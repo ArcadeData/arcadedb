@@ -75,6 +75,8 @@ public final class ColumnarTestData {
   public int     edgesPerVertex   = 0;
   /** More than 1 creates the type with that many buckets. */
   public int     buckets          = 1;
+  /** False makes {@link #createSchema} create the type and its properties only, so a test can add a COLUMNAR index over existing data. */
+  public boolean columnarIndexes  = true;
 
   private final Random    random;
   private final List<RID> live = new ArrayList<>();
@@ -88,8 +90,8 @@ public final class ColumnarTestData {
 
   /**
    * Creates {@code Asset(brand STRING, tags LIST OF STRING, fileSize LONG, publishDate DATETIME, author STRING, body STRING)}, body
-   * EXTERNAL when {@link #externalBody}, a vertex type when {@link #asVertices}, and a COLUMNAR index on brand, tags BY ITEM, fileSize,
-   * publishDate and author.
+   * EXTERNAL when {@link #externalBody}, a vertex type when {@link #asVertices}, and (unless {@link #columnarIndexes} is false) a COLUMNAR
+   * index on brand, tags BY ITEM, fileSize, publishDate and author, then waits for this node's projection to publish every column.
    */
   public void createSchema(final Database db) {
     db.command("sql", "CREATE " + (asVertices ? "VERTEX" : "DOCUMENT") + " TYPE " + TYPE + " BUCKETS " + Math.max(1, buckets));
@@ -101,11 +103,16 @@ public final class ColumnarTestData {
     db.command("sql", "CREATE PROPERTY " + TYPE + ".body STRING" + (externalBody ? " (EXTERNAL true)" : ""));
     if (asVertices)
       db.command("sql", "CREATE EDGE TYPE " + EDGE_TYPE);
+    if (!columnarIndexes)
+      return;
     db.command("sql", "CREATE INDEX ON " + TYPE + " (brand) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (tags BY ITEM) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (fileSize) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (publishDate) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (author) COLUMNAR");
+    // the columns of an empty bucket are published by background builds: none may still run once records exist, or it would move
+    // rows a test expects in the overlay into a segment, and remark pages while a test holds the apply
+    FacetOracle.awaitCaughtUp(db);
   }
 
   /**
@@ -198,7 +205,8 @@ public final class ColumnarTestData {
   }
 
   private void update(final Database db, final RID rid) {
-    final MutableDocument record = rid.asDocument(true).modify();
+    // through db, not the RID: a RID keeps the database it was created on, closed once that node stopped (a failover test)
+    final MutableDocument record = db.lookupByRID(rid, true).asDocument().modify();
     switch (random.nextInt(5)) {
     case 0 -> record.set("brand", brand());
     case 1 -> record.set("tags", tags(random.nextInt(50) == 0));
@@ -245,7 +253,7 @@ public final class ColumnarTestData {
       final int maxRecordsInPage = bucket(db).getMaxRecordsInPage();
       if (tiny[0].getPosition() / maxRecordsInPage == seal.getPosition() / maxRecordsInPage) {
         final long placeholdersBefore = layoutCount(db, "totalPlaceholderRecords");
-        db.transaction(() -> tiny[0].asDocument(true).modify().set("brand", brand).set("v", padding).save());
+        db.transaction(() -> db.lookupByRID(tiny[0], true).asDocument().modify().set("brand", brand).set("v", padding).save());
         if (layoutCount(db, "totalPlaceholderRecords") != placeholdersBefore + 1)
           throw new AssertionError("Growing " + tiny[0] + " on its sealed page did not leave a placeholder");
         live.add(tiny[0]);

@@ -418,6 +418,56 @@ class ColumnarReconcilerTest extends TestHelper {
   }
 
   @Test
+  void columnsRegisteredBeforeTheFirstReconcileOfAnEmptyBucketArePublished() throws Exception {
+    createAssetType(1);
+    final int colorFileId = 999_997;
+    try (final AutoCloseable ignored = manager().suspendApply()) {
+      database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+      final int bucketId = bucketIds()[0];
+      final ColumnarProjection projection = manager().projection(bucketId);
+      final int brandFileId = columnarIndex("brand").getFileId();
+      assertThat(projection.isPublishedWith(brandFileId)).as("the empty bucket is published with its first column at open").isTrue();
+
+      // as on a follower: a second schema entry registers another column on the open projection before any reconcile ran (no build(),
+      // the registration adds the column), so the first reconcile meets a bucket new to it, and empty
+      final ColumnDefinition color = column(colorFileId, "color", Type.STRING);
+      projection.addColumn(color);
+      final Map<Integer, ColumnDefinition[]> both = new HashMap<>();
+      both.put(bucketId, new ColumnDefinition[] { column(brandFileId, "brand", Type.STRING), color });
+      manager().reconcile(both);
+      // still held: a pass would reconcile against the real schema, which has no color index, and drop the column first
+      awaitRebuildEnded(projection);
+      assertThat(projection.isPublishedWith(colorFileId)).as("the column the registration added is published, not left missing")
+          .isTrue();
+      assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CREATE)).as("building an empty bucket is no rebuild").isZero();
+    }
+  }
+
+  @Test
+  void aColumnAddedToAnEmptyBucketByAReconcileCountsNoRebuild() throws Exception {
+    createAssetType(1);
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+    // caught up: the reconcile the index asked for ran, so the bucket is in the definitions it recorded
+    awaitCaughtUp();
+    final int bucketId = bucketIds()[0];
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final int brandFileId = columnarIndex("brand").getFileId();
+    final int colorFileId = 999_996;
+    try (final AutoCloseable ignored = manager().suspendApply()) {
+      // as on a follower: the schema entry of a second index adds its column without a build(); the reconcile sees ADD_COLUMN
+      final ColumnDefinition color = column(colorFileId, "color", Type.STRING);
+      projection.addColumn(color);
+      final Map<Integer, ColumnDefinition[]> both = new HashMap<>();
+      both.put(bucketId, new ColumnDefinition[] { column(brandFileId, "brand", Type.STRING), color });
+      manager().reconcile(both);
+      awaitRebuildEnded(projection);
+      assertThat(projection.isPublishedWith(colorFileId)).isTrue();
+      assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CREATE)).as("building an empty bucket is no rebuild").isZero();
+      assertThat(stats().rebuildsTotal()).isZero();
+    }
+  }
+
+  @Test
   void dropIndexWhileReadingDefersDeletion() throws InterruptedException {
     createIndexedAssets(1, 2_000);
     final int bucketId = bucketIds()[0];
@@ -674,6 +724,13 @@ class ColumnarReconcilerTest extends TestHelper {
     for (int i = 0; i < WAIT_MS && (stats().rebuilds(projection.typeName(), reason) < expected || projection.rebuildRequest.get() != null); i++)
       Thread.sleep(1);
     assertThat(stats().rebuilds(projection.typeName(), reason)).isEqualTo(expected);
+    assertThat(projection.rebuildRequest.get()).isNull();
+  }
+
+  /** Waits for the rebuild the caller just scheduled (the request is set synchronously by the schedule) to end. */
+  private static void awaitRebuildEnded(final ColumnarProjection projection) throws InterruptedException {
+    for (int i = 0; i < WAIT_MS && projection.rebuildRequest.get() != null; i++)
+      Thread.sleep(1);
     assertThat(projection.rebuildRequest.get()).isNull();
   }
 
