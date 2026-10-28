@@ -42,6 +42,11 @@ import java.util.Set;
  * A segment entry with {@code deadVersion} 0 has no dead set file (no row of it is dead); any other version names
  * {@code seg-<id>.dead.<version>}. Whether a no-WAL write is pending is not recorded here: the {@code NOWAL} marker file is the only
  * record of it.
+ * <p>
+ * {@code conversions} records, per column, how many values extracted into the projection failed to convert (held as missing) or were
+ * converted from another stored type (held as the declared type), counted since the column was last extracted from every record. A
+ * column without an entry has unknown counts: a manifest written before the field existed reads that way, with no format change, and a
+ * GROUP BY answered from the projection declines such a column until a rebuild extracts it again.
  */
 public final class ColumnarManifest {
   public static final String FILE_NAME           = "manifest.json";
@@ -63,6 +68,10 @@ public final class ColumnarManifest {
   public record DictionaryEntry(int indexFileId, int generation, String file, int entries, long bytes) {
   }
 
+  /** The conversion counts of one column, see the class comment. */
+  public record ConversionEntry(int indexFileId, long failures, long coerced) {
+  }
+
   private final long                  generation;
   private final int                   bucketFileId;
   private final String                bucketName;
@@ -73,6 +82,7 @@ public final class ColumnarManifest {
   private final String                ownerMapFile;
   private final String                externalOwnerMapFile;
   private final long                  lastTransactionId;
+  private final List<ConversionEntry> conversions;
   private final Set<String>           files;
 
   /**
@@ -83,6 +93,14 @@ public final class ColumnarManifest {
   public ColumnarManifest(final long generation, final int bucketFileId, final String bucketName, final int maxRecordsInPage,
       final ColumnDefinition[] columns, final List<SegmentEntry> segments, final List<DictionaryEntry> dictionaries, final String ownerMapFile,
       final String externalOwnerMapFile, final long lastTransactionId) {
+    this(generation, bucketFileId, bucketName, maxRecordsInPage, columns, segments, dictionaries, ownerMapFile, externalOwnerMapFile,
+        lastTransactionId, List.of());
+  }
+
+  /** @param conversions the conversion counts of the columns that have known ones, at most one per column */
+  public ColumnarManifest(final long generation, final int bucketFileId, final String bucketName, final int maxRecordsInPage,
+      final ColumnDefinition[] columns, final List<SegmentEntry> segments, final List<DictionaryEntry> dictionaries, final String ownerMapFile,
+      final String externalOwnerMapFile, final long lastTransactionId, final List<ConversionEntry> conversions) {
     this.generation = generation;
     this.bucketFileId = bucketFileId;
     this.bucketName = bucketName;
@@ -93,6 +111,7 @@ public final class ColumnarManifest {
     this.ownerMapFile = ownerMapFile;
     this.externalOwnerMapFile = externalOwnerMapFile;
     this.lastTransactionId = lastTransactionId;
+    this.conversions = List.copyOf(conversions);
 
     final Set<String> names = new HashSet<>();
     for (final SegmentEntry segment : this.segments) {
@@ -111,7 +130,7 @@ public final class ColumnarManifest {
 
   public ColumnarManifest withGeneration(final long next) {
     return new ColumnarManifest(next, bucketFileId, bucketName, maxRecordsInPage, columns, segments, dictionaries, ownerMapFile,
-        externalOwnerMapFile, lastTransactionId);
+        externalOwnerMapFile, lastTransactionId, conversions);
   }
 
   public int formatVersion() {
@@ -165,6 +184,11 @@ public final class ColumnarManifest {
     return lastTransactionId;
   }
 
+  /** The conversion counts of the columns that have known ones; a column without an entry has unknown counts. */
+  public List<ConversionEntry> conversions() {
+    return conversions;
+  }
+
   /** Every file name this manifest references (segments, dead sets, dictionaries, owner maps), for {@code deleteUnreferenced}. */
   public Set<String> files() {
     return files;
@@ -198,11 +222,17 @@ public final class ColumnarManifest {
     if (externalOwnerMapFile != null)
       json.put("externalOwnerMapFile", externalOwnerMapFile);
     json.put("lastTransactionId", lastTransactionId);
+    final JSONArray conversionsJson = new JSONArray();
+    for (final ConversionEntry conversion : conversions)
+      conversionsJson.put(new JSONObject().put("indexFileId", conversion.indexFileId()).put("failures", conversion.failures())
+          .put("coerced", conversion.coerced()));
+    // written even when empty: its absence is how a manifest of the earlier format reads
+    json.put("conversions", conversionsJson);
     return json;
   }
 
   /**
-   * Absent optional fields take their defaults (generation 0, no segments, no dictionaries, no owner maps).
+   * Absent optional fields take their defaults (generation 0, no segments, no dictionaries, no owner maps, no known conversion counts).
    *
    * @throws BlockCorruptionException when {@code formatVersion} is absent or not exactly 1, a field has the wrong type or a
    *                                  non-integral or out-of-range value, a required entry field (segment id and file, dictionary index
@@ -254,12 +284,25 @@ public final class ColumnarManifest {
       if (maxRecordsInPage % 64 != 0 || (maxRecordsInPage == 0 && !segments.isEmpty()))
         throw new BlockCorruptionException("Columnar manifest has invalid maxRecordsInPage " + maxRecordsInPage);
 
+      // absent in a manifest of the earlier format: every column's counts are then unknown
+      final JSONArray conversionsJson = json.getJSONArray("conversions", new JSONArray());
+      final List<ConversionEntry> conversions = new ArrayList<>(conversionsJson.length());
+      final Set<Integer> counted = new HashSet<>();
+      for (int i = 0; i < conversionsJson.length(); i++) {
+        final JSONObject c = conversionsJson.getJSONObject(i);
+        final int indexFileId = (int) integer(c, "indexFileId", -1, 0, Integer.MAX_VALUE);
+        if (!counted.add(indexFileId))
+          throw new BlockCorruptionException("Columnar manifest holds two conversion counts of index " + indexFileId);
+        conversions.add(new ConversionEntry(indexFileId, integer(c, "failures", -1, 0, Long.MAX_VALUE), integer(c, "coerced", -1, 0,
+            Long.MAX_VALUE)));
+      }
+
       final String ownerMapFile = json.getString("ownerMapFile", null);
       final String externalOwnerMapFile = json.getString("externalOwnerMapFile", null);
       final ColumnarManifest manifest = new ColumnarManifest(integer(json, "generation", 0, 0, Long.MAX_VALUE),
           (int) integer(json, "bucketFileId", 0, 0, Integer.MAX_VALUE), json.getString("bucketName", null), maxRecordsInPage, columns, segments,
           dictionaries, ownerMapFile == null ? null : fileName(ownerMapFile), externalOwnerMapFile == null ? null : fileName(externalOwnerMapFile),
-          integer(json, "lastTransactionId", 0, Long.MIN_VALUE, Long.MAX_VALUE));
+          integer(json, "lastTransactionId", 0, Long.MIN_VALUE, Long.MAX_VALUE), conversions);
 
       int named = dictionaries.size() + (ownerMapFile == null ? 0 : 1) + (externalOwnerMapFile == null ? 0 : 1);
       for (final SegmentEntry segment : segments)

@@ -512,8 +512,11 @@ final class ColumnarFlusher {
     }
     ColumnarTestHooks.reach(DICTIONARIES_SYNCED);
 
+    final ColumnDefinition[] manifestColumns = p.manifestColumns(current);
+    // the counts include every value the published rows hold: an apply pass counts before it publishes its rows
     final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), p.maxRecordsInPage(),
-        p.manifestColumns(current), segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
+        manifestColumns, segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId,
+        p.conversionEntries(manifestColumns));
     publishManifest(p, manifest, attempt, () -> {
       if (!p.publish(manifest, next, overlays.get(), writerDictionaries, p.currentState().isUsable()))
         return false;

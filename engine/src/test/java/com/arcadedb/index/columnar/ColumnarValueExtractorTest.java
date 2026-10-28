@@ -385,12 +385,22 @@ class ColumnarValueExtractorTest extends TestHelper {
     assertThat(sink.events).containsExactly("ordinal");
     assertThat(dictionary.valueOf(sink.ordinal)).isEqualTo(5L);
     assertThat(stats.conversionFailures("Asset", "brand")).isZero();
+    // converted, not failed: the column holds the value as another type than the record does (plan 5 Task 13 I3)
+    assertThat(stats.coercedValues("Asset", "brand")).isEqualTo(1);
+    // read-only extraction counts nothing
+    extractor.extract(record, allColumns()[0], dictionary, new RecordingSink());
+    assertThat(stats.coercedValues("Asset", "brand")).isEqualTo(1);
 
-    try (final ResultSet result = database.query("sql", "SELECT brand AS v FROM Asset GROUP BY brand")) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet result = database.query("sql", "SELECT brand AS v FROM Asset GROUP BY brand")) {
       // the result carries the raw value, the group key is its normalization
       assertThat(Type.normalizeNumberForKey(result.next().<Object>getProperty("v"))).isEqualTo(5L);
       assertThat(result.hasNext()).isFalse();
     }
+    // a value of the declared type is not coerced
+    final Document typed = save(database.newDocument("Asset").set("brand", "five"));
+    extractor.extractForApply(typed, allColumns()[0], dictionary, new RecordingSink());
+    assertThat(stats.coercedValues("Asset", "brand")).isEqualTo(1);
   }
 
   @Test
@@ -535,7 +545,8 @@ class ColumnarValueExtractorTest extends TestHelper {
 
   private Map<Object, Long> groupBy(final String sql) {
     final Map<Object, Long> counts = new HashMap<>();
-    try (final ResultSet result = database.query("sql", sql)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet result = database.query("sql", sql)) {
       while (result.hasNext()) {
         final Result row = result.next();
         final Object key = row.getProperty("v");

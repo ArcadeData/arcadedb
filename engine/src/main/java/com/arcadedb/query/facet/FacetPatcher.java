@@ -284,7 +284,7 @@ public final class FacetPatcher {
   }
 
   /** The record as the caller's transaction reads it, null when there is none at the position. */
-  static Document recordAt(final DatabaseInternal db, final RID rid) {
+  public static Document recordAt(final DatabaseInternal db, final RID rid) {
     // the empty slots of pending pages are not in the patch set (MatchSet keeps the occupied ones), so an absent record is a delete
     try {
       return db.lookupByRID(rid, true).asDocument();

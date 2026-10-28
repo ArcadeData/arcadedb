@@ -202,9 +202,11 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     return counts;
   }
 
+  /** The record-scan GROUP BY, the baseline the facets are timed against: never answered from the projection (plan 5 Task 13). */
   private Map<Object, Long> groupBy(final String sql) {
     final Map<Object, Long> counts = new HashMap<>();
-    try (final ResultSet rs = database.query("sql", sql)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet rs = database.query("sql", sql)) {
       while (rs.hasNext()) {
         final var row = rs.next();
         final Object key = row.getProperty("v");

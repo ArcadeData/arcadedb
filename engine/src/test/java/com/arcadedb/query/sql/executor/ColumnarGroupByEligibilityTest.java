@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Which GROUP BY shapes the planner answers with a {@link ColumnarGroupByStep} (EXPLAIN shows it, with the normal aggregation chain as
- * its fallback), which keep the normal plan, and the fallback-only execution of the step.
+ * its fallback), which keep the normal plan, and the rows of both execution paths of the step.
  */
 class ColumnarGroupByEligibilityTest extends TestHelper {
   private static final String TYPE    = ColumnarTestData.TYPE;
@@ -104,7 +104,7 @@ class ColumnarGroupByEligibilityTest extends TestHelper {
       "SELECT brand, count(*) FROM Asset GROUP BY brand",
       "SELECT brand AS b, count(*) AS c, sum(fileSize), avg(fileSize), min(score), max(score), count(fileSize) FROM Asset GROUP BY brand",
       "SELECT author, count(DISTINCT brand) FROM Asset GROUP BY author",
-      "SELECT fileSize, count(*) FROM Asset WHERE brand = 'b1' GROUP BY fileSize",
+      "SELECT fileSize, count(*) FROM Asset GROUP BY fileSize",
       "SELECT brand, count(*) AS c FROM Asset GROUP BY brand ORDER BY c DESC LIMIT 5",
       "SELECT `count`, min(ratio), max(ratio), sum(`count`) FROM Asset GROUP BY `count`",
       "SELECT count(*) FROM Asset GROUP BY brand" })                         // the key grouped by, not projected
@@ -117,6 +117,8 @@ class ColumnarGroupByEligibilityTest extends TestHelper {
   @ParameterizedTest
   @ValueSource(strings = {
       "SELECT tags, count(*) FROM Asset GROUP BY tags",                       // list
+      "SELECT fileSize, count(*) FROM Asset WHERE brand = 'brand-1' GROUP BY fileSize", // any WHERE (ruling C1/I1)
+      "SELECT brand, count(*) FROM Asset WHERE fileSize > 0 GROUP BY brand",
       "SELECT brand.toLowerCase(), count(*) FROM Asset GROUP BY brand.toLowerCase()",
       "SELECT brand, count(*) + 1 FROM Asset GROUP BY brand",
       "SELECT brand, sum(score) FROM Asset GROUP BY brand",                   // DOUBLE sum
@@ -242,58 +244,53 @@ class ColumnarGroupByEligibilityTest extends TestHelper {
     final String plan = explain("SELECT brand, count(*), sum(fileSize) FROM Asset GROUP BY brand");
     assertThat(plan).contains("+ AGGREGATE FROM COLUMNAR PROJECTION (Asset.brand)", "aggregates: count(*), sum(fileSize)",
         "match set: all records", "fallback: CALCULATE AGGREGATE PROJECTIONS");
-    assertThat(explain("SELECT fileSize, count(*) FROM Asset WHERE brand = 'b1' GROUP BY fileSize")).contains("match set: from upstream");
+    assertThat(explain("SELECT fileSize, count(*) FROM Asset WHERE brand = 'brand-1' GROUP BY fileSize")).doesNotContain("COLUMNAR PROJECTION");
   }
 
-  /** R22: a WHERE an index search consumes is still a WHERE: the match set comes from upstream, never "all records". */
+  /** R22: a WHERE an index search consumes is still a WHERE, and a statement with a WHERE keeps the normal plan (ruling C1/I1). */
   @Test
   @Timeout(120)
-  void whereConsumedByAnIndexIsFromUpstream() {
+  void whereConsumedByAnIndexKeepsTheNormalPlan() {
     load(500);
     database.command("sql", "CREATE INDEX ON " + TYPE + " (author) NOTUNIQUE");
     final String plan = explain("SELECT brand, count(*) FROM Asset WHERE author = 'x' GROUP BY brand");
     assertThat(plan).contains("FETCH FROM INDEX");
-    assertThat(plan).contains("AGGREGATE FROM COLUMNAR PROJECTION", "match set: from upstream");
-    assertThat(plan).doesNotContain("match set: all records");
+    assertThat(plan).doesNotContain("COLUMNAR PROJECTION");
   }
 
-  /** Until the columnar path exists, the step runs its fallback: the rows of the forced-normal plan, and a "normal" path. */
+  /**
+   * Both paths of the step against a plan without it: the fallback chain (switch off) and the projection (switch on) each return the rows
+   * of the same statement over a subquery, which the planner declines.
+   */
   @Test
   @Timeout(120)
-  void fallbackOnlySkeletonReturnsNormalRows() {
+  void bothPathsReturnTheRowsOfAPlanWithoutTheStep() {
     load(500);
     final List<String> queries = List.of("SELECT brand, count(*) AS c, sum(fileSize) AS s, avg(fileSize) AS a FROM Asset GROUP BY brand",
         "SELECT brand, count(*) AS c FROM Asset GROUP BY brand ORDER BY c DESC, brand LIMIT 5",
-        "SELECT fileSize, count(*) FROM Asset WHERE brand = 'brand-1' GROUP BY fileSize",
+        "SELECT fileSize, count(*) FROM Asset GROUP BY fileSize",
         "SELECT author, count(DISTINCT brand) AS d FROM Asset GROUP BY author");
     for (final String sql : queries) {
-      final List<Map<String, Object>> withStep = rows(sql);
-      final ColumnarGroupByStep step = profiledStep(sql);
-      assertThat(step).as(sql).isNotNull();
-      assertThat(step.lastPath()).as(sql).startsWith("normal");
-
       // the oracle: the same statement over a subquery, which the planner declines, so its plan has no step at all
-      final String stepless = sql.contains("WHERE") ?
-          sql.replace("FROM Asset WHERE brand = 'brand-1'", "FROM (SELECT FROM Asset WHERE brand = 'brand-1')") :
-          sql.replace("FROM Asset", "FROM (SELECT FROM Asset)");
+      final String stepless = sql.replace("FROM Asset", "FROM (SELECT FROM Asset)");
       assertThat(explain(stepless)).as(stepless).doesNotContain("COLUMNAR PROJECTION");
       final List<Map<String, Object>> oracle = rows(stepless);
-      assertThat(withStep).as(sql).isNotEmpty();
-      if (sql.contains("ORDER BY"))
-        assertThat(withStep).as(sql).containsExactlyElementsOf(oracle);
-      else
-        assertThat(withStep).as(sql).containsExactlyInAnyOrderElementsOf(oracle);
+      assertThat(oracle).as(stepless).isNotEmpty();
 
-      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, false);
-      try {
-        final List<Map<String, Object>> normal = rows(sql);
-        assertThat(withStep).as(sql).isNotEmpty();
-        if (sql.contains("ORDER BY"))
-          assertThat(withStep).as(sql).containsExactlyElementsOf(normal);
-        else
-          assertThat(withStep).as(sql).containsExactlyInAnyOrderElementsOf(normal);
-      } finally {
-        database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, true);
+      for (final boolean accelerated : new boolean[] { false, true }) {
+        database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, accelerated);
+        try {
+          final List<Map<String, Object>> withStep = rows(sql);
+          final ColumnarGroupByStep step = profiledStep(sql);
+          assertThat(step).as(sql).isNotNull();
+          assertThat(step.lastPath()).as(sql).isEqualTo(accelerated ? "columnar" : "normal: disabled by arcadedb.columnar.groupByAcceleration");
+          if (sql.contains("ORDER BY"))
+            assertThat(withStep).as(sql).containsExactlyElementsOf(oracle);
+          else
+            assertThat(withStep).as(sql).containsExactlyInAnyOrderElementsOf(oracle);
+        } finally {
+          database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, true);
+        }
       }
     }
   }
@@ -323,16 +320,31 @@ class ColumnarGroupByEligibilityTest extends TestHelper {
   @Timeout(120)
   void profilePrintsThePathAndTheFallbackThatRan() {
     load(500);
-    try (final ResultSet rs = database.query("sql", "PROFILE SELECT brand, count(*) FROM Asset GROUP BY brand")) {
+    final String sql = "SELECT brand, count(*) FROM Asset GROUP BY brand";
+    try (final ResultSet rs = database.query("sql", "PROFILE " + sql)) {
       while (rs.hasNext())
         rs.next();
       final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
-      assertThat(plan).contains("path: normal (reason: ");
-      assertThat(plan).containsPattern("\\n +\\+ CALCULATE AGGREGATE PROJECTIONS");
+      assertThat(plan).containsPattern("path: columnar \\(segments [1-9][0-9]*, patched 0\\)");
+      assertThat(plan).doesNotContainPattern("\\n +\\+ CALCULATE AGGREGATE PROJECTIONS");
     }
-    // the fallback is the step's sub-steps: plan JSON and cost roll-ups see the aggregation
-    assertThat(profiledStep("SELECT brand, count(*) FROM Asset GROUP BY brand").getSubSteps())
-        .anyMatch(step -> step instanceof AggregateProjectionCalculationStep);
+    // nothing of the fallback ran: no sub-step to roll costs up from
+    assertThat(profiledStep(sql).getSubSteps()).isEmpty();
+
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, false);
+    try {
+      try (final ResultSet rs = database.query("sql", "PROFILE " + sql)) {
+        while (rs.hasNext())
+          rs.next();
+        final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
+        assertThat(plan).contains("path: normal (reason: disabled by arcadedb.columnar.groupByAcceleration)");
+        assertThat(plan).containsPattern("\\n +\\+ CALCULATE AGGREGATE PROJECTIONS");
+      }
+      // the fallback is the step's sub-steps: plan JSON and cost roll-ups see the aggregation
+      assertThat(profiledStep(sql).getSubSteps()).anyMatch(step -> step instanceof AggregateProjectionCalculationStep);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, true);
+    }
   }
 
   /**

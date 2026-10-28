@@ -457,6 +457,10 @@ final class ColumnarApplier {
     private RuntimeException  unreadableCause;
     /** Failing values of the staged records by column, counted after the publish so a failed pass counts nothing. */
     private final long[]      stagedFailures;
+    /** Values of the staged records converted from another stored type, by column. */
+    private final long[]      stagedCoerced;
+    /** By column: whether the record being extracted holds a value converted from another stored type. */
+    private final boolean[]   coerced;
 
     private Pass(final ColumnarProjection projection, final ColumnDefinition[] columns, final String typeName) {
       this.projection = projection;
@@ -476,6 +480,8 @@ final class ColumnarApplier {
       this.dictionaries = new GlobalDictionary[columns.length];
       this.failures = new int[columns.length];
       this.stagedFailures = new long[columns.length];
+      this.stagedCoerced = new long[columns.length];
+      this.coerced = new boolean[columns.length];
       this.reader = new ColumnarValueExtractor.RecordReader(columns);
     }
 
@@ -516,6 +522,11 @@ final class ColumnarApplier {
 
         // nothing of the run is visible before this point: a failed pass leaves the projection and its owner maps as they were
         ColumnarTestHooks.reach(BEFORE_PUBLISH);
+        // the projection's conversion counts first, so a manifest that names a published row also counts its value (a failed pass
+        // over-counts, which only makes a GROUP BY decline)
+        for (int k = 0; k < columns.length; k++)
+          if (stagedFailures[k] > 0 || stagedCoerced[k] > 0)
+            projection.countConversions(columns[k].indexFileId(), stagedFailures[k], stagedCoerced[k]);
         publish();
         applyOwnerChanges();
 
@@ -532,6 +543,9 @@ final class ColumnarApplier {
         for (int k = 0; k < columns.length; k++)
           if (stagedFailures[k] > 0)
             extractor.countFailures(columns[k], (int) stagedFailures[k]);
+        for (int k = 0; k < columns.length; k++)
+          if (stagedCoerced[k] > 0)
+            extractor.countCoerced(columns[k], stagedCoerced[k]);
 
         projection.tracker().completed(pages, pages.length);
         projection.pagesApplied(pages, pages.length);
@@ -588,6 +602,7 @@ final class ColumnarApplier {
       deadNow = new PositionBitmap(maxRecordsInPage);
       superseded = new PositionBitmap(maxRecordsInPage);
       Arrays.fill(stagedFailures, 0L);
+      Arrays.fill(stagedCoerced, 0L);
       reread = 0;
       unreadable = 0;
     }
@@ -759,11 +774,14 @@ final class ColumnarApplier {
         for (int k = 0; k < columns.length; k++) {
           fresh.present[k] = false;
           failures[k] = 0;
+          coerced[k] = false;
           final ColumnKind kind = columns[k].kind();
           if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
             continue;
           sink.k = k;
-          failures[k] = extractor.extractValueForApplyUncounted(reader.raw(k), columns[k], dictionaries[k], sink);
+          final Object raw = reader.raw(k);
+          coerced[k] = raw != null && ColumnarValueExtractor.isCoerced(columns[k], raw);
+          failures[k] = extractor.extractValueForApplyUncounted(raw, columns[k], dictionaries[k], sink);
         }
       } finally {
         reader.end();
@@ -786,8 +804,11 @@ final class ColumnarApplier {
       changed = true;
       supersede(position, where);
       // once per staged record version and failing value: a re-read of an unchanged record counts nothing
-      for (int k = 0; k < columns.length; k++)
+      for (int k = 0; k < columns.length; k++) {
         stagedFailures[k] += failures[k];
+        if (coerced[k])
+          stagedCoerced[k]++;
+      }
     }
 
     /** The position is no record any more: its live value dies, wherever it is. */

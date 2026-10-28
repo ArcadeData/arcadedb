@@ -1239,6 +1239,11 @@ public final class ColumnarIndexManager {
     return stats.conversionFailures(type, property);
   }
 
+  /** Values extracted as the declared type from another stored type, see {@link ColumnarStats#coercedValue}. */
+  public long coercedValues(final String type, final String property) {
+    return stats.coercedValues(type, property);
+  }
+
   /** The permits of the queries of this database that scan records because no projection can answer them; one instance per database. */
   public Semaphore fallbackScans() {
     return fallbackScans;

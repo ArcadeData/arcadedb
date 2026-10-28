@@ -309,6 +309,7 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 - Hierarchy shared build: BEFORE/AFTER READ triggers on the tag type run during the build with no user (a BEFORE READ returning false hides a tag from every user); consider building with read events bypassed (plan 5 Task 5).
 - HIERARCHY facet: the projected and scanned collectors of one type may take views of different generations within one query (exact either way); taking one view per query would remove the extra build (plan 5 Task 6).
 - facet.searchValues: every batch runs a full FACETS query over the type with up to 2*topMax INCLUDE parameters, and each batch size yields a new statement text for the plan cache; consider a dedicated count path and a fixed parameter shape (plan 5 Task 11).
+- GROUP BY acceleration with a WHERE (deferred from plan 5 Task 13): rows filtered by the WHERE must be counted from the version the WHERE saw; design: take a second snapshot after draining the matches, decline if anything was published in between, count rows on pages pending in that snapshot from their records; re-evaluate the WHERE on any replay. Plan 5 accelerates only GROUP BY without a WHERE.
 
 ## Pre-merge steps (before the feature branch is merged to main)
 

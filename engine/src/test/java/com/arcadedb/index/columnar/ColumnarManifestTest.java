@@ -259,4 +259,29 @@ class ColumnarManifestTest {
     // an owner map that is also a dictionary file
     assertCorrupt(manifest(", \"ownerMapFile\":\"dict-11.0.dic\"", SEGMENT, DICTIONARY));
   }
+
+  /** Plan 5 Task 13: the conversion counts round-trip; a manifest without the field (the earlier format) reads with none known. */
+  @Test
+  void conversionCountsRoundTripAndAreUnknownWhenAbsent() {
+    final ColumnarManifest base = sample(5, null);
+    final List<ColumnarManifest.ConversionEntry> conversions = List.of(new ColumnarManifest.ConversionEntry(11, 0, 3),
+        new ColumnarManifest.ConversionEntry(13, 2, 0));
+    final ColumnarManifest manifest = new ColumnarManifest(5, 65, "Asset_0", 2048, base.columns(), base.segments(), base.dictionaries(),
+        "owners-5.own", null, 987654321L, conversions);
+    final JSONObject json = manifest.toJSON();
+    final ColumnarManifest copy = ColumnarManifest.fromJSON(new JSONObject(json.toString()));
+    assertThat(copy.conversions()).isEqualTo(conversions);
+    assertThat(copy.withGeneration(6).conversions()).isEqualTo(conversions);
+
+    // the earlier constructor (and format) knows no counts, but still writes the field, empty
+    assertThat(base.conversions()).isEmpty();
+    assertThat(base.toJSON().getJSONArray("conversions").length()).isZero();
+    json.remove("conversions");
+    assertThat(ColumnarManifest.fromJSON(json).conversions()).isEmpty();
+
+    assertCorrupt("{\"formatVersion\":1, \"conversions\":[{\"indexFileId\":11, \"failures\":0, \"coerced\":0}, "
+        + "{\"indexFileId\":11, \"failures\":1, \"coerced\":0}]}");
+    assertCorrupt("{\"formatVersion\":1, \"conversions\":[{\"indexFileId\":11, \"failures\":-1, \"coerced\":0}]}");
+    assertCorrupt("{\"formatVersion\":1, \"conversions\":[{\"indexFileId\":11, \"failures\":0}]}");
+  }
 }

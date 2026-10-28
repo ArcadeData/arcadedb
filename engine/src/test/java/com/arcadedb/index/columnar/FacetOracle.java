@@ -90,6 +90,23 @@ public final class FacetOracle {
   private FacetOracle() {
   }
 
+  /** Turns GROUP BY acceleration back to what it was before {@link #normalPlan}; closes without a checked exception. */
+  public interface NormalPlan extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  /**
+   * Turns {@code arcadedb.columnar.groupByAcceleration} off on the database until the result is closed, so a GROUP BY that checks the
+   * projection reads the records, never the projection it checks. Open it before the statement and close it once the rows are read:
+   * the switch is read when the statement runs. Not for concurrent statements on the same database.
+   */
+  public static NormalPlan normalPlan(final Database db) {
+    final boolean previous = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION);
+    db.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, false);
+    return () -> db.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, previous);
+  }
+
   /**
    * The facet counts of GROUP BY over the type, polymorphic. BY ITEM is inferred from the COLUMNAR index on the property.
    *
@@ -135,7 +152,8 @@ public final class FacetOracle {
     final Type propertyType = column.kind() == ColumnKind.LONG ? propertyType(db, type, column) : null;
     final String terms = "SELECT " + quote(property) + " AS v, count(*) AS c FROM " + quote(type) + where(where) + " GROUP BY " + quote(
         property);
-    try (final ResultSet rs = db.query("sql", terms)) {
+    try (final NormalPlan normal = normalPlan(db);
+        final ResultSet rs = db.query("sql", terms)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         add(counts, scalarKey(column, propertyType, extractor, row.getProperty("v")), row.<Number>getProperty("c").longValue());

@@ -105,7 +105,8 @@ class TermsAfterCursorTest extends TestHelper {
   /** {@code GROUP BY p ORDER BY p} as (value, count) pairs, the groups with at least {@code minCount} records. */
   private List<List<Object>> oracle(final String type, final String property, final int minCount) {
     final List<List<Object>> groups = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql",
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet rs = database.query("sql",
         "SELECT " + property + " AS v, count(*) AS c FROM " + type + " WHERE " + property + " IS NOT NULL GROUP BY " + property
             + " ORDER BY v")) {
       while (rs.hasNext()) {
