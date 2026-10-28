@@ -237,6 +237,27 @@ public final class PositionBitmap {
     return copy;
   }
 
+  /**
+   * A bitmap over stripes owned by someone else, kept by reference without copying their words: every stripe starts shared, so the
+   * first write to one clones it and the given stripes are never written. The page and stripe index arrays are copied.
+   *
+   * @param pages   strictly ascending page numbers, the first {@code count} are used
+   * @param stripes the stripe of each page, {@code maxRecordsInPage / 64} words with at least one bit set
+   */
+  static PositionBitmap wrapShared(final int maxRecordsInPage, final int[] pages, final long[][] stripes, final int count) {
+    final PositionBitmap bitmap = new PositionBitmap(maxRecordsInPage);
+    for (int i = 0; i < count; i++)
+      if (stripes[i].length != bitmap.wordsPerStripe)
+        throw new IllegalArgumentException("Stripe of page " + pages[i] + " has " + stripes[i].length + " words, expected " + bitmap.wordsPerStripe);
+    bitmap.pageNumbers = Arrays.copyOf(pages, count);
+    bitmap.stripes = Arrays.copyOf(stripes, count);
+    // generation 0 for every stripe and 1 for the bitmap: no stripe is owned, the first write clones it
+    bitmap.stripeGeneration = new long[count];
+    bitmap.generation = 1;
+    bitmap.size = count;
+    return bitmap;
+  }
+
   long[] stripeForTesting(final int page) {
     return stripe(page);
   }

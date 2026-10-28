@@ -39,4 +39,32 @@ final class RowValues {
     doubles = new double[columns];
     present = new boolean[columns];
   }
+
+  /**
+   * Validates the slot of column {@code k} for the column's kind: an ORDINAL is non-negative, an ORDINAL_LIST has a count within its
+   * array and strictly ascending non-negative ordinals. A missing slot is always valid.
+   *
+   * @throws IllegalArgumentException when the slot breaks a rule
+   */
+  void check(final int k, final ColumnDefinition column) {
+    if (!present[k])
+      return;
+    switch (column.kind()) {
+    case ORDINAL -> {
+      if (ordinal[k] < 0)
+        throw new IllegalArgumentException("Negative ordinal " + ordinal[k] + " for column " + column.property());
+    }
+    case ORDINAL_LIST -> {
+      final int[] values = list[k];
+      final int count = listCount[k];
+      if (count < 0 || count > 0 && (values == null || count > values.length))
+        throw new IllegalArgumentException("Invalid list count " + count + " for column " + column.property());
+      for (int i = 0; i < count; i++)
+        if (values[i] < 0 || i > 0 && values[i] <= values[i - 1])
+          throw new IllegalArgumentException("List ordinals of column " + column.property() + " must be non-negative and strictly ascending");
+    }
+    default -> {
+    }
+    }
+  }
 }

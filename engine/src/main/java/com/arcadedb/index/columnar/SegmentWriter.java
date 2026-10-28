@@ -157,7 +157,7 @@ final class SegmentWriter implements AutoCloseable {
     if (rowCount == Integer.MAX_VALUE)
       throw new IllegalStateException("Segment " + file + " is full: " + rowCount + " rows");
     for (int k = 0; k < columns.length; k++)
-      checkValue(k, row);
+      row.check(k, columns[k]);
 
     final int page = (int) (position / maxRecordsInPage);
     final int slot = (int) (position % maxRecordsInPage);
@@ -219,28 +219,6 @@ final class SegmentWriter implements AutoCloseable {
     closed = true;
     channel.close();
     Files.deleteIfExists(file);
-  }
-
-  private void checkValue(final int k, final RowValues row) {
-    if (!row.present[k])
-      return;
-    switch (kinds[k]) {
-    case ORDINAL -> {
-      if (row.ordinal[k] < 0)
-        throw new IllegalArgumentException("Negative ordinal " + row.ordinal[k] + " for column " + columns[k].property());
-    }
-    case ORDINAL_LIST -> {
-      final int[] list = row.list[k];
-      final int count = row.listCount[k];
-      if (count < 0 || count > 0 && (list == null || count > list.length))
-        throw new IllegalArgumentException("Invalid list count " + count + " for column " + columns[k].property());
-      for (int i = 0; i < count; i++)
-        if (list[i] < 0 || i > 0 && list[i] <= list[i - 1])
-          throw new IllegalArgumentException("List ordinals of column " + columns[k].property() + " must be non-negative and strictly ascending");
-    }
-    default -> {
-    }
-    }
   }
 
   private void storeValue(final int k, final RowValues row) {
