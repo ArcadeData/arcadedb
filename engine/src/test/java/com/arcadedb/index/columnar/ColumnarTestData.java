@@ -24,9 +24,11 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Random;
@@ -43,6 +45,10 @@ import java.util.Random;
 public final class ColumnarTestData {
   public static final String TYPE      = "Asset";
   public static final String EDGE_TYPE = "Related";
+  /** The tag vertex type of {@link #createTagTree}, keyed by {@code path STRING}. */
+  public static final String TAG_TYPE    = "Tag";
+  /** The edge of {@link #createTagTree}, running {@code (parent)-[ParentOf]->(child)}. */
+  public static final String PARENT_EDGE = "ParentOf";
 
   private static final int    TRANSACTION_SIZE        = 500;
   private static final int    MUTATION_BATCH          = 100;
@@ -86,6 +92,13 @@ public final class ColumnarTestData {
   public boolean timeOfDay        = false;
   /** The records without an author store an explicit null (and an update clears it to null) instead of leaving the property out. */
   public boolean explicitNulls    = false;
+  /**
+   * The {@code hierarchy} object of the METADATA {@link #createSchema} puts on the tags index (null: no hierarchy). When set, the tag
+   * schema of {@link #createTagSchema} is created first, so the hierarchy validates at CREATE INDEX.
+   */
+  public JSONObject   tagHierarchy = null;
+  /** The values the tags of inserted and updated records are drawn from (null: {@code tag-N} over {@link #tagVocabulary}). */
+  public List<String> tagValues    = null;
 
   private final Random    random;
   private final List<RID> live = new ArrayList<>();
@@ -100,7 +113,8 @@ public final class ColumnarTestData {
   /**
    * Creates {@code Asset(brand STRING, tags LIST OF STRING, fileSize LONG, publishDate DATETIME, author STRING, body STRING)}, body
    * EXTERNAL when {@link #externalBody}, a vertex type when {@link #asVertices}, and (unless {@link #columnarIndexes} is false) a COLUMNAR
-   * index on brand, tags BY ITEM, fileSize, publishDate and author, then waits for this node's projection to publish every column.
+   * index on brand, tags BY ITEM (with {@link #tagHierarchy} as its METADATA when set), fileSize, publishDate and author, then waits
+   * for this node's projection to publish every column.
    */
   public void createSchema(final Database db) {
     db.command("sql", "CREATE " + (asVertices ? "VERTEX" : "DOCUMENT") + " TYPE " + TYPE + " BUCKETS " + Math.max(1, buckets));
@@ -119,7 +133,11 @@ public final class ColumnarTestData {
     if (!columnarIndexes)
       return;
     db.command("sql", "CREATE INDEX ON " + TYPE + " (brand) COLUMNAR");
-    db.command("sql", "CREATE INDEX ON " + TYPE + " (tags BY ITEM) COLUMNAR");
+    if (tagHierarchy != null) {
+      createTagSchema(db);
+      db.command("sql", "CREATE INDEX ON " + TYPE + " (tags BY ITEM) COLUMNAR METADATA " + new JSONObject().put("hierarchy", tagHierarchy));
+    } else
+      db.command("sql", "CREATE INDEX ON " + TYPE + " (tags BY ITEM) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (fileSize) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (publishDate) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (author) COLUMNAR");
@@ -130,6 +148,64 @@ public final class ColumnarTestData {
     // the columns of an empty bucket are published by background builds: none may still run once records exist, or it would move
     // rows a test expects in the overlay into a segment, and remark pages while a test holds the apply
     FacetOracle.awaitCaughtUp(db);
+  }
+
+  /** Creates, when absent, {@code Tag(path STRING)} with a NOTUNIQUE index on {@code path} and the edge type {@code ParentOf}. */
+  public static void createTagSchema(final Database db) {
+    db.command("sql", "CREATE VERTEX TYPE " + TAG_TYPE + " IF NOT EXISTS");
+    db.command("sql", "CREATE PROPERTY " + TAG_TYPE + ".path IF NOT EXISTS STRING");
+    db.command("sql", "CREATE INDEX IF NOT EXISTS ON " + TAG_TYPE + " (path) NOTUNIQUE");
+    db.command("sql", "CREATE EDGE TYPE " + PARENT_EDGE + " IF NOT EXISTS");
+  }
+
+  /**
+   * Creates (in one transaction, after {@link #createTagSchema}) a tag forest of {@code fanout} roots {@code t0..t<fanout-1>}, each
+   * node with {@code fanout} children {@code <parent>/t<i>}, {@code depth} levels in all, linked by {@code ParentOf} edges from parent
+   * to child. The seed shuffles the order the vertices and edges are created in, never the tree.
+   *
+   * @return every path, in creation order
+   */
+  public static List<String> createTagTree(final Database db, final long seed, final int depth, final int fanout) {
+    createTagSchema(db);
+    final List<String> paths = new ArrayList<>();
+    final List<Integer> parentOf = new ArrayList<>();
+    int levelStart = 0;
+    for (int level = 0; level < depth; level++) {
+      final int levelEnd = paths.size();
+      if (level == 0) {
+        for (int i = 0; i < fanout; i++) {
+          paths.add("t" + i);
+          parentOf.add(-1);
+        }
+      } else
+        for (int parent = levelStart; parent < levelEnd; parent++)
+          for (int i = 0; i < fanout; i++) {
+            paths.add(paths.get(parent) + "/t" + i);
+            parentOf.add(parent);
+          }
+      levelStart = levelEnd;
+    }
+
+    final Random random = new Random(seed);
+    final List<Integer> order = new ArrayList<>(paths.size());
+    for (int i = 0; i < paths.size(); i++)
+      order.add(i);
+    Collections.shuffle(order, random);
+    final List<Integer> edgeOrder = new ArrayList<>(order);
+    Collections.shuffle(edgeOrder, random);
+
+    final MutableVertex[] vertices = new MutableVertex[paths.size()];
+    final List<String> created = new ArrayList<>(paths.size());
+    db.transaction(() -> {
+      for (final int node : order) {
+        vertices[node] = db.newVertex(TAG_TYPE).set("path", paths.get(node)).save();
+        created.add(paths.get(node));
+      }
+      for (final int node : edgeOrder)
+        if (parentOf.get(node) >= 0)
+          vertices[parentOf.get(node)].newEdge(PARENT_EDGE, vertices[node]);
+    });
+    return created;
   }
 
   /**
@@ -302,13 +378,17 @@ public final class ColumnarTestData {
     final int count = random.nextInt(maxTags + 1);
     final List<String> tags = new ArrayList<>(count + 2);
     for (int i = 0; i < count; i++)
-      tags.add("tag-" + random.nextInt(tagVocabulary));
+      tags.add(tag());
     if (withDuplicate) {
       if (tags.isEmpty())
-        tags.add("tag-" + random.nextInt(tagVocabulary));
+        tags.add(tag());
       tags.add(tags.get(random.nextInt(tags.size())));
     }
     return tags;
+  }
+
+  private String tag() {
+    return tagValues != null ? tagValues.get(random.nextInt(tagValues.size())) : "tag-" + random.nextInt(tagVocabulary);
   }
 
   private long fileSize() {
