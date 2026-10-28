@@ -128,12 +128,12 @@ class Issue8931ProductionErrorConcealmentIT extends PostgresWireProtocolTestBase
   @Test
   void aRefusedCatalogQueryKeepsItsExplanationInProductionMode() throws Exception {
     final Map<Character, String> error = withMode("production", (out, in) -> {
-      sendSimpleQuery(out, "select count(*) from pg_catalog.pg_proc");
+      sendSimpleQuery(out, "select count(*) from pg_catalog.pg_extension");
       return failureOf(readUntilReadyForQuery(in));
     });
 
     assertThat(error.get('C')).isEqualTo("0A000");
-    assertThat(error.get('M')).contains("pg_proc").isNotEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
+    assertThat(error.get('M')).contains("pg_extension").isNotEqualTo(ArcadeDBServer.CONCEALED_ERROR_MESSAGE);
   }
 
   /** The same for the refusal of a catalog query that costs too much (issue #10228): fixed text, a client-driven failure. */

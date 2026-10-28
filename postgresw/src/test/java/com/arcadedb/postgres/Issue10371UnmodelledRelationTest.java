@@ -50,8 +50,8 @@ class Issue10371UnmodelledRelationTest {
   private static final String USER          = "root";
 
   /** Relations PostgreSQL has and this catalog does not model: some are empty in ArcadeDB's world, some are not. */
-  private static final List<String> UNMODELLED = List.of("pg_catalog.pg_proc", "pg_proc", "pg_extension", "pg_trigger",
-      "pg_stat_activity", "pg_settings", "pg_rewrite", "pg_tablespace", "information_schema.referential_constraints",
+  private static final List<String> UNMODELLED = List.of("pg_catalog.pg_extension", "pg_extension", "pg_locks", "pg_stat_database",
+      "pg_stat_activity", "pg_stat_user_tables", "pg_language", "pg_opclass", "information_schema.referential_constraints",
       "information_schema.table_privileges", "information_schema.routines", "information_schema.sequences",
       "information_schema.statistics");
 
@@ -108,13 +108,13 @@ class Issue10371UnmodelledRelationTest {
 
   @Test
   void aRefusalNamesTheRelationItCouldNotModel() {
-    assertThat(PostgresCatalog.refusalOf("select count(*) from pg_catalog.pg_proc")).isInstanceOf(
-        PostgresCatalog.UnsupportedCatalogQuery.class).hasMessageContaining("\"pg_proc\"");
+    assertThat(PostgresCatalog.refusalOf("select count(*) from pg_catalog.pg_extension")).isInstanceOf(
+        PostgresCatalog.UnsupportedCatalogQuery.class).hasMessageContaining("\"pg_extension\"");
     assertThat(PostgresCatalog.refusalOf("select * from information_schema.routines where 1 = 1"))
         .hasMessageContaining("\"information_schema.routines\"");
     // a function is not a relation: the one named is the relation it is read from
-    assertThat(PostgresCatalog.refusalOf("select pg_catalog.pg_get_functiondef(p.oid) from pg_catalog.pg_proc p"))
-        .hasMessageContaining("\"pg_proc\"").hasMessageNotContaining("pg_get_functiondef");
+    assertThat(PostgresCatalog.refusalOf("select pg_catalog.pg_get_userbyid(e.extowner) from pg_catalog.pg_extension e"))
+        .hasMessageContaining("\"pg_extension\"").hasMessageNotContaining("pg_get_userbyid");
     // a shape with no unmodelled relation in it still says it is refused, and why
     assertThat(PostgresCatalog.refusalOf("select relname from pg_class a, pg_class b, pg_class c where a.oid = b.oid"))
         .hasMessageContaining("shape");
@@ -124,8 +124,8 @@ class Issue10371UnmodelledRelationTest {
   /** A column reference is not a relation: {@code pg_type.oid} must not be named as the relation that was refused. */
   @Test
   void aColumnReferenceIsNotNamedAsTheRefusedRelation() {
-    assertThat(PostgresCatalog.refusalOf("select pg_type.oid from pg_catalog.pg_proc, pg_catalog.pg_type"))
-        .hasMessageContaining("\"pg_proc\"").hasMessageNotContaining("pg_type.oid");
+    assertThat(PostgresCatalog.refusalOf("select pg_type.oid from pg_catalog.pg_extension, pg_catalog.pg_type"))
+        .hasMessageContaining("\"pg_extension\"").hasMessageNotContaining("pg_type.oid");
     assertThat(PostgresCatalog.refusalOf("select pg_type.oid from pg_catalog.pg_type, pg_class a, pg_class b, pg_class c"))
         .hasMessageContaining("shape");
   }
@@ -138,7 +138,8 @@ class Issue10371UnmodelledRelationTest {
   @Test
   void aTypeQueryThatCannotBeReadIsRefusedLikeAnyOtherCatalogQuery() {
     // another relation the catalog does not model
-    assertThat(PostgresCatalog.resolve("select * from pg_type t, pg_proc p where p.prorettype = t.oid", database, USER))
+    assertThat(PostgresCatalog.resolve("select * from pg_type t, pg_extension e where e.extnamespace = t.typnamespace", database,
+        USER))
         .isSameAs(PostgresCatalog.DECLINED);
     // a filter it cannot evaluate, which over the fixed set of types would otherwise select every one of them
     assertThat(PostgresCatalog.resolve("select t.oid from pg_type t where t.typname = lookup_something(t.oid)", database, USER))

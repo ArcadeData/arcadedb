@@ -283,7 +283,7 @@ class PostgresCatalogTest {
 
   @Test
   void aQueryAboutARelationThisCatalogDoesNotModelIsDeclined() {
-    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_proc")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_extension")).isSameAs(PostgresCatalog.DECLINED);
   }
 
   @Test
@@ -425,7 +425,7 @@ class PostgresCatalogTest {
         "relname")).containsExactly("Article", "Author", database.getName(), "pg_catalog");
     assertThat(names(resolve("SELECT relkind FROM pg_class GROUP BY relkind").rows, "relkind")).containsExactly("r");
     // A set operation with an arm this catalog cannot answer is declined whole, not answered by its other arm.
-    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT proname FROM pg_proc")).isSameAs(
+    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT extname FROM pg_extension")).isSameAs(
         PostgresCatalog.DECLINED);
     // LIMIT ALL is no limit (issue #10228).
     assertThat(names(resolve("SELECT relname FROM pg_class LIMIT ALL").rows, "relname")).containsExactly("Article", "Author");

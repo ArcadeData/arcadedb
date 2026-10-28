@@ -1774,6 +1774,8 @@ abstract class PostgresCatalogExpression {
           return parseAggregate(name.toLowerCase(Locale.ENGLISH));
         if (currentQualifier == null && "trim".equalsIgnoreCase(name))
           return parseTrim();
+        if (currentQualifier == null && "substring".equalsIgnoreCase(name) && isSqlSubstring())
+          return parseSqlSubstring();
 
         ++position;
         final List<PostgresCatalogExpression> arguments = new ArrayList<>();
@@ -1844,6 +1846,54 @@ abstract class PostgresCatalogExpression {
         return null;
 
       return new FunctionCall(function, characters == null ? List.of(string) : List.of(string, characters));
+    }
+
+    /**
+     * Whether the call at the current position is {@code substring(string FROM start [FOR count])} or {@code substring(string FOR
+     * count)}, SQL's own spelling, rather than the plain {@code substring(string, start [, count])}: a FROM or FOR keyword inside its
+     * parentheses and outside any nested ones. Nothing is parsed, so the position and the parser's state stay as they were.
+     */
+    private boolean isSqlSubstring() {
+      int depth = 0;
+      for (int i = position; i < tokens.size(); i++) {
+        final PostgresCatalogToken token = tokens.get(i);
+        if (token.isSymbol("("))
+          ++depth;
+        else if (token.isSymbol(")")) {
+          if (--depth == 0)
+            return false;
+        } else if (depth == 1 && (token.isKeyword("FROM") || token.isKeyword("FOR")))
+          return true;
+      }
+      return false;
+    }
+
+    /**
+     * Reads {@code substring(string FROM start [FOR count])} and {@code substring(string FOR count)} as the plain call PostgreSQL turns
+     * them into, {@code substring(string, start [, count])}: pgjdbc's {@code getFunctions()} reads the kind of a function's result
+     * with {@code substring(pg_get_function_result(p.oid) from 0 for 6)} (issue #10591).
+     */
+    private PostgresCatalogExpression parseSqlSubstring() {
+      ++position; // (
+      final PostgresCatalogExpression string = parseExpression();
+      if (string == null)
+        return null;
+      PostgresCatalogExpression start = new Literal(1);
+      PostgresCatalogExpression count = null;
+      if (skipKeyword("FROM")) {
+        start = parseExpression();
+        if (start == null)
+          return null;
+      }
+      if (skipKeyword("FOR")) {
+        count = parseExpression();
+        if (count == null)
+          return null;
+      }
+      if (!skipSymbol(")"))
+        return null;
+
+      return new FunctionCall("substring", count == null ? List.of(string, start) : List.of(string, start, count));
     }
 
     /**

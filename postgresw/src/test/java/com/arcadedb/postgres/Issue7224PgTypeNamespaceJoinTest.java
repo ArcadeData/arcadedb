@@ -179,8 +179,8 @@ class Issue7224PgTypeNamespaceJoinTest {
 
     // With nothing readable left to decide it - a sub-select over a relation this catalog does not model - the
     // answer is still a decline rather than "every type".
-    assertThat(PostgresCatalog.resolve("SELECT typname FROM pg_type t WHERE (SELECT p.proisstrict FROM pg_proc p "
-        + "WHERE p.oid = t.typreceive)", database, USER)).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(PostgresCatalog.resolve("SELECT typname FROM pg_type t WHERE (SELECT e.extrelocatable FROM pg_extension e "
+        + "WHERE e.oid = t.typreceive)", database, USER)).isSameAs(PostgresCatalog.DECLINED);
   }
 
   private PostgresCatalog.Answer resolve(final String query, final Object... parameters) {
