@@ -27,8 +27,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 public class IndexMetadata {
@@ -196,6 +198,31 @@ public class IndexMetadata {
    */
   protected Object getUserMetadataValue(final String key) {
     return null;
+  }
+
+  /**
+   * The settings of the {@code METADATA} clause this definition carries with another value than {@code defaults}, by key in
+   * key order: what a statement has to name to create the same index again (discussion #10893). A setting with no value on
+   * this definition is left out, since there is nothing to ask for.
+   *
+   * @param defaults a definition of the same index type as created with no {@code METADATA}
+   */
+  public final Map<String, Object> getUserSettingsDifferingFrom(final IndexMetadata defaults) {
+    final Map<String, Object> settings = new TreeMap<>();
+    for (final String key : getUserSettingKeys()) {
+      final Object value = getUserMetadataValue(key);
+      if (value != null && !Objects.equals(value, defaults.getUserMetadataValue(key)))
+        settings.put(key, value);
+    }
+    return settings;
+  }
+
+  /**
+   * The keys of the {@code METADATA} clause this definition has a value for. The default is {@link #getUserMetadataKeys()};
+   * override where the key space is open-ended, to name the keys of it this definition carries.
+   */
+  protected Set<String> getUserSettingKeys() {
+    return getUserMetadataKeys();
   }
 
   /**

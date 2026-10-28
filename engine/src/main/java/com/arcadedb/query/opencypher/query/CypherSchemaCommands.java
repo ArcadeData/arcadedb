@@ -281,7 +281,7 @@ public final class CypherSchemaCommands {
         + " REQUIRE " + props + " " + requirement;
   }
 
-  private static String quote(final String name) {
+  static String quote(final String name) {
     return "`" + name.replace("`", "``") + "`";
   }
 
@@ -410,10 +410,11 @@ public final class CypherSchemaCommands {
           neoType, edge ? "RELATIONSHIP" : "NODE", List.of(label), new ArrayList<>(index.getPropertyNames()),
           indexProvider(index.getType()), owner, null, null));
       if (allColumns) {
+        final Map<String, Object> indexConfig = indexConfig(index);
         row.add(null);
-        row.add(Map.of());
+        row.add(Map.of("indexProvider", indexProvider(index.getType()), "indexConfig", indexConfig != null ? indexConfig : Map.of()));
         row.add("");
-        row.add(indexCreateStatement(index, neoType, edge, label));
+        row.add(indexCreateStatement(index, neoType, edge, label, indexConfig));
       }
       rows.add(row);
     }
@@ -433,10 +434,28 @@ public final class CypherSchemaCommands {
   }
 
   /**
-   * The statement that creates the index again. A vector and a full-text index are written in the syntax Cypher accepts for
-   * them since #10678, with the settings their OPTIONS carry, so the statement SHOW INDEXES lists runs as it is.
+   * The {@code indexConfig} of a vector or a full-text index, the settings its OPTIONS name to create it again (discussion
+   * #10893), or null for an index Cypher creates with no OPTIONS.
    */
-  private static String indexCreateStatement(final TypeIndex index, final String neoType, final boolean edge, final String label) {
+  private static Map<String, Object> indexConfig(final TypeIndex index) {
+    final IndexInternal[] bucketIndexes = index.getIndexesOnBuckets();
+    final IndexInternal first = bucketIndexes.length > 0 ? bucketIndexes[0] : null;
+    if (index.getType() == Schema.INDEX_TYPE.LSM_VECTOR && first instanceof LSMVectorIndex vector)
+      return CypherIndexOptions.vectorIndexConfig(vector.getMetadata());
+    if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT && first instanceof LSMTreeFullTextIndex fullText) {
+      final FullTextIndexMetadata metadata = fullText.getFullTextMetadata();
+      return metadata != null ? CypherIndexOptions.fullTextIndexConfig(metadata) : Map.of();
+    }
+    return null;
+  }
+
+  /**
+   * The statement that creates the index again. A vector and a full-text index are written in the syntax Cypher accepts for
+   * them since #10678, with every setting of their {@code indexConfig}, so the statement SHOW INDEXES lists runs as it is and
+   * builds the same index.
+   */
+  private static String indexCreateStatement(final TypeIndex index, final String neoType, final boolean edge, final String label,
+      final Map<String, Object> indexConfig) {
     final String variable = edge ? "r" : "n";
     final StringJoiner props = new StringJoiner(", ");
     for (final String property : index.getPropertyNames())
@@ -444,19 +463,13 @@ public final class CypherSchemaCommands {
     final String head = "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(index.getName()) + " FOR " + (
         edge ? "()-[r:" + quote(label) + "]-()" : "(n:" + quote(label) + ")");
 
-    final IndexInternal[] bucketIndexes = index.getIndexesOnBuckets();
-    final IndexInternal first = bucketIndexes.length > 0 ? bucketIndexes[0] : null;
-    if (index.getType() == Schema.INDEX_TYPE.LSM_VECTOR && first instanceof LSMVectorIndex vector)
-      return head + " ON " + props + " OPTIONS {indexConfig: {`" + CypherIndexOptions.VECTOR_DIMENSIONS + "`: " + vector.getDimensions()
-          + ", `" + CypherIndexOptions.VECTOR_SIMILARITY + "`: '" + vector.getSimilarityFunction().name().toLowerCase(Locale.ROOT)
-          + "'}}";
-    if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT && first instanceof LSMTreeFullTextIndex fullText) {
-      final FullTextIndexMetadata metadata = fullText.getFullTextMetadata();
-      final String analyzer = metadata != null ? CypherIndexOptions.analyzerName(metadata.getAnalyzerClass()) : null;
-      return head + " ON EACH [" + props + "]" + (analyzer != null ?
-          " OPTIONS {indexConfig: {`" + CypherIndexOptions.FULLTEXT_ANALYZER + "`: '" + analyzer + "'}}" :
-          "");
-    }
+    final String options = indexConfig != null && !indexConfig.isEmpty() ?
+        " OPTIONS " + CypherIndexOptions.indexConfigLiteral(indexConfig) :
+        "";
+    if (index.getType() == Schema.INDEX_TYPE.LSM_VECTOR && indexConfig != null)
+      return head + " ON " + props + options;
+    if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT && indexConfig != null)
+      return head + " ON EACH [" + props + "]" + options;
     return head + " ON (" + props + ")";
   }
 
