@@ -41,7 +41,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -65,8 +68,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue10769MembershipChangeReadsCommittedConfigurationTest {
   private static final RaftPeerId SELF = RaftPeerId.valueOf("A");
 
-  private final List<SetConfigurationRequest.Arguments> sent = new CopyOnWriteArrayList<>();
-  private       FakeRaftHAServer                        server;
+  private final    List<SetConfigurationRequest.Arguments> sent = new CopyOnWriteArrayList<>();
+  private          FakeRaftHAServer                        server;
+  // The failure the recording client answers with; null answers every change as committed
+  private volatile IOException                             failWith;
 
   @BeforeEach
   void setUp() {
@@ -165,6 +170,46 @@ class Issue10769MembershipChangeReadsCommittedConfigurationTest {
   }
 
   /**
+   * An add that failed, checked while the configuration is momentarily unreadable: the check waits for a readable
+   * configuration instead of deciding on the window, so a change that committed after all keeps its declared address.
+   */
+  @Test
+  void aFailedAddCheckedDuringARestartWindowKeepsTheAddressOfAPeerThatCommitted() {
+    final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
+    server.httpAddresses(httpAddresses);
+    final AtomicInteger reads = new AtomicInteger();
+    // The attempt reads {A,B,C}; the failure check then meets the restart window once, then the committed {A,B,C,F}
+    server.on("getCommittedPeersOrNull", args -> switch (reads.incrementAndGet()) {
+      case 1 -> List.of(peer("A"), peer("B"), peer("C"));
+      case 2 -> null;
+      default -> List.of(peer("A"), peer("B"), peer("C"), peer("F"));
+    });
+    failWith = new IOException("the reply was lost");
+
+    final RaftPeer newPeer = RaftPeer.newBuilder().setId("F").setAddress("h-F:2434").build();
+    assertThatThrownBy(() -> new RaftClusterManager(server, 0).addPeer(newPeer, null, "h-F:2480"))
+        .isInstanceOf(ConfigurationException.class);
+
+    assertThat(reads.get()).as("the unreadable read was waited out, not believed").isGreaterThanOrEqualTo(3);
+    assertThat(httpAddresses).containsEntry(RaftPeerId.valueOf("F"), "h-F:2480");
+  }
+
+  /** The other side of the same check: a readable configuration without the peer withdraws the declared address. */
+  @Test
+  void aFailedAddOfAPeerThatDidNotCommitWithdrawsTheAddress() {
+    final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
+    server.httpAddresses(httpAddresses);
+    server.committedPeers(List.of(peer("A"), peer("B"), peer("C")));
+    failWith = new IOException("refused");
+
+    final RaftPeer newPeer = RaftPeer.newBuilder().setId("F").setAddress("h-F:2434").build();
+    assertThatThrownBy(() -> new RaftClusterManager(server, 0).addPeer(newPeer, null, "h-F:2480"))
+        .isInstanceOf(ConfigurationException.class);
+
+    assertThat(httpAddresses).doesNotContainKey(RaftPeerId.valueOf("F"));
+  }
+
+  /**
    * The structural half of the guarantee: the retry loop takes a change built FROM a committed configuration, so no
    * overload accepting a free-standing supplier of arguments (which could read any accessor) may exist.
    */
@@ -229,8 +274,10 @@ class Issue10769MembershipChangeReadsCommittedConfigurationTest {
   private RaftClient recordingClient() {
     final AdminApi admin = new AdminApi() {
       @Override
-      public RaftClientReply setConfiguration(final SetConfigurationRequest.Arguments arguments) {
+      public RaftClientReply setConfiguration(final SetConfigurationRequest.Arguments arguments) throws IOException {
         sent.add(arguments);
+        if (failWith != null)
+          throw failWith;
         return RaftClientReply.newBuilder().setClientId(ClientId.randomId()).setServerId(SELF)
             .setGroupId(RaftGroupId.randomId()).setCallId(sent.size()).setSuccess(true).build();
       }

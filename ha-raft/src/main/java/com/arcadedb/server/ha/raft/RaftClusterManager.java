@@ -258,18 +258,19 @@ class RaftClusterManager {
    * Whether {@code peerId} is in the committed configuration; never throws. Not {@link RaftHAServer#getLivePeers()}: the
    * declared list it substitutes for an unreadable configuration would keep a declared address for a peer whose add did
    * not commit (issue #10769).
+   * <p>
+   * An unreadable configuration (an in-place restart re-initializing the division) is waited out with the bounded wait
+   * every membership change uses, so the answer comes from a readable configuration rather than from the window: a late
+   * commit landing then still keeps its declared address. Only a configuration that stays unreadable past the wait (or an
+   * interrupt) answers "not a member", the answer that withdraws the address, as #8330 decided for any peer not shown to
+   * be a member; a member left without it is resolved by the derived address until it is heard from (#9255).
    */
   private boolean isMember(final RaftPeerId peerId) {
     try {
-      final Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
-      if (committed != null)
-        for (final RaftPeer peer : committed)
-          if (peer.getId().equals(peerId))
-            return true;
-    } catch (final RuntimeException ignored) {
-      // Unreadable configuration: treat as "not a member", the answer that withdraws the address.
+      return readCommittedConfiguration("check the membership of peer " + peerId).contains(peerId.toString());
+    } catch (final RuntimeException unreadable) {
+      return false;
     }
-    return false;
   }
 
   void removePeer(final String peerId) {
