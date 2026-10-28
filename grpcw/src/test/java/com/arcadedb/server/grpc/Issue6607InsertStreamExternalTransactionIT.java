@@ -52,7 +52,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
   }
 
   private long countRows(final String typeName) {
-    return getServer(0).getDatabase(getDatabaseName())
+    return getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
   }
 
@@ -63,7 +63,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
   @Test
   void rowsStreamedUnderExternalTransactionDoNotSurviveRollback() throws Exception {
     final String typeName = "Issue6607ExtTxRollback_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -110,7 +110,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
           .isZero();
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -121,7 +121,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
   @Test
   void rowsStreamedUnderExternalTransactionPersistOnCommit() throws Exception {
     final String typeName = "Issue6607ExtTxCommit_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -167,7 +167,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
       assertThat(countRows(typeName)).isEqualTo(12L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -216,7 +216,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
   @Test
   void bulkInsertWithExternalTransactionRowsDoNotSurviveRollback() throws Exception {
     final String typeName = "Issue6607BulkExtTxRollback_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -254,7 +254,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
           .isZero();
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -264,7 +264,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
   @Test
   void bulkInsertWithExternalTransactionRowsPersistOnCommit() throws Exception {
     final String typeName = "Issue6607BulkExtTxCommit_" + System.currentTimeMillis();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -305,7 +305,7 @@ class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
       assertThat(countRows(typeName)).isEqualTo(7L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 

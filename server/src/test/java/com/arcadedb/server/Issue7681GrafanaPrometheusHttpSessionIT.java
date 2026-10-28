@@ -604,7 +604,7 @@ class Issue7681GrafanaPrometheusHttpSessionIT extends BaseGraphServerTest {
   }
 
   private boolean existsType(final String typeName) {
-    return getServer(0).getDatabase(getDatabaseName()).getSchema().existsType(typeName);
+    return getServer(0).getDatabaseForOperator(getDatabaseName()).getSchema().existsType(typeName);
   }
 
   /** Two committed samples at t=1000 and t=2000, plus a DOCUMENT type used as a transaction witness. */

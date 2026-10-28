@@ -47,6 +47,8 @@ public class WebSocketEventBus {
   private final       ArcadeDBServer                                                               arcadeServer;
   public static final String                                                                       CHANNEL_ID       = "ID";
   public static final String                                                                       USER             = "USER";
+  /** How many times a subscribe resolves a name whose instance is closed under it before it refuses (issue #10801). */
+  private static final int MAX_SUBSCRIBE_RESOLUTIONS = 10;
 
   public WebSocketEventBus(final ArcadeDBServer server) {
     this.arcadeServer = server;
@@ -68,15 +70,89 @@ public class WebSocketEventBus {
    * ended the {@code close database} mark for every other client. It is resolved on every subscribe, before anything is
    * registered: a refused subscribe leaves no subscription behind, and a watcher started by an earlier subscribe does not let a
    * later one through to a database closed since.
+   * <p>
+   * The subscription is to the NAME, and the watcher of the name listens on the instance the server registers under it now
+   * (issue #10801): a watcher left on an instance a {@code close database} closed is replaced here, and
+   * {@link #onDatabaseRegistered} moves it as soon as a new instance is registered, so the subscribers already there keep their
+   * stream too.
    */
   public void subscribe(final String databaseName, final String type, final Set<ChangeEvent.TYPE> changeTypes, final WebSocketChannel channel) {
-    final ServerDatabase database = this.arcadeServer.getDatabaseForClient(databaseName);
-    final var channelId = (UUID) channel.getAttribute(CHANNEL_ID);
+    // Resolved outside the per-database lock: the snapshot installer holds the registry lock while it reports the instance it
+    // registered, and that report takes the per-database lock (onDatabaseRegistered)
+    for (int attempt = 0; attempt <= MAX_SUBSCRIBE_RESOLUTIONS; attempt++)
+      if (subscribeTo(this.arcadeServer.getDatabaseForClient(databaseName), databaseName, type, changeTypes, channel))
+        return;
+    throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it keeps being closed");
+  }
+
+  /**
+   * Registers the subscription on {@code database}, the instance just resolved for the name, and returns false when it was closed
+   * in the meantime: a newer instance was registered, or is about to be, and its report may already have found no subscriber to
+   * move. A watcher started on this one would never deliver anything, so the caller resolves the name again, which also gives a
+   * {@code close database} its refusal.
+   */
+  private boolean subscribeTo(final ServerDatabase database, final String databaseName, final String type,
+      final Set<ChangeEvent.TYPE> changeTypes, final WebSocketChannel channel) {
     synchronized (lockFor(databaseName)) {
-      final var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
-      databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
-      // computeIfAbsent guarantees a single watcher even when two Undertow IO threads subscribe to the same database at once.
-      this.databaseWatchers.computeIfAbsent(databaseName, k -> createAndStartWatcher(database));
+      if (!database.isOpen())
+        return false;
+
+      // The watcher first: one that fails to start leaves no subscription behind. Under the lock, so a single watcher is started
+      // even when two Undertow IO threads subscribe to the same database at once
+      final DatabaseEventWatcherThread current = this.databaseWatchers.get(databaseName);
+      if (current == null || !current.isWatching(database)) {
+        final DatabaseEventWatcherThread started = createAndStartWatcher(database);
+        // A watcher left on a closed instance has nothing left to deliver: stopped, not joined (see onDatabaseRegistered)
+        if (current != null)
+          current.signalStop();
+        this.databaseWatchers.put(databaseName, started);
+      }
+
+      final var channelId = (UUID) channel.getAttribute(CHANNEL_ID);
+      this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>())
+          .computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
+      return true;
+    }
+  }
+
+  /**
+   * The server registered an instance under {@code databaseName}: an {@code open database} after a {@code close database}, a
+   * restore, an HA snapshot install, a database created again after a drop (issue #10801). A watcher listens on the instance it
+   * was started on, and the name's subscribers were left on the closed one: {@code subscribe} answered {@code ok}, the commit
+   * succeeded, and nothing was pushed until the last subscriber left. The name's watcher is moved onto {@code database} here, so
+   * every subscriber of the name, the ones from before the close included, receives its changes from now on.
+   * <p>
+   * Called on the thread that changed the registry, which may hold the registry lock (the snapshot installer does): the stale
+   * watcher is stopped, not joined. It listens on an instance that is closed, so it has nothing left to deliver, and it
+   * unregisters its listeners as it exits.
+   */
+  public void onDatabaseRegistered(final String databaseName, final ServerDatabase database) {
+    synchronized (lockFor(databaseName)) {
+      final var databaseSubscribers = this.subscribers.get(databaseName);
+      if (databaseSubscribers == null || databaseSubscribers.isEmpty() || !database.isOpen())
+        return;
+      final DatabaseEventWatcherThread current = this.databaseWatchers.get(databaseName);
+      if (current != null && current.isWatching(database))
+        return;
+      if (current != null)
+        current.signalStop();
+      this.databaseWatchers.put(databaseName, createAndStartWatcher(database));
+    }
+  }
+
+  /**
+   * The server deregistered {@code databaseName} (a {@code close database}, a drop, a restore or an HA snapshot install taking it
+   * away): its watcher is stopped, and its subscriptions are kept, so {@link #onDatabaseRegistered} gives them the stream of the
+   * instance registered under the name next (issue #10801). Stopped and not joined, for the reason given there.
+   * <p>
+   * A name that is dropped and never registered again keeps its subscriptions until their channels close or unsubscribe, which is
+   * the same lifetime a subscription to a quiet database has.
+   */
+  public void onDatabaseUnregistered(final String databaseName) {
+    synchronized (lockFor(databaseName)) {
+      final DatabaseEventWatcherThread current = this.databaseWatchers.remove(databaseName);
+      if (current != null)
+        current.signalStop();
     }
   }
 
@@ -284,6 +360,11 @@ public class WebSocketEventBus {
     return this.databaseLocks.computeIfAbsent(database, k -> new Object());
   }
 
+  /**
+   * Non-blocking, so safe on a thread that holds the registry lock ({@link #onDatabaseRegistered}): the constructor adds three
+   * listeners to the database's in-memory event registry (under that registry's own short monitor) and allocates the queue, and
+   * {@code start()} only starts the thread. No I/O, and neither the server's database registry lock nor a database lock is taken.
+   */
   private DatabaseEventWatcherThread createAndStartWatcher(final ServerDatabase database) {
     final var queueSize = this.arcadeServer.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_WS_EVENT_BUS_QUEUE_SIZE);
     final var watcherThread = new DatabaseEventWatcherThread(this, database, queueSize);

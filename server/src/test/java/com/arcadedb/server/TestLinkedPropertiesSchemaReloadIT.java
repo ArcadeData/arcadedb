@@ -159,7 +159,7 @@ public class TestLinkedPropertiesSchemaReloadIT {
       if (!server.existsDatabase(url)) {
         sdb = server.createDatabase(url, MODE.READ_WRITE);
       } else {
-        sdb = server.getDatabase(url);
+        sdb = server.getDatabaseForOperator(url);
       }
       if (AUTO_TRANS)
         sdb.setAutoTransaction(true);

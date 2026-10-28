@@ -291,6 +291,12 @@ public class TransactionContext implements Transaction {
   // Set by publishCommittedPages once the WAL append crossed the point of no return; drives the failure regime of
   // the 2nd phase whichever thread concludes it.
   private       boolean                              phase2WalAppended;
+  // Set by publishCommittedPages right before the first page is handed to the page manager (#10768): from there a failure can
+  // leave part of the transaction visible, and on disk with a synchronous flush, so the transaction must not be rolled back even
+  // when no WAL record exists (txWAL=false) - see concludePhase2Internal
+  private       boolean                              phase2PublicationStarted;
+  // Handed to PageManager.publishPages, which runs it once its waits are over: one instance per context, not one per commit
+  private final Runnable                             markPublicationStarted = () -> phase2PublicationStarted = true;
   // Group commit (arcadedb.txWalGroupCommit): raised by commit() around its 2nd phase, the only path that waits for the
   // deferred flush. The ticket is what that flush owes this transaction, 0 when nothing is owed
   private       boolean                              deferWALSync;
@@ -3467,10 +3473,10 @@ public class TransactionContext implements Transaction {
               .queueTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
         else
           database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
-        // Only a REAL append crosses the point of no return (#5053/#4940): with useWAL=false (bulk loads)
-        // changes.result is null, nothing is durable and there is no WAL record for recovery to replay - a
-        // publish failure must then behave like any pre-durability failure (full rollback of user-held
-        // record state, no fence: fencing would promise a replay that cannot happen).
+        // Only a REAL append crosses the WAL point of no return (#5053/#4940): with useWAL=false (bulk loads)
+        // changes.result is null, nothing is durable and there is no WAL record for recovery to replay. A failure
+        // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
+        // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
       }
 
@@ -3495,7 +3501,12 @@ public class TransactionContext implements Transaction {
         if (pageWALSyncTicket > 0)
           page.setWALSyncTicket(pageWALSyncTicket);
       }
-      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
+      // THE SECOND POINT OF NO RETURN, THE ONE THAT HOLDS WITHOUT A WAL (#10768): the pages reach the read cache one by one, and
+      // with a synchronous flush the file one by one, so a failure from there can leave some of them visible and the rest not.
+      // Rolling back over that told the caller nothing happened and reset the identities of records that did land, so a retry
+      // inserted them twice. Raised by the page manager once its waits for flush capacity are over, right before the first page
+      // is handed over: a wait that fails or is interrupted has published nothing, and is still rolled back
+      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
@@ -3615,8 +3626,19 @@ public class TransactionContext implements Transaction {
   }
 
   private void fenceIfPastPointOfNoReturn(final Throwable cause) {
-    if (phase2WalAppended && database.getEmbedded() instanceof LocalDatabase localDatabase)
-      localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", cause);
+    if ((phase2WalAppended || phase2PublicationStarted) && database.getEmbedded() instanceof LocalDatabase localDatabase)
+      localDatabase.fenceForRecovery(fenceReason(), cause);
+  }
+
+  /**
+   * Why a failed 2nd phase fences the database: past the WAL append the reopen replays the transaction; past the start of a
+   * publication that has no WAL record (txWAL=false) nothing can, and the files may keep part of it (#10768).
+   */
+  private String fenceReason() {
+    return phase2WalAppended ?
+        "commit of tx " + txId + " failed after its WAL append" :
+        "commit of tx " + txId + " failed after its pages started to be published, with no WAL record to replay it "
+            + "(txWAL=false): the database may hold part of the transaction, check it with CHECK DATABASE after reopening it";
   }
 
   /**
@@ -3660,9 +3682,17 @@ public class TransactionContext implements Transaction {
       // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
       // exceptional post-append failure) is the acceptable side.
       if (database.getEmbedded() instanceof LocalDatabase localDatabase)
-        localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", commitFailureCause);
+        localDatabase.fenceForRecovery(fenceReason(), commitFailureCause);
       // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
       // makes them real): release resources WITHOUT touching user-held record state.
+      reset();
+    } else if (phase2PublicationStarted) {
+      // #10768: NO WAL RECORD (txWAL=false), BUT THE PUBLICATION STARTED, SO PART OF THE TRANSACTION MAY BE VISIBLE, AND ON DISK.
+      // Not "nothing happened": a rollback() here reset the identities of records that did land, and the caller's retry
+      // inserted them a second time. Concluded as the appended case is - fenced, so nothing commits on top of the half
+      // published state, and released without touching user-held record state - minus the replay, which nothing can make
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+        localDatabase.fenceForRecovery(fenceReason(), commitFailureCause);
       reset();
     } else if (remotelyCommitted)
       // #5064: the replication QUORUM already durably committed this transaction cluster-wide; only the
@@ -3904,6 +3934,7 @@ public class TransactionContext implements Transaction {
 
     remotelyCommitted = false;
     phase2WalAppended = false;
+    phase2PublicationStarted = false;
     deferredWALSyncTicket = 0;
     status = STATUS.INACTIVE;
     // The refusal belonged to the transaction that is ending here, not to the context, which begin() reuses.

@@ -129,7 +129,7 @@ class RaftHAInsertBenchmark {
     server.start();
 
     try {
-      final Database db = server.getDatabase(DB_NAME);
+      final Database db = server.getDatabaseForOperator(DB_NAME);
       initSchema(db);
 
       insertEmbedded(db, WARMUP_COUNT, 0);
@@ -148,7 +148,7 @@ class RaftHAInsertBenchmark {
     final ArcadeDBServer[] servers = startCluster(serverCount);
     try {
       final ArcadeDBServer leader = findLeader(servers);
-      final Database db = leader.getDatabase(DB_NAME);
+      final Database db = leader.getDatabaseForOperator(DB_NAME);
       initSchema(db);
       Thread.sleep(2000);
 
@@ -168,7 +168,7 @@ class RaftHAInsertBenchmark {
     final ArcadeDBServer[] servers = startCluster(serverCount);
     try {
       final ArcadeDBServer leader = findLeader(servers);
-      initSchema(leader.getDatabase(DB_NAME));
+      initSchema(leader.getDatabaseForOperator(DB_NAME));
       Thread.sleep(2000);
 
       int followerPort = -1;
@@ -198,7 +198,7 @@ class RaftHAInsertBenchmark {
     final ArcadeDBServer[] servers = startCluster(serverCount);
     try {
       final ArcadeDBServer leader = findLeader(servers);
-      initSchema(leader.getDatabase(DB_NAME));
+      initSchema(leader.getDatabaseForOperator(DB_NAME));
       Thread.sleep(2000);
 
       try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", leader.getHttpServer().getPort(),
@@ -264,7 +264,7 @@ class RaftHAInsertBenchmark {
     server.start();
 
     try {
-      final Database db = server.getDatabase(DB_NAME);
+      final Database db = server.getDatabaseForOperator(DB_NAME);
       initSchema(db);
 
       insertAsync(db, WARMUP_COUNT, 0);
@@ -286,7 +286,7 @@ class RaftHAInsertBenchmark {
     final ArcadeDBServer[] servers = startCluster(serverCount);
     try {
       final ArcadeDBServer leader = findLeader(servers);
-      final Database db = leader.getDatabase(DB_NAME);
+      final Database db = leader.getDatabaseForOperator(DB_NAME);
       initSchema(db);
       Thread.sleep(2000);
 

@@ -603,7 +603,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected Database getServerDatabase(final int i, final String name) {
-    return servers[i] != null ? servers[i].getDatabase(name) : null;
+    return servers[i] != null ? servers[i].getDatabaseForOperator(name) : null;
   }
 
   protected ArcadeDBServer getServer(final String name) {
@@ -647,7 +647,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
    */
   protected void corruptSealedStoreAndReopen(final int serverIndex, final String typeName) throws Exception {
     final ArcadeDBServer server = getServer(serverIndex);
-    final DatabaseInternal embedded = (DatabaseInternal) server.getDatabase(getDatabaseName()).getEmbedded();
+    final DatabaseInternal embedded = (DatabaseInternal) server.getDatabaseForOperator(getDatabaseName()).getEmbedded();
     ((LocalTimeSeriesType) embedded.getSchema().getType(typeName)).getEngine().compactAll();
 
     final File sealed = new File(getDatabasePath(serverIndex), typeName + "_shard_0.ts.sealed");
@@ -660,7 +660,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       raf.seek(0);
       raf.write(b ^ 0x01);
     }
-    server.getDatabase(getDatabaseName());
+    server.getDatabaseForOperator(getDatabaseName());
   }
 
   protected static String readResponse(final HttpURLConnection connection) throws IOException {
@@ -718,7 +718,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         if (getServer(i) != null)
           for (final String dbName : getServer(i).getDatabaseNames())
             if (getServer(i).existsDatabase(dbName))
-              ((DatabaseInternal) getServer(i).getDatabase(dbName)).getEmbedded().drop();
+              ((DatabaseInternal) getServer(i).getDatabaseForOperator(dbName)).getEmbedded().drop();
 
     TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
     TestServerHelper.deleteDatabaseFolders(getServerCount());

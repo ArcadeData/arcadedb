@@ -113,7 +113,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     for (final String database : databasesToDrop) {
       try {
         if (getServer(0).existsDatabase(database))
-          getServer(0).getDatabase(database).getEmbedded().drop();
+          getServer(0).getDatabaseForOperator(database).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }
@@ -144,14 +144,14 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     databasesToDrop.add(target);
 
     final String archive = triggerBackupAndGetFileName();
-    final long sourceCount = getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
 
     final List<RestoreProgress> events = new ArrayList<>();
     client.restoreBackup(getDatabaseName(), archive, target, false, events::add);
 
     assertThat(events).isNotEmpty();
     assertThat(events.getLast().getCompleted()).isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   @Test
@@ -160,7 +160,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     databasesToDrop.add(target);
 
     final Path archive = backupPath(triggerBackupAndGetFileName());
-    final long sourceCount = getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
 
     final List<RestoreProgress> events = new ArrayList<>();
     client.restoreDatabase(target, "file://" + archive.toAbsolutePath(), events::add);
@@ -170,7 +170,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest 
     assertThat(events).hasSizeGreaterThan(1);
     assertThat(events.getFirst().getCompleted()).isFalse();
     assertThat(events.getLast().getCompleted()).isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   /**

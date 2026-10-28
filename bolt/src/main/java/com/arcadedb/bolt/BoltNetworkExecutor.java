@@ -1518,9 +1518,10 @@ public class BoltNetworkExecutor extends Thread {
       // SHOW CURRENT USER or CALL dbms.showCurrentUser()
       stream.fields = List.of("user", "roles", "passwordChangeRequired", "suspended", "home");
       stream.syntheticResults = new ArrayList<>();
-      final List<Object> userRecord = new ArrayList<>();
+      final List<Object> userRecord = new ArrayList<>(5);
       userRecord.add(user != null ? user.getName() : "anonymous");
-      userRecord.add(List.of("admin"));
+      userRecord.add(currentUserRoles());
+      // ArcadeDB has neither a forced password change nor a suspended account, so false is the true answer for both
       userRecord.add(false);
       userRecord.add(false);
       userRecord.add(null); // home database (null = use default)
@@ -1594,6 +1595,23 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     return false;
+  }
+
+  /**
+   * The roles column of {@code SHOW CURRENT USER}: the groups the connection's user holds on the database the connection is bound
+   * to, sorted, so ArcadeDB's {@code admin} group is Neo4j's {@code admin} role and every other group keeps its own name. It was
+   * the constant {@code ["admin"]}, which told every Neo4j tool that every principal, down to one granted read access to a single
+   * type, was an administrator (issue #10766). Informational only: the engine's own access checks never read it.
+   */
+  private List<String> currentUserRoles() {
+    if (user == null || database == null)
+      return List.of();
+    final String[] groups = user.getDatabaseUser(database).getGroups();
+    if (groups == null || groups.length == 0)
+      return List.of();
+    final String[] sorted = groups.clone();
+    Arrays.sort(sorted);
+    return List.of(sorted);
   }
 
   /**

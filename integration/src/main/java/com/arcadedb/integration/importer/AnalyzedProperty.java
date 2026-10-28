@@ -75,22 +75,15 @@ public class AnalyzedProperty {
 
     this.lastContent = lastContent;
 
+    // A VALUE KEEPS THE COLUMN A NUMERIC CANDIDATE ONLY WHEN IT IS THE DECIMAL TEXT OF A NUMBER, NOT WHEN JAVA CAN PARSE
+    // IT: Long.parseLong/Double.parseDouble ACCEPT "+5", "02134", "10D", "0x1p3", "NaN" AND " 1 ", AND THE LOAD PASS THEN
+    // STORED THEM AS 5, 2134, 10.0, 8.0, NaN AND 1.0 WITH THE TEXT KEPT NOWHERE (ISSUE #10755)
     if (!lastContent.isEmpty()) {
-      if (candidateForInteger) {
-        try {
-          Long.parseLong(lastContent);
-        } catch (final NumberFormatException e) {
-          candidateForInteger = false;
-        }
-      }
+      if (candidateForInteger && !CanonicalNumber.isLong(lastContent))
+        candidateForInteger = false;
 
-      if (candidateForDecimal) {
-        try {
-          Double.parseDouble(lastContent);
-        } catch (final NumberFormatException e) {
-          candidateForDecimal = false;
-        }
-      }
+      if (candidateForDecimal && !CanonicalNumber.isDecimal(lastContent))
+        candidateForDecimal = false;
     }
 
     if (!collectingSamples)
