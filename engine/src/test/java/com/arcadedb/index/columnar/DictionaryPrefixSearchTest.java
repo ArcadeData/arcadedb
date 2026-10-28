@@ -101,6 +101,27 @@ class DictionaryPrefixSearchTest {
     assertThat(DictionaryPrefixSearch.rankAfter(dictionary, "run")).isZero();
   }
 
+  /** A caller that charged the tail for a size it read: the ordinals appended after that size are not scanned. */
+  @Test
+  void sizeBoundCapsTheUnrankedTail() {
+    final GlobalDictionary dictionary = GlobalDictionary.createInMemory();
+    for (final String value : RANKED)
+      dictionary.getOrAdd(value);
+    final int bound = dictionary.size();
+    dictionary.getOrAdd("runa");
+    dictionary.getOrAdd("rua");
+    final int[] out = new int[10];
+    final int n = DictionaryPrefixSearch.search(dictionary, "ru", null, 10, out, bound);
+    final List<Object> values = new ArrayList<>();
+    for (int i = 0; i < n; i++) {
+      assertThat(out[i]).isLessThan(bound);
+      values.add(dictionary.valueOf(out[i]));
+    }
+    assertThat(values).containsExactly("ru", "rum", "run", "runner", "running", "rust");
+    // a bound above the size is the size
+    assertThat(DictionaryPrefixSearch.search(dictionary, "ru", null, 10, out, Integer.MAX_VALUE)).isEqualTo(8);
+  }
+
   @Test
   void emptyPrefixReturnsFirstMax() {
     final GlobalDictionary dictionary = dictionary(true);
