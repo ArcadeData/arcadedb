@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The harness stands up no cluster: an empty WAL payload makes {@code applyTxEntry} fail on the first
  * thing it does - reading the entry's WAL transaction id - which is a representative "unexpected error"
- * for that database. (It used to fail one step later, on {@code server.getDatabaseForOperator(...)} against the
+ * for that database. (It used to fail one step later, on {@code server.getDatabase(...)} against the
  * {@code null} server, until issue #6965 moved the WAL read in front of it; issue #7495 is what made that
  * failure reach the per-database quarantine again, and {@code Issue7495TruncatedWalEntryQuarantineTest}
  * covers the {@code null}-server error on its own.)

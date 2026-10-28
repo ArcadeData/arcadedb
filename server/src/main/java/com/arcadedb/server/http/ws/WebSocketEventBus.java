@@ -144,6 +144,9 @@ public class WebSocketEventBus {
    * The server deregistered {@code databaseName} (a {@code close database}, a drop, a restore or an HA snapshot install taking it
    * away): its watcher is stopped, and its subscriptions are kept, so {@link #onDatabaseRegistered} gives them the stream of the
    * instance registered under the name next (issue #10801). Stopped and not joined, for the reason given there.
+   * <p>
+   * A name that is dropped and never registered again keeps its subscriptions until their channels close or unsubscribe, which is
+   * the same lifetime a subscription to a quiet database has.
    */
   public void onDatabaseUnregistered(final String databaseName) {
     synchronized (lockFor(databaseName)) {
@@ -357,6 +360,11 @@ public class WebSocketEventBus {
     return this.databaseLocks.computeIfAbsent(database, k -> new Object());
   }
 
+  /**
+   * Non-blocking, so safe on a thread that holds the registry lock ({@link #onDatabaseRegistered}): the constructor adds three
+   * listeners to the database's in-memory event registry (under that registry's own short monitor) and allocates the queue, and
+   * {@code start()} only starts the thread. No I/O, and neither the server's database registry lock nor a database lock is taken.
+   */
   private DatabaseEventWatcherThread createAndStartWatcher(final ServerDatabase database) {
     final var queueSize = this.arcadeServer.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_WS_EVENT_BUS_QUEUE_SIZE);
     final var watcherThread = new DatabaseEventWatcherThread(this, database, queueSize);

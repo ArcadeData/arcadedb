@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #10690: a {@code /ws} SUBSCRIBE frame resolved its database through {@code ArcadeDBServer.getDatabaseForOperator(String)}, the
+ * Issue #10690: a {@code /ws} SUBSCRIBE frame resolved its database through {@code ArcadeDBServer.getDatabase(String)}, the
  * operator's entry point, which opens a database from disk past the {@code close database} mark and clears the mark on the way.
  * One subscribe frame from any user with access to the name reopened a database the operator had closed (for a cold backup, a
  * copy of the files) and served it again to every protocol. The subscribe now resolves through
