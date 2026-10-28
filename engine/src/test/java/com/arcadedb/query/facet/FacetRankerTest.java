@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -263,5 +264,51 @@ class FacetRankerTest {
       for (int b = 0; b < raw.length; b++)
         assertThat(Integer.signum(cmp.compare(raw[a], raw[b]))).as("%s vs %s", raw[a], raw[b])
             .isEqualTo(Integer.signum(dictionary.compare(ordinals[a], ordinals[b])));
+  }
+
+  /** The bounded heap of {@code topValues} answers exactly what a full sort of every candidate answers, for every order and size. */
+  @Test
+  void topValuesHeapEqualsAFullSort() {
+    final Random random = new Random(41);
+    for (int round = 0; round < 50; round++) {
+      final Map<Object, long[]> counts = new LinkedHashMap<>();
+      final int n = random.nextInt(300);
+      for (int i = 0; i < n; i++) {
+        final Object key = switch (random.nextInt(3)) {
+          case 0 -> "v-" + random.nextInt(500);
+          case 1 -> (long) random.nextInt(500);
+          default -> random.nextInt(10) == 0 ? null : random.nextDouble() * 100;
+        };
+        // few distinct counts: most ranks are decided by the value tie-break
+        counts.put(key, new long[] { 1 + random.nextInt(4) });
+      }
+      for (final FacetOrder order : FacetOrder.values())
+        for (final int top : new int[] { 1, 3, 10, 1_000 })
+          for (final int minCount : new int[] { 1, 3 })
+            assertThat(FacetRanker.topValues(counts, top, minCount, order)).as(order + " top " + top + " minCount " + minCount)
+                .isEqualTo(fullSort(counts, top, minCount, order));
+    }
+  }
+
+  private static List<Map.Entry<Object, Long>> fullSort(final Map<Object, long[]> counts, final int top, final int minCount,
+      final FacetOrder order) {
+    final List<Map.Entry<Object, Long>> all = new ArrayList<>();
+    for (final Map.Entry<Object, long[]> e : counts.entrySet())
+      if (e.getValue()[0] >= minCount)
+        all.add(new AbstractMap.SimpleImmutableEntry<>(e.getKey(), e.getValue()[0]));
+    final FacetValueComparator values = FacetValueComparator.INSTANCE;
+    all.sort((a, b) -> {
+      final Object x = a.getKey();
+      final Object y = b.getKey();
+      int cmp = switch (order) {
+        case COUNT_DESC -> Long.compare(b.getValue(), a.getValue());
+        case COUNT_ASC -> Long.compare(a.getValue(), b.getValue());
+        default -> 0;
+      };
+      if (cmp == 0)
+        cmp = order == FacetOrder.VALUE_DESC && x != null && y != null ? values.compare(y, x) : values.compare(x, y);
+      return cmp;
+    });
+    return new ArrayList<>(all.subList(0, Math.min(top, all.size())));
   }
 }

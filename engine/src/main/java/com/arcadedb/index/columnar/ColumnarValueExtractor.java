@@ -215,6 +215,11 @@ public final class ColumnarValueExtractor {
     }
   }
 
+  /** Whether the property is a column of this extractor's type. */
+  public boolean hasColumn(final String property) {
+    return columns.containsKey(property);
+  }
+
   /** The unit of the epoch counts a date column stores, null for a column that is not a date. */
   public TimeUnit dateUnit(final String property) {
     return switch (column(property).propertyType()) {

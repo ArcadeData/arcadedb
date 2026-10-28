@@ -22,7 +22,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnKind;
-import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 
@@ -58,11 +57,11 @@ final class FacetBounds {
    * A literal as the lower bound {@code v >= bound} of a LONG column: a number of a column that is not a date is rounded up (for an
    * integral value {@code v >= 1.5} is {@code v >= 2}, and {@code v < 1.5} is {@code v < 2}, so the ceiling serves both ends of a
    * half-open range), saturating at the long limits; anything else (a date, a date string) is converted as a stored value is
-   * ({@link ColumnarValueExtractor#toColumnLong}), after the conversion WHERE applies.
+   * ({@link ColumnConversion#toColumnLong}), after the conversion WHERE applies.
    *
    * @throws CommandExecutionException when the literal is not a value of the column
    */
-  static long toColumnLong(final String alias, final DatabaseInternal database, final ColumnarValueExtractor extractor,
+  static long toColumnLong(final String alias, final DatabaseInternal database, final ColumnConversion extractor,
       final ColumnDefinition column, final Object literal) {
     if (column.kind() != ColumnKind.LONG)
       throw new IllegalStateException("Column '" + column.property() + "' is not a LONG column");
