@@ -1472,8 +1472,8 @@ public class ArcadeDBServer {
 
   /**
    * The database a client of a wire protocol (Postgres, Bolt, gRPC, Redis, MongoDB, MCP, Gremlin) names, opened from disk when it
-   * is not open (issue #10533). Same as {@link #getDatabaseForOperator(String)} except that a name an operator has taken away is refused
-   * with {@link DatabaseNotAvailableException}, as {@link #getDatabaseForRequest} does for HTTP: a database a {@code close
+   * is not open (issue #10533). Same as {@link #getDatabaseForOperator(String)} except that a name an operator has taken away is
+   * refused with {@link DatabaseNotAvailableException}, as {@link #getDatabaseForRequest} does for HTTP: a database a {@code close
    * database} command closed stays closed until {@code open database}, and one a restore holds is not opened for a client, whose
    * writes the swap of the restore would discard. A name being dropped is refused to every caller.
    * <p>
@@ -1997,8 +1997,8 @@ public class ArcadeDBServer {
    * {@link #databasesLock} as one step.
    * <p>
    * The caller holds {@code embedded} open and registered under {@code databaseName}: the control plane resolves it through
-   * {@link #getDatabaseForOperator(String)} after taking the maintenance slot of the drop, and the startup restore does the same. That is
-   * what makes the hold safe to take without {@link #databasesLock}, see below.
+   * {@link #getDatabaseForOperator(String)} after taking the maintenance slot of the drop, and the startup restore does the same.
+   * That is what makes the hold safe to take without {@link #databasesLock}, see below.
    *
    * @throws ServerControlPlane.OperationInProgressException when the name is already being dropped, which the maintenance slot
    *                                                         does not allow either: a second drop is refused, never allowed to end
@@ -2049,6 +2049,35 @@ public class ArcadeDBServer {
   }
 
   /**
+   * Tells the plugins, then the {@code /ws} change stream, that {@code database} was registered under {@code databaseName}: the
+   * stream of the name follows the instance registered under it (issue #10801). Same thread and same constraints as
+   * {@link #notifyPlugins}.
+   */
+  private void notifyRegistered(final String databaseName, final ServerDatabase database) {
+    notifyPlugins(databaseName, true);
+    final HttpServer http = httpServer;
+    if (http != null)
+      try {
+        http.getWebSocketEventBus().onDatabaseRegistered(databaseName, database);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on moving the change stream of database '%s' to its new instance", e,
+            databaseName);
+      }
+  }
+
+  /** The counterpart of {@link #notifyRegistered} for a database that left the registry. */
+  private void notifyUnregistered(final String databaseName) {
+    notifyPlugins(databaseName, false);
+    final HttpServer http = httpServer;
+    if (http != null)
+      try {
+        http.getWebSocketEventBus().onDatabaseUnregistered(databaseName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on stopping the change stream of database '%s'", e, databaseName);
+      }
+  }
+
+  /**
    * Notifies every installed plugin that a database entered or left the server registry, so per-database plugin state
    * (a backup schedule, for instance) stays in step with the registry instead of outliving its database (issue #6752).
    * <p>
@@ -2067,30 +2096,6 @@ public class ArcadeDBServer {
    * priority was being handed a registration per pre-existing database before it had even been given this server
    * (issue #6852).
    */
-  private void notifyRegistered(final String databaseName, final ServerDatabase database) {
-    notifyPlugins(databaseName, true);
-    // The /ws change stream of the name follows the instance registered under it (issue #10801)
-    final HttpServer http = httpServer;
-    if (http != null)
-      try {
-        http.getWebSocketEventBus().onDatabaseRegistered(databaseName, database);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on moving the change stream of database '%s' to its new instance", e,
-            databaseName);
-      }
-  }
-
-  private void notifyUnregistered(final String databaseName) {
-    notifyPlugins(databaseName, false);
-    final HttpServer http = httpServer;
-    if (http != null)
-      try {
-        http.getWebSocketEventBus().onDatabaseUnregistered(databaseName);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on stopping the change stream of database '%s'", e, databaseName);
-      }
-  }
-
   private void notifyPlugins(final String databaseName, final boolean registered) {
     if (pluginManager == null)
       return;

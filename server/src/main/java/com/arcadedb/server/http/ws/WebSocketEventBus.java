@@ -48,7 +48,7 @@ public class WebSocketEventBus {
   public static final String                                                                       CHANNEL_ID       = "ID";
   public static final String                                                                       USER             = "USER";
   /** How many times a subscribe resolves a name whose instance is closed under it before it refuses (issue #10801). */
-  private static final int                                                                         MAX_SUBSCRIBE_RESOLUTIONS = 10;
+  private static final int MAX_SUBSCRIBE_RESOLUTIONS = 10;
 
   public WebSocketEventBus(final ArcadeDBServer server) {
     this.arcadeServer = server;
@@ -77,33 +77,41 @@ public class WebSocketEventBus {
    * stream too.
    */
   public void subscribe(final String databaseName, final String type, final Set<ChangeEvent.TYPE> changeTypes, final WebSocketChannel channel) {
-    final var channelId = (UUID) channel.getAttribute(CHANNEL_ID);
-    for (int attempt = 0; ; attempt++) {
-      // Resolved outside the per-database lock: the snapshot installer holds the registry lock while it reports the instance it
-      // registered, and that report takes the per-database lock (onDatabaseRegistered)
-      final ServerDatabase database = this.arcadeServer.getDatabaseForClient(databaseName);
-      synchronized (lockFor(databaseName)) {
-        // Closed between the resolution and here: a newer instance was registered, or is about to be, and its report may already
-        // have found no subscriber to move. A watcher started on this one would never deliver anything, so the name is resolved
-        // again, which also gives a 'close database' its refusal
-        if (!database.isOpen()) {
-          if (attempt < MAX_SUBSCRIBE_RESOLUTIONS)
-            continue;
-          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it keeps being closed");
-        }
+    // Resolved outside the per-database lock: the snapshot installer holds the registry lock while it reports the instance it
+    // registered, and that report takes the per-database lock (onDatabaseRegistered)
+    for (int attempt = 0; attempt <= MAX_SUBSCRIBE_RESOLUTIONS; attempt++)
+      if (subscribeTo(this.arcadeServer.getDatabaseForClient(databaseName), databaseName, type, changeTypes, channel))
+        return;
+    throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it keeps being closed");
+  }
 
-        final var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
-        databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
-        // Under the lock, so a single watcher is started even when two Undertow IO threads subscribe to the same database at once
-        final DatabaseEventWatcherThread current = this.databaseWatchers.get(databaseName);
-        if (current == null || !current.isWatching(database)) {
-          // A watcher left on a closed instance has nothing left to deliver: stopped, not joined (see onDatabaseRegistered)
-          if (current != null)
-            current.signalStop();
-          this.databaseWatchers.put(databaseName, createAndStartWatcher(database));
-        }
+  /**
+   * Registers the subscription on {@code database}, the instance just resolved for the name, and returns false when it was closed
+   * in the meantime: a newer instance was registered, or is about to be, and its report may already have found no subscriber to
+   * move. A watcher started on this one would never deliver anything, so the caller resolves the name again, which also gives a
+   * {@code close database} its refusal.
+   */
+  private boolean subscribeTo(final ServerDatabase database, final String databaseName, final String type,
+      final Set<ChangeEvent.TYPE> changeTypes, final WebSocketChannel channel) {
+    synchronized (lockFor(databaseName)) {
+      if (!database.isOpen())
+        return false;
+
+      // The watcher first: one that fails to start leaves no subscription behind. Under the lock, so a single watcher is started
+      // even when two Undertow IO threads subscribe to the same database at once
+      final DatabaseEventWatcherThread current = this.databaseWatchers.get(databaseName);
+      if (current == null || !current.isWatching(database)) {
+        final DatabaseEventWatcherThread started = createAndStartWatcher(database);
+        // A watcher left on a closed instance has nothing left to deliver: stopped, not joined (see onDatabaseRegistered)
+        if (current != null)
+          current.signalStop();
+        this.databaseWatchers.put(databaseName, started);
       }
-      return;
+
+      final var channelId = (UUID) channel.getAttribute(CHANNEL_ID);
+      this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>())
+          .computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
+      return true;
     }
   }
 

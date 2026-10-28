@@ -802,8 +802,11 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {
     // Cluster token auth (inter-node communication)
-    // A request carrying the token was let through by handleRequest only when the token is this cluster's
+    // A request carrying a token is authenticated by the token alone: never by the credentials beside it (issue #10827).
+    // handleRequest has already answered an invalid one with its own message; checked again so this method holds the rule by itself
     if (carriesClusterToken(exchange)) {
+      if (!isValidClusterToken(exchange.getRequestHeaders().getFirst(PeerRequest.CLUSTER_TOKEN_HEADER)))
+        return null;
       final ServerSecurityUser rootUser = httpServer.getServer().getSecurity().getUser("root");
       if (rootUser == null)
         LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
