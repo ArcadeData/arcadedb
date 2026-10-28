@@ -171,6 +171,47 @@ class Issue10669SmallSlotShrinksAChunkTest extends BucketPageLayoutTestSupport {
   }
 
   /**
+   * Every shrink of the same chain adds one continuation chunk (code review on #10860): three small slots of one page,
+   * three chunks more. None of them may outlive the record: once it shrinks back into a plain record, the bucket holds
+   * no chunk at all, orphaned or not.
+   */
+  @Test
+  void repeatedShrinksLeaveNoChunkBehindOnceTheRecordShrinks() {
+    final List<RID> empties = new ArrayList<>();
+    final RID[] sealer = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Repeated10669", 1).createProperty("v", Type.STRING);
+      for (int i = 0; i < 3; i++)
+        empties.add(database.newDocument("Repeated10669").save().getIdentity());
+      sealer[0] = database.newDocument("Repeated10669").set("v", "s").save().getIdentity();
+    });
+    seal(sealer[0], "Repeated10669");
+    final long chunksBefore = (Long) bucketStats("Repeated10669").get("totalChunks");
+
+    for (final RID empty : empties)
+      database.transaction(() -> empty.asDocument(true).modify().set("v", BIG + empty.getPosition()).save());
+
+    final Map<String, Object> grown = bucketStats("Repeated10669");
+    assertThat((Long) grown.get("totalChunks")).as("one continuation chunk per shrink " + grown)
+        .isEqualTo(chunksBefore + empties.size());
+    database.transaction(() -> assertThat(sealer[0].asDocument(true).getString("v")).isEqualTo(SEALER));
+    checkDatabase();
+
+    database.transaction(() -> sealer[0].asDocument(true).modify().set("v", "short").save());
+
+    final Map<String, Object> shrunk = bucketStats("Repeated10669");
+    assertThat((Long) shrunk.get("totalMultiPageRecords")).as(shrunk.toString()).isZero();
+    assertThat((Long) shrunk.get("totalChunks")).as("no chunk outlives the chain " + shrunk).isZero();
+    assertThat((Long) shrunk.get("orphanedChunks")).as(shrunk.toString()).isZero();
+    assertIntact("Repeated10669", empties.size() + 1);
+    database.transaction(() -> {
+      assertThat(sealer[0].asDocument(true).getString("v")).isEqualTo("short");
+      for (final RID empty : empties)
+        assertThat(empty.asDocument(true).getString("v")).isEqualTo(BIG + empty.getPosition());
+    });
+  }
+
+  /**
    * An update of another record applied in the same transaction commits with the grown one: the shape that used to be
    * refused, and roll the whole transaction back, now commits whole.
    */

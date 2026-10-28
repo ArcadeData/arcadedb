@@ -7648,7 +7648,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                         final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
     int chunkPositionInPage = -1;
     int chunkMarkerSize = 0;
-    int chunkSize = 0;
+    int donorChunkSize = 0;
     boolean chunkIsRecordHead = false;
     for (int pos = 0; pos < recordCountInPage; ++pos) {
       final int candidatePositionInPage = getRecordPositionInPage(page, pos);
@@ -7670,10 +7670,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // at save() with one taken at commit: for a placeholder's content a mismatch is a ConcurrentModificationException.
       final boolean candidateIsRecordHead = candidateSize[0] == FIRST_CHUNK;
       if (chunkPositionInPage < 0 || (candidateIsRecordHead && !chunkIsRecordHead)
-              || (candidateIsRecordHead == chunkIsRecordHead && candidateChunkSize > chunkSize)) {
+              || (candidateIsRecordHead == chunkIsRecordHead && candidateChunkSize > donorChunkSize)) {
         chunkPositionInPage = candidatePositionInPage;
         chunkMarkerSize = (int) candidateSize[1];
-        chunkSize = candidateChunkSize;
+        donorChunkSize = candidateChunkSize;
         chunkIsRecordHead = candidateIsRecordHead;
       }
     }
@@ -7684,20 +7684,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final int chunkSizeOffset = chunkPositionInPage + chunkMarkerSize;
     final int nextChunkPointerOffset = chunkSizeOffset + INT_SERIALIZED_SIZE;
     final int contentOffset = nextChunkPointerOffset + LONG_SERIALIZED_SIZE;
-    final int keptChunkSize = chunkSize - bytesNeeded;
+    final int keptChunkSize = donorChunkSize - bytesNeeded;
 
     final byte[] movedContent = new byte[bytesNeeded];
     page.readByteArray(contentOffset + keptChunkSize, movedContent, 0, bytesNeeded);
     final long chainTail = page.readLong(nextChunkPointerOffset);
 
     // Written BEFORE this page changes, and kept off it: the page has far less free tail than a chunk header. The new
-    // chunk is linked from this chunk's next-chunk pointer, whose offset the shift below does not move.
+    // chunk is linked from this chunk's next-chunk pointer, whose offset the shift below does not move. Should the write
+    // fail part way, whatever it allocated lives only in this transaction's pages and goes with its rollback. The pointer
+    // is rewritten under no coverage span: the caller poisons this page, so no merge replays any write on it.
     writeContinuationChunks(page, nextChunkPointerOffset, 0, movedContent, 0, bytesNeeded,
             page.getPageId().getPageNumber(), chainTail);
 
     page.writeInt(chunkSizeOffset, keptChunkSize);
 
-    final int from = chunkPositionInPage + chunkFootprint(chunkMarkerSize, chunkSize);
+    final int from = chunkPositionInPage + chunkFootprint(chunkMarkerSize, donorChunkSize);
     if (pageOccupiedInBytes > from)
       page.move(from, from - bytesNeeded, pageOccupiedInBytes - from);
 
