@@ -198,6 +198,10 @@ public class CoreApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("QueryRequest", createQueryRequestSchema());
     openAPI.getComponents().addSchemas("QueryResponse", createQueryResponseSchema());
     openAPI.getComponents().addSchemas("NdJsonQueryEvent", createNdJsonQueryEventSchema());
+    openAPI.getComponents().addSchemas("Facets", createFacetsSchema());
+    openAPI.getComponents().addSchemas("FacetsMeta", createFacetsMetaSchema());
+    openAPI.getComponents().addSchemas("FacetResult", createFacetResultSchema());
+    openAPI.getComponents().addSchemas("FacetBucket", createFacetBucketSchema());
     openAPI.getComponents().addSchemas("CommandRequest", createCommandRequestSchema());
     openAPI.getComponents().addSchemas("ServerCommandResponse", createServerCommandResponseSchema());
     openAPI.getComponents().addSchemas("RunningQuery", createRunningQuerySchema());
@@ -1048,6 +1052,82 @@ public class CoreApiSpec implements OpenApiContributor {
     // only a query-language plugin can produce - and a 'required' that is true of the three engines in the
     // distribution and false of a fourth is the lie #7578 warns about in the other direction.
     schema.setRequired(List.of("limit", "returned", "truncated"));
+    schema.addProperty("facets", SpecBuilders.ref("Facets"));
+    return schema;
+  }
+
+  private Schema<?> createFacetsSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        The facets of a SELECT with a FACETS clause: one entry per facet alias, plus 'meta'. Present only when \
+        the statement asked for facets. Facets cover the full WHERE match set, not the LIMIT page: 'returned' \
+        and 'truncated' describe the rows only, the facets always count every match.""");
+    schema.addProperty("meta", SpecBuilders.ref("FacetsMeta"));
+    schema.setAdditionalProperties(SpecBuilders.ref("FacetResult"));
+    schema.setRequired(List.of("meta"));
+    return schema;
+  }
+
+  private Schema<?> createFacetsMetaSchema() {
+    final Schema<Object> schema = SpecBuilders.object("How exact the facets of this response are");
+    schema.addProperty("exact", SpecBuilders.bool("""
+        False when the counts may lag the committed data because the patch budget was exceeded, or when a DISTINCT \
+        facet is approximate. True when every count is exact."""));
+    schema.addProperty("patched", SpecBuilders.integer(
+        "Number of records read from the record itself to correct the columnar projection"));
+    schema.addProperty("lagMs", SpecBuilders.integer(
+        "How many milliseconds the columnar projection was behind the committed data"));
+    schema.setRequired(List.of("exact", "patched", "lagMs"));
+    return schema;
+  }
+
+  private Schema<?> createFacetResultSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        One facet. Terms, range, histogram and hierarchy facets carry 'buckets'; a distinct facet carries 'value' \
+        and 'exact'; a stats facet carries 'count', 'min', 'max', 'sum' and 'avg'. A facet that could not be \
+        computed has source 'unavailable', a 'reason' and no other result member.""");
+    final Schema<String> type = SpecBuilders.string("Kind of the facet");
+    type.setEnum(List.of("terms", "range", "histogram", "hierarchy", "distinct", "stats"));
+    schema.addProperty("type", type);
+    final Schema<String> source = SpecBuilders.string("""
+        How the facet was computed: 'index' from the columnar projection, 'scan' when at least one bucket of the \
+        type was read from the records, 'unavailable' when it could not be computed (see 'reason').""");
+    source.setEnum(List.of("index", "scan", "unavailable"));
+    schema.addProperty("source", source);
+    schema.addProperty("reason", SpecBuilders.string("Why the facet is unavailable. Present only when source is 'unavailable'"));
+    schema.addProperty("buckets", SpecBuilders.arrayOf(SpecBuilders.ref("FacetBucket"),
+        "The buckets, ranked as the FACETS clause asked. Absent from distinct, stats and unavailable facets"));
+    schema.addProperty("otherCount", SpecBuilders.integer(
+        "Sum of the counts of the values not returned in 'buckets'. Written by terms and hierarchy facets only"));
+    schema.addProperty("missing", SpecBuilders.integer("Number of matching records without a value for the faceted property"));
+    schema.addProperty("after", SpecBuilders.anyValue("""
+        Cursor to pass to AFTER to get the next page of buckets; null when no value follows. Present only when \
+        the facet was paged."""));
+    schema.addProperty("value", SpecBuilders.integer("DISTINCT: the number of distinct values"));
+    schema.addProperty("exact", SpecBuilders.bool("DISTINCT: false when the number of distinct values is approximate"));
+    schema.addProperty("count", SpecBuilders.integer("STATS: the number of matching records with a value"));
+    schema.addProperty("min", SpecBuilders.anyValue("STATS: the smallest value, a number"));
+    schema.addProperty("max", SpecBuilders.anyValue("STATS: the largest value, a number"));
+    schema.addProperty("sum", SpecBuilders.anyValue("STATS: the sum of the values, a number"));
+    schema.addProperty("avg", SpecBuilders.anyValue("STATS: the average of the values, a number"));
+    schema.setRequired(List.of("type", "source"));
+    return schema;
+  }
+
+  private Schema<?> createFacetBucketSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        One bucket of a facet. A term bucket carries 'value'; a range or histogram bucket carries 'key' and its \
+        bounds; the bucket of the records without a value carries 'value' null and 'missing' true.""");
+    schema.addProperty("value", SpecBuilders.anyValue("The term: a string, a number or a boolean, null for the missing bucket"));
+    schema.addProperty("missing", SpecBuilders.bool("True on the bucket of the records without a value"));
+    schema.addProperty("key", SpecBuilders.string("Label of a range or histogram bucket"));
+    schema.addProperty("from", SpecBuilders.anyValue("Inclusive lower bound of a range or histogram bucket; absent when unbounded"));
+    schema.addProperty("to", SpecBuilders.anyValue("Exclusive upper bound of a range or histogram bucket; absent when unbounded"));
+    schema.addProperty("default", SpecBuilders.bool("True on the bucket of the values that fall in no range"));
+    schema.addProperty("parent", SpecBuilders.anyValue("Hierarchy facets: the value of the parent bucket"));
+    schema.addProperty("depth", SpecBuilders.integer("Hierarchy facets: the depth of the bucket, 0 for a root"));
+    schema.addProperty("orphan", SpecBuilders.bool("Hierarchy facets: true when the parent is not among the values"));
+    schema.addProperty("count", SpecBuilders.integer("Number of matching records in the bucket"));
+    schema.setRequired(List.of("count"));
     return schema;
   }
 
@@ -1059,12 +1139,15 @@ public class CoreApiSpec implements OpenApiContributor {
    */
   private Schema<?> createNdJsonQueryEventSchema() {
     final Schema<Object> schema = SpecBuilders.object("""
-        One line of a newline-delimited streaming response. Exactly one of 'record', 'stats' or 'error' is \
-        present.""");
+        One line of a newline-delimited streaming response. Exactly one of 'record', 'facets', 'stats' or \
+        'error' is present.""");
     schema.addProperty("record", SpecBuilders.freeFormObject("""
         One result row, identical to an element of the 'result' array of the buffered application/json \
         response. An open map: a row's keys are the projections the statement asked for, plus the '@rid' and \
         '@type' markers JsonSerializer writes into every serialized record."""));
+
+    final Schema<?> facets = SpecBuilders.ref("Facets");
+    schema.addProperty("facets", facets);
 
     final Schema<Object> stats = SpecBuilders.object("""
         Trailer, always the last line of a complete stream. Carries the same three numbers the buffered \
