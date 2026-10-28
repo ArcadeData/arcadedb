@@ -76,7 +76,7 @@ class Issue7641DropDatabaseSlotTest {
           .hasMessageContaining(DB_NAME);
 
       // NOTHING WAS TOUCHED: THE DATABASE WAS NEVER EVEN LOOKED UP TO BE DROPPED
-      assertThat(server.calls("getDatabase")).doesNotContain(List.of(DB_NAME));
+      assertThat(server.calls("getDatabaseForOperator")).doesNotContain(List.of(DB_NAME));
       assertThat(server.calls("removeDatabase")).doesNotContain(List.of(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.BACKUP);
@@ -97,7 +97,7 @@ class Issue7641DropDatabaseSlotTest {
       assertThatThrownBy(() -> controlPlane.dropDatabase(DB_NAME))
           .isInstanceOf(ServerControlPlane.OperationInProgressException.class);
 
-      assertThat(server.calls("getDatabase")).doesNotContain(List.of(DB_NAME));
+      assertThat(server.calls("getDatabaseForOperator")).doesNotContain(List.of(DB_NAME));
     } finally {
       coordinator.end(DB_NAME, Operation.RESTORE);
     }
@@ -151,7 +151,7 @@ class Issue7641DropDatabaseSlotTest {
 
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     server.returns("getBackupCoordinator", coordinator);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? database : null);
 
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
     controlPlane.dropDatabase(DB_NAME);
@@ -181,7 +181,7 @@ class Issue7641DropDatabaseSlotTest {
 
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     server.returns("getBackupCoordinator", coordinator);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? database : null);
     doThrow(new RuntimeException("boom")).when(embedded).drop();
 
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
@@ -224,7 +224,7 @@ class Issue7641DropDatabaseSlotTest {
     final AtomicBoolean exists = new AtomicBoolean(true);
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME) ? exists.get() : false);
     server.returns("getBackupCoordinator", coordinator);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? database : null);
     doAnswer(invocation -> {
       assertThat(exists.getAndSet(false)).as("the directory was deleted twice").isTrue();
       return null;

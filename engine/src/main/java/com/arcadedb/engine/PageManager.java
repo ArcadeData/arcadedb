@@ -1794,6 +1794,16 @@ public class PageManager extends LockContext {
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    publishPages(pagesToWrite, newPages, asyncFlush, null);
+  }
+
+  /**
+   * @param onPublicationStart run under the page-manager lock right before the first page is handed over, after the waits that
+   *                           can block or be interrupted with nothing published (#10768): from that call on a failure can leave
+   *                           part of the pages visible. {@code null} for none
+   */
+  public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
+      final boolean asyncFlush, final Runnable onPublicationStart) throws IOException, InterruptedException {
     // BOTH WAITS ARE OUTSIDE THE LOCK, AND THAT IS THE ENTIRE POINT (issues #6200 and #6259). Publication holds the
     // JVM-wide page-manager lock across BOTH of its halves - the page write and the flush enqueue - because the
     // snapshot t0 barrier (#6075/#6125) rests on exactly that, so the enqueue cannot move out; what can, and must, is
@@ -1825,6 +1835,8 @@ public class PageManager extends LockContext {
       if (outermost)
         ++publicationSequence;
       try {
+        if (onPublicationStart != null)
+          onPublicationStart.run();
         writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
 
         if (newPages != null)

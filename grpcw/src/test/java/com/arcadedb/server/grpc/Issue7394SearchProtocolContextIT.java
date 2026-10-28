@@ -232,7 +232,7 @@ public class Issue7394SearchProtocolContextIT extends BaseGrpcServerTest {
   void theSameSqlRunOutsideAnyProtocolStillReportsInternal() {
     // The server's own live handle: the one populateDatabase() used is closed by the time a test body runs.
     // The result set is lazy, so it has to be consumed or the projection - and the function in it - never runs.
-    try (final ResultSet rs = getServer(0).getDatabase(getDatabaseName())
+    try (final ResultSet rs = getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT observedprotocol() AS p FROM " + VECTOR_TYPE + " LIMIT 1")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((String) rs.next().getProperty("p")).isEqualTo(ProtocolContext.INTERNAL);

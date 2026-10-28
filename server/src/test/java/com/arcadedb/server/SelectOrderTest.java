@@ -73,7 +73,7 @@ class SelectOrderTest {
 
       ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
       arcadeDBServer.start();
-      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
 
       try {
         String customBucketName = "O202203";
@@ -194,7 +194,7 @@ class SelectOrderTest {
 
       ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
       arcadeDBServer.start();
-      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
 
       try {
         database.transaction(() -> {

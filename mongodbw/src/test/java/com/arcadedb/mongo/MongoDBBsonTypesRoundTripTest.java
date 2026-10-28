@@ -220,7 +220,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void decimalWiderThanDecimal128DoesNotFailTheRead() {
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 30).set("v", new BigDecimal("1234567890123456789012345678901234567890.5")).save());
     final Document back = collection.find(eq("_id", 30)).first();
     assertThat(back).isNotNull();
@@ -296,7 +296,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void malformedTagWithNestedDateStillReads() {
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 50)
         .set("v", Map.of(MongoBsonValues.TAG, "timestamp", "when", LocalDateTime.of(2024, 1, 2, 3, 4))).save());
     final Document back = collection.find(eq("_id", 50)).first();
@@ -324,7 +324,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   @Test
   void filterMatchesAnObjectIdStoredAsHexBeforeTagging() {
     final ObjectId oid = new ObjectId("507f1f77bcf86cd799439013");
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 62).set("ref", oid.toHexString()).save());
     assertThat(collection.find(eq("ref", oid)).first().get("_id")).isEqualTo(62);
     assertThat(collection.find(in("ref", List.of(oid))).first().get("_id")).isEqualTo(62);
@@ -351,7 +351,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   @Test
   void explicitEqAndNeOnAnObjectIdMatchBothStoredForms() {
     final ObjectId oid = new ObjectId("507f1f77bcf86cd799439016");
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 68).set("ref", oid.toHexString()).save());
     collection.insertOne(new Document("_id", 69).append("ref", oid));
     assertThat(collection.find(new Document("ref", new Document("$eq", oid))).into(new ArrayList<>())).hasSize(2);
@@ -370,7 +370,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
   @Test
   void notEqOnAnObjectIdExcludesBothStoredForms() {
     final ObjectId oid = new ObjectId("507f1f77bcf86cd799439017");
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> db.newDocument("bson").set("_id", 70).set("ref", oid.toHexString()).save());
     collection.insertOne(new Document("_id", 71).append("ref", oid));
     collection.insertOne(new Document("_id", 72).append("ref", new ObjectId("507f1f77bcf86cd799439018")));
@@ -381,7 +381,7 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
 
   @Test
   void taggedMapsMissingARequiredFieldReadAsPlainMaps() {
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.transaction(() -> {
       db.newDocument("bson").set("_id", 80).set("v", Map.of(MongoBsonValues.TAG, "regex")).save();
       db.newDocument("bson").set("_id", 81).set("v", Map.of(MongoBsonValues.TAG, "javascript")).save();

@@ -51,7 +51,11 @@ import java.util.logging.Level;
  * @author Luca Garulli
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
-  private       String              logicName;
+  // Assigned only by rename(), which re-keys the schema's index map in the same step (issue #10751). The rename runs under the
+  // schema change of the type rename, and a query reads the name without a lock: volatile so it sees the new name once it is set
+  private volatile String           logicName;
+  // A name the user chose (CREATE INDEX <name> ON ...): it is not derived from the type, so a type rename leaves it alone
+  private final    boolean          manualName;
   // Copy-on-write: a query plans and reads while DDL on the same type adds, removes or clears sub-indexes
   private final List<IndexInternal> indexesOnBuckets = new CopyOnWriteArrayList<>();
   private final DocumentType        type;
@@ -71,8 +75,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private BinaryComparator comparator;
 
   public TypeIndex(final String logicName, final DocumentType type) {
+    this(logicName, type, false);
+  }
+
+  /**
+   * @param manualName whether {@code logicName} is a name the user chose rather than the one derived from the type and its properties
+   */
+  public TypeIndex(final String logicName, final DocumentType type, final boolean manualName) {
     this.logicName = logicName;
     this.type = type;
+    this.manualName = manualName;
+  }
+
+  /** Whether this index answers to a name the user chose, which a rename of its type does not touch. */
+  public boolean hasManualName() {
+    return manualName;
   }
 
   @Override
@@ -730,13 +747,39 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
-   * The type this index is declared on has been renamed: its logic name follows, and so do the sub-indexes on its own buckets. The
-   * sub-indexes on the buckets of its sub types name those sub types, which the rename did not touch (issue #10317).
+   * The type this index is declared on has been renamed: a derived logic name follows (a manual one is the user's and stays, issue
+   * #10751), and so do the sub-indexes on its own buckets. The sub-indexes on the buckets of its sub types name those sub types,
+   * which the rename did not touch (issue #10317).
    */
   @Override
   public void updateTypeName(final String newTypeName) {
-    logicName = getTypeName() + getPropertyNames().toString().replace(" ", "");
+    if (!manualName)
+      rename(nameUnderType(newTypeName));
     updateTypeNameOfSubIndexesOn(type, newTypeName);
+  }
+
+  /** The name this index answers to once its type is named {@code typeName}: unchanged for a manual name, derived otherwise. */
+  public String nameUnderType(final String typeName) {
+    return manualName ? logicName : typeName + getPropertyNames().toString().replace(" ", "");
+  }
+
+  /**
+   * The only assignment of the name this index answers to, and the schema's index map follows it in the same step: an index whose
+   * name changed while the map kept the old key answered to a name nothing resolved, so DROP INDEX and REBUILD INDEX with the
+   * name the catalog printed failed and the retired name still reached it (issue #10751).
+   */
+  private void rename(final String newName) {
+    final String oldName = logicName;
+    if (newName.equals(oldName))
+      return;
+    // indexRenamed() reads the new name from this index, so it is assigned first and given back if the map could not follow
+    logicName = newName;
+    try {
+      type.getSchema().getEmbedded().indexRenamed(oldName, this);
+    } catch (final RuntimeException | Error e) {
+      logicName = oldName;
+      throw e;
+    }
   }
 
   /**

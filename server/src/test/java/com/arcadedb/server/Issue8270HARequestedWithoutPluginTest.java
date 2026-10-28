@@ -70,7 +70,7 @@ class Issue8270HARequestedWithoutPluginTest extends StaticBaseServerTest {
     assertThat(server.isHARequested()).isTrue();
     assertThat(server.getHA()).as("no HA plugin in this module").isNull();
 
-    final ServerDatabase loaded = server.getDatabase(DATABASE);
+    final ServerDatabase loaded = server.getDatabaseForOperator(DATABASE);
     assertThat(((LocalDatabase) loaded.getWrappedDatabaseInstance()).getWriteRefusal())
         .as("the database opened while the HA plugin was expected accepts writes once startup gave up on it").isNull();
     loaded.transaction(() -> loaded.newDocument("Doc").set("n", 1).save());

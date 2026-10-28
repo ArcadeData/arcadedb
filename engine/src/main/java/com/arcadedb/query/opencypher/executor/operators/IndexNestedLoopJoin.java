@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -134,6 +135,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       // ... charged to the heap budget all queries share (issue #9792), and given back at the next left row
       private OperationHeapLimit             servedHeapLimit;
       private Result                         pending;
+      // The last row the conjuncts on the node rejected, rebound to the next vertex instead of a new row (issue #10818)
+      private ResultInternal                 rejectedRight;
 
       @Override
       public boolean hasNext() {
@@ -230,10 +233,16 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
             servedHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
           }
 
-          final ResultInternal row = new ResultInternal();
-          row.setProperty(variable, identifiable.asVertex());
+          ResultInternal row = rejectedRight;
+          rejectedRight = null;
+          final Vertex vertex = identifiable.asVertex();
+          if (row == null || !row.rebindSingleProperty(variable, vertex)) {
+            row = new ResultInternal();
+            row.setProperty(variable, vertex);
+          }
           if (rightFilter == null || Boolean.TRUE.equals(rightFilter.evaluateTernary(row, context)))
             return row;
+          rejectedRight = row;
         }
       }
 
@@ -296,6 +305,7 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       private void finish() {
         finished = true;
         currentLeft = null;
+        rejectedRight = null;
         closeRight();
         servedForLeftRow = null;
         if (servedHeapLimit != null) {
