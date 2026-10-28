@@ -1391,7 +1391,7 @@ limit
 
 /**
  * FACETS clause (columnar faceting), on the outermost SELECT only:
- * FACETS [alias:] expression TERMS|RANGES|HISTOGRAM options [, ...]
+ * FACETS [alias:] expression TERMS|RANGES|HISTOGRAM|HIERARCHY|DISTINCT|STATS options [, ...]
  * facetBody is a labeled-alternative rule so that further facet kinds can be appended as new alternatives.
  */
 facetsClause
@@ -1406,6 +1406,9 @@ facetBody
     : TERMS facetTermsOption*                                                                     # termsFacet
     | RANGES LPAREN facetRange (COMMA facetRange)* RPAREN (DEFAULT STRING_LITERAL)? facetFilter?    # rangesFacet
     | HISTOGRAM (CALENDAR | FIXED) facetInterval facetHistogramOption*                            # histogramFacet
+    | HIERARCHY facetHierarchyOption*                                                             # hierarchyFacet
+    | DISTINCT (PRECISION INTEGER_LITERAL)? facetFilter?                                          # distinctFacet
+    | STATS facetFilter?                                                                          # statsFacet
     ;
 
 facetTermsOption
@@ -1414,6 +1417,13 @@ facetTermsOption
     | ORDER_BY (COUNT | VALUE) (ASC | DESC)?
     | INCLUDE arrayLiteral
     | MISSING
+    | AFTER expression
+    | facetFilter
+    ;
+
+facetHierarchyOption
+    : TOP pInteger
+    | MIN_COUNT pInteger
     | facetFilter
     ;
 
@@ -1926,6 +1936,9 @@ identifier
     | MISSING
     | RANGES
     | HISTOGRAM
+    | HIERARCHY
+    | STATS
+    | AFTER
     | CALENDAR
     | FIXED
     | TIMEZONE

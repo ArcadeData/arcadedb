@@ -663,18 +663,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         buildFacetHistogramOption(item, option);
       }
     }
+    case SQLParser.HierarchyFacetContext hierarchy -> {
+      item.kind = FacetItem.Kind.HIERARCHY;
+      for (final SQLParser.FacetHierarchyOptionContext option : hierarchy.facetHierarchyOption())
+        buildFacetHierarchyOption(item, option);
+    }
+    case SQLParser.DistinctFacetContext distinct -> {
+      item.kind = FacetItem.Kind.DISTINCT;
+      if (distinct.INTEGER_LITERAL() != null)
+        item.precision = parseIntegerLiteral(distinct.INTEGER_LITERAL().getText()).longValue();
+      if (distinct.facetFilter() != null)
+        buildFacetFilter(item, distinct.facetFilter());
+    }
+    case SQLParser.StatsFacetContext stats -> {
+      item.kind = FacetItem.Kind.STATS;
+      if (stats.facetFilter() != null)
+        buildFacetFilter(item, stats.facetFilter());
+    }
     default -> throw new CommandSQLParsingException("Unsupported facet: " + ctx.facetBody().getText());
     }
     return item;
   }
 
   private void buildFacetTermsOption(final FacetItem item, final SQLParser.FacetTermsOptionContext option) {
-    if (option.TOP() != null) {
-      checkFacetOptionOnce(item, item.top, "TOP");
-      item.top = visitPInteger(option.pInteger());
-    } else if (option.MIN_COUNT() != null) {
-      checkFacetOptionOnce(item, item.minCount, "MIN_COUNT");
-      item.minCount = visitPInteger(option.pInteger());
+    if (option.TOP() != null || option.MIN_COUNT() != null) {
+      buildFacetTopOrMinCount(item, option.TOP(), option.pInteger());
     } else if (option.ORDER_BY() != null) {
       checkFacetOptionOnce(item, item.orderByCount, "ORDER BY");
       item.orderByCount = option.COUNT() != null;
@@ -699,8 +712,33 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } else if (option.MISSING() != null) {
       checkFacetOptionOnce(item, item.missing ? Boolean.TRUE : null, "MISSING");
       item.missing = true;
+    } else if (option.AFTER() != null) {
+      checkFacetOptionOnce(item, item.after, "AFTER");
+      final Expression after = (Expression) visit(option.expression());
+      // the cursor is read once per execution, before any record: a value, never something that needs a record or runs a statement
+      if (!after.isLiteral(true))
+        throw new CommandSQLParsingException("AFTER takes a literal or a parameter, found: " + option.expression().getText());
+      item.after = after;
     } else
       buildFacetFilter(item, option.facetFilter());
+  }
+
+  private void buildFacetHierarchyOption(final FacetItem item, final SQLParser.FacetHierarchyOptionContext option) {
+    if (option.TOP() != null || option.MIN_COUNT() != null)
+      buildFacetTopOrMinCount(item, option.TOP(), option.pInteger());
+    else
+      buildFacetFilter(item, option.facetFilter());
+  }
+
+  /** Sets the TOP (when the token is given) or the MIN_COUNT of a facet option. */
+  private void buildFacetTopOrMinCount(final FacetItem item, final TerminalNode top, final SQLParser.PIntegerContext value) {
+    if (top != null) {
+      checkFacetOptionOnce(item, item.top, "TOP");
+      item.top = visitPInteger(value);
+    } else {
+      checkFacetOptionOnce(item, item.minCount, "MIN_COUNT");
+      item.minCount = visitPInteger(value);
+    }
   }
 
   private void buildFacetHistogramOption(final FacetItem item, final SQLParser.FacetHistogramOptionContext option) {

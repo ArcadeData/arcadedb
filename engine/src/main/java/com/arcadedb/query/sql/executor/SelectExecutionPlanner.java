@@ -259,6 +259,10 @@ public class SelectExecutionPlanner {
     // clause at planning and to plan by its FILTERs; the collect step compiles it again, against the context of each execution
     facetsClause = statement.getFacets().copy();
     info.facets = FacetSpecCompiler.compile(facetsClause, context);
+    // a bucket or subquery target has no type to check against: the executor makes these checks per declaring type
+    final String facetTypeName = item.getIdentifier() == null ? null : item.getIdentifier().getStringValue();
+    final Schema schema = context.getDatabase().getSchema();
+    FacetSpecCompiler.validateAgainstSchema(info.facets, facetTypeName != null && schema.existsType(facetTypeName) ? schema.getType(facetTypeName) : null);
     if (facetsDependOnInputParameters(facetsClause))
       planDependsOnInputParameters = true;
     // decided before the WHERE is planned: an index search or an indexed function consumes info.whereClause
@@ -273,6 +277,8 @@ public class SelectExecutionPlanner {
   /** Whether a bound, an interval or an INCLUDE value of the clause is an input parameter, resolved into the compiled facets. */
   private static boolean facetsDependOnInputParameters(final FacetsClause clause) {
     for (final FacetItem item : clause.items) {
+      if (item.after != null && item.after.containsInputParameter())
+        return true;
       if (item.interval instanceof InputParameter || item.boundsFrom instanceof InputParameter || item.boundsTo instanceof InputParameter)
         return true;
       if (item.ranges != null)

@@ -20,6 +20,6 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.query.sql.parser.WhereClause;
 
-/** A facet counting the values of a hierarchical property by path. Reserved for the HIERARCHY clause. */
+/** A facet counting the values of a hierarchical property by path. */
 public record HierarchyFacetSpec(String alias, String property, WhereClause filter, int top, int minCount) implements FacetSpec {
 }

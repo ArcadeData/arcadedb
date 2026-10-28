@@ -271,12 +271,6 @@ class SQLFacetsParserTest {
   }
 
   @Test
-  void plan5KindsAreNotParsedYet() {
-    assertThatThrownBy(() -> parse("SELECT FROM A FACETS t: tags HIERARCHY")).isInstanceOf(CommandSQLParsingException.class);
-    assertThatThrownBy(() -> parse("SELECT FROM A FACETS t: tags STATS")).isInstanceOf(CommandSQLParsingException.class);
-  }
-
-  @Test
   void distinctProjectionUnaffected() {
     final SelectStatement s = parse("SELECT DISTINCT brand FROM A FACETS brand TERMS");
     assertThat(s.getFacets()).isNotNull();

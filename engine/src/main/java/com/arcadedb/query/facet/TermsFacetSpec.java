@@ -28,7 +28,7 @@ import java.util.List;
  *
  * @param include       the only values to return, even at count 0; null or empty when all are candidates
  * @param missingBucket true to add the bucket of the records without a value
- * @param after         the cursor of the AFTER option, always null for now
+ * @param after         the cursor of the AFTER option, null when absent
  */
 public record TermsFacetSpec(String alias, String property, Expression expression, WhereClause filter, int top, int minCount, FacetOrder order,
                              List<Object> include, boolean missingBucket, Object after) implements FacetSpec {

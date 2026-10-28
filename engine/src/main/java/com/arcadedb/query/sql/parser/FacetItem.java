@@ -43,6 +43,10 @@ public class FacetItem extends SimpleNode {
   /** TRUE for {@code ASC}, FALSE for {@code DESC}, null when not written. */
   public Boolean              ascending;
   public boolean              missing;
+  /** The cursor of {@code AFTER} (a literal or an input parameter), null when not written. */
+  public Expression           after;
+  /** The distinct threshold of {@code DISTINCT PRECISION n}, null when not written. */
+  public Long                 precision;
   public List<FacetRangeItem> ranges;
   public String               defaultLabel;
   /** TRUE for {@code CALENDAR}, FALSE for {@code FIXED}, null for any kind but HISTOGRAM. */
@@ -96,6 +100,10 @@ public class FacetItem extends SimpleNode {
       else
         FacetRangeItem.appendBound(params, builder, interval);
     }
+    case DISTINCT -> {
+      if (precision != null)
+        builder.append(" PRECISION ").append(precision);
+    }
     default -> {
     }
     }
@@ -124,6 +132,10 @@ public class FacetItem extends SimpleNode {
     }
     if (missing)
       builder.append(" MISSING");
+    if (after != null) {
+      builder.append(" AFTER ");
+      after.toString(params, builder);
+    }
     if (timezone != null) {
       builder.append(" TIMEZONE ");
       appendQuotedStringLiteral(builder, timezone);
@@ -162,6 +174,8 @@ public class FacetItem extends SimpleNode {
     result.orderByCount = orderByCount;
     result.ascending = ascending;
     result.missing = missing;
+    result.after = after == null ? null : after.copy();
+    result.precision = precision;
     if (ranges != null) {
       result.ranges = new ArrayList<>(ranges.size());
       for (final FacetRangeItem r : ranges)
@@ -179,18 +193,19 @@ public class FacetItem extends SimpleNode {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { alias, expression, kind, top, minCount, filter, include, orderByCount, ascending, missing, ranges,
-        defaultLabel, calendar, interval, timezone, offset, boundsFrom, boundsTo };
+    return new Object[] { alias, expression, kind, top, minCount, filter, include, orderByCount, ascending, missing, after,
+        precision, ranges, defaultLabel, calendar, interval, timezone, offset, boundsFrom, boundsTo };
   }
 
   @Override
   protected SimpleNode[] getCacheableElements() {
     final int includes = include == null ? 0 : include.size();
-    final SimpleNode[] elements = new SimpleNode[2 + includes];
+    final SimpleNode[] elements = new SimpleNode[3 + includes];
     elements[0] = expression;
     elements[1] = filter;
+    elements[2] = after;
     for (int i = 0; i < includes; i++)
-      elements[2 + i] = include.get(i);
+      elements[3 + i] = include.get(i);
     return elements;
   }
 
@@ -218,6 +233,10 @@ public class FacetItem extends SimpleNode {
       json.put("ascending", ascending);
     if (missing)
       json.put("missing", true);
+    if (after != null)
+      json.put("after", after.toString());
+    if (precision != null)
+      json.put("precision", precision);
     if (ranges != null) {
       final List<Object> values = new ArrayList<>(ranges.size());
       for (final FacetRangeItem r : ranges)
