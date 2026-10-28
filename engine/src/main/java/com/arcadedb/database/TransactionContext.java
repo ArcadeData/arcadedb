@@ -1852,16 +1852,7 @@ public class TransactionContext implements Transaction {
    * Looks for the page in the TX context first, then delegates to the database.
    */
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
-    BasePage page = null;
-
-    if (modifiedPages != null)
-      page = modifiedPages.get(pageId);
-
-    if (page == null && newPages != null)
-      page = newPages.get(pageId);
-
-    if (page == null)
-      page = immutablePages.get(pageId);
+    BasePage page = getPageHeldByTransaction(pageId);
 
     if (page == null) {
       // NOT FOUND, DELEGATES TO THE DATABASE
@@ -1892,6 +1883,42 @@ public class TransactionContext implements Transaction {
         }
       }
     }
+
+    return page;
+  }
+
+  /**
+   * {@link #getPage(PageId, int)} for a reader that reads the page only at absolute positions ({@code readInt}, {@code readLong},
+   * {@code readShort}, {@code readByte}, {@code slice()}, {@code getPageId()}), as an index lookup does (#10654). A page the
+   * transaction holds is answered as {@code getPage} answers it. On a {@code READ_COMMITTED} miss the answer is the page cache's
+   * shared view of the page, the one every thread reads, instead of a new {@code ImmutablePage}, {@code Binary} and buffer per
+   * call: {@code getPage} keeps nothing on that path either, so the reader sees the same bytes. {@code REPEATABLE_READ} goes
+   * through {@code getPage}, because the page it returns is the one the transaction keeps and hands to every later
+   * {@code getPage}, whose caller may move its buffer position.
+   */
+  public BasePage getPageForAbsoluteReads(final PageId pageId, final int size) throws IOException {
+    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+      return getPage(pageId, size);
+
+    final BasePage page = getPageHeldByTransaction(pageId);
+    return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
+   * The page this transaction holds for {@code pageId}, looked up in the order both {@link #getPage} and
+   * {@link #getPageForAbsoluteReads} rely on: modified, new, then the immutable pages it keeps. {@code null} when it holds none.
+   */
+  private BasePage getPageHeldByTransaction(final PageId pageId) {
+    BasePage page = null;
+
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+
+    if (page == null)
+      page = immutablePages.get(pageId);
 
     return page;
   }
