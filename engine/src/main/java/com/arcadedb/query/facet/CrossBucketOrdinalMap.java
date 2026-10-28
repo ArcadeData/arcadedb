@@ -20,10 +20,13 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.GlobalDictionary;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -43,7 +46,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *   (append-only) and rebuilt when the bucket's current dictionary is another instance (a compaction), which bumps
  *   {@link #version()}. Arrays are published copy-on-write, so a concurrent query keeps those it read. A snapshot holding a dictionary
  *   that is neither the cached one nor its bucket's current one (a compaction raced the acquire) gets an array of its own, uncached
- *   and charged to {@link FacetMemoryBudget}.</li>
+ *   and charged to {@link FacetMemoryBudget}. A user who may not read every bucket of the declaring type gets an uncached entry of
+ *   the query's own, so the merge holds the values of the buckets it reads only.</li>
  * </ul>
  * A value no bucket references any more keeps its merged ordinal until the entry is dropped: the entries live in the database's
  * {@link ColumnarIndexManager#ordinalMapEntry}, cleared on any columnar schema event (they are rare: a projection or a column
@@ -71,7 +75,8 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
   public static CrossBucketOrdinalMap of(final DatabaseInternal db, final String typeName, final String property,
       final ColumnarSnapshot[] snapshots) {
     final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
-    final Entry entry = entry(manager, typeName, property);
+    // the cached entry merges every bucket any query read: its size would count the values of buckets this user may not read
+    final Entry entry = readsEveryBucket(db, typeName) ? entry(manager, typeName, property) : new Entry();
     for (final ColumnarSnapshot snapshot : snapshots)
       if (snapshot.dictionary(property) == null)
         throw new IllegalArgumentException("The snapshot of bucket " + snapshot.bucketId() + " has no dictionary of '" + property + "'");
@@ -103,6 +108,21 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
 
   @Override
   public void close() {
+  }
+
+  /**
+   * Whether the current user may read every bucket of the declaring type and its subtypes. When not, the query merges its own snapshots
+   * in an uncached entry: its counter size and PROFILE cardinality then depend on the dictionaries of the buckets it reads only, never
+   * on values only hidden records hold, nor on what another user counted before.
+   */
+  private static boolean readsEveryBucket(final DatabaseInternal db, final String typeName) {
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(db);
+    if (user == null)
+      return true;
+    for (final Bucket bucket : db.getSchema().getType(typeName).getBuckets(true))
+      if (!user.requestAccessOnFile(bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return false;
+    return true;
   }
 
   /** The database's entry of the (declaring type, property), held by its {@link ColumnarIndexManager#ordinalMapEntry}. */

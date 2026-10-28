@@ -36,6 +36,8 @@ import com.arcadedb.query.sql.parser.FacetItem;
 import com.arcadedb.query.sql.parser.FacetsClause;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -62,6 +64,9 @@ import java.util.function.IntPredicate;
  *       {@code projection+scan} when it does not cover every bucket (no usable projection, or changed by the caller's open
  *       transaction): the records of those buckets are read by a scan of them when the step opens.</li>
  * </ul>
+ * The index and the projection hold the records of every bucket; a bucket the current user may not read is left out of the match set
+ * when it is built, so its records reach no count, no memory reservation and no PROFILE figure (the executor skips such a bucket too).
+ * <p>
  * {@link ParallelRowPipeline#of} stops at this step, so an aggregation above it stays sequential: intended, it must see the rows the
  * facets were collected from.
  */
@@ -263,9 +268,12 @@ public class FacetCollectStep extends AbstractExecutionStep {
     return source;
   }
 
+  /** The buckets whose matches the index adds: those the filters between it and this step pass and the current user may read. */
   private IntPredicate acceptedBuckets(final List<ExecutionStepInternal> bucketFilters) {
+    // resolved once: the predicate is asked for every RID of the index's answer
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
     return bucketId -> {
-      if (bucketId < 0)
+      if (bucketId < 0 || user != null && !user.requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
         return false;
       for (final ExecutionStepInternal filter : bucketFilters)
         if (filter instanceof FilterByClustersStep clusters ? !clusters.acceptsBucket(bucketId)
@@ -282,11 +290,13 @@ public class FacetCollectStep extends AbstractExecutionStep {
   }
 
   /**
-   * Takes the matches of the buckets the caller's open transaction did not change from the projection; the rows of the others (and
-   * of those without a usable projection) are recorded.
+   * Takes the matches of the buckets the caller's open transaction did not change from the projection; the records of the others (and
+   * of those without a usable projection) are read by a scan of them. A bucket the current user may not read is left out of both: its
+   * records are no match of the facets.
    */
   private void openProjection(final long budgetWaitMs, final CommandContext context) {
-    int[] eligible = projectionBuckets;
+    final int[] readable = readable(projectionBuckets);
+    int[] eligible = readable;
     if (database.isTransactionActive()) {
       final TransactionContext transaction = database.getTransaction();
       final int[] unchanged = new int[eligible.length];
@@ -299,41 +309,58 @@ public class FacetCollectStep extends AbstractExecutionStep {
       }
       eligible = count == eligible.length ? eligible : Arrays.copyOf(unchanged, count);
     }
-    if (eligible.length == 0)
+    // with a bucket hidden from the user the rows are no source: draining them would read the hidden bucket
+    final boolean hidden = readable.length < projectionBuckets.length;
+    if (eligible.length == 0 && !hidden)
       return;
 
-    projection = MatchSet.fromProjection(database, eligible, budgetWaitMs);
-    if (projection.isOverBudget()) {
-      // the facets are unavailable: recording the rows would only spend more of the budget
-      recordRows = false;
-      matchSource = PROJECTION;
-      return;
+    if (eligible.length > 0) {
+      projection = MatchSet.fromProjection(database, eligible, budgetWaitMs);
+      if (projection.isOverBudget()) {
+        // the facets are unavailable: recording the rows would only spend more of the budget
+        recordRows = false;
+        matchSource = PROJECTION;
+        return;
+      }
     }
-    final int[] coveredIds = projection.bucketIds();
-    if (coveredIds.length == 0)
+    final int[] coveredIds = projection != null ? projection.bucketIds() : new int[0];
+    if (coveredIds.length == 0 && !hidden)
       return;
-    final boolean[] covered = new boolean[coveredIds[coveredIds.length - 1] + 1];
+    final boolean[] covered = new boolean[coveredIds.length == 0 ? 0 : coveredIds[coveredIds.length - 1] + 1];
     for (final int bucketId : coveredIds)
       covered[bucketId] = true;
     recordRows = false;
-    if (coveredIds.length == projectionBuckets.length)
+    if (coveredIds.length == readable.length)
       matchSource = PROJECTION;
     else {
       // the other buckets are read here, by themselves: drained from the rows, they would cost a read of every covered record too
-      scanUncovered(covered, context);
+      scanUncovered(readable, covered, context);
       matchSource = PROJECTION + "+" + SCAN;
     }
   }
 
+  /** The buckets of {@code bucketIds} the current user may read records of. */
+  private int[] readable(final int[] bucketIds) {
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
+    if (user == null)
+      return bucketIds;
+    final int[] readable = new int[bucketIds.length];
+    int count = 0;
+    for (final int bucketId : bucketIds)
+      if (user.requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        readable[count++] = bucketId;
+    return count == readable.length ? bucketIds : Arrays.copyOf(readable, count);
+  }
+
   /**
-   * Records every record of the target buckets the projection match set does not hold, as the caller's transaction sees them. The bucket
+   * Records every record of {@code bucketIds} the projection match set does not hold, as the caller's transaction sees them. The bucket
    * iterator loads each record to hand out its RID, so this costs a full read of those buckets (counted in {@code readRecord}), never of
    * the covered ones.
    */
-  private void scanUncovered(final boolean[] covered, final CommandContext context) {
+  private void scanUncovered(final int[] bucketIds, final boolean[] covered, final CommandContext context) {
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int ticks = 0;
-    for (final int bucketId : projectionBuckets) {
+    for (final int bucketId : bucketIds) {
       if (bucketId < covered.length && covered[bucketId])
         continue;
       final Iterator<Record> records = database.iterateBucket(database.getSchema().getBucketById(bucketId).getName());
