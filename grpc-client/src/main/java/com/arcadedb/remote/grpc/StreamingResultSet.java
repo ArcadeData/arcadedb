@@ -18,8 +18,10 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.grpc.FacetProtocol;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.QueryResult;
 import io.grpc.StatusException;
@@ -49,6 +51,7 @@ class StreamingResultSet implements ResultSet {
   // warns, it does not prevent it), so publish this flag with a happens-before edge to the reader in hasNext.
   private volatile boolean                         streamExhausted = false;
   private       Result                             nextResult      = null;
+  private       FacetResults                       facets          = null;
 
   StreamingResultSet(BlockingClientCall<?, QueryResult> stream, RemoteGrpcDatabase db) {
     this.stream = stream;
@@ -82,6 +85,10 @@ class StreamingResultSet implements ResultSet {
           LogManager.instance().log(this, Level.FINE, "Received batch with %d records, isLastBatch=%s", queryResult.getRecordsCount(),
               queryResult.getIsLastBatch());
         }
+
+        // FACETS queries: the server attaches the facets to the terminal batch only, which may carry no records
+        if (queryResult.hasFacets())
+          facets = FacetProtocol.fromProto(queryResult.getFacets());
 
         if (queryResult.getRecordsCount() == 0) {
           if (queryResult.getIsLastBatch()) {
@@ -143,6 +150,15 @@ class StreamingResultSet implements ResultSet {
     nextResult = null;
     totalProcessed.incrementAndGet();
     return result;
+  }
+
+  /**
+   * The facets of a FACETS query, null until the terminal batch was read and null for a query without FACETS. They arrive with the
+   * last batch, so they are available at the latest once {@link #hasNext()} returned false.
+   */
+  @Override
+  public FacetResults getFacets() {
+    return facets;
   }
 
   @Override
