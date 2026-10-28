@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -88,6 +89,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   @BeforeEach
   public void beginTest() {
+    checkEndTestIsALifecycleMethod();
+
     checkForActiveDatabases();
 
     setTestConfiguration();
@@ -101,6 +104,26 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     prepareDatabase();
 
     startServers();
+  }
+
+  /**
+   * JUnit runs an overriding method as a lifecycle method only when the override carries the annotation itself: an {@code endTest()}
+   * overridden without {@code @AfterEach} is never called, so the servers of every test of the class are left running, each holding
+   * its HTTP port, its Redis or Bolt listener and its databases. Nothing failed where it happened: the classes that ran after found
+   * the HTTP port range taken one port more per test, and failed with "Unable to listen to a HTTP port" or on a database locked by
+   * one of those servers (issue #10707's symptom). Refused here, at the start of the first test of such a class.
+   */
+  private void checkEndTestIsALifecycleMethod() {
+    final Method endTest;
+    try {
+      endTest = getClass().getMethod("endTest");
+    } catch (final NoSuchMethodException e) {
+      throw new IllegalStateException(e);
+    }
+    if (!endTest.isAnnotationPresent(AfterEach.class))
+      throw new IllegalStateException(endTest.getDeclaringClass().getName()
+          + " overrides endTest() without @AfterEach, so JUnit never calls it and the servers of every test are left running: "
+          + "annotate the override with @AfterEach, or remove it when it only resets settings (endTest() already resets them all)");
   }
 
   private void prepareDatabase() {
