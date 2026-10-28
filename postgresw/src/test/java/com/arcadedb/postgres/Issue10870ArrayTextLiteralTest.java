@@ -100,7 +100,9 @@ class Issue10870ArrayTextLiteralTest {
     assertThatThrownBy(() -> text(PostgresType.ARRAY_INT, "{{{{{{{1}}}}}}}")).isInstanceOf(PostgresProtocolException.class)
         .hasMessageContaining("dimensions exceeds");
     // a hostile literal of nothing but opening braces fails on the 7th, not with a StackOverflowError
-    assertThatThrownBy(() -> text(PostgresType.ARRAY_TEXT, "{".repeat(100_000))).isInstanceOf(PostgresProtocolException.class);
+    assertThatThrownBy(() -> text(PostgresType.ARRAY_TEXT, "{".repeat(100_000))).isInstanceOf(PostgresProtocolException.class)
+        // and the message quotes the start of the literal, not all of it
+        .satisfies(e -> assertThat(e.getMessage().length()).isLessThan(300));
   }
 
   @Test

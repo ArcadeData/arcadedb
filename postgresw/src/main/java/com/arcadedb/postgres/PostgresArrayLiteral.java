@@ -50,7 +50,8 @@ import java.util.function.Function;
 final class PostgresArrayLiteral {
   // PostgreSQL caps array dimensions at 6 (MAXDIM): a literal nested deeper is refused before it can recurse further, so a client
   // cannot exhaust the stack with a few kilobytes of opening braces
-  private static final int MAX_DIMENSIONS = 6;
+  private static final int MAX_DIMENSIONS    = 6;
+  private static final int MAX_QUOTED_LENGTH = 128;
 
   private final String              text;
   private final Function<String, ?> elementParser;
@@ -244,6 +245,8 @@ final class PostgresArrayLiteral {
   }
 
   private static PostgresProtocolException malformed(final String text, final String detail) {
-    return new PostgresProtocolException("malformed array literal: \"" + text + "\" (" + detail + ")");
+    // the literal is the client's, and can be megabytes: the message quotes enough of it to recognise, not all of it
+    final String quoted = text == null || text.length() <= MAX_QUOTED_LENGTH ? text : text.substring(0, MAX_QUOTED_LENGTH) + "...";
+    return new PostgresProtocolException("malformed array literal: \"" + quoted + "\" (" + detail + ")");
   }
 }
