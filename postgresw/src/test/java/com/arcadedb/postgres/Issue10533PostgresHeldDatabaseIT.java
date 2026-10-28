@@ -100,7 +100,7 @@ public class Issue10533PostgresHeldDatabaseIT extends PostgresWireProtocolTestBa
 
   private static void dropIfPresent(final ArcadeDBServer server) {
     if (server.existsDatabase(HELD))
-      server.dropLocalDatabase(server.getDatabase(HELD).getEmbedded(), HELD);
+      server.dropLocalDatabase(server.getDatabaseForOperator(HELD).getEmbedded(), HELD);
     FileUtils.deleteRecursively(
         new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), HELD));
   }

@@ -41,7 +41,8 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  // A new field that carries row state must also be checked by rewrapElement(), or a filtered scan moves it to another record
+  // A new field that carries row state must also be checked by rewrapElement() and rebindSingleProperty(), or a filtered scan
+  // moves it to another record
   protected final Database database;
   protected final Object value;
   protected Map<String, Object> content;
@@ -719,6 +720,28 @@ public class ResultInternal implements Result {
       return false;
     final Record record = identifiable.getRecord();
     this.element = record instanceof Document doc ? doc : null;
+    return true;
+  }
+
+  /**
+   * Rebinds the row's one binding: the invariant is that the row holds exactly the binding {@code name} and no other state.
+   * Then {@code name} is bound to {@code newValue} in place and the answer is {@code true}; otherwise the row is left alone
+   * and the answer is {@code false}, so the caller builds a new row.
+   * <p>
+   * An openCypher scan uses it to evaluate its pushed predicate on one row for every vertex the predicate rejects, rather
+   * than on a new row and map per vertex (issue #10818). "No other state" means no other binding, removed property,
+   * temporary property, metadata, element or value, on a plain {@link #ResultInternal()} row: whatever was written to the
+   * row belongs to the vertex it was written for.
+   * <p>
+   * Engine-internal: public only because the openCypher operators live in another package.
+   */
+  public boolean rebindSingleProperty(final String name, final Object newValue) {
+    if (getClass() != ResultInternal.class || content == null || content.size() != 1 || !content.containsKey(name)
+        || temporaryContent != null || metadata != null || tombstones != null || element != null || value != null || database != null
+        || projectionSourceType != null || projectionSourceColumns != null || projectionExcludes != null)
+      return false;
+    // AN EXISTING KEY OF A LINKEDHASHMAP IS OVERWRITTEN IN PLACE: NO ENTRY IS ALLOCATED
+    content.put(name, toStoredValue(null, newValue));
     return true;
   }
 

@@ -61,7 +61,7 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
   private volatile SecurityConvergenceGate     securityConvergenceGate;
 
   // Calls whose effect, or whose moment, a test observes: recorded, and answered by a function the test may set
-  private static final Set<String> RECORDED = Set.of("getBackupCoordinator", "getDatabase", "existsDatabase",
+  private static final Set<String> RECORDED = Set.of("getBackupCoordinator", "getDatabaseForOperator", "existsDatabase",
       "getDatabaseNames", "removeDatabase", "stop", "getHA", "getConfiguration", "getServerName");
   private volatile CallLog         log     = new CallLog();
   private final    CallLog.Answers answers = new CallLog.Answers(RECORDED);
@@ -182,7 +182,7 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
 
   /**
    * Lists databases by name only: {@link #getDatabaseNames()} answers them, while {@link #existsDatabase(String)} and
-   * {@link #getDatabase(String)} know only the databases served with {@link #database(String, ServerDatabase)}. That is
+   * {@link #getDatabaseForOperator(String)} know only the databases served with {@link #database(String, ServerDatabase)}. That is
    * a registry entry whose database is not available, for code that reads the names and never opens one.
    */
   public FakeArcadeDBServer databaseNames(final String... names) {
@@ -231,14 +231,14 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
   }
 
   @Override
-  public ServerDatabase getDatabase(final String databaseName) {
-    return (ServerDatabase) call("getDatabase", () -> databases.get(databaseName), databaseName);
+  public ServerDatabase getDatabaseForOperator(final String databaseName) {
+    return (ServerDatabase) call("getDatabaseForOperator", () -> databases.get(databaseName), databaseName);
   }
 
   /** A client resolves the database the way the operator does here: there is no mark on a name of a server that never started. */
   @Override
   public ServerDatabase getDatabaseForClient(final String databaseName) {
-    return getDatabase(databaseName);
+    return getDatabaseForOperator(databaseName);
   }
 
   /** Recorded, and forgets a database served here; the real registry of an unstarted server holds nothing. */

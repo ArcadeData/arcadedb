@@ -18,6 +18,7 @@
  */
 package com.arcadedb.redis;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -57,15 +58,25 @@ public final class RedisRecords {
     }
   }
 
+  /**
+   * The record {@code rid} names, or null when there is none: the one RID lookup of both surfaces, so every command that takes a RID
+   * answers a missing record with the protocol's "not there" (nil, 0) rather than an error. {@code lookupByRID} THROWS for a missing
+   * record, and the sites that called it directly were written as if it answered null: HMGET caught it (#9055) while HGET and HEXISTS
+   * replied an error on the RESP wire and HGET threw on the query language (#10765). Only "not found" is caught: a security refusal
+   * or a closed database is not an answer to "is it there" and reaches the caller.
+   */
+  public static Record lookupByRid(final Database database, final RID rid) {
+    try {
+      return database.lookupByRID(rid, true);
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+  }
+
   /** Deletes the record at {@code rid}; false when there is none or the engine refused it, so the reply counts only what was really deleted. */
   public static boolean deleteByRid(final DatabaseInternal database, final RID rid) {
-    final Record record;
-    try {
-      record = database.lookupByRID(rid, true);
-    } catch (final RecordNotFoundException e) {
-      return false;
-    }
-    return database.deleteRecordReportingVeto(record);
+    final Record record = lookupByRid(database, rid);
+    return record != null && database.deleteRecordReportingVeto(record);
   }
 
   /**

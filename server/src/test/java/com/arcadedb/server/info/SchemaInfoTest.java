@@ -37,7 +37,7 @@ class SchemaInfoTest extends BaseGraphServerTest {
 
   @Test
   void schemaDocumentCarriesTypesWithCategoryAndProperties() {
-    final JSONObject schema = SchemaInfo.toJSON(getServer(0).getDatabase(getDatabaseName()), getDatabaseName());
+    final JSONObject schema = SchemaInfo.toJSON(getServer(0).getDatabaseForOperator(getDatabaseName()), getDatabaseName());
 
     assertThat(schema.getString("database")).isEqualTo(getDatabaseName());
 
@@ -64,7 +64,7 @@ class SchemaInfoTest extends BaseGraphServerTest {
    */
   @Test
   void propertyDefaultsAreDescribedByTheirDefinition() {
-    final ServerDatabase database = getServer(0).getDatabase(getDatabaseName());
+    final ServerDatabase database = getServer(0).getDatabaseForOperator(getDatabaseName());
     database.command("sql", "CREATE DOCUMENT TYPE DefaultProbe");
     database.command("sql", "CREATE PROPERTY DefaultProbe.plain STRING");
     database.command("sql", "CREATE PROPERTY DefaultProbe.status STRING (DEFAULT 'active')");
@@ -112,7 +112,7 @@ class SchemaInfoTest extends BaseGraphServerTest {
    */
   @Test
   void resolvingForAUserLeavesNoPrincipalBoundOnTheCallingThread() {
-    final ServerDatabase database = getServer(0).getDatabase(getDatabaseName());
+    final ServerDatabase database = getServer(0).getDatabaseForOperator(getDatabaseName());
     clearBinding(database);
 
     final JSONObject schema = SchemaInfo.forUser(getServer(0), rootUser(), getDatabaseName());

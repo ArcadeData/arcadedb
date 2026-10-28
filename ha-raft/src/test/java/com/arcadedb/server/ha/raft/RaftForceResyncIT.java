@@ -137,7 +137,7 @@ class RaftForceResyncIT extends BaseRaftHATest {
     assertClusterConsistency();
 
     final ArcadeDBServer followerServer = getServer(followerIndex);
-    final String dbPath = ((DatabaseInternal) followerServer.getDatabase(dbName)).getDatabasePath();
+    final String dbPath = ((DatabaseInternal) followerServer.getDatabaseForOperator(dbName)).getDatabasePath();
     final String token = getRaftPlugin(followerIndex).getRaftHAServer().getClusterToken();
 
     // Simulate a resync whose download can never succeed (unreachable leader endpoint). The install

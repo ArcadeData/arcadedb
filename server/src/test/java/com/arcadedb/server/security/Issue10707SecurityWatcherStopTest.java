@@ -92,7 +92,7 @@ class Issue10707SecurityWatcherStopTest {
 
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     server.databaseNames(DATABASE);
-    server.on("getDatabase", args -> {
+    server.on("getDatabaseForOperator", args -> {
       // Only the groups watcher's thread is held; its name carries the file it watches
       if (Thread.currentThread().getName().contains(SecurityGroupFileRepository.FILE_NAME)) {
         sweeping.countDown();

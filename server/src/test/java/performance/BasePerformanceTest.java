@@ -122,7 +122,7 @@ public abstract class BasePerformanceTest {
   }
 
   protected Database getServerDatabase(final int i, final String name) {
-    return servers[i].getDatabase(name);
+    return servers[i].getDatabaseForOperator(name);
   }
 
   protected ArcadeDBServer getServer(final String name) {
@@ -176,7 +176,7 @@ public abstract class BasePerformanceTest {
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
         if (getServer(i).existsDatabase(getDatabaseName()))
-          getServer(i).getDatabase(getDatabaseName()).drop();
+          getServer(i).getDatabaseForOperator(getDatabaseName()).drop();
 
     TestServerHelper.checkActiveDatabases();
 
