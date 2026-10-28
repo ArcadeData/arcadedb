@@ -33,6 +33,8 @@ import com.arcadedb.utility.RidLongHashMap;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -50,13 +52,30 @@ import java.util.logging.Level;
  * Cost: O(V + E log E) time, heap proportional to the number of tags and parent links.
  */
 public final class HierarchyBuilder {
+  /** Reached between the two scans of the vertex type (test hook: a write there must leave the view stale). */
+  static final String      BETWEEN_SCANS    = "hierarchy.betweenScans";
   private static final int INITIAL_CAPACITY = 64;
+  /** Vertices read between two checks of the cancel flag. */
+  private static final int CANCEL_CHECK_MASK = 1023;
 
   private HierarchyBuilder() {
   }
 
-  /** @param indexName the COLUMNAR index the hierarchy belongs to, named by the cycle WARNING */
+  /** {@link #build(DatabaseInternal, HierarchyDefinition, long, String, boolean, HierarchyView, BooleanSupplier)}, a cycle logged. */
   static HierarchyView build(final DatabaseInternal db, final HierarchyDefinition def, final long generation, final String indexName) {
+    return build(db, def, generation, indexName, true, null, null);
+  }
+
+  /**
+   * @param indexName the COLUMNAR index the hierarchy belongs to, named by the cycle WARNING
+   * @param logCycles false never logs the cycle WARNING (a private view of an uncommitted change)
+   * @param previous  the view this build replaces, null for none: the cycle WARNING is logged only when the set of nodes on a cycle
+   *                  differs from its own ({@link HierarchyView#sameCycles}), so a standing cycle is not logged on every rebuild
+   * @param cancelled checked between the scans and every 1024 vertices of each, null for never: once true the build stops with a
+   *                  {@link CancellationException}
+   */
+  static HierarchyView build(final DatabaseInternal db, final HierarchyDefinition def, final long generation, final String indexName,
+      final boolean logCycles, final HierarchyView previous, final BooleanSupplier cancelled) {
     // PASS 1: A NODE PER DISTINCT KEY, VERTEX RID TO NODE
     final RidLongHashMap ridToNode = new RidLongHashMap();
     final HashMap<Object, Integer> keyToNode = new HashMap<>();
@@ -66,7 +85,9 @@ public final class HierarchyBuilder {
     int nullKeys = 0;
 
     final Iterator<Record> vertices = db.iterateType(def.vertexType(), true);
-    while (vertices.hasNext()) {
+    for (int read = 0; vertices.hasNext(); read++) {
+      if ((read & CANCEL_CHECK_MASK) == 0)
+        checkCancelled(cancelled);
       final Vertex vertex = vertices.next().asVertex();
       final Object key = FacetValueComparator.normalize(vertex.get(def.key()));
       if (key == null) {
@@ -95,12 +116,17 @@ public final class HierarchyBuilder {
     for (int r = 0; r < nodeCount; r++)
       rank[nodeOfRank[r]] = r;
 
+    ColumnarTestHooks.reach(BETWEEN_SCANS);
+    checkCancelled(cancelled);
+
     // PASS 2: PARENT LINKS AS (CHILD << 32 | RANK OF PARENT), SO ONE SORT GROUPS BY CHILD AND ORDERS EACH GROUP BY VALUE
     final GraphEngine graph = db.getGraphEngine();
     long[] links = new long[INITIAL_CAPACITY];
     int linkCount = 0;
     final Iterator<Record> children = db.iterateType(def.vertexType(), true);
-    while (children.hasNext()) {
+    for (int read = 1; children.hasNext(); read++) {
+      if ((read & CANCEL_CHECK_MASK) == 0)
+        checkCancelled(cancelled);
       final Vertex vertex = children.next().asVertex();
       // -1: a null key, or a vertex created after the first pass
       final int child = (int) ridToNode.get(vertex.getIdentity(), -1);
@@ -137,16 +163,18 @@ public final class HierarchyBuilder {
       parents = Arrays.copyOf(parents, parentCount);
 
     final int[] depth = depths(nodeCount, parentOffsets, parents);
-    final int[] cycleSample = new int[] { -1 };
-    final int cycleNodes = cycleNodes(nodeCount, parentOffsets, parents, cycleSample);
-    if (cycleNodes > 0)
+    final long[] cycleState = new long[] { -1, 0 };
+    final int cycleNodes = cycleNodes(nodeCount, parentOffsets, parents, values, cycleState);
+    final long cycleSignature = cycleState[1];
+    if (logCycles && cycleNodes > 0 && (previous == null || !previous.sameCycles(cycleNodes, cycleSignature)))
       LogManager.instance().log(HierarchyBuilder.class, Level.WARNING,
           "Hierarchy of index '%s' (%s.%s over %s %s, database '%s') has %d node(s) on a cycle of parent links, for example '%s':"
               + " they are counted once per document and have depth -1 when no root reaches them", indexName, def.vertexType(),
-          def.key(), def.parentEdge(), def.parentDirection(), db.getName(), cycleNodes, values[cycleSample[0]]);
+          def.key(), def.parentEdge(), def.parentDirection(), db.getName(), cycleNodes, values[(int) cycleState[0]]);
 
     // no orphan node in a view built from the graph: every node has a vertex
-    return new HierarchyView(generation, parentOffsets, parents, values, depth, null, keyToNode, cycleNodes, duplicateKeys, nullKeys);
+    return new HierarchyView(generation, parentOffsets, parents, values, depth, null, keyToNode, cycleNodes, cycleSignature, duplicateKeys,
+        nullKeys);
   }
 
   /** Breadth-first from the nodes without parents over the child links: the shortest distance from a root, -1 when none reaches. */
@@ -189,9 +217,11 @@ public final class HierarchyBuilder {
    * Counts the nodes on a cycle: the members of every strongly connected component of more than one node, plus the nodes that are
    * their own parent. Iterative Tarjan, so a deep chain cannot overflow the thread stack.
    *
-   * @param sample receives one node on a cycle, when there is one
+   * @param state receives one node on a cycle in {@code state[0]} (left as is when there is none) and, in {@code state[1]}, an
+   *              order-independent 64-bit signature of the values of the nodes on a cycle (0 for none)
    */
-  private static int cycleNodes(final int nodeCount, final int[] parentOffsets, final int[] parents, final int[] sample) {
+  private static int cycleNodes(final int nodeCount, final int[] parentOffsets, final int[] parents, final Object[] values,
+      final long[] state) {
     final int[] index = new int[nodeCount];
     Arrays.fill(index, -1);
     final int[] low = new int[nodeCount];
@@ -244,8 +274,11 @@ public final class HierarchyBuilder {
           } while (member != node);
           if (size > 1 || isOwnParent(node, parentOffsets, parents)) {
             count += size;
-            if (sample[0] < 0)
-              sample[0] = node;
+            if (state[0] < 0)
+              state[0] = node;
+            // the members popped are still in the stack array, above its new size
+            for (int m = stackSize; m < stackSize + size; m++)
+              state[1] += mix(values[stack[m]].hashCode());
           }
         }
       }
@@ -270,6 +303,19 @@ public final class HierarchyBuilder {
     while (j < to)
       temp[k++] = nodes[j++];
     System.arraycopy(temp, from, nodes, from, to - from);
+  }
+
+  private static void checkCancelled(final BooleanSupplier cancelled) {
+    if (cancelled != null && cancelled.getAsBoolean())
+      throw new CancellationException("hierarchy build cancelled");
+  }
+
+  /** The splitmix64 finalizer: spreads a value hash so the sum over a set rarely collides with the sum over another set. */
+  private static long mix(final long value) {
+    long z = value + 0x9E3779B97F4A7C15L;
+    z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+    z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+    return z ^ (z >>> 31);
   }
 
   private static boolean isOwnParent(final int node, final int[] parentOffsets, final int[] parents) {

@@ -891,7 +891,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void rollback() {
     stats.txRollbacks.incrementAndGet();
+    rollbackUncounted();
+  }
 
+  /**
+   * {@link #rollback()} without counting a rollback in the database statistics: for an engine-internal read-only transaction (the
+   * shared build of a COLUMNAR hierarchy view) whose end is no rollback of any user's work.
+   */
+  public void rollbackUncounted() {
     executeInReadLock(() -> {
       try {
         checkTransactionIsActive(false);

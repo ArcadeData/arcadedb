@@ -25,6 +25,8 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.block.BlockCorruptionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.ColumnarIndexMetadata;
 import com.arcadedb.schema.DocumentType;
@@ -84,9 +86,13 @@ import java.util.logging.Level;
  * <p>
  * <b>Marks.</b> {@link #markPages} is on the commit path: one volatile read and one array read for a file with no projection, an atomic
  * OR per page for a projected one; a database with no projection and no watcher is not even called ({@link #hasMarkTargets()}). A
- * mark on an external-property bucket goes to the owning projection's external tracker (R7). A file
- * with no projection may be watched ({@link #watchFiles}): its marks bump the watcher's generation synchronously and the watcher runs
- * later on {@link ColumnarApplyPool}, coalesced.
+ * mark on an external-property bucket goes to the owning projection's external tracker (R7). Any file, projected or not, may be
+ * watched ({@link #watchFiles}): its marks bump the watcher's generation synchronously and the watcher runs later on
+ * {@link ColumnarApplyPool}, coalesced.
+ * <p>
+ * <b>Hierarchies (plan 5).</b> {@link #hierarchy} creates, on first use, one {@link HierarchyManager} per (declaring type, property)
+ * whose COLUMNAR index has a hierarchy in its METADATA; the registry listens to the schema events once for all of them, and closes a
+ * manager once its index is gone and every manager when the database closes.
  * <p>
  * <b>Scheduling (P53).</b> {@link #startApplying()} registers one tick with {@link ColumnarApplyPool}. The tick takes no lock: it reads
  * the trackers' pending clocks (volatile) and CASes {@link #passScheduled} to submit at most one pass of this database at a time,
@@ -212,6 +218,10 @@ public final class ColumnarIndexManager {
     }
   }
 
+  /** The key of a {@link HierarchyManager} in {@link #hierarchies}. */
+  private record HierarchyKey(String typeName, String property) {
+  }
+
   private final LocalDatabase database;
   private final boolean       readOnly;
   private final ColumnarStats stats        = new ColumnarStats();
@@ -253,6 +263,14 @@ public final class ColumnarIndexManager {
   private volatile long                               nextOpenRetryMs;
   /** Replaced by a new empty map after {@link #registered} on every change, so an extractor built from a stale list is dropped. */
   private volatile Map<String, ColumnarValueExtractor> extractors  = new ConcurrentHashMap<>();
+
+  /** The hierarchy managers created by {@link #hierarchy}; created and closed under {@link #hierarchyLock}. */
+  private final ConcurrentHashMap<HierarchyKey, HierarchyManager> hierarchies = new ConcurrentHashMap<>();
+  private final Object                                          hierarchyLock = new Object();
+  // under hierarchyLock: the one schema listener of every hierarchy manager is registered (addSchemaEventListener has no remove)
+  private boolean                                               hierarchyListening;
+  // under hierarchyLock: no manager is created once the database closed
+  private boolean                                               hierarchiesClosed;
 
   private final Object       watchLock        = new Object();
   // replaced whole under watchLock
@@ -516,6 +534,99 @@ public final class ColumnarIndexManager {
    */
   public void addSchemaEventListener(final Consumer<ColumnarSchemaEvent> listener) {
     schemaListeners.add(listener);
+  }
+
+  /** The number of {@link #addSchemaEventListener schema listeners}. */
+  int schemaListenerCountForTesting() {
+    return schemaListeners.size();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- hierarchies
+
+  /**
+   * Plan 5: the {@link HierarchyManager} of the COLUMNAR index of {@code typeName.property} (the type declaring the index, not a
+   * subtype), created on the first call from the METADATA of the type index; null when the type, its index or the index's hierarchy
+   * does not exist, or once the database closed. A definition that cannot be read (a hand-edited persisted {@code parentDirection})
+   * gives a manager that is unavailable with the reason: nothing throws to the query.
+   */
+  public HierarchyManager hierarchy(final String typeName, final String property) {
+    final HierarchyKey key = new HierarchyKey(typeName, property);
+    final HierarchyManager existing = hierarchies.get(key);
+    if (existing != null)
+      return existing;
+    synchronized (hierarchyLock) {
+      if (hierarchiesClosed)
+        return null;
+      final HierarchyManager raced = hierarchies.get(key);
+      if (raced != null)
+        return raced;
+      final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+      final TypeIndex index = type == null ? null : type.getColumnarIndex(property);
+      final ColumnarIndexMetadata metadata = index == null ? null : hierarchyMetadataOf(index);
+      if (metadata == null)
+        return null;
+      HierarchyDefinition definition = null;
+      String invalid = null;
+      try {
+        definition = metadata.getHierarchyDefinition();
+      } catch (final RuntimeException e) {
+        invalid = "hierarchy definition of index '" + index.getName() + "' is invalid: " + e.getMessage();
+      }
+      final HierarchyManager manager = new HierarchyManager(database, this, typeName, property, definition, invalid);
+      if (!hierarchyListening) {
+        addSchemaEventListener(this::onHierarchySchemaEvent);
+        hierarchyListening = true;
+      }
+      hierarchies.put(key, manager);
+      return manager;
+    }
+  }
+
+  /** The metadata of the first COLUMNAR bucket index of the type index when it has a hierarchy, else null. */
+  static ColumnarIndexMetadata hierarchyMetadataOf(final TypeIndex index) {
+    for (final IndexInternal sub : index.getSubIndexes())
+      if (sub instanceof ColumnarIndex columnar) {
+        final ColumnarIndexMetadata metadata = columnar.getColumnarMetadata();
+        return metadata != null && metadata.getHierarchy() != null ? metadata : null;
+      }
+    return null;
+  }
+
+  /**
+   * The one schema listener of the hierarchy managers: a {@code HIERARCHY_SOURCE_CHANGED} reaches each of them; a dropped column or
+   * projection, or a rename, closes the managers whose index is gone (a recreated index gets a new manager on its first use).
+   */
+  private void onHierarchySchemaEvent(final ColumnarSchemaEvent event) {
+    switch (event.kind()) {
+    case HIERARCHY_SOURCE_CHANGED -> {
+      for (final HierarchyManager manager : hierarchies.values())
+        manager.onSchemaEvent(event);
+    }
+    case DROP_COLUMN, DROP_PROJECTION, RENAME -> {
+      synchronized (hierarchyLock) {
+        for (final Iterator<HierarchyManager> it = hierarchies.values().iterator(); it.hasNext(); ) {
+          final HierarchyManager manager = it.next();
+          if (!manager.indexExists()) {
+            it.remove();
+            manager.close();
+          }
+        }
+      }
+    }
+    default -> {
+      // no hierarchy reads the other kinds
+    }
+    }
+  }
+
+  /** Closes every hierarchy manager (their watchers are removed) and creates no other one. */
+  private void closeHierarchies() {
+    synchronized (hierarchyLock) {
+      hierarchiesClosed = true;
+      for (final HierarchyManager manager : hierarchies.values())
+        manager.close();
+      hierarchies.clear();
+    }
   }
 
   /**
@@ -1234,18 +1345,20 @@ public final class ColumnarIndexManager {
     }
   }
 
-  /** Marks into the tracker the file id routes to and returns its projection; notifies the watchers of a file with no projection. */
+  /**
+   * Marks into the tracker the file id routes to and returns its projection (null for none); then notifies the watchers of the file,
+   * projected or not (plan 5 R9: a hierarchy's tag type may have a COLUMNAR index of its own).
+   */
   private ColumnarProjection mark(final int fileId, final int[] pageNumbers, final int count) {
     final IntConsumer hook = onMarkForTesting;
     if (hook != null)
       hook.accept(fileId);
     final Routes current = routes;
+    ColumnarProjection projection = null;
     if (fileId >= 0 && fileId < current.byFileId.length) {
-      final ColumnarProjection projection = current.byFileId[fileId];
-      if (projection != null) {
+      projection = current.byFileId[fileId];
+      if (projection != null)
         (current.externalFileId[fileId] ? projection.externalTracker() : projection.tracker()).mark(pageNumbers, count);
-        return projection;
-      }
     }
     final Watcher[][] byFile = watchersByFileId;
     if (fileId >= 0 && fileId < byFile.length && byFile[fileId] != null) {
@@ -1255,13 +1368,12 @@ public final class ColumnarIndexManager {
       }
       watchersPending = true;
     }
-    return null;
+    return projection;
   }
 
   /**
-   * Plan 5: runs {@code onChange} on {@link ColumnarApplyPool} after marks on any of the files, which must have no projection (a
-   * projected file's marks go to its tracker). Coalesced: one run per pass whatever the number of marks. Calling it again with the
-   * same {@code onChange} adds files.
+   * Plan 5: runs {@code onChange} on {@link ColumnarApplyPool} after marks on any of the files (a projected file's marks also go to its
+   * tracker). Coalesced: one run per pass whatever the number of marks. Calling it again with the same {@code onChange} adds files.
    */
   public void watchFiles(final int[] fileIds, final Runnable onChange) {
     synchronized (watchLock) {
@@ -1278,6 +1390,30 @@ public final class ColumnarIndexManager {
       publishWatchers();
     }
     ensureTicking();
+  }
+
+  /**
+   * Plan 5 R9: makes {@code fileIds} the whole file set of the watcher of {@code onChange}, created when there is none. The watcher and
+   * its {@link #watchGeneration generation} are kept, so a generation read before the swap is never ahead of one read after it.
+   */
+  public void replaceWatchedFiles(final Runnable onChange, final int[] fileIds) {
+    synchronized (watchLock) {
+      Watcher watcher = find(onChange);
+      if (watcher == null) {
+        watcher = new Watcher(onChange);
+        final Watcher[] next = Arrays.copyOf(watchers, watchers.length + 1);
+        next[watchers.length] = watcher;
+        watchers = next;
+      }
+      watcher.fileIds = Arrays.stream(fileIds).filter(id -> id >= 0).distinct().toArray();
+      publishWatchers();
+    }
+    ensureTicking();
+  }
+
+  /** The number of registered watchers ({@link #watchFiles}). */
+  int watcherCountForTesting() {
+    return watchers.length;
   }
 
   /** Removes the watcher of {@link #watchFiles}; it does not run again once a pass running it ends. */
@@ -2166,6 +2302,22 @@ public final class ColumnarIndexManager {
     }
   }
 
+  /**
+   * Runs a maintenance body that belongs to no projection (a {@link HierarchyManager} rebuild) counted in {@link #maintenanceRunning},
+   * so a close waits for it as for a flush or merge; nothing once a close began. The body must stop at its next step once its owner is
+   * closed: the close waits for it with no deadline after the drain one.
+   */
+  void runDatabaseMaintenanceBody(final Runnable body) {
+    maintenanceRunning.incrementAndGet();
+    try {
+      // read after the increment: a close that set closing before it waits for this body, one that sets it after is seen here
+      if (!closing)
+        body.run();
+    } finally {
+      maintenanceRunning.decrementAndGet();
+    }
+  }
+
   /** Flush, then merge when the merge policy selects segments. Runs on {@link ColumnarMaintenancePool}, or a test thread. */
   private void maintain(final Slot slot) {
     final ColumnarProjection projection = slot.projection;
@@ -2524,6 +2676,7 @@ public final class ColumnarIndexManager {
     killed = true;
     closing = true;
     stopApplying();
+    closeHierarchies();
   }
 
   private void stopApplying() {
@@ -2552,6 +2705,7 @@ public final class ColumnarIndexManager {
     closing = true;
     ordinalMapCache.clear();
     stopApplying();
+    closeHierarchies();
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(drainTimeoutMs);
     awaitNoPass(deadline);
     final boolean flushing = flush && !killed && !readOnly;

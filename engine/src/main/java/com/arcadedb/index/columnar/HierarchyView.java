@@ -41,12 +41,14 @@ public final class HierarchyView {
   private final boolean[]            orphan;
   private final Map<Object, Integer> keyToNode;
   private final int                  cycleNodes;
+  private final long                 cycleSignature;
   private final int                  duplicateKeys;
   private final int                  nullKeys;
 
   /** {@code orphan} null means no node is an orphan. */
   HierarchyView(final long generation, final int[] parentOffsets, final int[] parents, final Object[] values, final int[] depth,
-      final boolean[] orphan, final Map<Object, Integer> keyToNode, final int cycleNodes, final int duplicateKeys, final int nullKeys) {
+      final boolean[] orphan, final Map<Object, Integer> keyToNode, final int cycleNodes, final long cycleSignature, final int duplicateKeys,
+      final int nullKeys) {
     this.generation = generation;
     this.parentOffsets = parentOffsets;
     this.parents = parents;
@@ -55,6 +57,7 @@ public final class HierarchyView {
     this.orphan = orphan != null ? orphan : NO_ORPHANS;
     this.keyToNode = keyToNode;
     this.cycleNodes = cycleNodes;
+    this.cycleSignature = cycleSignature;
     this.duplicateKeys = duplicateKeys;
     this.nullKeys = nullKeys;
   }
@@ -107,6 +110,14 @@ public final class HierarchyView {
   /** The number of nodes that lie on a cycle of parent links (a node that is its own parent included). */
   public int cycleNodes() {
     return cycleNodes;
+  }
+
+  /**
+   * Whether this view has the same set of nodes on a cycle as described: the same count and the same order-independent signature of
+   * their values (a 64-bit hash: a collision only skips one log line).
+   */
+  boolean sameCycles(final int otherCycleNodes, final long otherCycleSignature) {
+    return cycleNodes == otherCycleNodes && cycleSignature == otherCycleSignature;
   }
 
   /** The number of vertices whose key another vertex already had: they share its node, their parents unioned. */

@@ -413,7 +413,7 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
   }
 
   @Test
-  void watchedFileWithoutProjectionBumpsTheGenerationAndRuns() throws InterruptedException {
+  void watchedFileBumpsTheGenerationAndRunsWithOrWithoutProjection() throws InterruptedException {
     createAsset(1);
     database.command("sql", "CREATE DOCUMENT TYPE Tag");
     final int tagBucket = bucketIds("Tag")[0];
@@ -430,9 +430,25 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
     assertThat(manager.watchGeneration(watcher)).isEqualTo(1);
     assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
 
-    // a projected file goes to its tracker, never to a watcher
+    // a projected file goes to its tracker and to its watchers too (plan 5 R9: a Tag type with a COLUMNAR index of its own)
+    // drained first, so the pending mark below can only be this one
+    assertThat(manager.awaitCaughtUp(10_000)).isTrue();
+    try (final AutoCloseable hold = manager.suspendApply()) {
+      assertThat(manager.projection(assetBucket).tracker().oldestPendingEpochStartMs()).isZero();
+      manager.markPages(assetBucket, new int[] { 0 }, 1);
+      assertThat(manager.watchGeneration(watcher)).isEqualTo(2);
+      assertThat(manager.projection(assetBucket).tracker().oldestPendingEpochStartMs()).isNotZero();
+    } catch (final Exception e) {
+      throw new IllegalStateException(e);
+    }
+
+    // a new file set keeps the watcher and its counter: the generation never goes back
+    manager.replaceWatchedFiles(watcher, new int[] { assetBucket });
+    assertThat(manager.watchGeneration(watcher)).isEqualTo(2);
+    manager.markPages(tagBucket, new int[] { 0 }, 1);
+    assertThat(manager.watchGeneration(watcher)).isEqualTo(2);
     manager.markPages(assetBucket, new int[] { 0 }, 1);
-    assertThat(manager.watchGeneration(watcher)).isEqualTo(1);
+    assertThat(manager.watchGeneration(watcher)).isEqualTo(3);
 
     manager.unwatchFiles(watcher);
     manager.markPages(tagBucket, new int[] { 0 }, 1);
