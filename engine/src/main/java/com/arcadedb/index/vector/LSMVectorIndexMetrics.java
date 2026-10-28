@@ -47,6 +47,11 @@ class LSMVectorIndexMetrics {
   // given search path (exact on the plain and groupBy paths, PQ-approximate on the PQ path), picked before any
   // graph traversal ran. Shared across all three paths; a query on any of them can bump this counter.
   private final AtomicLong preFilterSearches = new AtomicLong(0);
+  // Graph walks set up to score on the PQ codes fused into the nodes of the graph file (jvector FusedPQ, the fusedPQ index
+  // setting), on the exact path and on the ungrouped PQ path that SQL and openCypher take alike (issue #10713; groupBy keeps
+  // its exact walk). Counted when the walk's score provider is built, so a walk that then fails is still counted. Zero on an
+  // index whose graph file carries no fused codes, so it says whether the bytes the setting costs on disk are read.
+  private final AtomicLong fusedPQWalks = new AtomicLong(0);
   // Grouped searches (vector.neighbors with groupBy) that ran out of candidate budget before they could open `limit`
   // distinct groups, so the caller got a correct but short answer. Finding the limit-th nearest group costs however
   // many candidates the data puts between it and the query, which no fixed budget can guarantee (issue #5761), so
@@ -167,6 +172,10 @@ class LSMVectorIndexMetrics {
     preFilterSearches.incrementAndGet();
   }
 
+  void incrementFusedPQWalks() {
+    fusedPQWalks.incrementAndGet();
+  }
+
   void incrementGroupedSearchesShortOfLimit() {
     groupedSearchesShortOfLimit.incrementAndGet();
   }
@@ -269,6 +278,10 @@ class LSMVectorIndexMetrics {
     return preFilterSearches.get();
   }
 
+  long getFusedPQWalks() {
+    return fusedPQWalks.get();
+  }
+
   long getGroupedSearchesShortOfLimit() {
     return groupedSearchesShortOfLimit.get();
   }
@@ -330,6 +343,7 @@ class LSMVectorIndexMetrics {
     stats.put("graphRebuildCount", graphRebuildCount.get());
     stats.put("bruteForceScans", bruteForceScans.get());
     stats.put("preFilterSearches", preFilterSearches.get());
+    stats.put("fusedPQWalks", fusedPQWalks.get());
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
     stats.put("groupedSearchesGroupsUnavailable", groupedSearchesGroupsUnavailable.get());
     stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
@@ -362,6 +376,7 @@ class LSMVectorIndexMetrics {
     graphRebuildCount.set(0);
     bruteForceScans.set(0);
     preFilterSearches.set(0);
+    fusedPQWalks.set(0);
     groupedSearchesShortOfLimit.set(0);
     groupedSearchesGroupsUnavailable.set(0);
     groupedSearchesMergingDelta.set(0);
