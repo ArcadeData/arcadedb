@@ -175,8 +175,8 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
       d.set("nullable", null);
       d.save();
 
+      // the eager copy, less the `record` key that only answers when asked for (issue #10898)
       final LinkedHashMap<String, Object> eager = new LinkedHashMap<>();
-      eager.put("record", d);
       for (final String prop : d.getPropertyNames())
         eager.put(prop, d.get(prop));
       eager.put("@rid", d.getIdentity());
@@ -184,7 +184,7 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
       eager.put("score", 0.5f);
 
       final ScoredRecordRow lazy = new ScoredRecordRow(d, "score", 0.5f);
-      // the record property overwrote the `record` key in the eager copy, and does so in the lazy row
+      // a record property named `record` is a real entry and wins over the record, before and after the row is enumerated
       assertThat(lazy.get("record")).isEqualTo("a property named like the record key");
       assertThat(lazy.getRecord()).isSameAs(d);
       for (final String key : List.of("record", "name", "nullable", "missing"))
@@ -192,6 +192,7 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
       for (final String key : eager.keySet())
         assertThat(lazy.get(key)).as(key).isEqualTo(eager.get(key));
       assertThat(lazy.keySet()).containsExactlyElementsOf(eager.keySet());
+      assertThat(lazy.get("record")).isEqualTo("a property named like the record key");
     });
   }
 
@@ -271,7 +272,8 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
       int count = 0;
       while (rs.hasNext()) {
         final Result r = rs.next();
-        assertThat(r.getPropertyNames()).containsExactly("record", "name", "text", "embedding", "score", "@rid", "@type");
+        // the record is reachable under `record` but not enumerated: its properties are the row's already (issue #10898)
+        assertThat(r.getPropertyNames()).containsExactly("name", "text", "embedding", "score", "@rid", "@type");
         assertThat((String) r.getProperty("name")).startsWith("p");
         assertThat((String) r.getProperty("text")).contains("passage");
         assertThat((Object) r.getProperty("embedding")).isNotNull();
@@ -297,8 +299,8 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
     database.transaction(() -> {
       final Document doc = (Document) database.lookupByRID(rids.getFirst(), true);
 
+      // the eager copy, less the `record` key that only answers when asked for (issue #10898)
       final LinkedHashMap<String, Object> eager = new LinkedHashMap<>();
-      eager.put("record", doc);
       for (final String prop : doc.getPropertyNames())
         eager.put(prop, doc.get(prop));
       eager.put("@rid", doc.getIdentity());

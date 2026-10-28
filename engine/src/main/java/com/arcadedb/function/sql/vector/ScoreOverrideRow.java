@@ -48,6 +48,8 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
   private final String                        scoreKey;
   private final Object                        score;
   private       LinkedHashMap<String, Object> materialized;
+  // set once the `record` key was removed from the row: it no longer answers what the source carries
+  private       boolean                       recordKeyRemoved;
 
   /**
    * @param source a {@link Map} or a {@link Result} row
@@ -61,7 +63,7 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
     // A plain map row is copied now, as it always was: whoever holds it can still change it, and the score computed from its
     // values must not end up next to other values, or another @rid. Only the rows backed by a record (the lazy output of the
     // vector functions) and the read-only results are read on demand
-    if (source instanceof Map<?, ?> && !(source instanceof ScoredRecordRow) && !(source instanceof ScoreOverrideRow))
+    if (isPlainMap(source))
       materialize();
   }
 
@@ -74,8 +76,10 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
 
   @Override
   public Object get(final Object key) {
-    if (materialized != null)
-      return materialized.get(key);
+    if (materialized != null) {
+      final Object value = materialized.get(key);
+      return value != null || materialized.containsKey(key) || !carriesRecordKey(key) ? value : sourceRecord();
+    }
     if (!(key instanceof String name))
       return null;
     if (name.equals(scoreKey))
@@ -95,7 +99,7 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
   @Override
   public boolean containsKey(final Object key) {
     if (materialized != null)
-      return materialized.containsKey(key);
+      return materialized.containsKey(key) || (carriesRecordKey(key) && sourceRecord() != null);
     if (!(key instanceof String name))
       return false;
     if (name.equals(scoreKey))
@@ -139,7 +143,13 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
 
   @Override
   public Object remove(final Object key) {
-    return materialize().remove(key);
+    final LinkedHashMap<String, Object> copy = materialize();
+    if (!ScoredRecordRow.RECORD.equals(key))
+      return copy.remove(key);
+    // whether the key held a real entry or only answered what the source carries, it answers nothing once removed
+    final boolean answeredTheSource = carriesRecordKey(key) && !copy.containsKey(ScoredRecordRow.RECORD);
+    recordKeyRemoved = true;
+    return answeredTheSource ? sourceRecord() : copy.remove(key);
   }
 
   @Override
@@ -150,6 +160,24 @@ final class ScoreOverrideRow extends AbstractMap<String, Object> {
   @Override
   public void clear() {
     materialize().clear();
+    recordKeyRemoved = true;
+  }
+
+  /**
+   * True for the {@code record} key while the eager copy does not hold it and the source may still answer it: the
+   * {@link ScoredRecordRow} this row re-scores answers it without enumerating it (issue #10898), so the copy built from its
+   * entries leaves it out. A plain map source was copied whole, so whatever it held under the key is in the copy already.
+   */
+  private boolean carriesRecordKey(final Object key) {
+    return !recordKeyRemoved && !isPlainMap(source) && ScoredRecordRow.RECORD.equals(key);
+  }
+
+  private Object sourceRecord() {
+    return source instanceof Map<?, ?> map ? map.get(ScoredRecordRow.RECORD) : ((Result) source).getProperty(ScoredRecordRow.RECORD);
+  }
+
+  private static boolean isPlainMap(final Object source) {
+    return source instanceof Map<?, ?> && !(source instanceof ScoredRecordRow) && !(source instanceof ScoreOverrideRow);
   }
 
   private LinkedHashMap<String, Object> materialize() {

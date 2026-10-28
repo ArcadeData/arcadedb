@@ -8612,6 +8612,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public List<Pair<RID, Float>> findNeighborsFromVector(final float[] queryVector, final int k, final int efSearch,
       final Set<RID> allowedRIDs, final WorkGuard guard) {
+    checkIsValid();
     if (metadata.quantizationType != VectorQuantizationType.BINARY || k <= 0 || queryVector == null)
       return searchNeighbors(queryVector, k, efSearch, allowedRIDs, guard);
 
@@ -9108,6 +9109,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorGrouped(final float[] queryVector, final int limit, final int groupSize,
       final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final WorkGuard guard) {
+    checkIsValid();
     if (limit <= 0 || groupSize <= 0)
       return Collections.emptyList();
     return groupedSearch(queryVector, limit, groupSize, efSearch, allowedRIDs, groupKeyResolver, null,
@@ -9141,6 +9143,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public List<Pair<RID, Float>> findNeighborsFromVectorForGroups(final float[] queryVector, final Set<Object> groupKeys,
       final int groupSize, final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final float maxDistance, final WorkGuard guard) {
+    checkIsValid();
     if (groupKeys == null || groupKeys.isEmpty() || groupSize <= 0)
       return Collections.emptyList();
     return groupedSearch(queryVector, groupKeys.size(), groupSize, efSearch, allowedRIDs, groupKeyResolver, groupKeys,
@@ -10017,6 +10020,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public List<Pair<RID, Float>> findNeighborsFromVectorApproximate(final float[] queryVector, int k, final int efSearch,
       final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+    checkIsValid();
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
     final boolean rerank = rerankOversample > 0;
@@ -10313,6 +10317,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
+    checkIsValid();
     if (keys == null || keys.length == 0 || keys[0] == null)
       throw new IllegalArgumentException("Expected float array, byte array (INT8), or supported vector type as key for vector search");
 
@@ -11259,6 +11264,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public long countEntries() {
+    checkIsValid();
     // Use vectorIndex which already applies LSM merge-on-read semantics
     // (latest entry for each RID, filtering out deleted entries)
     return vectorIndex().getActiveCount();
@@ -13729,6 +13735,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Refuses to answer a search or a count on an instance a drop or a {@code REBUILD INDEX} has retired. Its locations and
+   * graph were released with it, so every read answered as if the index were empty - 0 rows, 0 entries - which a caller
+   * cannot tell from a real empty answer, while the {@link TypeIndex} over it and an {@code LSMTreeIndex} bucket refuse: the
+   * caller has to fetch the index again by name (issue #10897). {@link #getStats()} is not guarded: it describes this
+   * instance, and the close-time diagnostics it carries are read after the instance was released. A superseded instance (a
+   * schema reload published its successor) stays valid on purpose, so a query that resolved it before the swap still
+   * completes.
+   */
   private void checkIsValid() {
     if (!valid)
       throw new IndexException("Index '" + indexName + "' is not valid. Probably has been drop or rebuilt");
