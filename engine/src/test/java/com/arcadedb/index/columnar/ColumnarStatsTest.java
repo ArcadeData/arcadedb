@@ -1,0 +1,160 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.columnar;
+
+import com.sun.management.ThreadMXBean;
+import org.junit.jupiter.api.Test;
+
+import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
+
+class ColumnarStatsTest {
+  @Test
+  void countersAreKeyedByTypeAndReason() {
+    final ColumnarStats stats = new ColumnarStats();
+    stats.rebuild("Asset", "create");
+    stats.rebuild("Asset", "create");
+    stats.rebuild("Asset", "corrupt");
+
+    assertThat(stats.rebuilds("Asset", "create")).isEqualTo(2);
+    assertThat(stats.rebuilds("Asset", "corrupt")).isEqualTo(1);
+    assertThat(stats.rebuilds("Asset", "missing")).isZero();
+    assertThat(stats.rebuilds("Other", "create")).isZero();
+    assertThat(stats.rebuildsTotal()).isEqualTo(3);
+
+    stats.conversionFailure("Asset", "fileSize");
+    assertThat(stats.conversionFailures("Asset", "fileSize")).isEqualTo(1);
+    assertThat(stats.conversionFailures("Asset", "brand")).isZero();
+    assertThat(stats.conversionFailures("Other", "fileSize")).isZero();
+  }
+
+  @Test
+  void readersReturnWhatWritersAdded() {
+    final ColumnarStats stats = new ColumnarStats();
+    writeEveryCell(stats);
+
+    assertThat(stats.applyPasses()).isEqualTo(1);
+    assertThat(stats.applyPagesCount("Asset")).isEqualTo(5);
+    assertThat(stats.placeholdersResolvedCount("Asset")).isEqualTo(2);
+    assertThat(stats.flushCount("Asset")).isEqualTo(1);
+    assertThat(stats.mergeCount("Asset")).isEqualTo(1);
+    assertThat(stats.recoveryPagesCount()).isEqualTo(7);
+    assertThat(stats.recordsRereadCount("Asset")).isEqualTo(11);
+    assertThat(stats.unreadableCount("Asset")).isEqualTo(1);
+    assertThat(stats.rebuildPagesReusedCount("Asset")).isEqualTo(13);
+    assertThat(stats.flushDurationCount("Asset")).isEqualTo(1);
+    assertThat(stats.flushDurationTotalNanos("Asset")).isEqualTo(1_000);
+    assertThat(stats.mergeDurationCount("Asset")).isEqualTo(1);
+    assertThat(stats.mergeDurationTotalNanos("Asset")).isEqualTo(2_000);
+    assertThat(stats.dictionaryCompactions("Asset", "brand")).isEqualTo(1);
+    assertThat(stats.dictionaryOrdinalsReclaimed("Asset", "brand")).isEqualTo(600);
+    assertThat(stats.applyLagMs("Asset")).isEqualTo(42);
+    assertThat(stats.overlayRows("Asset")).isEqualTo(99);
+    assertThat(stats.segments("Asset")).isEqualTo(3);
+    assertThat(stats.dictionarySize("Asset", "brand")).isEqualTo(1234);
+    assertThat(stats.cardinalityExceeded("Asset", "brand")).isTrue();
+    assertThat(stats.cardinalityExceeded("Asset", "tags")).isFalse();
+    assertThat(stats.deadRatio("Asset")).isEqualTo(0.25);
+    assertThat(stats.openFiles("Asset")).isEqualTo(8);
+
+    // a reader never invents a value for another type
+    assertThat(stats.applyPagesCount("Other")).isZero();
+    assertThat(stats.deadRatio("Other")).isZero();
+    assertThat(stats.cardinalityExceeded("Other", "brand")).isFalse();
+  }
+
+  @Test
+  void forEachKeyListsEveryRegisteredCell() {
+    final ColumnarStats stats = new ColumnarStats();
+    writeEveryCell(stats);
+
+    final List<String> keys = new ArrayList<>();
+    stats.forEachKey((kind, type, property, reason) -> keys.add(kind + "|" + type + "|" + property + "|" + reason));
+
+    final Set<String> expected = new TreeSet<>(List.of("rebuilds|Asset|null|create", "dictionary.compactions|Asset|brand|null",
+        "dictionary.ordinals.reclaimed|Asset|brand|null", "apply.pages|Asset|null|null", "apply.placeholders.resolved|Asset|null|null",
+        "flush.count|Asset|null|null", "merge.count|Asset|null|null", "conversion.failures|Asset|fileSize|null",
+        "recovery.pages|null|null|null", "apply.records.reread|Asset|null|null", "apply.unreadable|Asset|null|null",
+        "rebuild.pages.reused|Asset|null|null", "flush.duration|Asset|null|null", "merge.duration|Asset|null|null",
+        "apply.lag.ms|Asset|null|null", "overlay.rows|Asset|null|null", "segments|Asset|null|null", "segments.dead.ratio|Asset|null|null",
+        "dictionary.size|Asset|brand|null", "cardinality.exceeded|Asset|brand|null", "open.files|Asset|null|null"));
+    assertThat(new TreeSet<>(keys)).isEqualTo(expected);
+    assertThat(keys).hasSameSizeAs(expected);
+  }
+
+  @Test
+  void cellsAreAllocationFreeAfterFirstUse() {
+    final ColumnarStats stats = new ColumnarStats();
+    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    assumeThat(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled()).isTrue();
+    final long threadId = Thread.currentThread().threadId();
+
+    // first use creates the cells, and warms the JIT so the measured window holds no compilation garbage
+    for (int i = 0; i < 20_000; i++)
+      writeHotCells(stats);
+
+    final long before = threads.getThreadAllocatedBytes(threadId);
+    for (int i = 0; i < 10_000; i++)
+      writeHotCells(stats);
+    final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
+
+    assertThat(allocated).as("bytes allocated by 10_000 writes to existing cells").isZero();
+  }
+
+  private static void writeHotCells(final ColumnarStats stats) {
+    stats.conversionFailure("Asset", "fileSize");
+    stats.rebuild("Asset", "create");
+    stats.applyPages("Asset", 1);
+    stats.flushDuration("Asset", 10);
+    stats.setOverlayRows("Asset", 5);
+    stats.setCardinalityExceeded("Asset", "brand", true);
+    stats.setDeadRatio("Asset", 0.5);
+    stats.dictionaryCompaction("Asset", "brand", 3);
+  }
+
+  private static void writeEveryCell(final ColumnarStats stats) {
+    stats.rebuild("Asset", "create");
+    stats.conversionFailure("Asset", "fileSize");
+    stats.applyPass();
+    stats.applyPages("Asset", 5);
+    stats.placeholdersResolved("Asset", 2);
+    stats.flush("Asset");
+    stats.merge("Asset");
+    stats.recoveryPages(7);
+    stats.recordsReread("Asset", 11);
+    stats.flushDuration("Asset", 1_000);
+    stats.mergeDuration("Asset", 2_000);
+    stats.unreadable("Asset");
+    stats.rebuildPagesReused("Asset", 13);
+    stats.dictionaryCompaction("Asset", "brand", 600);
+    stats.setApplyLagMs("Asset", 42);
+    stats.setOverlayRows("Asset", 99);
+    stats.setSegments("Asset", 3);
+    stats.setDictionarySize("Asset", "brand", 1234);
+    stats.setCardinalityExceeded("Asset", "brand", true);
+    stats.setDeadRatio("Asset", 0.25);
+    stats.setOpenFiles("Asset", 8);
+  }
+}

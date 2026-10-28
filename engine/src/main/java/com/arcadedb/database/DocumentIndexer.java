@@ -909,7 +909,11 @@ public class DocumentIndexer {
     }
   }
 
-  private Object getPropertyValue(final Document record, final String propertyName) {
+  /**
+   * Reads the value an index keys for {@code propertyName}: the exact property name first (names with dots are valid), then the dotted
+   * path, and the special {@code @out}/{@code @in} of an edge. Static so the columnar extractor reads a record exactly as an index does.
+   */
+  public static Object getPropertyValue(final Document record, final String propertyName) {
     if (record instanceof Edge edge) {
       // EDGE: CHECK FOR SPECIAL CASES @OUT AND @IN
       if ("@out".equals(propertyName))
@@ -941,7 +945,7 @@ public class DocumentIndexer {
    *
    * @return The nested property value, or null if any part of the path is null
    */
-  private Object getNestedPropertyValue(final Document record, final String propertyPath) {
+  private static Object getNestedPropertyValue(final Document record, final String propertyPath) {
     final String[] pathParts = propertyPath.split("\\.", 2); // Split into at most 2 parts
     Object current = record.get(pathParts[0]);
 
@@ -956,7 +960,7 @@ public class DocumentIndexer {
   /**
    * Helper method to recursively get nested values from objects.
    */
-  private Object getNestedValue(Object current, String path) {
+  private static Object getNestedValue(Object current, String path) {
     if (current == null) {
       return null;
     }
