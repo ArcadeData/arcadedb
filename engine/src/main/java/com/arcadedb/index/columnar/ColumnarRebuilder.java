@@ -56,7 +56,9 @@ import java.util.logging.Level;
  * {@link #REBUILD_SEMAPHORE} rebuilds run JVM-wide, a semaphore of its own (spec 5.6), never the one of the vector index rebuilds. No
  * worker ever waits for a permit: a rebuild without one waits in a queue, started by the rebuild that releases a permit or by the next
  * apply tick of any database ({@link #drainWaiting()}), so a rebuild never stalls the flushes that share the pool. A rebuild that
- * actually runs counts {@code rebuilds} once, with its reason; one that finds its projection closed counts nothing. A READ_ONLY
+ * actually runs counts {@code rebuilds} once, with its reason; one that finds its projection closed counts nothing, nor does a
+ * {@code create} that finds every column published (it does not run) or its bucket empty (it runs uncounted, see {@link #rebuild}). A
+ * request with another reason coalesced into a pending {@code create} makes that create run and count under that reason. A READ_ONLY
  * database, a closing manager and a closed projection schedule nothing (R16).
  * <p>
  * <b>Run.</b> Counted as a running maintenance job of its manager (a close waits for it, and it aborts at the next page once the close
@@ -85,6 +87,10 @@ final class ColumnarRebuilder {
   static final String CHECK_FIX        = ColumnarSchemaEvent.CHECK_FIX;
   /** Reached once the scan wrote every segment, before the publish takes the apply lock. */
   static final String SCANNED          = "rebuild.scanned";
+  /** Reached by a job after its rebuild body (run, skipped or failed), before it leaves the running state. */
+  static final String FINISHING        = "rebuild.finishing";
+  /** Reached by a job once it left the running state (any create it scheduled is queued by then), before it drains the waiting queue. */
+  static final String FINISHED         = "rebuild.finished";
 
   /** Rebuilds running JVM-wide; separate from the vector index rebuild permits (spec 5.6). */
   static final Semaphore REBUILD_SEMAPHORE = new Semaphore(Math.max(1, GlobalConfiguration.COLUMNAR_REBUILD_CONCURRENCY.getValueAsInteger()));
@@ -94,9 +100,11 @@ final class ColumnarRebuilder {
 
   /**
    * The coalescing state of one projection ({@link ColumnarProjection#rebuildRequest}, null when idle): queued with its reason, or
-   * running, with the reason of the request that arrived meanwhile (null for none).
+   * running, with the reason of the request that arrived meanwhile (null for none). {@code absorbed} is the reason of a request
+   * coalesced into a pending {@code create} (the queued one, or the rerun of a running rebuild), null for none: that create then runs
+   * even with every column published, as it stands for the other request too, and counts under the absorbed reason.
    */
-  record Request(String reason, boolean running, String rerunReason) {
+  record Request(String reason, boolean running, String rerunReason, String absorbed) {
   }
 
   private ColumnarRebuilder() {
@@ -113,16 +121,27 @@ final class ColumnarRebuilder {
     for (; ; ) {
       final Request current = state.get();
       if (current == null) {
-        if (state.compareAndSet(null, new Request(reason, false, null))) {
-          WAITING.offer(new Job(manager, projection, reason));
+        if (state.compareAndSet(null, new Request(reason, false, null, null))) {
+          WAITING.offer(new Job(manager, projection));
           drainWaiting();
           return;
         }
-      } else if (!current.running() || current.rerunReason() != null)
-        return;
-      else if (state.compareAndSet(current, new Request(current.reason(), true, reason)))
+      } else if (!current.running()) {
+        if (!absorbs(current.reason(), current.absorbed(), reason)
+            || state.compareAndSet(current, new Request(current.reason(), false, null, reason)))
+          return;
+      } else if (current.rerunReason() == null) {
+        if (state.compareAndSet(current, new Request(current.reason(), true, reason, null)))
+          return;
+      } else if (!absorbs(current.rerunReason(), current.absorbed(), reason)
+          || state.compareAndSet(current, new Request(current.reason(), true, current.rerunReason(), reason)))
         return;
     }
+  }
+
+  /** A pending request with {@code pendingReason} newly absorbs one with {@code reason}: a create not absorbing yet meets another reason. */
+  private static boolean absorbs(final String pendingReason, final String absorbed, final String reason) {
+    return absorbed == null && CREATE.equals(pendingReason) && !CREATE.equals(reason);
   }
 
   /** A rebuild of the projection is queued (waiting for a permit or a pool thread) or running; lock free. */
@@ -154,55 +173,95 @@ final class ColumnarRebuilder {
     }
   }
 
-  /** One rebuild holding a permit; queues the rerun its projection asked for while it ran. */
-  private record Job(ColumnarIndexManager manager, ColumnarProjection projection, String reason) implements Runnable {
+  /**
+   * One rebuild holding a permit; queues the rerun its projection asked for while it ran, or a {@code create} when a column was added
+   * after the run decided on its columns (see {@link #finish}).
+   */
+  private record Job(ColumnarIndexManager manager, ColumnarProjection projection) implements Runnable {
     @Override
     public void run() {
+      final ColumnDefinition[][] decided = new ColumnDefinition[1][];
       try {
         // only this job leaves the queued state; everything the rebuild reads is read after this point, so a request coalesced with
         // the queued state is seen by this run
-        projection.rebuildRequest.set(new Request(reason, true, null));
-        manager.runRebuildBody(projection, () -> rebuild(manager, projection, reason));
+        // (a CAS loop: a schedule may mark the queued create absorbed meanwhile, and the state is never null while this job lives)
+        Request queued;
+        do
+          queued = projection.rebuildRequest.get();
+        while (!projection.rebuildRequest.compareAndSet(queued, new Request(queued.reason(), true, null, null)));
+        final String reason = queued.reason();
+        final String absorbed = queued.absorbed();
+        manager.runRebuildBody(projection, () -> decided[0] = rebuild(manager, projection, reason, absorbed));
+        ColumnarTestHooks.reach(FINISHING);
       } finally {
         REBUILD_SEMAPHORE.release();
-        finish();
+        finish(decided[0]);
+        ColumnarTestHooks.reach(FINISHED);
         drainWaiting();
       }
     }
 
-    private void finish() {
+    /**
+     * Leaves the running state. A column registered while this job ran, after its last column check (the skip decision, the I3 check of
+     * {@code rebuildPublished}, or the columns the scan captured), relied on this running job and scheduled nothing: once the state is
+     * idle, a {@code create} is scheduled when the columns are no longer the ones the run decided on and one is unpublished. The add
+     * writes the volatile columns and then reads this state; this writes the state and then reads the columns, so one side sees the
+     * other. Keyed on columns whose definitions differ from the decided ones (compared by content: both arrays are copies), not on an
+     * unpublished column alone, so a create or schema rebuild that keeps failing is not retried forever.
+     */
+    private void finish(final ColumnDefinition[] decided) {
       final AtomicReference<Request> state = projection.rebuildRequest;
       for (; ; ) {
         final Request current = state.get();
         if (current.rerunReason() == null) {
-          if (state.compareAndSet(current, null))
+          if (state.compareAndSet(current, null)) {
+            if (decided != null && projection.isUsable() && projection.hasUnpublishedColumn()
+                && !Arrays.equals(projection.columns(), decided))
+              schedule(manager, projection, CREATE);
             return;
-        } else if (state.compareAndSet(current, new Request(current.rerunReason(), false, null))) {
+          }
+        } else if (state.compareAndSet(current, new Request(current.rerunReason(), false, null, current.absorbed()))) {
           if (manager.isClosing() || projection.isClosedOrDropped())
             state.set(null);
           else
-            WAITING.offer(new Job(manager, projection, current.rerunReason()));
+            WAITING.offer(new Job(manager, projection));
           return;
         }
       }
     }
   }
 
-  /** The body of a rebuild, counted as running by its manager. */
-  private static void rebuild(final ColumnarIndexManager manager, final ColumnarProjection projection, final String reason) {
+  /**
+   * The body of a rebuild, counted as running by its manager. Both {@code create} decisions are taken holding the maintenance slot, so
+   * no other publish of the projection runs between them and the scan: a {@code create} finding every column published has nothing to
+   * build and ends without running or counting (unless it absorbed another reason), and one finding the bucket empty runs (its scan
+   * publishes the columns with their dictionaries, rows committed meanwhile included) but is not counted: it is the empty publish of an
+   * open (V-B1) done late, not a rebuild. A create that absorbed another reason counts under that reason.
+   *
+   * @return the columns the run decided on (captured once holding the slot: the ones it found all published, or the ones its scan
+   * builds), null when it did not get that far (the projection closed, or the database is closing)
+   */
+  private static ColumnDefinition[] rebuild(final ColumnarIndexManager manager, final ColumnarProjection projection, final String reason,
+      final String absorbed) {
     if (!projection.canWrite())
-      return;
+      return null;
     // a running flush, merge or compaction of the projection ends soon; the rebuild then holds the slot for its whole run
     while (!projection.tryBeginMaintenance()) {
       if (!projection.canWrite() || manager.isClosing())
-        return;
+        return null;
       LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
     }
+    // captured once, before the skip decision reads the columns again: a column added in between only causes a reschedule
+    final ColumnDefinition[] decided = projection.columns();
     try {
-      projection.stats().rebuild(projection.typeName(), reason);
+      final boolean create = CREATE.equals(reason) && absorbed == null;
+      if (create && !projection.hasUnpublishedColumn())
+        return decided;
       final boolean published = ColumnarApplier.inDatabaseContext(manager.getDatabase(), () -> {
+        if (!create || !manager.isBucketEmpty(projection.bucketId()))
+          projection.stats().rebuild(projection.typeName(), absorbed != null ? absorbed : reason);
         try {
-          return new Run(manager, projection, reason).execute();
+          return new Run(manager, projection, reason, decided).execute();
         } catch (final IOException e) {
           throw new UncheckedIOException(e);
         }
@@ -218,6 +277,7 @@ final class ColumnarRebuilder {
     } finally {
       projection.endMaintenance();
     }
+    return decided;
   }
 
   /** One scan and publish; used once. */
@@ -262,11 +322,11 @@ final class ColumnarRebuilder {
     private boolean                              pageExtracted;
     private int                                  pageCopied;
 
-    private Run(final ColumnarIndexManager manager, final ColumnarProjection p, final String reason) {
+    private Run(final ColumnarIndexManager manager, final ColumnarProjection p, final String reason, final ColumnDefinition[] columns) {
       this.manager = manager;
       this.p = p;
       this.reason = reason;
-      this.columns = p.columns();
+      this.columns = columns;
       this.maxRecordsInPage = p.maxRecordsInPage();
       this.maxRows = Math.max(1,
           manager.getDatabase().getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS));

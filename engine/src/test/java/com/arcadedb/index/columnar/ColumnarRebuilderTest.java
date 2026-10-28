@@ -33,6 +33,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndexTestAccess;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
@@ -105,6 +106,165 @@ class ColumnarRebuilderTest extends TestHelper {
     assertThat(stats().rebuildsTotal()).isEqualTo(1);
     for (final String property : PROPERTIES)
       assertMatchesGroupBy(property);
+  }
+
+  @Test
+  void severalIndexesOnAnEmptyTypeCountNoRebuild() throws InterruptedException {
+    createAssetType();
+    for (final String property : PROPERTIES)
+      database.command("sql", "CREATE INDEX ON Asset (" + property + ") COLUMNAR");
+    awaitCaughtUp();
+    // every column is published (awaitCaughtUp waits for each index), and building an empty bucket is no rebuild
+    assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CREATE)).isZero();
+    assertThat(stats().rebuildsTotal()).isZero();
+
+    insertAssets(2_000, 0);
+    awaitCaughtUp();
+    for (final String property : PROPERTIES)
+      assertMatchesGroupBy(property);
+    assertThat(stats().rebuildsTotal()).isZero();
+  }
+
+  @Test
+  void severalIndexesOnAnEmptiedTypeCountNoRebuild() throws InterruptedException {
+    // pages but no record: the emptiness the create decision reads through LocalBucket.count(), inside the database context
+    createAssetType();
+    insertAssets(2_000, 0);
+    database.transaction(() -> database.command("sql", "DELETE FROM Asset"));
+    assertThat(((LocalBucket) database.getSchema().getType("Asset").getBuckets(false).getFirst()).getCommittedPageCount()).isPositive();
+    for (final String property : PROPERTIES)
+      database.command("sql", "CREATE INDEX ON Asset (" + property + ") COLUMNAR");
+    awaitCaughtUp();
+    assertThat(stats().rebuildsTotal()).isZero();
+
+    insertAssets(1_000, 5_000);
+    awaitCaughtUp();
+    for (final String property : PROPERTIES)
+      assertMatchesGroupBy(property);
+  }
+
+  @Test
+  void aCreateWithEveryColumnPublishedDoesNotRunUnlessItAbsorbedAnotherReason() throws InterruptedException {
+    createIndexedAssets(2_000);
+    final ColumnarProjection projection = manager().projection(database.getSchema().getType("Asset").getBuckets(false).getFirst()
+        .getFileId());
+    assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CREATE)).isEqualTo(1);
+
+    // every column is published: a create has nothing to build
+    ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CREATE);
+    awaitRebuildEnded(projection);
+    assertThat(stats().rebuildsTotal()).isEqualTo(1);
+
+    // a check_fix coalesced into a queued create: the create stands for it, so it runs, and counts as the check_fix
+    final int permits = ColumnarRebuilder.REBUILD_SEMAPHORE.drainPermits();
+    try {
+      ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CREATE);
+      ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CHECK_FIX);
+      assertThat(projection.rebuildRequest.get().absorbed()).isEqualTo(ColumnarRebuilder.CHECK_FIX);
+    } finally {
+      ColumnarRebuilder.REBUILD_SEMAPHORE.release(permits);
+    }
+    ColumnarRebuilder.drainWaiting();
+    awaitRebuildEnded(projection);
+    assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CREATE)).isEqualTo(1);
+    assertThat(stats().rebuilds("Asset", ColumnarRebuilder.CHECK_FIX)).isEqualTo(1);
+    assertThat(stats().rebuildsTotal()).isEqualTo(2);
+    awaitCaughtUp();
+    assertMatchesGroupBy("brand");
+  }
+
+  @Test
+  void anIndexCreatedWhileARebuildFinishesIsBuilt() throws Exception {
+    createIndexedAssets(2_000);
+    final ColumnarProjection projection = manager().projection(database.getSchema().getType("Asset").getBuckets(false).getFirst()
+        .getFileId());
+    final CountDownLatch finishing = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    holdFirst(ColumnarRebuilder.FINISHING, finishing, release);
+    try {
+      // a check_fix runs to its end and holds just before it leaves the running state: past every column check it makes
+      ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CHECK_FIX);
+      assertThat(finishing.await(WAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+      // the leader's CREATE INDEX meets the running rebuild: it relies on that rebuild for the new column
+      database.command("sql", "CREATE INDEX ON Asset (color) COLUMNAR");
+      // and the reconcile it asks for runs in the same window (else a later pass could build the column by chance): ADD_COLUMN finds
+      // the rebuild running too
+      final Map<Integer, ColumnDefinition[]> schema = new HashMap<>();
+      schema.put(projection.bucketId(),
+          new ColumnDefinition[] { columnarIndex("brand").columnDefinition(), columnarIndex("color").columnDefinition() });
+      manager().reconcile(schema);
+    } finally {
+      release.countDown();
+    }
+    awaitCaughtUp();
+    assertThat(projection.isPublishedWith(columnarIndex("color").getFileId())).isTrue();
+    assertMatchesGroupBy("color");
+  }
+
+  @Test
+  void aColumnReconciledWhileARebuildFinishesIsBuilt() throws Exception {
+    createIndexedAssets(2_000);
+    final ColumnarProjection projection = manager().projection(database.getSchema().getType("Asset").getBuckets(false).getFirst()
+        .getFileId());
+    final int brandFileId = columnarIndex("brand").getFileId();
+    final int colorFileId = 999_995;
+    final CountDownLatch finishing = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    holdFirst(ColumnarRebuilder.FINISHING, finishing, release);
+    // held throughout: a pass would reconcile against the real schema, which has no index 999_995, and drop the column
+    try (final AutoCloseable ignored = manager().suspendApply()) {
+      try {
+        ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CHECK_FIX);
+        assertThat(finishing.await(WAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+        // as on a follower: a schema entry adds the column, the reconcile sees ADD_COLUMN while the rebuild is still running
+        final ColumnDefinition color = ColumnarIndex.defineColumn(colorFileId, "color", Type.STRING, false);
+        projection.addColumn(color);
+        final Map<Integer, ColumnDefinition[]> both = new HashMap<>();
+        both.put(projection.bucketId(),
+            new ColumnDefinition[] { ColumnarIndex.defineColumn(brandFileId, "brand", Type.STRING, false), color });
+        manager().reconcile(both);
+      } finally {
+        release.countDown();
+      }
+      for (int i = 0; i < WAIT_MS && !projection.isPublishedWith(colorFileId); i++)
+        Thread.sleep(1);
+      assertThat(projection.isPublishedWith(colorFileId)).as("the column added during the rebuild's tail is built").isTrue();
+    }
+  }
+
+  @Test
+  void aCreateThatKeepsFailingIsNotRescheduledByItsOwnFinish() throws Exception {
+    createIndexedAssets(2_000);
+    final ColumnarProjection projection = manager().projection(database.getSchema().getType("Asset").getBuckets(false).getFirst()
+        .getFileId());
+    final long rebuildsBefore = stats().rebuildsTotal();
+    // every scan fails as a full disk would: the projection keeps its previous, usable state and the new column stays unpublished
+    final AtomicInteger scans = new AtomicInteger();
+    final CountDownLatch finished = new CountDownLatch(1);
+    ColumnarTestHooks.killPoint = name -> {
+      if (name.equals(ColumnarRebuilder.SCANNED)) {
+        scans.incrementAndGet();
+        throw new IllegalStateException("Simulated write failure of a columnar rebuild");
+      }
+      if (name.equals(ColumnarRebuilder.FINISHED))
+        finished.countDown();
+    };
+    database.command("sql", "CREATE INDEX ON Asset (color) COLUMNAR");
+    assertThat(finished.await(WAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+    // a create the finish scheduled would be queued by now: the failed run decided on these very columns, so none is
+    assertThat(projection.rebuildRequest.get()).as("the failed create reschedules nothing").isNull();
+    assertThat(scans.get()).isEqualTo(1);
+    assertThat(stats().rebuildsTotal()).isEqualTo(rebuildsBefore + 1);
+    assertThat(projection.isUsable()).isTrue();
+    assertThat(projection.isPublishedWith(columnarIndex("color").getFileId())).isFalse();
+
+    // once the failure is gone, a new request builds the column
+    ColumnarTestHooks.killPoint = null;
+    ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.CREATE);
+    awaitCaughtUp();
+    assertThat(projection.isPublishedWith(columnarIndex("color").getFileId())).isTrue();
+    assertMatchesGroupBy("color");
   }
 
   @Test
@@ -586,6 +746,33 @@ class ColumnarRebuilderTest extends TestHelper {
     for (int i = 0; i < WAIT_MS && (stats().rebuilds("Asset", reason) < expectedRuns || projection.rebuildRequest.get() != null); i++)
       Thread.sleep(1);
     assertThat(stats().rebuilds("Asset", reason)).isEqualTo(expectedRuns);
+    assertThat(projection.rebuildRequest.get()).isNull();
+  }
+
+  private ColumnarIndex columnarIndex(final String property) {
+    return (ColumnarIndex) database.getSchema().getType("Asset").getAllIndexes(false).stream()
+        .filter(i -> i.getType() == Schema.INDEX_TYPE.COLUMNAR && i.getPropertyNames().contains(property)).findFirst().orElseThrow()
+        .getIndexesOnBuckets()[0];
+  }
+
+  /** Blocks the first thread reaching {@code point} until {@code release}, counting {@code reached} down when it arrives. */
+  private static void holdFirst(final String point, final CountDownLatch reached, final CountDownLatch release) {
+    final AtomicBoolean first = new AtomicBoolean(true);
+    ColumnarTestHooks.killPoint = name -> {
+      if (name.equals(point) && first.compareAndSet(true, false)) {
+        reached.countDown();
+        try {
+          release.await(WAIT_MS, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    };
+  }
+
+  private static void awaitRebuildEnded(final ColumnarProjection projection) throws InterruptedException {
+    for (int i = 0; i < WAIT_MS && projection.rebuildRequest.get() != null; i++)
+      Thread.sleep(1);
     assertThat(projection.rebuildRequest.get()).isNull();
   }
 

@@ -377,7 +377,10 @@ public final class ColumnarIndexManager {
     try {
       openRegistered();
       final ColumnarProjection projection = projection(index.getAssociatedBucketId());
-      if (projection != null && !projection.isPublishedWith(index.columnDefinition().indexFileId()))
+      // a queued rebuild captures this column when it starts; a running one that decided on its columns before this add schedules a
+      // create when it leaves the running state (ColumnarRebuilder.Job#finish: this add writes the columns, then reads that state)
+      if (projection != null && !projection.isPublishedWith(index.columnDefinition().indexFileId())
+          && !ColumnarRebuilder.isQueuedOrRunning(projection))
         ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
     } finally {
       registryLock.unlock();
@@ -453,7 +456,9 @@ public final class ColumnarIndexManager {
    * ({@link ColumnarProjection#redefineColumns}); a RETYPE is rebuilt with reason {@code schema};</li>
    * <li>{@code ADD_COLUMN}: a {@code create} rebuild, only when the published manifest lacks the column and no rebuild of the
    * projection is queued or running (R17, V-B4: the leader's {@link ColumnarIndex#build} covered it otherwise);</li>
-   * <li>{@code CREATE_EMPTY}, {@code HIERARCHY_SOURCE_CHANGED}: the listeners only.</li>
+   * <li>{@code CREATE_EMPTY}: a {@code create} rebuild of the columns the open did not publish (added to the open projection by a later
+   * registration before this reconcile), as for {@code ADD_COLUMN}; nothing when the open published them all;</li>
+   * <li>{@code HIERARCHY_SOURCE_CHANGED}: the listeners only.</li>
    * </ul>
    * A projection whose bucket or type was renamed takes the new names ({@code RENAME} with no index file id). The registered indexes
    * the schema no longer has are forgotten, and the extractor cache is dropped (a supertype change changes the columns of a type).
@@ -512,15 +517,14 @@ public final class ColumnarIndexManager {
       for (final ColumnarSchemaEvent event : events) {
         if (deferred.contains(event.bucketFileId()))
           continue;
-        if (event.kind() == ColumnarSchemaEvent.Kind.ADD_COLUMN) {
-          final ColumnarProjection projection = slotsByBucket.get(event.bucketFileId()).projection;
-          // a column the registration did not add (its open came first): added, missing until a rebuild publishes it
-          for (final ColumnDefinition column : applied.get(event.bucketFileId()))
-            if (column.indexFileId() == event.indexFileId())
-              projection.addColumn(column);
-          // a running rebuild that captured the columns before this one is followed by a create (rebuildPublished, I3)
-          if (!projection.isPublishedWith(event.indexFileId()) && !ColumnarRebuilder.isQueuedOrRunning(projection))
-            ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
+        if (event.kind() == ColumnarSchemaEvent.Kind.ADD_COLUMN)
+          addAndBuild(slotsByBucket.get(event.bucketFileId()).projection, applied.get(event.bucketFileId()), event.indexFileId());
+        else if (event.kind() == ColumnarSchemaEvent.Kind.CREATE_EMPTY) {
+          // the open published the columns it had; a column a later registration added to the open projection (a follower applying
+          // several schema entries before this first reconcile) is published by nobody else: built like an added column
+          final ColumnDefinition[] columns = applied.get(event.bucketFileId());
+          for (final ColumnDefinition column : columns)
+            addAndBuild(slotsByBucket.get(event.bucketFileId()).projection, columns, column.indexFileId());
         }
         delivered.add(event);
       }
@@ -602,8 +606,22 @@ public final class ColumnarIndexManager {
     }
   }
 
+  /**
+   * Under {@link #registryLock}: adds the column of {@code columns} with the index file id to the projection when the registration did
+   * not (its open came first), and schedules a {@code create} rebuild unless the projection publishes it or a rebuild is queued or
+   * running (a running rebuild that decided on its columns before this add schedules a create when it leaves the running state,
+   * {@code ColumnarRebuilder.Job#finish}).
+   */
+  private void addAndBuild(final ColumnarProjection projection, final ColumnDefinition[] columns, final int indexFileId) {
+    for (final ColumnDefinition column : columns)
+      if (column.indexFileId() == indexFileId)
+        projection.addColumn(column);
+    if (!projection.isPublishedWith(indexFileId) && !ColumnarRebuilder.isQueuedOrRunning(projection))
+      ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
+  }
+
   /** Whether the bucket has no record; false when it cannot be read (an {@code ADD_COLUMN} then rebuilds, which costs a scan only). */
-  private boolean isBucketEmpty(final int bucketId) {
+  boolean isBucketEmpty(final int bucketId) {
     try {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(bucketId);
       return bucket.getCommittedPageCount() == 0 || bucket.count() == 0;
