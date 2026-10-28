@@ -115,10 +115,15 @@ public class Issue10553MongoHeldDatabaseTest extends BaseMongoServerTest {
     }
   }
 
+  /** Not the transient code, and since issue #10795 not an uncoded "Unknown error" either: NamespaceNotFound, the caller's. */
   @Test
-  void aNameThatIsNotADatabaseKeepsItsAnswer() {
+  void aNameThatIsNotADatabaseIsNamespaceNotFound() {
     assertThatThrownBy(() -> client.getDatabase("mongonothing10553").runCommand(new Document("find", "C")))
-        .isInstanceOfSatisfying(MongoCommandException.class, e -> assertThat(e.getErrorCode()).isNotEqualTo(TEMPORARILY_UNAVAILABLE));
+        .isInstanceOfSatisfying(MongoCommandException.class, e -> {
+          assertThat(e.getErrorCode()).isEqualTo(26);
+          assertThat(e.getErrorCodeName()).isEqualTo("NamespaceNotFound");
+          assertThat(e.getErrorMessage()).contains("mongonothing10553").contains("does not exist");
+        });
   }
 
   /**
@@ -139,7 +144,7 @@ public class Issue10553MongoHeldDatabaseTest extends BaseMongoServerTest {
 
   private static void dropIfPresent(final ArcadeDBServer server) {
     if (server.existsDatabase(HELD))
-      server.dropLocalDatabase(server.getDatabase(HELD).getEmbedded(), HELD);
+      server.dropLocalDatabase(server.getDatabaseForOperator(HELD).getEmbedded(), HELD);
     FileUtils.deleteRecursively(
         new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), HELD));
   }

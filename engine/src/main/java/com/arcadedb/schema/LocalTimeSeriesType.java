@@ -19,6 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.Component;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
@@ -28,6 +30,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -334,12 +337,19 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   /**
    * Refuses a rename whose target names a file already there: a component or a sealed file left under that name by another type
    * would be adopted by this type's engine at the next open, or overwritten.
+   * <p>
+   * A component is a schema object of its own, whose name the caller's choice of type name collides with (a bucket created as
+   * {@code <newName>_shard_0}, the bucket of a document type named {@code <newName>_shard}), so it is refused as a taken name, which
+   * every wire answers as a conflict (issue #10796). A sealed file is not one: no schema object holds it.
    */
   private void checkEngineFilesCanMove(final String oldName, final String newName) {
-    for (final String componentName : engineComponentNames(newName))
-      if (schema.getFileByName(componentName) != null)
-        throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the component '"
-            + componentName + "' its samples would move to already exists. Nothing was changed");
+    for (final String componentName : engineComponentNames(newName)) {
+      final Component holder = schema.getFileByName(componentName);
+      if (holder != null)
+        throw new AlreadyExistsException(kindHolding(holder, componentName),
+            "Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the component '" + componentName
+                + "' its samples would move to already exists. Nothing was changed");
+    }
     final String directory = schema.getDatabase().getDatabasePath() + File.separator;
     for (int i = 0; i < engineShardCount(); i++) {
       final File sealed = new File(directory + TimeSeriesSealedStore.sealedFileNameFor(newName, i));
@@ -347,6 +357,18 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the sealed file '"
             + sealed.getName() + "' its samples would move to already exists. Nothing was changed");
     }
+  }
+
+  /**
+   * The kind of schema object that holds the name of {@code holder}: a bucket, an index, or {@code null} for another component (a
+   * component left by a type that no longer exists), which {@link AlreadyExistsException} words as a schema object.
+   */
+  private AlreadyExistsException.Kind kindHolding(final Component holder, final String componentName) {
+    if (holder instanceof Bucket)
+      return AlreadyExistsException.Kind.BUCKET;
+    if (schema.existsIndex(componentName))
+      return AlreadyExistsException.Kind.INDEX;
+    return null;
   }
 
   /**

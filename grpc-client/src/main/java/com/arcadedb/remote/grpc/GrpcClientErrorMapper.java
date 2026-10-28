@@ -20,6 +20,7 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
@@ -297,6 +298,8 @@ final class GrpcClientErrorMapper {
       case "com.arcadedb.exception.ConcurrentModificationException" -> new ConcurrentModificationException(msg);
       case "com.arcadedb.exception.NeedRetryException" -> new NeedRetryException(msg);
       case "com.arcadedb.exception.RecordNotFoundException" -> new RecordNotFoundException(msg, null);
+      // A name that is no database (issue #10795): answered NOT_FOUND, which the status fallback reads as a missing record
+      case "com.arcadedb.exception.DatabaseNotFoundException" -> new DatabaseNotFoundException(msg);
       case "com.arcadedb.exception.TimeoutException" -> new TimeoutException(msg);
       // Stopped on request (issue #9689): its own type, so no retry loop mistakes it for a failure worth repeating
       case "com.arcadedb.exception.QueryTerminatedException" -> new QueryTerminatedException(msg);

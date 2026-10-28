@@ -64,10 +64,10 @@ class ServerDefaultDatabasesIT extends BaseGraphServerTest {
     assertThat(getServer(0).existsDatabase("Universe")).isTrue();
     assertThat(getServer(0).existsDatabase("Amiga")).isTrue();
 
-    assertThat(getServer(0).getDatabase("Universe").getMode()).isEqualTo(READ_WRITE);
-    assertThat(getServer(0).getDatabase("Amiga").getMode()).isEqualTo(READ_WRITE);
+    assertThat(getServer(0).getDatabaseForOperator("Universe").getMode()).isEqualTo(READ_WRITE);
+    assertThat(getServer(0).getDatabaseForOperator("Amiga").getMode()).isEqualTo(READ_WRITE);
 
-    ((DatabaseInternal) getServer(0).getDatabase("Universe")).getEmbedded().drop();
-    ((DatabaseInternal) getServer(0).getDatabase("Amiga")).getEmbedded().drop();
+    ((DatabaseInternal) getServer(0).getDatabaseForOperator("Universe")).getEmbedded().drop();
+    ((DatabaseInternal) getServer(0).getDatabaseForOperator("Amiga")).getEmbedded().drop();
   }
 }

@@ -75,7 +75,7 @@ class CompositeIndexTest {
     GlobalConfiguration.DATE_TIME_FORMAT.setValue(dateTimePattern);
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
     String sqlString = "UPDATE Order SET id = ?, processor = ?, vstart = ?, vstop = ?, status = ? UPSERT RETURN AFTER WHERE processor = ? AND vstart = ? AND vstop = ?";
     LocalDateTime vstart, vstop;
     String processor = "SIR1LRM-7.1";

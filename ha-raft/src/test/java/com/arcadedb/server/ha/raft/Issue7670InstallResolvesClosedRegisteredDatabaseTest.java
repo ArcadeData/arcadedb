@@ -131,7 +131,7 @@ class Issue7670InstallResolvesClosedRegisteredDatabaseTest {
     assertThat(backup).as("the retained backup was reconciled into the live directory").doesNotExist();
     assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
 
-    final ServerDatabase reopened = server.getDatabase(DB_NAME);
+    final ServerDatabase reopened = server.getDatabaseForOperator(DB_NAME);
     assertThat(reopened.isOpen()).as("the reconciled database was reopened").isTrue();
     assertThat(reopened.getSchema().existsType(ORIGINAL_TYPE))
         .as("the reopened database is the previous copy the backup held").isTrue();
@@ -166,7 +166,7 @@ class Issue7670InstallResolvesClosedRegisteredDatabaseTest {
         marker, server);
 
     assertThat(marker).doesNotExist();
-    final ServerDatabase reopened = server.getDatabase(DB_NAME);
+    final ServerDatabase reopened = server.getDatabaseForOperator(DB_NAME);
     assertThat(reopened.isOpen()).isTrue();
     assertThat(reopened.getSchema().existsType(SNAPSHOT_TYPE)).as("the installed snapshot is live").isTrue();
     assertThat(reopened.getSchema().existsType(ORIGINAL_TYPE)).as("the previous copy was swapped out").isFalse();
@@ -201,7 +201,7 @@ class Issue7670InstallResolvesClosedRegisteredDatabaseTest {
     assertThat(marker).as("a torn directory keeps the marker that stops it being opened").exists();
     assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR)).as("the failed staging is still dropped")
         .doesNotExist();
-    assertThatThrownBy(() -> server.getDatabase(DB_NAME)).as("the torn directory is still refused")
+    assertThatThrownBy(() -> server.getDatabaseForOperator(DB_NAME)).as("the torn directory is still refused")
         .hasMessageContaining(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
   }
 
@@ -214,7 +214,7 @@ class Issue7670InstallResolvesClosedRegisteredDatabaseTest {
   private Path registerThenCloseUnderneathTheRegistry(final Path databasesDir) {
     final ServerDatabase live = server.createDatabase(DB_NAME, ComponentFile.MODE.READ_WRITE);
     live.getSchema().createDocumentType(ORIGINAL_TYPE);
-    ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().close();
+    ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().close();
     assertThat(server.existsDatabase(DB_NAME)).as("precondition: still registered").isTrue();
     return databasesDir.resolve(DB_NAME);
   }

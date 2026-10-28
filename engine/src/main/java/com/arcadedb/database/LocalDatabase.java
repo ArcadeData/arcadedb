@@ -52,6 +52,7 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -143,6 +144,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -166,16 +168,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
   private volatile PageVersionReservations pageVersionReservations;
   /**
-   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
+   * Why this database refuses writes right now, empty when it accepts them (issue #8270). Never mutated: replaced as a whole
+   * under {@link #writeRefusalLock}, so the commit path reads it with one volatile load and no lock.
    * <p>
    * Set by a server that has opened the database before it can replicate it: on a node configured for high
    * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
    * database for replication. A commit or a schema change reaching this instance in that window would be applied
    * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
-   * at the same page versions. Unlike the recovery fence it does not block reads, and it is lifted as soon as the
-   * database is wrapped.
+   * at the same page versions. And by a server restoring a backup over it (issue #10689): every write made until the
+   * restore swaps the backup in would be acknowledged and then destroyed. Unlike the recovery fence it does not block
+   * reads. Several refusals can stand at once, and each is lifted by whoever put it, so ending one never ends another.
    */
-  private volatile String                  writeRefusal = null;
+  private volatile WriteRefusal[]          writeRefusals     = NO_WRITE_REFUSAL;
+  private final    Object                  writeRefusalLock  = new Object();
+  private static final WriteRefusal[]      NO_WRITE_REFUSAL  = new WriteRefusal[0];
+
+  /**
+   * @param unavailable {@code true} when the refusal lasts as long as an operator's operation (a restore), and so is answered
+   *                    as a database not available rather than as a conflict a retry resolves at once
+   */
+  private record WriteRefusal(String reason, boolean unavailable) {
+  }
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -795,7 +808,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(databasePath);
       TransactionContext tx = current.getLastTransaction();
-      if (tx.isActive()) {
+      // NOT ONE WHOSE TRANSACTION IS STILL CONCLUDING EITHER (#10687): ITS COMMIT COUNT IS ABOUT TO BE READ BY THE CALLER OF THE
+      // COMMIT THAT ENDED IT, SEE TransactionContext.isRunningAfterCompletionCallbacks()
+      if (tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
         // CREATE A NESTED TX
         tx = new TransactionContext(getWrappedDatabaseInstance());
         current.pushTransaction(tx);
@@ -3200,6 +3215,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     if (name.startsWith("$"))
       name = name.substring(1);
+    // A name SQL reserves is the context's ($parent, $depth...): SQL cannot set it as a global, and an entry another key space put
+    // in the store under it (a Redis key, issue #10790) must not answer for it where the context has none
+    if (SQLQueryEngine.RESERVED_VARIABLE_NAMES.contains(name))
+      return null;
     return globalVariables.get(name);
   }
 
@@ -3258,6 +3277,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return CollectionUtils.immutableMap(globalVariables);
+  }
+
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return globalVariables;
   }
 
   public QueryEngineManager getQueryEngineManager() {
@@ -4573,27 +4597,79 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Refuses every commit carrying changes, and every schema change, with a retryable {@link NeedRetryException}
-   * naming {@code reason}, until {@link #acceptWrites()} is called. Reads are unaffected.
+   * naming {@code reason}, until {@link #acceptWrites(String)} lifts it. Reads are unaffected.
    */
   public void refuseWrites(final String reason) {
-    writeRefusal = reason;
+    refuseWrites(reason, false);
   }
 
-  /** Lifts a {@link #refuseWrites(String)} refusal. */
-  public void acceptWrites() {
-    writeRefusal = null;
+  /**
+   * As {@link #refuseWrites(String)}, and with {@code unavailable} set the refusal is a {@link DatabaseNotAvailableException}
+   * instead: the database is taken away for as long as an operator's operation lasts (a restore replacing it, issue #10689), which
+   * a client must read as "not available", not as a conflict to retry at once. A refusal already standing for the same reason is
+   * not added twice, and keeps the {@code unavailable} it was first given: a reason is one refusal, owned by whoever lifts it with
+   * {@link #acceptWrites(String)}, so callers pass a constant.
+   */
+  public void refuseWrites(final String reason, final boolean unavailable) {
+    synchronized (writeRefusalLock) {
+      final WriteRefusal[] current = writeRefusals;
+      for (final WriteRefusal refusal : current)
+        if (refusal.reason().equals(reason))
+          return;
+      final WriteRefusal[] updated = Arrays.copyOf(current, current.length + 1);
+      updated[current.length] = new WriteRefusal(reason, unavailable);
+      writeRefusals = updated;
+    }
   }
 
-  /** The reason {@link #refuseWrites(String)} was given, or {@code null} when this database accepts writes. */
+  /**
+   * Lifts the refusal given for {@code reason} only, leaving any other in place: a server that stops waiting for its HA plugin
+   * must not end the refusal a restore in progress put on the same database, nor the other way round.
+   */
+  public void acceptWrites(final String reason) {
+    synchronized (writeRefusalLock) {
+      final WriteRefusal[] current = writeRefusals;
+      for (int i = 0; i < current.length; i++)
+        if (current[i].reason().equals(reason)) {
+          final WriteRefusal[] updated = new WriteRefusal[current.length - 1];
+          System.arraycopy(current, 0, updated, 0, i);
+          System.arraycopy(current, i + 1, updated, i, current.length - i - 1);
+          writeRefusals = updated.length == 0 ? NO_WRITE_REFUSAL : updated;
+          return;
+        }
+    }
+  }
+
+  /**
+   * Returns once every commit that was already running has ended. A commit checks the write refusal and writes its pages under
+   * the shared lock, so taking the exclusive one waits exactly for the commits that may have passed the check before a
+   * {@link #refuseWrites} and are still writing: after this, no commit can complete that did not see the refusal (issue
+   * #10689). An HA leader replicates between its two commit phases, outside this lock, so a commit already replicating is not
+   * waited for. Must not be called holding the shared lock.
+   */
+  public void awaitCommitsInFlight() {
+    executeInWriteLock(() -> null);
+  }
+
+  /** The reason of the first refusal {@link #refuseWrites(String)} put in place, or {@code null} when this database accepts writes. */
   public String getWriteRefusal() {
-    return writeRefusal;
+    final WriteRefusal[] current = writeRefusals;
+    return current.length == 0 ? null : current[0].reason();
   }
 
-  /** Throws the retryable refusal of {@link #refuseWrites(String)}, if one is in place. */
+  /**
+   * Throws the refusal of {@link #refuseWrites(String)}, if one is in place: retryable, or not available when it was given so. A
+   * not-available refusal wins over a retryable one standing beside it, so a client is not told to retry at once into an outage
+   * that lasts as long as an operator's operation.
+   */
   public void checkWritesAccepted() {
-    final String refusal = writeRefusal;
-    if (refusal != null)
-      throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + refusal);
+    final WriteRefusal[] current = writeRefusals;
+    if (current.length == 0)
+      return;
+    for (final WriteRefusal refusal : current)
+      if (refusal.unavailable())
+        throw new DatabaseNotAvailableException("Database '" + name + "' does not accept writes: " + refusal.reason());
+    throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + current[0].reason());
   }
 
   protected void checkDatabaseIsOpen() {

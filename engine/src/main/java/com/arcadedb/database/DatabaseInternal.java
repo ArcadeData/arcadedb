@@ -36,6 +36,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -47,6 +48,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -670,4 +672,20 @@ public interface DatabaseInternal extends Database {
    * @return Map of variable name to value
    */
   Map<String, Object> getGlobalVariables();
+
+  /**
+   * The map that holds the global variables, keyed by the exact names it holds, for a key space that is not SQL's: the Redis
+   * wrapper stores its database-backed keys here (issue #10790). The accessors above speak SQL - they strip one leading
+   * {@code $} and refuse the names SQL reserves ({@link SQLQueryEngine#RESERVED_VARIABLE_NAMES}) - so a
+   * Redis key {@code $k} was the key {@code k} and a key {@code parent} could not be written at all. Through this map every key is
+   * the client's own: what SQL can name as {@code $k} it still reads, and a name SQL reserves stays the context's
+   * ({@link #getGlobalVariable} answers it absent).
+   * <p>
+   * A raw store: the caller owns its keys, nothing here validates them. Like every {@code ConcurrentHashMap} it refuses a
+   * {@code null} key or value with a {@code NullPointerException}, so a removal is a {@code remove}, never a {@code put} of
+   * {@code null} as {@link #setGlobalVariable} accepts.
+   * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #getGlobalVariable(String)}.
+   */
+  ConcurrentMap<String, Object> getGlobalVariableStore();
 }

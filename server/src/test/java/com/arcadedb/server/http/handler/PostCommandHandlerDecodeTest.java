@@ -38,10 +38,10 @@ class PostCommandHandlerDecodeTest extends BaseGraphServerTest {
 
   @Test
   void javaScriptFunctionWithLogicalAndOperatorDirectCommand() {
-    getServer(0).getDatabase(getDatabaseName()).command("sql",
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql",
         "DEFINE FUNCTION Test.getMatchRating2 \"return 1==1 && 0==0\" LANGUAGE js");
 
-    final var result = getServer(0).getDatabase(getDatabaseName()).query("sql",
+    final var result = getServer(0).getDatabaseForOperator(getDatabaseName()).query("sql",
         "SELECT `Test.getMatchRating2`() as result");
 
     assertThat(result.next().<Boolean>getProperty("result")).isTrue();

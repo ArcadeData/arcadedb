@@ -98,7 +98,7 @@ class ArcadeStateMachineBootstrapMismatchTest {
     // The server arg is null: the only path exercised here is getEmbedded().close() (via
     // closeLocalDatabaseIfOpen), which dereferences the wrapped localDb, not the server, so null is safe.
     final ServerDatabase serverDb = new ServerDatabase(null, localDb);
-    mockServer.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? serverDb : null);
+    mockServer.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? serverDb : null);
     mockServer.on("removeDatabase", args -> {
       if (Objects.equals(args[0], DB_NAME))
         dbRegistered.set(false);
@@ -144,7 +144,7 @@ class ArcadeStateMachineBootstrapMismatchTest {
     // The server arg is null: the only path exercised here is getEmbedded().close() (via
     // closeLocalDatabaseIfOpen), which dereferences the wrapped localDb, not the server, so null is safe.
     final ServerDatabase serverDb = new ServerDatabase(null, localDb);
-    mockServer.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? serverDb : null);
+    mockServer.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? serverDb : null);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(mockServer);

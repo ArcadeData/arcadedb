@@ -56,28 +56,35 @@ public class SQLFunctionVectorSparseCreate extends SQLFunctionVectorAbstract {
     try {
       indices = VectorUtils.toIntArray(indicesObj);
     } catch (final IllegalArgumentException e) {
-      throw new CommandSQLParsingException(e.getMessage(), e);
+      throw new CommandSQLParsingException(NAME + " indices: " + e.getMessage(), e);
     }
     final float[] values = toFloatArray(valuesObj);
 
     if (indices.length != values.length)
       throw new CommandSQLParsingException("Indices and values arrays must have same length");
 
+    for (final int index : indices)
+      if (index < 0)
+        throw new CommandSQLParsingException(NAME + " index must be non-negative, found: " + index);
+
     if (params.length == 2) {
       // Infer dimensions from max index
       return new SparseVector(indices, values);
     } else {
-      // Explicit dimensions
+      // Explicit dimensions. intValue() READ 2.9 AS 2 - A VECTOR OF A DIMENSION THE CALLER DID NOT ASK FOR, AND EVERY
+      // LATER sparseDot/sparseNeighbors COMPUTED ON IT - AND 3000000000 AS A NEGATIVE INT (issue #10699)
       final Object dimsObj = params[2];
-      if (dimsObj == null)
-        throw new CommandSQLParsingException("Dimensions cannot be null");
+      if (dimsObj != null && !(dimsObj instanceof Number))
+        throw new CommandSQLParsingException(NAME + " dimensions must be a number, found: " + dimsObj.getClass().getSimpleName());
 
-      int dimensions;
-      if (dimsObj instanceof Number num) {
-        dimensions = num.intValue();
-      } else {
-        throw new CommandSQLParsingException("Dimensions must be a number, found: " + dimsObj.getClass().getSimpleName());
-      }
+      final int dimensions = parseInteger(dimsObj, "dimensions");
+      if (dimensions <= 0)
+        throw new CommandSQLParsingException(NAME + " dimensions must be positive, got " + dimensions);
+
+      for (final int index : indices)
+        if (index >= dimensions)
+          throw new CommandSQLParsingException(
+              NAME + " index " + index + " is out of bounds for dimensions " + dimensions + ": dimensions must be greater than the largest index");
 
       return new SparseVector(indices, values, dimensions);
     }

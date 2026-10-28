@@ -2688,11 +2688,16 @@ public class SelectExecutionPlanner {
    * the runtime caller lets it propagate as a genuine execution error.
    */
   private static Object resolveInRightHandRawValue(final InCondition in, final CommandContext context) {
+    final Object value;
     if (in.getRightMathExpression() != null)
-      return in.getRightMathExpression().execute((Result) null, context);
-    if (in.getRightParam() != null)
-      return in.getRightParam().getValue(context.getInputParameters());
-    return NOT_A_RESOLVABLE_RID_SHAPE;
+      value = in.getRightMathExpression().execute((Result) null, context);
+    else if (in.getRightParam() != null)
+      value = in.getRightParam().getValue(context.getInputParameters());
+    else
+      return NOT_A_RESOLVABLE_RID_SHAPE;
+    // a Java array bound to the placeholder ('@rid IN ?' with a RID[]) is the list of its elements, as a scan reads it: taken for
+    // one RID it resolved to none and the fetch answered no row (issue #10721)
+    return MultiValue.isSequenceArray(value) ? MultiValue.getMultiValueIterable(value) : value;
   }
 
   /**

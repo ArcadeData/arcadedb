@@ -250,7 +250,7 @@ class Issue7683PrometheusConcurrentBodiesIT extends BaseGraphServerTest {
    * assert the timestamp, end to end, in the units the client sent.
    */
   private List<String> storedSamples() {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     final List<String> found = new ArrayList<>();
     for (int w = 0; w < WRITERS; w++) {
       final String type = metric(w);

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.NodeLocalFiles;
@@ -267,6 +268,19 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
+    // A request that carries a cluster token claims to be a peer's, and a peer's claim is proven by the token alone: one that
+    // does not match is refused, never read as no token at all (issue #10827). Falling through to the Basic credentials beside
+    // it served the snapshot to the request shape the shared HTTP gate (AbstractServerHttpHandler) refuses with 401. No peer
+    // sends both: the snapshot download carries the token and the principal it stands for, never an Authorization header.
+    if (carriesClusterToken(exchange)
+        && !isValidClusterToken(exchange.getRequestHeaders().getFirst(PeerRequest.CLUSTER_TOKEN_HEADER))) {
+      // Tells the operator, rate-limited, where this node's token came from and why a peer's may differ (issue #10601)
+      HAServerPlugin.reportClusterTokenRefusal(httpServer.getServer(), String.valueOf(exchange.getSourceAddress()));
+      exchange.setStatusCode(401);
+      exchange.getResponseSender().send("Invalid cluster token");
+      return;
+    }
+
     final ServerSecurityUser user = authenticate(exchange);
     if (user == null) {
       exchange.setStatusCode(401);
@@ -338,7 +352,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
       LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
 
-      final DatabaseInternal db = server.getDatabase(databaseName);
+      final DatabaseInternal db = server.getDatabaseForOperator(databaseName);
 
       // NO PER-DATABASE LOCK HERE (issue #9295): the point-in-time window path suspends nothing, so two followers
       // of the same database are served side by side, each bounded by the concurrencySemaphore. Only the
@@ -583,14 +597,14 @@ public class SnapshotHttpHandler implements HttpHandler {
           final PageSnapshot window = db.getPageManager().openSnapshot(db);
           try {
             return new SnapshotImage(window, listSealedStoresOrFail(new File(db.getDatabasePath()), databaseName));
-          } catch (final RuntimeException e) {
+          } catch (final RuntimeException | Error e) {
             // A WINDOW THAT NEVER REACHES A STREAMER IS NEVER CLOSED BY ONE: the finally below only covers the
             // image this block returns. SUPPRESSED RATHER THAN REPLACED - a close that fails on the way out must
             // not become the exception the operator reads, because the one that got us here is the one that says
             // what went wrong (code review on PR #7708)
             try {
               window.close();
-            } catch (final RuntimeException closeFailure) {
+            } catch (final RuntimeException | Error closeFailure) {
               e.addSuppressed(closeFailure);
             }
             throw e;
@@ -638,7 +652,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       return;
     }
 
-    final DatabaseInternal db = server.getDatabase(databaseName);
+    final DatabaseInternal db = server.getDatabaseForOperator(databaseName);
 
     // Hold a read lock to keep the configuration files still, and serialize with this handler's other entry
     // point per database (see perDatabaseSuspendLock: only the fallback path below suspends anything, but when
@@ -771,25 +785,34 @@ public class SnapshotHttpHandler implements HttpHandler {
     return perDatabaseSuspendLock.computeIfAbsent(databaseName, k -> new ReentrantLock());
   }
 
+  private static boolean carriesClusterToken(final HttpServerExchange exchange) {
+    final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
+    return clusterTokenHeader != null && !clusterTokenHeader.isEmpty();
+  }
+
+  /**
+   * Whether the request's cluster token is this cluster's, through the helper every other cluster-token check uses (issue
+   * #9554): read through {@code server.getHA()} alone, the token was missing while the HA plugin was still starting - after Ratis
+   * could already be elected leader and asked for a snapshot - and once it had stopped, so a peer's correctly authenticated
+   * download was refused.
+   */
+  private boolean isValidClusterToken(final String providedToken) {
+    final String expectedToken = HAServerPlugin.effectiveClusterToken(httpServer.getServer());
+    return expectedToken != null && !expectedToken.isBlank() && providedToken != null && MessageDigest.isEqual(
+        expectedToken.getBytes(DatabaseFactory.getDefaultCharset()), providedToken.getBytes(DatabaseFactory.getDefaultCharset()));
+  }
+
   private ServerSecurityUser authenticate(final HttpServerExchange exchange) {
     // Cluster token auth (inter-node communication)
-    final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
-    if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
-      final var server = httpServer.getServer();
-      // The helper every other cluster-token check uses (issue #9554): read through server.getHA() alone, the token was
-      // missing while the HA plugin was still starting - after Ratis could already be elected leader and asked for a
-      // snapshot - and once it had stopped, so a peer's correctly authenticated download was refused.
-      final String expectedToken = HAServerPlugin.effectiveClusterToken(server);
-      if (expectedToken != null && !expectedToken.isEmpty()
-          && MessageDigest.isEqual(
-          expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {
-        final ServerSecurityUser rootUser = server.getSecurity().getUser("root");
-        if (rootUser == null) {
-          LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
-          return null;
-        }
-        return rootUser;
-      }
+    // A request carrying a token is authenticated by the token alone: never by the credentials beside it (issue #10827).
+    // handleRequest has already answered an invalid one with its own message; checked again so this method holds the rule by itself
+    if (carriesClusterToken(exchange)) {
+      if (!isValidClusterToken(exchange.getRequestHeaders().getFirst(PeerRequest.CLUSTER_TOKEN_HEADER)))
+        return null;
+      final ServerSecurityUser rootUser = httpServer.getServer().getSecurity().getUser("root");
+      if (rootUser == null)
+        LogManager.instance().log(this, Level.SEVERE, "Cluster token valid but 'root' user not found");
+      return rootUser;
     }
 
     final HeaderValues authHeader = exchange.getRequestHeaders().get(Headers.AUTHORIZATION);

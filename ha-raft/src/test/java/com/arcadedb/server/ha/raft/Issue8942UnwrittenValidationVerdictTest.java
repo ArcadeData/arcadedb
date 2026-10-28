@@ -324,7 +324,7 @@ class Issue8942UnwrittenValidationVerdictTest {
   }
 
   private static void assertValue(final ArcadeDBServer server, final String expected) {
-    final var db = server.getDatabase(DB_NAME);
+    final var db = server.getDatabaseForOperator(DB_NAME);
     assertThat(db.iterateType("Item", false).next().asDocument().getString("value")).isEqualTo(expected);
   }
 
