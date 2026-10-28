@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
@@ -26,6 +27,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IntHashSet;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -43,7 +45,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -64,6 +68,12 @@ import java.util.logging.Level;
  * {@link #reserveDictionaryGeneration(int)} and {@link #holdFiles(String...)} before writing them, and {@link #releaseFiles} them once
  * the manifest naming them is published (or once it deleted them). Held names are never deleted by an unreferenced-file scan.
  * <p>
+ * Flush (Task 10, {@link ColumnarFlusher}): {@link #freezeOverlay()} hands the live overlay to the flush and publishes its view before the
+ * now empty live one; until {@link #flushPublished} swaps it for the new segment, {@link #liveValueLookup} answers it with
+ * {@link #LOOKUP_FROZEN} and the apply pass records the positions it supersedes there ({@link #supersedeFrozen}), which the published
+ * frozen view hides (V-B2) and the new segment starts with as its dead set. At most one flush, merge or compaction runs per projection
+ * ({@link #tryBeginMaintenance()}, V-B6).
+ * <p>
  * File lifetime (R1, R2): a state's last release ({@link ProjectionState}'s {@code onLastRelease}, often on a query thread) closes the
  * segment readers no retained state holds any more and, when the state named a file neither the current manifest nor a retained state
  * names, deletes the unreferenced files under {@code publishLock} and calls {@link SegmentFile#deleted()} for each deleted segment: the
@@ -74,6 +84,8 @@ public final class ColumnarProjection {
   static final long   LOOKUP_ABSENT   = -1;
   /** {@link #liveValueLookup}: the live overlay holds the position's value. */
   static final long   LOOKUP_OVERLAY  = -2;
+  /** {@link #liveValueLookup}: the frozen overlay of a running flush holds the position's value. */
+  static final long   LOOKUP_FROZEN   = -3;
   static final String MISSING         = "missing";
   static final String CORRUPT         = "corrupt";
   /** Reached by {@link #acquire()} between the read of the pending positions and the read of the state. */
@@ -94,6 +106,7 @@ public final class ColumnarProjection {
   private final DirtyPageTracker tracker;
   private final DirtyPageTracker externalTracker;
   private final int              externalFileId;
+  private final int              segmentBlockRows;
 
   private final ReentrantReadWriteLock ownersLock         = new ReentrantReadWriteLock();
   private final ReentrantReadWriteLock externalOwnersLock;
@@ -112,7 +125,36 @@ public final class ColumnarProjection {
   private volatile Consumer<String>              rebuildRequester = reason -> {
   };
 
+  /**
+   * No-WAL marker protocol (R8, V-B3), state for Task 13: {@code markPagesWithoutWAL} marks the pages, {@link #bumpNoWalEpoch()}s,
+   * and under {@link #noWalMarkerLock}, when {@link #noWalMarkerEpoch} is -1, writes {@code <bucketDir>/NOWAL} and records the bumped
+   * epoch there. A flush never deletes the marker: the bucket pages of a no-WAL commit reach the disk asynchronously (PageManager), so
+   * after a flush the projection could be newer than the bucket. Only a clean close, once the database flushed every page, deletes it
+   * and resets {@link #noWalMarkerEpoch} to -1 (Tasks 12/13).
+   */
+  private final AtomicLong noWalEpoch            = new AtomicLong();
+  final         Object     noWalMarkerLock       = new Object();
+  /** Epoch at which NOWAL was last written, -1 when no marker is current; guarded by {@link #noWalMarkerLock}. */
+  long                     noWalMarkerEpoch      = -1;
+
+  // flush state, written under applyLock
+  private volatile ColumnarOverlay     frozenOverlay;
+  private          ColumnarSegmentView frozenView;          // the frozen overlay's published view, before masking
+  private          PositionBitmap      supersededInFrozen;  // positions the apply pass superseded in the frozen overlay (V-B2)
+  private          boolean             supersededChanged;
+  private          long                generationFloor;     // generations at or below it may name files of an uncertain publish
+  private          ContentOwnerMap     publishedOwners;     // the owner maps and their modification counts at the last publish
+  private          long                publishedOwnersModifications;
+  private          ContentOwnerMap     publishedExternalOwners;
+  private          long                publishedExternalOwnersModifications;
+  private final    AtomicBoolean       maintenance         = new AtomicBoolean();
+  private volatile long                lastFlushMs         = System.currentTimeMillis();
+
   // guarded by publishLock
+  /** Pages the apply pass completed since the last freeze (R14, V-B2): a flush keeps them unflushed. */
+  private final IntHashSet               appliedSinceFreeze  = new IntHashSet();
+  /** {@link #appliedSinceFreeze} of the external tracker's pages (R7), null when the bucket has no external bucket. */
+  private final IntHashSet               externalAppliedSinceFreeze;
   private final Set<ProjectionState>     retained            = new HashSet<>();
   private final Set<SegmentReader>       openReaders         = Collections.newSetFromMap(new IdentityHashMap<>());
   private final Map<String, SegmentFile> segmentFiles        = new HashMap<>();
@@ -127,26 +169,30 @@ public final class ColumnarProjection {
   private volatile boolean               dropped;
 
   private ColumnarProjection(final Path databasePath, final LocalBucket bucket, final String typeName, final ColumnDefinition[] columns,
-      final ColumnarStats stats, final boolean readOnly, final LocalBucket external) {
+      final ColumnarStats stats, final boolean readOnly, final LocalBucket external, final int segmentBlockRows) {
     this.bucketId = bucket.getFileId();
     this.bucketName = bucket.getName();
     this.typeName = typeName;
     this.bucketDir = ColumnarStore.bucketDir(databasePath, bucketId);
     this.readOnly = readOnly;
     this.maxRecordsInPage = bucket.getMaxRecordsInPage();
+    this.segmentBlockRows = segmentBlockRows;
     this.stats = stats;
     this.columns = columns.clone();
     this.overlay = new ColumnarOverlay(maxRecordsInPage, this.columns, System::currentTimeMillis);
     this.tracker = new DirtyPageTracker(maxRecordsInPage, System::currentTimeMillis);
+    this.supersededInFrozen = new PositionBitmap(maxRecordsInPage);
     if (external == null) {
       this.externalTracker = null;
       this.externalFileId = -1;
       this.externalOwnersLock = null;
+      this.externalAppliedSinceFreeze = null;
     } else {
       this.externalTracker = new DirtyPageTracker(external.getMaxRecordsInPage(), System::currentTimeMillis);
       this.externalFileId = external.getFileId();
       this.externalOwnersLock = new ReentrantReadWriteLock();
       this.externalOwners = new ContentOwnerMap();
+      this.externalAppliedSinceFreeze = new IntHashSet();
     }
   }
 
@@ -165,7 +211,8 @@ public final class ColumnarProjection {
     final Integer externalId = type instanceof LocalDocumentType local ? local.getExternalBucketIdFor(bucket.getFileId()) : null;
     final LocalBucket external = externalId == null ? null : (LocalBucket) db.getSchema().getBucketById(externalId);
     final ColumnarProjection projection = new ColumnarProjection(Path.of(db.getDatabasePath()), bucket,
-        type == null ? bucket.getName() : type.getName(), columns, stats, db.getMode() == ComponentFile.MODE.READ_ONLY, external);
+        type == null ? bucket.getName() : type.getName(), columns, stats, db.getMode() == ComponentFile.MODE.READ_ONLY, external,
+        db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS));
     projection.load(db, bucket);
     return projection;
   }
@@ -213,6 +260,7 @@ public final class ColumnarProjection {
 
       publish(found, readers.toArray(NO_SEGMENTS), new ColumnarSegmentView[] { overlay.publish() }, Map.copyOf(loaded), reason == null);
       unusableReason = reason;
+      ownersPublished();
     } finally {
       publishLock.unlock();
     }
@@ -392,7 +440,8 @@ public final class ColumnarProjection {
     }
   }
 
-  private String propertyOf(final int indexFileId) {
+  /** The property of the column of the index file id, null when the projection has no such column. */
+  String propertyOf(final int indexFileId) {
     for (final ColumnDefinition column : columns)
       if (column.indexFileId() == indexFileId)
         return column.property();
@@ -428,17 +477,30 @@ public final class ColumnarProjection {
       oldest = oldest == 0 ? external : external == 0 ? oldest : Math.min(oldest, external);
     }
     ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
+    return new Snapshot(bucketId, retainState(), pending, oldest);
+  }
 
+  /**
+   * A reference on the current state, released by the caller: its segment readers stay open until then (a merge reads them).
+   *
+   * @throws IllegalStateException when the projection is closed or dropped
+   */
+  ProjectionState retainState() {
     while (true) {
       final ProjectionState current = state.get();
       try {
-        return new Snapshot(bucketId, current.retain(), pending, oldest);
+        return current.retain();
       } catch (final IllegalStateException e) {
         // released by a publish that already swapped in a newer state: retry on it; released and still current: closed or dropped meanwhile
         if (state.get() == current)
           throw new IllegalStateException("Columnar projection of bucket '" + bucketName + "' is closed", e);
       }
     }
+  }
+
+  /** The current state, not retained: the caller holds {@link #applyLock()}, so its segment set cannot change meanwhile. */
+  ProjectionState currentState() {
+    return state.get();
   }
 
   /**
@@ -457,6 +519,33 @@ public final class ColumnarProjection {
 
   int bucketId() {
     return bucketId;
+  }
+
+  String bucketName() {
+    return bucketName;
+  }
+
+  /** The type name the stats of this projection are kept under. */
+  String typeName() {
+    return typeName;
+  }
+
+  Path bucketDir() {
+    return bucketDir;
+  }
+
+  ColumnarStats stats() {
+    return stats;
+  }
+
+  /** Rows per row block of the segments this projection writes ({@code arcadedb.columnar.segmentBlockRows} of the database). */
+  int segmentBlockRows() {
+    return segmentBlockRows;
+  }
+
+  /** False on a READ_ONLY database and once closed or dropped: no flush or merge writes then. */
+  boolean canWrite() {
+    return !readOnly && !closed && !dropped;
   }
 
   int maxRecordsInPage() {
@@ -595,13 +684,21 @@ public final class ColumnarProjection {
     return true;
   }
 
-  /** Apply thread, end of a pass: publishes the overlay's current content as the state's live overlay view. Nothing after drop. */
+  /**
+   * Apply thread, end of a pass (the caller holds {@link #applyLock()}): publishes the overlay's current content as the state's live
+   * overlay view and, when the pass superseded positions of the frozen overlay, the frozen view hiding them (V-B2), in the same state.
+   * Nothing after drop.
+   */
   void publishOverlay() {
     publishLock.lock();
     try {
       final ProjectionState current = state.get();
       final ColumnarSegmentView[] overlays = current.overlays().clone();
       overlays[overlays.length - 1] = overlay.publish();
+      if (supersededChanged && frozenView != null && overlays.length > 1) {
+        overlays[overlays.length - 2] = new MaskedView(frozenView, supersededInFrozen.snapshot());
+        supersededChanged = false;
+      }
       publish(manifest, current.segments(), overlays, dictionaries, current.isUsable());
     } finally {
       publishLock.unlock();
@@ -673,24 +770,22 @@ public final class ColumnarProjection {
 
   /**
    * Apply thread: reads the live value of column {@code column} (an index of {@link #columns()}) at the position into the same slot of
-   * {@code out}, newest first: the live overlay, then the segments of the current state from the newest, skipping dead rows. A live row
+   * {@code out}, newest first: the live overlay, the frozen overlay of a running flush (unless the position was
+   * {@link #supersedeFrozen superseded} there), then the segments of the current state from the newest, skipping dead rows. A live row
    * without a value for the column (a column the segment does not have, or a missing value) answers with {@code present} false.
    * Segment columns are matched by index file id, so a RENAME keeps its values. The caller holds {@link #applyLock()}, so the segment
    * set it reads cannot change during the pass (every publish changing it holds the same lock).
    *
-   * @return {@link #LOOKUP_OVERLAY}, the id of the segment holding the live row, or {@link #LOOKUP_ABSENT} (then {@code present} is
-   * false)
+   * @return {@link #LOOKUP_OVERLAY}, {@link #LOOKUP_FROZEN}, the id of the segment holding the live row, or {@link #LOOKUP_ABSENT}
+   * (then {@code present} is false)
    */
   long liveValueLookup(final long position, final int column, final RowValues out) {
     if (position >= 0 && position / maxRecordsInPage <= Integer.MAX_VALUE) {
-      final OverlayPageBlock block = overlay.page((int) (position / maxRecordsInPage));
-      if (block != null) {
-        final int row = block.row((int) (position % maxRecordsInPage));
-        if (row >= 0) {
-          readOverlayValue(block, row, column, out);
-          return LOOKUP_OVERLAY;
-        }
-      }
+      if (readOverlayValue(overlay, position, column, out))
+        return LOOKUP_OVERLAY;
+      final ColumnarOverlay frozen = frozenOverlay;
+      if (frozen != null && !supersededInFrozen.get(position) && readOverlayValue(frozen, position, column, out))
+        return LOOKUP_FROZEN;
       final SegmentReader[] segments = state.get().segments();
       for (int i = segments.length - 1; i >= 0; i--) {
         final SegmentReader segment = segments[i];
@@ -699,12 +794,24 @@ public final class ColumnarProjection {
         final PositionBitmap dead = segment.deadSet();
         if (dead != null && dead.get(position))
           continue;
-        readSegmentValue(segment, position, column, out);
+        readSegmentValue(segment, position, columns[column], column, out);
         return segment.segmentId();
       }
     }
     out.present[column] = false;
     return LOOKUP_ABSENT;
+  }
+
+  /** Reads the value of column k at the position from the overlay into {@code out}; false when the overlay holds no row there. */
+  private boolean readOverlayValue(final ColumnarOverlay from, final long position, final int k, final RowValues out) {
+    final OverlayPageBlock block = from.page((int) (position / maxRecordsInPage));
+    if (block == null)
+      return false;
+    final int row = block.row((int) (position % maxRecordsInPage));
+    if (row < 0)
+      return false;
+    readOverlayValue(block, row, k, out);
+    return true;
   }
 
   private static void readOverlayValue(final OverlayPageBlock block, final int row, final int k, final RowValues out) {
@@ -725,10 +832,25 @@ public final class ColumnarProjection {
     }
   }
 
-  private void readSegmentValue(final SegmentReader segment, final long position, final int k, final RowValues out) {
-    final ColumnDefinition definition = columns[k];
+  /**
+   * Reads the stored value of the column {@code definition} (matched by index file id and kind) at the position of the segment into
+   * slot {@code k} of {@code out}, whatever the segment's dead set says; missing when the segment has no such column or value.
+   */
+  static void readSegmentValue(final SegmentReader segment, final long position, final ColumnDefinition definition, final int k,
+      final RowValues out) {
+    readValue(columnReader(segment, definition), position, definition, k, out);
+  }
+
+  /** The segment's reader of the column {@code definition} (by index file id, same kind), null when the segment has no such column. */
+  static ColumnReader columnReader(final SegmentReader segment, final ColumnDefinition definition) {
     final ColumnReader reader = segment.columnByIndexFileId(definition.indexFileId());
-    if (reader == null || reader.kind() != definition.kind() || !reader.isPresent(position)) {
+    return reader == null || reader.kind() != definition.kind() ? null : reader;
+  }
+
+  /** Reads the value at the position from {@code reader} (null: no such column) into slot {@code k} of {@code out}. */
+  static void readValue(final ColumnReader reader, final long position, final ColumnDefinition definition, final int k,
+      final RowValues out) {
+    if (reader == null || !reader.isPresent(position)) {
       out.present[k] = false;
       return;
     }
@@ -757,8 +879,9 @@ public final class ColumnarProjection {
    * V-B4: adds a column definition. The published state is unchanged and the column reads as missing (no writer dictionary, see
    * {@link #dictionary}) until the next rebuild publishes it. The overlay is re-keyed to the new columns (its blocks rebuilt as NEW
    * blocks with the column missing, R13) under {@link #applyLock()} only, then swapped in under {@link #publishLock()}, so the next apply
-   * pass builds blocks the overlay accepts. Every overlay mutation (apply pass, a flush's freeze) must hold {@link #applyLock()}. A column
-   * whose index file id is already projected is ignored.
+   * pass builds blocks the overlay accepts. The frozen overlay of a running flush is re-keyed too, so {@link #liveValueLookup} reads it
+   * with the new column indexes; the flush keeps writing the overlay it froze. Every overlay mutation (apply pass, a flush's freeze) must
+   * hold {@link #applyLock()}. A column whose index file id is already projected is ignored.
    */
   void addColumn(final ColumnDefinition column) {
     applyLock.lock();
@@ -771,9 +894,12 @@ public final class ColumnarProjection {
       next[current.length] = column;
       // rebuilt outside the publish lock, so a release on a query thread never waits for it: the apply lock keeps the overlay still
       final ColumnarOverlay rekeyed = rekey(overlay, current, next);
+      final ColumnarOverlay rekeyedFrozen = frozenOverlay == null ? null : rekey(frozenOverlay, current, next);
       publishLock.lock();
       try {
         overlay = rekeyed;
+        if (rekeyedFrozen != null)
+          frozenOverlay = rekeyedFrozen;
         columns = next;
       } finally {
         publishLock.unlock();
@@ -985,6 +1111,279 @@ public final class ColumnarProjection {
 
   private static String fileName(final SegmentReader reader) {
     return reader.file().path().getFileName().toString();
+  }
+
+  /** V-B6: claims the projection's single maintenance slot (flush, merge, compaction); false when another job holds it. */
+  boolean tryBeginMaintenance() {
+    return maintenance.compareAndSet(false, true);
+  }
+
+  /** Releases the slot of {@link #tryBeginMaintenance()}. */
+  void endMaintenance() {
+    maintenance.set(false);
+  }
+
+  /** The no-WAL epoch: the number of no-WAL marks so far (R8, V-B3). */
+  long noWalEpoch() {
+    return noWalEpoch.get();
+  }
+
+  /** Task 13, after setting the bits of a no-WAL commit: advances the no-WAL epoch and returns its new value. */
+  long bumpNoWalEpoch() {
+    return noWalEpoch.incrementAndGet();
+  }
+
+  /** Clock time of the last published flush, the creation time before the first: the age a deletes-only flush waits for. */
+  long lastFlushMs() {
+    return lastFlushMs;
+  }
+
+  /** True while a flush froze an overlay and did not publish it yet (running, or failed and to be retried). */
+  boolean hasFrozenOverlay() {
+    return frozenOverlay != null;
+  }
+
+  /**
+   * Flush, first step; the caller holds {@link #applyLock()}, so no apply pass runs. Clears {@link #appliedSinceFreeze} and the
+   * superseded positions, freezes the live overlay and publishes its view before the now empty live one. A frozen overlay left by a
+   * failed flush is returned again, its records kept.
+   *
+   * @return the frozen overlay, null when there is no row to write
+   */
+  ColumnarOverlay freezeOverlay() {
+    if (!applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Freezing the overlay of the columnar projection of bucket '" + bucketName + "' needs its apply lock");
+    publishLock.lock();
+    try {
+      if (frozenOverlay != null)
+        return frozenOverlay;
+      clearFreezeRecords();
+      if (overlay.rows() == 0)
+        return null;
+      final ColumnarOverlay frozen = overlay.freeze();
+      frozenOverlay = frozen;
+      frozenView = frozen.publish();
+      final ProjectionState current = state.get();
+      publish(manifest, current.segments(), new ColumnarSegmentView[] { frozenView, overlay.publish() }, dictionaries, current.isUsable());
+      return frozen;
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Apply thread (holds {@link #applyLock()}): the pass updated or deleted a position whose live value {@link #liveValueLookup} answered
+   * from the frozen overlay ({@link #LOOKUP_FROZEN}). The next {@link #publishOverlay()} hides it in the frozen view and the flushed
+   * segment starts with it dead (V-B2). Ignored when no overlay is frozen.
+   */
+  void supersedeFrozen(final long position) {
+    if (frozenOverlay == null)
+      return;
+    supersededInFrozen.set(position);
+    supersededChanged = true;
+  }
+
+  /** Flush, under {@link #applyLock()}: a copy of the positions superseded in the frozen overlay, null when there is none. */
+  PositionBitmap supersededInFrozenCopy() {
+    return supersededInFrozen.isEmpty() ? null : supersededInFrozen.copy();
+  }
+
+  /**
+   * Apply pass (holds {@link #applyLock()}), after {@code tracker().completed}: records the first {@code count} primary pages as applied
+   * since the freeze (V-B2).
+   */
+  void pagesApplied(final int[] pages, final int count) {
+    addApplied(appliedSinceFreeze, pages, count);
+  }
+
+  /** {@link #pagesApplied} for pages of the external tracker (R7). */
+  void externalPagesApplied(final int[] pages, final int count) {
+    addApplied(externalAppliedSinceFreeze, pages, count);
+  }
+
+  private void addApplied(final IntHashSet target, final int[] pages, final int count) {
+    if (!applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Recording applied pages of bucket '" + bucketName + "' needs its apply lock");
+    publishLock.lock();
+    try {
+      for (int i = 0; i < count; i++)
+        target.add(pages[i]);
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Flush, last step, under {@link #applyLock()} and {@link #publishLock()} once the state holding the new segment is published: the
+   * pages unflushed at the freeze leave the trackers unless the apply pass completed them again since (R14), and the frozen overlay is
+   * gone.
+   */
+  void flushPublished(final int[] pages, final int[] externalPages) {
+    if (!publishLock.isHeldByCurrentThread() || !applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Completing a flush of bucket '" + bucketName + "' needs its apply and publish locks");
+    tracker.flushed(pages, pages.length, appliedSinceFreeze::contains);
+    if (externalTracker != null)
+      externalTracker.flushed(externalPages, externalPages.length, externalAppliedSinceFreeze::contains);
+    frozenOverlay = null;
+    frozenView = null;
+    clearFreezeRecords();
+    lastFlushMs = System.currentTimeMillis();
+  }
+
+  private void clearFreezeRecords() {
+    appliedSinceFreeze.clear();
+    if (externalAppliedSinceFreeze != null)
+      externalAppliedSinceFreeze.clear();
+    if (!supersededInFrozen.isEmpty())
+      supersededInFrozen = new PositionBitmap(maxRecordsInPage);
+    supersededChanged = false;
+  }
+
+  /**
+   * The manifest generation the next flush, merge or compaction publishes, under {@link #applyLock()}: one above the current manifest
+   * and above every generation an uncertain publish may have used ({@link #publishUncertain}).
+   */
+  long nextGeneration() {
+    final ColumnarManifest current = manifest;
+    return Math.max(current == null ? 0 : current.generation(), generationFloor) + 1;
+  }
+
+  /**
+   * Under {@link #applyLock()}: a publish failed after it started replacing the manifest and the file on disk is not known to be its own.
+   * Its files stay held and the next publish uses a higher generation, so no name it may have published is ever written again.
+   */
+  void publishUncertain(final long generation) {
+    generationFloor = Math.max(generationFloor, generation);
+  }
+
+  /** Whether the name is held by {@link #holdFiles}, {@link #reserveSegmentId} or {@link #reserveDictionaryGeneration}. */
+  boolean isHeld(final String name) {
+    publishLock.lock();
+    try {
+      return inFlightFiles.contains(name);
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  Set<String> heldFilesForTesting() {
+    publishLock.lock();
+    try {
+      return Set.copyOf(inFlightFiles);
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /** Under {@link #applyLock()}, after a manifest publish (or the load): the owner maps as they are now are the published ones. */
+  void ownersPublished() {
+    publishedOwners = owners;
+    publishedOwnersModifications = owners.modifications();
+    if (externalOwnersLock != null) {
+      publishedExternalOwners = externalOwners;
+      publishedExternalOwnersModifications = externalOwners.modifications();
+    }
+  }
+
+  /** Under {@link #applyLock()}: whether an owner map changed since {@link #ownersPublished()}. */
+  boolean ownersChangedSincePublish() {
+    if (owners != publishedOwners || owners.modifications() != publishedOwnersModifications)
+      return true;
+    return externalOwnersLock != null && (externalOwners != publishedExternalOwners
+        || externalOwners.modifications() != publishedExternalOwnersModifications);
+  }
+
+  /** True once {@link #close()} or {@link #drop()} ran; a publisher checks it under {@link #publishLock()} before its manifest. */
+  boolean isClosedOrDropped() {
+    return closed || dropped;
+  }
+
+  /**
+   * The frozen overlay's view hiding the positions the apply pass superseded after the freeze (V-B2), so a position counts once: its
+   * newer value is in the live overlay, or it was deleted. Point reads answer the stored row, as every {@link ColumnReader} does.
+   */
+  private static final class MaskedView implements ColumnarSegmentView {
+    private final    ColumnarSegmentView inner;
+    private final    PositionBitmap      hidden;
+    private volatile PositionBitmap      live;
+
+    private MaskedView(final ColumnarSegmentView inner, final PositionBitmap hidden) {
+      this.inner = inner;
+      this.hidden = hidden;
+    }
+
+    @Override
+    public PositionBitmap live() {
+      PositionBitmap result = live;
+      if (result == null) {
+        result = inner.live().copy();
+        result.andNot(hidden);
+        live = result;
+      }
+      return result;
+    }
+
+    @Override
+    public PositionBitmap live(final int fromPage, final int toPageExclusive) {
+      final PositionBitmap result = inner.live(fromPage, toPageExclusive);
+      result.andNot(hidden);
+      return result;
+    }
+
+    @Override
+    public ColumnReader column(final String property) {
+      final ColumnReader column = inner.column(property);
+      return column == null ? null : new MaskedColumn(column, hidden);
+    }
+
+    @Override
+    public long minLong(final String property) {
+      return inner.minLong(property);
+    }
+
+    @Override
+    public long maxLong(final String property) {
+      return inner.maxLong(property);
+    }
+  }
+
+  private record MaskedColumn(ColumnReader inner, PositionBitmap hidden) implements ColumnReader {
+    @Override
+    public ColumnKind kind() {
+      return inner.kind();
+    }
+
+    @Override
+    public boolean isPresent(final long position) {
+      return inner.isPresent(position);
+    }
+
+    @Override
+    public int ordinal(final long position) {
+      return inner.ordinal(position);
+    }
+
+    @Override
+    public int ordinals(final long position, final int[] out) {
+      return inner.ordinals(position, out);
+    }
+
+    @Override
+    public long longValue(final long position) {
+      return inner.longValue(position);
+    }
+
+    @Override
+    public double doubleValue(final long position) {
+      return inner.doubleValue(position);
+    }
+
+    @Override
+    public void forEachOrdinal(final PositionBitmap matches, final OrdinalConsumer consumer) {
+      final PositionBitmap visible = matches.copy();
+      visible.andNot(hidden);
+      inner.forEachOrdinal(visible, consumer);
+    }
   }
 
   /** A held state seen through the {@link ColumnarSnapshot} contract; releases it once. */

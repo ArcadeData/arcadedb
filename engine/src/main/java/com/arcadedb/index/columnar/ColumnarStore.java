@@ -101,6 +101,15 @@ public final class ColumnarStore {
   /** {@link #writeAtomically(Path, byte[])} reaching the given kill points (null for none) after the tmp write and after the rename. */
   static void writeAtomically(final Path target, final byte[] content, final String tmpWrittenPoint, final String renamedPoint)
       throws IOException {
+    writeTmp(target, content, tmpWrittenPoint);
+    renameTmp(target, renamedPoint);
+  }
+
+  /**
+   * First half of {@link #writeAtomically}: writes and forces {@code <target>.tmp}; the target is untouched, so a failure here leaves the
+   * previous file in place.
+   */
+  static void writeTmp(final Path target, final byte[] content, final String tmpWrittenPoint) throws IOException {
     final Path tmp = target.resolveSibling(target.getFileName() + TMP_SUFFIX);
     try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
         StandardOpenOption.WRITE)) {
@@ -109,7 +118,11 @@ public final class ColumnarStore {
     }
     if (tmpWrittenPoint != null)
       ColumnarTestHooks.reach(tmpWrittenPoint);
-    FileUtils.publishAtomically(tmp, target, false);
+  }
+
+  /** Second half of {@link #writeAtomically}: the atomic rename of the tmp file {@link #writeTmp} wrote, then the directory fsync. */
+  static void renameTmp(final Path target, final String renamedPoint) throws IOException {
+    FileUtils.publishAtomically(target.resolveSibling(target.getFileName() + TMP_SUFFIX), target, false);
     if (renamedPoint != null)
       ColumnarTestHooks.reach(renamedPoint);
     fsyncDirectory(target.getParent());

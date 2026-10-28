@@ -298,9 +298,22 @@ public final class ColumnarManifest {
    * directory is fsynced first so those files' entries are durable before the rename that makes the manifest name them.
    */
   public void publish(final Path bucketDir) throws IOException {
+    writeTmp(bucketDir);
+    rename(bucketDir);
+  }
+
+  /**
+   * First half of {@link #publish}: fsyncs the directory, then writes and forces {@code manifest.json.tmp}. The published manifest is
+   * untouched, so a failure here changes nothing a reader or a crash recovery sees.
+   */
+  void writeTmp(final Path bucketDir) throws IOException {
     ColumnarStore.fsyncDirectory(bucketDir);
-    ColumnarStore.writeAtomically(bucketDir.resolve(FILE_NAME), toJSON().toString().getBytes(StandardCharsets.UTF_8),
-        "publish.manifestTmpWritten", "publish.manifestRenamed");
+    ColumnarStore.writeTmp(bucketDir.resolve(FILE_NAME), toJSON().toString().getBytes(StandardCharsets.UTF_8), "publish.manifestTmpWritten");
+  }
+
+  /** Second half of {@link #publish}: replaces {@code manifest.json} with the tmp file of {@link #writeTmp} and fsyncs the directory. */
+  void rename(final Path bucketDir) throws IOException {
+    ColumnarStore.renameTmp(bucketDir.resolve(FILE_NAME), "publish.manifestRenamed");
   }
 
   /**
