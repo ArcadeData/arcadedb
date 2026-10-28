@@ -192,6 +192,60 @@ class Issue10847PqCodebookReuseTest extends TestHelper {
     assertThat(rebuilt.getLastPqReusedCodes()).isZero();
   }
 
+  /**
+   * A compaction renumbers every vector id densely. The codes in hand are re-bound to the renumbered map, so the next build
+   * still carries each code over to the vector it encodes, never to the vector that inherited its old id.
+   */
+  @Test
+  void codesCarriedOverAcrossARenumberingCompactionStillEncodeTheirVectors() {
+    createIndex();
+    insert(VECTORS, false);
+    indexOf().buildVectorGraphNow();
+
+    // THE LOWEST IDS GO, SO THE RENUMBERING SHIFTS EVERY SURVIVOR DOWN
+    delete(50);
+    database.command("sql", "COMPACT INDEX `Embedding[vector]`");
+    final LSMVectorIndex index = indexOf();
+    assertThat(index.getVectorIndex().getMaxVectorId()).as("the compaction renumbered the live set")
+        .isEqualTo(index.getVectorIndex().size() - 1);
+
+    insert(20, false);
+    index.buildVectorGraphNow();
+
+    assertThat(index.getLastPqReusedCodes()).as("the surviving codes are carried over").isPositive();
+    assertCodesAreTheEncodingOfTheirVectors(index, index.pqCodesForTest());
+    assertNearestIsItself(index);
+  }
+
+  /**
+   * Codes bound to a map other than the resident one name their vectors by ids a renumbering reissues: they lose their
+   * binding, and the next build trains a new codebook instead of carrying them over.
+   */
+  @Test
+  void codesBoundToAnotherMapAreNotCarriedOverAcrossARenumbering() {
+    createIndex();
+    insert(VECTORS, false);
+    final LSMVectorIndex built = indexOf();
+    built.buildVectorGraphNow();
+    final LSMVectorIndex.PQCodes held = built.pqCodesForTest();
+    // Same content, another array: bound to a map that is not the resident one
+    built.setPqCodesForTest(held.boundTo(held.ordinalMap().clone()));
+
+    delete(50);
+    database.command("sql", "COMPACT INDEX `Embedding[vector]`");
+    final LSMVectorIndex index = indexOf();
+    final LSMVectorIndex.PQCodes afterCompaction = index.pqCodesForTest();
+    assertThat(afterCompaction.ordinalMap() == null || afterCompaction.ordinalMap() == index.getOrdinalToVectorIdForTest())
+        .as("never left bound to the map of the reissued ids").isTrue();
+
+    insert(20, false);
+    index.buildVectorGraphNow();
+
+    assertThat(index.pqCodesForTest().quantization()).as("a new codebook, nothing carried over by stale ids")
+        .isNotSameAs(held.quantization());
+    assertCodesAreTheEncodingOfTheirVectors(index, index.pqCodesForTest());
+  }
+
   /** The merge of two ascending ordinal maps: a vector id found in both names its previous ordinal, any other one -1. */
   @Test
   void previousOrdinalsAreMatchedByVectorId() {

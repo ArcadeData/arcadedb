@@ -107,9 +107,14 @@ public class JSONImporterFormat implements FormatImporter {
                 .log(this, Level.INFO,
                     "-onRowError skip has no effect on a single top-level JSON object (no -mapping set): there is no "
                         + "sibling record to continue with, so any error still aborts the import");
-          // Discarded rather than checked here: safe because createRecord() returns null immediately whenever
-          // mapping is null, before any type conversion that could actually throw.
-          final Object record = parseRecord(reader, settings, context, database, mapping, false, new AtomicBoolean());
+          // Checked, not discarded: createRecord() returns null at once without a mapping, but a value parseRecord() reads
+          // can still fail on its own (a number token only a hostile payload writes, issue #10756), and under -onRowError
+          // skip that failure is recorded here instead of thrown. Saving the record with the value as null would be the
+          // silent skip the message above says this path does not do.
+          final AtomicBoolean recordFailed = new AtomicBoolean();
+          final Object record = parseRecord(reader, settings, context, database, mapping, false, recordFailed);
+          if (recordFailed.get())
+            throw new ImportException("A value of the single top-level JSON object failed to import, aborting the import", null);
           if (record instanceof Map)
             saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
           return;

@@ -305,7 +305,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public float[] getFloatArray(final int count) {
     final int bytes = arrayBytes(count, FLOAT_SERIALIZED_SIZE);
     checkForFetching(bytes);
-    if (buffer.remaining() < bytes)
+    if (readableBytes() < bytes)
       throw new BufferUnderflowException();
     final float[] values = new float[count];
     buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(values);
@@ -326,7 +326,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public double[] getDoubleArray(final int count) {
     final int bytes = arrayBytes(count, DOUBLE_SERIALIZED_SIZE);
     checkForFetching(bytes);
-    if (buffer.remaining() < bytes)
+    if (readableBytes() < bytes)
       throw new BufferUnderflowException();
     final double[] values = new double[count];
     buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().get(values);
@@ -339,6 +339,14 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     if (count < 0 || bytes > Integer.MAX_VALUE)
       throw new IllegalArgumentException("Invalid array length " + count);
     return (int) bytes;
+  }
+
+  /**
+   * The bytes a bulk read may consume: up to the logical content ({@code size}) as well as the buffer's limit, so a count
+   * read from corrupt content cannot pull in the bytes of a backing array that lie past the content.
+   */
+  private int readableBytes() {
+    return Math.min(size, buffer.limit()) - buffer.position();
   }
 
   @Override

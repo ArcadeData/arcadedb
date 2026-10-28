@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10756: the JSON importer read every number token with {@code nextDouble()}, so {@code 42} was stored as {@code 42.0}
@@ -120,6 +121,25 @@ class Issue10756JsonImporterNumbersTest {
     } finally {
       dropDatabase(databasePath);
     }
+  }
+
+  /**
+   * A single top-level object has no sibling record to skip to, so a refused number aborts the import even under
+   * {@code -onRowError skip}, rather than saving the object with the value silently set to null.
+   */
+  @Test
+  void aHostileNumberInASingleObjectAbortsTheImport() {
+    final String fileName = "importer-10756-hostile-single.json";
+    assertThatThrownBy(() -> importSource(fileName, "{\"id\":1,\"bomb\":1e999999999}", " -onRowError skip"))
+        .hasStackTraceContaining("single top-level JSON object");
+    final String databasePath = "target/databases/test-import-10756-" + fileName.replace('.', '-');
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      try (final Database db = factory.open()) {
+        assertThat(db.getSchema().existsType("Document") ? db.countType("Document", true) : 0L)
+            .as("no record saved with the value as null").isZero();
+      }
+    dropDatabase(databasePath);
   }
 
   /**

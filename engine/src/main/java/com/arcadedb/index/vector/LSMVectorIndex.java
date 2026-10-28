@@ -5084,6 +5084,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final Supplier<RandomAccessVectorValues> perThread = vectors.threadLocalSupplier();
     final LongAdder carried = new LongAdder();
+    // The parallel stream runs on THIS pool only because it is started from one of its tasks: a stream started anywhere else
+    // runs on the common pool, which engine code must not use (see QueryEngineManager). Keep the submit around it.
     pool.submit(() -> IntStream.range(0, count).parallel().forEach(ordinal -> {
       final ByteSequence<?> chunk = chunks[ordinal / perChunk];
       final int offset = (ordinal % perChunk) * codeSize;
