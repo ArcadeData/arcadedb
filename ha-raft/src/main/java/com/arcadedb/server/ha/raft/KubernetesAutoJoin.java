@@ -391,7 +391,11 @@ public class KubernetesAutoJoin {
         final RaftClientReply joinReply = tempClient.admin().setConfiguration(addArgs);
         if (joinReply.isSuccess())
           return null;
-        return joinReply.getException() != null ? joinReply.getException().getMessage() : "unknown";
+        // Never null here: null is the answer that means "committed", and a rejection read as one ends the retry loop
+        final Exception cause = joinReply.getException();
+        if (cause == null)
+          return "unknown";
+        return cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
       }
     }
 

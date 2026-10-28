@@ -345,6 +345,12 @@ final class RaftPeerAddressResolver {
       if (closing + 1 < entry.length() && entry.charAt(closing + 1) != ':')
         throw new ServerException("Invalid peer address '" + entry + "': expected ':' after the IPv6 host "
             + entry.substring(0, closing + 1));
+      // Only ':' may separate the host from an object-form brace: "[::1]:2434:{http:2480}" would otherwise drop the
+      // positional 2434 and take the default Raft port, as the unbracketed branch below already refuses to
+      final int brace = entry.indexOf('{');
+      if (brace > closing && !entry.substring(closing + 1, brace).trim().equals(":"))
+        throw new ServerException("Invalid peer address '" + entry
+            + "': only ':' may separate the IPv6 host from '{'; use [fe80::1]:{raft:2434} or the positional form");
       host = entry.substring(0, closing + 1);
     } else {
       final int braceIdx = entry.indexOf('{');

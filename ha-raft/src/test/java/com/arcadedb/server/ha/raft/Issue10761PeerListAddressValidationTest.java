@@ -121,7 +121,8 @@ class Issue10761PeerListAddressValidationTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = { "[::1", "[]:2434", "[::1]2434", "fe80::1:{raft:2434}", ":2434" })
+  @ValueSource(strings = { "[::1", "[]:2434", "[::1]2434", "fe80::1:{raft:2434}", ":2434", "[::1]:2434:{http:2480}",
+      "host:2434:{http:2480}" })
   void aMalformedHostIsRefused(final String entry) {
     assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList(entry, 2424)).isInstanceOf(ServerException.class);
     assertThat(PeerAddressAllowlistFilter.extractPeerHosts(entry)).as("an entry that names no peer resolves nothing")
