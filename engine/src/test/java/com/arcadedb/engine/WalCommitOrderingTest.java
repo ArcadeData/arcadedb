@@ -205,22 +205,25 @@ class WalCommitOrderingTest {
 
 
   @Test
-  void publishFailureWithWalDisabledAbortsWithoutFencing() throws Exception {
-    // #5053 review round 6: walAppended was set even when changes.result was null (useWAL=false, the
-    // supported bulk-load mode) - a post-validation publish failure then FENCED the whole database while
-    // promising a WAL replay that cannot happen (nothing was appended): a permanently unusable database for
-    // a transaction that opted out of WAL durability. Such a failure must simply abort, as before this PR.
+  void publishFailureWithWalDisabledFencesAndKeepsTheIdentities() throws Exception {
+    // #5053 review round 6 made this failure abort with a full rollback, on the grounds that with useWAL=false (the
+    // supported bulk-load mode) there is no WAL record to replay. #10768: the failure injected here lands AFTER every page
+    // of the transaction was published, so the rollback told the caller nothing happened over a record that was there,
+    // and reset its identity, so a retry inserted it twice. Past the start of the publication the transaction is fenced
+    // and released without touching the records the caller holds, as past the WAL append; the fence names that there is
+    // no replay, and a reopen lifts it.
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists())
       factory.open().drop();
 
-    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    DatabaseInternal db = (DatabaseInternal) factory.create();
     try {
       db.getSchema().createDocumentType("Doc");
 
       db.begin();
       db.getTransaction().setUseWAL(false);
-      db.newDocument("Doc").set("v", 1).save();
+      final MutableDocument held = db.newDocument("Doc").set("v", 1);
+      held.save();
       final TransactionContext tx = (TransactionContext) db.getTransaction();
       final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
       assertThat(phase1.result).as("useWAL=false must build no WAL buffer").isNull();
@@ -229,10 +232,15 @@ class WalCommitOrderingTest {
       assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(TransactionException.class);
 
       assertThat(((LocalDatabase) db).isFencedForRecovery())
-          .as("a publish failure with NO WAL record must abort, not fence: there is nothing to replay (#5053)")
-          .isFalse();
-      // The database keeps working.
-      db.transaction(() -> db.newDocument("Doc").set("v", 2).save());
+          .as("a failure past the start of the publication fences, WAL or not (#10768)").isTrue();
+      assertThat(held.getIdentity()).as("the published record keeps its identity: a retry must not insert it again").isNotNull();
+
+      // A reopen lifts the fence, and the database keeps working.
+      db.close();
+      db = (DatabaseInternal) factory.open();
+      final DatabaseInternal reopened = db;
+      reopened.transaction(() -> reopened.newDocument("Doc").set("v", 2).save());
+      assertThat(reopened.countType("Doc", false)).isEqualTo(2);
     } finally {
       db.close();
       factory.close();

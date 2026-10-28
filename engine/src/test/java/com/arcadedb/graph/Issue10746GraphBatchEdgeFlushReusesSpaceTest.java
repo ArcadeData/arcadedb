@@ -90,6 +90,25 @@ class Issue10746GraphBatchEdgeFlushReusesSpaceTest extends TestHelper {
     assertEveryEdgeReadsBack();
   }
 
+  /**
+   * With no delete at all, only the room an appended page reports when the writer leaves it can keep the next flush on that page:
+   * ten small flushes share one page instead of opening ten.
+   */
+  @Test
+  void theNextFlushFillsTheFreeTailOfThePageTheLastOneLeft() {
+    createSchema();
+    for (int flush = 0; flush < 10; flush++)
+      try (final GraphBatch batch = database.batch().build()) {
+        final RID[] vertices = batch.createVertices("Node", 2);
+        for (int k = 0; k < 5; k++)
+          batch.newEdge(vertices[0], "Link", vertices[1], "w", k);
+      }
+
+    assertThat(database.countType("Link", false)).isEqualTo(50);
+    assertThat(linkBucket().getTotalPages()).as("50 small edges written by 10 flushes fit one page").isEqualTo(1);
+    assertEveryEdgeReadsBack();
+  }
+
   /** A record larger than a page cannot be appended in one piece: it is written as a chunk chain, like createRecord writes it. */
   @Test
   void anEdgeLargerThanAPageIsWrittenAsAMultiPageRecord() {
