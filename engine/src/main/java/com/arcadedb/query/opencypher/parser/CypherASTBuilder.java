@@ -403,13 +403,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   private CypherDDLStatement handleCreateIndex(final Cypher25Parser.CreateIndexContext ctx) {
-    // The grammar supports: INDEX, RANGE INDEX, TEXT INDEX, POINT INDEX, VECTOR INDEX, LOOKUP INDEX, FULLTEXT INDEX
-    // ArcadeDB maps all standard indexes to LSM_TREE
+    // The grammar supports: INDEX, RANGE INDEX, TEXT INDEX, POINT INDEX, VECTOR INDEX, LOOKUP INDEX, FULLTEXT INDEX.
+    // ArcadeDB maps the standard, RANGE, TEXT and POINT indexes to LSM_TREE, VECTOR to LSM_VECTOR and FULLTEXT to FULL_TEXT
+    if (ctx.createVectorIndex() != null)
+      return handleCreateVectorIndex(ctx.createVectorIndex());
+    if (ctx.createFulltextIndex() != null)
+      return handleCreateFulltextIndex(ctx.createFulltextIndex());
+
     final Cypher25Parser.CreateIndex_Context indexCtx;
     if (ctx.createIndex_() != null)
       indexCtx = ctx.createIndex_();
     else
-      throw new CommandParsingException("Only standard, RANGE and TEXT index types are supported");
+      throw new CommandParsingException("Only standard, RANGE, TEXT, VECTOR and FULLTEXT index types are supported");
 
     // Extract optional index name
     final String indexName = indexCtx.symbolicNameOrStringParameter() != null
@@ -436,6 +441,72 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null,
         indexName, labelName, propertyNames, ifNotExists, false, forRelationship);
+  }
+
+  /**
+   * {@code CREATE VECTOR INDEX [name] [IF NOT EXISTS] FOR (n:Label) ON n.prop [OPTIONS {...}]}, Neo4j 5 syntax, issue #10678.
+   * The {@code indexConfig} in the options is read when the statement runs, so it may be a parameter.
+   */
+  private CypherDDLStatement handleCreateVectorIndex(final Cypher25Parser.CreateVectorIndexContext ctx) {
+    if (ctx.withProperties() != null)
+      throw new CommandParsingException("CREATE VECTOR INDEX ... WITH [...] (additional filtering properties) is not supported");
+
+    final List<String> propertyNames = extractIndexPropertyNames(ctx.propertyList());
+    if (propertyNames.size() != 1)
+      throw new CommandParsingException("A vector index is on exactly one property, found " + propertyNames.size());
+
+    return createIndexStatement(CypherDDLStatement.IndexKind.VECTOR, "CREATE VECTOR INDEX", ctx.symbolicNameOrStringParameter(),
+        ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null, ctx.multiLabelNodePattern(), ctx.multiRelTypeRelPattern(),
+        propertyNames, ctx.commandOptions());
+  }
+
+  /**
+   * {@code CREATE FULLTEXT INDEX [name] [IF NOT EXISTS] FOR (n:Label) ON EACH [n.a, n.b] [OPTIONS {...}]}, Neo4j 5 syntax, issue
+   * #10678.
+   */
+  private CypherDDLStatement handleCreateFulltextIndex(final Cypher25Parser.CreateFulltextIndexContext ctx) {
+    final List<String> propertyNames = new ArrayList<>();
+    for (final Cypher25Parser.PropertyContext prop : ctx.enclosedPropertyList().property())
+      propertyNames.add(stripBackticks(prop.propertyKeyName().getText()));
+
+    return createIndexStatement(CypherDDLStatement.IndexKind.FULLTEXT, "CREATE FULLTEXT INDEX", ctx.symbolicNameOrStringParameter(),
+        ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null, ctx.multiLabelNodePattern(), ctx.multiRelTypeRelPattern(),
+        propertyNames, ctx.commandOptions());
+  }
+
+  /**
+   * The statement of a {@code CREATE VECTOR INDEX} or {@code CREATE FULLTEXT INDEX}. Neo4j lets either span several labels
+   * ({@code (n:A|B)}); an ArcadeDB index belongs to one type, so a pattern naming more than one is refused rather than indexing
+   * only the first.
+   */
+  private CypherDDLStatement createIndexStatement(final CypherDDLStatement.IndexKind indexKind, final String statement,
+      final Cypher25Parser.SymbolicNameOrStringParameterContext nameCtx, final boolean ifNotExists,
+      final Cypher25Parser.MultiLabelNodePatternContext nodePattern, final Cypher25Parser.MultiRelTypeRelPatternContext relPattern,
+      final List<String> propertyNames, final Cypher25Parser.CommandOptionsContext optionsCtx) {
+    final String indexName = nameCtx != null ? stripBackticks(nameCtx.getText()) : null;
+
+    final boolean forRelationship = relPattern != null;
+    final List<Cypher25Parser.SymbolicNameStringContext> labels = forRelationship ?
+        relPattern.symbolicNameString() :
+        nodePattern.symbolicNameString();
+    if (labels.size() != 1)
+      throw new CommandParsingException(
+          statement + " over several " + (forRelationship ? "relationship types" : "labels") + " is not supported: an index "
+              + "belongs to one type, create one index per " + (forRelationship ? "relationship type" : "label"));
+    final String labelName = stripBackticks(labels.getFirst().getText());
+
+    Expression options = null;
+    if (optionsCtx != null) {
+      final Cypher25Parser.MapOrParameterContext mapOrParam = optionsCtx.mapOrParameter();
+      if (mapOrParam.map() != null)
+        options = expressionBuilder.parseMapLiteralExpression(mapOrParam.map());
+      else
+        options = new ParameterExpression(stripBackticks(mapOrParam.parameter().parameterName().getText()),
+            mapOrParam.parameter().getText());
+    }
+
+    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, indexName, labelName, propertyNames, ifNotExists,
+        false, forRelationship, null, indexKind, options);
   }
 
   private CypherDDLStatement handleDropIndex(final Cypher25Parser.DropIndexContext ctx) {

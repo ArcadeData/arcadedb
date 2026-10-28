@@ -34,6 +34,15 @@ public class CypherDDLStatement implements CypherStatement {
     UNIQUE, NOT_NULL, KEY, TYPED
   }
 
+  /**
+   * The kind of index a {@code CREATE ... INDEX} asks for: {@code RANGE} for the plain, RANGE, TEXT and POINT forms (all an
+   * LSM_TREE), {@code VECTOR} for {@code CREATE VECTOR INDEX} (an LSM_VECTOR) and {@code FULLTEXT} for
+   * {@code CREATE FULLTEXT INDEX} (a FULL_TEXT index), issue #10678.
+   */
+  public enum IndexKind {
+    RANGE, VECTOR, FULLTEXT
+  }
+
   private final Kind kind;
   private final ConstraintKind constraintKind;
   private final String constraintName;
@@ -43,6 +52,8 @@ public class CypherDDLStatement implements CypherStatement {
   private final boolean ifExists;
   private final boolean forRelationship;
   private final CypherTypeName typedName;
+  private final IndexKind indexKind;
+  private final Expression options;
 
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
@@ -53,6 +64,18 @@ public class CypherDDLStatement implements CypherStatement {
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
       final boolean forRelationship, final CypherTypeName typedName) {
+    this(kind, constraintKind, constraintName, labelName, propertyNames, ifNotExists, ifExists, forRelationship, typedName, null,
+        null);
+  }
+
+  /**
+   * @param indexKind the kind of index a {@code CREATE INDEX} asks for, null for any other statement (read as {@code RANGE})
+   * @param options   the {@code OPTIONS} map of a {@code CREATE INDEX}, a map literal or a parameter, evaluated when the
+   *                  statement runs; null when the statement has none
+   */
+  public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
+      final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
+      final boolean forRelationship, final CypherTypeName typedName, final IndexKind indexKind, final Expression options) {
     this.kind = kind;
     this.constraintKind = constraintKind;
     this.constraintName = constraintName;
@@ -62,6 +85,8 @@ public class CypherDDLStatement implements CypherStatement {
     this.ifExists = ifExists;
     this.forRelationship = forRelationship;
     this.typedName = typedName;
+    this.indexKind = indexKind != null ? indexKind : IndexKind.RANGE;
+    this.options = options;
   }
 
   public Kind getKind() {
@@ -98,6 +123,15 @@ public class CypherDDLStatement implements CypherStatement {
 
   public CypherTypeName getTypedName() {
     return typedName;
+  }
+
+  public IndexKind getIndexKind() {
+    return indexKind;
+  }
+
+  /** The {@code OPTIONS} of a {@code CREATE INDEX}, to evaluate against the statement's parameters, or null. */
+  public Expression getOptions() {
+    return options;
   }
 
   @Override
