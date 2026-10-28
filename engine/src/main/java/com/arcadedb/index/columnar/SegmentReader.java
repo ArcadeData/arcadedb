@@ -147,6 +147,11 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
     return file;
   }
 
+  /** The dead set the reader was opened with, null when no row is dead; shared, never write it (copy it to derive a new one). */
+  PositionBitmap deadSet() {
+    return dead;
+  }
+
   long segmentId() {
     return layout.segmentId;
   }
@@ -280,6 +285,15 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
   public ColumnReader column(final String property) {
     final Integer index = layout.columnIndex.get(property);
     return index == null ? null : readers[index];
+  }
+
+  /** The reader of the column of the index file id (stable across a property RENAME), null when the segment has no such column. */
+  ColumnReader columnByIndexFileId(final int indexFileId) {
+    final ColumnDefinition[] columns = layout.columns;
+    for (int k = 0; k < columns.length; k++)
+      if (columns[k].indexFileId() == indexFileId)
+        return readers[k];
+    return null;
   }
 
   @Override
