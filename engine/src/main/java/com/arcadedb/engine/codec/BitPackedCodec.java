@@ -61,11 +61,20 @@ public final class BitPackedCodec {
   }
 
   static int encodedSize(final long[] values, final int offset, final int length) {
-    return Math.toIntExact(HEADER_BYTES + wordCount(length, analyze(values, offset, length, null, 0)) * 8L);
+    return sizeForWidth(length, analyze(values, offset, length, 0L, 0.0, null, 0));
+  }
+
+  /**
+   * Size of the encoding of the residuals {@code values[offset + i] - LinearCodec.predict(intercept, slope, i)}, computed
+   * with the same single scan and no allocation.
+   */
+  static int encodedSizeOfResiduals(final long[] values, final int offset, final int length, final long intercept,
+      final double slope) {
+    return sizeForWidth(length, analyze(values, offset, length, intercept, slope, null, 0));
   }
 
   static void encodeInto(final long[] values, final int offset, final int length, final byte[] out, final int base) {
-    final int w = analyze(values, offset, length, out, base);
+    final int w = analyze(values, offset, length, 0L, 0.0, out, base);
     if (w == 0)
       return;
 
@@ -183,31 +192,43 @@ public final class BitPackedCodec {
     return a << shift;
   }
 
+  /** Bit width of the quotients {@code (v - min) / gcd} for a slice with the given statistics. */
+  static int width(final long min, final long max, final long gcd) {
+    final long range = max - min;
+    return 64 - Long.numberOfLeadingZeros(gcd == 1 ? range : Long.divideUnsigned(range, gcd));
+  }
+
+  /** Size in bytes of an encoding of {@code count} values at bit width {@code w}. */
+  static int sizeForWidth(final int count, final int w) {
+    return Math.toIntExact(HEADER_BYTES + wordCount(count, w) * 8L);
+  }
+
   private static long wordCount(final int count, final int w) {
     return ((long) count * w + 63) >>> 6;
   }
 
   /**
-   * The only analysis of a slice: one pass finds min, max and the gcd of the differences from the first value (equal to
+   * The only analysis of a slice (or of its residuals against a line, plain values being the line 0 + 0.0 * i): one pass finds min, max and the gcd of the differences from the first value (equal to
    * the gcd of the differences from the min, with an early exit once it is 1). Returns the bit width of the quotients;
    * when {@code header} is not null it also writes the header fields (id, width, reserved, count, min, gcd) at
    * {@code base}.
    */
-  private static int analyze(final long[] values, final int offset, final int length, final byte[] header, final int base) {
+  private static int analyze(final long[] values, final int offset, final int length, final long intercept,
+      final double slope, final byte[] header, final int base) {
     if (offset < 0 || length < 0 || (long) offset + length > values.length)
       throw new IndexOutOfBoundsException("Slice [" + offset + ", +" + length + ") outside array of " + values.length);
     long min = 0;
     long gcd = 1;
     int w = 0;
     if (length > 0) {
-      final long v0 = values[offset];
+      final long v0 = values[offset] - LinearCodec.predict(intercept, slope, 0);
       long max = v0;
       long g = 0;
       min = v0;
       final int end = offset + length;
       int i = offset + 1;
       for (; i < end && g != 1; i++) {
-        final long v = values[i];
+        final long v = values[i] - LinearCodec.predict(intercept, slope, i - offset);
         if (v < min)
           min = v;
         else if (v > max)
@@ -215,15 +236,14 @@ public final class BitPackedCodec {
         g = unsignedGcd(g, v >= v0 ? v - v0 : v0 - v);
       }
       for (; i < end; i++) {
-        final long v = values[i];
+        final long v = values[i] - LinearCodec.predict(intercept, slope, i - offset);
         if (v < min)
           min = v;
         else if (v > max)
           max = v;
       }
       gcd = g == 0 ? 1 : g;
-      final long range = max - min;
-      w = 64 - Long.numberOfLeadingZeros(gcd == 1 ? range : Long.divideUnsigned(range, gcd));
+      w = width(min, max, gcd);
     }
     if (header != null) {
       header[base] = CODEC_ID;
