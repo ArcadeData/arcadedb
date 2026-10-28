@@ -21,11 +21,34 @@ package com.arcadedb.exception;
 import java.io.IOException;
 
 public class DatabaseIsClosedException extends ArcadeDBException {
+  private final String databaseName;
+
   public DatabaseIsClosedException(final String s) {
     super(s);
+    this.databaseName = null;
   }
 
   public DatabaseIsClosedException(final String s, final IOException e) {
     super(s, e);
+    this.databaseName = null;
+  }
+
+  /**
+   * The handle of {@code databaseName} was closed: the message is the name, as it always was, and the name is kept apart so a
+   * caller can ask what became of the database (issue #10872).
+   */
+  protected DatabaseIsClosedException(final String s, final String databaseName) {
+    super(s);
+    this.databaseName = databaseName;
+  }
+
+  /** The handle of {@code databaseName} was closed (issue #10872). */
+  public static DatabaseIsClosedException of(final String databaseName) {
+    return new DatabaseIsClosedException(databaseName, databaseName);
+  }
+
+  /** The name of the database whose handle was closed, or {@code null} when the thrower did not say. */
+  public String getDatabaseName() {
+    return databaseName;
   }
 }

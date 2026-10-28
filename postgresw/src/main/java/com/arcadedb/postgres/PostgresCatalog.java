@@ -1553,6 +1553,7 @@ public class PostgresCatalog {
     private final PostgresSessionSettings settings;
 
     private Map<Integer, String>      namesByOid;
+    private Map<Integer, String>      namesByRowTypeOid;
     private Map<String, DocumentType> typesByFoldedName;
     /** The types that hold the rows of a materialized view or a continuous aggregate, by name (issue #10691). */
     private Map<String, MaterializedRelation> materializedRelations;
@@ -1722,6 +1723,16 @@ public class PostgresCatalog {
 
     String schema() {
       return database.getName();
+    }
+
+    /** The relation whose row type has {@code oid} (issue #10873), or null: name order decides a collision, as in {@link #relationNamed}. */
+    String rowTypeNamed(final int oid) {
+      if (namesByRowTypeOid == null) {
+        namesByRowTypeOid = new HashMap<>();
+        for (final DocumentType type : sortedTypes(this))
+          namesByRowTypeOid.putIfAbsent(rowTypeOidOf(type.getName()), type.getName());
+      }
+      return namesByRowTypeOid.get(oid);
     }
 
     /**
@@ -1896,6 +1907,10 @@ public class PostgresCatalog {
       rows.add(inSchema(row, row.of("pg_type").get("typnamespace"), PG_CATALOG_SCHEMA).complete());
     }
 
+    // The row type of every relation (issue #10873), in the relation's own schema, carrying the relation typrelid names
+    for (final DocumentType type : sortedTypes(context))
+      rows.add(relationRow(context, type).complete());
+
     return rows;
   }
 
@@ -2046,9 +2061,12 @@ public class PostgresCatalog {
             "relrowsecurity", Boolean.FALSE, "relforcerowsecurity", Boolean.FALSE, "relchecks", 0,//
             // -1 is PostgreSQL's own "never analysed, count unknown", which is honest here: counting the
             // records of every type to answer a table list would turn a metadata query into a full scan.
-            "reltuples", -1, "relpages", 0, "relam", HEAP_ACCESS_METHOD_OID, "reltype", 0, "relfilenode", oid,
+            // reltype names the relation's row type, which pg_type has (issue #10873): 0 is PostgreSQL's answer for an index alone
+            "reltuples", -1, "relpages", 0, "relam", HEAP_ACCESS_METHOD_OID, "reltype", rowTypeOidOf(name), "relfilenode", oid,
             "reltablespace", 0, "reloftype", 0, "reltoastrelid", 0, "relreplident", "d", "relrewrite", 0)//
         .with("pg_am", HEAP_ACCESS_METHOD_VALUES);
+    // the type row a join on reltype reads, and the one pg_type itself lists for the relation
+    row.of("pg_type").putAll(rowTypeColumns(name));
 
     if (view != null)
       return row.with("pg_matviews", "schemaname", schema, "matviewname", name, "matviewowner", context.userName(),//
@@ -2129,7 +2147,9 @@ public class PostgresCatalog {
       final boolean notNull, final boolean hasDefault, final boolean local, final int inheritedCount) {
     return new Object[] { "attrelid", relationOid, "attname", name, "attnum", ordinal, "atttypid", pgType.code, "attlen",
         pgType.size, "atttypmod", -1, "attnotnull", notNull, "atthasdef", hasDefault, "attisdropped", Boolean.FALSE, "attislocal",
-        local, "attinhcount", inheritedCount, "attndims", pgType.isArrayType() ? 1 : 0, "attcollation", 0, "attstattarget", -1,
+        local, "attinhcount", inheritedCount, "attndims", pgType.isArrayType() ? 1 : 0,
+        // the collation of the column's type, as PostgreSQL stores it, so a join to pg_type reads one answer (issue #10873)
+        "attcollation", PostgresTypeCatalog.collation(pgType), "attstattarget", -1,
         "attidentity", "", "attgenerated", "", "atthasmissing", Boolean.FALSE, "attbyval", pgType.size > 0 && pgType.size <= 8,
         "attalign", "i", "attcompression", "",
         // A variable-length value is stored "extended" in PostgreSQL, a fixed-length one "plain".
@@ -2243,12 +2263,9 @@ public class PostgresCatalog {
   private static List<Row> attributeRows(final Context context) {
     final List<Row> rows = new ArrayList<>(columnRows(context, false));
     for (final PostgresCatalogIndexes.Info index : context.indexes()) {
-      final List<Column> columns = context.columnsOf(index.type());
+      final PostgresType[] keyTypes = keyTypes(context, index);
       for (int k = 0; k < index.columns().length; k++) {
-        final int attnum = index.attnums()[k];
-        // A key that is no column of the type is an expression column of the index, which PostgreSQL still gives an attribute
-        // (issue #10829): relnatts counts it, and its name is the expression's, never the property it reads
-        final PostgresType pgType = attnum > 0 ? columns.get(attnum - 1).type() : expressionType(index.type(), index.columns()[k]);
+        final PostgresType pgType = keyTypes[k];
         rows.add(describeType(indexRow(context, index)//
             // an index's key columns are its own, as in PostgreSQL: an index inherits nothing
             .with("pg_attribute", attributeValues(index.oid(), index.attributeNames()[k], k + 1, pgType, false, false, true, 0)),
@@ -2257,6 +2274,21 @@ public class PostgresCatalog {
       }
     }
     return rows;
+  }
+
+  /**
+   * The type of each key column of an index: its column's, or for a key that is no column of the type, an expression column of the
+   * index, which PostgreSQL still gives an attribute (issue #10829) - relnatts counts it, and its name is the expression's, never the
+   * property it reads. The one answer for the index's {@code pg_attribute} rows and its {@code pg_index.indcollation}.
+   */
+  private static PostgresType[] keyTypes(final Context context, final PostgresCatalogIndexes.Info index) {
+    final List<Column> columns = context.columnsOf(index.type());
+    final PostgresType[] types = new PostgresType[index.columns().length];
+    for (int k = 0; k < types.length; k++) {
+      final int attnum = index.attnums()[k];
+      types[k] = attnum > 0 ? columns.get(attnum - 1).type() : expressionType(index.type(), index.columns()[k]);
+    }
+    return types;
   }
 
   /**
@@ -2270,8 +2302,14 @@ public class PostgresCatalog {
 
   private static List<Map<String, Object>> indexRows(final Context context) {
     final List<Map<String, Object>> rows = new ArrayList<>();
-    for (final PostgresCatalogIndexes.Info index : context.indexes())
-      rows.add(completeMap("pg_index", PostgresCatalogIndexes.indexValues(index)));
+    for (final PostgresCatalogIndexes.Info index : context.indexes()) {
+      // the collation of each key, its column's (issue #10873): what the key column's pg_attribute.attcollation says too
+      final PostgresType[] keyTypes = keyTypes(context, index);
+      final int[] collations = new int[keyTypes.length];
+      for (int k = 0; k < keyTypes.length; k++)
+        collations[k] = PostgresTypeCatalog.collation(keyTypes[k]);
+      rows.add(completeMap("pg_index", PostgresCatalogIndexes.indexValues(index, collations)));
+    }
     return rows;
   }
 
@@ -2507,6 +2545,38 @@ public class PostgresCatalog {
    */
   private static int oidOf(final String typeName) {
     return FIRST_USER_OID + Math.floorMod(typeName.hashCode(), OID_SPACE);
+  }
+
+  /**
+   * The OID of a relation's row type, its {@code pg_class.reltype} (issue #10873): stable for the same reason {@link #oidOf} is,
+   * and drawn apart from it, as PostgreSQL gives a table and its row type two OIDs, so a join on the wrong column does not happen
+   * to match.
+   */
+  private static int rowTypeOidOf(final String typeName) {
+    return FIRST_USER_OID + Math.floorMod(("pg_type:" + typeName).hashCode(), OID_SPACE);
+  }
+
+  /** The {@code pg_type} columns of the row type of a relation (issue #10873), the one answer of every path that reads it. */
+  private static Map<String, Object> rowTypeColumns(final String typeName) {
+    return PostgresTypeCatalog.rowTypeColumns(rowTypeOidOf(typeName), typeName, SCHEMA_OID, oidOf(typeName));
+  }
+
+  /**
+   * The row types of the relations of {@code database}, in name order, for the {@code pg_type} queries
+   * {@link PostgresTypeCatalog} answers before this catalog is asked (issue #10873): one enumeration of pg_type, whichever of
+   * the two answers it.
+   */
+  static List<Map<String, Object>> rowTypes(final Database database) {
+    if (database == null)
+      return List.of();
+    final List<String> names = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      names.add(type.getName());
+    names.sort(null);
+    final List<Map<String, Object>> rowTypes = new ArrayList<>(names.size());
+    for (final String name : names)
+      rowTypes.add(rowTypeColumns(name));
+    return rowTypes;
   }
 
   // ---------------------------------------------------------------- projection
@@ -3297,12 +3367,12 @@ public class PostgresCatalog {
         // Both tablespaces there are live in the data directory, which PostgreSQL answers with an empty location (issue #10591)
         case "pg_tablespace_location" -> arguments.size() != 1 || arguments.get(0) == PostgresCatalogExpression.UNKNOWN ?
             PostgresCatalogExpression.UNKNOWN : arguments.get(0) == null ? null : "";
-        case "format_type" -> formatType(arguments);
+        case "format_type" -> formatType(arguments, context);
         // PostgreSQL's OID-alias types, reached either as a cast ('Article'::regclass) or as the function
         // spelling of the same lookup (to_regclass('Article')). See regClass for which direction each
         // argument type means.
         case "regclass", "to_regclass" -> regClass(arguments, context);
-        case "regtype", "to_regtype" -> regType(arguments);
+        case "regtype", "to_regtype" -> regType(arguments, context);
         // The one expression this catalog stores is a column default, whose text pg_attrdef.adbin holds
         // (issue #10228). Anything else - a partition bound, a policy - has no ArcadeDB equivalent, and NULL is
         // what PostgreSQL answers for an object that has none.
@@ -3419,12 +3489,13 @@ public class PostgresCatalog {
      * {@code format_type(oid, typmod)}: the SQL name PostgreSQL prints a type under - {@code integer}, not
      * {@code int4} - which is what psql's {@code \d} shows in its Type column (issue #10228).
      */
-    private static Object formatType(final List<Object> arguments) {
+    private static Object formatType(final List<Object> arguments, final Context context) {
       if (arguments.isEmpty() || !(arguments.get(0) instanceof Number oid))
         return PostgresCatalogExpression.UNKNOWN;
       final PostgresType type = PostgresType.byCode(oid.intValue());
       if (type == null)
-        return null;
+        // a relation's row type is named after the relation, quoted as an identifier, as PostgreSQL prints it (issue #10873)
+        return rowTypeName(oid.intValue(), context);
       // The one name format_type() and regtype disagree on: blank-padded char without a length is "bpchar".
       if (type == PostgresType.BPCHAR && (arguments.size() < 2 || !(arguments.get(1) instanceof Number typmod)
           || typmod.intValue() < 0))
@@ -3479,7 +3550,7 @@ public class PostgresCatalog {
      * produce. {@code atttypid::regtype} is how a client prints a column's type; {@code 'int4'::regtype} is
      * how it names one to filter by.
      */
-    private static Object regType(final List<Object> arguments) {
+    private static Object regType(final List<Object> arguments, final Context context) {
       if (arguments.size() != 1)
         return PostgresCatalogExpression.UNKNOWN;
 
@@ -3488,18 +3559,29 @@ public class PostgresCatalog {
         return value;
 
       if (value instanceof Number oid)
-        return typeNamed(oid.intValue());
+        return typeNamed(oid.intValue(), context);
 
       final String written = PostgresCatalogExpression.asString(value).trim();
       if (isDigits(written))
         try {
-          return typeNamed(Integer.parseInt(written));
+          return typeNamed(Integer.parseInt(written), context);
         } catch (final NumberFormatException e) {
           return null;
         }
 
-      final PostgresType type = PostgresType.byName(unqualify(written));
-      return type == null ? null : type.code;
+      final String name = unqualify(written);
+      final PostgresType type = PostgresType.byName(name);
+      if (type != null)
+        return type.code;
+      // the row type of a relation is a type of the same name (issue #10873)
+      final DocumentType relation = context.typeNamed(name);
+      return relation == null ? null : rowTypeOidOf(relation.getName());
+    }
+
+    /** The name of a relation's row type as {@code format_type} and {@code regtype} print it, or null for an OID that is none. */
+    private static String rowTypeName(final int oid, final Context context) {
+      final String relation = context.rowTypeNamed(oid);
+      return relation == null ? null : PostgresCatalogIndexes.quoteIdentifier(relation);
     }
 
     /**
@@ -3508,9 +3590,9 @@ public class PostgresCatalog {
      * name is left as written rather than folded to lower case, because the fold is undone by
      * {@link Context#typeNamed} anyway and the verbatim spelling is the one that can match exactly.
      */
-    private static String typeNamed(final int oid) {
+    private static String typeNamed(final int oid, final Context context) {
       final PostgresType type = PostgresType.byCode(oid);
-      return type == null ? null : type.sqlName();
+      return type == null ? rowTypeName(oid, context) : type.sqlName();
     }
 
     private static String unqualify(final String written) {

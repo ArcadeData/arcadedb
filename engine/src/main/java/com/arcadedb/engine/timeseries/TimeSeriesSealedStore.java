@@ -1448,13 +1448,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * block's dictionary is built with, so the declared set IS that dictionary. The paths that rewrite a block
    * afterwards keep it true: {@link #truncateBefore} and {@link #truncateToBlockCount} drop whole blocks and copy
    * every retained one verbatim, compaction's {@link #writeTempCompactionFile} does the same, and
-   * {@link #downsampleBlocks} recomputes the set from the rows it emits. Nothing deletes a row from a sealed block,
-   * so no declaration outlives the rows it was computed from.
+   * {@link #downsampleBlocks} recomputes the set from the rows it emits, and so does the rebuild of a block
+   * {@link #deleteSamples} removes rows from ({@code rebuildWithout}), from the rows that survive. So no declaration
+   * outlives the rows it was computed from.
    * <p>
    * What a declaration cannot carry is the BOXING the scan applies on the way out: {@link #decompressColumns} puts
    * every dictionary string through {@link ColumnDefinition#boxString}, which returns its argument unchanged for a
-   * {@code STRING} column and only for one - elsewhere {@code ""} comes back as {@code null} (as {@code false} for
-   * {@code BOOLEAN}) and a numeric string comes back normalised. A block is therefore answered from its declaration
+   * {@code STRING} column and only for one - elsewhere {@code ""} comes back as {@code null} (for {@code BOOLEAN} too since
+   * issue #10874) and a numeric string comes back normalised. A block is therefore answered from its declaration
    * only for a {@code STRING} TAG column stored with {@code DICTIONARY}, and read otherwise. Either way what lands
    * in {@code out} is exactly what a full scan of that block would have put there.
    * <p>
@@ -2132,15 +2133,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
           if (needRowTagFilter && count > 0) {
             // Mixed-tag block: decompress the tag columns the filter reads and keep the rows that match them
-            final List<TagFilter.Condition> filterConditions = tagFilter.getConditions();
-            final String[][] tagCols = new String[filterConditions.size()][];
-            for (int ci = 0; ci < filterConditions.size(); ci++) {
-              final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
-              tagCols[ci] = DictionaryCodec.decode(sliceColumn(blockData, entry, schemaIdx));
-            }
+            final boolean[] tagRowMatches = tagFilterRowMatches(blockData, entry, tagFilter, tsCount);
             int kept = 0;
             for (int s = 0; s < count; s++)
-              if (matchesTagConditions(tagCols, filterConditions, selected[s]))
+              if (tagRowMatches[selected[s]])
                 selected[kept++] = selected[s];
             count = kept;
           }
@@ -2554,14 +2550,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           metrics.addDecompVal(System.nanoTime() - t0);
 
         final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
-        String[][] filterCols = null;
-        List<TagFilter.Condition> filterConditions = null;
-        if (needRowTagFilter) {
-          filterConditions = tagFilter.getConditions();
-          filterCols = new String[filterConditions.size()][];
-          for (int ci = 0; ci < filterConditions.size(); ci++)
-            filterCols[ci] = DictionaryCodec.decode(sliceColumn(blockData, entry, findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex())));
-        }
+        final boolean[] tagRowMatches = needRowTagFilter ? tagFilterRowMatches(blockData, entry, tagFilter, tsCount) : null;
 
         t0 = metrics != null ? System.nanoTime() : 0;
         final int rangeStart = lowerBound(reusableTsBuf, 0, tsCount, fromTs);
@@ -2590,7 +2579,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         long windowEnd = 0;
         for (int k = 0; k < rowCount; k++) {
           final int i = rowFieldFilter ? selected[k] : rangeStart + k;
-          if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
+          if (needRowTagFilter && !tagRowMatches[i])
             continue;
 
           MultiColumnAggregationResult group;
@@ -4752,15 +4741,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Whether column {@code c} carries a {@code {min, max, sum}} triplet in a block header.
    * <p>
-   * ONE definition, shared by the two writers and the reader, because the block format stores the triplets
-   * positionally with no column index: the three sites must agree on exactly which columns contribute one or the
-   * statistics land on the wrong columns. The answer is the codec - the two numeric codecs are the ones
-   * {@link #reduceNumericStats} is run for - and deliberately NOT the value of the declared minimum, which since
-   * issue #7043 can legitimately be NaN for a column whose samples are all NaN.
+   * A shorthand for {@link ColumnDefinition#carriesBlockStatistics()}, the ONE definition every writer
+   * ({@link #downsampleBlocks}, the block rebuilds, {@code TimeSeriesShard}'s compaction), the reader and the DEEP
+   * check share, because the block format stores the triplets positionally with no column index: they must agree on
+   * exactly which columns contribute one or the statistics land on the wrong columns (issue #10878). The answer is the
+   * codec - the numeric codecs are the ones {@link #reduceNumericStats} is run for - and deliberately NOT the value of
+   * the declared minimum, which since issue #7043 can legitimately be NaN for a column whose samples are all NaN.
    */
   private boolean hasNumericStats(final int c) {
-    final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
-    return codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B;
+    return columns.get(c).carriesBlockStatistics();
   }
 
   /**
@@ -5453,9 +5442,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return BlockMatchResult.SLOW_PATH;
 
       final String[] distinctVals = entry.tagDistinctValues[schemaIdx];
+      final ColumnDefinition column = columns.get(schemaIdx);
       boolean anyMatch = false;
       for (final String dv : distinctVals) {
-        if (cond.matchValues().contains(dv)) {
+        if (cond.matchesStored(column, dv)) {
           anyMatch = true;
           break;
         }
@@ -5532,14 +5522,34 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Checks if a row at index i matches all tag filter conditions.
+   * Which rows of a block satisfy every condition of {@code tagFilter}, indexed by row.
+   * <p>
+   * Each condition is decided once per DISTINCT dictionary entry, through {@link TagFilter.Condition#matchesStored} -
+   * the same reading of the stored text a row scan applies - and then looked up per row by dictionary index, so the
+   * aggregation push-down and the scan cannot disagree about a row (issue #10874) and no row hashes a string.
    */
-  private static boolean matchesTagConditions(final String[][] tagCols,
-      final List<TagFilter.Condition> conditions, final int i) {
-    for (int ci = 0; ci < tagCols.length; ci++)
-      if (!conditions.get(ci).matchValues().contains(tagCols[ci][i]))
-        return false;
-    return true;
+  private boolean[] tagFilterRowMatches(final byte[] blockData, final BlockEntry entry, final TagFilter tagFilter,
+      final int rowCount) throws IOException {
+    final boolean[] rowMatches = new boolean[rowCount];
+    Arrays.fill(rowMatches, true);
+    final int[] indices = new int[rowCount];
+    for (final TagFilter.Condition cond : tagFilter.getConditions()) {
+      final int schemaIdx = findNonTsColumnSchemaIndex(cond.columnIndex());
+      final byte[] encoded = sliceColumn(blockData, entry, schemaIdx);
+      final ColumnDefinition column = columns.get(schemaIdx);
+      if (DictionaryCodec.valueCount(encoded) != rowCount)
+        throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + rowCount + " timestamp(s) but column '"
+            + column.getName() + "' holds a different number of values");
+
+      final String[] dictionary = DictionaryCodec.decodeIndexed(encoded, indices);
+      final boolean[] entryMatches = new boolean[dictionary.length];
+      for (int k = 0; k < dictionary.length; k++)
+        entryMatches[k] = cond.matchesStored(column, dictionary[k]);
+      for (int i = 0; i < rowCount; i++)
+        if (!entryMatches[indices[i]])
+          rowMatches[i] = false;
+    }
+    return rowMatches;
   }
 
   /**

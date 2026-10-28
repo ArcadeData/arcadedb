@@ -36,6 +36,7 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
@@ -1696,6 +1697,40 @@ public class ArcadeDBServer {
   }
 
   /**
+   * The refusal of a caller that may not open a database ({@code allowLoad=false}) and finds {@code databaseName} not open, called
+   * under {@link #databasesLock}. A name that is no database on this server is {@link DatabaseNotFoundException}: permanent, and the
+   * caller's to correct. Anything else is a database that exists and cannot serve the request now, told apart by its reason, which
+   * a client is shown where the message is concealed (issue #10872). Before, both were the same bare
+   * {@link DatabaseNotAvailableException}, and HTTP answered a database an operator closed as one that does not exist.
+   */
+  private DatabaseNotAvailableException notOpenForThisCaller(final String databaseName) {
+    if (beingDropped.contains(databaseName))
+      return new DatabaseNotAvailableException(
+          "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted",
+          DatabaseNotAvailableException.Reason.DROPPING);
+    if (closedByCommand.contains(databaseName))
+      return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
+          + "'close database' command and stays closed until 'open database'", DatabaseNotAvailableException.Reason.CLOSED);
+    if (restoringDatabaseNames.contains(databaseName))
+      return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: a restore of it is in progress",
+          DatabaseNotAvailableException.Reason.RESTORING);
+
+    // Validated before the name becomes a path: a name that leaves the database directory, or one reserved for the server's own
+    // use, is no database whatever is on disk
+    if (isReservedDatabaseName(databaseName) || !isValidDatabaseName(databaseName))
+      return new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
+    final File directory = new File(
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
+    // A snapshot install can take the schema away mid-swap, so the marker is asked before the directory is
+    if (isAwaitingSnapshotRecovery(directory))
+      return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: an interrupted HA snapshot "
+          + "install has to be reconciled first", DatabaseNotAvailableException.Reason.RECOVERING);
+    if (!holdsDatabase(directory))
+      return new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
+    return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
+  }
+
+  /**
    * Refuses to bring a database into existence under a name an in-flight restore has claimed. Called from the two
    * places in this class that reach {@code DatabaseFactory.create()}, both already holding {@link #databasesLock},
    * which is what makes the refusal atomic with the claim rather than another unsynchronised sample.
@@ -1741,7 +1776,7 @@ public class ArcadeDBServer {
       if (isAwaitingSnapshotRecovery(new File(databasePath)))
         throw new DatabaseNotAvailableException("Cannot create database '" + databaseName + "': an interrupted "
             + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory. Snapshot recovery must "
-            + "reconcile it first");
+            + "reconcile it first", DatabaseNotAvailableException.Reason.RECOVERING);
 
       final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true);
 
@@ -1862,7 +1897,7 @@ public class ArcadeDBServer {
           + "that none of them holds a newer one, so it is not reopened as the cluster's copy. The reason is in the "
           + "server log and in the cluster alerts. Transfer the leadership to the server holding the newer copy, or, "
           + "only if this copy is known to be the right one, accept it as it is with POST "
-          + "/api/v1/cluster/accept-copy/" + databaseName + " on this node");
+          + "/api/v1/cluster/accept-copy/" + databaseName + " on this node", DatabaseNotAvailableException.Reason.RECOVERING);
     }
     return true;
   }
@@ -2414,7 +2449,7 @@ public class ArcadeDBServer {
 
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
-          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
+          throw notOpenForThisCaller(databaseName);
 
         checkDatabasesNotClosedByStop(databaseName);
 
@@ -2425,15 +2460,15 @@ public class ArcadeDBServer {
         // unflagged getDatabaseForOperator(String).
         if (beingDropped.contains(databaseName))
           throw new DatabaseNotAvailableException(
-              "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted");
+              "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted", DatabaseNotAvailableException.Reason.DROPPING);
 
         if (refuseIfClosedByCommand) {
           if (closedByCommand.contains(databaseName))
             throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
-                + "'close database' command and stays closed until 'open database'");
+                + "'close database' command and stays closed until 'open database'", DatabaseNotAvailableException.Reason.CLOSED);
           if (restoringDatabaseNames.contains(databaseName))
             throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: a restore of it is in "
-                + "progress, and will replace what is on disk");
+                + "progress, and will replace what is on disk", DatabaseNotAvailableException.Reason.RESTORING);
         }
 
         checkDatabaseNameIsValid(databaseName);
@@ -2448,7 +2483,7 @@ public class ArcadeDBServer {
         if (!underSnapshotRecovery && isAwaitingSnapshotRecovery(new File(path)))
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: an interrupted "
               + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory, so its files are "
-              + "neither the previous database nor the new one. Snapshot recovery must reconcile it first");
+              + "neither the previous database nor the new one. Snapshot recovery must reconcile it first", DatabaseNotAvailableException.Reason.RECOVERING);
 
         // A copy closed on this node that the last resync could not verify - the leader did not hold it - may be behind
         // the committed log, and reopening it here would serve it unclamped (issue #8589). Refused on a follower, for
@@ -2464,7 +2499,7 @@ public class ArcadeDBServer {
               + "was closed here and the last HA resync could not verify its copy, because the leader did not hold it. "
               + "It may be behind the cluster, so it is not reopened on a follower. It is reinstalled by the next resync "
               + "that finds the leader holding it, which this node checks periodically; open it on the leader, or "
-              + "remove this node's copy (or its '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)");
+              + "remove this node's copy (or its '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)", DatabaseNotAvailableException.Reason.RECOVERING);
         }
         // On the leader the copy becomes the cluster's, so it is reopened only once its peers have said none of them
         // holds a newer one (issue #8605) - which the check before the lock established, or this node was not the
@@ -2472,7 +2507,7 @@ public class ArcadeDBServer {
         if (!peersVerifiedCopy && leaderHoldsUnverifiedClosedCopy(databaseDirectory))
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node became "
               + "the leader while opening a copy the last HA resync could not verify, and has not compared it with the "
-              + "other servers' copies yet. Retry the request");
+              + "other servers' copies yet. Retry the request", DatabaseNotAvailableException.Reason.RECOVERING);
 
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 

@@ -177,9 +177,11 @@ class Issue10495TypeLookupTest {
   @Test
   void everyTypeIsListedWithItsSchemaAndNoRangeOrEnum() {
     final List<List<Object>> rows = rowsOf(EVERY_TYPE);
-    assertThat(rows).hasSize(PostgresTypeCatalog.types().size());
+    // the built-in types and the row type of the one relation (issue #10873), which is in the relation's schema
+    assertThat(rows).hasSize(PostgresTypeCatalog.types().size() + 1);
     for (final PostgresType type : PostgresTypeCatalog.types())
       assertThat(rows).contains(List.of("pg_catalog", type.code, type.typeName));
+    assertThat(rows).filteredOn(row -> "Person".equals(row.get(2))).extracting(row -> row.get(0)).containsExactly(database.getName());
   }
 
   @Test

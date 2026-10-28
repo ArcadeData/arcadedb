@@ -221,6 +221,19 @@ public final class TagFilter {
     }
 
     /**
+     * Whether a tag whose sealed dictionary text is {@code storedText} satisfies this condition: the text is read back
+     * into {@code column}'s declared type first ({@link ColumnDefinition#boxString}), exactly as a row scan presents it.
+     * <p>
+     * ONE row test for every sealed path - the scan, the aggregation push-down and the block-level skip - so they decide
+     * a predicate on the same value. The push-down used to test the raw text instead, which disagreed with the scan
+     * wherever the reading is not the identity: an unset BOOLEAN tag stored as the empty text, for one (issue #10874).
+     * Called once per DISTINCT stored text, never per row.
+     */
+    boolean matchesStored(final ColumnDefinition column, final String storedText) {
+      return matchValues.contains(column.boxString(storedText));
+    }
+
+    /**
      * Expands the caller's values with every representation a scan can present them in: the text form
      * for a typed value, and the typed form for text. A form is only added when it is unambiguous, and
      * an added form can only ever match a column that really is of that type, so no false positive is

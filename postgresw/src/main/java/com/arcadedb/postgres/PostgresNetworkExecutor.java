@@ -1631,7 +1631,7 @@ public class PostgresNetworkExecutor extends Thread {
           Thread.currentThread().threadId());
 
     // A set operation naming no catalog relation (issue #10228) is never a pg_type lookup.
-    final List<Result> types = PostgresCatalog.mightBeCatalogQuery(query) ? toResults(PostgresTypeCatalog.resolve(query)) : null;
+    final List<Result> types = PostgresCatalog.mightBeCatalogQuery(query) ? toResults(PostgresTypeCatalog.resolve(query, () -> PostgresCatalog.rowTypes(database))) : null;
     if (types != null)
       return new CatalogAnswer(types, getColumns(types));
 

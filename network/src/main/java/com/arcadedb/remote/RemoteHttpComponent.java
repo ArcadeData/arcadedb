@@ -25,6 +25,8 @@ import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
@@ -1230,6 +1232,13 @@ public class RemoteHttpComponent extends RWLockContext {
           }
         }
         return new RecordNotFoundException(detail, rid);
+      } else if (exception.equals(DatabaseNotFoundException.class.getName())) {
+        // THE NAME IS NO DATABASE OF THE SERVER (ISSUE #10872): PERMANENT, NOTHING TO RETRY
+        return new DatabaseNotFoundException(detail);
+      } else if (exception.equals(DatabaseNotAvailableException.class.getName())) {
+        // THE DATABASE EXISTS AND AN OPERATOR OR THE CLUSTER HOLDS IT (ISSUE #10872), SENT WITH 503: REBUILT AS ITS OWN TYPE AND
+        // REASON RATHER THAN AS THE NeedRetryException AN UNTYPED 503 BECOMES, SO NO RETRY LOOP SPINS ON A DATABASE CLOSED ON PURPOSE
+        return new DatabaseNotAvailableException(detail, DatabaseNotAvailableException.Reason.fromName(exceptionArgs));
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName())

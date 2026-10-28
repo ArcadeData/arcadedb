@@ -4668,7 +4668,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return;
     for (final WriteRefusal refusal : current)
       if (refusal.unavailable())
-        throw new DatabaseNotAvailableException("Database '" + name + "' does not accept writes: " + refusal.reason());
+        throw new DatabaseNotAvailableException("Database '" + name + "' does not accept writes: " + refusal.reason(),
+            DatabaseNotAvailableException.Reason.WRITES_REFUSED);
     throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + current[0].reason());
   }
 
@@ -4678,7 +4679,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
-      throw closedForReopen ? new DatabaseIsReopeningException(name) : new DatabaseIsClosedException(name);
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
     if (fenceReason != null)
       // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
       // published, so the live in-memory state diverges from what recovery will reconstruct. Every further

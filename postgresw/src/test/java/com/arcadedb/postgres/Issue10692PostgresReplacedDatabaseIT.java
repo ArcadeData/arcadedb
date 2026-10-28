@@ -56,7 +56,7 @@ public class Issue10692PostgresReplacedDatabaseIT extends PostgresWireProtocolTe
     super.beginTest();
     controlPlane = new ServerControlPlane(getServer(0));
     controlPlane.createDatabase(NAME);
-    getServer(0).getDatabase(NAME).getSchema().createDocumentType("S");
+    getServer(0).getDatabaseForOperator(NAME).getSchema().createDocumentType("S");
   }
 
   @AfterEach
@@ -66,7 +66,7 @@ public class Issue10692PostgresReplacedDatabaseIT extends PostgresWireProtocolTe
       final ArcadeDBServer server = getServer(0);
       server.unmarkClosedByCommand(NAME);
       if (server.existsDatabase(NAME))
-        server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+        server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
       FileUtils.deleteRecursively(
           new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));
     } finally {
