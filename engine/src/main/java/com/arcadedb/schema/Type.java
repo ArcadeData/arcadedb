@@ -357,6 +357,16 @@ public enum Type {
   }
 
   /**
+   * The count of epoch days a number stands for in a conversion to a DATE. Only a value WRITTEN into a DATE property reads the
+   * milliseconds of a UTC midnight as that day (issue #10865, see {@link DateUtils#dateNumberToEpochDays(long)}): that is where
+   * a {@code LocalDate} query parameter or an HTTP client's date arrives as milliseconds. A conversion with no property behind
+   * it, a comparison above all, keeps reading every number as a count of days, so a number never equals a date (#8913).
+   */
+  private static long dateNumberToEpochDays(final long number, final Property property) {
+    return property != null ? DateUtils.dateNumberToEpochDays(number) : number;
+  }
+
+  /**
    * Same as {@link #convert(Database, Object, Class)}, but a failed conversion returns {@code null} instead of
    * throwing, for callers - typically a comparison across incompatible types - that need "no defined ordering"
    * rather than a raw parse exception (#5900).
@@ -641,10 +651,15 @@ public enum Type {
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
     // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
     // validator to refuse (#9111)
-    if (isPlainScalar(item, ofType))
+    if (isPlainScalar(item, ofType)) {
+      // A number written into a LIST/MAP OF DATE is read like one written into a DATE property: the milliseconds of a UTC
+      // midnight are that day (issue #10865). Done here because the item is converted with no property, see below
+      if (ofType == DATE && ofClass == LocalDate.class && item instanceof Number number)
+        return DateUtils.date(database, DateUtils.dateNumberToEpochDays(DateUtils.numberToEpochUnits(number)), LocalDate.class);
       // the declared property is carried so a number out of the element range is refused instead of clamped; a date
       // conversion expects a date property, not the collection one
       return convert(database, item, ofClass, ofType.isDateOrDateTime() ? null : property);
+    }
 
     return item;
   }
@@ -986,7 +1001,7 @@ public enum Type {
         else if (value instanceof OffsetDateTime offset)
           return offset.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
-          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
+          return DateUtils.date(database, dateNumberToEpochDays(DateUtils.numberToEpochUnits(number), property), LocalDate.class);
         else if (value instanceof Date date)
           // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
           // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
@@ -997,7 +1012,7 @@ public enum Type {
               LocalDate.class);
         else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
-            return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
+            return DateUtils.date(database, dateNumberToEpochDays(Long.parseLong(valueAsString), property), LocalDate.class);
           else
             // The one chain, not a second copy of it: parseDateTimeKeepingWallClock already tries the schema's
             // dateTimeFormat and then its dateFormat before the built-in shapes, which is precisely what this branch

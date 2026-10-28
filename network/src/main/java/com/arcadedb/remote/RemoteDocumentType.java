@@ -312,8 +312,9 @@ public class RemoteDocumentType implements DocumentType {
   public boolean existsPolymorphicProperty(final String propertyName) {
     if (existsProperty(propertyName))
       return true;
-    for (DocumentType s : getSuperTypes())
-      if (s.existsProperty(propertyName))
+    // the whole hierarchy, not only the direct parents: a property declared on a grandparent is inherited too (issue #10865)
+    for (final DocumentType s : getSuperTypes())
+      if (s.existsPolymorphicProperty(propertyName))
         return true;
     return false;
   }

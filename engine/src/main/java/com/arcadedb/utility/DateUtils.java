@@ -209,6 +209,25 @@ public class DateUtils {
   }
 
   /**
+   * Reads a number given for a DATE as a count of epoch days, unless it is the epoch MILLISECONDS of a UTC midnight, which is
+   * read as that day. A DATE is a count of days on disk and on the remote client's record wire (#4601), but a {@code LocalDate}
+   * travelling as a query parameter, or a date sent by an HTTP client, is written as the milliseconds of its UTC midnight
+   * ({@code JSONObject}, #9037), and nothing on the way tells the two apart. Read as days, those milliseconds are a day past
+   * the year 238,000 (26.10.2 refused them as out of range, earlier versions stored null), so a non-zero exact multiple of a
+   * day's milliseconds is read as milliseconds instead (issue #10865). The only day counts that reading takes away are the
+   * multiples of 86,400,000 days, all of them more than 236,000 years away from 1970; zero is the same day either way.
+   * {@code Type} applies it to a value WRITTEN into a DATE property only, never to a comparison.
+   *
+   * @param number a count of epoch days, or the epoch milliseconds of a UTC midnight
+   *
+   * @return the count of epoch days
+   */
+  public static long dateNumberToEpochDays(final long number) {
+    // floorMod/floorDiv for the house rule (#7638); on an exact multiple they answer what '%' and '/' would
+    return number != 0 && Math.floorMod(number, MS_IN_A_DAY) == 0 ? Math.floorDiv(number, MS_IN_A_DAY) : number;
+  }
+
+  /**
    * Converts a temporal value to the number of days since the epoch, the canonical encoding for the
    * {@link com.arcadedb.schema.Type#DATE} type both on disk and on the remote JSON wire. Mirrors the
    * {@code TYPE_DATE} branch of the binary serializer so the remote path and the embedded binary path
