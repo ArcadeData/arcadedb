@@ -65,7 +65,9 @@ import java.util.logging.Level;
  * by a commit, so its page is re-marked here with an exponential backoff; after {@value #UNREADABLE_ATTEMPTS_BEFORE_REBUILD} failed
  * retries a {@code corrupt} rebuild is requested, the previous valid state serving meanwhile. Unreadable records are logged once per page
  * per minute (with the exception when deserialization threw), and the rebuild request once. A committed page that cannot be read at
- * all is kept whole and retried the same way; only a page past the bucket's committed page count loses its rows.
+ * all is kept whole and retried the same way. So is a page past the bucket's committed page count (a commit's first mark drained before
+ * its pages are published), never applied as an empty page, but neither counted, logged nor rebuilt: it leaves the retries once visible,
+ * or after the last attempt (see {@link UnreadablePages#notVisible}).
  * <p>
  * Conversion failures are counted once per staged record version and failing value, after the publish: a re-read of an unchanged
  * record with an unconvertible value counts nothing, and a failed pass counts nothing either.
@@ -161,6 +163,13 @@ final class ColumnarApplier {
     private long[]        loggedMs = new long[0];
     private int           size;
     private volatile long nextDueMs = Long.MAX_VALUE;
+    /** {@link #size} for readers off the apply lock. */
+    private volatile int  retrying;
+
+    /** Some page awaits a retry (final review A-I2: such a page's records may be missing from the projection); lock free. */
+    boolean hasRetries() {
+      return retrying > 0;
+    }
 
     /** A page is due for its retry at the clock time; lock free. */
     boolean isDue(final long nowMs) {
@@ -217,6 +226,17 @@ final class ColumnarApplier {
       return attempts[i];
     }
 
+    /**
+     * A visit found the page past the bucket's committed page count (final review A-C1): retried as an unreadable page is, with no log,
+     * no count and no rebuild. A commit's second mark re-marks its new pages once they are visible, which ends the retry; a page still
+     * past the count after {@value ColumnarApplier#UNREADABLE_ATTEMPTS_BEFORE_REBUILD} attempts belongs to no commit (a refused one, or a mark of a page
+     * that was never allocated): it holds no record and leaves the retries.
+     */
+    void notVisible(final int page, final long nowMs) {
+      if (failed(page, nowMs) >= UNREADABLE_ATTEMPTS_BEFORE_REBUILD)
+        readable(page);
+    }
+
     /** A visit of the whole page read every record: the page leaves the retries. */
     void readable(final int page) {
       if (size == 0)
@@ -249,6 +269,7 @@ final class ColumnarApplier {
     void clear() {
       size = 0;
       nextDueMs = Long.MAX_VALUE;
+      retrying = 0;
     }
 
     int sizeForTesting() {
@@ -268,6 +289,7 @@ final class ColumnarApplier {
         if (!remarked[i])
           next = Math.min(next, dueMs[i]);
       nextDueMs = next;
+      retrying = size;
     }
 
     private static long backoffMs(final int attempt) {
@@ -428,6 +450,8 @@ final class ColumnarApplier {
     // per page
     private boolean           changed;
     private boolean           unreadableHere;
+    /** The page was past the committed page count: retried, but neither counted, logged nor rebuilt as unreadable. */
+    private boolean           pastCount;
     private boolean           recordReported;
     private RuntimeException  unreadableCause;
     /** Failing values of the staged records by column, counted after the publish so a failed pass counts nothing. */
@@ -472,6 +496,8 @@ final class ColumnarApplier {
           applyPage(page);
           if (!unreadableHere)
             retries.readable(page);
+          else if (pastCount)
+            retries.notVisible(page, nowMs);
           else
             corrupt |= failed(retries, page, nowMs);
         }
@@ -610,9 +636,14 @@ final class ColumnarApplier {
       final OverlayPageBlock current = startPage(page);
       Arrays.fill(records, 0L);
       final long version = bucket.visitCommittedPage(page, this);
-      if (version < 0 && page < bucket.getCommittedPageCount()) {
-        // a committed page that could not be read: nothing is known of it, everything is kept and the page retried
-        unreadable();
+      if (version < 0) {
+        // nothing is known of the page, everything is kept and the page retried: a committed page that could not be read, or one past the
+        // committed page count (final review A-C1: the first mark of a commit drained before its pages are published, which its second
+        // mark re-marks once they are visible; never an empty page)
+        if (page < bucket.getCommittedPageCount())
+          unreadable();
+        else
+          unreadableHere = pastCount = true;
         endPage(page, current, 0);
         return;
       }
@@ -623,7 +654,7 @@ final class ColumnarApplier {
           final int slot = (w << 6) + Long.numberOfTrailingZeros(gone);
           delete(base + slot, slot);
         }
-      endPage(page, current, version >= 0 ? version : current != null ? current.pageVersion() : 0);
+      endPage(page, current, version);
     }
 
     /** The owners {@code owners[from, to)} of one clean page, each re-read alone. */
@@ -636,8 +667,8 @@ final class ColumnarApplier {
         final long read = bucket.visitCommittedRecord(owner, this);
         if (read >= 0)
           version = read;
-        else if (page < bucket.getCommittedPageCount()) {
-          // a committed page that could not be read: the owner is kept and its page retried
+        else {
+          // a page that could not be read (an owner's page is committed): the owner is kept and its page retried
           unreadable();
           continue;
         }
@@ -651,6 +682,7 @@ final class ColumnarApplier {
     private OverlayPageBlock startPage(final int page) {
       changed = false;
       unreadableHere = false;
+      pastCount = false;
       unreadableCause = null;
       final OverlayPageBlock current = projection.overlay().page(page);
       if (current != null)

@@ -395,8 +395,9 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
 
     final long original = breakChain(rid);
     try {
-      caughtUp();
+      awaitDrained(projection());
       assertThat(stats().unreadableCount("Asset")).isEqualTo(1);
+      assertThat(manager().awaitCaughtUp(50)).as("a page awaiting its retry is not caught up (final review A-I2)").isFalse();
       assertThat(brandCounts()).as("the previous value is still counted").isEqualTo(Map.of("a", 1L));
       assertThat(projection().owners().ownsExactly(rid.getPosition(), chainPages, chainPages.length)).as("owner map untouched").isTrue();
       assertThat(projection().unreadablePages().sizeForTesting()).isEqualTo(1);
@@ -421,12 +422,12 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
 
     final long original = breakChain(rid);
     try {
-      caughtUp();
+      awaitDrained(projection());
       assertThat(stats().unreadableCount("Asset")).isEqualTo(1);
 
       // a commit re-marking the page before the retry is due is a visit, not an attempt
       manager().markPages(bucketId(), new int[] { pageOf(rid) }, 1);
-      caughtUp();
+      awaitDrained(projection());
       assertThat(stats().unreadableCount("Asset")).isEqualTo(2);
 
       // the retry is not due: no pass re-reads the page

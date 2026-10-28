@@ -556,6 +556,8 @@ class ColumnarFlusherTest extends TestHelper {
     final String ownerMap = SegmentFormat.ownerMapFileName(projection.manifest().generation() + 1);
     Files.write(bucketDir.resolve(ownerMap), new byte[] { 1 });
     assertThatThrownBy(() -> ColumnarFlusher.flush(projection, 1)).isInstanceOf(FileAlreadyExistsException.class);
+    // final review A-I3: the attempt did not create that file, so its failure path does not delete it; the retry takes the next generation
+    assertThat(bucketDir.resolve(ownerMap)).exists();
 
     assertThat(projection.hasFrozenOverlay()).isTrue();
     assertThat(segmentFiles()).isEmpty();
@@ -568,7 +570,7 @@ class ColumnarFlusherTest extends TestHelper {
     ColumnarFlusher.flush(projection, 2);
     assertThat(projection.hasFrozenOverlay()).isFalse();
     assertThat(projection.manifest().segments()).hasSize(1);
-    assertThat(projection.manifest().ownerMapFile()).isEqualTo(ownerMap);
+    assertThat(projection.manifest().ownerMapFile()).isNotEqualTo(ownerMap);
     assertThat(counts(projection)).isEqualTo(expected(1, 1, 2, 1, 4, 1));
     final IntHashSet pending = recoverySet(projection);
     assertThat(pending.contains(0)).isFalse();

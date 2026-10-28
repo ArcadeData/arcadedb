@@ -303,17 +303,22 @@ public final class ColumnarManifest {
   }
 
   /**
-   * First half of {@link #publish}: fsyncs the directory, then writes and forces {@code manifest.json.tmp}. The published manifest is
-   * untouched, so a failure here changes nothing a reader or a crash recovery sees.
+   * First half of {@link #publish}: fsyncs the directory, then writes and forces {@code manifest.json.<generation>.tmp}, a name of this
+   * generation only, so two writers of one directory never share a tmp file (final review A-I3). The published manifest is untouched,
+   * so a failure here changes nothing a reader or a crash recovery sees.
    */
   void writeTmp(final Path bucketDir) throws IOException {
     ColumnarStore.fsyncDirectory(bucketDir);
-    ColumnarStore.writeTmp(bucketDir.resolve(FILE_NAME), toJSON().toString().getBytes(StandardCharsets.UTF_8), "publish.manifestTmpWritten");
+    ColumnarStore.writeTmpFile(tmpFile(bucketDir), toJSON().toString().getBytes(StandardCharsets.UTF_8), "publish.manifestTmpWritten");
   }
 
   /** Second half of {@link #publish}: replaces {@code manifest.json} with the tmp file of {@link #writeTmp} and fsyncs the directory. */
   void rename(final Path bucketDir) throws IOException {
-    ColumnarStore.renameTmp(bucketDir.resolve(FILE_NAME), "publish.manifestRenamed");
+    ColumnarStore.renameTmpFile(tmpFile(bucketDir), bucketDir.resolve(FILE_NAME), "publish.manifestRenamed");
+  }
+
+  private Path tmpFile(final Path bucketDir) {
+    return bucketDir.resolve(FILE_NAME + "." + generation + ColumnarStore.TMP_SUFFIX);
   }
 
   /**

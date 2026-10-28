@@ -321,33 +321,79 @@ public final class ColumnarIndexManager {
    * projects that bucket; otherwise the column stays until the reconciler removes it.
    */
   public void unregister(final ColumnarIndex index) {
+    final Slot dropped;
     registryLock.lock();
     try {
-      final int fileId = index.getFileId();
-      pendingLoad.remove(fileId);
-      pendingBind.remove(fileId);
-      if (indexes.remove(fileId) == null)
-        return;
-      final int bucketId = index.getAssociatedBucketId();
-      final List<ColumnDefinition> failed = failedOpens.get(bucketId);
-      if (failed != null) {
-        failed.removeIf(column -> column.indexFileId() == fileId);
-        if (failed.isEmpty())
-          failedOpens.remove(bucketId);
-      }
-      publishRegistry();
-      for (final ColumnarIndex other : indexes.values())
-        if (other.getAssociatedBucketId() == bucketId)
-          return;
-      final Slot slot = slotsByBucket.remove(bucketId);
-      if (slot == null)
-        return;
-      publishRegistry();
-      slot.projection.drop();
-      forgetMarkerRebuild(slot.projection);
+      dropped = unregisterLocked(index);
     } finally {
       registryLock.unlock();
     }
+    if (dropped != null)
+      fenceAndDrop(dropped);
+  }
+
+  /** Under {@link #registryLock}: {@link #unregister}; returns the slot taken out of the registry, whose projection is to drop. */
+  private Slot unregisterLocked(final ColumnarIndex index) {
+    final int fileId = index.getFileId();
+    pendingLoad.remove(fileId);
+    pendingBind.remove(fileId);
+    if (indexes.remove(fileId) == null)
+      return null;
+    final int bucketId = index.getAssociatedBucketId();
+    final List<ColumnDefinition> failed = failedOpens.get(bucketId);
+    if (failed != null) {
+      failed.removeIf(column -> column.indexFileId() == fileId);
+      if (failed.isEmpty())
+        failedOpens.remove(bucketId);
+    }
+    publishRegistry();
+    for (final ColumnarIndex other : indexes.values())
+      if (other.getAssociatedBucketId() == bucketId)
+        return null;
+    return removeSlot(bucketId);
+  }
+
+  /**
+   * Under {@link #registryLock}: takes the bucket's slot out of the registry and stops its projection publishing, so no job of it writes
+   * a manifest from now on; the drop itself is {@link #fenceAndDrop}, once the registry lock is released. Null when the bucket has none.
+   */
+  private Slot removeSlot(final int bucketId) {
+    final Slot slot = slotsByBucket.remove(bucketId);
+    if (slot == null)
+      return null;
+    publishRegistry();
+    slot.projection.stopPublishing();
+    return slot;
+  }
+
+  /**
+   * Drops the projection of a slot {@link #removeSlot} took out of the registry, fenced as a close is (final review A-I3): its running
+   * maintenance jobs (they abort at their next step, publishing nothing and deleting only what they created) and its apply pass are
+   * waited for, so no job of the dropped projection touches the bucket directory a projection recreated on the same bucket owns next,
+   * and no pass reads the readers and dictionaries the drop closes. Called with no registry lock held. The wait is bounded by the drain
+   * timeout: a job still running then is logged and the projection dropped anyway.
+   */
+  private void fenceAndDrop(final Slot slot) {
+    final ColumnarProjection projection = slot.projection;
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(drainTimeoutMs);
+    while (slot.running.get() > 0 && System.nanoTime() - deadline < 0)
+      LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+    boolean locked = false;
+    try {
+      locked = slot.running.get() == 0 && projection.applyLock().tryLock(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    if (!locked)
+      LogManager.instance().log(this, Level.WARNING, "The columnar projection of bucket '%s' of database '%s' is dropped while one of "
+          + "its jobs still runs after %d ms", null, projection.bucketName(), database.getName(), drainTimeoutMs);
+    try {
+      projection.drop();
+    } finally {
+      if (locked)
+        projection.applyLock().unlock();
+    }
+    forgetMarkerRebuild(projection);
   }
 
   /**
@@ -478,6 +524,7 @@ public final class ColumnarIndexManager {
    */
   private boolean reconcile(final Map<Integer, ColumnDefinition[]> fromSchema, final Map<String, String> fingerprints) {
     final List<ColumnarSchemaEvent> delivered = new ArrayList<>();
+    final List<Slot> dropped = new ArrayList<>();
     boolean complete = true;
     registryLock.lock();
     try {
@@ -496,8 +543,11 @@ public final class ColumnarIndexManager {
         switch (event.kind()) {
         case DROP_PROJECTION -> {
           // a bucket the schema still projects and this node has no projection of (its open failed): retried, not dropped
-          if (!fromSchema.containsKey(event.bucketFileId()))
-            dropProjection(event.bucketFileId());
+          if (!fromSchema.containsKey(event.bucketFileId())) {
+            final Slot slot = dropProjection(event.bucketFileId());
+            if (slot != null)
+              dropped.add(slot);
+          }
           else
             deferred.add(event.bucketFileId());
         }
@@ -548,6 +598,8 @@ public final class ColumnarIndexManager {
     } finally {
       registryLock.unlock();
     }
+    for (final Slot slot : dropped)
+      fenceAndDrop(slot);
     for (final ColumnarSchemaEvent event : delivered)
       notifyListeners(event);
     return complete;
@@ -571,16 +623,14 @@ public final class ColumnarIndexManager {
     return result.toArray(new ColumnDefinition[0]);
   }
 
-  /** Under {@link #registryLock}: drops the bucket's projection and forgets its indexes (a dropped type or bucket, a follower). */
-  private void dropProjection(final int bucketId) {
+  /**
+   * Under {@link #registryLock}: forgets the bucket's indexes and takes its slot out of the registry (a dropped type or bucket, a
+   * follower); returns the slot whose projection the caller drops through {@link #fenceAndDrop} once the lock is released, null for none.
+   */
+  private Slot dropProjection(final int bucketId) {
     indexes.values().removeIf(index -> index.getAssociatedBucketId() == bucketId);
     failedOpens.remove(bucketId);
-    final Slot slot = slotsByBucket.remove(bucketId);
-    if (slot == null)
-      return;
-    publishRegistry();
-    slot.projection.drop();
-    forgetMarkerRebuild(slot.projection);
+    return removeSlot(bucketId);
   }
 
   /** Under {@link #registryLock}: gives every projection the current names of its bucket and type, recording a RENAME per change. */
@@ -1796,9 +1846,10 @@ public final class ColumnarIndexManager {
   }
 
   /**
-   * Waits until every projection is usable, every registered index's column is published ({@link #isUsable(ColumnarIndex)}) and no
-   * page is pending (in an epoch or in flight): every mark that returned before the call
-   * is applied and its overlay published.
+   * Waits until every projection is usable, every registered index's column is published ({@link #isUsable(ColumnarIndex)}), no page is
+   * pending (in an epoch or in flight), no page awaits the retry of an unreadable record and no rebuild is queued or running: every mark
+   * that returned before the call is applied and its overlay published, and no committed record is left out of a projection while it is
+   * not pending. A permanently unreadable record therefore makes this wait for the {@code corrupt} rebuild it ends in.
    *
    * @return false when that is not reached within {@code timeoutMs}
    */
@@ -1815,9 +1866,12 @@ public final class ColumnarIndexManager {
   private boolean isCaughtUp() {
     if (!failedBuckets.isEmpty() || applying && isReconcileDue())
       return false;
-    for (final Slot slot : slots)
-      if (!slot.projection.isUsable() || hasPendingApply(slot.projection))
+    for (final Slot slot : slots) {
+      final ColumnarProjection projection = slot.projection;
+      if (!projection.isUsable() || hasPendingApply(projection) || projection.unreadablePages().hasRetries()
+          || ColumnarRebuilder.isQueuedOrRunning(projection))
         return false;
+    }
     for (final ColumnarIndex index : registered)
       if (!isUsable(index))
         return false;

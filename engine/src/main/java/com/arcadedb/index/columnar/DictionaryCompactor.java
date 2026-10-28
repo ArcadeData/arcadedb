@@ -143,8 +143,9 @@ final class DictionaryCompactor {
     try {
       final int generation = p.reserveDictionaryGeneration(column.indexFileId());
       final String name = SegmentFormat.dictionaryFileName(column.indexFileId(), generation);
-      attempt.written.add(name);
+      attempt.held.add(name);
       fresh = GlobalDictionary.create(p.bucketDir().resolve(name));
+      attempt.created(p.bucketDir().resolve(name));
       final Remap remap = new Remap(old, fresh, referenced, scanned);
       // sorted here, with no lock held
       fresh.rebuildRankView();
@@ -158,10 +159,10 @@ final class DictionaryCompactor {
           continue; // a segment written before the column existed: nothing to re-encode
         final int segmentId = p.reserveSegmentId();
         final String segmentName = SegmentFormat.segmentFileName(segmentId);
-        attempt.written.add(segmentName);
+        attempt.held.add(segmentName);
         files[i] = p.bucketDir().resolve(segmentName);
         rows[i] = ColumnarFlusher.writeMerged(p, new SegmentReader[] { inputs[i] }, columns, files[i], segmentId,
-            row -> remap.row(row, remappedColumn, column.kind()));
+            row -> remap.row(row, remappedColumn, column.kind()), attempt);
       }
       ColumnarTestHooks.reach(SEGMENTS_WRITTEN);
 

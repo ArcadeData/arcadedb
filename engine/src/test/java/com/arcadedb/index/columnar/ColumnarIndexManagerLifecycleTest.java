@@ -203,13 +203,15 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
   void cleanOpenStartsApplying() throws InterruptedException {
     createAsset(1);
     final int bucketId = bucketIds("Asset")[0];
+    // a committed page to mark: a page past the committed count is retried (final review A-C1), which is not what this test is about
+    database.transaction(() -> database.newDocument("Asset").set("brand", "a").save());
 
     reopenDatabase();
 
     final ColumnarIndexManager manager = manager();
     assertThat(manager.isApplyingForTesting()).isTrue();
     final ColumnarProjection projection = manager.projection(bucketId);
-    manager.markPages(bucketId, new int[] { 0, 3 }, 2);
+    manager.markPages(bucketId, new int[] { 0 }, 1);
     assertThat(projection.tracker().oldestPendingEpochStartMs()).isPositive();
 
     assertThat(manager.awaitCaughtUp(10_000)).isTrue();
@@ -278,7 +280,9 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
     final int bucketId = bucketIds("Asset")[0];
     final ColumnarIndexManager manager = manager();
     final ColumnarProjection projection = manager.projection(bucketId);
-    manager.markPages(bucketId, new int[] { 4 }, 1);
+    // a committed page to mark, as in cleanOpenStartsApplying
+    database.transaction(() -> database.newDocument("Asset").set("brand", "a").save());
+    manager.markPages(bucketId, new int[] { 0 }, 1);
 
     final ExecutorService executor = Executors.newSingleThreadExecutor();
     projection.applyLock().lock();

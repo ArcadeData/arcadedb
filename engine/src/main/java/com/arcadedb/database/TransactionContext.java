@@ -316,6 +316,11 @@ public class TransactionContext implements Transaction {
    * published and before the second columnar mark, on a database with a columnar mark target only. Null outside tests.
    */
   public static volatile Runnable                    afterPublishBeforeSecondMarkForTesting;
+  /**
+   * Test seam (final review A-C1): runs on the committing thread after the first columnar mark and before the pages are published, on
+   * a database with a columnar mark target only. Null outside tests.
+   */
+  public static volatile Runnable                    afterFirstColumnarMarkForTesting;
   // The pages of the commit as ColumnarIndexManager.packPage keys, sorted, and the page numbers of one file at a time: reused
   // across the commits of this context, grown when a commit has more pages than any before
   private       long[]                               columnarMarkKeys      = new long[0];
@@ -3679,13 +3684,11 @@ public class TransactionContext implements Transaction {
       // inserted them twice. Raised by the page manager once its waits for flush capacity are over, right before the first page
       // is handed over: a wait that fails or is interrupted has published nothing, and is still rolled back. Both publication
       // paths below pass it: the columnar one writes its first mark before, so a refused NOWAL marker is still rolled back
-      if (columnar == null)
+      if (columnar == null) {
         database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
-      else
+        raisePageCounts();
+      } else
         publishPagesWithColumnarMarks(columnar, columnarProjected, changes, pagesToPublish);
-
-      for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
-        ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
@@ -3725,6 +3728,12 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /** Raises the page count of every file this transaction allocated pages in; after the publication of the pages, never before. */
+  private void raisePageCounts() {
+    for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
+      ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
+  }
+
   /** The columnar manager of the database when a mark can reach a projection or a watched file, null otherwise. */
   private ColumnarIndexManager columnarMarkTarget() {
     if (embedded == null)
@@ -3758,7 +3767,9 @@ public class TransactionContext implements Transaction {
    * the flush thread writes a page and its WAL file becomes droppable before the second mark ran; the second one, once the pages are
    * visible, is the ordering-protocol mark: an apply pass that drains it reads the committed images. A commit that wrote no WAL marks
    * through {@link ColumnarIndexManager#markPagesWithoutWAL}. The WAL file of a commit touching a projected bucket counts it until the
-   * second mark ran ({@link WALFile#columnarMarksStarted()}), because the first one may have been drained from the previous images.
+   * second mark ran ({@link WALFile#columnarMarksStarted()}), because the first one may have been drained from the previous images. The
+   * page counts are raised between the publication and the second mark, so a pass draining the second mark sees every page of the
+   * commit.
    */
   private void publishPagesWithColumnarMarks(final ColumnarIndexManager columnar, final boolean projected, final TransactionPhase1 changes,
       final List<MutablePage> pagesToPublish) throws IOException, InterruptedException {
@@ -3769,7 +3780,12 @@ public class TransactionContext implements Transaction {
     try {
       // a failure to write the NOWAL marker refuses the no-WAL commit here, before anything is visible
       columnar.markPackedPages(columnarMarkKeys, columnarMarkCount, columnarMarkPages, withoutWAL);
+      final Runnable firstMarkSeam = afterFirstColumnarMarkForTesting;
+      if (firstMarkSeam != null)
+        firstMarkSeam.run();
       database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush(), markPublicationStarted);
+      // before the second mark (final review A-C1): an apply pass draining it must find every page of the commit inside the counts
+      raisePageCounts();
       final Runnable seam = afterPublishBeforeSecondMarkForTesting;
       if (seam != null)
         seam.run();

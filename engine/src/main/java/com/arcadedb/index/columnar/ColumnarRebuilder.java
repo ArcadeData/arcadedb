@@ -33,6 +33,7 @@ import com.arcadedb.serializer.BinarySerializer;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -363,6 +364,8 @@ final class ColumnarRebuilder {
       p.beginRebuildTracking();
       boolean published = false;
       try {
+        // a dropped projection's directory is never created again (final review A-I3)
+        ColumnarFlusher.checkPublishing(p);
         ColumnarStore.createBucketDir(Path.of(db.getDatabasePath()), p.bucketId());
         p.deleteOrphansForRebuild();
         createDictionaries();
@@ -437,8 +440,9 @@ final class ColumnarRebuilder {
           continue;
         generations[k] = p.reserveDictionaryGeneration(columns[k].indexFileId());
         final String name = SegmentFormat.dictionaryFileName(columns[k].indexFileId(), generations[k]);
-        attempt.written.add(name);
+        attempt.held.add(name);
         dictionaries[k] = GlobalDictionary.create(p.bucketDir().resolve(name));
+        attempt.created(p.bucketDir().resolve(name));
         dictionaryMap.put(columns[k].property(), dictionaries[k]);
       }
     }
@@ -602,9 +606,10 @@ final class ColumnarRebuilder {
     private void openWriter() throws IOException {
       final int segmentId = p.reserveSegmentId();
       final String name = SegmentFormat.segmentFileName(segmentId);
-      attempt.written.add(name);
+      attempt.held.add(name);
       writerFile = p.bucketDir().resolve(name);
       writer = new SegmentWriter(writerFile, segmentId, maxRecordsInPage, columns, p.segmentBlockRows());
+      attempt.created(writerFile);
       writerRows = 0;
     }
 
@@ -624,10 +629,15 @@ final class ColumnarRebuilder {
       try {
         ColumnarFlusher.checkPublishing(p);
         final long generation = p.nextGeneration();
-        final String ownerMapFile = ColumnarFlusher.writeOwnerMap(p, owners, null, SegmentFormat.ownerMapFileName(generation),
-            attempt.written);
-        final String externalOwnerMapFile = externalOwners == null ? null : ColumnarFlusher.writeOwnerMap(p, externalOwners, null,
-            SegmentFormat.externalOwnerMapFileName(generation), attempt.written);
+        final String ownerMapFile;
+        final String externalOwnerMapFile;
+        try {
+          ownerMapFile = ColumnarFlusher.writeOwnerMap(p, owners, null, SegmentFormat.ownerMapFileName(generation), attempt);
+          externalOwnerMapFile = externalOwners == null ? null : ColumnarFlusher.writeOwnerMap(p, externalOwners, null,
+              SegmentFormat.externalOwnerMapFileName(generation), attempt);
+        } catch (final FileAlreadyExistsException e) {
+          throw ColumnarFlusher.generationTaken(p, generation, e);
+        }
         ColumnarTestHooks.reach(ColumnarFlusher.SEGMENTS_SYNCED);
 
         final List<ColumnarManifest.DictionaryEntry> dictionaryEntries = new ArrayList<>();
