@@ -84,6 +84,27 @@ class Issue10867DropRacesSealedRewriteTest extends TestHelper {
     assertTheRecreatedTypeIsEmpty();
   }
 
+  /**
+   * A store closed without a drop - the engine a schema reload replaced, whose successor has the file open - refuses a swap as
+   * well: the swap would move a file under the successor's open channel.
+   */
+  @Test
+  void aStoreClosedWithoutADropRefusesTheSwapToo() throws Exception {
+    final TimeSeriesSealedStore store = createTypeWithSmallBlocks();
+    final TimeSeriesSealedStore.MergePlan plan = store.prepareMerge(TimeSeriesShard.SEALED_BLOCK_SIZE, 0L, 1);
+    final long sizeBefore = sealedFile().length();
+
+    store.close();
+
+    assertThat(store.commitMerge(plan)).isFalse();
+    assertThat(new File(getDatabasePath(), "Ticker_shard_0" + TimeSeriesSealedStore.MERGE_TEMP_SUFFIX)).doesNotExist();
+    assertThat(sealedFile()).hasSize(sizeBefore);
+
+    // the engine that opens the file next finds it as the closed store left it
+    reopenDatabase();
+    assertThat(countSamples()).isEqualTo(100);
+  }
+
   /** The control: the same merge before the drop is installed, and the drop then deletes its result. */
   @Test
   void aMergeInstalledBeforeTheDropIsDroppedWithTheType() throws Exception {

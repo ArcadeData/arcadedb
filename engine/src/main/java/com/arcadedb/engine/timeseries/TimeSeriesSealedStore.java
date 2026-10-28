@@ -5092,18 +5092,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Closes the store for good. Under the directory WRITE lock, which every swap of the sealed file holds (issue #10867): a swap
+   * either completes before the store is closed or finds it closed and refuses, whoever closes it - a drop, or an engine replaced by
+   * a schema reload, whose successor has the file open itself.
+   */
   @Override
   public void close() throws IOException {
+    directoryLock.writeLock().lock();
     try {
       flushHeader();
     } finally {
-      // MARKED CLOSED EVEN WHEN THE FLUSH FAILS, SO NO LATER READ REOPENS A STORE ITS OWNER CLOSED (#9621)
-      synchronized (channelReopenLock) {
-        closed = true;
-        if (indexChannel != null && indexChannel.isOpen())
-          indexChannel.close();
-        if (indexFile != null)
-          indexFile.close();
+      try {
+        // MARKED CLOSED EVEN WHEN THE FLUSH FAILS, SO NO LATER READ REOPENS A STORE ITS OWNER CLOSED (#9621)
+        synchronized (channelReopenLock) {
+          closed = true;
+          if (indexChannel != null && indexChannel.isOpen())
+            indexChannel.close();
+          if (indexFile != null)
+            indexFile.close();
+        }
+      } finally {
+        directoryLock.writeLock().unlock();
       }
     }
   }

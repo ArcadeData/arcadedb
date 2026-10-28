@@ -294,6 +294,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         schema.removeFile(fileId);
       }
 
+    // the type's own name, which the schema validated when the type was created, names the files exactly as the engine names them
+    // (TimeSeriesSealedStore.sealedFileNameFor): nothing outside the database directory can be reached through it
     final String directory = database.getDatabasePath() + File.separator;
     for (int i = 0; i < engineShardCount(); i++)
       try {

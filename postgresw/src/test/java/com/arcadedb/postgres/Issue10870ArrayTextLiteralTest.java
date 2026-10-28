@@ -95,6 +95,15 @@ class Issue10870ArrayTextLiteralTest {
   }
 
   @Test
+  void aLiteralNestedDeeperThanPostgresAllowsIsRefusedNotRecursedInto() {
+    assertThat((List<Object>) text(PostgresType.ARRAY_INT, "{{{{{{1}}}}}}")).containsExactly(1);
+    assertThatThrownBy(() -> text(PostgresType.ARRAY_INT, "{{{{{{{1}}}}}}}")).isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("dimensions exceeds");
+    // a hostile literal of nothing but opening braces fails on the 7th, not with a StackOverflowError
+    assertThatThrownBy(() -> text(PostgresType.ARRAY_TEXT, "{".repeat(100_000))).isInstanceOf(PostgresProtocolException.class);
+  }
+
+  @Test
   void theLeniencyTheProtocolAlwaysHadIsKept() {
     assertThat((List<Object>) text(PostgresType.ARRAY_TEXT, "")).isEmpty();
     assertThat((List<Object>) text(PostgresType.ARRAY_INT, "1,NULL,3")).containsExactly(1, null, 3);

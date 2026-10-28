@@ -48,9 +48,14 @@ import java.util.function.Function;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class PostgresArrayLiteral {
+  // PostgreSQL caps array dimensions at 6 (MAXDIM): a literal nested deeper is refused before it can recurse further, so a client
+  // cannot exhaust the stack with a few kilobytes of opening braces
+  private static final int MAX_DIMENSIONS = 6;
+
   private final String              text;
   private final Function<String, ?> elementParser;
   private       int                 pos;
+  private       int                 depth;
 
   private PostgresArrayLiteral(final String text, final Function<String, ?> elementParser) {
     this.text = text;
@@ -105,6 +110,16 @@ final class PostgresArrayLiteral {
 
   /** Reads one {@code {...}} level, the opening brace at {@code pos}, its sub-arrays flattened into it. */
   private ArrayList<Object> parseLevel() {
+    if (++depth > MAX_DIMENSIONS)
+      throw malformed(text, "number of array dimensions exceeds the maximum allowed (" + MAX_DIMENSIONS + ")");
+    try {
+      return parseLevelElements();
+    } finally {
+      --depth;
+    }
+  }
+
+  private ArrayList<Object> parseLevelElements() {
     ++pos; // the opening brace
     final ArrayList<Object> elements = new ArrayList<>();
 
