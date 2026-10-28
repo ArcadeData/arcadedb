@@ -1470,8 +1470,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
     final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
-      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters));
-      case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters));
+      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
+      case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
       case RANGE -> null;
     };
 

@@ -19,11 +19,19 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
 
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.StringJoiner;
 
 /**
  * Translates the {@code OPTIONS} of Neo4j's {@code CREATE VECTOR INDEX} and {@code CREATE FULLTEXT INDEX} into the
@@ -39,6 +47,8 @@ final class CypherIndexOptions {
   static final String VECTOR_HNSW_M                  = "vector.hnsw.m";
   static final String VECTOR_HNSW_EF                 = "vector.hnsw.ef_construction";
   static final String VECTOR_QUANTIZED               = "vector.quantization.enabled";
+  static final String VECTOR_QUANTIZATION_TYPE       = "vector.quantization.type";
+  static final String VECTOR_SEARCH_EXPANSION        = "vector.default_search_expansion_factor";
   static final String FULLTEXT_ANALYZER              = "fulltext.analyzer";
   static final String FULLTEXT_EVENTUALLY_CONSISTENT = "fulltext.eventually_consistent";
 
@@ -70,29 +80,35 @@ final class CypherIndexOptions {
   }
 
   /**
-   * The LSM_VECTOR metadata of a {@code CREATE VECTOR INDEX}: {@code vector.dimensions} (required, ArcadeDB sizes the index
-   * on it), {@code vector.similarity_function} ({@code cosine}, the default, or {@code euclidean}), {@code vector.hnsw.m}
-   * (the graph degree, doubled into {@code maxConnections} since JVector does not double it at the base layer as Lucene's
-   * HNSW does), {@code vector.hnsw.ef_construction} ({@code beamWidth}) and {@code vector.quantization.enabled}
-   * ({@code INT8} scalar quantization when true).
+   * The LSM_VECTOR metadata of a {@code CREATE VECTOR INDEX}. The Neo4j settings are {@code vector.dimensions} (required,
+   * ArcadeDB sizes the index on it), {@code vector.similarity_function} ({@code cosine}, the default, or {@code euclidean}),
+   * {@code vector.hnsw.m} (the graph degree, doubled into {@code maxConnections} since JVector does not double it at the base
+   * layer as Lucene's HNSW does), {@code vector.hnsw.ef_construction} ({@code beamWidth}), {@code vector.quantization.type}
+   * ({@code none}, {@code scalar} for {@code INT8}, {@code binary}) and the deprecated {@code vector.quantization.enabled}
+   * ({@code INT8} when true), which must agree with the type when both are given.
+   * <p>
+   * With no quantization setting the index keeps the exact vectors ({@code NONE}), the LSM_VECTOR default, where Neo4j
+   * quantizes ({@code binary} since 2026.08, {@code scalar} before): a quantized index answers with a lower recall, which a
+   * script that did not ask for it must not get behind its back. SHOW INDEXES names the quantization of every vector index,
+   * so the statement it lists means the same on both (discussion #10893).
+   * <p>
+   * Every other LSM_VECTOR setting is given under its own name, as in the {@code METADATA} of SQL {@code CREATE INDEX}
+   * ({@code efSearch}, {@code quantization: 'PRODUCT'}, ...), and is read and checked by the same reader. Those names have no
+   * dot, so they cannot be taken for a Neo4j setting; a setting named both ways is refused rather than one silently winning.
    */
-  static JSONObject vectorMetadata(final Object options) {
+  static JSONObject vectorMetadata(final Object options, final String typeName, final String[] propertyNames) {
     final Map<String, Object> config = indexConfig(options, "CREATE VECTOR INDEX");
     final JSONObject metadata = new JSONObject();
+    // the Neo4j setting each metadata key was translated from, to refuse the same metadata key named natively too
+    final Map<String, String> translatedFrom = new HashMap<>();
 
-    final Object dimensions = config.get(VECTOR_DIMENSIONS);
-    if (dimensions == null)
-      throw new CommandParsingException(
-          "CREATE VECTOR INDEX needs the number of dimensions: OPTIONS {indexConfig: {`" + VECTOR_DIMENSIONS + "`: 768}}");
-    metadata.put("dimensions", positiveInt(dimensions, VECTOR_DIMENSIONS));
-
-    String similarity = "COSINE";
+    String quantizationType = null;
+    Boolean quantizationEnabled = null;
     for (final Map.Entry<String, Object> entry : config.entrySet()) {
       final String key = entry.getKey();
       final Object value = entry.getValue();
       switch (key) {
-      case VECTOR_DIMENSIONS -> {
-      }
+      case VECTOR_DIMENSIONS -> translate(metadata, translatedFrom, key, "dimensions", positiveInt(value, key));
       case VECTOR_SIMILARITY -> {
         final String function = value instanceof String s ? s.toLowerCase(Locale.ROOT) : null;
         // dot_product is ArcadeDB's own, which Neo4j does not have: accepted so the statement SHOW INDEXES lists for such an
@@ -100,52 +116,200 @@ final class CypherIndexOptions {
         if (!"cosine".equals(function) && !"euclidean".equals(function) && !"dot_product".equals(function))
           throw new CommandParsingException(
               "Unsupported `" + VECTOR_SIMILARITY + "` '" + value + "': use 'cosine', 'euclidean' or 'dot_product'");
-        similarity = function.toUpperCase(Locale.ROOT);
+        translate(metadata, translatedFrom, key, "similarity", function.toUpperCase(Locale.ROOT));
       }
       case VECTOR_HNSW_M -> {
         final int m = positiveInt(value, key);
         if (m > Integer.MAX_VALUE / 2)
           throw new CommandParsingException("`" + key + "` is too large: " + m);
-        metadata.put("maxConnections", 2 * m);
+        translate(metadata, translatedFrom, key, "maxConnections", 2 * m);
       }
-      case VECTOR_HNSW_EF -> metadata.put("beamWidth", positiveInt(value, key));
+      case VECTOR_HNSW_EF -> translate(metadata, translatedFrom, key, "beamWidth", positiveInt(value, key));
+      case VECTOR_QUANTIZATION_TYPE -> {
+        quantizationType = value instanceof String s ? s.toLowerCase(Locale.ROOT) : null;
+        if (!"none".equals(quantizationType) && !"scalar".equals(quantizationType) && !"binary".equals(quantizationType))
+          throw new CommandParsingException("Unsupported `" + key + "` '" + value + "': use 'none', 'scalar' or 'binary' (for "
+              + "ArcadeDB's product quantization: quantization: 'PRODUCT')");
+      }
       case VECTOR_QUANTIZED -> {
         if (!(value instanceof Boolean enabled))
           throw new CommandParsingException("`" + key + "` must be true or false, found " + value);
-        metadata.put("quantization", enabled ? "INT8" : "NONE");
+        quantizationEnabled = enabled;
       }
-      default -> throw new CommandParsingException(
-          "Unsupported vector index setting `" + key + "`: supported are " + VECTOR_DIMENSIONS + ", " + VECTOR_SIMILARITY + ", "
-              + VECTOR_HNSW_M + ", " + VECTOR_HNSW_EF + " and " + VECTOR_QUANTIZED);
+      case VECTOR_SEARCH_EXPANSION -> throw new CommandParsingException("`" + key + "` is not supported: an LSM_VECTOR index "
+          + "has no per-index expansion of the candidates a search asks for, its search beam is set with efSearch");
+      default -> {
+        if (key.indexOf('.') >= 0)
+          throw new CommandParsingException(
+              "Unsupported vector index setting `" + key + "`: supported are " + VECTOR_DIMENSIONS + ", " + VECTOR_SIMILARITY
+                  + ", " + VECTOR_QUANTIZATION_TYPE + ", " + VECTOR_QUANTIZED + ", " + VECTOR_HNSW_M + " and " + VECTOR_HNSW_EF
+                  + ", and the LSM_VECTOR settings under their own names (efSearch, quantization, ...)");
+      }
       }
     }
-    metadata.put("similarity", similarity);
-    return metadata;
+
+    if (quantizationEnabled != null && quantizationType != null && quantizationEnabled == "none".equals(quantizationType))
+      throw new CommandParsingException(
+          "`" + VECTOR_QUANTIZED + "`: " + quantizationEnabled + " contradicts `" + VECTOR_QUANTIZATION_TYPE + "`: '"
+              + quantizationType + "': give only `" + VECTOR_QUANTIZATION_TYPE + "`, which replaces the deprecated flag");
+    if (quantizationType != null)
+      translate(metadata, translatedFrom, VECTOR_QUANTIZATION_TYPE, "quantization", switch (quantizationType) {
+        case "scalar" -> "INT8";
+        case "binary" -> "BINARY";
+        default -> "NONE";
+      });
+    else if (quantizationEnabled != null)
+      translate(metadata, translatedFrom, VECTOR_QUANTIZED, "quantization", quantizationEnabled ? "INT8" : "NONE");
+
+    copyNativeSettings(config, metadata, translatedFrom);
+
+    if (!metadata.has("dimensions"))
+      throw new CommandParsingException(
+          "CREATE VECTOR INDEX needs the number of dimensions: OPTIONS {indexConfig: {`" + VECTOR_DIMENSIONS + "`: 768}}");
+    if (!metadata.has("similarity"))
+      metadata.put("similarity", "COSINE");
+    return checked(metadata, new LSMVectorIndexMetadata(typeName, propertyNames, -1), Schema.INDEX_TYPE.LSM_VECTOR);
   }
 
   /**
    * The FULL_TEXT metadata of a {@code CREATE FULLTEXT INDEX}: {@code fulltext.analyzer}, a Neo4j analyzer name or the class
    * name of a Lucene analyzer, and {@code fulltext.eventually_consistent}, accepted with either value since a FULL_TEXT index
-   * is updated by the transaction that changes the record, which is what Neo4j's default ({@code false}) promises.
+   * is updated by the transaction that changes the record, which is what Neo4j's default ({@code false}) promises. Every other
+   * FULL_TEXT setting is given under its own name, as for a vector index ({@link #vectorMetadata(Object)}).
    */
-  static JSONObject fullTextMetadata(final Object options) {
+  static JSONObject fullTextMetadata(final Object options, final String typeName, final String[] propertyNames) {
     final Map<String, Object> config = indexConfig(options, "CREATE FULLTEXT INDEX");
     final JSONObject metadata = new JSONObject();
+    final Map<String, String> translatedFrom = new HashMap<>();
     for (final Map.Entry<String, Object> entry : config.entrySet()) {
       final String key = entry.getKey();
       final Object value = entry.getValue();
       switch (key) {
-      case FULLTEXT_ANALYZER -> metadata.put("analyzer", analyzerClass(value));
+      case FULLTEXT_ANALYZER -> translate(metadata, translatedFrom, key, "analyzer", analyzerClass(value));
       case FULLTEXT_EVENTUALLY_CONSISTENT -> {
         if (!(value instanceof Boolean))
           throw new CommandParsingException("`" + key + "` must be true or false, found " + value);
       }
-      default -> throw new CommandParsingException(
-          "Unsupported full-text index setting `" + key + "`: supported are " + FULLTEXT_ANALYZER + " and "
-              + FULLTEXT_EVENTUALLY_CONSISTENT);
+      default -> {
+        if (key.indexOf('.') >= 0)
+          throw new CommandParsingException(
+              "Unsupported full-text index setting `" + key + "`: supported are " + FULLTEXT_ANALYZER + " and "
+                  + FULLTEXT_EVENTUALLY_CONSISTENT + ", and the FULL_TEXT settings under their own names (defaultOperator, "
+                  + "bm25_k1, ...)");
+      }
       }
     }
+    copyNativeSettings(config, metadata, translatedFrom);
+    return checked(metadata, new FullTextIndexMetadata(typeName, propertyNames, -1), Schema.INDEX_TYPE.FULL_TEXT);
+  }
+
+  /**
+   * The metadata, once the reader of the index type has read it onto a throwaway definition: a setting it refuses (a native key
+   * misspelled, a value out of range) is reported by the statement before any type or property is created for the index.
+   */
+  private static JSONObject checked(final JSONObject metadata, final IndexMetadata definition, final Schema.INDEX_TYPE indexType) {
+    try {
+      definition.fromUserMetadata(metadata, indexType);
+    } catch (final IndexException | IllegalArgumentException e) {
+      throw new CommandParsingException("Invalid " + (indexType == Schema.INDEX_TYPE.LSM_VECTOR ? "vector" : "full-text")
+          + " index OPTIONS: " + e.getMessage(), e);
+    }
     return metadata;
+  }
+
+  /**
+   * The {@code indexConfig} that creates the vector index {@code metadata} describes again, the one SHOW INDEXES lists: the
+   * Neo4j settings where Neo4j has a spelling for the value, then every other setting that differs from the LSM_VECTOR default
+   * under its own name. The quantization is always named, since Neo4j's default for it is not ArcadeDB's.
+   */
+  static Map<String, Object> vectorIndexConfig(final LSMVectorIndexMetadata metadata) {
+    final Map<String, Object> settings = metadata.getUserSettingsDifferingFrom(
+        new LSMVectorIndexMetadata(metadata.typeName, null, -1));
+    final Map<String, Object> config = new LinkedHashMap<>();
+    config.put(VECTOR_DIMENSIONS, metadata.dimensions);
+    config.put(VECTOR_SIMILARITY, metadata.similarityFunction.name().toLowerCase(Locale.ROOT));
+    settings.remove("dimensions");
+    settings.remove("similarity");
+
+    settings.remove("quantization");
+    switch (metadata.quantizationType) {
+    case NONE -> config.put(VECTOR_QUANTIZATION_TYPE, "none");
+    case INT8 -> config.put(VECTOR_QUANTIZATION_TYPE, "scalar");
+    case BINARY -> config.put(VECTOR_QUANTIZATION_TYPE, "binary");
+    default -> config.put("quantization", metadata.quantizationType.name());
+    }
+
+    // vector.hnsw.m is doubled into maxConnections, so an odd degree has no Neo4j spelling
+    if (settings.containsKey("maxConnections") && metadata.maxConnections % 2 == 0) {
+      settings.remove("maxConnections");
+      config.put(VECTOR_HNSW_M, metadata.maxConnections / 2);
+    }
+    if (settings.remove("beamWidth") != null)
+      config.put(VECTOR_HNSW_EF, metadata.beamWidth);
+
+    // an efSearch that was asked for is kept even at its default value, which a search reads differently from none (#6494)
+    if (metadata.efSearchConfigured)
+      settings.put("efSearch", metadata.efSearch);
+    // refused at creation since #5559, so a value an older version persisted is not a setting a statement can ask for
+    settings.remove("locationCacheSize");
+
+    for (final Map.Entry<String, Object> entry : settings.entrySet())
+      config.put(entry.getKey(), entry.getValue() instanceof Enum<?> e ? e.name() : entry.getValue());
+    return config;
+  }
+
+  /**
+   * The {@code indexConfig} that creates the full-text index {@code metadata} describes again: {@code fulltext.analyzer} when
+   * the analyzer is not the default one, then every other setting that differs from the FULL_TEXT default under its own name.
+   */
+  static Map<String, Object> fullTextIndexConfig(final FullTextIndexMetadata metadata) {
+    final Map<String, Object> settings = metadata.getUserSettingsDifferingFrom(
+        new FullTextIndexMetadata(metadata.typeName, null, -1));
+    final Map<String, Object> config = new LinkedHashMap<>();
+    settings.remove("analyzer");
+    final String analyzer = analyzerName(metadata.getAnalyzerClass());
+    if (analyzer != null)
+      config.put(FULLTEXT_ANALYZER, analyzer);
+    config.putAll(settings);
+    return config;
+  }
+
+  /** {@code indexConfig} written as the Cypher map literal of an {@code OPTIONS}, every key quoted. */
+  static String indexConfigLiteral(final Map<String, Object> config) {
+    final StringJoiner entries = new StringJoiner(", ", "{indexConfig: {", "}}");
+    for (final Map.Entry<String, Object> entry : config.entrySet()) {
+      final Object value = entry.getValue();
+      entries.add("`" + entry.getKey() + "`: " + (value instanceof String s ?
+          "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'" :
+          String.valueOf(value)));
+    }
+    return entries.toString();
+  }
+
+  /** Records the metadata key a Neo4j setting is translated into, refusing one that another Neo4j setting already set. */
+  private static void translate(final JSONObject metadata, final Map<String, String> translatedFrom, final String neo4jKey,
+      final String metadataKey, final Object value) {
+    final String previous = translatedFrom.putIfAbsent(metadataKey, neo4jKey);
+    if (previous != null && !previous.equals(neo4jKey))
+      throw new CommandParsingException("`" + previous + "` and `" + neo4jKey + "` both set " + metadataKey + ": give one");
+    metadata.put(metadataKey, value);
+  }
+
+  /**
+   * Copies the settings named natively (no dot) into the metadata as they are, for the index's own reader to check, refusing
+   * one a Neo4j setting of the same statement already set.
+   */
+  private static void copyNativeSettings(final Map<String, Object> config, final JSONObject metadata,
+      final Map<String, String> translatedFrom) {
+    for (final Map.Entry<String, Object> entry : config.entrySet()) {
+      final String key = entry.getKey();
+      if (key.indexOf('.') >= 0)
+        continue;
+      final String neo4jKey = translatedFrom.get(key);
+      if (neo4jKey != null)
+        throw new CommandParsingException("`" + neo4jKey + "` and `" + key + "` both set " + key + ": give one");
+      metadata.put(key, entry.getValue());
+    }
   }
 
   /**
