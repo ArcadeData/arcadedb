@@ -33,6 +33,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.PageSnapshotException;
+import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.utility.CodeUtils;
@@ -1200,9 +1201,12 @@ public class SnapshotHttpHandler implements HttpHandler {
    * <p>
    * Deliberately applied here and not in {@code PageManager.openSnapshot}: the full backup reads the same window, and
    * what a backup archive contains is a separate contract (the backup half is #8848).
+   * <p>
+   * Nor anything under the columnar projection root (plan 3, Task 22): the projection is node-local derived state that a
+   * follower rebuilds after an install. It is not a registered file today; the guard keeps a later change from shipping it.
    */
   static boolean isShippedPageFile(final String fileName) {
-    return !PaginatedComponent.isTemporaryFileName(fileName);
+    return !PaginatedComponent.isTemporaryFileName(fileName) && !ColumnarStore.isProjectionEntry(fileName);
   }
 
   /**
