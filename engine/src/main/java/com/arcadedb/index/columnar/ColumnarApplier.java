@@ -424,6 +424,7 @@ final class ColumnarApplier {
     private final GlobalDictionary[]     dictionaries;
     /** Failing values of each column of the record being read, counted only when the record is staged. */
     private final int[]                  failures;
+    private final ColumnarValueExtractor.RecordReader reader;
     private long[]                       found       = new long[16];
     private long[]                       owners      = new long[16];
     private OverlayPageBlock[]           blocks      = new OverlayPageBlock[16];
@@ -475,6 +476,7 @@ final class ColumnarApplier {
       this.dictionaries = new GlobalDictionary[columns.length];
       this.failures = new int[columns.length];
       this.stagedFailures = new long[columns.length];
+      this.reader = new ColumnarValueExtractor.RecordReader(columns);
     }
 
     private int run(final ColumnarIndexManager manager) {
@@ -576,6 +578,7 @@ final class ColumnarApplier {
       database = db.getWrappedDatabaseInstance();
       recordFactory = db.getRecordFactory();
       serializer = db.getSerializer();
+      reader.prepare(db.getSchema().getDictionary());
       externalFileId = projection.externalFileId();
       externalValues = externalFileId < 0 ? null : new ExternalValuePages((LocalBucket) db.getSchema().getBucketById(externalFileId));
       for (int k = 0; k < columns.length; k++) {
@@ -751,14 +754,19 @@ final class ColumnarApplier {
 
     /** Fills {@link #fresh} with the record's column values; a column with no writer dictionary yet (V-B4) is missing. */
     private void extract(final Document document) {
-      for (int k = 0; k < columns.length; k++) {
-        fresh.present[k] = false;
-        failures[k] = 0;
-        final ColumnKind kind = columns[k].kind();
-        if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
-          continue;
-        sink.k = k;
-        failures[k] = extractor.extractForApplyUncounted(document, columns[k], dictionaries[k], sink);
+      reader.begin(document);
+      try {
+        for (int k = 0; k < columns.length; k++) {
+          fresh.present[k] = false;
+          failures[k] = 0;
+          final ColumnKind kind = columns[k].kind();
+          if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
+            continue;
+          sink.k = k;
+          failures[k] = extractor.extractValueForApplyUncounted(reader.raw(k), columns[k], dictionaries[k], sink);
+        }
+      } finally {
+        reader.end();
       }
     }
 

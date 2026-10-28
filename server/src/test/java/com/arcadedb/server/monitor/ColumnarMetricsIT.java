@@ -25,6 +25,7 @@ import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.GlobalConfiguration;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.FunctionTimer;
@@ -165,7 +166,7 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
     eventually(() -> {
       for (final String name : List.of("apply.pages", "apply.placeholders.resolved", "flush.count", "merge.count", "apply.records.reread",
           "apply.unreadable", "rebuild.pages.reused", "flush.duration", "merge.duration", "apply.lag.ms", "overlay.rows", "segments",
-          "segments.dead.ratio", "open.files"))
+          "segments.dead.ratio", "files.open"))
         assertThat(meter("arcadedb.columnar." + name, "type", "Asset")).as(name).isNotNull();
       for (final String name : List.of("dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
           "dictionary.size", "cardinality.exceeded"))
@@ -181,7 +182,7 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
       assertThat(counter("merge.count", "Asset")).isGreaterThan(0);
       assertThat(counter("apply.pages", "Asset")).isGreaterThan(0);
       assertThat(gauge("segments", "Asset")).isGreaterThan(0);
-      assertThat(gauge("open.files", "Asset")).isGreaterThan(0);
+      assertThat(gauge("files.open", "Asset")).isGreaterThan(0);
       assertThat(gauge("apply.lag.ms", "Asset")).isGreaterThanOrEqualTo(0);
       assertThat(gauge("segments.dead.ratio", "Asset")).isGreaterThan(0);
       assertThat(propertyGauge("dictionary.size", "Asset", "brand")).isEqualTo(7);
@@ -191,6 +192,48 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
       assertThat(cache).isNotNull();
       assertThat(((Gauge) cache).value()).isEqualTo((double) BlockCache.instance().usedBytes());
     });
+  }
+
+  @Test
+  void aByItemColumnReportsUnderItsProperty() throws Exception {
+    // final review C-I1: the series of "tags BY ITEM" are the property's, "tags", the key every reader of the projection uses
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.command("sql", "CREATE DOCUMENT TYPE Tagged BUCKETS 1");
+    db.command("sql", "CREATE PROPERTY Tagged.tags LIST OF STRING");
+    db.command("sql", "CREATE INDEX ON Tagged (tags BY ITEM) COLUMNAR METADATA {\"maxCardinality\": 3}");
+    db.transaction(() -> {
+      db.newDocument("Tagged").set("tags", List.of("t0", "t1", "t2")).save();
+      db.newDocument("Tagged").set("tags", List.of("t2", "t3", "t4")).save();
+    });
+    awaitProjection();
+
+    eventually(() -> {
+      assertThat(propertyGauge("dictionary.size", "Tagged", "tags")).isEqualTo(5);
+      assertThat(propertyGauge("cardinality.exceeded", "Tagged", "tags")).isEqualTo(1);
+      for (final String name : List.of("dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures"))
+        assertThat(meter("arcadedb.columnar." + name, "type", "Tagged", "property", "tags")).as(name).isNotNull();
+      assertThat(Metrics.globalRegistry.getMeters().stream().filter(m -> "tags by item".equals(m.getId().getTag("property"))))
+          .as("no series under the index property").isEmpty();
+    });
+  }
+
+  @Test
+  void aDatabaseWithoutColumnarIndexesHasNoSeries() throws Exception {
+    // final review C-M2: the default database of the fixture never gets a COLUMNAR index; another one proves the binder refreshed
+    final String other = getDatabaseName() + "_columnar";
+    final ServerDatabase columnar = getServer(0).getOrCreateDatabase(other);
+    try {
+      columnar.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
+      columnar.command("sql", "CREATE PROPERTY Asset.brand STRING");
+      columnar.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+
+      eventually(() -> assertThat(meter("arcadedb.columnar.recovery.pages", "database", other)).isNotNull());
+      assertThat(metersOfDatabase()).isEmpty();
+    } finally {
+      // ServerDatabase refuses drop(): the embedded instance drops, then the server forgets it
+      columnar.getEmbedded().drop();
+      getServer(0).removeDatabase(other);
+    }
   }
 
   // -------------------------------------------------------------------------------------------------------------------- helpers

@@ -102,7 +102,7 @@ class ColumnarStatsTest {
         "flush.count|Asset|null|null", "merge.count|Asset|null|null", "conversion.failures|Asset|fileSize|null",
         "recovery.pages|null|null|null", "apply.records.reread|Asset|null|null", "apply.unreadable|Asset|null|null",
         "rebuild.pages.reused|Asset|null|null", "flush.duration|Asset|null|null", "merge.duration|Asset|null|null",
-        "overlay.rows|Asset|null|null", "segments|Asset|null|null", "open.files|Asset|null|null"));
+        "overlay.rows|Asset|null|null", "segments|Asset|null|null", "files.open|Asset|null|null"));
     assertThat(new TreeSet<>(keys)).isEqualTo(expected);
     assertThat(keys).hasSameSizeAs(expected);
   }

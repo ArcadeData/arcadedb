@@ -76,7 +76,7 @@ public final class ColumnarMetrics implements AutoCloseable {
 
   private static final String[] TYPE_KINDS = { "apply.pages", "apply.placeholders.resolved", "flush.count", "merge.count",
       "apply.records.reread", "apply.unreadable", "rebuild.pages.reused", "flush.duration", "merge.duration", "apply.lag.ms",
-      "overlay.rows", "segments", "segments.dead.ratio", "open.files" };
+      "overlay.rows", "segments", "segments.dead.ratio", "files.open" };
 
   private static final String[] PROPERTY_KINDS = { "dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
       "dictionary.size", "cardinality.exceeded" };
@@ -147,7 +147,8 @@ public final class ColumnarMetrics implements AutoCloseable {
     for (final String name : server.getDatabaseNames()) {
       final LocalDatabase local = localOf(name);
       final ColumnarIndexManager manager = local != null && local.isOpen() ? local.getColumnarIndexManager() : null;
-      if (manager == null)
+      // final review C-M2: a database that never had a COLUMNAR index gets no series (and no walk of its indexes every refresh)
+      if (manager == null || !manager.hasColumnarState())
         continue;
       open.add(name);
       Bound current = bound.get(name);
@@ -204,8 +205,10 @@ public final class ColumnarMetrics implements AutoCloseable {
       final String type = index.getTypeName();
       for (final String kind : TYPE_KINDS)
         bind(database, b, kind, type, null, null);
+      // final review C-I1: the column's property, the key of every reader ("tags" for "tags by item")
+      final String property = Index.basePropertyName(index.getPropertyNames().getFirst());
       for (final String kind : PROPERTY_KINDS)
-        bind(database, b, kind, type, index.getPropertyNames().get(0), null);
+        bind(database, b, kind, type, property, null);
       for (final String reason : REBUILD_REASONS)
         bind(database, b, "rebuilds", type, null, reason);
     }
@@ -250,8 +253,9 @@ public final class ColumnarMetrics implements AutoCloseable {
     case "merge.duration" -> timer(b, name, tags, "Duration of segment merges", s -> s.mergeDurationCount(type),
         s -> s.mergeDurationTotalNanos(type));
     case "apply.lag.ms" ->
-        managerGauge(b, name, tags, "Age of the oldest committed page not yet applied, the worst bucket of the type", "milliseconds",
-            m -> m.applyLagMs(type));
+        // no base unit: the name carries it (as arcadedb.engine.snapshot.window.age.ms), Prometheus would append it a second time
+        managerGauge(b, name, tags, "Age in milliseconds of the oldest committed page not yet applied, the worst bucket of the type",
+            null, m -> m.applyLagMs(type));
     case "overlay.rows" -> gauge(b, name, tags, "Rows in the in-memory overlay", null, s -> s.overlayRows(type));
     case "segments" -> gauge(b, name, tags, "Segments of the projection", null, s -> s.segments(type));
     case "segments.dead.ratio" ->
@@ -261,7 +265,7 @@ public final class ColumnarMetrics implements AutoCloseable {
     case "cardinality.exceeded" ->
         managerGauge(b, name, tags, "1 when the dictionary of any bucket passed the cardinality limit of the property "
             + "(the lowest limit when several indexes cover it)", null, m -> m.cardinalityExceeded(type, property) ? 1 : 0);
-    case "open.files" -> gauge(b, name, tags, "Open files of the projection", null, s -> s.openFiles(type));
+    case "files.open" -> gauge(b, name, tags, "Open files of the projection", null, s -> s.openFiles(type));
     default -> throw new IllegalArgumentException("Unknown columnar stat " + kind);
     }
   }

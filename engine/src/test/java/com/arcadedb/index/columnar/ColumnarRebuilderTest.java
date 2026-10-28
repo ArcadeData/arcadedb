@@ -238,6 +238,8 @@ class ColumnarRebuilderTest extends TestHelper {
     final ColumnarProjection projection = manager().projection(database.getSchema().getType("Asset").getBuckets(false).getFirst()
         .getFileId());
     final long rebuildsBefore = stats().rebuildsTotal();
+    // the clock of the retry backoff stands still: only the finish could schedule another run here
+    manager().setClockForTesting(() -> 1_000_000L);
     // every scan fails as a full disk would: the projection keeps its previous, usable state and the new column stays unpublished
     final AtomicInteger scans = new AtomicInteger();
     final CountDownLatch finished = new CountDownLatch(1);
@@ -265,6 +267,84 @@ class ColumnarRebuilderTest extends TestHelper {
     awaitCaughtUp();
     assertThat(projection.isPublishedWith(columnarIndex("color").getFileId())).isTrue();
     assertMatchesGroupBy("color");
+  }
+
+  @Test
+  void aFailedRebuildIsRetriedWithBackoffUntilTheFailureClears() throws Exception {
+    // final review (Task 16 M1, Task 23): a failure that clears is built without an outside trigger, one attempt per backoff
+    createIndexedAssets(2_000);
+    final int bucketId = database.getSchema().getType("Asset").getBuckets(false).getFirst().getFileId();
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final long[] now = { 1_000_000L };
+    manager().setClockForTesting(() -> now[0]);
+    final AtomicInteger scans = new AtomicInteger();
+    final AtomicBoolean failing = new AtomicBoolean(true);
+    ColumnarTestHooks.killPoint = name -> {
+      if (name.equals(ColumnarRebuilder.SCANNED)) {
+        scans.incrementAndGet();
+        if (failing.get())
+          throw new IllegalStateException("Simulated write failure of a columnar rebuild");
+      }
+    };
+    database.command("sql", "CREATE INDEX ON Asset (color) COLUMNAR");
+    awaitRebuildRuns(projection, scans, 1);
+    assertThat(manager().rebuildBackoffMsForTesting(bucketId)).isEqualTo(ColumnarIndexManager.REBUILD_RETRY_BASE_MS);
+
+    // passes run all along: none retries before the backoff elapsed
+    manager().scheduleMaintenanceForTesting();
+    assertThat(projection.rebuildRequest.get()).isNull();
+    assertThat(scans.get()).isEqualTo(1);
+
+    now[0] += ColumnarIndexManager.REBUILD_RETRY_BASE_MS;
+    manager().scheduleMaintenanceForTesting();
+    awaitRebuildRuns(projection, scans, 2);
+    assertThat(manager().rebuildBackoffMsForTesting(bucketId)).as("doubled").isEqualTo(2 * ColumnarIndexManager.REBUILD_RETRY_BASE_MS);
+
+    failing.set(false);
+    now[0] += 2 * ColumnarIndexManager.REBUILD_RETRY_BASE_MS;
+    manager().scheduleMaintenanceForTesting();
+    awaitRebuildRuns(projection, scans, 3);
+    ColumnarTestHooks.killPoint = null;
+    awaitCaughtUp();
+    assertThat(projection.isPublishedWith(columnarIndex("color").getFileId())).isTrue();
+    assertThat(manager().rebuildBackoffMsForTesting(bucketId)).as("a published rebuild ends the backoff").isZero();
+    assertMatchesGroupBy("color");
+  }
+
+  @Test
+  void aFailedRebuildOfAnUncheckedProjectionWithoutCheckMarkerMovesTheObligationToTheRebuildMarker() throws Exception {
+    // batch 2 N3: an unclean check whose CHECK marker cannot be written, and whose rebuild fails, must not keep the WAL for the session
+    createIndexedAssets(500);
+    final ColumnarProjection projection = manager().projection(database.getSchema().getType("Asset").getBuckets(false).getFirst()
+        .getFileId());
+    manager().setClockForTesting(() -> 1_000_000L);
+    final Path bucketDir = projection.bucketDir();
+    Files.deleteIfExists(bucketDir.resolve(ColumnarStore.CHECK_MARKER));
+    projection.markUnusableWithoutRequest(ColumnarProjection.UNCLEAN_CHECK);
+    final Path rebuildMarker = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR).resolve(ColumnarStore.REBUILD_MARKER);
+    assertThat(bucketDir.toFile().setWritable(false)).isTrue();
+    try {
+      final CountDownLatch finished = new CountDownLatch(1);
+      ColumnarTestHooks.killPoint = name -> {
+        if (name.equals(ColumnarRebuilder.FINISHED))
+          finished.countDown();
+      };
+      ColumnarRebuilder.schedule(manager(), projection, ColumnarRebuilder.SCHEMA);
+      assertThat(finished.await(WAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+      assertThat(projection.unusableReason()).isEqualTo(ColumnarProjection.CORRUPT);
+      assertThat(rebuildMarker).exists();
+      assertThat(manager().persistRecoverySet()).as("the WAL may be dropped again").isTrue();
+    } finally {
+      ColumnarTestHooks.killPoint = null;
+      bucketDir.toFile().setWritable(true);
+    }
+
+    // the retry publishes and clears the marker
+    manager().setClockForTesting(System::currentTimeMillis);
+    awaitCaughtUp();
+    assertThat(rebuildMarker).doesNotExist();
+    assertMatchesGroupBy("brand");
   }
 
   @Test
@@ -768,6 +848,15 @@ class ColumnarRebuilderTest extends TestHelper {
         }
       }
     };
+  }
+
+  /** Waits until {@code runs} scans happened and no rebuild of the projection is queued or running. */
+  private static void awaitRebuildRuns(final ColumnarProjection projection, final AtomicInteger scans, final int runs)
+      throws InterruptedException {
+    for (int i = 0; i < WAIT_MS && (scans.get() < runs || projection.rebuildRequest.get() != null); i++)
+      Thread.sleep(1);
+    assertThat(scans.get()).isEqualTo(runs);
+    assertThat(projection.rebuildRequest.get()).isNull();
   }
 
   private static void awaitRebuildEnded(final ColumnarProjection projection) throws InterruptedException {

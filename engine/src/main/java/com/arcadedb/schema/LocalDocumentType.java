@@ -122,6 +122,12 @@ public class LocalDocumentType implements DocumentType {
    */
   private final   Map<List<String>, TypeIndex>      columnarIndexesByProperties  = new ConcurrentHashMap<>();
   /**
+   * Final review C-M3: {@link #getAllIndexes(boolean) getAllIndexes(false)} once the type has a COLUMNAR index, both maps in one
+   * unmodifiable list, so the per-commit and per-query callers allocate nothing; rebuilt by {@link #refreshOwnIndexes()} after every
+   * change of either map, null while there is no COLUMNAR index (the key map's own view is answered then, as always).
+   */
+  private volatile Collection<TypeIndex>            ownIndexesWithColumnar;
+  /**
    * The property lists of the indexes {@link TypeIndexBuilder} is populating right now (issue #9331). The index is registered
    * bucket by bucket, each bucket index before its entries are committed, so for the whole build it covers only part of
    * the records: a query that picked it answered with the rows of the buckets built so far, empty ones included.
@@ -2207,10 +2213,8 @@ public class LocalDocumentType implements DocumentType {
     if (!polymorphic || superTypes.isEmpty()) {
       if (columnarIndexesByProperties.isEmpty())
         return Collections.unmodifiableCollection(indexesByProperties.values());
-      final List<TypeIndex> own = new ArrayList<>(indexesByProperties.size() + columnarIndexesByProperties.size());
-      own.addAll(indexesByProperties.values());
-      own.addAll(columnarIndexesByProperties.values());
-      return Collections.unmodifiableList(own);
+      final Collection<TypeIndex> own = ownIndexesWithColumnar;
+      return own != null ? own : combinedOwnIndexes();
     }
 
     final Set<TypeIndex> set = new HashSet<>(indexesByProperties.values());
@@ -2220,6 +2224,18 @@ public class LocalDocumentType implements DocumentType {
       set.addAll(t.getAllIndexes(true));
 
     return Collections.unmodifiableSet(set);
+  }
+
+  private Collection<TypeIndex> combinedOwnIndexes() {
+    final List<TypeIndex> own = new ArrayList<>(indexesByProperties.size() + columnarIndexesByProperties.size());
+    own.addAll(indexesByProperties.values());
+    own.addAll(columnarIndexesByProperties.values());
+    return Collections.unmodifiableList(own);
+  }
+
+  /** After a change of {@link #indexesByProperties} or {@link #columnarIndexesByProperties}; serialized, so the last change wins. */
+  private synchronized void refreshOwnIndexes() {
+    ownIndexesWithColumnar = columnarIndexesByProperties.isEmpty() ? null : combinedOwnIndexes();
   }
 
   @Override
@@ -2596,6 +2612,7 @@ public class LocalDocumentType implements DocumentType {
     // can attach.
     if (propIndex != null && !propIndex.isValid()) {
       indexes.remove(propertyList);
+      refreshOwnIndexes();
       schema.removeIndexDuringLoad(propIndex.getName());
       propIndex = null;
     }
@@ -2618,14 +2635,15 @@ public class LocalDocumentType implements DocumentType {
       // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
       schema.publishIndexDuringLoad(propIndex.getName(), propIndex);
       indexes.put(propertyList, propIndex);
+      refreshOwnIndexes();
     }
     return propIndex;
   }
 
   public void removeTypeIndexInternal(final TypeIndex index) {
     // by identity: TypeIndex.equals() reads the sub-indexes, which a dropped index no longer answers for
-    if (!removeByIdentity(indexesByProperties, index))
-      removeByIdentity(columnarIndexesByProperties, index);
+    if (removeByIdentity(indexesByProperties, index) || removeByIdentity(columnarIndexesByProperties, index))
+      refreshOwnIndexes();
 
     for (final IndexInternal idx : index.getIndexesOnBuckets())
       removeBucketIndexInternal(idx);
@@ -3292,6 +3310,19 @@ public class LocalDocumentType implements DocumentType {
    */
   void checkCanAddSuperType(final LocalDocumentType superType, final boolean newLinkage) {
     checkTimeSeriesHierarchy(superType);
+
+    // final review C-I2: the super type's COLUMNAR indexes reach every bucket of this type and of its sub types, which must not hold
+    // a COLUMNAR column on the same property already (a bucket projection keys its dictionaries by property). Skipped for a linkage
+    // that already holds
+    if (newLinkage)
+      for (final TypeIndex incoming : superType.getAllIndexes(true))
+        if (incoming.getType() == Schema.INDEX_TYPE.COLUMNAR) {
+          final String property = Index.basePropertyName(incoming.getPropertyNames().getFirst());
+          final TypeIndex existing = TypeColumnarIndexBuilder.findColumnarIndexReaching(this, property, incoming);
+          if (existing != null)
+            throw TypeColumnarIndexBuilder.columnarConflict("Cannot make type '" + name + "' a sub type of '" + superType.getName()
+                + "', whose COLUMNAR index '" + incoming.getName() + "' would reach its buckets", existing, property);
+        }
 
     // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
     // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Skipped for a linkage that already holds.

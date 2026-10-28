@@ -976,7 +976,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return -1L;
     try {
       file.readPage(pageNumber, header);
-      return header.getInt(0);
+      return header.getInt(BasePage.PAGE_VERSION_OFFSET);
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on reading the header of page " + pageNumber + " of bucket '" + componentName + "'", e);
     }

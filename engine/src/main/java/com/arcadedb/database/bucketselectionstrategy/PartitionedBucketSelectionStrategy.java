@@ -173,7 +173,8 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
           + "normalisation that placement never applies, so the two spellings of one key sit in two buckets");
 
     for (final TypeIndex index : type.getAllIndexes(true))
-      if (!coversPartitionProperties(index.getPropertyNames()))
+      // an index no lookup reads (COLUMNAR answers facets only) has no lookup to prune
+      if (index.getType() != null && index.getType().isPlannable() && !coversPartitionProperties(index.getPropertyNames()))
         warnings.add("index '" + index.getName() + "' is on " + index.getPropertyNames() + " rather than the "
             + "partition properties " + propertyNames + ", so lookups through it cannot be pruned to one bucket and "
             + "fan out across all of them");

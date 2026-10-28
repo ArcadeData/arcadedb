@@ -329,6 +329,20 @@ public final class GlobalDictionary {
       rankView = built;
   }
 
+  /** The ordinals the rank view covers: the first {@code rankViewSize()} ordinals rank by position, the newer ones by search. */
+  public int rankViewSize() {
+    return rankView.rankOfOrdinal.length;
+  }
+
+  /**
+   * Whether the ordinals appended since the rank view was built are enough to rebuild it: more than {@code max(1024, rankViewSize / 8)}
+   * (plan 3), so a sort ranks them by position again without re-sorting a large dictionary for a few new values.
+   */
+  public boolean isRankViewStale() {
+    final int covered = rankView.rankOfOrdinal.length;
+    return size - covered > Math.max(1024, covered / 8);
+  }
+
   /** The rank view's ordinals in value order. Not copied: callers must not mutate it. */
   public int[] sortedOrdinals() {
     return rankView.sortedOrdinals;

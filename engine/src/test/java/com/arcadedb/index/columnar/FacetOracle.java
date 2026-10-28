@@ -30,9 +30,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
 import java.lang.reflect.Array;
@@ -495,13 +493,16 @@ public final class FacetOracle {
         + " diverges from GROUP BY (" + keys.size() + " keys, first differences): " + diffs);
   }
 
+  /**
+   * The column of the COLUMNAR index on {@code property} the type declares or inherits, resolved as the schema resolves it (the type's
+   * own first, then its super types in declaration order), so the answer never depends on hash iteration order.
+   */
   private static ColumnDefinition column(final Database db, final String type, final String property) {
-    final DocumentType documentType = db.getSchema().getType(type);
-    for (final TypeIndex index : documentType.getAllIndexes(true))
-      if (index.getType() == Schema.INDEX_TYPE.COLUMNAR)
-        for (final IndexInternal sub : index.getSubIndexes())
-          if (sub instanceof ColumnarIndex columnar && columnar.columnDefinition().property().equals(property))
-            return columnar.columnDefinition();
+    final TypeIndex index = db.getSchema().getType(type).getPolymorphicColumnarIndex(property);
+    if (index != null)
+      for (final IndexInternal sub : index.getSubIndexes())
+        if (sub instanceof ColumnarIndex columnar)
+          return columnar.columnDefinition();
     throw new IllegalArgumentException("Type " + type + " has no COLUMNAR index on '" + property + "'");
   }
 

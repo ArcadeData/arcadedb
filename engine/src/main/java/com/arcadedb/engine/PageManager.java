@@ -1649,10 +1649,6 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * The version of the most recent committed copy of a page this node holds: the read cache, the flush pipeline or the
-   * file, in that order. {@code 0} for a page that does not exist yet.
-   */
-  /**
    * The version of the page's copy that the flush pipeline still holds for its file (committed, not written yet), -1 when the file holds
    * the newest version. Reads no page and caches nothing.
    */
@@ -1661,6 +1657,10 @@ public class PageManager extends LockContext {
     return thread == null ? -1L : thread.pendingVersionOf(pageId);
   }
 
+  /**
+   * The version of the most recent committed copy of a page this node holds: the read cache, the flush pipeline or the
+   * file, in that order. {@code 0} for a page that does not exist yet.
+   */
   public int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
     CachedPage page = readCache.get(pageId);
     if (page == null)

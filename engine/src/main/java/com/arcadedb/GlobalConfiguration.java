@@ -392,7 +392,9 @@ public enum GlobalConfiguration {
 
   COLUMNAR_APPLY_INTERVAL("arcadedb.columnar.applyInterval", SCOPE.DATABASE,
       "Milliseconds between two checks for committed pages to apply to the COLUMNAR indexes of a database. The JVM-wide ticker "
-          + "wakes up every 10ms and honors this value per database, at every check. Default is 100", Long.class, 100L),
+          + "wakes up every 10ms and honors this value per database, at every check. Under sustained ingest the interval is stretched "
+          + "up to 5 times, never past the larger of this value and 500ms (500ms at the default), so one pass covers more commits; "
+          + "schema reconciles and file watchers of COLUMNAR indexes ride on the same interval. Default is 100", Long.class, 100L),
 
   COLUMNAR_APPLY_THREADS("arcadedb.columnar.applyThreads", SCOPE.JVM,
       "Threads of the JVM-wide pool that applies committed pages to COLUMNAR indexes (at most one pass per database at a time). "

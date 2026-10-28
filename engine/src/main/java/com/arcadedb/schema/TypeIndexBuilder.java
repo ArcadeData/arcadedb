@@ -316,6 +316,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   @Override
   public TypeIndex create() {
+    // withType(COLUMNAR) records the type on this builder too (a caller may ignore the builder it returns): the COLUMNAR checks of
+    // TypeColumnarIndexBuilder (one index per property per hierarchy, the cardinality limit) must run on that route as well
+    if (indexType == Schema.INDEX_TYPE.COLUMNAR && !(this instanceof TypeColumnarIndexBuilder))
+      return new TypeColumnarIndexBuilder(this).create();
+
     built = false;
     builtInCallerTransaction = false;
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -567,6 +572,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           current.drop();
           replaced[0] = definition;
         }
+        try {
+          checkUnderSchemaLock(type);
+        } catch (final RuntimeException refusal) {
+          // a refusal, not a failed build: thrown as it is once the build's try is left, as the one over a concurrent index
+          refusedOverConcurrent[0] = refusal;
+          return null;
+        }
 
         if (deferredUniqueCheck) {
           // UNDER THE WRITE LOCK, AFTER THE DECISION OVER AN EXISTING INDEX AND THE DROP OF A REPLACED ONE: NO OTHER INDEX ON THESE
@@ -729,6 +741,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     }
 
     return created;
+  }
+
+  /**
+   * A last refusal of the request, asked under the schema write lock right before the build, once any index on the requested
+   * properties was decided over: nothing for a key index; {@link TypeColumnarIndexBuilder} asks again there what it asked before the
+   * lock, so a concurrent creation cannot slip between the two.
+   */
+  protected void checkUnderSchemaLock(final LocalDocumentType type) {
   }
 
   /**

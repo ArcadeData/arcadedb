@@ -29,6 +29,7 @@ import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,31 +41,45 @@ import java.util.logging.Level;
 
 /**
  * Spec 2 goal "ingest cost unchanged" (spec 10 benchmarks), report only: 200,000 inserts then 100,000 updates of {@code Asset}, without
- * (A) and with (B) the five COLUMNAR indexes of {@link ColumnarTestData#createSchema}, on the same seeded data, each run on a fresh
- * database.
+ * (A) and with (B) the five COLUMNAR indexes of {@link ColumnarTestData#createSchema}, and B' = B with every apply pass of the database
+ * held ({@link ColumnarIndexManager#suspendApply()}) across both phases, on the same seeded data, each run on a fresh database. B' tells
+ * the commit path (the page marking inside {@code commit()}, which B' still pays) from the background apply passes and flushes (which
+ * B' defers to after the phases): B' close to A and B above both puts the overhead on the background.
  * <p>
- * Method: one warm-up run of each variant, then {@value #MEASURED_PAIRS} measured A/B pairs whose order alternates (AB, BA, AB, ...),
- * so a drift of the machine over the run weighs on both variants alike. Per variant and phase the log line gives the median, min and
- * max over the pairs of the stall-discounted phase time ({@link StallAwareStopwatch#effectiveMs()}), and the median over the runs of
- * each run's median bytes allocated by the committing thread inside {@code commit()}. The projection's apply passes run on their own
- * pool after each commit, off the ingest path: variant B also logs an "apply catch-up" phase, the time from the end of the updates
- * until {@link ColumnarIndexManager#awaitCaughtUp} returns. Nothing is asserted.
+ * Method: one warm-up run of each variant, then {@value #MEASURED_ROUNDS} measured A/B/B' triples whose order rotates (A B B', B B' A,
+ * B' A B, ...), so a drift of the machine over the run weighs on every variant alike. Per variant and phase the log line gives the median,
+ * min and max over the triples of the stall-discounted phase time ({@link StallAwareStopwatch#effectiveMs()}), the median of the CPU time
+ * of the committing thread over the phase, the median of the GC count and GC time of the JVM over the phase, and the median over the runs
+ * of each run's median bytes allocated by the committing thread inside {@code commit()}. B and B' also log an "apply catch-up" phase, the
+ * time from the end of the updates (for B', from the release of the hold) until {@link ColumnarIndexManager#awaitCaughtUp} returns.
+ * Nothing is asserted.
  */
 @Tag("benchmark")
 class ColumnarIngestOverheadBenchmark extends TestHelper {
-  private static final int    INSERTS          = 200_000;
-  private static final int    UPDATES          = 100_000;
-  private static final int    TRANSACTION_SIZE = 500;
-  private static final int    MEASURED_PAIRS   = 5;
-  private static final long   SEED             = 42;
-  private static final long   DAY_MS           = 86_400_000L;
-  private static final long   EPOCH_2020_MS    = 1_577_836_800_000L;
-  private static final long   CATCH_UP_MS      = 600_000;
-  private static final String TYPE             = ColumnarTestData.TYPE;
+  private static final int      INSERTS          = 200_000;
+  private static final int      UPDATES          = 100_000;
+  private static final int      TRANSACTION_SIZE = 500;
+  private static final int      MEASURED_ROUNDS  = 5;
+  private static final long     SEED             = 42;
+  private static final long     DAY_MS           = 86_400_000L;
+  private static final long     EPOCH_2020_MS    = 1_577_836_800_000L;
+  private static final long     CATCH_UP_MS      = 600_000;
+  private static final String   TYPE             = ColumnarTestData.TYPE;
+  private static final String[] VARIANTS         = { "A without COLUMNAR", "B with 5 COLUMNAR", "B' 5 COLUMNAR held" };
+  // variants
+  private static final int      A                = 0;
+  private static final int      B                = 1;
+  private static final int      B_HELD           = 2;
   // phases of one run
-  private static final int    INSERT           = 0;
-  private static final int    UPDATE           = 1;
-  private static final int    CATCH_UP         = 2;
+  private static final int      INSERT           = 0;
+  private static final int      UPDATE           = 1;
+  private static final int      CATCH_UP         = 2;
+  // figures of one phase
+  private static final int      EFFECTIVE_MS     = 0;
+  private static final int      CPU_MS           = 1;
+  private static final int      GC_COUNT         = 2;
+  private static final int      GC_MS            = 3;
+  private static final int      BYTES            = 4;
 
   private final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
 
@@ -75,46 +90,46 @@ class ColumnarIngestOverheadBenchmark extends TestHelper {
 
   @Test
   void ingestWithAndWithoutColumnarIndexes() throws Exception {
-    run(false);
-    recreateDatabase();
-    run(true);
+    for (int variant = 0; variant < VARIANTS.length; variant++) {
+      run(variant);
+      recreateDatabase();
+    }
 
-    // [variant][phase][pair]: effective ms; [variant][phase][pair]: median bytes per commit
-    final long[][][] ms = new long[2][3][MEASURED_PAIRS];
-    final long[][][] bytes = new long[2][2][MEASURED_PAIRS];
-    for (int pair = 0; pair < MEASURED_PAIRS; pair++)
-      for (int k = 0; k < 2; k++) {
-        final boolean columnar = (pair + k) % 2 == 1;
+    // [variant][phase][figure][round]
+    final long[][][][] figures = new long[VARIANTS.length][3][5][MEASURED_ROUNDS];
+    for (int round = 0; round < MEASURED_ROUNDS; round++)
+      for (int k = 0; k < VARIANTS.length; k++) {
+        final int variant = (round + k) % VARIANTS.length;
+        final long[][] result = run(variant);
         recreateDatabase();
-        final long[] result = run(columnar);
-        final int variant = columnar ? 1 : 0;
-        ms[variant][INSERT][pair] = result[0];
-        ms[variant][UPDATE][pair] = result[1];
-        ms[variant][CATCH_UP][pair] = result[2];
-        bytes[variant][INSERT][pair] = result[3];
-        bytes[variant][UPDATE][pair] = result[4];
+        for (int phase = 0; phase < 3; phase++)
+          for (int figure = 0; figure < 5; figure++)
+            figures[variant][phase][figure][round] = result[phase][figure];
       }
 
-    for (int variant = 0; variant < 2; variant++) {
-      final String name = variant == 0 ? "A without COLUMNAR" : "B with 5 COLUMNAR";
-      report(name, INSERTS + " inserts", ms[variant][INSERT], bytes[variant][INSERT]);
-      report(name, UPDATES + " updates", ms[variant][UPDATE], bytes[variant][UPDATE]);
+    for (int variant = 0; variant < VARIANTS.length; variant++) {
+      report(VARIANTS[variant], INSERTS + " inserts", figures[variant][INSERT]);
+      report(VARIANTS[variant], UPDATES + " updates", figures[variant][UPDATE]);
     }
-    report("B with 5 COLUMNAR", "apply catch-up", ms[1][CATCH_UP], null);
+    report(VARIANTS[B], "apply catch-up", figures[B][CATCH_UP]);
+    report(VARIANTS[B_HELD], "apply catch-up", figures[B_HELD][CATCH_UP]);
   }
 
   /**
    * One run on the current (fresh) database.
    *
-   * @return insert ms, update ms, catch-up ms (0 without COLUMNAR), median insert bytes per commit, median update bytes per commit
+   * @return per phase (insert, update, catch-up): effective ms, committer CPU ms, GC count, GC ms, median bytes per commit (0 for the
+   * catch-up); the catch-up is all zero without COLUMNAR
    */
-  private long[] run(final boolean columnar) throws InterruptedException {
-    createSchema(columnar);
+  private long[][] run(final int variant) throws Exception {
+    createSchema(variant != A);
     final Random random = new Random(SEED);
     final List<RID> rids = new ArrayList<>(INSERTS);
+    final long[][] result = new long[3][5];
 
+    final AutoCloseable hold = variant == B_HELD ? manager().suspendApply() : null;
     final long[] insertBytes = new long[(INSERTS + TRANSACTION_SIZE - 1) / TRANSACTION_SIZE];
-    final StallAwareStopwatch insertWatch = StallAwareStopwatch.start();
+    Phase phase = new Phase();
     for (int commit = 0; commit < insertBytes.length; commit++) {
       database.begin();
       for (int i = commit * TRANSACTION_SIZE; i < Math.min((commit + 1) * TRANSACTION_SIZE, INSERTS); i++) {
@@ -125,10 +140,10 @@ class ColumnarIngestOverheadBenchmark extends TestHelper {
       }
       insertBytes[commit] = commit();
     }
-    final long insertMs = insertWatch.effectiveMs();
+    phase.end(result[INSERT], median(insertBytes));
 
     final long[] updateBytes = new long[(UPDATES + TRANSACTION_SIZE - 1) / TRANSACTION_SIZE];
-    final StallAwareStopwatch updateWatch = StallAwareStopwatch.start();
+    phase = new Phase();
     for (int commit = 0; commit < updateBytes.length; commit++) {
       database.begin();
       for (int i = commit * TRANSACTION_SIZE; i < Math.min((commit + 1) * TRANSACTION_SIZE, UPDATES); i++) {
@@ -142,16 +157,47 @@ class ColumnarIngestOverheadBenchmark extends TestHelper {
       }
       updateBytes[commit] = commit();
     }
-    final long updateMs = updateWatch.effectiveMs();
+    phase.end(result[UPDATE], median(updateBytes));
 
-    long catchUpMs = 0;
-    if (columnar) {
-      final StallAwareStopwatch catchUpWatch = StallAwareStopwatch.start();
+    if (variant != A) {
+      phase = new Phase();
+      if (hold != null)
+        hold.close();
       if (!manager().awaitCaughtUp(CATCH_UP_MS))
         throw new IllegalStateException("The columnar projections did not catch up within " + CATCH_UP_MS + " ms");
-      catchUpMs = catchUpWatch.effectiveMs();
+      phase.end(result[CATCH_UP], 0);
     }
-    return new long[] { insertMs, updateMs, catchUpMs, median(insertBytes), median(updateBytes) };
+    return result;
+  }
+
+  /** The figures of one phase, from its construction to {@link #end}. */
+  private final class Phase {
+    private final StallAwareStopwatch watch    = StallAwareStopwatch.start();
+    private final long                cpuNanos = threads.getCurrentThreadCpuTime();
+    private final long                gcCount  = gcCount();
+    private final long                gcMs     = gcMs();
+
+    void end(final long[] into, final long bytesPerCommit) {
+      into[EFFECTIVE_MS] = watch.effectiveMs();
+      into[CPU_MS] = (threads.getCurrentThreadCpuTime() - cpuNanos) / 1_000_000L;
+      into[GC_COUNT] = gcCount() - gcCount;
+      into[GC_MS] = gcMs() - gcMs;
+      into[BYTES] = bytesPerCommit;
+    }
+  }
+
+  private static long gcCount() {
+    long total = 0;
+    for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans())
+      total += Math.max(0, gc.getCollectionCount());
+    return total;
+  }
+
+  private static long gcMs() {
+    long total = 0;
+    for (final GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans())
+      total += Math.max(0, gc.getCollectionTime());
+    return total;
   }
 
   /** Commits the open transaction and returns the bytes the calling thread allocated inside the commit. */
@@ -162,14 +208,14 @@ class ColumnarIngestOverheadBenchmark extends TestHelper {
     return threads.getThreadAllocatedBytes(threadId) - before;
   }
 
-  private void report(final String variant, final String phase, final long[] ms, final long[] bytesPerCommit) {
-    final long[] sorted = ms.clone();
+  private void report(final String variant, final String phase, final long[][] figures) {
+    final long[] sorted = figures[EFFECTIVE_MS].clone();
     Arrays.sort(sorted);
-    final String allocation = bytesPerCommit == null ? "" :
-        String.format(Locale.ROOT, ", %,d bytes allocated per commit (median)", median(bytesPerCommit));
-    LogManager.instance().log(this, Level.INFO,
-        String.format(Locale.ROOT, "INGEST %-19s %-15s median %,6d ms effective (min %,d, max %,d, %d runs)%s", variant, phase,
-            median(ms), sorted[0], sorted[sorted.length - 1], ms.length, allocation));
+    LogManager.instance().log(this, Level.INFO, String.format(Locale.ROOT,
+        "INGEST %-19s %-15s median %,6d ms effective (min %,d, max %,d, %d runs), committer CPU %,d ms, GC %d collections %,d ms, "
+            + "%,d bytes allocated per commit (medians)", variant, phase, median(figures[EFFECTIVE_MS]), sorted[0],
+        sorted[sorted.length - 1], sorted.length, median(figures[CPU_MS]), median(figures[GC_COUNT]), median(figures[GC_MS]),
+        median(figures[BYTES])));
   }
 
   /** The median; of an even count, the mean of the middle two. */

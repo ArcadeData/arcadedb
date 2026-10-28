@@ -18,9 +18,12 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentIndexer;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
@@ -178,6 +181,15 @@ public final class ColumnarValueExtractor {
     return extract(record, column, dictionary, true, sink);
   }
 
+  /**
+   * {@link #extractForApplyUncounted} of a raw value already read from the record ({@link RecordReader#raw}): null or absent is
+   * missing.
+   */
+  int extractValueForApplyUncounted(final Object raw, final ColumnDefinition column, final GlobalDictionary dictionary,
+      final ValueSink sink) {
+    return extractRaw(raw, column, dictionary, true, sink);
+  }
+
   /** Counts {@code failures} conversion failures of the column. */
   void countFailures(final ColumnDefinition column, final int failures) {
     for (int i = 0; i < failures; i++)
@@ -225,7 +237,11 @@ public final class ColumnarValueExtractor {
   /** Returns the number of failing values; counts nothing. */
   private int extract(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final boolean grow,
       final ValueSink sink) {
-    final Object raw = DocumentIndexer.getPropertyValue(record, column.property());
+    return extractRaw(DocumentIndexer.getPropertyValue(record, column.property()), column, dictionary, grow, sink);
+  }
+
+  private int extractRaw(final Object raw, final ColumnDefinition column, final GlobalDictionary dictionary, final boolean grow,
+      final ValueSink sink) {
     if (raw == null) {
       sink.missing();
       return 0;
@@ -342,5 +358,89 @@ public final class ColumnarValueExtractor {
     if (converted == null)
       throw UNCONVERTIBLE;
     return converted;
+  }
+  /**
+   * Reads the raw values of the columns of one record with ONE walk of its header (final review C, ingest cost): the per-column read
+   * ({@link DocumentIndexer#getPropertyValue}) walks the header twice per column ({@code has}, then {@code get}). For the apply pass and
+   * the rebuild, one instance per pass and thread. A column is read through the walk when its property is a plain name the schema
+   * dictionary knew at {@link #prepare} (a nested path, an {@code @} property, or a name first written later takes the per-column read),
+   * and the record is an {@link ImmutableDocument} whose header reads; anything else takes the per-column read, which answers exactly as
+   * before. The record's content is left at the position it had.
+   */
+  static final class RecordReader {
+    private final ColumnDefinition[] columns;
+    private final int[]              positions;
+    /** Whether column k is read through the walk, decided by {@link #prepare}. */
+    private final boolean[]          walked;
+    private int[]                    slotByNameId = new int[0];
+    private int                      wanted;
+    // the record being read, between begin and end
+    private Document                 document;
+    private ImmutableDocument        immutable;
+    private Binary                   located;
+    private int                      before;
+
+    RecordReader(final ColumnDefinition[] columns) {
+      this.columns = columns;
+      this.positions = new int[columns.length];
+      this.walked = new boolean[columns.length];
+    }
+
+    /** Resolves the dictionary ids of the column properties, once per pass. */
+    void prepare(final Dictionary dictionary) {
+      final int[] ids = new int[columns.length];
+      int length = 0;
+      for (int k = 0; k < columns.length; k++) {
+        final String property = columns[k].property();
+        ids[k] = property.indexOf('.') >= 0 || property.startsWith("@") ? -1 : dictionary.getIdByName(property, false);
+        length = Math.max(length, ids[k] + 1);
+      }
+      if (slotByNameId.length < length)
+        slotByNameId = new int[length];
+      Arrays.fill(slotByNameId, -1);
+      wanted = 0;
+      for (int k = 0; k < columns.length; k++) {
+        // a second column on the same property (refused by the schema) would share the slot: it reads on its own
+        walked[k] = ids[k] >= 0 && slotByNameId[ids[k]] < 0;
+        if (walked[k]) {
+          slotByNameId[ids[k]] = k;
+          wanted++;
+        }
+      }
+    }
+
+    /** Walks the header of the record for the columns of {@link #prepare}; pair with {@link #end()}. */
+    void begin(final Document record) {
+      document = record;
+      if (wanted == 0 || !(record instanceof ImmutableDocument doc))
+        return;
+      final Binary content = doc.getBuffer();
+      if (content == null)
+        return;
+      before = content.position();
+      content.position(doc.getPropertiesStartingPosition());
+      located = doc.locateProperties(slotByNameId, positions, wanted);
+      if (located == null)
+        content.position(before);
+      else
+        immutable = doc;
+    }
+
+    /** The raw value of column k of the record, as {@link DocumentIndexer#getPropertyValue} reads it: null when absent. */
+    Object raw(final int k) {
+      if (located == null || !walked[k])
+        return DocumentIndexer.getPropertyValue(document, columns[k].property());
+      final int position = positions[k];
+      return position < 0 ? null : immutable.getPropertyAt(located, columns[k].property(), position, null);
+    }
+
+    /** Leaves the record's content at the position it had before {@link #begin}. */
+    void end() {
+      if (located != null)
+        located.position(before);
+      located = null;
+      immutable = null;
+      document = null;
+    }
   }
 }

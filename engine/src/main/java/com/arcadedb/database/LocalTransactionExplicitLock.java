@@ -92,6 +92,11 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
             + last.getMessage());
   }
 
+  /** Whether {@link #lock()} would lock the file; for tests of what the collection takes. */
+  boolean collectsFile(final int fileId) {
+    return filesToLock.contains(fileId);
+  }
+
   private void refreshFileIds() {
     filesToLock.clear();
     for (final String b : bucketNames)
@@ -166,6 +171,9 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
    * "not all the modified resources were locked" error. Keep this symmetric with addFilesToLock.
    */
   private void addIndexFileIds(final IndexInternal idx) {
+    // no commit writes the file of an index the transaction does not maintain (COLUMNAR): nothing to lock
+    if (idx.getType() != null && !idx.getType().isMaintainedInTransaction())
+      return;
     for (final int fileId : idx.getFileIds())
       addNonNegative(fileId);
   }

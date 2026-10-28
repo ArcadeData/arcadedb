@@ -120,6 +120,10 @@ public final class ColumnarIndexManager {
   static final long MAINTENANCE_BACKOFF_BASE_MS   = 1_000L;
   /** Longest delay between two attempts of a failing flush or merge. */
   static final long MAINTENANCE_BACKOFF_MAX_MS    = 60_000L;
+  /** Delay before the first retry of a failed rebuild of a projection; doubled per failure in a row, see {@link #rebuildFailed}. */
+  static final long REBUILD_RETRY_BASE_MS = 1_000L;
+  /** Longest delay between two attempts of a failing rebuild. */
+  static final long REBUILD_RETRY_MAX_MS  = 300_000L;
   /** Merges of a projection failing in a row with a {@link BlockCorruptionException} after which it is marked {@code corrupt}. */
   static final int  CORRUPT_MERGES_BEFORE_REBUILD = 3;
   /** Bound of the drain of {@link #close()}, of the wait of {@link #suspendApply()} for a running pass, and of {@link #flushNow()}. */
@@ -143,6 +147,19 @@ public final class ColumnarIndexManager {
   static final String DROP_FENCE = "projection.dropFence";
   /** Reached by the reconcile of a pass before it reads the schema. */
   static final String RECONCILE = "manager.reconcile";
+  /**
+   * Largest factor the apply interval ({@code arcadedb.columnar.applyInterval}) is stretched by while every pass leaves new marks
+   * behind (sustained ingest): 5, and never past {@code max(applyInterval, }{@link #APPLY_PACING_LAG_LIMIT_MS}{@code )}, so 100 ms
+   * stretches to 500 ms at most and the apply lag stays below the spec's ~1 s target.
+   */
+  static final int    APPLY_PACING_MAX_FACTOR = 5;
+  /**
+   * Least time between two rank-view rebuilds of one projection (plan 3 rank view): a dictionary that keeps growing past the staleness
+   * threshold ({@link GlobalDictionary#isRankViewStale()}) is re-sorted at most this often, on the maintenance pool.
+   */
+  static final long   RANK_VIEW_MIN_INTERVAL_MS = 10_000L;
+  /** Oldest pending mark age past which the pacing falls back to the base interval, whatever the ingest. */
+  static final long   APPLY_PACING_LAG_LIMIT_MS = 500L;
 
   /** Permits of {@link #fallbackScans()}; plan 4 reads them from {@code arcadedb.columnar.maxFallbackScans}. */
   private static final int    FALLBACK_SCANS  = 2;
@@ -165,6 +182,14 @@ public final class ColumnarIndexManager {
     volatile long            backoffMs;
     volatile boolean         mergeWanted;
     int                      corruptMerges;
+    /** The reason the failed rebuild is retried with, set before {@link #rebuildRetryAtMs}; see {@link #rebuildFailed}. */
+    volatile String          rebuildRetryReason;
+    /** Clock time at which the failed rebuild is retried, 0 for none. */
+    volatile long            rebuildRetryAtMs;
+    /** Delay of the last retry of a failing rebuild, 0 once a rebuild published. */
+    volatile long            rebuildBackoffMs;
+    /** The clock time of the last rank-view rebuild of the projection ({@link #rebuildRankViews}); written by its jobs only. */
+    volatile long            rankViewsRebuiltMs = Long.MIN_VALUE;
     /** The clock time of the last compaction check of each ordinal column, by index file id ({@link #compactAfterMerge}). */
     final Map<Integer, Long> compactionCheckedMs = new ConcurrentHashMap<>();
     // written by close() only
@@ -199,6 +224,8 @@ public final class ColumnarIndexManager {
   private volatile boolean    reconcileTracked;
   private final List<Consumer<ColumnarSchemaEvent>> schemaListeners = new CopyOnWriteArrayList<>();
   private final Runnable      tick         = this::tick;
+  /** The interval the tick is registered with: the paced apply interval, read only when there is work (C-M1). */
+  private final LongSupplier  tickInterval = this::tickIntervalMs;
 
   private final ReentrantLock                         registryLock = new ReentrantLock();
   // guarded by registryLock
@@ -260,7 +287,16 @@ public final class ColumnarIndexManager {
   private final AtomicInteger maintenanceInFlight = new AtomicInteger();
   /** Maintenance bodies entered and not ended, see {@link Slot#running}. */
   private final AtomicInteger maintenanceRunning  = new AtomicInteger();
+  /** The startup ran on a writable database and no close began: the tick may run (registered once there is work, C-M1). */
   private volatile boolean    applying;
+  /** The tick is registered with {@link ColumnarApplyPool}; guarded by {@link #tickLock}. */
+  private boolean             tickRegistered;
+  private final Object        tickLock            = new Object();
+  /**
+   * The factor the apply interval is stretched by under sustained ingest, 1 to {@link #APPLY_PACING_MAX_FACTOR} (see
+   * {@link #paceAfterPass}); written by the pass only, which never runs twice at once for a database.
+   */
+  private volatile int        applyPacing         = 1;
   private volatile boolean    closing;
   private volatile boolean    killed;
   private volatile long       lastPassMs          = System.currentTimeMillis();
@@ -892,6 +928,8 @@ public final class ColumnarIndexManager {
     slots = next;
     routes = new Routes(byFileId, external);
     refreshMarkTargets();
+    if (applying && (next.length > 0 || !failedBuckets.isEmpty()))
+      ensureTicking();
   }
 
   /**
@@ -1222,6 +1260,7 @@ public final class ColumnarIndexManager {
       watcher.fileIds = Arrays.stream(merged).filter(id -> id >= 0).distinct().toArray();
       publishWatchers();
     }
+    ensureTicking();
   }
 
   /** Removes the watcher of {@link #watchFiles}; it does not run again once a pass running it ends. */
@@ -1323,8 +1362,82 @@ public final class ColumnarIndexManager {
     if (readOnly || closing || applying)
       return;
     recordReconcileBase();
-    ColumnarApplyPool.getInstance().register(tick, () -> database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL));
-    applying = true;
+    synchronized (tickLock) {
+      applying = true;
+    }
+    if (hasTickWork())
+      ensureTicking();
+  }
+
+  /**
+   * C-M1: registers the tick with {@link ColumnarApplyPool} the first time this database has columnar work, so a database that never
+   * had a COLUMNAR index starts no ticker and is never woken up. Idempotent; nothing before the startup or once a close began.
+   */
+  private void ensureTicking() {
+    synchronized (tickLock) {
+      if (tickRegistered || !applying || closing)
+        return;
+      ColumnarApplyPool.getInstance().register(tick, tickInterval);
+      tickRegistered = true;
+    }
+  }
+
+  /** Something a tick acts on exists: a projection, a failed open, a file watcher or a tracked definition to reconcile. */
+  private boolean hasTickWork() {
+    return slots.length > 0 || !failedBuckets.isEmpty() || watchers.length > 0 || reconcileTracked;
+  }
+
+  /**
+   * The interval {@link ColumnarApplyPool} checks the tick at: every base period while there is nothing to do (the tick then returns
+   * after its few volatile reads, and no configuration is read, C-M1), otherwise {@code arcadedb.columnar.applyInterval} times the
+   * current pacing factor, capped at {@code max(applyInterval, }{@link #APPLY_PACING_LAG_LIMIT_MS}{@code )}.
+   */
+  private long tickIntervalMs() {
+    if (isIdle())
+      return 0L;
+    final long base = database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL);
+    final int factor = applyPacing;
+    // batch 3 r1 M1: never stretched past max(base, the lag limit), so the lag bound holds whatever the configured interval
+    return factor == 1 ? base : Math.min(base * factor, Math.max(base, APPLY_PACING_LAG_LIMIT_MS));
+  }
+
+  /** Nothing for a tick to do: no projection, no pending watcher, no failed open, no due reconcile. Volatile reads only. */
+  private boolean isIdle() {
+    return slots.length == 0 && !watchersPending && failedBuckets.isEmpty() && !isReconcileDue();
+  }
+
+  /**
+   * Adaptive apply pacing (final review C, spec 2 "ingest cost unchanged"), after the apply loop of a pass: when the pass leaves marks
+   * behind that arrived while it ran (sustained ingest), the interval to the next pass doubles, up to {@link #APPLY_PACING_MAX_FACTOR}
+   * times the base, so one pass covers more commits and a page written by consecutive commits is re-read once instead of once per base
+   * interval. It falls back to the base as soon as a pass finds nothing left, or the oldest pending mark is older than
+   * {@link #APPLY_PACING_LAG_LIMIT_MS}. The stretched interval never exceeds {@code max(applyInterval, 500 ms)}
+   * ({@link #tickIntervalMs}), so the apply lag stays bounded by that plus one pass: an interval of 500 ms or more is not stretched at
+   * all. Everything else the tick drives (reconcile, watchers, open retries, waiting rebuilds) rides on the same interval.
+   */
+  private void paceAfterPass(final long nowMs) {
+    final long oldest = oldestPendingMarkMs();
+    if (oldest == 0 || nowMs - oldest > APPLY_PACING_LAG_LIMIT_MS) {
+      if (applyPacing != 1)
+        applyPacing = 1;
+    } else if (applyPacing < APPLY_PACING_MAX_FACTOR)
+      applyPacing = Math.min(APPLY_PACING_MAX_FACTOR, applyPacing * 2);
+  }
+
+  /** The start time of the oldest epoch with pending marks over every projection, 0 for none; lock free. */
+  private long oldestPendingMarkMs() {
+    long oldest = 0;
+    for (final Slot slot : slots) {
+      oldest = older(oldest, slot.projection.tracker().oldestPendingEpochStartMs());
+      final DirtyPageTracker external = slot.projection.externalTracker();
+      if (external != null)
+        oldest = older(oldest, external.oldestPendingEpochStartMs());
+    }
+    return oldest;
+  }
+
+  private static long older(final long a, final long b) {
+    return a == 0 ? b : b == 0 ? a : Math.min(a, b);
   }
 
   /**
@@ -1628,8 +1741,71 @@ public final class ColumnarIndexManager {
     }
   }
 
+  /**
+   * {@link ColumnarRebuilder}, after a rebuild of the projection failed (final review: Task 16 M1, Task 23, batch 2 N3): the rebuild is
+   * retried with its reason by the first pass after a bounded exponential backoff ({@link #REBUILD_RETRY_BASE_MS} doubling up to
+   * {@link #REBUILD_RETRY_MAX_MS}), so a failure that clears (a full disk freed) is built without an outside trigger, and one that does
+   * not costs one attempt per backoff, never a back-to-back loop. A rebuild that publishes ends the backoff.
+   * <p>
+   * A projection serving the fallback for its unclean-open check whose {@code CHECK} marker could not be written (the retype path of the
+   * startup) is held only by the WAL, which {@link #persistRecoverySet()} would then keep for the whole session: the obligation moves
+   * to the {@code REBUILD} marker (reason {@code corrupt}, owed when it cannot be written either), which every later open honours, so the
+   * WAL drops are refused only while neither marker can be written.
+   */
+  void rebuildFailed(final ColumnarProjection projection, final String reason) {
+    final Slot slot = slotOf(projection);
+    if (slot == null || closing || readOnly)
+      return;
+    if (ColumnarProjection.UNCLEAN_CHECK.equals(projection.unusableReason()) && !Files.exists(projection.bucketDir().resolve(
+        ColumnarStore.CHECK_MARKER)) && !writeCheckMarker(projection))
+      moveCheckToRebuildMarker(projection);
+    final long backoff = slot.rebuildBackoffMs == 0 ? REBUILD_RETRY_BASE_MS : Math.min(slot.rebuildBackoffMs * 2, REBUILD_RETRY_MAX_MS);
+    slot.rebuildBackoffMs = backoff;
+    slot.rebuildRetryReason = reason;
+    slot.rebuildRetryAtMs = clockMs.getAsLong() + backoff;
+  }
+
+  /** The slot of the projection while it is this manager's; lock free (the rebuilder calls it holding the maintenance slot). */
+  private Slot slotOf(final ColumnarProjection projection) {
+    for (final Slot slot : slots)
+      if (slot.projection == projection)
+        return slot;
+    return null;
+  }
+
+  /** {@link #rebuildFailed}: the page check of the projection is owed by the {@code REBUILD} marker from now on. */
+  private void moveCheckToRebuildMarker(final ColumnarProjection projection) {
+    synchronized (recoveryLock) {
+      try {
+        ColumnarStore.writeRebuildReason(Path.of(database.getDatabasePath()), ColumnarProjection.CORRUPT);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Cannot write the columnar rebuild marker of database '%s': its WAL is kept until "
+            + "it is written", e, database.getName());
+        owedRebuildMarker = ColumnarProjection.CORRUPT;
+      }
+      markerRebuilds.add(projection);
+    }
+    projection.markUnusableWithoutRequest(ColumnarProjection.CORRUPT);
+  }
+
+  /** A pass: schedules the retry of the slot's failed rebuild once its backoff elapsed, unless a rebuild is queued or running. */
+  private void retryFailedRebuildIfDue(final Slot slot, final long now) {
+    final long at = slot.rebuildRetryAtMs;
+    if (at == 0 || now < at || ColumnarRebuilder.isQueuedOrRunning(slot.projection))
+      return;
+    final String reason = slot.rebuildRetryReason;
+    slot.rebuildRetryAtMs = 0;
+    if (reason != null)
+      ColumnarRebuilder.schedule(this, slot.projection, reason);
+  }
+
   /** {@link ColumnarRebuilder}, once a rebuild of the projection published: ends the obligations the rebuild discharged. */
   void rebuildPublished(final ColumnarProjection projection) {
+    final Slot published = slotOf(projection);
+    if (published != null) {
+      published.rebuildRetryAtMs = 0;
+      published.rebuildBackoffMs = 0;
+    }
     try {
       // a rebuild discharges a page check too: it read every page again
       Files.deleteIfExists(projection.bucketDir().resolve(ColumnarStore.CHECK_MARKER));
@@ -1764,9 +1940,39 @@ public final class ColumnarIndexManager {
     }
   }
 
-  /** The tick is registered with {@link ColumnarApplyPool}. */
+  /**
+   * Whether this database has, or had in this session, anything columnar to report: a registered COLUMNAR index, a projection, or a stats
+   * cell (final review C-M2: the metrics binder skips the others). Volatile reads only.
+   */
+  public boolean hasColumnarState() {
+    return registered.length > 0 || slots.length > 0 || stats.hasCells() || stats.recoveryPagesCount() > 0;
+  }
+
+  /** The startup ran and no close began: the tick runs once there is work. */
   boolean isApplyingForTesting() {
     return applying;
+  }
+
+  /** The tick is registered with {@link ColumnarApplyPool} (C-M1: only once the database has columnar work). */
+  boolean isTickRegisteredForTesting() {
+    synchronized (tickLock) {
+      return tickRegistered;
+    }
+  }
+
+  /** The interval the tick is registered with. */
+  LongSupplier tickIntervalForTesting() {
+    return tickInterval;
+  }
+
+  /** The current factor of the adaptive apply pacing. */
+  int applyPacingForTesting() {
+    return applyPacing;
+  }
+
+  /** The pacing step of a pass that ended at {@code nowMs} (wall clock, as the trackers stamp their epochs). */
+  void paceAfterPassForTesting(final long nowMs) {
+    paceAfterPass(nowMs);
   }
 
   /** The tick this manager registers, to call it from a test thread. */
@@ -1776,8 +1982,8 @@ public final class ColumnarIndexManager {
 
   /** No lock: volatile reads, then a CAS, then a submit. */
   private void tick() {
-    // a database with no COLUMNAR index pays these reads only, never a configuration read or a pass
-    if (slots.length == 0 && !watchersPending && failedBuckets.isEmpty() && !isReconcileDue())
+    // a database whose COLUMNAR indexes are gone pays these reads only, never a configuration read (tickIntervalMs) or a pass
+    if (isIdle())
       return;
     // a rebuild that found no free permit starts here once one is free (a test, or a rebuild of another JVM component, held it)
     if (ColumnarRebuilder.hasWaiting())
@@ -1836,6 +2042,8 @@ public final class ColumnarIndexManager {
         if (hasPendingApply(slot.projection) || slot.projection.unreadablePages().isDue(clockMs.getAsLong()))
           apply(slot.projection);
       }
+      // the trackers stamp their epochs with the wall clock
+      paceAfterPass(System.currentTimeMillis());
       runWatchers();
       retryFailedOpens();
       scheduleMaintenance();
@@ -1890,9 +2098,15 @@ public final class ColumnarIndexManager {
     final int maxRows = database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS);
     for (final Slot slot : slots) {
       final ColumnarProjection projection = slot.projection;
-      if (closing || now < slot.nextAttemptMs || projection.manifest() == null || projection.isClosedOrDropped())
+      if (closing || projection.isClosedOrDropped())
         continue;
-      if (!slot.mergeWanted && !ColumnarFlusher.shouldFlush(projection, now, intervalMs, maxRows))
+      retryFailedRebuildIfDue(slot, now);
+      if (projection.manifest() == null)
+        continue;
+      final boolean flushDue = now >= slot.nextAttemptMs && (slot.mergeWanted || ColumnarFlusher.shouldFlush(projection, now, intervalMs,
+          maxRows));
+      final boolean rankDue = isRankViewRebuildDue(slot, now);
+      if (!flushDue && !rankDue)
         continue;
       if (!slot.maintenanceQueued.compareAndSet(false, true))
         continue;
@@ -1900,7 +2114,12 @@ public final class ColumnarIndexManager {
       try {
         ColumnarMaintenancePool.getInstance().getExecutorService().execute(() -> {
           try {
-            runMaintenanceBody(slot, () -> maintain(slot));
+            runMaintenanceBody(slot, () -> {
+              if (flushDue)
+                maintain(slot);
+              if (rankDue)
+                rebuildRankViews(slot);
+            });
           } finally {
             slot.maintenanceQueued.set(false);
             maintenanceInFlight.decrementAndGet();
@@ -1966,6 +2185,41 @@ public final class ColumnarIndexManager {
       if (merging)
         slot.corruptMerges = 0;
       failed(slot, e);
+    }
+  }
+
+  /**
+   * The rank views of the projection are due for a rebuild: the last one is {@link #RANK_VIEW_MIN_INTERVAL_MS} old and a dictionary
+   * grew past its staleness threshold since. The throttle is read first, so a pass pays the dictionary walk once per interval at most.
+   */
+  private static boolean isRankViewRebuildDue(final Slot slot, final long now) {
+    if (slot.rankViewsRebuiltMs != Long.MIN_VALUE && now - slot.rankViewsRebuiltMs < RANK_VIEW_MIN_INTERVAL_MS)
+      return false;
+    for (final GlobalDictionary dictionary : slot.projection.dictionaries().values())
+      if (dictionary.isRankViewStale())
+        return true;
+    return false;
+  }
+
+  /**
+   * Plan 3 rank view scheduler: re-sorts the stale dictionaries of the projection, in a maintenance job of the projection holding its
+   * maintenance slot (a flush, merge, compaction or rebuild of the projection running meanwhile makes it skip; the next pass asks again).
+   * The sort reads a snapshot of the values and publishes atomically ({@link GlobalDictionary#rebuildRankView()}), so the apply pass
+   * appends meanwhile; values appended after it rank by search until the next rebuild.
+   */
+  private void rebuildRankViews(final Slot slot) {
+    final ColumnarProjection projection = slot.projection;
+    if (!projection.canWrite() || projection.isClosedOrDropped() || !projection.tryBeginMaintenance())
+      return;
+    try {
+      for (final GlobalDictionary dictionary : projection.dictionaries().values())
+        if (dictionary.isRankViewStale())
+          dictionary.rebuildRankView();
+      slot.rankViewsRebuiltMs = clockMs.getAsLong();
+    } catch (final RuntimeException e) {
+      logFailure("Columnar rank view rebuild of database '%s' failed on bucket " + projection.bucketName(), e);
+    } finally {
+      projection.endMaintenance();
     }
   }
 
@@ -2062,6 +2316,11 @@ public final class ColumnarIndexManager {
   /** The delay before the next attempt of a failing flush or merge of the bucket's projection, 0 after a success. */
   long maintenanceBackoffMsForTesting(final int bucketId) {
     return slot(bucketId).backoffMs;
+  }
+
+  /** The delay of the pending or last retry of a failing rebuild of the bucket's projection, 0 once a rebuild published. */
+  long rebuildBackoffMsForTesting(final int bucketId) {
+    return slot(bucketId).rebuildBackoffMs;
   }
 
   private Slot slot(final int bucketId) {
@@ -2251,10 +2510,15 @@ public final class ColumnarIndexManager {
   }
 
   private void stopApplying() {
-    if (applying) {
-      ColumnarApplyPool.getInstance().unregister(tick);
+    final boolean registered;
+    synchronized (tickLock) {
       applying = false;
+      registered = tickRegistered;
+      tickRegistered = false;
     }
+    // outside the lock: the unregistration waits for a running tick
+    if (registered)
+      ColumnarApplyPool.getInstance().unregister(tick);
   }
 
   private void shutdown(final boolean flush) {

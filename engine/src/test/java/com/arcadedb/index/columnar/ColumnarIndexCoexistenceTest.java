@@ -19,6 +19,7 @@
 package com.arcadedb.index.columnar;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -27,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -228,6 +230,40 @@ class ColumnarIndexCoexistenceTest extends TestHelper {
     assertThat(unique.get(new Object[] { "t5" }).hasNext()).isTrue();
     assertThat(unique.get(new Object[] { "missing" }).hasNext()).isFalse();
     assertThat(ColumnarTestHooks.INDEX_WRITES.get()).as("no write fanned out to the COLUMNAR index").isZero();
+  }
+
+  @Test
+  void ownIndexesAreOneListUntilTheyChange() {
+    // final review C-M3: getAllIndexes(false) is read per commit (UNIQUE checks) and per planned query
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+    database.command("sql", "CREATE INDEX ON Asset (brand) NOTUNIQUE");
+    final Collection<TypeIndex> first = type().getAllIndexes(false);
+    assertThat(type().getAllIndexes(false)).isSameAs(first);
+    assertThat(first).extracting(TypeIndex::getName).containsExactlyInAnyOrder(KEY, COLUMNAR);
+
+    database.command("sql", "DROP INDEX `" + KEY + "`");
+    assertThat(type().getAllIndexes(false)).extracting(TypeIndex::getName).containsExactly(COLUMNAR);
+    database.command("sql", "CREATE INDEX ON Asset (brand) UNIQUE");
+    assertThat(type().getAllIndexes(false)).extracting(TypeIndex::getName).containsExactlyInAnyOrder(KEY, COLUMNAR);
+    database.command("sql", "DROP INDEX `" + COLUMNAR + "`");
+    assertThat(type().getAllIndexes(false)).extracting(TypeIndex::getName).containsExactly(KEY);
+  }
+
+  @Test
+  void aColumnarIndexRaisesNoPartitionPruningWarning() {
+    // final review C-M7: no lookup reads a COLUMNAR index, so there is no lookup to prune
+    database.command("sql", "CREATE DOCUMENT TYPE Tenant BUCKETS 4");
+    database.command("sql", "CREATE PROPERTY Tenant.id STRING");
+    database.command("sql", "CREATE PROPERTY Tenant.tag STRING");
+    database.command("sql", "CREATE INDEX ON Tenant (id) UNIQUE");
+    database.command("sql", "CREATE INDEX ON Tenant (tag) NOTUNIQUE");
+    database.command("sql", "ALTER TYPE Tenant BucketSelectionStrategy `partitioned('id')`");
+    database.command("sql", "CREATE INDEX ON Tenant (tag) COLUMNAR");
+
+    final List<String> warnings = ((PartitionedBucketSelectionStrategy) database.getSchema().getType("Tenant")
+        .getBucketSelectionStrategy()).checkSuitability().warnings();
+    assertThat(warnings).anyMatch(w -> w.contains("'Tenant[tag]'"));
+    assertThat(warnings).noneMatch(w -> w.contains("Tenant[tag]_columnar"));
   }
 
   private void assertBoth() {

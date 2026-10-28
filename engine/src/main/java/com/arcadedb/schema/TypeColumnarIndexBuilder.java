@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
@@ -26,6 +27,9 @@ import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.index.columnar.ColumnarIndexFactoryHandler;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Builder for {@link Schema.INDEX_TYPE#COLUMNAR COLUMNAR} indexes: carries the {@link ColumnarIndexMetadata} and refuses, before
@@ -88,6 +92,12 @@ public class TypeColumnarIndexBuilder extends TypeIndexBuilder {
    * <p>
    * The scan reads without a lock: a write committed between it and the build can take the property over the limit. That is
    * accepted, a projection past its limit keeps working and reports it through its cardinality gauge.
+   * <p>
+   * Final review C-I2: a property takes one COLUMNAR index per type hierarchy, BY ITEM or not, since the projection of a bucket keys
+   * its dictionaries by property. Refused, before anything is created and again under the schema lock, when another COLUMNAR index on
+   * the same base property already reaches a bucket this one would (declared above the type, by the type, below it, or above one of
+   * its subtypes). The index on the very same properties that the type declares or inherits is left to {@link TypeIndexBuilder#create()},
+   * which answers {@code IF NOT EXISTS} with it.
    */
   @Override
   public TypeIndex create() {
@@ -98,6 +108,7 @@ public class TypeColumnarIndexBuilder extends TypeIndexBuilder {
     final String indexProperty = metadata.propertyNames.getFirst();
     final boolean byItem = indexProperty.endsWith(ColumnarIndex.BY_ITEM_SUFFIX);
     final String property = Index.basePropertyName(indexProperty);
+    checkNoOtherColumnarIndex(type, property, type.getPolymorphicIndexByProperties(metadata.propertyNames, Schema.INDEX_TYPE.COLUMNAR));
     final Type propertyType = resolvePropertyType(type, property, byItem);
     if (propertyType != null) {
       final ColumnDefinition column = ColumnarIndex.defineColumn(-1, property, propertyType, byItem);
@@ -109,6 +120,52 @@ public class TypeColumnarIndexBuilder extends TypeIndexBuilder {
       }
     }
     return super.create();
+  }
+
+  @Override
+  protected void checkUnderSchemaLock(final LocalDocumentType type) {
+    // any index on the requested properties was decided over (answered, refused, or dropped to be replaced) before this point
+    checkNoOtherColumnarIndex(type, Index.basePropertyName(metadata.propertyNames.getFirst()), null);
+  }
+
+  private void checkNoOtherColumnarIndex(final LocalDocumentType type, final String property, final TypeIndex answering) {
+    final TypeIndex other = findColumnarIndexReaching(type, property, answering);
+    if (other != null)
+      throw columnarConflict("Cannot create a COLUMNAR index on property '" + property + "' of type '" + type.getName() + "'", other,
+          property);
+  }
+
+  /**
+   * Final review C-I2: the COLUMNAR index on base property {@code property}, other than {@code except}, that projects a bucket of
+   * {@code type} or of a type below it: declared by any of those types or by a type above any of them (a diamond included). Null for
+   * none. Reads the hierarchy as it is; the callers that act on the answer hold the schema lock.
+   */
+  static TypeIndex findColumnarIndexReaching(final LocalDocumentType type, final String property, final TypeIndex except) {
+    return findColumnarIndexReaching(type, property, except, new HashSet<>());
+  }
+
+  private static TypeIndex findColumnarIndexReaching(final LocalDocumentType type, final String property, final TypeIndex except,
+      final Set<String> visited) {
+    if (!visited.add(type.getName()))
+      return null;
+    for (final TypeIndex index : type.getAllIndexes(true))
+      // getType() first: an index with no sub-index left answers null, and has no property names to ask
+      if (index != except && index.getType() == Schema.INDEX_TYPE.COLUMNAR && property.equals(
+          Index.basePropertyName(index.getPropertyNames().getFirst())))
+        return index;
+    for (final DocumentType subType : type.getSubTypes()) {
+      final TypeIndex found = findColumnarIndexReaching((LocalDocumentType) subType, property, except, visited);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /** The refusal of a second COLUMNAR index on one property of a hierarchy, for {@code what} (the statement refused). */
+  static SchemaException columnarConflict(final String what, final TypeIndex existing, final String property) {
+    return new SchemaException(what + ": the COLUMNAR index '" + existing.getName() + "' of type '" + existing.getTypeName()
+        + "' already projects property '" + property + "' into the same buckets, and a property takes one COLUMNAR index per type "
+        + "hierarchy (BY ITEM or not). Drop that index first");
   }
 
   /**
