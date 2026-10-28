@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 
@@ -56,49 +57,117 @@ class Issue10880ListBackupsUnreadableArchiveTest extends BaseGraphServerTest {
   }
 
   @AfterEach
-  void removeBackupDirectory() {
+  void removeBackupDirectory() throws IOException {
     if (backupDir != null) {
-      backupDir.toFile().setReadable(true);
-      backupDir.toFile().setExecutable(true);
+      // the backup root is shared with every other backup test of the module: give both directories back their access
+      // before deleting, or what is left behind fails the next test
+      if (backupDir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+        for (final Path dir : new Path[] { backupDir.getParent(), backupDir })
+          if (Files.exists(dir, LinkOption.NOFOLLOW_LINKS))
+            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwxr-xr-x"));
+      }
       FileUtils.deleteRecursively(backupDir.toFile());
+      assertThat(backupDir).as("the test leaves nothing behind").doesNotExist();
     }
   }
 
   @Test
-  void anArchiveThatCannotBeReadIsNotListedWithMadeUpNumbers() throws IOException {
-    final Path real = backupDir.resolve(getDatabaseName() + "-backup-20261028-120000.zip");
-    Files.write(real, new byte[4096]);
-
-    // What an archive removed by the retention sweep under the listing looks like to the stat: listed, then gone
-    final Path removed = backupDir.resolve(getDatabaseName() + "-backup-20261028-130000.zip");
-    Files.createSymbolicLink(removed, backupDir.resolve("does-not-exist.zip"));
+  void onlyRegularFilesAreListedWithTheNumbersReadFromThem() throws IOException {
+    final Path real = writeArchive("120000");
 
     // A directory with an archive's name is not an archive anybody can restore or delete
     Files.createDirectories(backupDir.resolve(getDatabaseName() + "-backup-20261028-140000.zip"));
 
-    final JSONObject listing = new ServerControlPlane(getServer(0)).listBackups(getDatabaseName());
+    final JSONObject listing = listBackups();
+    assertOnlyListed(listing, real);
+  }
 
+  @Test
+  void anArchiveRemovedUnderTheListingIsNotListedWithMadeUpNumbers() throws IOException {
+    final Path real = writeArchive("120000");
+
+    // What an archive removed by the retention sweep under the listing looks like to the stat: listed, then gone
+    final Path removed = backupDir.resolve(getDatabaseName() + "-backup-20261028-130000.zip");
+    boolean linked;
+    try {
+      Files.createSymbolicLink(removed, backupDir.resolve("does-not-exist.zip"));
+      linked = true;
+    } catch (final UnsupportedOperationException | IOException | SecurityException e) {
+      // Windows without the symbolic link privilege: the case cannot be built here
+      linked = false;
+    }
+    assumeThat(linked).as("symbolic links can be created").isTrue();
+
+    try {
+      assertOnlyListed(listBackups(), real);
+    } finally {
+      // a recursive delete that asks File.exists() never sees a dangling link
+      Files.deleteIfExists(removed);
+    }
+  }
+
+  @Test
+  void aDatabaseWithNoBackupDirectoryHasNoBackups() {
+    FileUtils.deleteRecursively(backupDir.toFile());
+
+    final JSONObject listing = listBackups();
+    assertThat(listing.getJSONArray("backups").length()).isZero();
+    assertThat(listing.getLong("totalCount")).isZero();
+    assertThat(listing.getLong("totalSize")).isZero();
+  }
+
+  @Test
+  void aDirectoryThatCannotBeListedIsATypedCommandFailure() throws IOException {
+    writeArchive("120000");
+    assumePosix();
+    Files.setPosixFilePermissions(backupDir, PosixFilePermissions.fromString("---------"));
+    // A superuser lists it anyway: nothing to test there
+    assumeThat(Files.isReadable(backupDir)).isFalse();
+
+    assertListingFails();
+  }
+
+  /** Files.isDirectory() answers false for a directory the server cannot reach, which used to read as "no backups". */
+  @Test
+  void aDirectoryThatCannotBeReachedIsATypedCommandFailureNotAnEmptyList() throws IOException {
+    writeArchive("120000");
+    assumePosix();
+    Files.setPosixFilePermissions(backupDir.getParent(), PosixFilePermissions.fromString("---------"));
+    assumeThat(Files.isDirectory(backupDir)).as("the directory is out of reach").isFalse();
+
+    assertListingFails();
+  }
+
+  private Path writeArchive(final String time) throws IOException {
+    final Path archive = backupDir.resolve(getDatabaseName() + "-backup-20261028-" + time + ".zip");
+    Files.write(archive, new byte[4096]);
+    return archive;
+  }
+
+  private JSONObject listBackups() {
+    return new ServerControlPlane(getServer(0)).listBackups(getDatabaseName());
+  }
+
+  private void assertOnlyListed(final JSONObject listing, final Path archive) throws IOException {
     final JSONArray backups = listing.getJSONArray("backups");
     assertThat(backups.length()).as("only the archive whose attributes were read is listed").isEqualTo(1);
     final JSONObject backup = backups.getJSONObject(0);
-    assertThat(backup.getString("fileName")).isEqualTo(real.getFileName().toString());
+    assertThat(backup.getString("fileName")).isEqualTo(archive.getFileName().toString());
     assertThat(backup.getLong("size")).isEqualTo(4096L);
-    assertThat(backup.getLong("lastModified")).isEqualTo(Files.getLastModifiedTime(real).toMillis());
+    assertThat(backup.getLong("lastModified")).isEqualTo(Files.getLastModifiedTime(archive).toMillis());
     assertThat(backup.getString("timestamp")).isEqualTo("2026-10-28T12:00");
 
     assertThat(listing.getLong("totalCount")).isEqualTo(1L);
     assertThat(listing.getLong("totalSize")).isEqualTo(4096L);
   }
 
-  @Test
-  void aDirectoryThatCannotBeListedIsATypedCommandFailure() throws IOException {
-    assumeThat(backupDir.getFileSystem().supportedFileAttributeViews()).contains("posix");
-    Files.setPosixFilePermissions(backupDir, PosixFilePermissions.fromString("---------"));
-    // A superuser lists it anyway: nothing to test there
-    assumeThat(Files.isReadable(backupDir)).isFalse();
-
-    assertThatThrownBy(() -> new ServerControlPlane(getServer(0)).listBackups(getDatabaseName()))
+  private void assertListingFails() {
+    assertThatThrownBy(this::listBackups)
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("Error listing backups for database '" + getDatabaseName() + "'");
+  }
+
+  private void assumePosix() {
+    assumeThat(backupDir.getFileSystem().supportedFileAttributeViews()).contains("posix");
   }
 }

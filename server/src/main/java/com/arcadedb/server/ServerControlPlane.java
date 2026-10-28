@@ -55,6 +55,7 @@ import com.arcadedb.utility.IPAddressBlocklist;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -1814,41 +1815,45 @@ public class ServerControlPlane {
     long totalSize = 0;
 
     final Path dbBackupDir = resolveBackupDirectory().resolve(databaseName);
-    if (Files.isDirectory(dbBackupDir)) {
-      final List<Path> archives;
-      try (final var stream = Files.list(dbBackupDir)) {
-        archives = stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList();
+    // Listed without asking Files.isDirectory() first: it answers false for a directory the server cannot reach as well
+    // as for an absent one, and the first is a failure to report, not "no backups"
+    List<Path> archives;
+    try (final var stream = Files.list(dbBackupDir)) {
+      archives = stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList();
+    } catch (final NoSuchFileException e) {
+      // no backup was ever taken of this database
+      archives = List.of();
+    } catch (final IOException | UncheckedIOException e) {
+      // an UncheckedIOException is a failure while the stream walks the directory
+      throw new CommandExecutionException("Error listing backups for database '" + databaseName + "'", e);
+    }
+
+    for (final Path p : archives) {
+      // One read for both values, so the size and the time always describe the same file
+      final BasicFileAttributes attributes;
+      try {
+        attributes = Files.readAttributes(p, BasicFileAttributes.class);
+      } catch (final NoSuchFileException e) {
+        LogManager.instance().log(this, Level.FINE, "Backup archive '%s' was removed while listing the backups", p);
+        continue;
       } catch (final IOException e) {
-        throw new CommandExecutionException("Error listing backups for database '" + databaseName + "'", e);
+        LogManager.instance().log(this, Level.WARNING, "Cannot read the backup archive '%s', it is not listed", e, p);
+        continue;
       }
+      if (!attributes.isRegularFile())
+        continue;
 
-      for (final Path p : archives) {
-        // One read for both values, so the size and the time always describe the same file
-        final BasicFileAttributes attributes;
-        try {
-          attributes = Files.readAttributes(p, BasicFileAttributes.class);
-        } catch (final NoSuchFileException e) {
-          LogManager.instance().log(this, Level.FINE, "Backup archive '%s' was removed while listing the backups", p);
-          continue;
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Cannot read the backup archive '%s', it is not listed", e, p);
-          continue;
-        }
-        if (!attributes.isRegularFile())
-          continue;
+      final JSONObject backup = new JSONObject();
+      backup.put("fileName", p.getFileName().toString());
+      backup.put("size", attributes.size());
+      backup.put("lastModified", attributes.lastModifiedTime().toMillis());
+      totalSize += attributes.size();
 
-        final JSONObject backup = new JSONObject();
-        backup.put("fileName", p.getFileName().toString());
-        backup.put("size", attributes.size());
-        backup.put("lastModified", attributes.lastModifiedTime().toMillis());
-        totalSize += attributes.size();
+      // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
+      final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
+      backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
 
-        // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
-        final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
-        backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
-
-        backups.put(backup);
-      }
+      backups.put(backup);
     }
 
     final JSONObject response = new JSONObject();

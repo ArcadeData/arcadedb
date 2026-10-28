@@ -158,6 +158,20 @@ class Issue10898VectorRowRecordKeyTest extends TestHelper {
       assertThat(overridden.containsKey("record")).isTrue();
       assertThat(overridden.remove("record")).isSameAs(doc);
       assertThat(overridden.get("record")).isNull();
+
+      // a real property named `record`, once removed, does not give way to the record behind it
+      final MutableDocument named = database.newDocument("Doc").set("content", "fig", "record", "a property");
+      named.save();
+      final ScoredRecordRow withProperty = new ScoredRecordRow(named, "score", 0.5f);
+      assertThat(withProperty.remove("record")).isEqualTo("a property");
+      assertThat(withProperty.get("record")).isNull();
+      assertThat(withProperty.containsKey("record")).isFalse();
+
+      final ScoreOverrideRow overriddenWithProperty = new ScoreOverrideRow(new ScoredRecordRow(named, "distance", 0.1f), "score",
+          2.0f);
+      assertThat(overriddenWithProperty.remove("record")).isEqualTo("a property");
+      assertThat(overriddenWithProperty.get("record")).isNull();
+      assertThat(overriddenWithProperty.containsKey("record")).isFalse();
     });
   }
 

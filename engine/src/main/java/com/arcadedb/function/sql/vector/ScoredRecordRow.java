@@ -137,11 +137,12 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
   @Override
   public Object remove(final Object key) {
     final LinkedHashMap<String, Object> copy = materialize();
-    if (isRecordKey(key) && !copy.containsKey(RECORD)) {
-      recordKeyRemoved = true;
-      return record;
-    }
-    return copy.remove(key);
+    if (!RECORD.equals(key))
+      return copy.remove(key);
+    // whether the key held a real entry or only answered the record, it answers nothing once removed
+    final boolean answeredTheRecord = isRecordKey(key) && !copy.containsKey(RECORD);
+    recordKeyRemoved = true;
+    return answeredTheRecord ? record : copy.remove(key);
   }
 
   @Override
