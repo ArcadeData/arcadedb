@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -31,11 +32,11 @@ import java.util.function.Function;
 
 /**
  * Converts {@link FacetResults} to and from {@link GrpcFacets}. The shape is the JSON of every other transport: each result's members
- * are those of {@link FacetResult#toJSON()}, and the members that have no proto field (bucket attributes, the cursor, the DISTINCT and
- * STATS members) travel as JSON object text.
+ * are those of {@link FacetResult#toJSON()}, and the members that have no proto field (bucket attributes, the DISTINCT members, the
+ * counts, sum and average of a STATS facet) travel as JSON object text.
  * <p>
- * The values of the data (a term, a bound) are {@link GrpcValue}s encoded exactly as the rows of the same transport encode theirs
- * (final review C-I8): the server hands its row encoder, a client its row decoder, so a date term arrives as the temporal a row's date
+ * The values of the data (a term, a bound, the cursor, a STATS facet's min and max) are {@link GrpcValue}s encoded exactly as the
+ * rows of the same transport encode theirs (final review C-I8): the server hands its row encoder, a client its row decoder, so a date term arrives as the temporal a row's date
  * does, a decimal as the {@code BigDecimal}, NaN as NaN (the engine already gives every term the Java type a row of its property
  * holds). A received value of a kind no facet value takes (a list, a map, bytes, a link: a newer server)
  * makes that one facet {@code unavailable} with the reason naming the kind, so the response or the stream that carries the facets is
@@ -48,6 +49,9 @@ public final class FacetProtocol {
   private static final String BUCKETS     = "buckets";
   private static final String OTHER_COUNT = "otherCount";
   private static final String MISSING     = "missing";
+  private static final String AFTER       = "after";
+  private static final String MIN         = "min";
+  private static final String MAX         = "max";
 
   private FacetProtocol() {
   }
@@ -106,10 +110,25 @@ public final class FacetProtocol {
       }
       case OTHER_COUNT -> out.setOtherCount(json.getLong(OTHER_COUNT));
       case MISSING -> out.setMissing(json.getLong(MISSING)).setHasCounts(true);
+      // typed below: values of the property
+      case AFTER, MIN, MAX -> {
+      }
       default -> extensions.put(name, json.opt(name));
       }
     if (!extensions.isEmpty())
       out.setExtensionsJson(extensions.toString());
+    final FacetStats stats = result.stats();
+    if (stats != null && !FacetResult.UNAVAILABLE.equals(result.source())) {
+      if (stats.min() != null)
+        out.setMin(encoder.apply(stats.min()));
+      if (stats.max() != null)
+        out.setMax(encoder.apply(stats.max()));
+    }
+    if (result.hasAfter()) {
+      out.setHasAfter(true);
+      if (result.after() != null)
+        out.setAfter(encoder.apply(result.after()));
+    }
     return out.build();
   }
 
@@ -125,8 +144,18 @@ public final class FacetProtocol {
       json.put(BUCKETS, new JSONArray()).put(OTHER_COUNT, proto.getOtherCount()).put(MISSING, proto.getMissing());
     }
     merge(json, proto.getExtensionsJson());
-    final FacetResult result = FacetResult.fromJSON(json);
-    return proto.getHasCounts() ? result.withBuckets(buckets) : result;
+    FacetResult result = FacetResult.fromJSON(json);
+    if (proto.getHasCounts())
+      result = result.withBuckets(buckets);
+    final FacetStats stats = result.stats();
+    if (stats != null && (proto.hasMin() || proto.hasMax()))
+      result = FacetResult.ofStats(result.source(), new FacetStats(stats.count(), stats.missing(),
+          proto.hasMin() ? decode(proto.getMin(), decoder) : null, proto.hasMax() ? decode(proto.getMax(), decoder) : null, stats.sum(),
+          stats.avg()));
+    // a server without the typed cursor sends it in the extensions, which fromJSON has read already
+    if (proto.getHasAfter())
+      result = result.withAfter(proto.hasAfter() ? decode(proto.getAfter(), decoder) : null);
+    return result;
   }
 
   private static GrpcFacetBucket bucketToProto(final FacetBucket bucket, final Function<Object, GrpcValue> encoder) {

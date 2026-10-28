@@ -123,6 +123,99 @@ class Issue9496NumericSumTest {
     }
   }
 
+  /** The total through the primitive adders, each input by its own class; any other class through {@link NumericSum#add}. */
+  private static Number primitive(final List<Number> values) {
+    final NumericSum sum = new NumericSum();
+    for (final Number v : values)
+      switch (v) {
+      case Integer i -> sum.addInt(i);
+      case Long l -> sum.addLong(l);
+      case Double d -> sum.addDouble(d);
+      case Float f -> sum.addFloat(f);
+      case Short s -> sum.addShort(s);
+      case Byte b -> sum.addByte(b);
+      default -> sum.add(v);
+      }
+    return sum.get();
+  }
+
+  /**
+   * The STATS facet feeds the sum without boxing (plan 5 Task 9): every primitive adder gives the boxed fold's total, value and class,
+   * including a single SHORT or BYTE value (a {@code Short} or {@code Byte} total, as {@code sum()} of one row gives) and a FLOAT total
+   * kept in float arithmetic.
+   */
+  @Test
+  void primitiveAddersMatchBoxedAdd() {
+    final List<List<Number>> fixed = List.of(List.of((short) 7), List.of((byte) -3), List.of((short) 1, (byte) 2), List.of((byte) 1, 2.5f),
+        List.of((short) 3, Long.MAX_VALUE), List.of((short) 3, 0.5), List.of(1.5f, 2.25f, 1), List.of(1.5f, 2L), List.of(0.1f, 0.2),
+        List.of(Integer.MAX_VALUE, (short) 1), List.of(Long.MAX_VALUE, (byte) 1), List.of(2.5f, new BigDecimal("1.5")),
+        List.of(Float.NaN, 1.0f), List.of(1, 2.5f, (short) 1), List.of(-0.0f));
+    for (final List<Number> values : fixed)
+      assertPrimitiveMatches(values);
+
+    final Random random = new Random(9);
+    for (int round = 0; round < 5_000; round++) {
+      final List<Number> values = new ArrayList<>();
+      final int n = 1 + random.nextInt(12);
+      // a third of the rounds one class only, the way a STATS column feeds it
+      final int only = round % 3 == 0 ? random.nextInt(6) : -1;
+      for (int i = 0; i < n; i++)
+        values.add(switch (only >= 0 ? only : random.nextInt(7)) {
+          case 0 -> random.nextBoolean() ? random.nextInt() : random.nextInt(1000);
+          case 1 -> random.nextBoolean() ? random.nextLong() : (long) random.nextInt(1000);
+          case 2 -> random.nextDouble() * 1e6 - 5e5;
+          case 3 -> random.nextFloat() * 1e4f - 5e3f;
+          case 4 -> (short) random.nextInt();
+          case 5 -> (byte) random.nextInt();
+          default -> new BigDecimal(random.nextInt(1000)).movePointLeft(2);
+        });
+      assertPrimitiveMatches(values);
+    }
+  }
+
+  private static void assertPrimitiveMatches(final List<Number> values) {
+    final Number expected = reference(values);
+    final Number boxed = unboxed(values);
+    final Number actual = primitive(values);
+    assertThat(actual).as("primitive sum of %s", values).isEqualTo(expected);
+    assertThat(actual.getClass()).as("type of the primitive sum of %s", values).isEqualTo(expected.getClass());
+    assertThat(boxed).as("boxed sum of %s", values).isEqualTo(expected);
+    assertThat(boxed.getClass()).as("type of the boxed sum of %s", values).isEqualTo(expected.getClass());
+  }
+
+  /**
+   * {@link NumericSum#merge} folds the other total in as one value; {@link SQLFunctionAverage#average} is what avg() returns (told
+   * whether a value was a DECIMAL, which avg() tracks itself).
+   */
+  @Test
+  void mergeAndAverageMatchTheFunctions() {
+    final NumericSum left = new NumericSum();
+    left.addInt(Integer.MAX_VALUE);
+    final NumericSum right = new NumericSum();
+    right.addInt(1);
+    left.merge(right);
+    left.merge(new NumericSum());
+    assertThat(left.get()).isEqualTo(Type.increment(Integer.MAX_VALUE, 1)).isInstanceOf(Long.class);
+    final NumericSum empty = new NumericSum();
+    empty.merge(new NumericSum());
+    assertThat(empty.get()).isNull();
+    assertThat(SQLFunctionAverage.average(empty, 0)).isNull();
+
+    final Object[][] inputs = { { 1, 2 }, { Long.MAX_VALUE, Long.MAX_VALUE }, { 0.5, 1L }, { 1.5f, 2.5f }, { new BigDecimal("1.10"), 2 },
+        { (short) 3 } };
+    for (final Object[] input : inputs) {
+      final SQLFunctionAverage avg = new SQLFunctionAverage();
+      final NumericSum sum = new NumericSum();
+      for (final Object value : input) {
+        avg.aggregate(null, new Object[] { value }, null);
+        sum.add((Number) value);
+      }
+      final boolean decimalInput = input[0] instanceof BigDecimal;
+      assertThat(decimalInput ? SQLFunctionAverage.average(sum, input.length, true) : SQLFunctionAverage.average(sum, input.length))
+          .as(List.of(input).toString()).isEqualTo(avg.getResult());
+    }
+  }
+
   @Test
   void emptyIsNull() {
     assertThat(new NumericSum().get()).isNull();

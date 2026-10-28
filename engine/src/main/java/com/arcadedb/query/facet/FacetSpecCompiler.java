@@ -123,7 +123,8 @@ public final class FacetSpecCompiler {
 
   private static boolean isStatsType(final Type type) {
     return switch (type) {
-      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DATE, DATETIME, DATETIME_SECOND -> true;
+      // every DATETIME precision: the projection and the fallback scan both read it at its declared precision (item C5)
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> true;
       default -> false;
     };
   }

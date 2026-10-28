@@ -180,16 +180,15 @@ class AdvancedFacetParserTest extends TestHelper {
 
   @Test
   void statsOnNumericAndDateTypesIsAccepted() {
-    // validation only: the STATS collector arrives with a later task
     for (final String property : new String[] { "fileSize", "ratio", "published", "day", "small", "medium", "count", "score", "sec" })
       FacetSpecCompiler.validateAgainstSchema(facetsOf("SELECT FROM Asset FACETS " + property + " STATS"), database.getSchema().getType("Asset"));
   }
 
+  /** Item C5 (plan 5 Task 9): DATETIME_MICROS and DATETIME_NANOS are read at their declared precision, on the projection and the scan. */
   @Test
-  void statsOnMicrosAndNanosIsRefused() {
+  void statsOnMicrosAndNanosIsAccepted() {
     for (final String property : new String[] { "micros", "nanos" })
-      assertThatThrownBy(() -> database.query("sql", "SELECT FROM Asset FACETS " + property + " STATS")).as(property)
-          .isInstanceOf(CommandSQLParsingException.class).hasMessageStartingWith("STATS requires a property of type");
+      FacetSpecCompiler.validateAgainstSchema(facetsOf("SELECT FROM Asset FACETS " + property + " STATS"), database.getSchema().getType("Asset"));
   }
 
   @Test

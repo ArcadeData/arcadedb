@@ -120,6 +120,16 @@ class FacetsExplainTest extends TestHelper {
 
   @Test
   @Timeout(120)
+  void profileShowsStatsExecution() {
+    load();
+    final String text = plan("PROFILE", "SELECT FROM " + TYPE + " WHERE " + WHERE + " FACETS s: fileSize STATS, p: publishDate STATS")
+        .getProperty("executionPlanAsString");
+    assertThat(text).contains("+ COLLECT FACET MATCHES", "s: fileSize STATS", "p: publishDate STATS", "source=index", "segments=1");
+    assertThat(text).containsPattern("budget=[1-9]");
+  }
+
+  @Test
+  @Timeout(120)
   void profileWithLimitStillComputesFacets() {
     load();
     final Result plan = plan("PROFILE", QUERY + " LIMIT 2");

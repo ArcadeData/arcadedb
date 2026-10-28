@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarTestAccess;
 import com.arcadedb.index.columnar.ColumnarTestData;
@@ -43,7 +42,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FacetExecutorTermsTest extends TestHelper {
   private static final String       TYPE   = ColumnarTestData.TYPE;
@@ -659,13 +657,13 @@ class FacetExecutorTermsTest extends TestHelper {
 
   @Test
   @Timeout(120)
-  void aSpecWithNoCollectorIsRefused() {
+  void everyKindHasACollectorAndReleasesTheSnapshots() {
+    // plan 5 Task 9: STATS, the last kind without a collector, is computed like the others
     data(1).createSchema(database);
     insert("brand-1", null, 1);
     FacetOracle.awaitCaughtUp(database);
     final StatsFacetSpec stats = new StatsFacetSpec("s", "fileSize", null);
-    assertThatThrownBy(() -> execute(null, stats)).isInstanceOf(CommandExecutionException.class)
-        .hasMessage("FACETS s: STATS facets are not supported");
+    assertThat(execute(null, stats).get("s").stats()).isEqualTo(FacetOracle.stats(database, TYPE, "fileSize", null));
     assertSnapshotsReleased(null, terms("brand", ALL), stats);
   }
 }

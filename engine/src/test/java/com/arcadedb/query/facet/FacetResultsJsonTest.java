@@ -19,6 +19,7 @@
 package com.arcadedb.query.facet;
 
 import com.arcadedb.index.columnar.GlobalDictionary;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -123,6 +124,30 @@ class FacetResultsJsonTest {
     assertThat(back.hasAfter()).isTrue();
     assertThat(FacetResults.fromJSON(json).get("st").stats().sum()).isEqualTo(500L);
     assertThat(FacetResults.fromJSON(json).get("uniq").distinct().exact()).isFalse();
+  }
+
+  /** Plan 5 Task 9 (R14): a STATS facet's min and max are values of the property, written and read as a row's value of its type. */
+  @Test
+  void statsExtremesGoThroughTheEncoderAndTheDecoder() {
+    final FacetResult stats = FacetResult.ofStats("index", new FacetStats(3L, 1L, 4, 9, 20L, 20 / 3d)).withValueType(Type.INTEGER);
+    final FacetResults results = new FacetResults(true, 0, 0, map("st", stats));
+    final JSONObject json = results.toJSON((value, type) -> "enc:" + type + ":" + value);
+    final JSONObject member = json.getJSONObject("st");
+    assertThat(member.getString("min")).isEqualTo("enc:INTEGER:4");
+    assertThat(member.getString("max")).isEqualTo("enc:INTEGER:9");
+    // the sum and the average are no values of the property (a FLOAT's mean is a double): written as they are
+    assertThat(member.getLong("sum")).isEqualTo(20L);
+    member.put(FacetResult.VALUE_TYPE_HINT, "value:" + Type.INTEGER.getId());
+    final FacetStats back = FacetResults.fromJSON(json, (value, type) -> "dec:" + type + ":" + value).get("st").stats();
+    assertThat(back.min()).isEqualTo("dec:INTEGER:enc:INTEGER:4");
+    assertThat(back.max()).isEqualTo("dec:INTEGER:enc:INTEGER:9");
+    assertThat(back.count()).isEqualTo(3L);
+
+    // no value: nothing to encode
+    final FacetResult empty = FacetResult.ofStats("index", new FacetStats(0L, 2L, null, null, null, null)).withValueType(Type.INTEGER);
+    final JSONObject none = new FacetResults(true, 0, 0, map("st", empty)).toJSON((value, type) -> "enc:" + value).getJSONObject("st");
+    assertThat(none.opt("min")).isNull();
+    assertThat(FacetResults.fromJSON(new FacetResults(true, 0, 0, map("st", empty)).toJSON()).get("st").stats().min()).isNull();
   }
 
   @Test
