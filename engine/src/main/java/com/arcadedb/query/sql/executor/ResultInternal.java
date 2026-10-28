@@ -41,7 +41,8 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
-  // A new field that carries row state must also be checked by rewrapElement(), or a filtered scan moves it to another record
+  // A new field that carries row state must also be checked by rewrapElement() and rebindSingleProperty(), or a filtered scan
+  // moves it to another record
   protected final Database database;
   protected final Object value;
   protected Map<String, Object> content;
@@ -719,6 +720,24 @@ public class ResultInternal implements Result {
       return false;
     final Record record = identifiable.getRecord();
     this.element = record instanceof Document doc ? doc : null;
+    return true;
+  }
+
+  /**
+   * Binds {@code name} to {@code newValue} in a row that {@link #ResultInternal()} built and {@link #setProperty} bound
+   * {@code name} in, and nothing else, so an openCypher scan can evaluate its pushed predicate on one row for every vertex
+   * the predicate rejects rather than on a new row and map per vertex (issue #10818). A row that carries anything besides
+   * that one binding - another binding, a removed property, a temporary property, metadata, an element, a value - is left
+   * alone and the answer is {@code false}: what was written to it belongs to the vertex it was written for, and the caller
+   * builds a new row instead.
+   */
+  public boolean rebindSingleProperty(final String name, final Object newValue) {
+    if (getClass() != ResultInternal.class || content == null || content.size() != 1 || !content.containsKey(name)
+        || temporaryContent != null || metadata != null || tombstones != null || element != null || value != null || database != null
+        || projectionSourceType != null || projectionSourceColumns != null || projectionExcludes != null)
+      return false;
+    // AN EXISTING KEY OF A LINKEDHASHMAP IS OVERWRITTEN IN PLACE: NO ENTRY IS ALLOCATED
+    content.put(name, toStoredValue(null, newValue));
     return true;
   }
 
