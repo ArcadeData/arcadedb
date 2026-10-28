@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
@@ -77,6 +78,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * Name of the response field telling whether the cap cut the result short.
    */
   public static final String TRUNCATED_FIELD = "truncated";
+
+  /**
+   * Name of the response field (and of the ndjson event) carrying the facets of a {@code SELECT ... FACETS} query.
+   */
+  public static final String FACETS_FIELD = "facets";
 
   /**
    * What an {@code EXPLAIN} (or {@code PROFILE}) request is told when it asks for the streaming encoding.
@@ -194,6 +200,18 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
+   * Adds the {@code facets} member of a {@code SELECT ... FACETS} query: exactly {@code FacetResults.toJSON()}, over every match
+   * of the WHERE whatever cap cut the rows (the matches the serializer did not reach are counted now). Absent for any other
+   * statement, so their response is unchanged. Must run after the rows are serialized and before the result set is closed, which
+   * is why {@link #serializeResultSetBounded} calls it: every buffered query operation serializes through it.
+   */
+  protected static void reportFacets(final JSONObject response, final ResultSet qResult) {
+    final FacetResults facets = qResult != null ? qResult.getFacets() : null;
+    if (facets != null)
+      response.put(FACETS_FIELD, facets.toJSON());
+  }
+
+  /**
    * Logs a warning when the result was cut by the configured default rather than by a cap the caller asked
    * for: that is the only truncation the client did not ask for, so an operator must be able to find it in
    * the log. Truncation against an explicit request {@code limit} (or against the query's own LIMIT) is the
@@ -269,12 +287,22 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   protected SerializationOutcome serializeResultSetBounded(final Database database, final String serializer,
       final int statedLimit, final int maxResultRows, final JSONObject response, final ResultSet qResult,
       final boolean includeTypeHints) {
+    if (qResult == null)
+      return SerializationOutcome.EMPTY;
+
     final int limit = applyMaxResultRows(statedLimit, maxResultRows);
-    final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult,
-        includeTypeHints);
-    if (limit != statedLimit && outcome.truncated())
-      throw resultSetTooLarge(maxResultRows);
-    return outcome;
+    try {
+      final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult,
+          includeTypeHints);
+      if (limit != statedLimit && outcome.truncated())
+        throw resultSetTooLarge(maxResultRows);
+      // After the refusal, so a refused response computes no facets; before the close, which would discard them: the facets
+      // count the matches the cap left unread as well
+      reportFacets(response, qResult);
+      return outcome;
+    } finally {
+      qResult.close();
+    }
   }
 
   /**
@@ -369,10 +397,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         // set, and its presence is what tells a truncated stream from one that ended on its own.
         truncated = qResult != null && effectiveLimit > 0 && returned >= effectiveLimit && qResult.hasNext();
       } catch (final RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error while streaming the result of a query on database '%s'",
-            e, database != null ? database.getName() : null);
-        writeClassifiedError(exchange, stream, e);
-        return new SerializationOutcome(returned, false);
+        return streamFailed(exchange, database, stream, e, returned);
       }
 
       if (ceilingLowered && truncated) {
@@ -382,13 +407,32 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         return new SerializationOutcome(returned, true);
       }
 
+      // After the probe, since computing the facets ends the rows, and after the refusal, so a refused stream computes none
+      final FacetResults facets;
+      try {
+        facets = qResult != null ? qResult.getFacets() : null;
+      } catch (final RuntimeException e) {
+        return streamFailed(exchange, database, stream, e, returned);
+      }
+
       // statedLimit, not effectiveLimit: the buffered path reports the cap the caller stated and refuses outright
       // (413) when the ceiling actually cut the result, which the branch above answers in band. Reporting the
       // ceiling here made the two encodings disagree about the same untruncated query - 'SELECT ... LIMIT 1000000'
       // returning five rows said 1000000 buffered and the ceiling streamed (code review).
+      if (facets != null)
+        stream.writeFacets(facets.toJSON());
       stream.writeStats(statedLimit, returned, truncated);
       return new SerializationOutcome(returned, truncated);
     }
+  }
+
+  /** A failure after the 200 went out: logged, answered with the in-band error line, and no {@code stats} trailer. */
+  private SerializationOutcome streamFailed(final HttpServerExchange exchange, final Database database,
+      final NdJsonResultStream stream, final RuntimeException e, final int returned) throws IOException {
+    LogManager.instance().log(this, Level.WARNING, "Error while streaming the result of a query on database '%s'",
+        e, database != null ? database.getName() : null);
+    writeClassifiedError(exchange, stream, e);
+    return new SerializationOutcome(returned, false);
   }
 
   /**
@@ -421,13 +465,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    *                         (issue #5812). Off by default on the HTTP surface: only a caller that must rebuild
    *                         the exact Java type of a projection/aggregate column - today the RemoteDatabase Java
    *                         driver - opts in by sending the {@code typeHints} request flag.
+   * @param qResult          not null, and not closed here: {@link #serializeResultSetBounded} closes it after the facets
    */
   protected SerializationOutcome serializeResultSet(final Database database, final String serializer, final int limit,
       final JSONObject response, final ResultSet qResult, final boolean includeTypeHints) {
-    if (qResult == null)
-      return SerializationOutcome.EMPTY;
-
-    try {
     switch (serializer) {
     case "graph": {
       // SERIALIZES THE GRAPH ELEMENTS IN VERTICES AND EDGES
@@ -588,9 +629,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           .setUseCollectionSize(false)
           .setUseCollectionSizeForEdges(false)
           .setIncludeTypeHints(includeTypeHints));
-    }
-    } finally {
-      qResult.close();
     }
   }
 
