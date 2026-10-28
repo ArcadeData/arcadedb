@@ -2735,6 +2735,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         throw e;
       }
 
+      refuseSwapOfClosedStore(tempPath);
+
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
       indexChannel.close();
@@ -3543,7 +3545,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   boolean commitMerge(final MergePlan plan) throws IOException {
     directoryLock.writeLock().lock();
     try {
-      if (directoryVersion != plan.directoryVersion()) {
+      // a store dropped since the plan was made is not the one it was derived from either (issue #10867): installing the merge
+      // would re-create the file the drop deleted, for the next type of that name to adopt
+      if (closed || directoryVersion != plan.directoryVersion()) {
         deleteMergeTempFileIfExists();
         return false;
       }
@@ -3644,6 +3648,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       deleteTempFileIfExists();
       throw e;
     }
+
+    refuseSwapOfClosedStore(tempPath);
 
     // Atomic file swap: close handles first (required on Windows), then atomically replace.
     // If the move fails, reopen the original file so the store remains usable.
@@ -4065,6 +4071,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath) throws IOException {
     directoryLock.writeLock().lock();
     try {
+      refuseSwapOfClosedStore(tempPath);
+
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
       indexChannel.close();
@@ -4297,6 +4305,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         deleteTempFileIfExists();
         throw e;
       }
+
+      refuseSwapOfClosedStore(tempPath);
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
@@ -5203,6 +5213,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public void installSealedFile(final File incoming) throws IOException {
     directoryLock.writeLock().lock();
     try {
+      // a store closed on purpose takes no image either (issue #10867): the incoming file is the caller's, and is left to it
+      if (closed)
+        throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
+            + "' was closed on purpose (its type was dropped or its engine replaced): the image is not installed");
+
       // Close current handles before replacing the file (required on Windows).
       try {
         if (indexChannel != null && indexChannel.isOpen())
@@ -5323,13 +5338,57 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Closes file handles and deletes the sealed store file from disk.
+   * Closes file handles and deletes the sealed store file from disk, with the temp files of any rewrite.
+   * <p>
+   * Under the directory WRITE lock, which every swap of the sealed file holds (issue #10867): a rewrite that has written its temp
+   * file - a merge, a compaction, retention, downsampling, a delete - either swapped it in before the drop, and the drop deletes the
+   * result, or finds the store closed and refuses the swap ({@link #refuseSwapOfClosedStore}). Without it a merge in flight moved
+   * its temp file onto the path the drop had just cleared, and a type created later under the same name adopted every sample of the
+   * dropped one. The shard's compaction mutex is not the lock for this: the drop runs under the database write lock, and a
+   * compaction holding the mutex commits transactions that wait for that lock.
    */
   public void drop() throws IOException {
-    close();
-    final File f = new File(basePath + ".ts.sealed");
-    if (f.exists() && !f.delete())
-      throw new IOException("Failed to delete sealed store file: " + f.getAbsolutePath());
+    directoryLock.writeLock().lock();
+    try {
+      close();
+      deleteFiles(basePath);
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * Deletes the sealed file of the store at {@code basePath} and the temp files a rewrite of it can leave, for a store that is not
+   * open as well (an engine that could not start, issue #6356): what {@link #drop()} deletes, so a type created later under the same
+   * name finds none of them.
+   */
+  public static void deleteFiles(final String basePath) throws IOException {
+    for (final String suffix : new String[] { ".ts.sealed.tmp", MERGE_TEMP_SUFFIX, ".ts.sealed.incoming" }) {
+      final File temp = new File(basePath + suffix);
+      if (temp.exists() && !temp.delete())
+        LogManager.instance().log(TimeSeriesSealedStore.class, Level.WARNING, "Could not delete the temp file '%s'", null,
+            temp.getAbsolutePath());
+    }
+    final File sealed = new File(basePath + FILE_EXTENSION);
+    if (sealed.exists() && !sealed.delete())
+      throw new IOException("Failed to delete sealed store file: " + sealed.getAbsolutePath());
+  }
+
+  /**
+   * Refuses to swap a rewrite in for the sealed file of a store closed on purpose (issue #10867): its type was dropped, or its engine
+   * superseded by one that has the file open itself. The temp file is deleted, so nothing is left under the type's names. Called
+   * under the directory write lock, which {@link #drop()} holds while it closes the store, and before the handles are touched: a
+   * refused swap must not reopen them.
+   */
+  private void refuseSwapOfClosedStore(final String tempPath) throws IOException {
+    if (!closed)
+      return;
+    final File temp = new File(tempPath);
+    if (temp.exists() && !temp.delete())
+      LogManager.instance().log(this, Level.WARNING, "Could not delete the temp file '%s' of a closed sealed store", null,
+          temp.getAbsolutePath());
+    throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
+        + "' was closed on purpose (its type was dropped or its engine replaced): the rewrite of it is not installed");
   }
 
   /**

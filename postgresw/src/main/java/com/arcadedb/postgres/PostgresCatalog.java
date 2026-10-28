@@ -253,6 +253,14 @@ public class PostgresCatalog {
   private static final Map<String, Set<String>> RELATIONS = new HashMap<>();
   /** Which family a relation puts the query in. Relations that only decorate a row are absent. */
   private static final Map<String, Family>      FAMILIES  = new HashMap<>();
+  /**
+   * The type each column of a relation is announced with, by relation, for the columns that are not a varchar (issue #10869). A
+   * column is typed from its relation and not from the rows that came back, so the same projection announces the same columns
+   * whether its filter matched a row or none: sampling the rows left every column of an empty answer a varchar, and a client that
+   * builds a typed schema from the announced OIDs saw {@code pg_class.oid} change type with the schema. A column absent here is a
+   * varchar, which is also what a column every row answers NULL in is.
+   */
+  private static final Map<String, Map<String, PostgresType>> COLUMN_TYPES = new HashMap<>();
 
   /**
    * The answer to a catalog query: the columns to announce, in the order the client projected them, and the
@@ -435,6 +443,47 @@ public class PostgresCatalog {
     relation("pg_settings", null, "name", "setting", "unit", "category", "short_desc", "extra_desc", "context", "vartype", "source",
         "min_val", "max_val", "enumvals", "boot_val", "reset_val", "sourcefile", "sourceline", "pending_restart");
 
+    // The declared type of every column that is not a varchar: what the rows of each relation carry, held to it by
+    // Issue10869CatalogColumnTypesTest over every modelled relation
+    columnTypes("pg_namespace", PostgresType.INTEGER, "oid", "nspowner");
+    columnTypes("pg_class", PostgresType.INTEGER, "oid", "relnamespace", "reltype", "reloftype", "relowner", "relam", "relfilenode",
+        "reltablespace", "relpages", "reltuples", "reltoastrelid", "relnatts", "relchecks", "relrewrite");
+    columnTypes("pg_class", PostgresType.BOOLEAN, "relhasindex", "relisshared", "relhasrules", "relhastriggers", "relhassubclass",
+        "relrowsecurity", "relforcerowsecurity", "relispopulated", "relispartition");
+    columnTypes("pg_tables", PostgresType.BOOLEAN, "hasindexes", "hasrules", "hastriggers", "rowsecurity");
+    columnTypes("pg_attribute", PostgresType.INTEGER, "attrelid", "atttypid", "attstattarget", "attlen", "attnum", "attndims",
+        "atttypmod", "attinhcount", "attcollation");
+    columnTypes("pg_attribute", PostgresType.BOOLEAN, "attbyval", "attnotnull", "atthasdef", "atthasmissing", "attisdropped",
+        "attislocal");
+    columnTypes("information_schema.columns", PostgresType.INTEGER, "ordinal_position", "character_octet_length", "numeric_precision",
+        "numeric_precision_radix", "numeric_scale", "datetime_precision");
+    columnTypes("pg_database", PostgresType.INTEGER, "oid", "datdba", "encoding", "datconnlimit", "dattablespace");
+    columnTypes("pg_database", PostgresType.BOOLEAN, "datistemplate", "datallowconn");
+    columnTypes("pg_roles", PostgresType.INTEGER, "oid", "rolconnlimit");
+    columnTypes("pg_roles", PostgresType.BOOLEAN, "rolsuper", "rolinherit", "rolcreaterole", "rolcreatedb", "rolcanlogin",
+        "rolreplication", "rolbypassrls");
+    columnTypes("pg_user", PostgresType.INTEGER, "usesysid");
+    columnTypes("pg_user", PostgresType.BOOLEAN, "usecreatedb", "usesuper", "userepl", "usebypassrls");
+    columnTypes("pg_matviews", PostgresType.BOOLEAN, "hasindexes", "ispopulated");
+    columnTypes("pg_type", PostgresType.INTEGER, "oid", "typnamespace", "typowner", "typlen", "typrelid", "typelem", "typarray",
+        "typbasetype", "typtypmod", "typndims", "typcollation");
+    columnTypes("pg_type", PostgresType.BOOLEAN, "typbyval", "typispreferred", "typisdefined", "typnotnull");
+    columnTypes("pg_attrdef", PostgresType.INTEGER, "adrelid", "adnum");
+    columnTypes("pg_am", PostgresType.INTEGER, "oid");
+    columnTypes("pg_collation", PostgresType.INTEGER, "oid", "collnamespace", "collowner");
+    columnTypes("pg_index", PostgresType.INTEGER, "indexrelid", "indrelid", "indnatts", "indnkeyatts");
+    columnTypes("pg_index", PostgresType.BOOLEAN, "indisunique", "indnullsnotdistinct", "indisprimary", "indisexclusion",
+        "indimmediate", "indisclustered", "indisvalid", "indcheckxmin", "indisready", "indislive", "indisreplident");
+    columnTypes("pg_constraint", PostgresType.INTEGER, "oid", "connamespace", "conrelid", "contypid", "conindid", "conparentid",
+        "confrelid", "coninhcount");
+    columnTypes("pg_constraint", PostgresType.BOOLEAN, "condeferrable", "condeferred", "convalidated", "conislocal", "connoinherit");
+    columnTypes("pg_constraint", PostgresType.ARRAY_INT, "conkey");
+    columnTypes("information_schema.key_column_usage", PostgresType.INTEGER, "ordinal_position");
+    columnTypes("pg_inherits", PostgresType.INTEGER, "inhrelid", "inhparent", "inhseqno");
+    columnTypes("pg_inherits", PostgresType.BOOLEAN, "inhdetachpending");
+    columnTypes("pg_tablespace", PostgresType.INTEGER, "oid", "spcowner");
+    columnTypes("pg_settings", PostgresType.BOOLEAN, "pending_restart");
+
     // The three lists name the same relations in three places: a relation answered with no rows must be read by the join path,
     // and the join path must know its columns. A drift fails the class here rather than as a refusal in a client.
     for (final String relation : JOINED_RELATIONS)
@@ -445,7 +494,29 @@ public class PostgresCatalog {
         throw new IllegalStateException("Catalog relation '" + relation + "' with no rows is not read by the join path");
   }
 
+  private static void columnTypes(final String relation, final PostgresType type, final String... columns) {
+    final Set<String> declared = RELATIONS.get(relation);
+    final Map<String, PostgresType> types = COLUMN_TYPES.computeIfAbsent(relation, r -> new HashMap<>());
+    for (final String column : columns) {
+      if (declared == null || !declared.contains(column))
+        throw new IllegalStateException("Catalog relation '" + relation + "' has no column '" + column + "' to type");
+      types.put(column, type);
+    }
+  }
+
   private PostgresCatalog() {
+  }
+
+  /** An answer over a closed set of rows, for {@link PostgresTypeCatalog}: pg_type's rows are its built-in types. */
+  static Answer answer(final LinkedHashMap<String, PostgresType> columns, final List<Map<String, Object>> rows) {
+    return new Answer(columns, rows, true);
+  }
+
+  /** The type a column of a modelled relation is announced with: see {@link #COLUMN_TYPES}. */
+  static PostgresType declaredType(final String relation, final String column) {
+    final Map<String, PostgresType> types = COLUMN_TYPES.get(relation);
+    final PostgresType type = types == null ? null : types.get(column);
+    return type != null ? type : PostgresType.VARCHAR;
   }
 
   /** The names of the relations this catalog models, for a test that holds every one of them to the same contract. */
@@ -1374,7 +1445,7 @@ public class PostgresCatalog {
     if (operation.limit != null && rows.size() > operation.limit)
       rows = new ArrayList<>(rows.subList(0, operation.limit));
 
-    return new Answer(columnsOf(keys, rows), rows, filtersExactly);
+    return new Answer(unionColumns(keys, answers, rows), rows, filtersExactly);
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -2658,7 +2729,7 @@ public class PostgresCatalog {
     if (statement.limit != null && result.size() > statement.limit)
       result = new ArrayList<>(result.subList(0, statement.limit));
 
-    return new Answer(columnsOf(projection.keys(), result), result, !toleratesUnreadableFilter);
+    return new Answer(columnsOf(projection, from, columnsByRelation, result), result, !toleratesUnreadableFilter);
   }
 
   /** The projected row, or null when one of its columns cannot be computed. */
@@ -2867,27 +2938,83 @@ public class PostgresCatalog {
   }
 
   /**
-   * The columns to announce. The type comes from the first value that is not null, exactly as the executor
-   * types a column from a sample row; a column that is null in every row is a varchar, which is what an
-   * all-null column has always been announced as.
+   * The columns to announce. A projected column of a modelled relation is announced with the type its relation declares for it
+   * (issue #10869), so the answer is described the same way whether the filter matched a row or none. Any other projected
+   * expression - a function call, a literal, a column of a derived table - is typed from its first value that is not null, exactly
+   * as the executor types a column from a sample row.
    */
-  private static LinkedHashMap<String, PostgresType> columnsOf(final Collection<String> keys,
-      final List<Map<String, Object>> rows) {
-    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(keys.size());
-    for (final String key : keys) {
-      PostgresType type = PostgresType.VARCHAR;
-      for (final Map<String, Object> row : rows) {
-        final Object value = row.get(key);
-        if (value != null) {
-          // an int2vector or oidvector travels as text, see textOfVectors
-          final PostgresType sampled = value instanceof PostgresCatalogIndexes.Vector ? PostgresType.VARCHAR :
-              PostgresType.getTypeForValue(value);
-          type = sampled.isArrayType() || sampled.isNativeScalarType() ? sampled : PostgresType.VARCHAR;
+  private static LinkedHashMap<String, PostgresType> columnsOf(final Projection projection, final List<FromEntry> from,
+      final Map<String, Collection<String>> columnsByRelation, final List<Map<String, Object>> rows) {
+    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(projection.items.size());
+    for (final ProjectionItem item : projection.items) {
+      final String relation = item.expression instanceof PostgresCatalogExpression.ColumnReference reference ?
+          relationOf(reference, from, columnsByRelation) : null;
+      columns.put(item.alias, relation != null ?
+          declaredType(relation, ((PostgresCatalogExpression.ColumnReference) item.expression).name) :
+          sampledType(item.alias, rows));
+    }
+    return columns;
+  }
+
+  /**
+   * The modelled relation a projected column reads, or null when it reads something else: a derived table, a table function, a
+   * column of the query around a sub-select. Resolved the way {@link RowResolver#column} resolves it - by its qualifier, else by the
+   * first entry of the FROM clause that has such a column - and only an entry whose columns are the relation's own is one: a derived
+   * table aliased with the name of a relation is still a derived table.
+   */
+  private static String relationOf(final PostgresCatalogExpression.ColumnReference reference, final List<FromEntry> from,
+      final Map<String, Collection<String>> columnsByRelation) {
+    FromEntry owner = null;
+    if (reference.qualifier != null)
+      owner = entryFor(from, reference.qualifier);
+    else
+      for (final FromEntry entry : from) {
+        final Collection<String> columns = columnsByRelation.get(entry.relation);
+        if (columns != null && columns.contains(reference.name)) {
+          owner = entry;
           break;
         }
       }
-      columns.put(key, type);
+
+    if (owner == null || owner.derived != null || owner.function != null)
+      return null;
+    final Set<String> declared = RELATIONS.get(owner.relation);
+    return declared != null && columnsByRelation.get(owner.relation) == declared && declared.contains(reference.name) ?
+        owner.relation : null;
+  }
+
+  /** The type of a column from its first value that is not null; a varchar when every row is NULL in it, or there is no row. */
+  private static PostgresType sampledType(final String key, final List<Map<String, Object>> rows) {
+    for (final Map<String, Object> row : rows) {
+      final Object value = row.get(key);
+      if (value != null) {
+        // an int2vector or oidvector travels as text, see textOfVectors
+        final PostgresType sampled = value instanceof PostgresCatalogIndexes.Vector ? PostgresType.VARCHAR :
+            PostgresType.getTypeForValue(value);
+        return sampled.isArrayType() || sampled.isNativeScalarType() ? sampled : PostgresType.VARCHAR;
+      }
     }
+    return PostgresType.VARCHAR;
+  }
+
+  /**
+   * The columns of a UNION, INTERSECT or EXCEPT: named by the first arm, as in PostgreSQL, and typed by the arms when they all
+   * announce the same type for a column, so an arm that matched no row does not turn the column into a varchar. Arms that disagree
+   * leave the column typed by its values.
+   */
+  private static LinkedHashMap<String, PostgresType> unionColumns(final List<String> keys, final List<Answer> arms,
+      final List<Map<String, Object>> rows) {
+    final PostgresType[] types = arms.get(0).columns.values().toArray(new PostgresType[0]);
+    final boolean[] disagree = new boolean[types.length];
+    for (int a = 1; a < arms.size(); a++) {
+      int k = 0;
+      for (final PostgresType armType : arms.get(a).columns.values())
+        disagree[k] |= armType != types[k++];
+    }
+
+    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(keys.size());
+    for (int k = 0; k < keys.size(); k++)
+      columns.put(keys.get(k), disagree[k] ? sampledType(keys.get(k), rows) : types[k]);
     return columns;
   }
 

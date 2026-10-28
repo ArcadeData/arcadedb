@@ -254,16 +254,54 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   /**
    * Drops this timeseries type: deletes all shard data files (mutable bucket and sealed store)
    * from disk and shuts down the engine.
+   * <p>
+   * The files go whether or not the engine started (issue #10866): a type whose engine could not open (issue #6356) still owns its
+   * buckets, its sealed files and its tag dictionary - {@link #collectOwnedComponentFiles} already names them to the drop - and left
+   * behind they came back registered at every open, and a type created later under the same name adopted the samples of the dropped
+   * one. The maintenance of the type stops with it, so no pass of it is scheduled on a name another type may take.
    */
   public void drop() {
-    if (engine != null) {
+    schema.cancelTimeSeriesMaintenance(name);
+
+    final TimeSeriesEngine current = engine;
+    if (current != null) {
       try {
-        engine.drop();
+        current.drop();
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.WARNING, "Error dropping TimeSeriesEngine for type '%s': %s", e, name, e.getMessage());
       }
       engine = null;
-    }
+    } else
+      dropFilesWithoutEngine();
+  }
+
+  /**
+   * The files of a type whose engine could not start (issue #6356), dropped the way the engine drops them: each component found by
+   * the name the engine would look it up by, then the sealed file of every shard, which no component holds.
+   */
+  private void dropFilesWithoutEngine() {
+    final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+    for (final String componentName : engineComponentNames(name))
+      if (schema.getFileByName(componentName) instanceof PaginatedComponent component) {
+        final int fileId = component.getFileId();
+        try {
+          database.getPageManager().deleteFile(database, fileId);
+          database.getFileManager().dropFile(fileId);
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.WARNING, "Error dropping the file '%s' of TIMESERIES type '%s': %s", e, componentName,
+              name, e.getMessage());
+        }
+        schema.removeFile(fileId);
+      }
+
+    final String directory = database.getDatabasePath() + File.separator;
+    for (int i = 0; i < engineShardCount(); i++)
+      try {
+        TimeSeriesSealedStore.deleteFiles(directory + name + "_shard_" + i);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error dropping the sealed file of shard %d of TIMESERIES type '%s': %s", e, i,
+            name, e.getMessage());
+      }
   }
 
   /**

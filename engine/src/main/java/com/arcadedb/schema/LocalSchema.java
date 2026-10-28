@@ -2992,6 +2992,12 @@ public class LocalSchema implements Schema {
     return timeSeriesMaintenanceScheduler;
   }
 
+  /** Stops the automatic maintenance of a TIMESERIES type, without starting a scheduler only to find nothing scheduled in it. */
+  synchronized void cancelTimeSeriesMaintenance(final String typeName) {
+    if (timeSeriesMaintenanceScheduler != null)
+      timeSeriesMaintenanceScheduler.cancel(typeName);
+  }
+
   private void readStatisticsFile() {
     if (storedStatisticsApplied) {
       carryLiveRecordCountsIntoRebuiltBuckets();
@@ -3193,6 +3199,7 @@ public class LocalSchema implements Schema {
           dropTypeInternal(type, typeName, canonicalTypeName);
           return null;
         });
+        reportFilesTheDropLeft(type.getName(), filesOfTheDrop);
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
@@ -3425,6 +3432,22 @@ public class LocalSchema implements Schema {
       final Collection<Integer> filesToLock, final Callable<RET> mutation) {
     requireFilesCanBeDeleted(statement, filesToProbe);
     return database.executeLockingFiles(filesToLock, mutation);
+  }
+
+  /**
+   * Reports every file the drop of a type probed as its own and did not delete (issue #10866). The probe names "the files this
+   * statement is going to delete", and nothing checked that it did: the files of a TIMESERIES type whose engine had not started stayed
+   * registered, came back at every open and were adopted by the next type of that name, with CHECK DATABASE silent about them. A
+   * leftover is logged rather than thrown: the type is already gone, and failing the statement now would only hide that it was.
+   */
+  private void reportFilesTheDropLeft(final String typeName, final Collection<Integer> fileIds) {
+    final FileManager fileManager = database.getFileManager();
+    for (final Integer fileId : fileIds) {
+      final ComponentFile file = fileManager.getFileIfExists(fileId);
+      if (file != null)
+        LogManager.instance().log(this, Level.SEVERE, "The drop of the type '%s' left its file '%s' (id=%d) behind", null, typeName,
+            file.getFileName(), fileId);
+    }
   }
 
   /**
