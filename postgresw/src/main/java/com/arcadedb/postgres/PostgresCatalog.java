@@ -592,6 +592,61 @@ public class PostgresCatalog {
   }
 
   /**
+   * Answers a session probe: a top-level SELECT with no FROM that names {@code pg_catalog} or {@code pg_type} as an identifier -
+   * {@code SELECT pg_catalog.set_config('search_path', '', false)}, {@code SELECT pg_catalog.pg_backend_pid()} - which
+   * {@link #resolve} leaves alone and ArcadeDB's SQL engine cannot read, since it takes {@code pg_catalog.f()} for a method call.
+   * The projection is evaluated as the one row PostgreSQL answers; one this catalog cannot evaluate keeps the empty result set
+   * such a probe has always been given.
+   * <p>
+   * Decided on the tokens, never on the text (issue #10695): a statement that is not a SELECT, a SELECT with a FROM, and one that
+   * merely holds the words in a string literal are not probes, and go on to the SQL engine. A substring test here once dropped
+   * every INSERT whose literal said "pg_catalog" and acknowledged it as {@code INSERT 0 0}.
+   *
+   * @return null when the statement is not such a probe
+   */
+  public static Answer resolveProbe(final String query, final Database database, final String userName,
+      final Object... parameters) {
+    // The substrings are only a cheap pre-filter; the tokens decide. Not startsAsQuery: a probe may open with a comment
+    if (query == null || database == null || !(containsIgnoreCase(query, PG_CATALOG_SCHEMA) || containsIgnoreCase(query,
+        "pg_type")))
+      return null;
+
+    List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+    if (tokens == null || !namesCatalogSchema(tokens))
+      return null;
+
+    while (!tokens.isEmpty() && tokens.get(tokens.size() - 1).isSymbol(";"))
+      tokens.remove(tokens.size() - 1);
+
+    substituteParameters(tokens, parameters);
+    tokens = unwrapParentheses(plainSpellings(tokens));
+    if (tokens.isEmpty() || !tokens.get(0).isKeyword("SELECT") || SetOperation.split(tokens) != null)
+      return null;
+
+    final Statement statement = Statement.split(tokens);
+    if (statement == null || statement.from != null)
+      return null;
+
+    Answer answer;
+    try {
+      answer = project(statement, List.of(), List.of(new Row()), new Context(database, userName), Map.of(), true, null, null);
+    } catch (final PostgresCatalogExpression.BudgetExceeded e) {
+      answer = null;
+    }
+    if (answer != null && answer.rows != null)
+      return textOfVectors(answer);
+    return new Answer(new LinkedHashMap<>(), new ArrayList<>(), false);
+  }
+
+  /** Whether {@code pg_catalog} or {@code pg_type} is a word of the statement, rather than part of a string literal or a longer name. */
+  private static boolean namesCatalogSchema(final List<PostgresCatalogToken> tokens) {
+    for (final PostgresCatalogToken token : tokens)
+      if (token.isKeyword(PG_CATALOG_SCHEMA) || token.isKeyword("pg_type"))
+        return true;
+    return false;
+  }
+
+  /**
    * The answer with its {@code int2vector} and {@code oidvector} values (an index's {@code indkey}) as the text a client reads
    * them as, the values separated by a space. Done on the answer of the statement, not of a derived table or a sub-select: those
    * go on reading them as the arrays they are, so that {@code indkey[0]} is the first key.
@@ -698,9 +753,10 @@ public class PostgresCatalog {
       return resolveSetOperation(setOperation, context, outer);
 
     if (tokens.isEmpty() || !tokens.get(0).isKeyword("SELECT"))
-      // Not a SELECT at all: a WITH, an INSERT, something else entirely. If it names an emulated relation it
-      // is still a catalog query, and answering it is not this class's job either way.
-      return namesAnEmulatedRelation(tokens) ? DECLINED : null;
+      // Not a SELECT at all: a WITH, an INSERT, something else entirely. If it reads or writes an emulated relation it is
+      // still a catalog query, and answering it is not this class's job either way. Only as a relation, though: a column the
+      // user called pg_type, in an INSERT or a CREATE PROPERTY, is not a catalog relation (issue #10695).
+      return namesAnEmulatedRelation(tokens, true) ? DECLINED : null;
 
     final Statement statement = Statement.split(tokens);
     if (statement == null)
@@ -708,7 +764,9 @@ public class PostgresCatalog {
 
     if (statement.from == null) {
       if (!nested)
-        return namesAnEmulatedRelation(tokens) ? DECLINED : null;
+        // A FROM-less SELECT reads a catalog relation only through a sub-select's FROM; a column alias such as
+        // SELECT 1 AS pg_type reads none (issue #10695)
+        return namesAnEmulatedRelation(tokens, true) ? DECLINED : null;
       // A row of literals - an arm of psqlodbc's UNION of relkinds, a sub-select's SELECT 1: one row, no relation.
       return project(statement, List.of(), List.of(new Row()), context, Map.of(), true, outer);
     }
@@ -1442,9 +1500,20 @@ public class PostgresCatalog {
    * it - would make part of the user's own schema unusable.
    */
   private static boolean namesAnEmulatedRelation(final List<PostgresCatalogToken> tokens) {
+    return namesAnEmulatedRelation(tokens, false);
+  }
+
+  /**
+   * @param asRelation whether only a name in a relation's place counts - right after {@code FROM}, {@code JOIN}, {@code INTO},
+   *                   {@code UPDATE}, {@code TABLE} or {@code ONLY} - rather than any word of the statement, for a statement whose
+   *                   other names are columns this class does not parse
+   */
+  private static boolean namesAnEmulatedRelation(final List<PostgresCatalogToken> tokens, final boolean asRelation) {
     for (int i = 0; i < tokens.size(); i++) {
       final PostgresCatalogToken token = tokens.get(i);
       if (token.type != PostgresCatalogToken.Type.IDENTIFIER)
+        continue;
+      if (asRelation && !(i > 0 && isRelationKeyword(tokens.get(i - 1))))
         continue;
 
       String name = token.text.toLowerCase(Locale.ENGLISH);
@@ -1461,6 +1530,11 @@ public class PostgresCatalog {
         return true;
     }
     return false;
+  }
+
+  private static boolean isRelationKeyword(final PostgresCatalogToken token) {
+    return token.isKeyword("FROM") || token.isKeyword("JOIN") || token.isKeyword("INTO") || token.isKeyword("UPDATE")
+        || token.isKeyword("TABLE") || token.isKeyword("ONLY");
   }
 
   // ---------------------------------------------------------------- rows
@@ -3193,6 +3267,17 @@ public class PostgresCatalog {
         // The statement that creates an index, and the constraint a unique index is (issue #10473)
         case "pg_get_indexdef" -> indexDefinition(arguments);
         case "pg_get_constraintdef" -> constraintDefinition(arguments);
+        // The session probes a client sends schema-qualified, which ArcadeDB's SQL engine cannot read (issue #10695)
+        case "pg_backend_pid" -> {
+          final Integer pid = arguments.isEmpty() ? PostgresBackendFunctions.currentProcessId(null) : null;
+          yield pid != null ? pid : PostgresCatalogExpression.UNKNOWN;
+        }
+        // No server here is ever replaying a WAL for a client to wait on: a replica takes and forwards writes
+        case "pg_is_in_recovery" -> arguments.isEmpty() ? Boolean.FALSE : PostgresCatalogExpression.UNKNOWN;
+        // set_config(name, value, is_local) answers the value it set; ArcadeDB has no such session settings to change, so the
+        // value is acknowledged as PostgreSQL would and nothing else happens, which is what the empty answer used to mean
+        case "set_config" -> arguments.size() != 3 || arguments.get(1) == PostgresCatalogExpression.UNKNOWN ?
+            PostgresCatalogExpression.UNKNOWN : arguments.get(1) == null ? null : PostgresCatalogExpression.asString(arguments.get(1));
         default -> PostgresCatalogExpression.UNKNOWN;
       };
     }
