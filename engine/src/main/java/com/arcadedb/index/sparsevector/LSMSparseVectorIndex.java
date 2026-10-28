@@ -1640,6 +1640,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     try {
       return NumberUtils.toIntWhole(value);
     } catch (final ArithmeticException e) {
+      // Only a carrier of the rejected value, worded for the message dimensionsToIndex builds around it
       throw new ArithmeticException(NumberUtils.describeRejectedNumber(value));
     }
   }

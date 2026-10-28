@@ -5052,6 +5052,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void adoptPQCodesFor(final PQCodes checked, final int[] ordinalMap) {
     if (checked != null && pqCodes == checked)
       pqCodes = checked.boundTo(ordinalMap);
+    else
+      LogManager.instance().log(this, Level.FINE,
+          "PQ codes of index %s not adopted for the graph a reopen published: %s, so searches stay exact until a build "
+              + "publishes codes for its own map (issue #10786)", indexName,
+          checked == null ? "there were none to check" : "they were replaced while the reopen checked them");
   }
 
   /**
