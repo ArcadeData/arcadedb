@@ -205,6 +205,20 @@ class Discussion10893CypherVectorIndexOptionsTest extends TestHelper {
     assertThat(createStatement("f")).isEqualTo(fulltext);
   }
 
+  @Test
+  void aSmallFloatSettingIsListedInExponentFormAndRoundTrips() {
+    command("CREATE FULLTEXT INDEX f FOR (n:Doc) ON EACH [n.body] OPTIONS {indexConfig: {bm25_b: 0.0001}}");
+
+    final String fulltext = createStatement("f");
+    assertThat(fulltext).isEqualTo("CREATE FULLTEXT INDEX `f` FOR (n:`Doc`) ON EACH [n.`body`] OPTIONS {indexConfig: "
+        + "{`bm25_b`: 1.0E-4}}");
+    command("DROP INDEX f");
+    command(fulltext);
+    assertThat(createStatement("f")).isEqualTo(fulltext);
+    assertThat(((LSMTreeFullTextIndex) ((TypeIndex) database.getSchema().getIndexByName("f")).getIndexesOnBuckets()[0])
+        .getFullTextMetadata().getBm25B()).isEqualTo(0.0001f);
+  }
+
   private VectorQuantizationType quantizationOf(final String type) {
     command("DROP INDEX q IF EXISTS");
     command("CREATE VECTOR INDEX q FOR (n:Q) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.quantization.type`: "

@@ -176,7 +176,7 @@ final class CypherIndexOptions {
    * The FULL_TEXT metadata of a {@code CREATE FULLTEXT INDEX}: {@code fulltext.analyzer}, a Neo4j analyzer name or the class
    * name of a Lucene analyzer, and {@code fulltext.eventually_consistent}, accepted with either value since a FULL_TEXT index
    * is updated by the transaction that changes the record, which is what Neo4j's default ({@code false}) promises. Every other
-   * FULL_TEXT setting is given under its own name, as for a vector index ({@link #vectorMetadata(Object)}).
+   * FULL_TEXT setting is given under its own name, as for a vector index ({@link #vectorMetadata(Object, String, String[])}).
    */
   static JSONObject fullTextMetadata(final Object options, final String typeName, final String[] propertyNames) {
     final Map<String, Object> config = indexConfig(options, "CREATE FULLTEXT INDEX");
