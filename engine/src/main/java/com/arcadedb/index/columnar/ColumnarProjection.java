@@ -19,9 +19,11 @@
 package com.arcadedb.index.columnar;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.block.BlockCorruptionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -31,10 +33,12 @@ import com.arcadedb.utility.IntHashSet;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -51,6 +55,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntUnaryOperator;
 import java.util.logging.Level;
@@ -89,10 +94,16 @@ public final class ColumnarProjection {
   static final long   LOOKUP_FROZEN   = -3;
   static final String MISSING         = "missing";
   static final String CORRUPT         = "corrupt";
+  /** The unusable reason while the page-version check of an unclean open runs (final review B-I6, round 2 NI3); not a rebuild. */
+  static final String UNCLEAN_CHECK   = "unclean_check";
+  /** Reached by the page-version check before each page it reads. */
+  static final String PAGE_CHECK_PAGE = "projection.pageCheckPage";
   /** Reached by {@link #acquire()} between the read of the pending positions and the read of the state. */
   static final String ACQUIRE_BETWEEN = "acquire.pendingRead";
   /** Reached by {@link #open} before it reads the files of the bucket directory. */
   static final String LOAD_FILES      = "projection.loadFiles";
+  /** Test seam: makes the tombstone rename of {@link #drop()} fail, as Windows does for a directory with open handles. */
+  static volatile boolean failTombstoneRenameForTesting;
   /** Reached by {@link #rebuildPublished} once the rebuilt state is current, holding the apply and publish locks. */
   static final String REBUILD_SWAPPED = "rebuild.stateSwapped";
 
@@ -113,6 +124,8 @@ public final class ColumnarProjection {
   private final DirtyPageTracker externalTracker;
   private final int              externalFileId;
   private final int              segmentBlockRows;
+  /** The WAL of the database, forced before every manifest publish (final review B-I4). */
+  private final TransactionManager transactionManager;
 
   private final ReentrantReadWriteLock ownersLock         = new ReentrantReadWriteLock();
   private final ReentrantReadWriteLock externalOwnersLock;
@@ -185,17 +198,22 @@ public final class ColumnarProjection {
   private int                            reportedSegments;
   private int                            reportedOpenFiles;
   private boolean                        ownReferenceDropped;
-  private boolean                        directoryDeleted;
+  private volatile boolean               directoryDeleted;
+  /** Where the files are: {@link #bucketDir}, or the tombstone a drop renamed it to (round 2 NI2). Under publishLock. */
+  private Path                           directory;
   private volatile boolean               closed;
   private volatile boolean               dropped;
   private volatile boolean               stopped;
 
   private ColumnarProjection(final Path databasePath, final LocalBucket bucket, final String typeName, final ColumnDefinition[] columns,
-      final ColumnarStats stats, final boolean readOnly, final LocalBucket external, final int segmentBlockRows) {
+      final ColumnarStats stats, final boolean readOnly, final LocalBucket external, final int segmentBlockRows,
+      final TransactionManager transactionManager) {
     this.bucketId = bucket.getFileId();
+    this.transactionManager = transactionManager;
     this.bucketName = bucket.getName();
     this.typeName = typeName;
     this.bucketDir = ColumnarStore.bucketDir(databasePath, bucketId);
+    this.directory = bucketDir;
     this.readOnly = readOnly;
     this.maxRecordsInPage = bucket.getMaxRecordsInPage();
     this.segmentBlockRows = segmentBlockRows;
@@ -225,7 +243,7 @@ public final class ColumnarProjection {
    * projection serves an unusable empty state. Without a manifest, a bucket with records records {@code missing}; an empty bucket is
    * usable at once (V-B1), published as an empty generation-1 manifest with one empty dictionary per ordinal column on a writable
    * database, kept in memory only on a READ_ONLY one. A writable open deletes the files the loaded manifest does not name (crash
-   * orphans, V-M11).
+   * orphans, V-M11) and every {@code *.tmp} file a crash left in the directory.
    */
   static ColumnarProjection open(final DatabaseInternal db, final LocalBucket bucket, final ColumnDefinition[] columns,
       final ColumnarStats stats) {
@@ -234,7 +252,7 @@ public final class ColumnarProjection {
     final LocalBucket external = externalId == null ? null : (LocalBucket) db.getSchema().getBucketById(externalId);
     final ColumnarProjection projection = new ColumnarProjection(Path.of(db.getDatabasePath()), bucket,
         type == null ? bucket.getName() : type.getName(), columns, stats, db.getMode() == ComponentFile.MODE.READ_ONLY, external,
-        db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS));
+        db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS), db.getTransactionManager());
     projection.load(db, bucket);
     return projection;
   }
@@ -250,6 +268,10 @@ public final class ColumnarProjection {
         ColumnarTestHooks.reach(LOAD_FILES);
         // first, on its own: a manifest that fails to load must still leave the reservations above every existing file
         seedFromDirectory();
+        if (!readOnly)
+          // a tmp file a crash left between its write and its rename (a per-generation manifest tmp, a marker's): nothing writes in the
+          // directory before the projection is routed, so none is in use (batch 1 N3)
+          ColumnarStore.deleteTmpFiles(bucketDir);
         found = ColumnarManifest.load(bucketDir);
         if (found != null) {
           seedFromManifest(found);
@@ -383,8 +405,69 @@ public final class ColumnarProjection {
       externalOwners = ContentOwnerMap.readFrom(bucketDir.resolve(found.externalOwnerMapFile()));
   }
 
-  private static boolean isEmpty(final LocalBucket bucket) {
-    return bucket.getCommittedPageCount() == 0 || bucket.count() == 0;
+  /**
+   * Whether the bucket has no record, decided from its pages (final review B-M2): the cached record counter can drift (#8640), and a
+   * drifted 0 would publish an empty, usable projection of a bucket with records. A count above 0 is trusted (a drifted one only costs a
+   * rebuild); otherwise the committed pages are read up to the first record.
+   */
+  static boolean isEmpty(final LocalBucket bucket) {
+    final int pages = bucket.getCommittedPageCount();
+    if (pages == 0)
+      return true;
+    if (bucket.count() > 0)
+      return false;
+    final boolean[] found = new boolean[1];
+    final LocalBucket.CommittedSlotVisitor visitor = (position, kind, content, offPagePages, offPageCount) -> {
+      if (kind == LocalBucket.CommittedSlotVisitor.RECORD)
+        found[0] = true;
+    };
+    for (int page = 0; page < pages && !found[0]; page++)
+      bucket.visitCommittedPage(page, visitor);
+    return !found[0];
+  }
+
+  /**
+   * Final review B-I6 (spec 6.5 "page versions validate recovery"), on an unclean open: the pages of the bucket whose committed version
+   * is not the newest one the segments of the current state recorded for them, a page no segment covers included (re-applying a page
+   * that holds no record removes nothing). Re-applying them repairs a mark lost on any path.
+   * Reads the version of every page of the bucket from its header ({@link LocalBucket#getPageVersionWithoutLoading}: no page is loaded or
+   * cached, no record is decoded), on the maintenance pool, never on the open path. Pages of the
+   * external-property bucket are not checked: no segment records their versions, so a mark lost on an external page only is not found
+   * (a plan 3 open item).
+   *
+   * @return the pages, null when a segment covers a page past the bucket's committed page count (rows of pages the bucket does not
+   * have, which no re-apply can remove: the projection is rebuilt)
+   *
+   * @throws ColumnarFlusher.PublishingStoppedException when {@code stop} says so between two pages (a close)
+   */
+  IntHashSet pagesChangedSinceSegments(final LocalBucket bucket, final BooleanSupplier stop) {
+    final ProjectionState retainedState = retainState();
+    try {
+      return pagesChangedSinceSegments(bucket, retainedState.segments(), stop);
+    } finally {
+      retainedState.release();
+    }
+  }
+
+  private IntHashSet pagesChangedSinceSegments(final LocalBucket bucket, final SegmentReader[] segments, final BooleanSupplier stop) {
+    final int pages = bucket.getCommittedPageCount();
+    for (final SegmentReader segment : segments)
+      if (segment.rowCount() > 0 && segment.maxPage() >= pages)
+        return null;
+    final IntHashSet changed = new IntHashSet();
+    final ByteBuffer header = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
+    for (int page = 0; page < pages; page++) {
+      ColumnarTestHooks.reach(PAGE_CHECK_PAGE);
+      if (stop.getAsBoolean())
+        throw new ColumnarFlusher.PublishingStoppedException(bucketName);
+      long recorded = -1;
+      for (final SegmentReader segment : segments)
+        if (page >= segment.minPage() && page <= segment.maxPage())
+          recorded = Math.max(recorded, segment.pageVersion(page));
+      if (recorded < 0 || recorded != bucket.getPageVersionWithoutLoading(page, header))
+        changed.add(page);
+    }
+    return changed;
   }
 
   /**
@@ -1289,6 +1372,24 @@ public final class ColumnarProjection {
     requestRebuild(rebuildReason);
   }
 
+  /** Final review B-I4: makes every commit of the database durable in its WAL; called before a manifest publish. */
+  void forceWAL() throws IOException {
+    transactionManager.forceWALFiles();
+  }
+
+  /** Republishes the current state usable when it is unusable for {@code reason} only (a later reason, a rebuild's, is kept). */
+  void markUsableAfter(final String reason) {
+    publishLock.lock();
+    try {
+      if (!reason.equals(unusableReason))
+        return;
+      final ProjectionState current = state.get();
+      publish(manifest, current.segments(), current.overlays(), dictionaries, true);
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
   /** The first half of {@link #markUnusable}: records the reason and republishes the state unusable, requesting nothing. */
   void markUnusableWithoutRequest(final String rebuildReason) {
     publishLock.lock();
@@ -1343,6 +1444,58 @@ public final class ColumnarProjection {
       dropOwnReference();
       if (retained.isEmpty())
         deleteDirectory();
+      else
+        moveToTombstone();
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Under publishLock, a drop whose deletion waits for a snapshot (round 2 NI2): renames {@link #bucketDir} to a unique tombstone at
+   * once, so a projection opened on the same bucket meanwhile owns a directory this one never deletes. The segment readers of the
+   * retained states read by path, so their files are re-pointed at the tombstone. When the rename fails (Windows refuses one with open
+   * handles), or a flush, merge, rebuild or compaction still writes in the directory (a drop that gave up waiting for it), the directory
+   * stays where it is, {@link #holdsBucketDirectory()} says so, and the manager opens no projection on the bucket until it is deleted.
+   * The open sweep deletes a tombstone a crash left.
+   */
+  private void moveToTombstone() {
+    if (readOnly)
+      return;
+    if (!Files.isDirectory(bucketDir)) {
+      // round 3 Minor 3: nothing created, nothing to delete at the last release (a projection opened meanwhile owns bucketDir)
+      directory = null;
+      return;
+    }
+    if (maintenance.get() || !inFlightFiles.isEmpty())
+      return;
+    final Path tombstone = bucketDir.resolveSibling(bucketDir.getFileName() + ColumnarStore.TOMBSTONE_INFIX + System.nanoTime());
+    try {
+      if (failTombstoneRenameForTesting)
+        throw new IOException("Simulated failure of the tombstone rename of " + bucketDir);
+      Files.move(bucketDir, tombstone, StandardCopyOption.ATOMIC_MOVE);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot move the directory of the dropped columnar projection of bucket '%s' aside: "
+          + "no projection opens on the bucket until its last snapshot is released", e, bucketName);
+      return;
+    }
+    directory = tombstone;
+    for (final SegmentFile file : segmentFiles.values())
+      file.relocate(tombstone);
+    for (final SegmentReader reader : openReaders)
+      reader.file().relocate(tombstone);
+    try {
+      ColumnarStore.fsyncDirectory(bucketDir.getParent());
+    } catch (final IOException e) {
+      // never thrown today, see fsyncDirectory
+    }
+  }
+
+  /** A dropped projection whose files are still in {@link #bucketDir} (its tombstone rename failed) and not deleted yet. */
+  boolean holdsBucketDirectory() {
+    publishLock.lock();
+    try {
+      return dropped && !directoryDeleted && bucketDir.equals(directory) && Files.isDirectory(bucketDir);
     } finally {
       publishLock.unlock();
     }
@@ -1441,8 +1594,8 @@ public final class ColumnarProjection {
       file.deleted();
     segmentFiles.clear();
     closeDictionaries();
-    if (!readOnly)
-      FileUtils.deleteRecursively(bucketDir.toFile());
+    if (!readOnly && directory != null)
+      FileUtils.deleteRecursively(directory.toFile());
   }
 
   private void closeDictionaries() {

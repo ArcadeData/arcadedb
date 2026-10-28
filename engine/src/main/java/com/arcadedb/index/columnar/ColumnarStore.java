@@ -48,15 +48,20 @@ import java.util.logging.Level;
  *     seg-*.acs, seg-*.dead.*, dict-*.dic, owner maps
  * </pre>
  * Publish order: segment, dead set, dictionary and owner map files are written and fsynced first; then the bucket directory is
- * fsynced, because POSIX does not order a file creation before a later rename without it; then the manifest is written through
+ * fsynced, because POSIX does not order a file creation before a later rename without it; then the WAL of the database is forced, so the
+ * new state is never more durable than the commits it holds (final review B-I4); then the manifest is written through
  * {@link #writeAtomically}; only then are unreferenced files deleted ({@link #deleteUnreferenced}).
  */
 public final class ColumnarStore {
   public static final String ROOT_DIR       = "columnar";
   public static final String REBUILD_MARKER = "REBUILD";
   public static final String NOWAL_MARKER   = "NOWAL";
+  /** Marker of a page-version check that has not ended (final review B-I6, round 2 NI3): the next open checks again. */
+  static final        String CHECK_MARKER   = "CHECK";
   /** Suffix of the temporary file {@link #writeAtomically} writes next to its target. */
   static final        String TMP_SUFFIX     = ".tmp";
+  /** {@code b<id>.dropped.<n>}: the directory of a dropped projection still read by a snapshot (round 2 NI2), swept at open. */
+  static final        String TOMBSTONE_INFIX = ".dropped.";
 
   private static final String SNAPSHOT_INSTALL = "snapshot_install";
 
@@ -235,7 +240,26 @@ public final class ColumnarStore {
     return deleted;
   }
 
+  /**
+   * Deletes every regular {@code *.tmp} file of the bucket directory: the tmp files of {@link #writeAtomically} and of the per-generation
+   * manifest that a crash left between their write and their rename. Only while nothing writes in the directory (a writable open, before
+   * the projection is routed); a file that cannot be deleted is logged and left in place.
+   */
+  static void deleteTmpFiles(final Path bucketDir) throws IOException {
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(bucketDir, "*" + TMP_SUFFIX)) {
+      for (final Path entry : entries)
+        if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS))
+          try {
+            Files.deleteIfExists(entry);
+          } catch (final IOException e) {
+            LogManager.instance().log(ColumnarStore.class, Level.WARNING, "Cannot delete the columnar tmp file '%s'", e, entry);
+          }
+    } catch (final NoSuchFileException e) {
+      // no directory yet
+    }
+  }
+
   private static boolean isNeverDeleted(final String name) {
-    return name.equals(ColumnarManifest.FILE_NAME) || name.equals(NOWAL_MARKER) || name.endsWith(TMP_SUFFIX);
+    return name.equals(ColumnarManifest.FILE_NAME) || name.equals(NOWAL_MARKER) || name.equals(CHECK_MARKER) || name.endsWith(TMP_SUFFIX);
   }
 }

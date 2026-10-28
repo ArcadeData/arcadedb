@@ -35,6 +35,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
@@ -532,10 +533,21 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
   private ByteBuffer readBlock(final int[] location, final int index) {
     final int offset = location[index * 2];
     final int size = location[index * 2 + 1];
-    try (final FileChannel channel = FileChannel.open(file.path(), StandardOpenOption.READ)) {
-      return readFully(channel, offset, size, file.path());
+    Path path = file.path();
+    try {
+      try (final FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+        return readFully(channel, offset, size, path);
+      } catch (final NoSuchFileException e) {
+        // the directory was moved to a dropped projection's tombstone between the path read and the open: once, under the new path
+        if (path.equals(file.path()))
+          throw e;
+        path = file.path();
+        try (final FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+          return readFully(channel, offset, size, path);
+        }
+      }
     } catch (final IOException e) {
-      throw new UncheckedIOException("Cannot read segment " + file.path(), e);
+      throw new UncheckedIOException("Cannot read segment " + path, e);
     }
   }
 
