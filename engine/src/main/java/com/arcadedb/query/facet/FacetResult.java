@@ -74,7 +74,7 @@ public final class FacetResult {
 
   /**
    * @param kind       {@code terms}, {@code range}, {@code histogram} or {@code hierarchy}
-   * @param source     {@code index}, {@code scan} or {@code mixed}
+   * @param source     {@code index} or {@code scan}; {@link #unavailable} builds the {@code unavailable} one
    * @param otherCount the counts of the values not returned; written for terms and hierarchy facets only
    * @param missing    the number of records without a value
    */
