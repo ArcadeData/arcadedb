@@ -8676,6 +8676,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph that has them score the walk
    * and {@code exact} re-ranks what it finds; every other graph scores both on {@code exact}.
+   */
+  private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
+      final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
+    return scoreProviderFor(searcher, graph, queryVector, exact, exact);
+  }
+
+  /**
+   * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph that has them score the walk
+   * and {@code reranker} scores what it finds; every other graph is walked on {@code walk}.
+   * <p>
+   * Both the exact walk ({@code walk} and {@code reranker} are the stored vectors) and the PQ walk of a PRODUCT index ({@code walk} is the
+   * memory-resident PQ codes, {@code reranker} the stored vectors or those same codes) take it, so a graph file written with the {@code fusedPQ}
+   * setting is read by the ungrouped SQL {@code vector.neighbors} and {@code db.index.vector.queryNodes} too, not only by the Java exact walk
+   * (issue #10713). The grouped search ({@code groupBy}) keeps its exact walk and does not come here. The fused codes are encoded with the same
+   * codebook as the memory-resident ones and sit beside the neighbour list of a node, in the page the walk loads anyway; jvector decodes them
+   * with its own scorer, so the order of the walk can differ slightly from a walk on the memory-resident codes. The reranker is the same either way.
    * <p>
    * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour list, in <b>that view</b>,
    * while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the view of the searcher, as jvector's
@@ -8684,14 +8700,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no neighbours of the entry node and stopped there (issue #10514).
    */
   private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
-      final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
+      final VectorFloat<?> queryVector, final ScoreFunction walk, final ScoreFunction.ExactScoreFunction reranker) {
     if (graph instanceof OnDiskGraphIndex diskGraph
         && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
       final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
-      return new DefaultSearchScoreProvider(
-          fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, exact), exact);
+      // jvector 4.0.2's FusedPQDecoder keeps the exact function it is handed but never calls it: the walk is scored on the fused
+      // codes only, and the reranker reaches the answer through the provider's re-rank step alone, so walk is not needed here
+      final DefaultSearchScoreProvider fused = new DefaultSearchScoreProvider(
+          fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, reranker), reranker);
+      metrics.incrementFusedPQWalks();
+      return fused;
     }
-    return new DefaultSearchScoreProvider(exact, exact);
+    return new DefaultSearchScoreProvider(walk, reranker);
   }
 
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
@@ -10118,8 +10138,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Convert query vector to VectorFloat
           final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-          // Build the memory-resident PQ score function (uses SIMD/Panama if available)
-          // This is the key to zero-disk-I/O: we use PQ scores for BOTH navigation AND final scoring
+          // Build the memory-resident PQ score function (uses SIMD/Panama if available). It scores the walk unless the graph file
+          // carries the fused codes (scoreProviderFor below), and it is what the PQ-scores-only reranker and the pre-filter plan read
           final ScoreFunction.ApproximateScoreFunction scoreFunction =
               pinnedPq.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
 
@@ -10130,9 +10150,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ScoreFunction.ExactScoreFunction reranker = rerank ?
               liveOnlyScoreFunction(queryVectorFloat, exactVectors) :
               ordinal -> scoreFunction.similarityTo(ordinal);
-
-          // Wrap in a DefaultSearchScoreProvider (concrete implementation)
-          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, reranker);
 
           // The beam: JVector keeps rerankK candidates and returns the best k of them after the reranker has scored them
           final long wanted = Math.max((long) k * rerankOversample, (long) efSearch);
@@ -10182,6 +10199,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ImmutableGraphIndex pooledGraph = pinnedGraph;
           final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
           try {
+            // A graph file written with the fusedPQ setting is walked on the codes fused into its nodes, through the view of this
+            // searcher; any other graph on the memory-resident codes. The reranker is the same either way (issue #10713)
+            final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, scoreFunction, reranker);
             searchResult = rerank || efSearch > k ?
                 searcher.search(ssp, k, rerankK, 0.0f, 0.0f, bitsFilter) :
                 searcher.search(ssp, k, bitsFilter);
