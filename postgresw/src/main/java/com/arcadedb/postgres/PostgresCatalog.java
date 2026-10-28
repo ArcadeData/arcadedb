@@ -169,11 +169,21 @@ public class PostgresCatalog {
    */
   private static final Set<String> JOINED_RELATIONS = Set.of("pg_index", "pg_indexes", "pg_constraint", "pg_inherits", "pg_policy",
       "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum",
-      "information_schema.table_constraints", "information_schema.key_column_usage");
+      "information_schema.table_constraints", "information_schema.key_column_usage", "pg_proc", "pg_trigger", "pg_auth_members",
+      "pg_depend", "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table", "pg_tablespace",
+      "pg_settings");
 
-  /** The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema. */
+  /**
+   * The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema: the honest answer to a
+   * question about them is "there are none", and a refusal would turn it into a driver exception (issue #10591). A relation
+   * PostgreSQL has that is NOT in this set and not modelled is still refused (issue #10371), because its absence would be a lie.
+   */
   private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
-      "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum");
+      "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum", "pg_proc", "pg_trigger", "pg_auth_members",
+      "pg_depend", "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
+
+  /** The OID and name of the two tablespaces every PostgreSQL has, the only ones this catalog's relations can be in (issue #10591). */
+  private static final Object[][] TABLESPACES = { { 1663, "pg_default" }, { 1664, "pg_global" } };
 
   /**
    * A catalog query that would spend more work than this server gives one statement - a client regular expression
@@ -393,6 +403,46 @@ public class PostgresCatalog {
     relation("pg_range", null, "rngtypid", "rngsubtype", "rngmultitypid", "rngcollation", "rngsubopc", "rngcanonical",
         "rngsubdiff");
     relation("pg_enum", null, "oid", "enumtypid", "enumsortorder", "enumlabel");
+
+    // What ArcadeDB has no equivalent of, so these have no rows (issue #10591): a question about them - which functions are defined,
+    // which foreign key depends on which index, whom a role is a member of - has "none" as its honest answer. A user-defined
+    // function, a sequence, a role membership, a foreign table and a default privilege do not exist here; pg_class already
+    // answers relhasrules and relhastriggers false for every relation, so pg_rewrite and pg_trigger agree with it. An ArcadeDB
+    // schema trigger is not a PostgreSQL trigger: it calls no function of pg_proc and no client can read it as one.
+    // The trade-off, accepted on purpose: a real PostgreSQL also has system rows in pg_proc (its built-in functions) and pg_depend
+    // (the dependencies of its own catalog). Those are PostgreSQL's implementation, not objects of this database: this server has
+    // no function with a pg_proc identity (an OID, a signature a client could bind), so "is gen_random_uuid defined" answering none
+    // is the true answer for it, and the listings that read these relations (psql's \df, pgjdbc's getFunctions and getImportedKeys) exclude the
+    // system rows anyway. A relation whose rows describe this server's own state (pg_stat_activity, pg_locks) is still refused.
+    relation("pg_proc", null, "oid", "proname", "pronamespace", "proowner", "prolang", "procost", "prorows", "provariadic",
+        "prosupport", "prokind", "prosecdef", "proleakproof", "proisstrict", "proretset", "provolatile", "proparallel", "pronargs",
+        "pronargdefaults", "prorettype", "proargtypes", "proallargtypes", "proargmodes", "proargnames", "proargdefaults",
+        "protrftypes", "prosrc", "probin", "prosqlbody", "proconfig", "proacl", "proisagg", "proiswindow");
+    relation("pg_trigger", null, "oid", "tgrelid", "tgparentid", "tgname", "tgfoid", "tgtype", "tgenabled", "tgisinternal",
+        "tgconstrrelid", "tgconstrindid", "tgconstraint", "tgdeferrable", "tginitdeferred", "tgnargs", "tgattr", "tgargs", "tgqual",
+        "tgoldtable", "tgnewtable");
+    relation("pg_auth_members", null, "oid", "roleid", "member", "grantor", "admin_option", "inherit_option", "set_option");
+    relation("pg_depend", null, "classid", "objid", "objsubid", "refclassid", "refobjid", "refobjsubid", "deptype");
+    relation("pg_rewrite", null, "oid", "rulename", "ev_class", "ev_type", "ev_enabled", "is_instead", "ev_qual", "ev_action");
+    relation("pg_sequence", null, "seqrelid", "seqtypid", "seqstart", "seqincrement", "seqmax", "seqmin", "seqcache", "seqcycle");
+    relation("pg_shdescription", null, "objoid", "classoid", "description");
+    relation("pg_default_acl", null, "oid", "defaclrole", "defaclnamespace", "defaclobjtype", "defaclacl");
+    relation("pg_foreign_table", null, "ftrelid", "ftserver", "ftoptions");
+    // The two tablespaces every PostgreSQL has: a relation's reltablespace of 0 is pg_default (issue #10591)
+    relation("pg_tablespace", null, "oid", "spcname", "spcowner", "spcacl", "spcoptions");
+    // A row per run-time parameter this connection answers SHOW for, with the value SHOW answers (issue #10591): pgjdbc reads
+    // max_index_keys from here before it asks for the keys of a table
+    relation("pg_settings", null, "name", "setting", "unit", "category", "short_desc", "extra_desc", "context", "vartype", "source",
+        "min_val", "max_val", "enumvals", "boot_val", "reset_val", "sourcefile", "sourceline", "pending_restart");
+
+    // The three lists name the same relations in three places: a relation answered with no rows must be read by the join path,
+    // and the join path must know its columns. A drift fails the class here rather than as a refusal in a client.
+    for (final String relation : JOINED_RELATIONS)
+      if (!RELATIONS.containsKey(relation))
+        throw new IllegalStateException("Joined catalog relation '" + relation + "' has no columns");
+    for (final String relation : NEVER_HAVE_ROWS)
+      if (!JOINED_RELATIONS.contains(relation))
+        throw new IllegalStateException("Catalog relation '" + relation + "' with no rows is not read by the join path");
   }
 
   private PostgresCatalog() {
@@ -493,6 +543,16 @@ public class PostgresCatalog {
    */
   public static Answer resolve(final String query, final Database database, final String userName,
       final Object... parameters) {
+    return resolveForSession(query, database, userName, null, parameters);
+  }
+
+  /**
+   * {@link #resolve} for a connection whose run-time parameters {@code pg_settings} lists (issue #10591).
+   *
+   * @param settings the parameters of the connection, null for a server's defaults as a fresh connection sees them
+   */
+  static Answer resolveForSession(final String query, final Database database, final String userName,
+      final PostgresSessionSettings settings, final Object... parameters) {
     if (query == null || database == null)
       return null;
 
@@ -520,11 +580,15 @@ public class PostgresCatalog {
       // answer - with its own error, rather than with the empty result set a declined catalog query gets.
       if (!containsSetOperation(tokens))
         return null;
-      final Answer answer = resolveBounded(tokens, new Context(database, userName), true);
+      final Answer answer = resolveBounded(tokens, context(database, userName, settings), true);
       return answer == DECLINED ? null : textOfVectors(answer);
     }
 
-    return textOfVectors(resolveBounded(tokens, new Context(database, userName), false));
+    return textOfVectors(resolveBounded(tokens, context(database, userName, settings), false));
+  }
+
+  private static Context context(final Database database, final String userName, final PostgresSessionSettings settings) {
+    return new Context(database, userName, settings != null ? settings : new PostgresSessionSettings());
   }
 
   /**
@@ -1412,6 +1476,7 @@ public class PostgresCatalog {
   private static final class Context {
     private final Database database;
     private final String   userName;
+    private final PostgresSessionSettings settings;
 
     private Map<Integer, String>      namesByOid;
     private Map<String, DocumentType> typesByFoldedName;
@@ -1435,9 +1500,15 @@ public class PostgresCatalog {
     /** The rows of each relation a join reads, built at most once per statement for the same reason {@link #rowsByFamily} is. */
     private final Map<String, List<Map<String, Object>>> joinRows = new HashMap<>();
 
-    Context(final Database database, final String userName) {
+    Context(final Database database, final String userName, final PostgresSessionSettings settings) {
       this.database = database;
       this.userName = userName;
+      this.settings = settings;
+    }
+
+    /** The run-time parameters of the connection that asked, which {@code pg_settings} lists (issue #10591). */
+    PostgresSessionSettings settings() {
+      return settings;
     }
 
     List<Row> rows(final Family family) {
@@ -2024,8 +2095,33 @@ public class PostgresCatalog {
       case "information_schema.table_constraints" -> tableConstraintRows(context);
       case "information_schema.key_column_usage" -> keyColumnRows(context);
       case "pg_inherits" -> inheritanceRows(context);
+      case "pg_tablespace" -> tablespaceRows();
+      case "pg_settings" -> settingRows(context);
       default -> familyRows(relation, context);
     };
+  }
+
+  /** {@code pg_tablespace}: the two tablespaces of every PostgreSQL, owned by the bootstrap superuser. */
+  private static List<Map<String, Object>> tablespaceRows() {
+    final List<Map<String, Object>> rows = new ArrayList<>(TABLESPACES.length);
+    for (final Object[] tablespace : TABLESPACES)
+      rows.add(completeMap("pg_tablespace", "oid", tablespace[0], "spcname", tablespace[1], "spcowner", OWNER_OID));
+    return rows;
+  }
+
+  /**
+   * {@code pg_settings}: a row per parameter {@code SHOW ALL} lists for this connection, with the value {@code SHOW} answers, so that
+   * the two cannot disagree (issue #10591). A parameter this server has no value for is absent, as it is from {@code SHOW ALL}.
+   * Only name, setting, context and pending_restart are filled: the type, unit, bounds and descriptions of a parameter are not
+   * modelled, and a client that reads one of them reads NULL.
+   */
+  private static List<Map<String, Object>> settingRows(final Context context) {
+    final List<String[]> settings = context.settings().showAll();
+    final List<Map<String, Object>> rows = new ArrayList<>(settings.size());
+    for (final String[] setting : settings)
+      rows.add(completeMap("pg_settings", "name", setting[0], "setting", setting[1], "context",
+          PostgresSessionSettings.contextOf(setting[0]), "pending_restart", Boolean.FALSE));
+    return rows;
   }
 
   /** The rows of a relation that belongs to a family, read off the rows of that family; none for one that belongs to none. */
@@ -3073,6 +3169,9 @@ public class PostgresCatalog {
         // it is on the search path by definition.
         case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible" -> Boolean.TRUE;
         case "pg_encoding_to_char" -> "UTF8";
+        // Both tablespaces there are live in the data directory, which PostgreSQL answers with an empty location (issue #10591)
+        case "pg_tablespace_location" -> arguments.size() != 1 || arguments.get(0) == PostgresCatalogExpression.UNKNOWN ?
+            PostgresCatalogExpression.UNKNOWN : arguments.get(0) == null ? null : "";
         case "format_type" -> formatType(arguments);
         // PostgreSQL's OID-alias types, reached either as a cast ('Article'::regclass) or as the function
         // spelling of the same lookup (to_regclass('Article')). See regClass for which direction each

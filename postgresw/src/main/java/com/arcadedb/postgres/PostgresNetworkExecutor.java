@@ -1603,7 +1603,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (types != null)
       return new CatalogAnswer(types, getColumns(types));
 
-    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolveForSession(query, database, userName, sessionSettings, parameters);
     if (answer != null) {
       if (answer.rows != null)
         return new CatalogAnswer(toResults(answer.rows), answer.columns);
