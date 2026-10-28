@@ -1154,6 +1154,15 @@ public class LocalSchema implements Schema {
     stagedBucketId2InvolvedTypeMap = null;
     supersededTypes = null;
     stagingThread.set(null);
+
+    // Only now can the columnar projections of the indexes this load registered be opened: they look their bucket and type up, which
+    // answered the previous generation until the publication. Never fails the load: the generation is published already
+    if (database.getEmbedded() instanceof LocalDatabase local && local.getColumnarIndexManager() != null)
+      try {
+        local.getColumnarIndexManager().schemaLoadEnded(committed);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Cannot open the columnar projections of the loaded schema", e);
+      }
   }
 
   /**
