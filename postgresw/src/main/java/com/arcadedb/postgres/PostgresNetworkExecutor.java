@@ -142,6 +142,11 @@ public class PostgresNetworkExecutor extends Thread {
 
   /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
   static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
+  /**
+   * admin_shutdown: what PostgreSQL terminates a backend with when an administrator takes its database away under it - here, a
+   * database closed, restored or dropped under a transaction the connection had open (issue #10692).
+   */
+  static final String SQLSTATE_ADMIN_SHUTDOWN       = "57P01";
   /** invalid_catalog_name: what PostgreSQL answers a connection to a database that does not exist (issue #10795). */
   static final String SQLSTATE_INVALID_CATALOG_NAME = "3D000";
 
@@ -494,7 +499,7 @@ public class PostgresNetworkExecutor extends Thread {
               consecutiveErrors = 0;
               currentMessageType = type;
 
-              if (type != 'X' && !revalidateUser())
+              if (type != 'X' && (!revalidateUser() || !rebindReplacedDatabase()))
                 return;
 
               switch (type) {
@@ -4026,22 +4031,98 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (final DatabaseOperationException e) {
-      // A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
-      // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other.
-      // The name that is no database is answered as PostgreSQL answers it, 3D000 invalid_catalog_name (issue #10795): HV00Q is an
-      // FDW code (fdw_schema_not_found) no driver associates with a database name
-      final ErrorCategory category = ErrorCategory.of(e);
-      if (category == ErrorCategory.UNAVAILABLE)
-        writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
-      else if (category == ErrorCategory.DATABASE_NOT_FOUND)
-        writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
-      else
-        // Deliberately unchanged: any other failure to open the database (an I/O error, a corrupted directory) keeps the answer it
-        // always had. It is neither a held database nor a missing name, and giving it a code of its own is not this branch's call
-        writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+      refuseDatabase(e);
       return false;
     }
 
+    return true;
+  }
+
+  /**
+   * Answers a connection whose database the server refused to resolve, with a FATAL error: the caller closes the connection.
+   * A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
+   * dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the
+   * other. The name that is no database is answered as PostgreSQL answers it, 3D000 invalid_catalog_name (issue #10795): HV00Q
+   * is an FDW code (fdw_schema_not_found) no driver associates with a database name.
+   */
+  private void refuseDatabase(final DatabaseOperationException e) {
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (category == ErrorCategory.UNAVAILABLE)
+      writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+    else if (category == ErrorCategory.DATABASE_NOT_FOUND)
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
+    else
+      // Deliberately unchanged: any other failure to open the database (an I/O error, a corrupted directory) keeps the answer it
+      // always had. It is neither a held database nor a missing name, and giving it a code of its own is not this branch's call
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+  }
+
+  /**
+   * Re-resolves the database this connection serves when the instance it holds has been closed, before each message (issue
+   * #10692). {@link #openDatabase()} resolves the name once, at connect, while the server replaces the instance behind a name on
+   * a {@code close database} followed by {@code open database}, on a restore with {@code overwrite} and on a {@code drop database}
+   * followed by a {@code create database}. A connection that kept the closed instance answered every later statement with
+   * {@code XX000} internal_error for the rest of its life, which for a pooled connection is hours, while a fresh connection worked.
+   * <p>
+   * Three outcomes:
+   * <ul>
+   *   <li>the name resolves again: the connection serves the new instance from this message on, as a fresh connection would;</li>
+   *   <li>it does not ({@code close database} not yet followed by {@code open database}, a restore still running, a drop): the
+   *   connection is closed with the FATAL error the connect path gives for the same name - {@code 57P03} cannot_connect_now for a
+   *   database the server holds, {@code 3D000} invalid_catalog_name for one that is gone - which is how PostgreSQL treats the
+   *   backends of a database taken away under them. A pool replaces the connection, and the new one is refused at connect until
+   *   the name is served again;</li>
+   *   <li>a transaction was open on the closed instance - an explicit {@code BEGIN} block, or an extended-protocol pipeline whose
+   *   portals a Sync has not ended yet: its work went with the instance, so carrying on against the new one would let the client
+   *   commit a block of which only the later statements exist. The connection is closed with {@code 57P01} admin_shutdown, as
+   *   PostgreSQL terminates a backend whose database an administrator took away.</li>
+   * </ul>
+   * Costs one {@code isOpen()} read when nothing changed.
+   *
+   * @return false when the connection was refused and is closing
+   */
+  private boolean rebindReplacedDatabase() {
+    if (database == null || database.isOpen())
+      return true;
+
+    // Every refusal below is FATAL: shutdown ends the message loop once this message returns, as revalidateUser() does, so the
+    // connection is closed after the error instead of reading the next message against a closed instance
+    if (explicitTransactionStarted || !portals.isEmpty()) {
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL,
+          "terminating connection because database '" + databaseName + "' was closed under its open transaction",
+          SQLSTATE_ADMIN_SHUTDOWN);
+      return false;
+    }
+
+    final Database live;
+    try {
+      live = server.getDatabaseForClient(databaseName);
+      // The thread's context for the path was removed when the old instance closed: this one belongs to the new instance. The
+      // user is the one revalidateUser() has just re-resolved and checked against this database name; a user the new instance
+      // does not grant gets the engine's deny-all database user, as at connect
+      DatabaseContext.INSTANCE.init((DatabaseInternal) live).setCurrentUser(authenticatedUser.getDatabaseUser(live));
+    } catch (final DatabaseOperationException e) {
+      shutdown = true;
+      refuseDatabase(e);
+      return false;
+    } catch (final RuntimeException e) {
+      // Answered rather than left to escape: the main loop would log it and answer nothing, and the client would wait for good
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL, clientMessage("Error on reopening database '" + databaseName + "': " + e.getMessage(), e),
+          sqlStateFor(e));
+      return false;
+    }
+
+    database = live;
+    sessionSettings.setIsolationLevels(this::currentIsolationLevel, live::getTransactionIsolationLevel);
+    live.setAutoTransaction(true);
+    // The schema types memoized on the prepared statements are the closed instance's: re-resolved against the new schema on next
+    // use, and the closed instance's schema is no longer reachable from this connection
+    for (final PostgresPortal statement : preparedStatements.values()) {
+      statement.queryTargetType = null;
+      statement.queryTargetTypeResolved = false;
+    }
     return true;
   }
 
