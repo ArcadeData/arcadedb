@@ -147,6 +147,11 @@ public final class LongLongHashMap {
     return size;
   }
 
+  /** Slots of the table, each holding a key and a value (16 bytes): what the map occupies on the heap is about 16 * capacity. */
+  public int capacity() {
+    return capacity;
+  }
+
   /**
    * Iterates over all entries. The consumer receives (key, value) pairs.
    * No object allocation during iteration.
