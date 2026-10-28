@@ -1827,7 +1827,7 @@ public class PostgresCatalog {
 
     for (final DocumentType type : types)
       if (relkind == null || relkind.equals(context.relkindOf(type.getName())))
-        rows.add(relationRow(context, type).complete());
+        rows.add(relationRow(context, type, sortedProperties(type).size()).complete());
 
     return rows;
   }
@@ -1836,8 +1836,12 @@ public class PostgresCatalog {
    * The row of a type as a relation. Which relations name it follows from its kind alone, so that no two of them can describe it in
    * two ways (issue #10691): a table is in {@code pg_tables} and {@code information_schema.tables}, a materialized view - or the
    * backing type of a continuous aggregate - is in {@code pg_matviews} and in neither of those, as PostgreSQL lists one.
+   * <p>
+   * {@code columnCount} is the number of its columns, {@link #sortedProperties} of it: {@code relnatts} is the number of the
+   * relation's {@code pg_attribute} rows in PostgreSQL, so it counts the same list those rows are built from, inherited
+   * properties in and hidden ones out (issue #10594).
    */
-  private static Row relationRow(final Context context, final DocumentType type) {
+  private static Row relationRow(final Context context, final DocumentType type, final int columnCount) {
     final String schema = context.schema();
     final String name = type.getName();
     final int oid = oidOf(name);
@@ -1847,8 +1851,7 @@ public class PostgresCatalog {
     final boolean hasIndexes = context.hasIndexes(name);
     final Row row = singletonRow(context)//
         .with("pg_class", "oid", oid, "relname", name, "relnamespace", SCHEMA_OID, "relowner", OWNER_OID,//
-            "relkind", view == null ? RELKIND_TABLE : RELKIND_MATERIALIZED_VIEW, "relpersistence", "p", "relnatts",
-            type.getPropertyNames().size(),//
+            "relkind", view == null ? RELKIND_TABLE : RELKIND_MATERIALIZED_VIEW, "relpersistence", "p", "relnatts", columnCount,//
             "relhasindex", hasIndexes, "relhasrules", Boolean.FALSE,//
             "relhastriggers", Boolean.FALSE, "relhassubclass", !type.getSubTypes().isEmpty(),//
             "relispartition", Boolean.FALSE, "relisshared", Boolean.FALSE, "relispopulated", view == null || view.populated(),//
@@ -1885,16 +1888,17 @@ public class PostgresCatalog {
       final boolean table = RELKIND_TABLE.equals(context.relkindOf(type.getName()));
       if (onlyTables && !table)
         continue;
+      final List<Property> properties = sortedProperties(type);
       int ordinal = 0;
-      for (final Property property : sortedProperties(type)) {
+      for (final Property property : properties) {
         ++ordinal;
         final PostgresType pgType = PostgresType.getTypeFromArcade(property.getType(), property.getOfType());
         final Object defaultValue = property.getDefaultValueDefinition();
         final boolean notNull = property.isNotNull() || property.isMandatory();
 
-        final Row row = relationRow(context, type)//
+        final Row row = relationRow(context, type, properties.size())//
             .with("pg_attribute", attributeValues(oidOf(type.getName()), property.getName(), ordinal, pgType, notNull,
-                defaultValue != null));
+                defaultValue != null, type.existsProperty(property.getName()), inheritedCount(type, property.getName())));
         if (table)
           row.with("information_schema.columns", "table_catalog", schema, "table_schema", schema, "table_name",
                 type.getName(), "column_name", property.getName(), "ordinal_position", ordinal,//
@@ -1928,12 +1932,14 @@ public class PostgresCatalog {
   /**
    * The {@code pg_attribute} columns of the {@code ordinal}th column of a relation, name and value in turn: the one answer for a
    * table's columns and for the key columns of its indexes (issue #10473), so a client reading one is told what it reads in the other.
+   * {@code local} and {@code inheritedCount} are {@code attislocal} and {@code attinhcount}: whether the relation declares the
+   * column itself, and from how many of its direct parents it inherits it (issue #10594).
    */
   private static Object[] attributeValues(final int relationOid, final String name, final int ordinal, final PostgresType pgType,
-      final boolean notNull, final boolean hasDefault) {
+      final boolean notNull, final boolean hasDefault, final boolean local, final int inheritedCount) {
     return new Object[] { "attrelid", relationOid, "attname", name, "attnum", ordinal, "atttypid", pgType.code, "attlen",
         pgType.size, "atttypmod", -1, "attnotnull", notNull, "atthasdef", hasDefault, "attisdropped", Boolean.FALSE, "attislocal",
-        Boolean.TRUE, "attinhcount", 0, "attndims", pgType.isArrayType() ? 1 : 0, "attcollation", 0, "attstattarget", -1,
+        local, "attinhcount", inheritedCount, "attndims", pgType.isArrayType() ? 1 : 0, "attcollation", 0, "attstattarget", -1,
         "attidentity", "", "attgenerated", "", "atthasmissing", Boolean.FALSE, "attbyval", pgType.size > 0 && pgType.size <= 8,
         "attalign", "i", "attcompression", "",
         // A variable-length value is stored "extended" in PostgreSQL, a fixed-length one "plain".
@@ -2033,7 +2039,8 @@ public class PostgresCatalog {
         final Property property = properties.get(attnum - 1);
         final PostgresType pgType = PostgresType.getTypeFromArcade(property.getType(), property.getOfType());
         rows.add(describeType(indexRow(context, index)//
-            .with("pg_attribute", attributeValues(index.oid(), property.getName(), k + 1, pgType, false, false)), pgType)
+            // an index's key columns are its own, as in PostgreSQL: an index inherits nothing
+            .with("pg_attribute", attributeValues(index.oid(), property.getName(), k + 1, pgType, false, false, true, 0)), pgType)
             .complete());
       }
     }
@@ -2172,6 +2179,18 @@ public class PostgresCatalog {
     final List<DocumentType> types = new ArrayList<>(context.database().getSchema().getTypes());
     types.sort(Comparator.comparing(DocumentType::getName));
     return types;
+  }
+
+  /**
+   * The number of direct super types of {@code type} that carry the property {@code name}, theirs or inherited: PostgreSQL's
+   * {@code attinhcount}, which counts a column merged from two parents once per parent (issue #10594).
+   */
+  private static int inheritedCount(final DocumentType type, final String name) {
+    int count = 0;
+    for (final DocumentType superType : type.getSuperTypes())
+      if (superType.existsPolymorphicProperty(name))
+        ++count;
+    return count;
   }
 
   /**
