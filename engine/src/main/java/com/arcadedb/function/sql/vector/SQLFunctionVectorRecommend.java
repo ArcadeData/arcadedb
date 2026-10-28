@@ -154,9 +154,8 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
     if (!(rawResult instanceof List<?> rawList))
       return rawResult;
 
-    // Post-filter: drop the example RIDs and truncate to k. {@code vector.neighbors} returns a
-    // list of LinkedHashMaps with an {@code @rid} entry; we read it directly rather than
-    // resolving the record again to keep this hop cheap.
+    // Post-filter: drop the example RIDs and truncate to k. The RID is read off the row by the shared
+    // extractor rather than by resolving the record again, to keep this hop cheap.
     final HashSet<RID> exclude = new HashSet<>(totalExamples);
     exclude.addAll(positives);
     exclude.addAll(negatives);
@@ -165,14 +164,9 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
     for (final Object row : rawList) {
       if (filtered.size() >= k)
         break;
-      if (row instanceof Map<?, ?> m) {
-        // RID extends Identifiable, so a single instanceof check covers both the
-        // {@code RID r -> exclude.contains(r)} fast path and the rarer
-        // {@code Identifiable id -> exclude.contains(id.getIdentity())} indirection. The
-        // earlier two-branch version had unreachable second branch on a {@code RID} value.
-        if (m.get("@rid") instanceof Identifiable id && exclude.contains(id.getIdentity()))
-          continue;
-      }
+      final RID rid = extractRidFromRow(row);
+      if (rid != null && exclude.contains(rid))
+        continue;
       filtered.add(row);
     }
     return filtered;

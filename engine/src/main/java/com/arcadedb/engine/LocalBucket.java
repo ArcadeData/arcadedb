@@ -542,7 +542,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                      final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
-    this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
+    this.contentHeaderSize = contentHeaderSizeForVersion(version);
     this.cachedRecordCount.set(0);
     this.reuseSpaceMode = reuseSpaceModeOf(database);
     this.purpose = purposeForVersion(version);
@@ -563,7 +563,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
-    contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
+    contentHeaderSize = contentHeaderSizeForVersion(version);
     this.reuseSpaceMode = reuseSpaceModeOf(database);
     // Derive purpose from the bucket file version - the version itself is persisted in the on-disk file name
     // (e.g. Doc_0_ext.<id>.<pageSize>.v1.bucket), so this assignment is reliable as soon as the LocalBucket
@@ -630,6 +630,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** Slot-table sizing for the bucket file format version. v0=2048 (legacy), v1=256 (paired external buckets). */
   private static int maxRecordsInPageForVersion(final int version) {
     return version >= EXTERNAL_BUCKET_VERSION ? DEF_MAX_RECORDS_IN_PAGE_V1 : DEF_MAX_RECORDS_IN_PAGE;
+  }
+
+  /** The content header of a page of the bucket file format version: the record count and the slot table. */
+  private static int contentHeaderSizeForVersion(final int version) {
+    return PAGE_RECORD_TABLE_OFFSET + maxRecordsInPageForVersion(version) * INT_SERIALIZED_SIZE;
+  }
+
+  /**
+   * The smallest page a bucket of the file format {@code version} can write a record into: the page header, the content header
+   * (whose slot table does not shrink with the page) and the head chunk of a record, since a record a page cannot host whole is
+   * written as a chunk chain whose head has to fit ({@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}). 8216 bytes at {@link #CURRENT_VERSION},
+   * 1048 at {@link #EXTERNAL_BUCKET_VERSION}. A bucket created with a smaller page accepted the creation and then failed every
+   * insert inside the page writer (issue #10876).
+   */
+  public static int minimumPageSize(final int version) {
+    return BasePage.PAGE_HEADER_SIZE + contentHeaderSizeForVersion(version) + MINIMUM_SPACE_FOR_FIRST_CHUNK;
   }
 
   public Purpose getPurpose() {

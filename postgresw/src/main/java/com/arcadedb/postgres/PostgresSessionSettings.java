@@ -53,9 +53,10 @@ import java.util.regex.Pattern;
  *   in PostgreSQL too, and a {@code SET} of them is refused with {@code 55P02} as PostgreSQL refuses it;</li>
  *   <li>{@code client_encoding} is accepted - drivers send it routinely - but every text value leaves this server in
  *   UTF-8, so {@code SHOW} answers {@code UTF8};</li>
- *   <li>{@code standard_conforming_strings} is accepted but {@code SHOW} answers {@code on}: a plain {@code '...'}
- *   literal is never backslash-interpreted here, and a driver that reads {@code off} back would escape for a parser
- *   this server does not have;</li>
+ *   <li>{@code standard_conforming_strings} is {@code on} unless the connection sets it {@code off}, and it is honoured
+ *   either way (issue #10871): it decides whether a backslash in a plain {@code '...'} literal is an ordinary character
+ *   or starts an escape, as it does in PostgreSQL, before the literal reaches the engine
+ *   ({@link PostgresQuotedIdentifierRewriter#toEngineLiterals});</li>
  *   <li>{@code DateStyle} keeps the field order the client asks for, but its output style is always {@code ISO}: that
  *   is the only format {@code PostgresType} writes a date or timestamp in;</li>
  *   <li>{@code role} and {@code session_authorization} (also {@code SET ROLE}, {@code SET SESSION AUTHORIZATION}) are
@@ -93,6 +94,7 @@ final class PostgresSessionSettings {
   static final String DATESTYLE         = "datestyle";
   static final String STATEMENT_TIMEOUT = "statement_timeout";
   static final String SEARCH_PATH       = "search_path";
+  static final String STANDARD_CONFORMING_STRINGS = "standard_conforming_strings";
 
   /**
    * The parameters PostgreSQL marks {@code GUC_REPORT} and this server answers, spelled as PostgreSQL spells them in
@@ -260,6 +262,49 @@ final class PostgresSessionSettings {
   }
 
   /**
+   * Records the run-time parameters the {@code options} startup parameter names, as PostgreSQL reads it: command-line switches
+   * separated by spaces (a backslash keeps the next character, a space included), of which {@code -c name=value},
+   * {@code -cname=value} and {@code --name=value} set a parameter, a dash in its name standing for an underscore. This is how
+   * libpq's {@code PGOPTIONS} and pgjdbc's {@code options} start a connection with, e.g.,
+   * {@code standard_conforming_strings} off (issue #10871). Any other switch is ignored, as is a parameter that would be
+   * refused ({@link #setFromStartup}).
+   */
+  void setFromStartupOptions(final String options) {
+    final List<String> switches = new ArrayList<>();
+    final StringBuilder current = new StringBuilder();
+    for (int i = 0; i < options.length(); i++) {
+      final char c = options.charAt(i);
+      if (c == '\\' && i + 1 < options.length())
+        current.append(options.charAt(++i));
+      else if (Character.isWhitespace(c)) {
+        if (!current.isEmpty()) {
+          switches.add(current.toString());
+          current.setLength(0);
+        }
+      } else
+        current.append(c);
+    }
+    if (!current.isEmpty())
+      switches.add(current.toString());
+
+    for (int i = 0; i < switches.size(); i++) {
+      final String option = switches.get(i);
+      final String assignment;
+      if (option.equals("-c") && i + 1 < switches.size())
+        assignment = switches.get(++i);
+      else if (option.startsWith("-c") && option.length() > 2)
+        assignment = option.substring(2);
+      else if (option.startsWith("--") && option.length() > 2)
+        assignment = option.substring(2);
+      else
+        continue;
+      final int equals = assignment.indexOf('=');
+      if (equals > 0)
+        setFromStartup(assignment.substring(0, equals).replace('-', '_'), assignment.substring(equals + 1));
+    }
+  }
+
+  /**
    * Whether the authenticated user is this server's superuser, which {@code is_superuser} answers.
    */
   void setSuperuser(final boolean superuser) {
@@ -393,7 +438,8 @@ final class PostgresSessionSettings {
       // Server facts: nothing a client sets changes them.
       case "server_version" -> PostgresNetworkExecutor.PG_SERVER_VERSION;
       case "server_encoding", "client_encoding" -> "UTF8";
-      case "integer_datetimes", "standard_conforming_strings" -> "on";
+      case "integer_datetimes" -> "on";
+      case STANDARD_CONFORMING_STRINGS -> standardConformingStrings() ? "on" : "off";
       case "is_superuser" -> superuser ? "on" : "off";
       case DATESTYLE -> "ISO, " + currentDateOrder();
       case "role" -> "none";
@@ -450,7 +496,7 @@ final class PostgresSessionSettings {
       case "server_version", "server_encoding", "integer_datetimes", "is_superuser" ->
           throw new SettingException("parameter \"" + key + "\" cannot be changed", SQLSTATE_CANT_CHANGE_RUNTIME);
       // Accepted, as drivers send them routinely, but not stored: show() answers what the server really does.
-      case "client_encoding", "standard_conforming_strings" -> false;
+      case "client_encoding" -> false;
       // Accepted, as drivers and ORMs send it on connect, but not stored: this server has one namespace per database and
       // resolves names in it whatever the client names, so SHOW answers that one, as current_schema() does (issue #9329)
       case SEARCH_PATH -> false;
@@ -650,12 +696,22 @@ final class PostgresSessionSettings {
     return switch (key) {
       case DATESTYLE -> parseDateOrder(value);
       case "intervalstyle" -> parseIntervalStyle(value);
+      case STANDARD_CONFORMING_STRINGS -> parseBoolean(key, value) ? "on" : "off";
       case STATEMENT_TIMEOUT -> {
         parseDurationMillis(key, value);
         yield value.trim();
       }
       default -> value;
     };
+  }
+
+  /**
+   * Whether a backslash in a plain {@code '...'} literal is an ordinary character ({@code on}, the default) or starts an
+   * escape as in an {@code E'...'} literal ({@code off}): what {@code standard_conforming_strings} answers, and how the
+   * literals of this connection's statements are read (issue #10871).
+   */
+  boolean standardConformingStrings() {
+    return !"off".equals(current(STANDARD_CONFORMING_STRINGS));
   }
 
   private String current(final String key) {
