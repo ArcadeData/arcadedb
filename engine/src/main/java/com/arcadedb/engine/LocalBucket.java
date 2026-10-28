@@ -317,6 +317,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // one slice per timeout, which is the bound it is held to either way. Guarded by the `freeSpaceInPages` monitor (also read
   // outside it, hence volatile).
   private volatile       int                       gatherPagesLeftInLap             = 0;
+  // #10709: the lowest page whose room the full map turned away since the last gather, -1 for none. That room is known to exist
+  // and known to nothing else, so like a scan cut short by the full map (#8660) it makes the next gather due whatever the clock
+  // says, and the gather starts there. It takes a full map to set it, so it cannot ask for a scan per allocation. Guarded by the
+  // `freeSpaceInPages` monitor (also read outside it, hence volatile).
+  private volatile       int                       unlistedRoomFrom                 = -1;
   // GATHER_STATS_MAX_PAGES_PER_SCAN, changed only by setGatherPagesPerScanForTesting (volatile: from the test's thread)
   private volatile       int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
@@ -612,6 +617,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     gatherTruncated = false;
     gatherResumePage = 0;
     gatherPagesLeftInLap = 0;
+    unlistedRoomFrom = -1;
     insertReservations.clear();
     inFlightNewPages.clear();
     pagesToRelist.clear();
@@ -2799,14 +2805,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * (#10637, {@link #relocateANeighbourOffPage}).
    */
   private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder) {
-    return createRecordInternal(buffer, isPlaceHolder, true);
-  }
-
-  /**
-   * @param mayCreatePage false to create the record only in a page the bucket already has: answers {@code null}, having written
-   *                      nothing and reserved nothing, when the allocator would open a new page for it ({@link #createRecordsBulk})
-   */
-  private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder, final boolean mayCreatePage) {
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
@@ -2864,10 +2862,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       } else
         createNewPage = true;
-
-      if (createNewPage && !mayCreatePage)
-        // NOTHING WRITTEN, NOTHING RESERVED: the loop above leaves the claim loop only through a claimed slot or a new page
-        return null;
 
       final MutablePage selectedPage;
       if (createNewPage) {
@@ -3597,6 +3591,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
         // the room it hid is known to nothing else now: a measurement no longer arms a gather by itself (#9575)
         changesFromLastStats.incrementAndGet();
+        roomTurnedAway(pageNumber);
         continue;
       }
       ++measured;
@@ -4083,19 +4078,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Creates multiple records from pre-serialized Binary buffers in a single operation (the edge flush of {@code GraphBatch}).
+   * Creates multiple records from pre-serialized Binary buffers in a single operation.
    * <p>
-   * The records go first where the bucket already has room, through the allocator every insert uses (issue #10746): the free
-   * slots and the free tail of its pages, the reuse-space mode and the append-only flag of the transaction, the in-flight slot
-   * reservations and the commit-time slot merge all apply to them as to a record created one by one. Always starting on a fresh
-   * page instead made every flush open one, however few records it carried, and left the room deleted records gave back to the
-   * single-record inserts only: under a steady insert/delete churn through {@code database.batch()} the bucket grew by one page per
-   * flush with a flat live set.
+   * #10746: a record goes where {@link #createRecord} would put it as long as that is a page that already exists - a free slot
+   * a delete left on an older page, the room left on the last one - and through the same code, so the slot reservation, the
+   * disjoint-slot merge and the free-space statistics see it like any other insert. From the first record that needs a new page
+   * on, the rest is appended sequentially to pages this call opens, without the per-record search: once the allocator found no
+   * room for one record it would find none for the next, so a bulk import into a bucket with no free space pays one search,
+   * not one per record. This used to start on a brand-new page whatever the bucket held, so under an insert/delete churn of
+   * small flushes the bucket grew by one page per flush while the room of the deleted records stayed empty.
    * <p>
-   * Once the allocator has no room left to offer, the rest are appended to fresh pages in sequence, which is the bulk-import case
-   * this method exists for: no per-record search, a fresh page has no gaps to fill. Each such page has its free tail listed when
-   * it is finished, so the next flush, or the next insert, fills it rather than opening another page. A record that would not fit
-   * even an empty page is created as a chunk chain by the allocator.
+   * A record larger than a page is written as a chunk chain by {@link #createRecordInternal(Binary, boolean)}: it cannot be
+   * appended in one piece (the writer failed with "Cannot write outside the page space").
    *
    * @param buffers    array of pre-serialized record content (NOT including the size prefix)
    * @param from       start index in buffers array (inclusive)
@@ -4110,96 +4104,85 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
-    int i = from;
-    // FIRST THE ROOM THE BUCKET ALREADY HAS, AS LONG AS THE ALLOCATOR FINDS SOME. The per-record search is paid only for the records
-    // that land in that room: on a bucket being imported into, that is the free tail of the last page the previous flush filled,
-    // listed by finishBulkPage, so a flush searches at most one page's worth of records before it appends
-    for (; i < to; i++) {
-      final RID rid = createRecordInternal(buffers[i], false, false);
-      if (rid == null)
-        break;
-      ridsOut[i - from] = rid;
-    }
-    if (i == to)
-      return;
-
-    // THEN THE REST, APPENDED TO FRESH PAGES
-    final int maxContent = getPageSize() - BasePage.PAGE_HEADER_SIZE;
+    final TransactionContext tx = database.getTransaction();
+    // the most an empty page holds: a record that needs more is a chunk chain
+    final int maxRecordSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
+    // The page the sequential append writes to: null while the records still go where createRecord puts them
     MutablePage currentPage = null;
     int recordPositionInPage = 0;
     int availablePositionIndex = 0;
-    // Set when a record too large for a page sealed the page being filled: the allocator is asked again before a new page is
-    // opened, so the room left on the sealed page is used by the records that follow
-    boolean askAllocator = false;
+    // where the append started on currentPage: what it took from the page is reported to the statistics once, when it leaves it
+    int appendStartInPage = 0;
 
-    for (; i < to; i++) {
-      final Binary buffer = buffers[i];
+    try {
+      for (int i = from; i < to; i++) {
+        final Binary buffer = buffers[i];
+        while (buffer.size() < MINIMUM_RECORD_SIZE)
+          buffer.append((byte) 0);
 
-      // Pad to minimum record size, as createRecordInternal does
-      while (buffer.size() < MINIMUM_RECORD_SIZE)
-        buffer.append((byte) 0);
+        final int actualSize = buffer.size();
+        final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
 
-      final int actualSize = buffer.size();
-      final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
-
-      if (contentHeaderSize + spaceNeeded > maxContent) {
-        // NOT EVEN AN EMPTY PAGE CAN HOST IT: THIS LOOP USED TO WRITE IT PAST THE END OF ITS PAGE, THE ALLOCATOR MAKES IT A CHUNK
-        // CHAIN. The page being filled is sealed first: the allocator may write the head chunk on its tail, and it reads the
-        // record count to know where the tail starts
-        if (currentPage != null) {
-          finishBulkPage(currentPage, availablePositionIndex, recordPositionInPage);
+        if (currentPage != null && spaceNeeded > maxRecordSpaceInPage) {
+          // A record no page holds in one piece goes to the allocator, which reads the record count of the page being appended
+          // to (it is the last page of the file): the append writes it only when it leaves the page, so it leaves it first
+          leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
           currentPage = null;
         }
-        ridsOut[i - from] = createRecordInternal(buffer, false, true);
-        askAllocator = true;
-        continue;
-      }
 
-      if (askAllocator) {
-        final RID rid = createRecordInternal(buffer, false, false);
-        if (rid != null) {
+        if (currentPage == null) {
+          final int pagesBefore = getTotalPages();
+          final RID rid = createRecordInternal(buffer, false);
           ridsOut[i - from] = rid;
+
+          final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
+          if (pageNumber >= pagesBefore && spaceNeeded <= maxRecordSpaceInPage && inFlightNewPages.get(pageNumber) == tx) {
+            // THE ALLOCATOR HAD TO OPEN A PAGE: THE REST IS APPENDED, STARTING ON THAT ONE, WHICH NO OTHER TRANSACTION CAN USE
+            currentPage = tx.getPageToModify(new PageId(database, file.getFileId(), pageNumber), pageSize, false);
+            availablePositionIndex = currentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+            recordPositionInPage = findContentInsertionOffset(currentPage, availablePositionIndex);
+            appendStartInPage = recordPositionInPage;
+          }
           continue;
         }
-        askAllocator = false;
+
+        if (availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > currentPage.getMaxContentSize()) {
+          leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
+          currentPage = addNewPage();
+          recordPositionInPage = contentHeaderSize;
+          appendStartInPage = recordPositionInPage;
+          availablePositionIndex = 0;
+        }
+
+        // Write the record offset in the record table, then the record size and content
+        currentPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE, recordPositionInPage);
+        final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
+        currentPage.writeByteArray(recordPositionInPage + sizeBytes, buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
+
+        ridsOut[i - from] = new RID(file.getFileId(),
+            ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
+
+        recordPositionInPage += sizeBytes + actualSize;
+        availablePositionIndex++;
       }
 
-      if (currentPage == null || availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > maxContent) {
-        if (currentPage != null)
-          finishBulkPage(currentPage, availablePositionIndex, recordPositionInPage);
+      if (currentPage != null)
+        leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
 
-        currentPage = addNewPage();
-        recordPositionInPage = contentHeaderSize;
-        availablePositionIndex = 0;
-      }
-
-      // Write the record offset in the record table
-      currentPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE, recordPositionInPage);
-
-      // Write record size + content
-      final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
-      currentPage.writeByteArray(recordPositionInPage + sizeBytes, buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
-
-      // Assign RID
-      ridsOut[i - from] = new RID(file.getFileId(),
-          ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
-
-      recordPositionInPage += sizeBytes + actualSize;
-      availablePositionIndex++;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot add new records to the bucket '" + componentName + "'", e);
     }
-
-    if (currentPage != null)
-      finishBulkPage(currentPage, availablePositionIndex, recordPositionInPage);
   }
 
   /**
-   * Seals a page {@link #createRecordsBulk} filled from scratch: writes its record count and lists its free tail, as an insert
-   * on a brand-new page does, so a later write fills it.
+   * Closes the sequential append of {@link #createRecordsBulk} on a page: writes its record count, and tells the free-space
+   * statistics what the append took from it, as one write that takes space (so it arms no gather, #9575). The room left on the
+   * page is then listed like the room any other insert leaves (#10746): the next flush fills it before it opens a page.
    */
-  private void finishBulkPage(final MutablePage page, final int records, final int contentEnd) {
-    page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) records);
-    final int emptyPageSpace = page.getMaxContentSize() - contentHeaderSize;
-    updatePageStatistics(page, emptyPageSpace, contentHeaderSize - contentEnd);
+  private void leaveAppendedPage(final MutablePage page, final int recordCount, final int appendStart, final int appendEnd) {
+    page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) recordCount);
+    if (appendEnd > appendStart)
+      updatePageStatistics(page, page.getMaxContentSize() - appendStart, appendStart - appendEnd);
   }
 
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
@@ -7694,9 +7677,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       avoidPageNumber);
           }
 
-          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0)
+          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0 || unlistedRoomFrom >= 0)
               && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS) {
-            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
+            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED (OR #10709, THE FULL MAP
+            // TURNED ROOM AWAY): LOOK THERE BEFORE GROWING
             gatherPageStatistics();
             if (!freeSpaceInPages.isEmpty()) {
               bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord, avoidPageNumber);
@@ -7868,6 +7852,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       timeOfLastStats = 1L;
   }
 
+  /**
+   * The opposite of {@link #expireGatherThrottleForTesting()}: starts the throttle between two gather scans again, as if a scan
+   * had just run, so a test does not depend on how long its own setup took (#10709). A bucket that never scanned keeps its
+   * first-run state. Package-private: for tests only.
+   */
+  void restartGatherThrottleForTesting() {
+    if (timeOfLastStats != 0L)
+      timeOfLastStats = System.currentTimeMillis();
+  }
+
+  /** The lowest page whose room the full free-space map turned away, -1 for none (#10709). Package-private: for tests only. */
+  int getUnlistedRoomFromForTesting() {
+    return unlistedRoomFrom;
+  }
+
+  /** The page the next gather scan starts at (#8660, #10709). Package-private: for tests only. */
+  int getGatherResumePageForTesting() {
+    synchronized (freeSpaceInPages) {
+      return gatherResumePage;
+    }
+  }
+
   /** The pages the free-space map currently lists. Package-private: for tests only. */
   int[] getListedFreeSpacePagesForTesting() {
     synchronized (freeSpaceInPages) {
@@ -7891,7 +7897,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // #8660: a scan cut short by the entry cap left pages unvisited, so the next one is due whatever the clock and the change
     // counter say. It cannot loop on a bucket with nothing to offer: the cursor moves on, and a scan that stops without filling
     // the map (at the end of its lap, or on its page budget) goes back to being throttled.
-    final boolean resuming = gatherTruncated;
+    // #10709: so is one asked after the full map turned room away, which only a scan can list again
+    final boolean resuming = gatherTruncated || unlistedRoomFrom >= 0;
     if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
       return;
 
@@ -7923,6 +7930,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final int pagesThisScan = Math.min(gatherPagesLeftInLap, gatherPagesPerScan);
           gatherTruncated = false;
 
+          // #10709: the scan starts at the room the full map turned away, the room it is asked for. A lap goes round the whole
+          // file wherever it starts, so it still visits every page. The cursor is moved there before anything is read: a scan
+          // that fails backs off like any other (below) and the next one, once the timeout is over, still starts at that room
+          final int roomFrom = unlistedRoomFrom;
+          unlistedRoomFrom = -1;
+          if (roomFrom >= 0 && roomFrom < pagesToScan)
+            gatherResumePage = roomFrom;
           int pageId = gatherResumePage < pagesToScan ? gatherResumePage : 0;
           int scanned = 0;
           while (scanned < pagesThisScan) {
@@ -8072,7 +8086,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (lowestPageId[0] > -1 && lowestPageSpace[0] < newSpace) {
               freeSpaceInPages.remove(lowestPageId[0], -1);
               freeSpaceInPages.put(pageId, newSpace);
-            }
+              roomTurnedAway(lowestPageId[0]);
+            } else
+              roomTurnedAway(pageId);
             // Either the evicted page or this one has room the map no longer lists: only a scan finds it again, whatever the
             // write was. Cheap while the map stays full: a gather stops at the first page then, and the slices of the lap
             // only run once the map has room for what they find (#9575)
@@ -8082,6 +8098,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       }
     }
+  }
+
+  /** Notes that the full free-space map could not list the room of {@code pageNumber} (#10709). Holds the map's monitor. */
+  private void roomTurnedAway(final int pageNumber) {
+    if (unlistedRoomFrom < 0 || pageNumber < unlistedRoomFrom)
+      unlistedRoomFrom = pageNumber;
   }
 
   /**
