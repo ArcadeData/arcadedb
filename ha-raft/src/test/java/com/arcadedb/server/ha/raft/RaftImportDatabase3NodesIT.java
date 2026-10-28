@@ -122,7 +122,7 @@ class RaftImportDatabase3NodesIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     // Step D: compute a reference snapshot of (type name, count) pairs from the leader
-    final Database leaderDb = getServer(leader).getDatabase(DB_NAME);
+    final Database leaderDb = getServer(leader).getDatabaseForOperator(DB_NAME);
     final Map<String, Long> leaderCounts = new HashMap<>();
     for (final DocumentType type : leaderDb.getSchema().getTypes())
       leaderCounts.put(type.getName(), leaderDb.countType(type.getName(), false));
@@ -138,7 +138,7 @@ class RaftImportDatabase3NodesIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i == leader)
         continue;
-      final Database peerDb = getServer(i).getDatabase(DB_NAME);
+      final Database peerDb = getServer(i).getDatabaseForOperator(DB_NAME);
       for (final Map.Entry<String, Long> entry : leaderCounts.entrySet()) {
         final String typeName = entry.getKey();
         final long expected = entry.getValue();

@@ -142,7 +142,7 @@ class Issue7305TimeSeriesGrpcAclIT extends BaseGrpcClientServerTest {
   }
 
   private long rootQueryCount(final String typeName) {
-    return ((Number) getServer(0).getDatabase(getDatabaseName())
+    return ((Number) getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) AS cnt FROM " + typeName).next().getProperty("cnt")).longValue();
   }
 

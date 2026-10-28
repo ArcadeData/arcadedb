@@ -167,7 +167,6 @@ import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
-import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.RangeIndex;
@@ -2845,7 +2844,7 @@ public class CypherExecutionPlan {
         boundVariables.add(item.getOutputName());
       return;
     }
-    final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+    final CypherProcedure procedure = callClause.resolveProcedure();
     if (procedure == null)
       return;
     final List<String> yieldFields = procedure.getYieldFields();

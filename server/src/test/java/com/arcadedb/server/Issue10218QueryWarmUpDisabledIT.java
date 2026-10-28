@@ -42,7 +42,7 @@ class Issue10218QueryWarmUpDisabledIT extends BaseGraphServerTest {
   void theSwitchStartsNoWarmUp() {
     assertThat(getServer(0).getQueryWarmUp()).isNull();
 
-    try (final ResultSet resultSet = getServer(0).getDatabase(getDatabaseName()).query("sql", "select 1 as one")) {
+    try (final ResultSet resultSet = getServer(0).getDatabaseForOperator(getDatabaseName()).query("sql", "select 1 as one")) {
       assertThat(resultSet.next().<Integer>getProperty("one")).isEqualTo(1);
     }
   }

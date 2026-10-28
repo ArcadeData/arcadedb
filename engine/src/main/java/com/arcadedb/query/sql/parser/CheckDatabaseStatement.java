@@ -59,7 +59,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
    * A CLAUSE OF ITS OWN rather than part of {@code FIX}, because the detection cannot tell garbage from a vertex
    * that merely lost its head-chunk pointer; the full argument is on
    * {@link DatabaseChecker#setDeleteOrphanEdgeRecords(boolean)}. Reporting the finding needs no clause at all - it
-   * is on for every run.
+   * is on for every run. A plain {@code FIX} relinks the orphans instead of removing them (#10741).
    */
   public       boolean               deleteOrphans = false;
   /**

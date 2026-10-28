@@ -111,7 +111,7 @@ class Issue8368BootstrapPassWindowTest {
     server.returns("getConfiguration", configuration());
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     final ServerDatabase servedDb = new ServerDatabase(null, localDb);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
     return server;
   }
 

@@ -114,7 +114,7 @@ class Issue9147ScriptGBindingNoDatabaseAtStartIT extends BaseGraphServerTest {
       final RequestOptions lang = RequestOptions.build().language("gremlin-lang").create();
       assertThat(client.submit("g.V().count()", lang).all().get().get(0).getLong()).isZero();
 
-      ((DatabaseInternal) getServer(0).getDatabase("mydb")).getEmbedded().drop();
+      ((DatabaseInternal) getServer(0).getDatabaseForOperator("mydb")).getEmbedded().drop();
       getServer(0).removeDatabase("mydb");
 
       assertThatThrownBy(() -> client.submit("g.V().count()", lang).all().get()).isInstanceOf(ExecutionException.class);

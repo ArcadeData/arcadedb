@@ -65,6 +65,6 @@ class Issue8270ImplicitHADatabaseWrappedIT extends BaseRaftHATest {
 
     Awaitility.await("write replicated to the follower").atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
         .ignoreExceptions()
-        .until(() -> getServer(followerIndex).getDatabase(CREATED).countType("Doc", true) == 1L);
+        .until(() -> getServer(followerIndex).getDatabaseForOperator(CREATED).countType("Doc", true) == 1L);
   }
 }

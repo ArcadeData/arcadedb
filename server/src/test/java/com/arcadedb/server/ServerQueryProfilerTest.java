@@ -200,7 +200,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   void profilerWithRealQueries() {
     // Create a test database
     server.createDatabase("profiler-test-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-test-db");
+    final ServerDatabase db = server.getDatabaseForOperator("profiler-test-db");
 
     // Create schema
     db.command("sql", "CREATE VERTEX TYPE Person");
@@ -289,7 +289,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   @Test
   void threadLocalQueryProfileCapturesEngineFromProfilingResultSet() {
     server.createDatabase("profiler-thread-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-thread-db");
+    final ServerDatabase db = server.getDatabaseForOperator("profiler-thread-db");
     db.command("sql", "CREATE VERTEX TYPE Person");
 
     final ServerQueryProfiler profiler = server.getQueryProfiler();
@@ -510,8 +510,8 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
       final long configuredMaxRam = PageManager.INSTANCE.getStats().maxRAM;
       assertThat(maxRam).isEqualTo(configuredMaxRam);
     } finally {
-      server.getDatabase("profiler-pm-db1").getEmbedded().drop();
-      server.getDatabase("profiler-pm-db2").getEmbedded().drop();
+      server.getDatabaseForOperator("profiler-pm-db1").getEmbedded().drop();
+      server.getDatabaseForOperator("profiler-pm-db2").getEmbedded().drop();
       server.removeDatabase("profiler-pm-db1");
       server.removeDatabase("profiler-pm-db2");
     }
@@ -534,7 +534,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   @Test
   void queryTotalCoversTheStepsItContains() {
     server.createDatabase("profiler-consistency-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-consistency-db");
+    final ServerDatabase db = server.getDatabaseForOperator("profiler-consistency-db");
     try {
       db.command("sql", "CREATE VERTEX TYPE Entity");
       db.command("sql", "CREATE PROPERTY Entity.id STRING");
@@ -719,7 +719,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   @Test
   void aContainerStepDoesNotDoubleCountItsChildrensTime() {
     server.createDatabase("profiler-container-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-container-db");
+    final ServerDatabase db = server.getDatabaseForOperator("profiler-container-db");
     try {
       db.command("sql", "CREATE DOCUMENT TYPE Item");
       db.transaction(() -> {
@@ -777,7 +777,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   @Test
   void recordingDoesNotTurnACypherReadIntoAnEagerDrain() {
     server.createDatabase("profiler-cypher-streaming-db", ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = server.getDatabase("profiler-cypher-streaming-db");
+    final ServerDatabase db = server.getDatabaseForOperator("profiler-cypher-streaming-db");
     try {
       db.command("sql", "CREATE VERTEX TYPE Item");
       db.transaction(() -> {

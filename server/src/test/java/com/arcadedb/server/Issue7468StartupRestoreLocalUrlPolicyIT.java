@@ -125,7 +125,7 @@ class Issue7468StartupRestoreLocalUrlPolicyIT extends BaseGraphServerTest {
 
     assertThat(getServer(0).existsDatabase(target))
         .as("the per-server override allows local URLs, so the startup restore must have run").isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(TYPE_NAME, true)).isEqualTo(DOCUMENT_COUNT);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(TYPE_NAME, true)).isEqualTo(DOCUMENT_COUNT);
   }
 
   /**
@@ -175,7 +175,7 @@ class Issue7468StartupRestoreLocalUrlPolicyIT extends BaseGraphServerTest {
     final String allowed = "globalon7468";
     getServer(0).restoreDatabaseFromStartupCommand(allowed, archiveUrl(), targetPath(allowed));
     assertThat(getServer(0).existsDatabase(allowed)).isTrue();
-    assertThat(getServer(0).getDatabase(allowed).countType(TYPE_NAME, true)).isEqualTo(DOCUMENT_COUNT);
+    assertThat(getServer(0).getDatabaseForOperator(allowed).countType(TYPE_NAME, true)).isEqualTo(DOCUMENT_COUNT);
   }
 
   // ------------------------------------------------------------------------------------------------- HELPERS

@@ -361,60 +361,10 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return count == result.length ? result : Arrays.copyOf(result, count);
   }
 
-  protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {
-    return switch (fromObject) {
-      case Boolean boolean1 -> boolean1;
-      case String string -> Boolean.parseBoolean(string);
-      case null, default -> defaultValue;
-    };
-  }
-
-  protected String stringOrDefault(final Object fromObject, final String defaultValue) {
-    if (fromObject == null)
-      return defaultValue;
-    return (String) fromObject;
-  }
-
-  protected Integer integerOrDefault(final Object fromObject, final int defaultValue) {
-    switch (fromObject) {
-      case null -> {
-        return defaultValue;
-      }
-      case Number number -> {
-        return number.intValue();
-      }
-      case String s -> {
-        try {
-          return Integer.parseInt(fromObject.toString());
-        } catch (final NumberFormatException ignore) {
-        }
-      }
-      default -> {
-      }
-    }
-    return defaultValue;
-  }
-
-  protected Long longOrDefault(final Object fromObject, final long defaultValue) {
-    switch (fromObject) {
-      case null -> {
-        return defaultValue;
-      }
-      case Number number -> {
-        return number.longValue();
-      }
-      case String s -> {
-        try {
-          return Long.parseLong(fromObject.toString());
-        } catch (final NumberFormatException ignore) {
-        }
-      }
-      default -> {
-      }
-    }
-    return defaultValue;
-  }
-
+  /**
+   * A coordinate of a vertex for the heuristic, read from the record: a missing or non-numeric one counts as 0. Options are not read
+   * through here but through {@code FunctionOptions}, which refuses a value of the wrong kind (#10788).
+   */
   protected Double doubleOrDefault(final Object fromObject, final double defaultValue) {
     switch (fromObject) {
       case null -> {

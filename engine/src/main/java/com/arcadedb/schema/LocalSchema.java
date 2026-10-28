@@ -1569,6 +1569,25 @@ public class LocalSchema implements Schema {
   private static final String BUCKETLESS_TYPE_WARNING_PREFIX = "bucketless-type:";
   // KEY PREFIX IN reportedUpgradeWarnings: A LIGHTWEIGHT EDGE TYPE WITH A CONSTRAINT IT CANNOT APPLY, ACCEPTED BEFORE #9846
   private static final String UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX = "unenforced-lightweight-constraint:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A CONTINUOUS AGGREGATE CREATED BEFORE #10804, WITH NO INDEX ON ITS BUCKET COLUMN
+  private static final String UNINDEXED_AGGREGATE_WARNING_PREFIX = "unindexed-continuous-aggregate:";
+
+  /**
+   * Issue #10804: names, once per aggregate for the life of this schema, a continuous aggregate whose refresh scans its whole backing
+   * type, with the statements that index it. Never breaks the load: the warning is advice.
+   */
+  private void warnAboutUnindexedContinuousAggregate(final ContinuousAggregateImpl aggregate) {
+    final String warning;
+    try {
+      warning = aggregate.getUpgradeWarning();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot tell whether continuous aggregate '%s' has an index on its bucket column", e,
+          aggregate.getName());
+      return;
+    }
+    if (warning != null && reportedUpgradeWarnings.add(UNINDEXED_AGGREGATE_WARNING_PREFIX + aggregate.getName()))
+      LogManager.instance().log(this, Level.WARNING, "Database '%s': %s", null, database.getName(), warning);
+  }
 
   /**
    * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
@@ -2397,13 +2416,36 @@ public class LocalSchema implements Schema {
 
   @Override
   public Trigger[] getTriggersForType(final String typeName) {
+    // Either side may be an alias (#10750): the argument because the caller typed it, the stored name because a schema written
+    // before triggers were bound to the type's own name kept the one the statement used
+    final String canonicalTypeName = TypeNameDependant.canonicalNameOf(this, typeName);
     return triggers.values().stream()
-        .filter(t -> t.getTypeName().equals(typeName))
+        .filter(t -> canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(this, t.getTypeName())))
         .toArray(Trigger[]::new);
   }
 
+  /**
+   * The trigger bound to the NAME OF ITS TYPE, never to the alias the statement or the schema file named it with (#10750). An
+   * alias is a second name of the type, not a part of it: it can be removed, and after a {@code DROP TYPE} it names nothing until
+   * an unrelated type takes it. A trigger that stored the alias was missed by the cleanup of the drop, which compares the type's
+   * own name, and bound itself to that later type at the next open; it was also missing from the listing of its own type, and
+   * orphaned by an {@code ALTER TYPE ... ALIASES} that removed the alias. Resolved once, where the trigger enters the schema, so
+   * no comparison downstream can be alias-blind. Answers the trigger unchanged when its type does not exist.
+   */
+  private Trigger bindToTypeName(final Trigger trigger) {
+    final LocalDocumentType type = getTypeOrNull(trigger.getTypeName());
+    if (type == null || type.getName().equals(trigger.getTypeName()))
+      return trigger;
+    if (trigger instanceof TriggerImpl impl) {
+      impl.retargetType(type.getName());
+      return impl;
+    }
+    return new TriggerImpl(trigger.getName(), trigger.getTiming(), trigger.getEvent(), type.getName(), trigger.getActionType(),
+        trigger.getActionCode());
+  }
+
   @Override
-  public void createTrigger(final Trigger trigger) {
+  public void createTrigger(final Trigger definition) {
     // A JAVASCRIPT or JAVA trigger is arbitrary host code that fires with the engine's own privileges: the JS
     // executor binds the real database object into a GraalVM context (HostAccess.ALL minus reflection), so the
     // script can reach database.getSecurity().createUser(...) and mint a server-wide admin, and the JAVA executor
@@ -2411,21 +2453,23 @@ public class LocalSchema implements Schema {
     // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
     // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
     // code and keeps the standard schema-level protection.
-    if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT || trigger.getActionType() == Trigger.ActionType.JAVA)
+    if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
     else
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
-      if (triggers.containsKey(trigger.getName())) {
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.TRIGGER, "Trigger '" + trigger.getName() + "' already exists");
+      if (triggers.containsKey(definition.getName())) {
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.TRIGGER, "Trigger '" + definition.getName() + "' already exists");
       }
 
       // Validate type exists
-      if (!existsType(trigger.getTypeName())) {
-        throw new SchemaException("Type '" + trigger.getTypeName() + "' does not exist");
+      if (!existsType(definition.getTypeName())) {
+        throw new SchemaException("Type '" + definition.getTypeName() + "' does not exist");
       }
+
+      final Trigger trigger = bindToTypeName(definition);
 
       // Store trigger
       triggers.put(trigger.getName(), trigger);
@@ -3214,8 +3258,10 @@ public class LocalSchema implements Schema {
     // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
     // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
     // leaves the type map, which is where the listener is unregistered from
+    // Compared by the name each stored type name resolves to, the aliases being still registered here: a trigger is bound to the
+    // type's own name where it enters the schema (#10750), and this still catches one that is not, whatever wrote it
     for (final Trigger trigger : new ArrayList<>(triggers.values()))
-      if (canonicalTypeName.equals(trigger.getTypeName())) {
+      if (canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(this, trigger.getTypeName()))) {
         unregisterTriggerListener(trigger.getName());
         triggers.remove(trigger.getName());
       }
@@ -3260,6 +3306,8 @@ public class LocalSchema implements Schema {
         }
     }
     files.addAll(indexFiles);
+    // the files of the storage the type owns besides its buckets, the same list a rename moves (issue #10749)
+    type.collectOwnedComponentFiles(files);
 
     for (final Bucket bucket : type.getBuckets(false)) {
       files.add(bucket.getFileId());
@@ -4496,7 +4544,7 @@ public class LocalSchema implements Schema {
       for (final String triggerName : triggersJSON.keySet()) {
         final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
         try {
-          final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
+          Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
 
           // ARBITRARY HOST CODE ARRIVING IN A FILE EARNS THE PERMISSION IT WOULD HAVE EARNED AT THE KEYBOARD.
           // createTrigger() gates a JAVASCRIPT or JAVA trigger on UPDATE_SECURITY and not UPDATE_SCHEMA for the
@@ -4537,6 +4585,10 @@ public class LocalSchema implements Schema {
               triggerTarget.put(trigger.getName(), trigger);
             continue;
           }
+
+          // A schema written before #10750 can name the type by an alias: the trigger registered and saved below is the one bound
+          // to the type's own name, so the next save repairs the file
+          trigger = bindToTypeName(trigger);
 
           // A trigger of this name already installed is being REPLACED by this one, not joined by it - the map
           // holds one entry per name either way. The sweep above covers that on the replace path; on the MERGE
@@ -4647,6 +4699,7 @@ public class LocalSchema implements Schema {
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
             ca.setStatus(MaterializedViewStatus.STALE);
+          warnAboutUnindexedContinuousAggregate(ca);
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading continuous aggregate '%s': %s", e, caName,
@@ -5493,6 +5546,12 @@ public class LocalSchema implements Schema {
     final String newName = index.getName();
     if (newName == null || newName.equals(oldName))
       return;
+
+    // Never over another index: the map is the only way to reach it (issue #10751). A type rename refuses this before it starts
+    final IndexInternal holder = indexMap.get(newName);
+    if (holder != null && holder != index)
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+          "Cannot rename index '" + oldName + "' to '" + newName + "': an index with that name already exists");
 
     LogManager.instance().log(this, Level.FINE, "Index '%s' renamed to '%s'", null, oldName, newName);
 
