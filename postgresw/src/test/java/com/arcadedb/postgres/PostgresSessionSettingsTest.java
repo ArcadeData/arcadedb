@@ -91,11 +91,36 @@ class PostgresSessionSettingsTest {
   }
 
   @Test
-  void standardConformingStringsAlwaysAnswersOn() {
-    // A plain '...' literal is never backslash-interpreted on this server, so SHOW must not claim otherwise.
+  void standardConformingStringsAnswersWhatTheConnectionSet() {
+    // Honoured since issue #10871: it decides how a plain '...' literal is read, so SHOW answers what was set
     final PostgresSessionSettings settings = new PostgresSessionSettings();
-    settings.set("standard_conforming_strings", "off");
+    assertThat(settings.standardConformingStrings()).isTrue();
+    settings.set("standard_conforming_strings", "false");
+    assertThat(settings.show("standard_conforming_strings")).isEqualTo("off");
+    assertThat(settings.standardConformingStrings()).isFalse();
+    settings.set("standard_conforming_strings", "1");
     assertThat(settings.show("standard_conforming_strings")).isEqualTo("on");
+    assertThat(settings.standardConformingStrings()).isTrue();
+    assertThatThrownBy(() -> settings.set("standard_conforming_strings", "maybe", false))
+        .isInstanceOf(PostgresSessionSettings.SettingException.class);
+    assertThat(settings.show("standard_conforming_strings")).isEqualTo("on");
+  }
+
+  @Test
+  void theOptionsStartupParameterSetsWhatItsSwitchesName() {
+    // libpq's PGOPTIONS and pgjdbc's "options" (issue #10871): -c name=value, -cname=value and --name=value
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.setFromStartupOptions("-c standard_conforming_strings=off  -capplication_name=my\\ app --statement-timeout=5s -X -c");
+    assertThat(settings.show("standard_conforming_strings")).isEqualTo("off");
+    assertThat(settings.show("application_name")).isEqualTo("my app");
+    assertThat(settings.show("statement_timeout")).isEqualTo("5s");
+    // a startup value is the reset value
+    settings.set("standard_conforming_strings", "on");
+    settings.set("standard_conforming_strings", null);
+    assertThat(settings.show("standard_conforming_strings")).isEqualTo("off");
+    // a value that would be refused is ignored, not fatal
+    settings.setFromStartupOptions("-c server_version=1");
+    assertThat(settings.show("server_version")).isEqualTo(PostgresNetworkExecutor.PG_SERVER_VERSION);
   }
 
   @Test

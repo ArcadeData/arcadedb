@@ -854,7 +854,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (portal.sqlStatement == null)
       // No parsed statement: a non-"sql" language (cypher/gremlin/graphql) goes straight to its own engine.
-      return database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
+      return database.command(portal.language, toEngineText(portal.language, portal.query), server.getConfiguration(),
+          getParams(portal));
 
     final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
     final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
@@ -877,7 +878,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (mustForwardToTheLeader(statement))
       // The text is parsed again there, out of the engine's statement cache, a cost only a follower's write pays. The
       // replicated command() re-checks leadership itself, so a node that became the leader meanwhile runs it locally.
-      return database.command(language, text, server.getConfiguration(), parameters);
+      return database.command(language, toEngineText(language, text), server.getConfiguration(), parameters);
     return statement.execute(database, parameters, createCommandContext());
   }
 
@@ -1396,7 +1397,7 @@ public class PostgresNetworkExecutor extends Thread {
           } else {
             admission = QueryAdmissionGate.getInstance().admit();
             statement = startStatement(query.language, query.query);
-            resultSet = database.command(query.language, query.query, server.getConfiguration());
+            resultSet = database.command(query.language, toEngineText(query.language, query.query), server.getConfiguration());
           }
         }
       }
@@ -1622,7 +1623,7 @@ public class PostgresNetworkExecutor extends Thread {
     // pg_type - are answered here rather than handed to ArcadeDB's SQL engine, which reads pg_catalog.f() as a method call. The
     // test is on the tokens, never on the text: a statement that merely CONTAINS those words - in a string literal, in a column
     // name, in an INSERT - goes to the engine like any other (issue #10695)
-    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, parameters);
+    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, sessionSettings, parameters);
     if (probe != null)
       return new CatalogAnswer(toResults(probe.rows), probe.columns);
 
@@ -2511,7 +2512,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     try {
       final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-      return sqlEngine.parse(query, (DatabaseInternal) database);
+      return sqlEngine.parse(toEngineText("sql", query), (DatabaseInternal) database);
     } catch (final Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: cannot parse query '%s': %s", query, e.getMessage());
@@ -2916,7 +2917,7 @@ public class PostgresNetworkExecutor extends Thread {
         QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), language, "command");
       }
     } else
-      resultSet = database.command(language, queryText, server.getConfiguration(), parameters);
+      resultSet = database.command(language, toEngineText(language, queryText), server.getConfiguration(), parameters);
 
     // From here to the end the result set is owned by this method and closed on every exit - a refusal below, a
     // failure while streaming - and NOT closed twice: browseAndCacheBoundedResultSet closes what it materializes.
@@ -3522,7 +3523,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.copyStatement = PostgresCopyStatement.parse(portal.query);
         if ("sql".equalsIgnoreCase(portal.language)) {
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-          portal.sqlStatement = sqlEngine.parse(portal.copyStatement.getQuery(), (DatabaseInternal) database);
+          portal.sqlStatement = sqlEngine.parse(toEngineText("sql", portal.copyStatement.getQuery()), (DatabaseInternal) database);
         }
 
       } else {
@@ -3581,7 +3582,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-              portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
+              portal.sqlStatement = sqlEngine.parse(toEngineText("sql", query.query), (DatabaseInternal) database);
               final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
               if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
@@ -4265,7 +4266,8 @@ public class PostgresNetworkExecutor extends Thread {
         databaseName = paramValue;
         break;
       case "options":
-        // DEPRECATED, IGNORE IT
+        // libpq's PGOPTIONS / pgjdbc's "options": the run-time parameters it names with -c are set like the ones above
+        sessionSettings.setFromStartupOptions(paramValue);
         break;
       case "replication":
         // NOT SUPPORTED, IGNORE IT
@@ -4710,9 +4712,21 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (QUOTED_IDENTIFIERS && ("sql".equals(language) || "sqlscript".equals(language)) && !isSessionCommand(queryText))
       // POSTGRES CLIENTS QUOTE IDENTIFIERS WITH DOUBLE QUOTES, WHILE ARCADEDB SQL USES BACK-TICKS (ISSUE #5369)
-      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText);
+      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText, sessionSettings.standardConformingStrings());
 
     return new Query(language, queryText);
+  }
+
+  /**
+   * The text the engine of {@code language} is handed for {@code text}: for SQL, every string literal written in the form
+   * the ArcadeDB lexer decodes to the value PostgreSQL reads, under this connection's {@code standard_conforming_strings}
+   * (issue #10871). Applied where the engine is called and not in {@link #getLanguageAndQuery}: the catalog, {@code COPY}
+   * and transaction-control parsers of this module read the statement with PostgreSQL's own literal rules.
+   */
+  private String toEngineText(final String language, final String text) {
+    return "sql".equalsIgnoreCase(language) || "sqlscript".equalsIgnoreCase(language) ?
+        PostgresQuotedIdentifierRewriter.toEngineLiterals(text, sessionSettings.standardConformingStrings()) :
+        text;
   }
 
   /**

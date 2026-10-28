@@ -605,7 +605,7 @@ public class PostgresCatalog {
    * @return null when the statement is not such a probe
    */
   public static Answer resolveProbe(final String query, final Database database, final String userName,
-      final Object... parameters) {
+      final PostgresSessionSettings settings, final Object... parameters) {
     // The substrings are only a cheap pre-filter; the tokens decide. Not startsAsQuery: a probe may open with a comment
     if (query == null || database == null || !(containsIgnoreCase(query, PG_CATALOG_SCHEMA) || containsIgnoreCase(query,
         "pg_type")))
@@ -627,11 +627,9 @@ public class PostgresCatalog {
     if (statement == null || statement.from != null)
       return null;
 
-    // The default settings: a probe reads no catalog relation (resolveForSession declines a FROM-less SELECT that names one
-    // before a probe is asked), so none of the session's settings can reach its answer
     Answer answer;
     try {
-      answer = project(statement, List.of(), List.of(new Row()), context(database, userName, null), Map.of(), true, null);
+      answer = project(statement, List.of(), List.of(new Row()), context(database, userName, settings), Map.of(), true, null);
     } catch (final PostgresCatalogExpression.BudgetExceeded e) {
       answer = null;
     }

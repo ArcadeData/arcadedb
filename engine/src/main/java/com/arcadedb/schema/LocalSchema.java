@@ -1910,6 +1910,34 @@ public class LocalSchema implements Schema {
     return createBucket(bucketName, pageSize, databasePath, LocalBucket.CURRENT_VERSION);
   }
 
+  /**
+   * Refuses a page a bucket of the file format {@code version} could not write a record into ({@link LocalBucket#minimumPageSize}),
+   * naming the setting the size comes from when the caller did not choose one (issue #10876). Asked before anything is created, so
+   * the refusal comes where the size was given, and not at the first insert into a bucket that cannot take one.
+   */
+  public static void checkBucketPageSize(final String bucketName, final int pageSize, final int version) {
+    final int minimum = LocalBucket.minimumPageSize(version);
+    if (pageSize < minimum)
+      throw new SchemaException("Cannot create bucket '" + bucketName + "' with a page size of " + pageSize
+          + " bytes: the minimum is " + minimum + " bytes, the room a page needs for its header, its slot table and one record. "
+          + "Without an explicit page size it comes from the database setting '" + (version >= LocalBucket.EXTERNAL_BUCKET_VERSION ?
+          GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE.getKey() :
+          GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey()) + "'");
+  }
+
+  /**
+   * {@link #checkBucketPageSize} for the paired EXTERNAL-property bucket of {@code primaryBucketName}, when it would have to be
+   * created: a caller about to attach a primary bucket to a type with EXTERNAL properties asks it first, so a refused pairing
+   * cannot leave the primary bucket attached without its pair (issue #10876).
+   */
+  public void checkPairedExternalBucketPageSize(final String primaryBucketName) {
+    final String externalName = InternalBucketNaming.externalPropertyBucketName(primaryBucketName);
+    if (lookupBucket(externalName) == null)
+      checkBucketPageSize(externalName,
+          database.getConfiguration().getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE),
+          LocalBucket.EXTERNAL_BUCKET_VERSION);
+  }
+
   /** Creates the bucket file under {@code parentDirectory} instead of the database directory; null/empty falls back. */
   public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory) {
     return createBucket(bucketName, pageSize, parentDirectory, LocalBucket.CURRENT_VERSION);
@@ -1924,6 +1952,7 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     checkValidBucketName(bucketName);
+    checkBucketPageSize(bucketName, pageSize, version);
 
     if (lookupBucket(bucketName) != null)
       throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,

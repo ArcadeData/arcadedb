@@ -2541,6 +2541,10 @@ public class LocalDocumentType implements DocumentType {
     // One lookup in the bucket-owner map rather than a walk of every type, which made each bucket attached cost O(N) and
     // the open of a schema of N types O(N^2) (issue #10247)
     schema.checkBucketIsFree(name, bucket);
+    // The paired bucket is created after the attach below: a page size it cannot have is refused before anything changes, or the
+    // type would keep a primary bucket with no pair (issue #10876)
+    if (hasExternalProperties() && !externalBucketIdByPrimaryBucketId.containsKey(bucket.getFileId()))
+      schema.checkPairedExternalBucketPageSize(bucket.getName());
 
     // If we already have a partitioned strategy in place, growing the bucket count changes the
     // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any
