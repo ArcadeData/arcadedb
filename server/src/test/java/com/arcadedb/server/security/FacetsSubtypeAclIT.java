@@ -70,6 +70,7 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
       + "w: weight TERMS TOP 100 MISSING";
   private static final String RED        = "search_fields(['title'], 'red')";
   private static final Pattern MATCHES   = Pattern.compile("matches=(\\d+)");
+  private static final Pattern RIDS      = Pattern.compile("\\[INDEX rids=(\\d+)]");
   private static final Pattern COUNTER   = Pattern.compile("counting=\\S+ budget=\\d+ cardinality=\\d+");
 
   @Override
@@ -170,13 +171,37 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
     final String facets = "brand TERMS TOP 1000 FILTER brand IN ['brand-3', 'brand-4', 'brand-5'] MISSING, "
         + "w: weight TERMS TOP 100 FILTER brand IN ['brand-3', 'brand-4', 'brand-5']";
     final String sql = "SELECT FROM " + ownBuckets() + " FACETS " + facets + " LIMIT 0";
-    assertThat(rootProfile(sql)).contains("[INDEX]");
+    assertThat(rootProfile(sql)).contains("[INDEX rids=");
     final FacetResults restricted = restricted(sql);
     assertThat(restricted.toJSON().toString()).isEqualTo(root(sql).toJSON().toString());
     assertThat(counts(restricted.get("w"))).isEqualTo(groupBy("weight", "brand IN ['brand-3', 'brand-4', 'brand-5']"));
     // the same facets over every type count Image: the oracle can tell the two apart
     assertThat(root("SELECT FROM " + SUPER + " FACETS " + facets + " LIMIT 0").toJSON().toString())
         .isNotEqualTo(restricted.toJSON().toString());
+  }
+
+  /**
+   * Final review B-M3: the INDEX FILTER evaluator looks its key up in the index of every bucket of the hierarchy, Image's too. It keeps
+   * (and charges to the memory budget) the RIDs of the buckets the user may read only, so neither the budget nor a fallback to the
+   * rows depends on records the user cannot see. PROFILE prints how many RIDs it holds.
+   */
+  @Test
+  void indexFilterHoldsTheRidsOfReadableBucketsOnly() {
+    final String brands = "brand IN ['brand-3', 'brand-4']";
+    final String sql = "SELECT FROM " + SUPER + " FACETS brand TERMS TOP 1000, w: weight TERMS TOP 100 FILTER " + brands + " LIMIT 0";
+    final long visible = groupBy("brand", brands).values().stream().mapToLong(Long::longValue).sum();
+    final long all = rootRows("SELECT FROM " + SUPER + " WHERE " + brands).size();
+    assertThat(all).isGreaterThan(visible);
+    assertThat(ridCount(rootProfile(sql))).isEqualTo(all);
+    assertThat(ridCount(restrictedProfile(sql))).isEqualTo(visible);
+    // the FILTER of w applies to brand: the visible records with one of the two brands
+    assertThat(counts(restricted(sql).get("brand"))).isEqualTo(groupBy("brand", brands));
+  }
+
+  private static long ridCount(final String plan) {
+    final Matcher matcher = RIDS.matcher(plan);
+    assertThat(matcher.find()).as(plan).isTrue();
+    return Long.parseLong(matcher.group(1));
   }
 
   /** PROFILE reports the size of the match set: Image's records are not part of it. */
@@ -290,7 +315,8 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
   @Test
   void refusedQueryFailsLikeThePlainQuery() {
     assertFailsLikeThePlainQuery("SELECT FROM " + SUPER + " WHERE score >= 0", " FACETS " + FACETS + " LIMIT 1");
-    assertFailsLikeThePlainQuery("SELECT FROM " + SUPER, " FACETS b: brand TERMS FILTER brand = 'brand-1' LIMIT 1");
+    // a FILTER only the row answers needs the rows (a FILTER answered by RID takes the projection, which leaves Image's buckets out)
+    assertFailsLikeThePlainQuery("SELECT FROM " + SUPER, " FACETS b: brand TERMS FILTER brand LIKE 'brand-1%' LIMIT 1");
   }
 
   private void assertFailsLikeThePlainQuery(final String plainSql, final String facetsTail) {

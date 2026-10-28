@@ -110,8 +110,8 @@ final class ColumnarReconciler {
 
   /** Whether the two definitions store the same values: everything but the property name is equal. */
   static boolean sameData(final ColumnDefinition a, final ColumnDefinition b) {
-    return a.indexFileId() == b.indexFileId() && a.propertyType() == b.propertyType() && a.kind() == b.kind() && a.byItem() == b.byItem()
-        && a.precision() == b.precision();
+    // one definition of the encoding (final fix batch 2, r1 M10): the two cannot drift
+    return a.indexFileId() == b.indexFileId() && a.sameEncoding(b);
   }
 
   /**

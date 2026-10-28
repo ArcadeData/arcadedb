@@ -347,6 +347,31 @@ class SQLFacetsIntegrationTest extends TestHelper {
     }
   }
 
+  /**
+   * Final fix batch 2 (Task 18 minor): an IF answers the rows of the branch that ran, so a {@code SELECT ... FACETS} ending that branch
+   * gives its facets to the script; a WHILE answers no row of its body, and no facets either.
+   */
+  @Test
+  @Timeout(300)
+  void facetsOfAStatementEndingAnIfBranchAreTheScripts() {
+    load(data(), 2_000);
+    final String where = "fileSize < 1048576";
+    final String sql = "SELECT FROM " + TYPE + " WHERE " + where + " FACETS brand TERMS TOP 1000";
+    try (final ResultSet rs = database.command("sqlscript", "IF (1 = 1) {\n" + sql + ";\n}")) {
+      assertThat(rids(rs)).hasSize((int) count(where));
+      assertThat(rs.getFacets()).as("the facets of the branch that ran").isNotNull();
+      assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", where));
+    }
+    try (final ResultSet rs = database.command("sqlscript", "IF (1 = 2) {\n" + sql + ";\n} ELSE {\nSELECT 1 AS one;\n}")) {
+      assertThat(rs.next().<Number>getProperty("one").intValue()).isEqualTo(1);
+      assertThat(rs.getFacets()).as("the branch that ran has no facets").isNull();
+    }
+    try (final ResultSet rs = database.command("sqlscript", "LET i = 0;\nWHILE ($i < 1) {\n" + sql + ";\nLET i = $i + 1;\n}")) {
+      assertThat(rs.hasNext()).as("a WHILE answers no row of its body").isFalse();
+      assertThat(rs.getFacets()).as("nor its facets").isNull();
+    }
+  }
+
   @Test
   @Timeout(300)
   void cachedPlanReusedGivesFreshFacets() {
@@ -517,6 +542,37 @@ class SQLFacetsIntegrationTest extends TestHelper {
         assertThat(facets.exact()).isTrue();
         assertThat(counts(facets.get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", "true"));
       }
+    }
+  }
+
+  /**
+   * Final review C-I4: no WHERE, and FILTERs the INDEX and PROJECTION evaluators answer by RID. The match set is the projection's and
+   * each match gets its fail mask by RID, so computing the facets reads no record; the rows still come from the scan, masked.
+   */
+  @Test
+  @Timeout(300)
+  void noWhereWithFiltersAnsweredByRidTakesTheProjection() {
+    load(data(), RECORDS);
+    database.command("sql", "CREATE INDEX ON " + TYPE + " (author) NOTUNIQUE");
+    final String author = "author = 'author-3'";
+    final String small = "fileSize < 1048576";
+    final String sql = "SELECT FROM " + TYPE + " FACETS brand TERMS TOP 1000 FILTER " + author + ", author TERMS TOP 1000 FILTER " + small
+        + ", tags TERMS TOP 1000";
+    assertThat(profile(sql)).contains("[INDEX rids=", "[PROJECTION", "matchSource=projection ");
+
+    // LIMIT 0: no row is read, so every record read is one the facets read
+    final long before = readRecords();
+    final FacetResults facets = facets(sql + " LIMIT 0");
+    assertThat(readRecords() - before).as("records read to compute the facets").isZero();
+    assertThat(facets.exact()).isTrue();
+    // a FILTER applies to the other facets: each counts the matches that pass every FILTER but its own
+    assertThat(counts(facets.get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", small));
+    assertThat(counts(facets.get("author"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "author", author));
+    assertThat(counts(facets.get("tags"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "tags", author + " AND " + small));
+
+    // the rows are those that pass every FILTER
+    try (final ResultSet rs = database.query("sql", sql)) {
+      assertThat((long) rids(rs).size()).isEqualTo(count(author + " AND " + small));
     }
   }
 

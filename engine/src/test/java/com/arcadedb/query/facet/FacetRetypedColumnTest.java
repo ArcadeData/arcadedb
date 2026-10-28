@@ -21,16 +21,22 @@ package com.arcadedb.query.facet;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
+import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -38,6 +44,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -129,6 +137,67 @@ class FacetRetypedColumnTest extends TestHelper {
 
   private ColumnarIndexManager manager() {
     return ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getColumnarIndexManager();
+  }
+
+  /** Keeps the epoch count of every patched value it is handed. */
+  private static final class EpochCollector implements FacetCollector {
+    private final List<Long> epochs = new ArrayList<>();
+
+    @Override
+    public void beginBucket(final int bucketId, final ColumnarSnapshot snapshot, final CrossBucketOrdinalMap map) {
+    }
+
+    @Override
+    public void collect(final ColumnarSegmentView segment, final PositionBitmap matches) {
+    }
+
+    @Override
+    public void collectPatched(final long position, final PatchedValue value) {
+      epochs.add(value.hasLong() ? value.longValue() : null);
+    }
+
+    @Override
+    public void merge(final FacetCollector other) {
+    }
+
+    @Override
+    public FacetResult finish() {
+      return null;
+    }
+  }
+
+  /**
+   * Final fix batch 2 (r1 M1): a record patched after the column was redefined is extracted with the column the facet was planned
+   * with, the one its collector decodes (epoch days), never with the new definition (epoch milliseconds).
+   */
+  @Test
+  @Timeout(120)
+  void aPatchedRecordIsExtractedWithTheColumnTheFacetWasPlannedWith() {
+    load();
+    final int bucketId = database.getSchema().getType(TYPE).getBuckets(true).getFirst().getFileId();
+    final ColumnDefinition planned = FacetFallbackScanner.column(database.getSchema().getType(TYPE), "day");
+    assertThat(planned.propertyType()).isEqualTo(Type.DATE);
+    final RID first;
+    final LocalDate day;
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid, day FROM " + TYPE + " LIMIT 1")) {
+      final Result row = rs.next();
+      first = row.getProperty("rid");
+      day = asDay(row.getProperty("day"));
+    }
+
+    try (final MatchSet matches = MatchSet.fromProjection((DatabaseInternal) database, new int[] { bucketId }, 0)) {
+      matches.setFacetFilterIndex(new int[] { -1 });
+      final PositionBitmap patch = new PositionBitmap(matches.forBucket(bucketId).maxRecordsInPage());
+      patch.set(first.getPosition());
+
+      retypeToDateTime();
+
+      final EpochCollector collector = new EpochCollector();
+      FacetPatcher.countPatched((DatabaseInternal) database, matches, matches.snapshot(bucketId), patch,
+          List.of(new TermsFacetSpec("day", "day", null, null, 100, 1, FacetOrder.COUNT_DESC, null, false, null)),
+          Arrays.asList((FacetCollector) collector), new ColumnDefinition[] { planned }, WorkGuard.forCommandDeadline(null));
+      assertThat(collector.epochs).containsExactly(day.toEpochDay());
+    }
   }
 
   @Test

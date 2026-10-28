@@ -24,6 +24,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
@@ -34,6 +35,8 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.List;
+import java.util.function.LongConsumer;
+import java.util.function.LongPredicate;
 
 /**
  * Corrects the projection with the records it cannot answer for (spec 7.3, D11): the matches on pages the apply thread has not applied
@@ -48,35 +51,73 @@ public final class FacetPatcher {
 
   /**
    * The positions of the bucket's matches the projection cannot answer for: {@code (matches AND pending) OR (matches AND NOT (pending
-   * OR live of any segment))}, that is the matches minus those a segment view holds live on a page that is not pending. A match no view
-   * covers and no dirty page explains is read from its record, so a projection bug costs time, never a wrong count.
+   * OR live of any segment))}, that is the matches minus those a segment view holds live on a page that is not pending, plus the
+   * caller's own writes. A match no view covers and no dirty page explains is read from its record, so a projection bug costs time,
+   * never a wrong count. A match no facet counts from the projection ({@code counted} refuses it: it fails the FILTERs of two facets,
+   * final review A-M1) is left out: reading it would reach no collector.
+   *
+   * @param counted the matches a facet counts in the bucket from the projection, null for every match
+   * @param own     the matches the caller's open transaction wrote in the bucket ({@link #ownWrites}), null for none
    *
    * @return a new bitmap owned by the caller, empty when the bucket has no matches; it allocates at most
    *     {@link #patchSetBytes} of {@link #patchSetSize}
    */
-  public static PositionBitmap patchSet(final MatchSet matches, final ColumnarSnapshot snapshot, final int bucketId) {
+  public static PositionBitmap patchSet(final MatchSet matches, final ColumnarSnapshot snapshot, final int bucketId,
+      final LongPredicate counted, final PositionBitmap own) {
     final PositionBitmap base = matches.forBucket(bucketId);
     final PositionBitmap pending = snapshot.pendingPositions();
     final PositionBitmap patch = new PositionBitmap(pending.maxRecordsInPage());
     if (base == null)
       return patch;
+    final LongConsumer add = counted == null ? patch::set : position -> {
+      if (counted.test(position))
+        patch.set(position);
+    };
     // the matches no view holds live, then those on pending pages: only the stripes of the patch set are allocated
-    base.forEachAndNotAny(lives(snapshot), patch::set);
-    base.forEachAnd(pending, patch::set);
+    base.forEachAndNotAny(lives(snapshot), add);
+    base.forEachAnd(pending, add);
+    if (own != null)
+      own.forEach(add);
     return patch;
   }
 
   /**
-   * An upper bound of the positions of {@link #patchSet}, counted without allocating anything: zero exactly when the patch set is empty
-   * (no match on a pending page, every match live in a view). A position both pending and uncovered is counted twice.
+   * The number of positions of {@link #patchSet}, counted without allocating anything: what the patch budget is tested against before
+   * any patch set is made.
    */
-  public static long patchSetSize(final MatchSet matches, final ColumnarSnapshot snapshot, final int bucketId) {
+  public static long patchSetSize(final MatchSet matches, final ColumnarSnapshot snapshot, final int bucketId,
+      final LongPredicate counted, final PositionBitmap own) {
     final PositionBitmap base = matches.forBucket(bucketId);
     if (base == null)
       return 0;
-    final long[] uncovered = new long[1];
-    base.forEachAndNotAny(lives(snapshot), position -> uncovered[0]++);
-    return uncovered[0] + base.andCardinality(snapshot.pendingPositions());
+    final PositionBitmap pending = snapshot.pendingPositions();
+    final PositionBitmap[] lives = lives(snapshot);
+    final long[] size = new long[1];
+    // uncovered and not pending, then pending: each position once
+    base.forEachAndNotAny(lives, position -> {
+      if (!pending.get(position) && (counted == null || counted.test(position)))
+        size[0]++;
+    });
+    if (counted == null)
+      size[0] += base.andCardinality(pending);
+    else
+      base.forEachAnd(pending, position -> {
+        if (counted.test(position))
+          size[0]++;
+      });
+    if (own != null)
+      own.forEach(position -> {
+        if (!pending.get(position) && isLive(lives, position) && (counted == null || counted.test(position)))
+          size[0]++;
+      });
+    return size[0];
+  }
+
+  private static boolean isLive(final PositionBitmap[] lives, final long position) {
+    for (final PositionBitmap live : lives)
+      if (live.get(position))
+        return true;
+    return false;
   }
 
   /** An upper bound of the bytes a patch set of at most {@code size} positions in the bucket allocates: a page index and stripes. */
@@ -149,13 +190,15 @@ public final class FacetPatcher {
    * The collectors were begun on this bucket.
    *
    * @param collectors one per facet, in the order of {@code facets}; null for a facet that does not count this bucket
+   * @param columns    one per facet: the column its collector was planned with (see {@link Patching})
    * @param guard      the query's deadline and termination, checked every few records
    *
    * @return the records read
    */
   public static long countPatched(final DatabaseInternal db, final MatchSet matches, final ColumnarSnapshot snapshot,
-      final PositionBitmap patch, final List<FacetSpec> facets, final List<FacetCollector> collectors, final WorkGuard guard) {
-    final Patching patching = new Patching(db, matches, snapshot, facets, collectors);
+      final PositionBitmap patch, final List<FacetSpec> facets, final List<FacetCollector> collectors, final ColumnDefinition[] columns,
+      final WorkGuard guard) {
+    final Patching patching = new Patching(db, matches, snapshot, facets, collectors, columns);
     final int bucketId = snapshot.bucketId();
     final int[] ticks = new int[1];
     patch.forEach(position -> {
@@ -170,21 +213,28 @@ public final class FacetPatcher {
   /**
    * The patching of one bucket, record by record: {@link #countPatched} drives it over the patch set, and the fallback scan drives it
    * over the records it reads anyway when the bucket is also scanned for other facets, so such a record is read once.
+   * <p>
+   * A record is read with the column its facet's collector was planned with, the definition the segments it counts were written with,
+   * not with the one its type's extractor holds now: a column redefined while the query counts (DATE to DATETIME, say) would otherwise
+   * hand the collector values in another encoding (final fix batch 2, r1 M1).
    */
   static final class Patching {
-    private final List<FacetSpec>      facets;
     private final List<FacetCollector> collectors;
+    private final ColumnDefinition[]   columns;
     private final MatchSet.FacetMatches[] facetMatches;
     private final GlobalDictionary[]   dictionaries;
     private final ColumnarIndexManager manager;
     private final PatchedValue         value = new PatchedValue();
     private       long                 read;
 
-    /** @param collectors one per facet, in the order of {@code facets}; null for a facet that does not count this bucket */
+    /**
+     * @param collectors one per facet, in the order of {@code facets}; null for a facet that does not count this bucket
+     * @param columns    one per facet: the column its collector was planned with; null for a facet that does not count this bucket
+     */
     Patching(final DatabaseInternal db, final MatchSet matches, final ColumnarSnapshot snapshot, final List<FacetSpec> facets,
-        final List<FacetCollector> collectors) {
-      this.facets = facets;
+        final List<FacetCollector> collectors, final ColumnDefinition[] columns) {
       this.collectors = collectors;
+      this.columns = columns;
       final int bucketId = snapshot.bucketId();
       final int facetCount = facets.size();
       facetMatches = new MatchSet.FacetMatches[facetCount];
@@ -208,7 +258,8 @@ public final class FacetPatcher {
 
     /**
      * Hands the patched record's value to the collector of every facet whose matches hold the position. A record whose type has no
-     * extractor any more (its COLUMNAR index dropped while the query counts) is still a match: it is counted as missing, never dropped.
+     * extractor any more (every COLUMNAR index of it dropped while the query counts) is still a match: it is counted as missing, never
+     * dropped.
      */
     void accept(final Document record, final long position) {
       final ColumnarValueExtractor extractor = manager.extractor(record.getTypeName());
@@ -218,10 +269,10 @@ public final class FacetPatcher {
         if (collector == null || facetMatches[f] == null || !facetMatches[f].get(position))
           continue;
         value.reset();
-        if (extractor == null || !extractor.hasColumn(facets.get(f).property()))
+        if (extractor == null || columns[f] == null)
           value.missing();
         else
-          extractor.extract(record, facets.get(f).property(), dictionaries[f], value);
+          extractor.extract(record, columns[f], dictionaries[f], value);
         collector.collectPatched(position, value);
       }
     }

@@ -5605,9 +5605,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       }
     }
 
-    // The facets of a SELECT ... FACETS query the leader answered, in the shape every transport shares
+    // The facets of a SELECT ... FACETS query the leader answered, in the shape every transport shares; their values kept as the JSON
+    // parse gives them, as the rows above keep theirs (final review C-I8)
     if (responseJson.has("facets"))
-      resultSet.setFacets(FacetResults.fromJSON(responseJson.getJSONObject("facets")));
+      resultSet.setFacets(FacetResults.fromJSON(responseJson.getJSONObject("facets"), (value, type) -> value));
 
     return resultSet;
   }

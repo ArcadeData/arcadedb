@@ -1050,7 +1050,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final long serFinalStart = System.nanoTime();
       out.setAffectedRecords(affected).setExecutionTimeMs(ms);
       if (facets != null)
-        out.setFacets(FacetProtocol.toProto(facets));
+        out.setFacets(FacetProtocol.toProto(facets, this::toGrpcValue));
       if (writeStats != null && writeStats.containsUpdates())
         out.setStats(QueryUpdateStats.newBuilder()
             .setNodesCreated(writeStats.getNodesCreated())
@@ -1815,7 +1815,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final ExecuteQueryResponse.Builder responseBuilder = ExecuteQueryResponse.newBuilder().addResults(resultBuilder.build())
             .setExecutionTimeMs(executionTime);
         if (facets != null)
-          responseBuilder.setFacets(FacetProtocol.toProto(facets));
+          responseBuilder.setFacets(FacetProtocol.toProto(facets, this::toGrpcValue));
         final ExecuteQueryResponse response = responseBuilder.build();
         profile.addSerializationNanos(serializationAccum + (System.nanoTime() - serBuildStart));
 
@@ -2521,7 +2521,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /** Attaches the facets of a FACETS query (null for any other query) to the terminal batch. */
   private static QueryResult.Builder withFacets(final QueryResult.Builder terminalBatch, final FacetResults facets) {
     if (facets != null)
-      terminalBatch.setFacets(FacetProtocol.toProto(facets));
+      // the values encoded as the rows' scalars are
+      terminalBatch.setFacets(FacetProtocol.toProto(facets, GrpcTypeConverter::toGrpcValue));
     return terminalBatch;
   }
 

@@ -1151,7 +1151,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             // Create QueryBatch with Results instead of Records
             // FACETS queries: the facets ride on the terminal batch only, which is yielded even when it holds no records
             nextBatch = new QueryBatch(convertedResults, totalInBatch, qr.getRunningTotalEmitted(),
-                qr.getIsLastBatch(), qr.hasFacets() ? FacetProtocol.fromProto(qr.getFacets()) : null);
+                qr.getIsLastBatch(), qr.hasFacets() ? FacetProtocol.fromProto(qr.getFacets(), ProtoUtils::fromGrpcValue) : null);
 
             if (qr.getIsLastBatch()) {
               drained = true;
@@ -2140,7 +2140,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
     }
     if (response.hasFacets())
-      resultSet.setFacets(FacetProtocol.fromProto(response.getFacets()));
+      resultSet.setFacets(FacetProtocol.fromProto(response.getFacets(), this::grpcValueToObject));
     return resultSet;
   }
 
@@ -2150,7 +2150,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       resultSet.add(grpcRecordToResult(record));
     }
     if (response.hasFacets())
-      resultSet.setFacets(FacetProtocol.fromProto(response.getFacets()));
+      resultSet.setFacets(FacetProtocol.fromProto(response.getFacets(), this::grpcValueToObject));
     return resultSet;
   }
 

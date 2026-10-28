@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.facet;
 
+import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
@@ -91,20 +93,101 @@ public final class FacetResults {
     return Collections.unmodifiableSet(results.keySet());
   }
 
+  /**
+   * How a transport writes a value of the data (a term, a bound, a cursor) into its JSON: the JSON form of {@code value}, a value of a
+   * property of schema type {@code type} (null when unknown). The HTTP serializer writes it as it writes that property in a row.
+   */
+  @FunctionalInterface
+  public interface ValueEncoder {
+    Object encode(Object value, Type type);
+  }
+
+  /** How a client reads a value of the data back from the JSON of its transport, as it reads a row's value of type {@code type}. */
+  @FunctionalInterface
+  public interface ValueDecoder {
+    Object decode(Object value, Type type);
+  }
+
+  /** The values as the engine holds them (integral numbers as {@code Long}): the JSON every in-process consumer reads. */
+  public static final ValueEncoder AS_IS = (value, type) -> value;
+
+  /**
+   * A facet value as the value a row of the property holds: a number converted to the Java type of {@code type} (a DOUBLE term the
+   * engine keys as an exact decimal is a {@code Double} again, an INTEGER one an {@code Integer}), anything else unchanged. Applied
+   * once, by the executor, to every term and cursor of a facet whose property type it knows: every caller, embedded or remote, gets
+   * what GROUP BY gets.
+   */
+  public static Object asRowValue(final Object value, final Type type) {
+    if (!(value instanceof Number number) || !isNumeric(type))
+      return value;
+    try {
+      return Type.convert(null, number, type.getDefaultJavaType());
+    } catch (final RuntimeException e) {
+      return value;
+    }
+  }
+
+  private static boolean isNumeric(final Type type) {
+    return type != null && switch (type) {
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> true;
+      default -> false;
+    };
+  }
+
   public JSONObject toJSON() {
+    return toJSON(AS_IS);
+  }
+
+  /** @param encoder writes each value of the data, see {@link ValueEncoder} */
+  public JSONObject toJSON(final ValueEncoder encoder) {
     final JSONObject json = new JSONObject();
     json.put(META, new JSONObject().put(EXACT, exact()).put(PATCHED, patched).put(LAG_MS, lagMs));
     for (final var entry : results.entrySet())
-      json.put(entry.getKey(), entry.getValue().toJSON());
+      json.put(entry.getKey(), entry.getValue().toJSON(encoder));
+    return json;
+  }
+
+  /**
+   * {@link #toJSON()} without any value of the data, for a plan's description that outlives the query (the server's query profiler
+   * keeps it): the meta, and per facet its kind, source, reason and counts, each bucket reduced to its count and its missing or default
+   * flag. No term, no bound, no label derived from a value, no cursor, and of a STATS facet its counts only (its min, max, sum and
+   * average are values of the data too).
+   */
+  public JSONObject toProfileJSON() {
+    final JSONObject json = toJSON();
+    for (final String alias : results.keySet()) {
+      final JSONObject result = json.getJSONObject(alias);
+      for (final String value : new String[] { "after", "min", "max", "sum", "avg" })
+        result.remove(value);
+      final JSONArray buckets = result.getJSONArray("buckets", null);
+      if (buckets == null)
+        continue;
+      final JSONArray counts = new JSONArray();
+      for (int i = 0; i < buckets.length(); i++) {
+        final JSONObject bucket = buckets.getJSONObject(i);
+        final JSONObject count = new JSONObject().put("count", bucket.getLong("count", 0L));
+        if (bucket.getBoolean("missing", false))
+          count.put("missing", true);
+        if (bucket.getBoolean("default", false))
+          count.put("default", true);
+        counts.put(count);
+      }
+      result.put("buckets", counts);
+    }
     return json;
   }
 
   public static FacetResults fromJSON(final JSONObject json) {
+    return fromJSON(json, null);
+  }
+
+  /** @param decoder reads each value of the data back, see {@link FacetResult#fromJSON(JSONObject, ValueDecoder)} */
+  public static FacetResults fromJSON(final JSONObject json, final ValueDecoder decoder) {
     final JSONObject meta = json.getJSONObject(META, new JSONObject());
     final LinkedHashMap<String, FacetResult> results = new LinkedHashMap<>();
     for (final String alias : json.keySet())
       if (!META.equals(alias))
-        results.put(alias, FacetResult.fromJSON(json.getJSONObject(alias)));
+        results.put(alias, FacetResult.fromJSON(json.getJSONObject(alias), decoder));
     return new FacetResults(meta.getBoolean(EXACT, true), meta.getLong(PATCHED, 0L), meta.getLong(LAG_MS, 0L), results);
   }
 }

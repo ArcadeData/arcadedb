@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.facet;
 
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
@@ -119,6 +120,14 @@ public final class FacetBucket {
   }
 
   public JSONObject toJSON() {
+    return toJSON(FacetResults.AS_IS, null);
+  }
+
+  /**
+   * @param encoder   writes each value of the data: the term with {@code valueType}, the bounds without a type
+   * @param valueType the schema type of the term, null when unknown
+   */
+  public JSONObject toJSON(final FacetResults.ValueEncoder encoder, final Type valueType) {
     final JSONObject json = new JSONObject();
     if (key != null) {
       json.put(KEY, key);
@@ -126,12 +135,13 @@ public final class FacetBucket {
         json.put(DEFAULT, true);
       else {
         if (from != null)
-          json.put(FROM, integral(from));
+          json.put(FROM, encoder.encode(integral(from), null));
         if (to != null)
-          json.put(TO, integral(to));
+          json.put(TO, encoder.encode(integral(to), null));
       }
     } else {
-      json.put(VALUE, integral(value));
+      // the bucket of the records without a value has no value to encode
+      json.put(VALUE, missing ? null : encoder.encode(integral(value), valueType));
       if (missing)
         json.put(MISSING, true);
     }
@@ -144,6 +154,15 @@ public final class FacetBucket {
   }
 
   public static FacetBucket fromJSON(final JSONObject json) {
+    return fromJSON(json, null, null);
+  }
+
+  /**
+   * @param decoder   reads the term back with {@code valueType}; null to keep it as JSON holds it, an integral number as a {@code Long}
+   *                  (the bounds are always kept so)
+   * @param valueType the type the result's hint names, null for none
+   */
+  public static FacetBucket fromJSON(final JSONObject json, final FacetResults.ValueDecoder decoder, final Type valueType) {
     final long count = json.getLong(COUNT, 0L);
     final FacetBucket bucket;
     if (json.getBoolean(MISSING, false))
@@ -153,7 +172,7 @@ public final class FacetBucket {
     else if (json.has(KEY))
       bucket = range(json.getString(KEY), integral(json.opt(FROM)), integral(json.opt(TO)), count);
     else
-      bucket = term(integral(json.opt(VALUE)), count);
+      bucket = term(decode(json.opt(VALUE), decoder, valueType), count);
     JSONObject extra = null;
     for (final String name : json.keySet())
       if (!isKnownMember(name)) {
@@ -170,6 +189,13 @@ public final class FacetBucket {
       case VALUE, KEY, FROM, TO, COUNT, MISSING, DEFAULT -> true;
       default -> false;
     };
+  }
+
+  /** A value of the data read back from JSON: by the decoder when there is one (a remote client, as its rows), else integral as Long. */
+  static Object decode(final Object json, final FacetResults.ValueDecoder decoder, final Type valueType) {
+    if (json == null)
+      return null;
+    return decoder != null ? decoder.decode(json, valueType) : integral(json);
   }
 
   /** An integral number as a {@code Long}, anything else unchanged: the form JSON writes and the form it is read back as. */

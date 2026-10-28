@@ -160,8 +160,9 @@ message QueryResult {
 // -----------------------------------------------------------------------------
 
 message GrpcFacetBucket {
-  // Facet values (value, from, to) use the scalar kinds only: string (decimal logical_type for exact decimals), int64,
-  // double, bool. A client that meets another kind should treat that facet as unavailable rather than fail the response.
+  // Facet values (value, from, to) are encoded as the values of a row of the same property: string, bool, int32/int64,
+  // float/double (NaN included), timestamp with logical_type date or datetime, decimal_value. A client that meets another kind
+  // (list, map, bytes, link) should treat that facet as unavailable rather than fail the response.
   GrpcValue value           = 1; // terms value; unset for a range/histogram bucket and for a null value
   optional string key       = 2; // range/histogram key; unset for a terms bucket
   GrpcValue from            = 3; // lower bound; unset when unbounded or not a range/histogram bucket

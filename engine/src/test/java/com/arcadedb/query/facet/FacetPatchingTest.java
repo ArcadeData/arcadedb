@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
@@ -45,6 +46,7 @@ import java.util.Map;
 import java.util.concurrent.Semaphore;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Patching (D10, D11): while the projection lags, the matches it cannot answer are read from the records, so facets stay equal to
@@ -506,7 +508,8 @@ class FacetPatchingTest extends TestHelper {
       final RecordingCollector tags = new RecordingCollector();
       try (final ColumnarSnapshot snapshot = manager().projection(bucketId).acquire()) {
         final long read = FacetPatcher.countPatched((DatabaseInternal) database, matches, snapshot, patch,
-            List.of(facets().get(0), facets().get(1)), Arrays.asList(brand, tags), WorkGuard.forCommandDeadline(null));
+            List.of(facets().get(0), facets().get(1)), Arrays.asList(brand, tags), new ColumnDefinition[] { column("brand"), column("tags") },
+            WorkGuard.forCommandDeadline(null));
         assertThat(read).isEqualTo(2);
       }
       assertThat(brand.patched).containsExactly(matched.getPosition());
@@ -514,13 +517,19 @@ class FacetPatchingTest extends TestHelper {
     }
   }
 
+  /** The COLUMNAR column of the property in the type, as a facet is planned with it. */
+  private ColumnDefinition column(final String property) {
+    return FacetFallbackScanner.column(database.getSchema().getType(TYPE), property);
+  }
+
   /**
-   * Final review A-M4: a patched record whose type lost the facet's column meanwhile (its COLUMNAR index dropped while the query counts)
-   * is still a match of the facet: it reaches the collector as missing, never silently dropped.
+   * Final review A-M4, final fix batch 2 (r1 M1): a patched record whose type lost the facet's column meanwhile (its COLUMNAR index
+   * dropped while the query counts) is still a match of the facet, never silently dropped: it is read with the column the facet was
+   * planned with while the type has an extractor at all, and reaches the collector as missing once it has none.
    */
   @Test
   @Timeout(300)
-  void aPatchedRecordWithoutTheColumnAnyMoreIsCountedAsMissing() throws Exception {
+  void aPatchedRecordWithoutTheColumnAnyMoreIsStillCounted() throws Exception {
     final ColumnarTestData data = data(1);
     data.createSchema(database);
     data.insertAssets(database, 500);
@@ -532,16 +541,136 @@ class FacetPatchingTest extends TestHelper {
       final RID matched = firstMatches("brand IS NOT NULL", 1).getFirst();
       final PositionBitmap patch = new PositionBitmap(matches.forBucket(bucketId).maxRecordsInPage());
       patch.set(matched.getPosition());
+      final ColumnDefinition planned = column("brand");
       final RecordingCollector brand = new RecordingCollector();
+      final RecordingCollector noExtractor = new RecordingCollector();
       try (final ColumnarSnapshot snapshot = manager().projection(bucketId).acquire()) {
         // the type keeps its other COLUMNAR indexes (it still has an extractor), without the brand column
         database.command("sql", "DROP INDEX `" + database.getSchema().getType(TYPE).getPolymorphicColumnarIndex("brand").getName() + "`");
-        final long read = FacetPatcher.countPatched((DatabaseInternal) database, matches, snapshot, patch, List.of(facets().get(0)),
-            Arrays.asList(brand), WorkGuard.forCommandDeadline(null));
-        assertThat(read).isEqualTo(1);
+        assertThat(FacetPatcher.countPatched((DatabaseInternal) database, matches, snapshot, patch, List.of(facets().get(0)),
+            Arrays.asList(brand), new ColumnDefinition[] { planned }, WorkGuard.forCommandDeadline(null))).isEqualTo(1);
+
+        // no COLUMNAR index left: the type has no extractor
+        for (final String property : List.of("tags", "fileSize", "publishDate", "author"))
+          database.command("sql",
+              "DROP INDEX `" + database.getSchema().getType(TYPE).getPolymorphicColumnarIndex(property).getName() + "`");
+        assertThat(FacetPatcher.countPatched((DatabaseInternal) database, matches, snapshot, patch, List.of(facets().get(0)),
+            Arrays.asList(noExtractor), new ColumnDefinition[] { planned }, WorkGuard.forCommandDeadline(null))).isEqualTo(1);
       }
       assertThat(brand.patched).containsExactly(matched.getPosition());
-      assertThat(brand.missing).containsExactly(matched.getPosition());
+      assertThat(brand.missing).isEmpty();
+      assertThat(noExtractor.patched).containsExactly(matched.getPosition());
+      assertThat(noExtractor.missing).containsExactly(matched.getPosition());
+    }
+  }
+
+  /** Final fix batch 2 (r1 M5): the ratio is a share; anything outside [0, 1] is refused, the setting keeping its value. */
+  @Test
+  void thePatchBudgetRatioIsAShareBetweenZeroAndOne() {
+    assertThat(GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getDefValue()).isEqualTo(1.0);
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
+    try {
+      for (final Object invalid : List.of(-0.1, 1.5, Double.NaN, "2"))
+        assertThatThrownBy(() -> GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(invalid)).as("ratio " + invalid)
+            .isInstanceOf(IllegalArgumentException.class);
+      assertThat(GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValueAsDouble()).isEqualTo(((Number) ratio).doubleValue());
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue("0");
+      assertThat(GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValueAsDouble()).isZero();
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(1);
+      assertThat(GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValueAsDouble()).isEqualTo(1.0);
+    } finally {
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
+    }
+  }
+
+  /**
+   * Final fix batch 2 (r1 M6): the ratio is taken of the matches of the buckets the projection answers, not of every match: the matches
+   * of a bucket every facet scans (here a type without COLUMNAR index) do not stretch the budget of the patched ones.
+   */
+  @Test
+  @Timeout(300)
+  void theRatioCountsTheMatchesOfThePatchedBucketsOnly() throws Exception {
+    final ColumnarTestData data = data(1);
+    data.createSchema(database);
+    final List<RID> rids = data.insertAssets(database, 1_000);
+    database.command("sql", "CREATE DOCUMENT TYPE Plain BUCKETS 1");
+    final List<RID> plain = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++)
+        plain.add(database.newDocument("Plain").set("brand", "plain-" + (i % 3)).save().getIdentity());
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(5);
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0.5);
+    try (final AutoCloseable hold = suspendApply()) {
+      // every Asset record is patched: 1,000 of Asset's 1,000 matches, within half of all 2,000 matches, beyond half of Asset's
+      database.transaction(() -> {
+        for (final RID rid : rids)
+          database.lookupByRID(rid, true).asDocument().modify().set("fileSize", 7L).save();
+      });
+      final MatchSet.Builder builder = MatchSet.builder((DatabaseInternal) database, 0, 0);
+      final FacetResults results;
+      try (builder) {
+        for (final RID rid : rids)
+          builder.add(rid, 0);
+        for (final RID rid : plain)
+          builder.add(rid, 0);
+        try (final MatchSet matches = builder.build()) {
+          matches.setFacetFilterIndex(new int[] { -1 });
+          results = FacetExecutor.execute((DatabaseInternal) database, matches,
+              List.of(new TermsFacetSpec("brand", "brand", null, null, ALL, 1, FacetOrder.COUNT_DESC, null, false, null)),
+              new BasicCommandContext());
+        }
+      }
+      assertThat(results.get("brand").source()).isEqualTo(FacetExecutor.SCAN);
+      assertThat(results.exact()).isFalse();
+      assertThat(results.patched()).isZero();
+    } finally {
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
+    }
+  }
+
+  /**
+   * Final review A-M1: a match no facet counts (it fails the FILTERs of two facets) is not patched: it would cost a record read that
+   * reaches no collector, and it would count against the patch budget.
+   */
+  @Test
+  @Timeout(300)
+  void aMatchNoFacetCountsIsNotPatched() throws Exception {
+    final ColumnarTestData data = data(1);
+    data.createSchema(database);
+    final List<RID> rids = data.insertAssets(database, 1_000);
+    FacetOracle.awaitCaughtUp(database);
+
+    try (final AutoCloseable hold = suspendApply()) {
+      database.transaction(() -> {
+        for (final RID rid : rids)
+          database.lookupByRID(rid, true).asDocument().modify().set("fileSize", 7L).save();
+      });
+      // a quarter of the matches fail both filters: neither facet counts them
+      final MatchSet.Builder builder = MatchSet.builder((DatabaseInternal) database, 2, 0);
+      long counted = 0;
+      try (builder) {
+        for (int i = 0; i < rids.size(); i++) {
+          final int failMask = i % 4;
+          builder.add(rids.get(i), failMask);
+          if (failMask != 3)
+            counted++;
+        }
+        try (final MatchSet matches = builder.build()) {
+          matches.setFacetFilterIndex(new int[] { 0, 1 });
+          final List<FacetSpec> specs = List.of(
+              new TermsFacetSpec("brand", "brand", null, null, ALL, 1, FacetOrder.COUNT_DESC, null, false, null),
+              new TermsFacetSpec("author", "author", null, null, ALL, 1, FacetOrder.COUNT_DESC, null, false, null));
+          final FacetResults results = FacetExecutor.execute((DatabaseInternal) database, matches, specs, new BasicCommandContext());
+          assertThat(results.exact()).isTrue();
+          assertThat(results.patched()).isEqualTo(counted);
+        }
+      }
     }
   }
 

@@ -29,30 +29,43 @@ import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The {@code facets} line of the ndjson encoding: one single-key line between the records and the {@code stats} trailer. */
+/**
+ * The facets of the ndjson encoding ride in the {@code stats} trailer (final review B-M2): no event a client that predates them does
+ * not know, and the trailer of any other statement is the plain triple.
+ */
 class NdJsonResultStreamFacetsTest {
 
   @Test
-  void facetsLineSitsBetweenRecordsAndStats() throws IOException {
+  void facetsRideInTheStatsTrailer() throws IOException {
     final FacetResults facets = FacetResultsSamples.allKinds();
     final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     try (final NdJsonResultStream stream = new NdJsonResultStream(bytes)) {
       stream.writeRecord(new JSONObject().put("n", 1));
-      stream.writeFacets(facets.toJSON());
-      stream.writeStats(3, 1, false);
+      stream.writeStats(3, 1, false, facets.toJSON());
     }
 
     final String[] lines = bytes.toString(StandardCharsets.UTF_8).split("\n");
-    assertThat(lines).hasSize(3);
-    final JSONObject record = new JSONObject(lines[0]);
-    final JSONObject facetsLine = new JSONObject(lines[1]);
-    final JSONObject stats = new JSONObject(lines[2]);
-    assertThat(record.keySet()).containsExactly("record");
-    assertThat(facetsLine.keySet()).containsExactly("facets");
-    assertThat(stats.keySet()).containsExactly("stats");
+    assertThat(lines).hasSize(2);
+    assertThat(new JSONObject(lines[0]).keySet()).containsExactly("record");
+    final JSONObject trailer = new JSONObject(lines[1]);
+    assertThat(trailer.keySet()).containsExactly("stats");
+    final JSONObject stats = trailer.getJSONObject("stats");
+    assertThat(stats.keySet()).containsExactly("limit", "returned", "truncated", "facets");
+    assertThat(stats.getInt("limit")).isEqualTo(3);
+    assertThat(stats.getInt("returned")).isEqualTo(1);
 
-    // exactly FacetResults.toJSON(), and it parses back into the same results
-    assertThat(facetsLine.getJSONObject("facets").toString()).isEqualTo(facets.toJSON().toString());
-    assertThat(FacetResults.fromJSON(facetsLine.getJSONObject("facets")).toJSON().toString()).isEqualTo(facets.toJSON().toString());
+    // exactly the facets given, and they parse back into the same results
+    assertThat(stats.getJSONObject("facets").toString()).isEqualTo(facets.toJSON().toString());
+    assertThat(FacetResults.fromJSON(stats.getJSONObject("facets")).toJSON().toString()).isEqualTo(facets.toJSON().toString());
+  }
+
+  @Test
+  void anyOtherStatementKeepsThePlainTrailer() throws IOException {
+    final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    try (final NdJsonResultStream stream = new NdJsonResultStream(bytes)) {
+      stream.writeStats(3, 0, false, null);
+    }
+    assertThat(new JSONObject(bytes.toString(StandardCharsets.UTF_8).trim()).getJSONObject("stats").keySet())
+        .containsExactly("limit", "returned", "truncated");
   }
 }

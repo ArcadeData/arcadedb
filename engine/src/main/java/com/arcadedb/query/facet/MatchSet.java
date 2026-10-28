@@ -27,10 +27,12 @@ import com.arcadedb.index.columnar.ColumnarProjection;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.PositionBitmap;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.LongPredicate;
 
 /**
  * The records a FACETS query matched, as one {@link PositionBitmap} per bucket, plus the disjunctive bookkeeping of the facet FILTERs
@@ -379,6 +381,49 @@ public final class MatchSet implements AutoCloseable {
     return union;
   }
 
+  /** The fail mask of one match, by its RID: bit {@code i} set when facet filter {@code i} refuses the record. */
+  @FunctionalInterface
+  public interface FailMask {
+    int of(RID rid);
+  }
+
+  /**
+   * The matches of a {@link #fromProjection} set, each with the fail mask its RID gets (no WHERE and FILTERs an evaluator answers by RID,
+   * final review C-I4): every match is recorded into {@code builder}, charged as rows are. The result holds the builder's bitmaps,
+   * with what it recorded before (the buckets the projection has no entry for), and takes over the projection's snapshots; the
+   * projection's own bitmaps are dropped and their reservations released. Over budget when the builder refused a step: the facets are
+   * then unavailable, and the snapshots are closed as well. Until the builder is built nothing is handed over, so on a failure the caller
+   * still closes both. Memory: while the matches are copied the projection's bitmaps and the builder's coexist, both charged, so the
+   * peak is about twice the match set (plus the filters' failed-only bitmaps); the projection's go as soon as the copy is done.
+   *
+   * @param guard the query's deadline and termination, checked every few matches
+   */
+  public static MatchSet withFailMasks(final MatchSet projection, final Builder builder, final FailMask failMask, final WorkGuard guard) {
+    final int[] ticks = new int[1];
+    for (int bucketId = 0; bucketId < projection.byBucket.length && !builder.overBudget; bucketId++) {
+      final BucketMatches matches = projection.byBucket[bucketId];
+      if (matches == null)
+        continue;
+      final int id = bucketId;
+      matches.base.forEach(position -> {
+        guard.checkPeriodically(++ticks[0]);
+        if (!builder.overBudget) {
+          final RID rid = new RID(id, position);
+          builder.add(rid, failMask.of(rid));
+        }
+      });
+    }
+    final MatchSet built = builder.build();
+    final boolean overBudget = built.overBudget;
+    final MatchSet result = new MatchSet(built.byBucket, built.size, overBudget, built.waits + projection.waits, built.reservations,
+        overBudget ? null : projection.snapshots);
+    built.closed = true;
+    projection.closed = true;
+    // nothing refers to the projection's bitmaps any more: their charge goes, and the snapshots too when the facets are unavailable
+    closeAll(overBudget && projection.snapshots != null ? Arrays.asList(projection.snapshots) : List.of(), projection.reservations);
+    return result;
+  }
+
   /**
    * Adds to {@code bitmap} the pending positions that hold a committed record. Pending is page-granular (every slot of a dirty page, plus
    * the owners of the content on it): reading each pending page's slot table once ({@link LocalBucket#forEachCommittedRecordSlot}, no
@@ -481,8 +526,38 @@ public final class MatchSet implements AutoCloseable {
     final long failedPages = failed == null ? 0 : failed.pageCount();
     final long patchPages = patched ? patch.pageCount() : 0;
     // the page index (page number, stripe reference, stripe generation) of the pass-all pages and of those the failed-only set adds,
-    // then one stripe cloned per failed-only page and per patched page
-    return INDEX_ENTRY_BYTES * (matches.passAll.pageCount() + failedPages) + stripeBytes * (failedPages + patchPages);
+    // twice for the growth of the index arrays (an or() over pages the pass-all set lacks doubles them), then one stripe cloned per
+    // failed-only page and per patched page
+    return 2 * INDEX_ENTRY_BYTES * (matches.passAll.pageCount() + failedPages) + stripeBytes * (failedPages + patchPages);
+  }
+
+  /**
+   * Whether a match of the bucket is counted by one of the {@code facets} (true entries, by facet index): it passes every filter, or
+   * fails only the filter of one of them. Null when every match of the bucket is (no filter recorded a failure there).
+   */
+  public LongPredicate countedBy(final int bucketId, final boolean[] facets) {
+    final BucketMatches matches = matches(bucketId);
+    if (matches == null || matches.passAll == matches.base)
+      return null;
+    final PositionBitmap passAll = matches.passAll;
+    final List<PositionBitmap> failed = new ArrayList<>();
+    for (int f = 0; f < facets.length; f++) {
+      final PositionBitmap failedOnly = facets[f] && filterIndexByFacet[f] >= 0 ? failedOnly(matches, filterIndexByFacet[f]) : null;
+      // one filter per facet: no two facets share a failed-only set
+      if (failedOnly != null)
+        failed.add(failedOnly);
+    }
+    if (failed.isEmpty())
+      return passAll::get;
+    final PositionBitmap[] others = failed.toArray(new PositionBitmap[0]);
+    return position -> {
+      if (passAll.get(position))
+        return true;
+      for (final PositionBitmap other : others)
+        if (other.get(position))
+          return true;
+      return false;
+    };
   }
 
   /** The index, among the facets that carry one, of the facet's FILTER; -1 for a facet without. */

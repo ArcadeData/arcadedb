@@ -280,7 +280,7 @@ class DisjunctiveFacetsTest extends TestHelper {
     final String sql = "SELECT FROM Item FACETS k TERMS FILTER k IN ['a', 'b']";
     final Map<Object, Long> expected = Map.of("a", 40_000L, "b", 40_000L, "c", 5_000L);
     assertThat(explain(sql)).contains("[INDEX]");
-    assertThat(profile(sql)).contains("[INDEX]").doesNotContain("fallback=");
+    assertThat(profile(sql)).contains("[INDEX rids=80000]").doesNotContain("fallback=");
     // granted (two steps), the RID set's reservations are given back with the result set
     assertThat(FacetMemoryBudget.instance().available()).isEqualTo(GlobalConfiguration.COLUMNAR_QUERY_MEMORY_BUDGET.getValueAsLong());
 

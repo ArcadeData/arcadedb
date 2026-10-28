@@ -33,11 +33,10 @@ import java.util.concurrent.locks.ReentrantLock;
  * <ul>
  * <li>{@code {"record": { ... }}} - one result row, serialized exactly as it would appear inside the
  *     {@code result} array of the buffered {@code application/json} response;</li>
- * <li>{@code {"facets": {"meta": {...}, "<alias>": {...}}}} - the facets of a {@code SELECT ... FACETS} query, exactly the
- *     {@code facets} member of the buffered response. At most one, after the last {@code record} line and before the
- *     {@code stats} trailer; absent for any other statement;</li>
  * <li>{@code {"stats": {"limit": n, "returned": n, "truncated": b}}} - the trailer, carrying the same three
- *     numbers the buffered response reports at top level. Always the last line of a successful stream;</li>
+ *     numbers the buffered response reports at top level. Always the last line of a successful stream. The trailer of a
+ *     {@code SELECT ... FACETS} query also carries {@code "facets": {"meta": {...}, "<alias>": {...}}}, exactly the
+ *     {@code facets} member of the buffered response: a client that predates the facets ignores the member;</li>
  * <li>{@code {"error": {"message": "...", "status": n, "exception": "...", "exceptionArgs": "...", "retryAfter": n}}}
  *     - the stream failed after the response had already begun. {@code status} is the code the buffered encoding
  *     would have answered the same failure with, {@code exception} the class it would have reported,
@@ -122,22 +121,28 @@ public final class NdJsonResultStream implements AutoCloseable {
   }
 
   /**
-   * Emits the facets of a {@code SELECT ... FACETS} query, exactly the {@code facets} member of the buffered response
-   * ({@code FacetResults.toJSON()}). Not flushed on its own: the {@code stats} trailer follows at once and flushes both.
-   */
-  public void writeFacets(final JSONObject facets) throws IOException {
-    writeEvent(AbstractQueryHandler.FACETS_FIELD, facets, false);
-  }
-
-  /**
    * Emits the trailer and flushes it. Carries the same {@code limit} / {@code returned} / {@code truncated}
    * triple the buffered response reports, so a client can apply one piece of logic to both encodings.
    */
   public void writeStats(final int limit, final int returned, final boolean truncated) throws IOException {
-    writeLine(new JSONObject().put("stats", new JSONObject()
+    writeStats(limit, returned, truncated, null);
+  }
+
+  /**
+   * The trailer of a {@code SELECT ... FACETS} query: the same triple plus its {@code facets}, exactly the {@code facets} member of
+   * the buffered response. In the trailer rather than on a line of their own (final review B-M2): a client that predates the facets
+   * reads the triple and ignores the member, where an event it does not know would fail the stream after its last row.
+   *
+   * @param facets the facets, null for any other statement (the trailer is then the plain triple)
+   */
+  public void writeStats(final int limit, final int returned, final boolean truncated, final JSONObject facets) throws IOException {
+    final JSONObject stats = new JSONObject()
         .put(AbstractQueryHandler.LIMIT_FIELD, limit > 0 ? limit : -1)
         .put(AbstractQueryHandler.RETURNED_FIELD, returned)
-        .put(AbstractQueryHandler.TRUNCATED_FIELD, truncated)), true);
+        .put(AbstractQueryHandler.TRUNCATED_FIELD, truncated);
+    if (facets != null)
+      stats.put(AbstractQueryHandler.FACETS_FIELD, facets);
+    writeLine(new JSONObject().put("stats", stats), true);
   }
 
   /**

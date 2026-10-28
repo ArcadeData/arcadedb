@@ -108,6 +108,21 @@ class FacetsExplainTest extends TestHelper {
   }
 
   /**
+   * Final review B-N1: the server's query profiler keeps {@code toResult()} of every plan it records, so the collect step reports the
+   * figures of its facets there (meta, sources, counts) but no value of the data: no term, no bound, no cursor.
+   */
+  @Test
+  @Timeout(120)
+  void thePlanResultKeepsTheFacetCountsButNoValue() {
+    load();
+    final Object facets = facetsOfStep(plan("PROFILE", QUERY + ", a: author TERMS TOP 3"));
+    assertThat(facets).isNotNull();
+    final String text = facets.toString();
+    assertThat(text).contains("brand", "exact", "count", "otherCount");
+    assertThat(text).doesNotContain("brand-", "author-", "value=", "from=", "to=");
+  }
+
+  /**
    * Final review B-I1: an INCLUDE value is evaluated when the facets are planned, so a nested statement there would run under EXPLAIN
    * (a read-only statement) and once more per execution. INCLUDE refuses any nested statement or subquery when it is parsed.
    */

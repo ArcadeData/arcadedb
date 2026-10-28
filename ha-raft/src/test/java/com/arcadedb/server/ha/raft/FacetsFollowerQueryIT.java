@@ -98,7 +98,10 @@ class FacetsFollowerQueryIT extends ColumnarHATestSupport {
     final List<RID> rids = load(leader, 1803L);
 
     final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
     GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(5);
+    // the absolute budget alone: the default share of the matches (all of them) would patch this lag
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
     try {
       try (final AutoCloseable hold = manager(follower).suspendApply()) {
         writeWhileHeld(leader, follower, rids);
@@ -118,6 +121,7 @@ class FacetsFollowerQueryIT extends ColumnarHATestSupport {
       FacetOracle.assertFacetsEqualGroupBy(database(follower), ColumnarTestData.TYPE, "brand", null);
     } finally {
       GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
     }
   }
 
@@ -132,6 +136,8 @@ class FacetsFollowerQueryIT extends ColumnarHATestSupport {
     // a read-only SQL command runs on the follower itself
     try (final ResultSet rs = database(follower).command("sql", QUERY)) {
       assertThat(rs.getFacets()).as("a SELECT ... FACETS command on a follower returns facets").isNotNull();
+      // computed here: what the empty statistics below tell apart from an answer parsed from the leader
+      assertThat(rs.getFacets().executionStats()).as("the facets were computed on the follower").isNotEmpty();
       assertThat(withoutMeta(rs.getFacets())).isEqualTo(leaderFacets);
     }
 

@@ -200,15 +200,25 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * Adds the {@code facets} member of a {@code SELECT ... FACETS} query: exactly {@code FacetResults.toJSON()}, over every match
-   * of the WHERE whatever cap cut the rows (the matches the serializer did not reach are counted now). Absent for any other
-   * statement, so their response is unchanged. Must run after the rows are serialized and before the result set is closed, which
-   * is why {@link #serializeResultSetBounded} calls it: every buffered query operation serializes through it.
+   * Adds the {@code facets} member of a {@code SELECT ... FACETS} query, over every match of the WHERE whatever cap cut the rows (the
+   * matches the serializer did not reach are counted now), its values encoded as the rows encode theirs ({@link #facetsJson}). Absent
+   * for any other statement, so their response is unchanged. Must run after the rows are serialized and before the result set is
+   * closed, which is why {@link #serializeResultSetBounded} calls it: every buffered query operation serializes through it.
    */
-  protected static void reportFacets(final JSONObject response, final ResultSet qResult) {
+  protected static void reportFacets(final Database database, final JSONObject response, final ResultSet qResult,
+      final boolean includeTypeHints) {
     final FacetResults facets = qResult != null ? qResult.getFacets() : null;
     if (facets != null)
-      response.put(FACETS_FIELD, facets.toJSON());
+      response.put(FACETS_FIELD, facetsJson(database, facets, includeTypeHints));
+  }
+
+  /**
+   * The JSON of the facets, the same on the buffered and the streamed encoding: {@code FacetResults.toJSON()} with every value of the
+   * data written as the row serializer writes a row's value of the same property, and, with type hints, the {@code @props} hint of the
+   * terms facets whose values JSON does not round-trip (final review C-I8).
+   */
+  static JSONObject facetsJson(final Database database, final FacetResults facets, final boolean includeTypeHints) {
+    return JsonSerializer.createJsonSerializer().setIncludeTypeHints(includeTypeHints).serializeFacets(database, facets);
   }
 
   /**
@@ -298,7 +308,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         throw resultSetTooLarge(maxResultRows);
       // After the refusal, so a refused response computes no facets; before the close, which would discard them: the facets
       // count the matches the cap left unread as well
-      reportFacets(response, qResult);
+      reportFacets(database, response, qResult, includeTypeHints);
       return outcome;
     } finally {
       qResult.close();
@@ -408,9 +418,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       }
 
       // After the probe, since computing the facets ends the rows, and after the refusal, so a refused stream computes none
-      final FacetResults facets;
+      // and their JSON: a failure in either is answered with the in-band error line, never with a stream that just stops
+      final JSONObject facetsJson;
       try {
-        facets = qResult != null ? qResult.getFacets() : null;
+        final FacetResults facets = qResult != null ? qResult.getFacets() : null;
+        facetsJson = facets != null ? facetsJson(database, facets, includeTypeHints) : null;
       } catch (final RuntimeException e) {
         return streamFailed(exchange, database, stream, e, returned);
       }
@@ -419,9 +431,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       // (413) when the ceiling actually cut the result, which the branch above answers in band. Reporting the
       // ceiling here made the two encodings disagree about the same untruncated query - 'SELECT ... LIMIT 1000000'
       // returning five rows said 1000000 buffered and the ceiling streamed (code review).
-      if (facets != null)
-        stream.writeFacets(facets.toJSON());
-      stream.writeStats(statedLimit, returned, truncated);
+      // the facets ride in the trailer (final review B-M2): a client that predates them reads the three numbers and ignores the
+      // member, where a line of its own would be an event it does not know and fail the stream after its last row
+      stream.writeStats(statedLimit, returned, truncated, facetsJson);
       return new SerializationOutcome(returned, truncated);
     }
   }
