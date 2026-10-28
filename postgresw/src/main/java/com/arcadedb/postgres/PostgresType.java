@@ -94,7 +94,7 @@ public enum PostgresType {
   ARRAY_DOUBLE(1022, "_float8", 701, 0, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
   ARRAY_TEXT(1009, "_text", 25, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
   ARRAY_JSON(199, "_json", 114, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
-  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean)),
+  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseBooleanText)),
   // numeric[]: the one array type that holds every integer, long, float, double and BigDecimal exactly (issue #9008)
   ARRAY_NUMERIC(1231, "_numeric", 1700, 0, Collection.class, -1, value -> parseArrayFromString(value, BigDecimal::new)),
   // The array types of the scalars above that had none (issue #10592): each scalar's typarray named one of these OIDs, and a client
@@ -567,55 +567,9 @@ public enum PostgresType {
     return name == null ? null : NAME_MAP.get(name.trim().toLowerCase(Locale.ENGLISH));
   }
 
-  /**
-   * Parses an array string representation into an ArrayList.
-   * Handles PostgreSQL array format like '{1,2,3}' or '{\"value1\",\"value2\"}'
-   */
-  private static <T> ArrayList<T> parseArrayFromString(String arrayStr, Function<String, T> elementParser) {
-    if (arrayStr == null || arrayStr.isEmpty())
-      return new ArrayList<>();
-
-    // Handle PostgreSQL array format: remove curly braces and split by comma
-    String content = arrayStr.trim();
-    if (content.startsWith("{") && content.endsWith("}")) {
-      content = content.substring(1, content.length() - 1);
-    }
-
-    // Split by comma, but handle quoted strings properly
-    List<String> elements = new ArrayList<>();
-    StringBuilder currentElement = new StringBuilder();
-    boolean inQuotes = false;
-    for (int i = 0; i < content.length(); i++) {
-      char c = content.charAt(i);
-      if (c == '\\' && i + 1 < content.length()) {
-        // Inside an array literal a backslash escapes the next character, typically a quote or another
-        // backslash (issue #5366). Without this the escaped quote was read as the end of the element.
-        currentElement.append(content.charAt(++i));
-        continue;
-      } else if (c == '"') {
-        inQuotes = !inQuotes;
-        // Skip the quote character itself for parsing
-        continue;
-      } else if (c == ',' && !inQuotes) {
-        elements.add(currentElement.toString().trim());
-        currentElement = new StringBuilder();
-        continue;
-      }
-      currentElement.append(c);
-    }
-    // Add the last element
-    if (currentElement.length() > 0) {
-      elements.add(currentElement.toString().trim());
-    }
-
-    // Parse each element
-    ArrayList<T> result = new ArrayList<>();
-    for (String element : elements) {
-      if (!element.isEmpty()) {
-        result.add(elementParser.apply(element));
-      }
-    }
-    return result;
+  /** Parses an array literal in text format: see {@link PostgresArrayLiteral} for the grammar (issue #10870). */
+  private static ArrayList<Object> parseArrayFromString(final String arrayStr, final Function<String, ?> elementParser) {
+    return PostgresArrayLiteral.parse(arrayStr, elementParser);
   }
 
   public static PostgresType getTypeForValue(Object val) {
@@ -1044,8 +998,17 @@ public enum PostgresType {
         sb.append(((Number) element).floatValue());
       } else if (element instanceof Double) {
         sb.append(((Number) element).doubleValue());
+      } else if (element instanceof BigDecimal bd) {
+        // as the scalar is written: toString() switches to scientific notation, which a numeric[] element is never written in
+        sb.append(bd.toPlainString());
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
+      } else if (pgType == ARRAY_BYTEA && byteaValueOf(element) != null) {
+        // a bytea[] element is the \x<hex> text the scalar has (issue #10870), not the JSON array of its bytes
+        appendQuoted(sb, toByteaText(byteaValueOf(element)));
+      } else if (pgType == ARRAY_DATE && element instanceof Date date) {
+        // a date[] element is the date alone, as the scalar DATE is written: the time of day is not part of the value
+        appendQuoted(sb, date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE));
       } else if (element instanceof Character) {
         // A Postgres array literal quotes an element with the DOUBLE quote and nothing else: a single quote is
         // an ordinary data character there, so wrapping the character in single quotes (issue #7801) shipped
@@ -1360,10 +1323,13 @@ public enum PostgresType {
   private static Object deserializeText(final long code, final byte[] valueAsBytes) {
     String str = new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
     if (code == 0) { // UNSPECIFIED
-      // Try to detect if this is a PostgreSQL array format
+      // A client that leaves the type unspecified may still send a list as an array literal (psycopg does, issue #2559). It is
+      // read as one only when it is a well-formed literal: a JSON document such as {"k": 1} merely starts and ends with a brace,
+      // and stays the string it was sent as (issue #10870).
       if (str.startsWith("{") && str.endsWith("}")) {
-        // Parse as an array using the TEXT array parser
-        return parseArrayFromString(str, s -> s);
+        final List<Object> array = PostgresArrayLiteral.tryParse(str);
+        if (array != null)
+          return array;
       }
       return str;
     }
@@ -1413,7 +1379,8 @@ public enum PostgresType {
       }
       case BYTEA -> valueAsBytes.clone();
       case NUMERIC -> parseNumericBinary(buffer);
-      case CHAR -> (char) buffer.get();
+      // "char" is one UNSIGNED byte: a bare (char) cast sign-extends, and 'é' (0xE9) came back as '￩'
+      case CHAR -> (char) (buffer.get() & 0xFF);
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
         // In PostgreSQL binary format, json is the raw UTF-8 text with no inner length prefix
@@ -1484,6 +1451,9 @@ public enum PostgresType {
       return buf.getDouble();
     if (elemOid == NUMERIC.code)
       return parseNumericBinary(buf);
+    // a "char"[] element is the single byte the scalar is, read as the Character the text format reads (issue #10870)
+    if (elemOid == CHAR.code)
+      return (char) (buf.get() & 0xFF);
     // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592): read as the scalar is, not as its bytes' text
     if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code)
       return deserializeBinary(elemOid, bytes);

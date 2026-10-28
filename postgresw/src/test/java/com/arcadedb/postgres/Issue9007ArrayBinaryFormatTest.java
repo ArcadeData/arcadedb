@@ -138,7 +138,8 @@ class Issue9007ArrayBinaryFormatTest {
 
   @Test
   void charAndNestedListArraysEncode() {
-    assertRoundTrip(PostgresType.ARRAY_CHAR, List.of('a', 'b'), List.of("a", "b"));
+    // a "char"[] element reads back as the Character the scalar "char" and the text format read (issue #10870)
+    assertRoundTrip(PostgresType.ARRAY_CHAR, List.of('a', 'b'), List.of('a', 'b'));
     assertRoundTrip(PostgresType.ARRAY_JSON, List.of(List.of(1, 2)), List.of("[1,2]"));
   }
 
