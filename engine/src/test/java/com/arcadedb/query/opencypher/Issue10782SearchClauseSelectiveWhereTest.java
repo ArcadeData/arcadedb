@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -42,6 +43,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10782: the {@code WHERE} of the Cypher 25 {@code SEARCH} clause was applied to a widening window of the index's
@@ -86,6 +88,31 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
         .containsExactly("d1995", "d1996", "d1997");
     // A widening window re-tested the candidates of every earlier pass: 3, 6, 12, ... 2048 of them
     assertThat(tested).as("no record may be tested twice in one search").doesNotHaveDuplicates();
+  }
+
+  @Test
+  void aSelectiveWalkStopsAtTheStatementsDeadline() {
+    createDocs(2_000, 5, "");
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setCommandDeadline(System.currentTimeMillis() + 2_000, "the test deadline");
+    final int[] tested = new int[1];
+    // The deadline passes while the walk runs, at the 10th record: the walk itself is JVector's and has no check of its
+    // own, so without one per record it would test the whole graph and answer as if there were no deadline
+    final Predicate<Document> small = record -> {
+      if (++tested[0] == 10)
+        try {
+          Thread.sleep(2_500);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      return "small".equals(record.getString("tenant"));
+    };
+
+    assertThatThrownBy(() -> DbIndexVectorQueryNodes.search("Doc[vector]", 3, new float[] { 0f, 1f }, small, context, "test"))
+        .isInstanceOf(TimeoutException.class);
+    assertThat(tested[0]).as("no record is tested past the deadline").isEqualTo(10);
   }
 
   @Test

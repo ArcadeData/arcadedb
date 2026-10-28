@@ -27,6 +27,7 @@ import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.AbstractSet;
@@ -85,6 +86,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private final WhereClause                     condition;
   private final Predicate<Document>             predicate;
   private final Set<RID>                        restrictTo;
+  private final WorkGuard                       guard;
   private final ConcurrentHashMap<RID, Boolean> decided = new ConcurrentHashMap<>();
 
   private RecordPredicateRidSet(final CommandContext context, final Map<String, Object> equalities, final WhereClause condition,
@@ -95,6 +97,10 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     this.condition = condition;
     this.predicate = predicate;
     this.restrictTo = restrictTo;
+    // The statement's deadline and termination, asked before each record this set loads (issue #10782): a selective
+    // predicate keeps the filtered walk going until it has met every vector it can reach, and the walk itself is
+    // JVector's, with no check of its own. The interrupt flag is left alone, as on every generic executor path
+    this.guard = WorkGuard.forCommandDeadline(context);
   }
 
   /**
@@ -185,6 +191,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   }
 
   private boolean test(final RID rid) {
+    // One clock read against a record load: not worth throttling
+    guard.check();
     final Document record;
     try {
       // A RID of an internal record (an edge segment, ...) has no properties to test
