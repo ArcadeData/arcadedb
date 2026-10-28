@@ -72,6 +72,15 @@ public class TimeSeriesShard implements AutoCloseable {
   /** The change of a session that only ships the record {@link #invalidateContinuousAggregatesBehindWatermark} already applied. */
   private static final Runnable             NO_SCHEMA_CHANGE      = () -> { };
 
+  /**
+   * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
+   * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
+   * have left them. Public only because the test that sets it is an HA integration test in another module
+   * ({@code Issue10673LateSampleRecordShippedBeforeTheSamplesIT}); nothing outside tests may set it, and a test that does clears it
+   * in a {@code finally}. Read once per append that committed: one volatile read.
+   */
+  public static volatile Runnable TEST_AFTER_APPEND_COMMIT_HOOK = null;
+
   private final int                    shardIndex;
   // The name the type is published under, which a rename changes once it is published (issue #10749): it names the type in the
   // sealed blobs this shard ships to the followers, which resolve it by that name
@@ -355,14 +364,21 @@ public class TimeSeriesShard implements AutoCloseable {
    * freshly-cleared page (see issue #4458). In standalone mode the lock is held through commit as
    * before, since there is no recording-session deadlock.
    * <p>
-   * The source is read once per retry attempt, and its timestamps once more after the commit when the type has a continuous
-   * aggregate (issue #10502). It is never retained.
+   * The source is read once per retry attempt, and its timestamps once more when the type has a continuous aggregate (issue
+   * #10502): after the commit off HA, before it under HA (issue #10673). It is never retained.
+   * <p>
+   * Under HA the late-sample record ships before the samples, judged against the watermark seen then. A refresh that starts after
+   * that check and ends before the commit can make the samples late only once they commit: their record then ships after the
+   * commit, as it did before #10673 (tracked as issue #10857).
    */
   public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
     // shipped to followers via the Raft WAL (TX_ENTRY). On a standalone database,
     // getWrappedDatabaseInstance() returns the same instance.
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
+
+    // Under HA the record of the samples behind a watermark ships BEFORE them (issue #10673), see shipLateSampleRecordBeforeCommit
+    final LateSampleRange shippedBeforeCommit = db.isReplicated() ? shipLateSampleRecordBeforeCommit(source) : null;
 
     boolean committed = false;
     appendLock.lock();
@@ -419,8 +435,95 @@ public class TimeSeriesShard implements AutoCloseable {
     }
 
     // After the commit and outside the append lock: the schema save it may do must not hold up the other appends of this shard
-    if (committed)
-      invalidateContinuousAggregatesBehindWatermark(source);
+    if (committed) {
+      final Runnable testHook = TEST_AFTER_APPEND_COMMIT_HOOK;
+      if (testHook != null)
+        testHook.run();
+      invalidateContinuousAggregatesBehindWatermark(source, shippedBeforeCommit);
+    }
+  }
+
+  /**
+   * The timestamps of the samples an append carries, as {@link #shipLateSampleRecordBeforeCommit} found them, and whether the record it
+   * made of them reached the followers. Passed to {@link #invalidateContinuousAggregatesBehindWatermark} so the source is scanned once.
+   */
+  private record LateSampleRange(long minTs, long maxTs, boolean shipped) {
+  }
+
+  /**
+   * Under HA, records the samples about to be appended that are behind the watermark of a continuous aggregate, and ships the record
+   * to the followers in a schema session BEFORE the samples are committed (issue #10673). The session used to follow the commit, so
+   * a leader lost between the two left the followers with the samples and without the record, and a follower promoted then never
+   * aggregated them. Raft applies its entries in order: a follower holding the samples now holds their record too.
+   * <p>
+   * A record shipped for samples that then fail to commit costs a recompute of buckets that did not change, nothing else. The record
+   * this makes on the leader may be cleared by a refresh that reads the source before the commit; the check made again once the
+   * samples have committed records them again, and ships that too.
+   *
+   * @return {@code null} when no continuous aggregate reads this shard or the append is empty
+   */
+  private LateSampleRange shipLateSampleRecordBeforeCommit(final TimeSeriesRowSource source) {
+    final int size = source.size();
+    if (size == 0)
+      return null;
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+    final ContinuousAggregate[] aggregates = schema.getContinuousAggregates();
+    if (!hasAggregateOverThisShard(schema, aggregates))
+      return null;
+
+    final LateSampleRange range = timestampRange(source);
+    if (!invalidateLateSamples(schema, aggregates, range.minTs(), range.maxTs()))
+      return range;
+    try {
+      schema.recordContinuousAggregateChange(NO_SCHEMA_CHANGE);
+      return range;
+    } catch (final RuntimeException e) {
+      // not shipped: the check made once the samples have committed ships it, whatever it finds
+      LogManager.instance().log(this, Level.FINE,
+          "Could not ship to the replicas the record of the samples about to be appended to the TIMESERIES type '%s' behind the "
+              + "watermark of a continuous aggregate, it is shipped once they commit", e, typeName);
+      return new LateSampleRange(range.minTs(), range.maxTs(), false);
+    }
+  }
+
+  /** The oldest and newest timestamps of a source that is not empty, as a range reported shipped. */
+  private static LateSampleRange timestampRange(final TimeSeriesRowSource source) {
+    long minTs = Long.MAX_VALUE;
+    long maxTs = Long.MIN_VALUE;
+    for (int row = 0, size = source.size(); row < size; row++) {
+      final long ts = source.getTimestamp(row);
+      if (ts < minTs)
+        minTs = ts;
+      if (ts > maxTs)
+        maxTs = ts;
+    }
+    return new LateSampleRange(minTs, maxTs, true);
+  }
+
+  /** Whether one of {@code aggregates} reads the type this shard belongs to. */
+  private boolean hasAggregateOverThisShard(final LocalSchema schema, final ContinuousAggregate[] aggregates) {
+    for (final ContinuousAggregate aggregate : aggregates)
+      if (readsThisShard(schema, aggregate))
+        return true;
+    return false;
+  }
+
+  private boolean readsThisShard(final LocalSchema schema, final ContinuousAggregate aggregate) {
+    // by the engine and not by name: the name the engine reports changes only once a rename is published (#10749), an aggregate
+    // follows the rename as it happens (#10096)
+    return aggregate instanceof ContinuousAggregateImpl impl
+        && schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType
+        && sourceType.getEngine() != null && sourceType.getEngine().getShard(shardIndex) == this;
+  }
+
+  /** Records {@code [minTs, maxTs]} on every aggregate over this shard it is late for, and tells whether a record changed. */
+  private boolean invalidateLateSamples(final LocalSchema schema, final ContinuousAggregate[] aggregates, final long minTs,
+      final long maxTs) {
+    boolean changed = false;
+    for (final ContinuousAggregate aggregate : aggregates)
+      if (readsThisShard(schema, aggregate) && ((ContinuousAggregateImpl) aggregate).invalidateLateSamples(minTs, maxTs))
+        changed = true;
+    return changed;
   }
 
   /**
@@ -435,13 +538,18 @@ public class TimeSeriesShard implements AutoCloseable {
    * append and record nothing: an aggregate outlives the raw samples it summarized.
    * <p>
    * Under HA a follower receives the samples as the replicated pages of this commit, not through this method, so it runs on the
-   * leader only. The leader saves the record in a schema recording session, which ships it to the followers (issue #10634): a
-   * follower promoted to leader then recomputes the buckets of those samples, instead of never aggregating them. The session is a
-   * replication round trip under the database write lock, paid once per bucket a stream of late samples reaches. It follows the
-   * commit of the samples rather than being part of it, so a leader lost between the two loses the record with it, as it loses an
-   * append it had not acknowledged yet. Off HA the plain schema save is kept: there is nobody to ship it to.
+   * leader only. The leader ships the record in a schema recording session (issue #10634), so a follower promoted to leader then
+   * recomputes the buckets of those samples instead of never aggregating them. That session runs BEFORE the commit of the samples
+   * ({@link #shipLateSampleRecordBeforeCommit}, issue #10673), so a leader lost right after the commit has already shipped it. This
+   * check, made again after the commit, ships a second session only when the record changed since: a refresh cleared it in between,
+   * or a refresh moved the watermark past the samples while they committed, or the first session failed. The session is a
+   * replication round trip under the database write lock, paid once per bucket a stream of late samples reaches. Off HA the plain
+   * schema save is kept, after the commit only: there is nobody to ship it to.
+   *
+   * @param shippedBeforeCommit what {@link #shipLateSampleRecordBeforeCommit} found, {@code null} when it did not run or found no
+   *                            aggregate over this shard
    */
-  private void invalidateContinuousAggregatesBehindWatermark(final TimeSeriesRowSource source) {
+  private void invalidateContinuousAggregatesBehindWatermark(final TimeSeriesRowSource source, final LateSampleRange shippedBeforeCommit) {
     final int size = source.size();
     if (size == 0)
       return;
@@ -450,31 +558,16 @@ public class TimeSeriesShard implements AutoCloseable {
     if (aggregates.length == 0)
       return;
 
-    long minTs = Long.MAX_VALUE;
-    long maxTs = Long.MIN_VALUE;
-    boolean scanned = false;
-    boolean changed = false;
-    for (final ContinuousAggregate aggregate : aggregates) {
-      // by the engine and not by name: the name the engine reports changes only once a rename is published (#10749), an aggregate
-      // follows the rename as it happens (#10096)
-      if (!(aggregate instanceof ContinuousAggregateImpl impl)
-          || !(schema.getTypeOrNull(impl.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType)
-          || sourceType.getEngine() == null || sourceType.getEngine().getShard(shardIndex) != this)
-        continue;
-      if (!scanned) {
-        for (int row = 0; row < size; row++) {
-          final long ts = source.getTimestamp(row);
-          if (ts < minTs)
-            minTs = ts;
-          if (ts > maxTs)
-            maxTs = ts;
-        }
-        scanned = true;
-      }
-      if (impl.invalidateLateSamples(minTs, maxTs))
-        changed = true;
-    }
-    if (!changed)
+    final LateSampleRange range;
+    if (shippedBeforeCommit != null)
+      range = shippedBeforeCommit;
+    else if (hasAggregateOverThisShard(schema, aggregates))
+      range = timestampRange(source);
+    else
+      return;
+    // evaluated first: the record is made again on the leader whatever the session before the commit did
+    final boolean changed = invalidateLateSamples(schema, aggregates, range.minTs(), range.maxTs());
+    if (!changed && range.shipped())
       return;
 
     // the samples are committed: a failure to save the record must not report the append as failed. The record stays in memory,
