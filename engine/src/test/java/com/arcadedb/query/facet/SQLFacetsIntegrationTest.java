@@ -329,6 +329,24 @@ class SQLFacetsIntegrationTest extends TestHelper {
         .hasMessageContaining("FACETS needs a type, a bucket or a subquery as target");
   }
 
+  /** A script answers the result set of its last statement, and with it the facets of a {@code SELECT ... FACETS} there. */
+  @Test
+  @Timeout(300)
+  void scriptEndingInFacetsKeepsFacets() {
+    load(data(), 2_000);
+    final String sql = "SELECT FROM " + TYPE + " WHERE fileSize < 1048576 FACETS brand TERMS TOP 1000";
+    try (final ResultSet rs = database.command("sqlscript", "LET n = SELECT count(*) FROM " + TYPE + ";\n" + sql + ";")) {
+      assertThat(rids(rs)).hasSize((int) count("fileSize < 1048576"));
+      final FacetResults facets = rs.getFacets();
+      assertThat(facets).as("the facets of the script's last statement").isNotNull();
+      assertThat(counts(facets.get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", "fileSize < 1048576"));
+    }
+    try (final ResultSet rs = database.command("sqlscript", sql + ";\nSELECT count(*) AS c FROM " + TYPE + ";")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(2_000L);
+      assertThat(rs.getFacets()).as("facets of a statement that is not the last one are not the script's").isNull();
+    }
+  }
+
   @Test
   @Timeout(300)
   void cachedPlanReusedGivesFreshFacets() {
