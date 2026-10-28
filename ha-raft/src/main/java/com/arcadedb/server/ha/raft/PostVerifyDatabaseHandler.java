@@ -761,12 +761,12 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
         final PageSnapshot window = db.getPageManager().openSnapshot(db);
         try {
           return new WindowImage(window, compactionPaused ? listSealedStores(db) : null);
-        } catch (final RuntimeException e) {
+        } catch (final RuntimeException | Error e) {
           // A WINDOW THAT NEVER REACHES THE CALLER IS NEVER CLOSED BY IT. SUPPRESSED RATHER THAN REPLACED: THE
           // EXCEPTION THAT GOT US HERE IS THE ONE THAT SAYS WHAT WENT WRONG
           try {
             window.close();
-          } catch (final RuntimeException closeFailure) {
+          } catch (final RuntimeException | Error closeFailure) {
             e.addSuppressed(closeFailure);
           }
           throw e;

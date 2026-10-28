@@ -595,14 +595,14 @@ public class SnapshotHttpHandler implements HttpHandler {
           final PageSnapshot window = db.getPageManager().openSnapshot(db);
           try {
             return new SnapshotImage(window, listSealedStoresOrFail(new File(db.getDatabasePath()), databaseName));
-          } catch (final RuntimeException e) {
+          } catch (final RuntimeException | Error e) {
             // A WINDOW THAT NEVER REACHES A STREAMER IS NEVER CLOSED BY ONE: the finally below only covers the
             // image this block returns. SUPPRESSED RATHER THAN REPLACED - a close that fails on the way out must
             // not become the exception the operator reads, because the one that got us here is the one that says
             // what went wrong (code review on PR #7708)
             try {
               window.close();
-            } catch (final RuntimeException closeFailure) {
+            } catch (final RuntimeException | Error closeFailure) {
               e.addSuppressed(closeFailure);
             }
             throw e;

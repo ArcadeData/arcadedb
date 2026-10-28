@@ -270,10 +270,10 @@ public class FullBackupFormat extends AbstractBackupFormat {
       final PageSnapshot window = database.getPageManager().openSnapshot(database);
       try {
         return new SnapshotImage(window, listSealedStoresOrFail(), vectorGraphSideFiles);
-      } catch (final RuntimeException e) {
+      } catch (final RuntimeException | Error e) {
         try {
           window.close();
-        } catch (final RuntimeException closeFailure) {
+        } catch (final RuntimeException | Error closeFailure) {
           e.addSuppressed(closeFailure);
         }
         throw e;

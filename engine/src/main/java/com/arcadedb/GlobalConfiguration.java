@@ -644,6 +644,15 @@ public enum GlobalConfiguration {
       never read by recovery.""",
       String.class, ""),
 
+  PAGE_SNAPSHOT_TRACK_OPENERS("arcadedb.pageSnapshotTrackOpeners", SCOPE.JVM,
+      """
+      Debug aid (issue #10657): record the stack of the code that opens each point-in-time snapshot window, so that a \
+      database close still waiting for a window after a minute names the code path that opened it and never released \
+      it. Off by default: the window is still reported with its opening thread and age, only the stack is skipped. The \
+      default follows the JVM system property of the same name, so a test run that sets it keeps it across \
+      GlobalConfiguration.resetAll().""",
+      Boolean.class, false, null, value -> Boolean.getBoolean("arcadedb.pageSnapshotTrackOpeners")),
+
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
 
