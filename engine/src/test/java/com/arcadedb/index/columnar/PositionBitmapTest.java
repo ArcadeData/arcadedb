@@ -341,4 +341,28 @@ class PositionBitmapTest {
     assertThatThrownBy(() -> a.or(other)).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> a.andCardinality(other)).isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void orStripeOrsWordsAndNeverCreatesAnEmptyStripe() {
+    final PositionBitmap bitmap = new PositionBitmap(128);
+    final long[] words = { 0, 0, 0b101L, 1L << 63 };
+    bitmap.orStripe(4, words, 0);
+    assertThat(bitmap.pages()).isEmpty();
+    bitmap.orStripe(4, words, 2);
+    bitmap.orStripe(4, new long[] { 0b10L, 0 }, 0);
+    assertThat(bitmap.pages()).containsExactly(4);
+    assertThat(bitmap.get(4 * 128)).isTrue();
+    assertThat(bitmap.get(4 * 128 + 1)).isTrue();
+    assertThat(bitmap.get(4 * 128 + 2)).isTrue();
+    assertThat(bitmap.get(4 * 128 + 127)).isTrue();
+    assertThat(bitmap.cardinality()).isEqualTo(4);
+    assertThat(bitmap.stripe(4)).containsExactly(0b111L, 1L << 63);
+    assertThat(bitmap.stripe(5)).isNull();
+
+    // a stripe shared with a snapshot is cloned before the OR
+    final PositionBitmap snapshot = bitmap.snapshot();
+    bitmap.orStripe(4, new long[] { 0b1000L, 0 }, 0);
+    assertThat(snapshot.get(4 * 128 + 3)).isFalse();
+    assertThat(bitmap.get(4 * 128 + 3)).isTrue();
+  }
 }
