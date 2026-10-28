@@ -481,4 +481,50 @@ class GlobalDictionaryTest {
     // one allocated chunk of 4096 references, though only one slot is used
     assertThat(dictionary.heapBytes()).isGreaterThanOrEqualTo(4096L * 8);
   }
+
+  @Test
+  @Timeout(60)
+  void appendPartialKillPointLeavesATruncatableTail() throws Exception {
+    final Path file = dir.resolve("dict-1.0.dic");
+    final GlobalDictionary dictionary = GlobalDictionary.create(file);
+    dictionary.getOrAdd("a");
+    dictionary.getOrAdd("b");
+    dictionary.getOrAdd("c");
+    final GlobalDictionary.DurableState durable = dictionary.fsync();
+
+    final KillPoint killPoint = KillPoint.arm("dictionary.appendPartial");
+    try {
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          dictionary.getOrAdd("x");
+        } catch (final Throwable t) {
+          failure.set(t);
+        }
+      });
+      writer.start();
+      assertThat(killPoint.awaitReached(10_000)).isTrue();
+      // the record header is on disk, its payload is not: varint length 1 and the type byte
+      assertThat(Files.size(file)).isEqualTo(durable.bytes() + 2);
+      killPoint.releaseAsCrashed();
+      writer.join(10_000);
+      assertThat(failure.get()).isInstanceOf(ColumnarTestHooks.SimulatedCrash.class);
+    } finally {
+      killPoint.disarm();
+    }
+    assertThat(dictionary.size()).isEqualTo(3);
+    assertThat(Files.size(file)).isEqualTo(durable.bytes() + 2);
+    dictionary.close();
+
+    final GlobalDictionary reopened = GlobalDictionary.open(file, durable.bytes(), durable.entries());
+    assertThat(reopened.size()).isEqualTo(3);
+    assertThat(Files.size(file)).isEqualTo(durable.bytes());
+    assertThat(reopened.ordinalOf("x")).isEqualTo(-1);
+    assertThat(reopened.getOrAdd("x")).isEqualTo(3);
+    final GlobalDictionary.DurableState after = reopened.fsync();
+    reopened.close();
+    final GlobalDictionary again = GlobalDictionary.open(file, after.bytes(), after.entries());
+    assertThat(again.valueOf(3)).isEqualTo("x");
+    again.close();
+  }
 }

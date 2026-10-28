@@ -628,7 +628,7 @@ public class FileUtils {
    * <p>
    * Costs one {@code isDirectory} stat when the directory already exists, which is every publish after the first.
    */
-  private static void createDirectoriesDurably(final Path dir) throws IOException {
+  public static void createDirectoriesDurably(final Path dir) throws IOException {
     if (Files.isDirectory(dir))
       return;
 
