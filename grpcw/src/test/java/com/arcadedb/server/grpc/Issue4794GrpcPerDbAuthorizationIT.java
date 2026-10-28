@@ -57,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The read ({@code executeQuery}), command ({@code executeCommand}) and write ({@code createRecord})
  * cases below are representative, not exhaustive: every database-touching RPC resolves its target
- * database through the single {@code ArcadeDbGrpcService.getDatabase(...)} chokepoint, where
+ * database through the single {@code ArcadeDbGrpcService.getDatabaseForOperator(...)} chokepoint, where
  * {@code validateCredentials(...)} authorizes the request-body database. The untested RPCs
  * (e.g. {@code lookupByRid}, {@code updateRecord}, {@code deleteRecord}, {@code bulkInsert}) are not
  * intentionally excluded; they share that same gate and so are covered transitively.

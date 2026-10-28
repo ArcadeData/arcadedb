@@ -115,7 +115,7 @@ class Issue8076BootstrapWindowStatusTest {
     server.returns("getConfiguration", config);
     server.on("existsDatabase", args -> Objects.equals(args[0], REPLACED_DB));
     final ServerDatabase servedDb = new ServerDatabase(null, localDb);
-    server.on("getDatabase", args -> Objects.equals(args[0], REPLACED_DB) ? servedDb : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], REPLACED_DB) ? servedDb : null);
     // The single-bucket check walks the registry; nothing in it is what these tests are about.
 
     return server;

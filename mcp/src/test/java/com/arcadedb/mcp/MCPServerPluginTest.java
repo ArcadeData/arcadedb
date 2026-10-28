@@ -955,7 +955,7 @@ class MCPServerPluginTest extends BaseGraphServerTest {
     assertThat(startResult.getInt("timeoutSeconds")).isEqualTo(30);
 
     // Run a query through the server database so the profiler captures it
-    getServer(0).getDatabase("graph").query("sql", "SELECT FROM V1 LIMIT 1").close();
+    getServer(0).getDatabaseForOperator("graph").query("sql", "SELECT FROM V1 LIMIT 1").close();
 
     // Check status while recording
     final JSONObject statusResponse = callTool("profiler_status", new JSONObject());

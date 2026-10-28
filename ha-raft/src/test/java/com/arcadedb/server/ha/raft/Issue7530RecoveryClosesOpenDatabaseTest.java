@@ -130,7 +130,7 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
     assertThat(server.existsDatabase(DB_NAME)).as("the repair reopened the database it closed").isTrue();
 
-    final ServerDatabase reopened = server.getDatabase(DB_NAME);
+    final ServerDatabase reopened = server.getDatabaseForOperator(DB_NAME);
     assertThat(reopened.isOpen()).isTrue();
     assertThat(reopened.getSchema().existsType(SNAPSHOT_TYPE))
         .as("the reopened database is the installed snapshot").isTrue();
@@ -287,7 +287,7 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     // refuses once the marker is on disk.
     final ServerDatabase live = server.createDatabase(DB_NAME, ComponentFile.MODE.READ_WRITE);
     live.getSchema().createDocumentType(ORIGINAL_TYPE);
-    ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().close();
+    ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().close();
     assertThat(server.existsDatabase(DB_NAME)).as("precondition: still registered").isTrue();
 
     final Path dbDir = databasesDir.resolve(DB_NAME);

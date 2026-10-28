@@ -65,7 +65,7 @@ class ReplicaInsertUniqueIndexInvisibleIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("a leader must be elected before the test starts").isGreaterThanOrEqualTo(0);
     final int replicaIndex = (leaderIndex + 1) % getServerCount();
 
-    final Database leaderDb = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database leaderDb = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     leaderDb.command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
     leaderDb.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".name STRING");
     leaderDb.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (name) UNIQUE");
@@ -80,7 +80,7 @@ class ReplicaInsertUniqueIndexInvisibleIT extends BaseRaftHATest {
         .isEqualTo(1);
 
     // The same insert pattern, executed on the REPLICA.
-    final Database replicaDb = getServer(replicaIndex).getDatabase(getDatabaseName());
+    final Database replicaDb = getServer(replicaIndex).getDatabaseForOperator(getDatabaseName());
     insertSingleton(replicaDb, "from-replica");
 
     // The record itself replicates: a full scan (count(@rid) forces one, unlike the cached count(*)) finds it on

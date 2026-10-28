@@ -68,11 +68,11 @@ class Issue5503ConcurrentFollowerWritesIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("a leader must be elected before the test starts").isGreaterThanOrEqualTo(0);
 
-    getServer(leaderIndex).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
+    getServer(leaderIndex).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + TYPE_NAME);
     waitForAllServers();
 
     // ALL WRITES GO THROUGH A FOLLOWER, FROM SEVERAL THREADS SHARING THE SAME EMBEDDED HANDLE
-    final Database follower = getServer((leaderIndex + 1) % getServerCount()).getDatabase(getDatabaseName());
+    final Database follower = getServer((leaderIndex + 1) % getServerCount()).getDatabaseForOperator(getDatabaseName());
 
     final ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
     final AtomicInteger retries = new AtomicInteger();
@@ -105,7 +105,7 @@ class Issue5503ConcurrentFollowerWritesIT extends BaseRaftHATest {
 
     // EVERY NODE MUST HOLD EVERY RECORD EXACTLY ONCE: A LOST OR CORRUPTED RECORD SHOWS UP AS A GAP
     for (int i = 0; i < getServerCount(); i++) {
-      final Database db = getServer(i).getDatabase(getDatabaseName());
+      final Database db = getServer(i).getDatabaseForOperator(getDatabaseName());
       final String role = i == leaderIndex ? "leader" : "follower";
 
       assertThat(scanCount(db)).as("record count on the %s (server %d), %d retries observed", role, i, retries.get())

@@ -239,7 +239,7 @@ class Issue9326Issue9327Issue9328Issue9329SessionCommandsIT extends PostgresWire
       assertThat(messageTypesOf(simple(out, in, "SET statement_timeout = DEFAULT"))).doesNotContain('E');
       assertThat(sqlStateOf(simple(out, in, "SET statement_timeout = 'forever'"))).isEqualTo("22023");
 
-      final Database database = getServer(0).getDatabase(getDatabaseName());
+      final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
       database.getSchema().getOrCreateDocumentType("Issue9329Doc");
       database.transaction(() -> {
         for (int i = 0; i < 3_000; i++)

@@ -81,7 +81,7 @@ class Issue7650AcquireExistsDatabaseRaceOwnershipTest {
     if (server != null) {
       try {
         if (server.existsDatabase(DB_NAME))
-          server.getDatabase(DB_NAME).drop();
+          server.getDatabaseForOperator(DB_NAME).drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }
