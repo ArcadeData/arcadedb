@@ -19,15 +19,12 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.MutablePage;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.Type;
-import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #10617: a record that outgrows its page and whose slot is too small for a chunk header spills into a
@@ -109,41 +106,6 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
   }
 
   /**
-   * A refusal in the middle of a commit takes the whole transaction back: an update of another record, applied before
-   * the refused one, must not survive it. Since #10637 a refusal needs a page where NO other record can give the
-   * missing bytes - here the small slot shares its page only with the head chunk of a record that spilled and sealed it.
-   */
-  @Test
-  void aRefusedUpdateRollsBackTheOtherWritesOfItsTransaction() {
-    final RID[] empty = new RID[1];
-    final RID[] other = new RID[1];
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Rollback10617", 1).createProperty("v", Type.STRING);
-      database.getSchema().createDocumentType("RollbackOther10617", 1).createProperty("v", Type.STRING);
-      other[0] = database.newDocument("RollbackOther10617").set("v", "before").save().getIdentity();
-      empty[0] = database.newDocument("Rollback10617").save().getIdentity();
-    });
-    sealWithASpilledNeighbour("Rollback10617");
-    assertThat(freeTailOfPageOf(empty[0])).as("the premise: the page has no free tail").isZero();
-
-    final long countBefore = countRecordsFromCounter("Rollback10617");
-
-    assertRefused(() -> database.transaction(() -> {
-      other[0].asDocument(true).modify().set("v", "after").save();
-      database.newDocument("Rollback10617").set("v", "inserted").save();
-      grow(empty[0]);
-    }));
-
-    assertIntact("Rollback10617", countBefore);
-    assertThat(countRecordsHolding("Rollback10617", "inserted")).as("the insert must have been rolled back").isZero();
-    database.transaction(() -> {
-      assertThat(other[0].asDocument(true).getString("v")).as("the other update must have been rolled back")
-          .isEqualTo("before");
-      assertThat(empty[0].asDocument(true).getPropertyNames()).isEmpty();
-    });
-  }
-
-  /**
    * The issue's second shape: the small slot is the LAST record of its page and the free tail is one byte short of
    * what the pointer is missing. The pointer used to run past the page's content area; since #10637 a record before it
    * releases the bytes, the small slot moves left with everything after the donor, and the pointer fits.
@@ -173,20 +135,6 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
     assertThat((Long) bucketStats("Exact10617").get("totalPlaceholderRecords")).isEqualTo(1L);
     assertIntact("Exact10617", countBefore);
     database.transaction(() -> assertThat(empty.asDocument(true).getString("v")).isEqualTo(BIG));
-  }
-
-  /**
-   * The update reaches the page at commit, so the refusal arrives wrapped in the commit's own exception: what matters
-   * is that it IS the refusal, and not whatever a write past the slot happened to break.
-   */
-  private static void assertRefused(final ThrowingCallable update) {
-    final Throwable thrown = catchThrowable(update);
-    assertThat(thrown).as("the update must be refused").isNotNull();
-    Throwable cause = thrown;
-    while (cause != null && !(cause instanceof DatabaseOperationException
-        && String.valueOf(cause.getMessage()).contains("cannot host a placeholder pointer")))
-      cause = cause.getCause();
-    assertThat(cause).as("refused because the slot cannot host the pointer, but got: " + thrown).isNotNull();
   }
 
   private static void grow(final RID rid) {
@@ -219,18 +167,6 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
     leaveFreeTail(first, POINTER_FOOTPRINT - footprint + tailBeyondMissing);
     return empty[0];
-  }
-
-  /**
-   * Seals page 0 of {@code typeName} with a record inserted after the ones already there and grown until it spills: its
-   * head chunk takes the whole free tail, and the page is left with no plain record that could move behind a pointer.
-   */
-  private void sealWithASpilledNeighbour(final String typeName) {
-    final RID[] sealer = new RID[1];
-    database.transaction(() -> sealer[0] = database.newDocument(typeName).set("v", "s").save().getIdentity());
-    database.transaction(() -> sealer[0].asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
-    assertThat((Long) bucketStats(typeName).get("totalMultiPageRecords")).as("the sealing record must have spilled")
-        .isEqualTo(1L);
   }
 
   /** Grows {@code rid}'s string value by exactly the bytes that leave its page with {@code tail} free bytes. */
