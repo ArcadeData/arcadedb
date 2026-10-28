@@ -20,6 +20,7 @@ package com.arcadedb.index.columnar;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentIndexer;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
@@ -52,7 +53,10 @@ import java.util.concurrent.TimeUnit;
  * single apply thread of the dictionary's projection.
  */
 public final class ColumnarValueExtractor {
-  /** The dictionary of a bucket and property, as the projection of that bucket currently writes it. */
+  /**
+   * The dictionary of a bucket and property, as the projection of that bucket currently writes it; throws
+   * {@link IllegalArgumentException} for a bucket it has no projection of.
+   */
   @FunctionalInterface
   public interface DictionaryResolver {
     GlobalDictionary dictionary(int bucketId, String property);
@@ -133,11 +137,21 @@ public final class ColumnarValueExtractor {
   /**
    * Read-only extraction against the dictionary of the record's bucket: a value the dictionary does not hold is reported through
    * {@link ValueSink#unknownValue}, the dictionary is never grown.
+   *
+   * @throws IllegalArgumentException for a dictionary-encoded column, when the record has no identity yet (it has no bucket), or when
+   *                                  the {@link DictionaryResolver} refuses its bucket
    */
   public void extract(final Document record, final String property, final ValueSink sink) {
     final ColumnDefinition column = column(property);
     final boolean ordinal = column.kind() == ColumnKind.ORDINAL || column.kind() == ColumnKind.ORDINAL_LIST;
-    extract(record, column, ordinal ? dictionaries.dictionary(record.getIdentity().getBucketId(), property) : null, false, sink);
+    GlobalDictionary dictionary = null;
+    if (ordinal) {
+      final RID rid = record.getIdentity();
+      if (rid == null)
+        throw new IllegalArgumentException("A record with no identity has no bucket to resolve the dictionary of '" + property + "' from");
+      dictionary = dictionaries.dictionary(rid.getBucketId(), property);
+    }
+    extract(record, column, dictionary, false, sink);
   }
 
   /**

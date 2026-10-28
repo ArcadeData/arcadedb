@@ -93,12 +93,14 @@ final class ColumnarFlusher {
    *
    * @param lastTransactionId written to the manifest, informational only
    *
-   * @throws IllegalStateException when another maintenance job of the projection runs
+   * @throws MaintenanceBusyException when another maintenance job of the projection runs
    */
   static void flush(final ColumnarProjection p, final long lastTransactionId) throws IOException {
     beginMaintenance(p);
     try {
       flushHoldingMaintenance(p, lastTransactionId);
+    } catch (final PublishingStoppedException e) {
+      // closed, dropped or stopped meanwhile: nothing happens, as for one found so at the start (the files written are deleted)
     } finally {
       p.endMaintenance();
     }
@@ -187,6 +189,7 @@ final class ColumnarFlusher {
     try (final SegmentWriter writer = new SegmentWriter(file, segmentId, maxRecordsInPage, columns, p.segmentBlockRows())) {
       final RowValues row = new RowValues(columns.length);
       for (final int page : frozen.pages()) {
+        checkPublishing(p);
         final OverlayPageBlock block = frozen.page(page);
         final long[] stripe = block.liveStripe();
         final long base = (long) page * maxRecordsInPage;
@@ -208,7 +211,7 @@ final class ColumnarFlusher {
    * files are deleted by the last release of a state holding them (R1). Nothing happens when an input is not in the current state
    * (any more), on a READ_ONLY database, a closed or dropped projection, or one without a manifest.
    *
-   * @throws IllegalStateException when another maintenance job of the projection runs
+   * @throws MaintenanceBusyException when another maintenance job of the projection runs
    */
   static void merge(final ColumnarProjection p, final long[] segmentIds) throws IOException {
     beginMaintenance(p);
@@ -218,6 +221,8 @@ final class ColumnarFlusher {
       final ProjectionState state = p.retainState();
       try {
         mergeHoldingState(p, state, segmentIds);
+      } catch (final PublishingStoppedException e) {
+        // as for a flush
       } finally {
         state.release();
       }
@@ -366,6 +371,7 @@ final class ColumnarFlusher {
         for (int k = 0; k < columns.length; k++)
           readers[i][k] = ColumnarProjection.columnReader(inputs[i], columns[k]);
       for (long from = minPage; from <= maxPage; from += MERGE_WINDOW_PAGES) {
+        checkPublishing(p);
         final int to = (int) Math.min((long) maxPage + 1, from + MERGE_WINDOW_PAGES);
         for (int i = 0; i < inputs.length; i++) {
           live[i] = inputs[i].live((int) from, to);
@@ -427,6 +433,7 @@ final class ColumnarFlusher {
    */
   private static void publish(final ColumnarProjection p, final SegmentReader[] next, final ColumnarSegmentView[] overlays,
       final long lastTransactionId, final Attempt attempt, final Runnable onPublished) throws IOException {
+    checkPublishing(p);
     final ColumnarManifest current = p.manifest();
     final Path dir = p.bucketDir();
     final long generation = p.nextGeneration();
@@ -476,6 +483,7 @@ final class ColumnarFlusher {
 
     final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), p.maxRecordsInPage(),
         current.columns(), segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
+    checkPublishing(p);
     // outside the publish lock: the published manifest is untouched until the rename
     manifest.writeTmp(dir);
     p.publishLock().lock();
@@ -596,9 +604,37 @@ final class ColumnarFlusher {
       }
   }
 
+  /**
+   * Aborts the flush or merge once the projection stopped publishing ({@link ColumnarProjection#stopPublishing()}): the caller's failure
+   * path then deletes what it wrote, as no rename was attempted yet.
+   */
+  private static void checkPublishing(final ColumnarProjection p) {
+    if (p.isClosedOrDropped())
+      throw new PublishingStoppedException(p.bucketName());
+  }
+
   private static void beginMaintenance(final ColumnarProjection p) {
     if (!p.tryBeginMaintenance())
-      throw new IllegalStateException(
-          "Another flush, merge or compaction of the columnar projection of bucket '" + p.bucketName() + "' is running");
+      throw new MaintenanceBusyException(p.bucketName());
+  }
+
+  /**
+   * Another flush, merge or compaction of the projection holds its maintenance slot. Not a failure: the job is retried later. An
+   * {@link IllegalStateException} of its own type, so a caller can tell it from any other refusal.
+   */
+  static final class MaintenanceBusyException extends IllegalStateException {
+    MaintenanceBusyException(final String bucketName) {
+      super("Another flush, merge or compaction of the columnar projection of bucket '" + bucketName + "' is running");
+    }
+  }
+
+  /**
+   * The projection stopped publishing (its database closes or drops) while a flush or merge ran: thrown between two steps so the failure
+   * path deletes what the job wrote, and swallowed by {@link #flush} and {@link #merge}.
+   */
+  private static final class PublishingStoppedException extends IllegalStateException {
+    PublishingStoppedException(final String bucketName) {
+      super("The columnar projection of bucket '" + bucketName + "' stopped publishing: the flush or merge was abandoned");
+    }
   }
 }

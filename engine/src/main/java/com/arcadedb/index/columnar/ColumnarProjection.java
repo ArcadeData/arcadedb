@@ -90,6 +90,8 @@ public final class ColumnarProjection {
   static final String CORRUPT         = "corrupt";
   /** Reached by {@link #acquire()} between the read of the pending positions and the read of the state. */
   static final String ACQUIRE_BETWEEN = "acquire.pendingRead";
+  /** Reached by {@link #open} before it reads the files of the bucket directory. */
+  static final String LOAD_FILES      = "projection.loadFiles";
 
   private static final SegmentReader[] NO_SEGMENTS       = new SegmentReader[0];
   private static final String          SEGMENT_PREFIX    = "seg-";
@@ -167,6 +169,7 @@ public final class ColumnarProjection {
   private boolean                        directoryDeleted;
   private volatile boolean               closed;
   private volatile boolean               dropped;
+  private volatile boolean               stopped;
 
   private ColumnarProjection(final Path databasePath, final LocalBucket bucket, final String typeName, final ColumnDefinition[] columns,
       final ColumnarStats stats, final boolean readOnly, final LocalBucket external, final int segmentBlockRows) {
@@ -225,6 +228,7 @@ public final class ColumnarProjection {
       ColumnarManifest found = null;
       String reason = null;
       try {
+        ColumnarTestHooks.reach(LOAD_FILES);
         // first, on its own: a manifest that fails to load must still leave the reservations above every existing file
         seedFromDirectory();
         found = ColumnarManifest.load(bucketDir);
@@ -234,7 +238,15 @@ public final class ColumnarProjection {
         }
       } catch (final NoSuchFileException e) {
         reason = MISSING;
-      } catch (final IOException | BlockCorruptionException e) {
+      } catch (final UncheckedIOException e) {
+        reason = e.getCause() instanceof NoSuchFileException ? MISSING : CORRUPT;
+        if (reason == CORRUPT)
+          LogManager.instance().log(this, Level.WARNING, "Columnar projection of bucket '%s' cannot be opened", e, bucketName);
+      } catch (final ColumnarTestHooks.SimulatedCrash e) {
+        throw e;
+      } catch (final IOException | RuntimeException e) {
+        // a RuntimeException here is bytes the format checks did not catch (a BufferUnderflowException, a negative size, a wrong
+        // class): corrupt files, rebuilt, never a reason to fail or retry the open
         LogManager.instance().log(this, Level.WARNING, "Columnar projection of bucket '%s' cannot be opened", e, bucketName);
         reason = CORRUPT;
       }
@@ -377,10 +389,13 @@ public final class ColumnarProjection {
           null, lastTransactionId);
       empty.publish(bucketDir);
       return empty;
-    } catch (final IOException e) {
+    } catch (final IOException | RuntimeException e) {
       for (final GlobalDictionary dictionary : created.values())
         dictionary.close();
-      throw new UncheckedIOException("Cannot publish the empty columnar projection of bucket '" + bucketName + "'", e);
+      created.clear();
+      if (e instanceof IOException io)
+        throw new UncheckedIOException("Cannot publish the empty columnar projection of bucket '" + bucketName + "'", io);
+      throw (RuntimeException) e;
     } finally {
       releaseFiles(names.toArray(new String[0]));
     }
@@ -543,9 +558,23 @@ public final class ColumnarProjection {
     return segmentBlockRows;
   }
 
-  /** False on a READ_ONLY database and once closed or dropped: no flush or merge writes then. */
+  /** False on a READ_ONLY database and once closed, dropped or stopped: no flush or merge writes then. */
   boolean canWrite() {
-    return !readOnly && !closed && !dropped;
+    return !readOnly && !closed && !dropped && !stopped;
+  }
+
+  /**
+   * The database closes or drops: from now on no publisher writes a manifest (a running flush or merge aborts at its next step, deleting
+   * only what it wrote before a rename was attempted) and no release deletes a file. Readers and dictionaries stay open until
+   * {@link #close()}.
+   */
+  void stopPublishing() {
+    publishLock.lock();
+    try {
+      stopped = true;
+    } finally {
+      publishLock.unlock();
+    }
   }
 
   int maxRecordsInPage() {
@@ -953,19 +982,27 @@ public final class ColumnarProjection {
    * READ_ONLY one nothing is requested or written (R16).
    */
   void markUnusable(final String rebuildReason) {
-    final Consumer<String> requester;
+    markUnusableWithoutRequest(rebuildReason);
+    requestRebuild(rebuildReason);
+  }
+
+  /** The first half of {@link #markUnusable}: records the reason and republishes the state unusable, requesting nothing. */
+  void markUnusableWithoutRequest(final String rebuildReason) {
     publishLock.lock();
     try {
       unusableReason = rebuildReason;
       final ProjectionState current = state.get();
       if (current.isUsable())
         publish(manifest, current.segments(), current.overlays(), dictionaries, false);
-      requester = readOnly || closed || dropped ? null : rebuildRequester;
     } finally {
       publishLock.unlock();
     }
-    if (requester != null)
-      requester.accept(rebuildReason);
+  }
+
+  /** The second half of {@link #markUnusable}: calls the rebuild requester, on a writable, open projection only. Takes no lock. */
+  void requestRebuild(final String rebuildReason) {
+    if (!readOnly && !closed && !dropped && !stopped)
+      rebuildRequester.accept(rebuildReason);
   }
 
   /** The rebuild entry of {@link #markUnusable}; a no-op by default. */
@@ -1046,7 +1083,7 @@ public final class ColumnarProjection {
       if (openDictionaries.size() > dictionaries.size())
         closeUnheldDictionaries(); // a replaced generation exists; an overlay publish skips this
       final ColumnarManifest current = manifest;
-      if (readOnly || closed || current == null || !namesUnreferenced(released, current.files(), heldFiles))
+      if (readOnly || closed || stopped || current == null || !namesUnreferenced(released, current.files(), heldFiles))
         return;
       heldFiles.addAll(inFlightFiles);
       for (final String name : ColumnarStore.deleteUnreferenced(bucketDir, current.files(), heldFiles)) {
@@ -1293,9 +1330,12 @@ public final class ColumnarProjection {
         || externalOwners.modifications() != publishedExternalOwnersModifications);
   }
 
-  /** True once {@link #close()} or {@link #drop()} ran; a publisher checks it under {@link #publishLock()} before its manifest. */
+  /**
+   * True once {@link #close()}, {@link #drop()} or {@link #stopPublishing()} ran; a publisher checks it under {@link #publishLock()}
+   * before its manifest.
+   */
   boolean isClosedOrDropped() {
-    return closed || dropped;
+    return closed || dropped || stopped;
   }
 
   /**

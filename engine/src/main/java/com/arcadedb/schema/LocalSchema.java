@@ -747,6 +747,14 @@ public class LocalSchema implements Schema {
     return stagingThread.get() == Thread.currentThread();
   }
 
+  /**
+   * Whether a schema load runs on the calling thread and has not published its components yet: a bucket or type looked up by id meanwhile
+   * is the previous generation's. The columnar index manager defers opening the projections of the indexes such a load registers.
+   */
+  public boolean isLoadingOnCurrentThread() {
+    return isStagingPublication();
+  }
+
   /** Whether THIS thread's load stages its file-id registrations (issues #7962, #7963). */
   private boolean isStagingFileIds() {
     return stagingFileIds && isStagingPublication();
@@ -1117,6 +1125,15 @@ public class LocalSchema implements Schema {
     stagedBucketId2InvolvedTypeMap = null;
     supersededTypes = null;
     stagingThread.set(null);
+
+    // Only now can the columnar projections of the indexes this load registered be opened: they look their bucket and type up, which
+    // answered the previous generation until the publication. Never fails the load: the generation is published already
+    if (database.getEmbedded() instanceof LocalDatabase local && local.getColumnarIndexManager() != null)
+      try {
+        local.getColumnarIndexManager().schemaLoadEnded(committed);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Cannot open the columnar projections of the loaded schema", e);
+      }
   }
 
   /**

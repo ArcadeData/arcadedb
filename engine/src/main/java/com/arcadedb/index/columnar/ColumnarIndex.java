@@ -154,10 +154,16 @@ public final class ColumnarIndex implements IndexInternal {
     ColumnarTestHooks.INDEX_WRITES.incrementAndGet();
   }
 
-  /** Scans nothing: the projection builds the column, so this asks the manager to reconcile its columns and indexes 0 records. */
+  /**
+   * Scans nothing: the projection builds the column. The schema has bound this index to its bucket by now, so this opens the
+   * projection the factory could not open yet ({@link ColumnarIndexManager#openRegistered()}), asks the manager to reconcile its
+   * columns and indexes 0 records.
+   */
   @Override
   public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction, final BuildIndexCallback callback) {
-    manager().requestReconcile();
+    final ColumnarIndexManager manager = manager();
+    manager.openRegistered();
+    manager.requestReconcile();
     return 0;
   }
 
