@@ -49,6 +49,18 @@ public final class DictionaryPrefixSearch {
    */
   public static int search(final GlobalDictionary dictionary, final String prefix, final String afterExclusiveOrNull, final int max,
       final int[] out) {
+    return search(dictionary, prefix, afterExclusiveOrNull, max, out, Integer.MAX_VALUE);
+  }
+
+  /**
+   * As {@link #search(GlobalDictionary, String, String, int, int[])}, scanning the unranked tail only up to {@code sizeBound}: the
+   * ordinals appended after it (by a concurrent apply) are not considered, so a caller that charged the tail for a size it read sees
+   * no larger tail allocated. The rank view is read as it is.
+   *
+   * @param sizeBound the dictionary size the tail is bounded by; the current size when it is larger
+   */
+  public static int search(final GlobalDictionary dictionary, final String prefix, final String afterExclusiveOrNull, final int max,
+      final int[] out, final int sizeBound) {
     final int limit = Math.min(max, out.length);
     if (limit <= 0)
       return 0;
@@ -58,7 +70,8 @@ public final class DictionaryPrefixSearch {
     // first view position inside the range: after the cursor when it lies at or above the prefix, else at the prefix
     int position = afterBounds ? firstGreater(dictionary, sorted, afterExclusiveOrNull) : firstAtLeast(dictionary, sorted, prefix);
 
-    final int[] tail = tailInRange(dictionary, sorted.length, prefix, afterBounds ? afterExclusiveOrNull : null);
+    final int[] tail = tailInRange(dictionary, sorted.length, Math.min(sizeBound, dictionary.size()), prefix,
+        afterBounds ? afterExclusiveOrNull : null);
     int t = 0;
     int n = 0;
     while (n < limit) {
@@ -122,11 +135,11 @@ public final class DictionaryPrefixSearch {
   }
 
   /**
-   * The ordinals newer than the view (from {@code viewSize} to the size now) whose value starts with the prefix and is greater than
+   * The ordinals newer than the view (from {@code viewSize} to {@code size}) whose value starts with the prefix and is greater than
    * {@code afterOrNull}, sorted by value. Bounded by the growth since the last rank-view rebuild.
    */
-  private static int[] tailInRange(final GlobalDictionary dictionary, final int viewSize, final String prefix, final String afterOrNull) {
-    final int size = dictionary.size();
+  private static int[] tailInRange(final GlobalDictionary dictionary, final int viewSize, final int size, final String prefix,
+      final String afterOrNull) {
     int[] matches = new int[Math.min(16, Math.max(0, size - viewSize))];
     int n = 0;
     for (int ordinal = viewSize; ordinal < size; ordinal++) {

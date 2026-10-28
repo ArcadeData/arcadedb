@@ -308,6 +308,7 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 - Hierarchy rebuild: `HierarchyBuilder` scans every Tag record twice (keys, then parent links); collecting the links in the first pass halves the load and closes the window where a tag created between the passes waits for the next rebuild (plan 5 Task 4).
 - Hierarchy shared build: BEFORE/AFTER READ triggers on the tag type run during the build with no user (a BEFORE READ returning false hides a tag from every user); consider building with read events bypassed (plan 5 Task 5).
 - HIERARCHY facet: the projected and scanned collectors of one type may take views of different generations within one query (exact either way); taking one view per query would remove the extra build (plan 5 Task 6).
+- facet.searchValues: every batch runs a full FACETS query over the type with up to 2*topMax INCLUDE parameters, and each batch size yields a new statement text for the plan cache; consider a dedicated count path and a fixed parameter shape (plan 5 Task 11).
 
 ## Pre-merge steps (before the feature branch is merged to main)
 

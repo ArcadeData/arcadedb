@@ -202,6 +202,8 @@ class Issue10850NoNarrowingReadsInFunctionsTest {
       Map.entry("function/convert/ConvertToInteger#execute: java/lang/Number.longValue", 1),
       // toBoolean(): FLOAT and DOUBLE are refused before it, the integral value is tested against zero
       Map.entry("function/convert/ToBooleanFunction#execute: java/lang/Number.longValue", 1),
+      // facet.searchValues(): the sign check of the limit only, which is then read through requireIntArgument
+      Map.entry("function/sql/facet/SQLFunctionFacetSearchValues#execute: java/lang/Number.longValue", 1),
       // year/month/day of a temporal value the engine built: components a LocalDate already holds as ints
       Map.entry("function/temporal/DateConstructorFunction#execute: java/lang/Number.intValue", 3)));
 
