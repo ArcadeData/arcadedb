@@ -143,7 +143,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
       collectedAnswer = answer;
       if (!(answer instanceof IndexedMatchSource.Rids rids))
         return false;
-      rids.forEachRid(rid -> !bucketFilter.test(rid.getBucketId()) || builder.add(rid, 0));
+      rids.forEachRid(bucketFilter, rid -> builder.add(rid, 0));
       return true;
     } finally {
       if (context.isProfiling())

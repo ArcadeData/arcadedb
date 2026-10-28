@@ -42,6 +42,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -235,12 +236,14 @@ final class FullTextFunctionSearch {
     }
 
     @Override
-    public void forEachRid(final Predicate<RID> action) {
+    public void forEachRid(final IntPredicate bucketFilter, final Predicate<RID> action) {
       int ticks = 0;
       for (final RID rid : matches.keySet()) {
         guard.checkPeriodically(++ticks);
         // as the rows skip a record gone since the index was updated (a slot-table check, no record read)
-        if ((filter == null || filter.accepts(rid)) && database.existsRecord(rid) && !action.test(rid))
+        if (!bucketFilter.test(rid.getBucketId()) || filter != null && !filter.accepts(rid) || !database.existsRecord(rid))
+          continue;
+        if (!action.test(rid))
           return;
       }
     }
