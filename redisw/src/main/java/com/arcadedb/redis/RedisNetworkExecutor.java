@@ -25,7 +25,6 @@ import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
@@ -790,12 +789,7 @@ public class RedisNetworkExecutor extends Thread {
           // BY RID - persistent mode
           if (database == null)
             database = getAuthorizedDatabase(bucketName);
-          Record record;
-          try {
-            record = database.lookupByRID(new RID(key), true);
-          } catch (final RecordNotFoundException e) {
-            record = null;
-          }
+          final Record record = RedisRecords.lookupByRid(database, RedisRecords.parseRid(key));
           values.add(record != null ? record.toJSON(true).toString() : null);
         } else
           values.add(getTransientValue(bucketName, key));
@@ -809,7 +803,7 @@ public class RedisNetworkExecutor extends Thread {
       }
     } else {
       // Persistent mode: get records from database
-      final List<Record> records = getRecords(bucketName, keys);
+      final List<Record> records = getRecordsByIndex(bucketName, keys);
 
       value.append("*");
       value.append(records.size());
@@ -1529,8 +1523,8 @@ public class RedisNetworkExecutor extends Thread {
       final Database database = getAuthorizedDatabase(bucketName);
 
       if (key.startsWith("#")) {
-        // BY RID
-        record = (Document) database.lookupByRID(new RID(key), true);
+        // BY RID: null when there is no such record, as HMGET answers it (#10765)
+        record = RedisRecords.lookupByRid(database, RedisRecords.parseRid(key));
       } else {
         throw new RedisException(
             "Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
@@ -1559,34 +1553,22 @@ public class RedisNetworkExecutor extends Thread {
     return value != null ? value.toString() : null;
   }
 
-  private List<Record> getRecords(final String bucketName, final List<Object> keys) {
-    final List<Record> records = new ArrayList<>();
+  /**
+   * Gets the records an index maps {@code keys} to, null for a key that is not there. Only HMGET's {@code <database>.<index>} form
+   * reaches it: the RID form is answered by HMGET's own loop, which also resolves the transient keys mixed with the RIDs.
+   */
+  private List<Record> getRecordsByIndex(final String bucketName, final List<Object> keys) {
+    final List<Record> records = new ArrayList<>(keys.size());
 
     final int pos = bucketName.indexOf(".");
-    if (pos < 0) {
-      // BY RID
-      final Database database = getAuthorizedDatabase(bucketName);
+    final String databaseName = bucketName.substring(0, pos);
+    final String keyType = bucketName.substring(pos + 1);
 
-      for (final Object key : keys) {
-        final String k = key.toString();
-        if (k.startsWith("#"))
-          records.add((Document) database.lookupByRID(new RID(k), true));
-        else
-          throw new RedisException("""
-              Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. \
-              Example: #13:432""");
-      }
-    } else {
-      // BY INDEX
-      final String databaseName = bucketName.substring(0, pos);
-      final String keyType = bucketName.substring(pos + 1);
+    final Database database = getAuthorizedDatabase(databaseName);
 
-      final Database database = getAuthorizedDatabase(databaseName);
-
-      for (final Object key : keys) {
-        final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
-        records.add(found != null ? found.asDocument() : null);
-      }
+    for (final Object key : keys) {
+      final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
+      records.add(found != null ? found.asDocument() : null);
     }
     return records;
   }

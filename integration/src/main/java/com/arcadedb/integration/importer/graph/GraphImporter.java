@@ -30,6 +30,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexMaintenanceSuspension;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
+import com.arcadedb.integration.importer.CanonicalNumber;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -135,7 +136,7 @@ public class GraphImporter implements AutoCloseable {
    *
    * @see #canonicalLong(String)
    */
-  static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
+  static final long NOT_CANONICAL_LONG = CanonicalNumber.NOT_CANONICAL_LONG;
 
   /**
    * Rows the vertex pass buffers before committing. The commit is what bounds the transaction's
@@ -2185,53 +2186,13 @@ public class GraphImporter implements AutoCloseable {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Reads {@code text} as the canonical decimal form of a {@code long}, returning
-   * {@link #NOT_CANONICAL_LONG} when it is not one. Neither allocates nor throws: an identity
-   * column is read once per row, and {@code Long.parseLong} in a {@code try} block would fill in a
-   * stack trace for every row of a string-keyed file.
-   * <p>
-   * "Canonical" is what keeps the primitive fast path from merging keys the source kept apart:
-   * {@code "007"} and {@code "7"} are two different identities, so only the form
-   * {@code Long.toString} would produce is allowed to become a number. Everything else - leading
-   * zeros, a leading {@code +}, {@code "-0"}, surrounding space, anything non-numeric - stays text.
+   * Reads {@code text} as the canonical decimal form of a {@code long}, returning {@link #NOT_CANONICAL_LONG} when it
+   * is not one: {@code "007"} and {@code "7"} are two different identities, so only the form {@code Long.toString}
+   * would produce becomes a number. The grammar is {@link CanonicalNumber}'s, shared with the schema analysis of the
+   * other importers.
    */
   static long canonicalLong(final String text) {
-    if (text == null)
-      return NOT_CANONICAL_LONG;
-    final int len = text.length();
-    if (len == 0)
-      return NOT_CANONICAL_LONG;
-
-    final boolean negative = text.charAt(0) == '-';
-    final int first = negative ? 1 : 0;
-    if (len - first < 1 || len - first > 19)
-      return NOT_CANONICAL_LONG;
-
-    final char firstDigit = text.charAt(first);
-    if (firstDigit < '0' || firstDigit > '9')
-      return NOT_CANONICAL_LONG;
-    // "0" is canonical, "00" and "007" are not, and "-0" is not the canonical form of zero
-    if (firstDigit == '0' && (len - first > 1 || negative))
-      return NOT_CANONICAL_LONG;
-
-    // Accumulate negatively: the negative range is the wider one, so this overflows only on values
-    // that genuinely do not fit, and Long.MIN_VALUE itself is rejected because it is the sentinel
-    long value = 0;
-    for (int i = first; i < len; i++) {
-      final char c = text.charAt(i);
-      if (c < '0' || c > '9')
-        return NOT_CANONICAL_LONG;
-      if (value < -922337203685477580L)
-        return NOT_CANONICAL_LONG;
-      value *= 10;
-      final int digit = c - '0';
-      if (value < Long.MIN_VALUE + digit)
-        return NOT_CANONICAL_LONG;
-      value -= digit;
-    }
-    if (value == NOT_CANONICAL_LONG)
-      return NOT_CANONICAL_LONG;
-    return negative ? value : -value;
+    return CanonicalNumber.parseLong(text);
   }
 
   /**

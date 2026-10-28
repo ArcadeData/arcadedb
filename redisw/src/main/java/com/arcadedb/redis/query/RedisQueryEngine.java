@@ -21,7 +21,6 @@ package com.arcadedb.redis.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -524,6 +523,18 @@ public class RedisQueryEngine implements QueryEngine {
    * A command the caller got wrong (argument count, malformed RID) is a client error, as the per-command checks of this engine always
    * were: a {@link RedisException} would be answered as an internal error (HTTP 500).
    */
+  /**
+   * A RID argument, refused as a bad request when it is not one, like any other malformed argument: only the parse is converted,
+   * so a failure of the lookup that follows still reaches the caller as what it is.
+   */
+  private static RID parseRid(final String text) {
+    try {
+      return RedisRecords.parseRid(text);
+    } catch (final RedisException e) {
+      throw badRequest(e);
+    }
+  }
+
   private static CommandParsingException badRequest(final RedisException e) {
     return new CommandParsingException(e.getMessage(), e);
   }
@@ -727,10 +738,9 @@ public class RedisQueryEngine implements QueryEngine {
 
     final String firstArg = parts.get(1);
 
-    // Check if it's a RID
-    if (firstArg.startsWith("#")) {
-      return (Document) database.lookupByRID(new RID(firstArg), true);
-    }
+    // Check if it's a RID: no record is a null answer, as on the RESP wire path (#10765)
+    if (firstArg.startsWith("#"))
+      return RedisRecords.lookupByRid(database, parseRid(firstArg));
 
     // It's an index lookup
     if (parts.size() < 3) {
@@ -763,7 +773,7 @@ public class RedisQueryEngine implements QueryEngine {
         if (!rid.startsWith("#")) {
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
         }
-        results.add((Document) database.lookupByRID(new RID(rid), true));
+        results.add(RedisRecords.lookupByRid(database, parseRid(rid)));
       }
     } else {
       // It's an index lookup
@@ -792,15 +802,10 @@ public class RedisQueryEngine implements QueryEngine {
 
     final String firstArg = parts.get(1);
 
-    // Check if it's a RID
-    if (firstArg.startsWith("#")) {
-      try {
-        final Record record = database.lookupByRID(new RID(firstArg), true);
-        return record != null ? 1 : 0;
-      } catch (Exception e) {
-        return 0;
-      }
-    }
+    // Check if it's a RID. Only "not found" answers 0: a refused or failed lookup used to be answered 0 too, by a catch of every
+    // exception (#10765)
+    if (firstArg.startsWith("#"))
+      return RedisRecords.lookupByRid(database, parseRid(firstArg)) != null ? 1 : 0;
 
     // It's an index lookup
     if (parts.size() < 3) {
@@ -836,11 +841,7 @@ public class RedisQueryEngine implements QueryEngine {
         final String rid = parts.get(i);
         if (!rid.startsWith("#"))
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
-        try {
-          rids.add(RedisRecords.parseRid(rid));
-        } catch (final RedisException e) {
-          throw badRequest(e);
-        }
+        rids.add(parseRid(rid));
       }
       database.transaction(() -> {
         int removed = 0;

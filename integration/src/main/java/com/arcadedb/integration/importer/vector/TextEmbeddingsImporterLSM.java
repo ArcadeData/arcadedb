@@ -26,6 +26,9 @@ import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 
@@ -45,6 +48,9 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TextEmbeddingsImporterLSM {
+  public static final String DEFAULT_VECTOR_PROPERTY = "vector";
+  public static final String DEFAULT_ID_PROPERTY     = "name";
+
   private final    InputStream      inputStream;
   private final    ImporterSettings settings;
   private final    ConsoleLogger    logger;
@@ -60,8 +66,8 @@ public class TextEmbeddingsImporterLSM {
   private          ImporterContext  context           = new ImporterContext();
   private          String           vectorTypeName;
   private          String           similarityFunctionName;
-  private          String           vectorPropertyName;
-  private          String           idPropertyName    = "name";
+  private final    String           vectorPropertyName;
+  private final    String           idPropertyName;
   private          int              maxConnections    = 32;
   private          int              beamWidth         = 100;
   private volatile long             embeddingsParsed  = 0L;
@@ -83,11 +89,10 @@ public class TextEmbeddingsImporterLSM {
     // USE CAMEL CASE FOR THE VECTOR TYPE
     vectorTypeName = Character.toUpperCase(vectorTypeName.charAt(0)) + vectorTypeName.substring(1).toLowerCase(Locale.ENGLISH);
 
-    if (settings.options.containsKey("vectorProperty"))
-      this.vectorPropertyName = settings.getValue("vectorProperty", null);
-
-    if (settings.options.containsKey("idProperty"))
-      this.idPropertyName = settings.getValue("idProperty", null);
+    // BOTH THROUGH THE ONE ACCESSOR THAT TAKES A DEFAULT AND REFUSES A BLANK NAME: vectorProperty USED TO BE READ ONLY
+    // WHEN PRESENT, SO A SNIFFED WORD2VEC/GLOVE IMPORT WITH NO OPTIONS DIED ON A NULL MAP KEY IN THE SCHEMA (ISSUE #10767)
+    this.vectorPropertyName = settings.getPropertyNameValue("vectorProperty", DEFAULT_VECTOR_PROPERTY);
+    this.idPropertyName = settings.getPropertyNameValue("idProperty", DEFAULT_ID_PROPERTY);
 
     this.maxConnections = settings.getIntValue("m", 32);
     this.beamWidth = settings.getIntValue("beamWidth", 100);
@@ -119,18 +124,15 @@ public class TextEmbeddingsImporterLSM {
 
       // Create vertex type and LSM_VECTOR index
       // Check if type exists first
-      if (!database.getSchema().existsType(settings.vertexTypeName)) {
-        database.command("sql", "CREATE VERTEX TYPE " + settings.vertexTypeName).close();
-      }
+      if (!database.getSchema().existsType(settings.vertexTypeName))
+        database.getSchema().createVertexType(settings.vertexTypeName);
 
-      // Create properties
+      // Create properties through the schema API: a name is a value there, never SQL text to be parsed
       final var type = database.getSchema().getType(settings.vertexTypeName);
-      if (!type.existsProperty(idPropertyName)) {
-        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + idPropertyName + " STRING").close();
-      }
-      if (!type.existsProperty(vectorPropertyName)) {
-        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + vectorPropertyName + " ARRAY_OF_FLOATS").close();
-      }
+      if (!type.existsProperty(idPropertyName))
+        type.createProperty(idPropertyName, Type.STRING);
+      if (!type.existsProperty(vectorPropertyName))
+        type.createProperty(vectorPropertyName, Type.ARRAY_OF_FLOATS);
 
       // Create LSM_VECTOR index
       final String indexName = settings.vertexTypeName + "[" + vectorPropertyName + "]";
@@ -138,10 +140,12 @@ public class TextEmbeddingsImporterLSM {
         database.getSchema().getIndexByName(indexName);
         // Index already exists
       } catch (final Exception e) {
-        // Index doesn't exist, create it
-        database.command("sql", "CREATE INDEX ON " + settings.vertexTypeName + " (" + vectorPropertyName + ") LSM_VECTOR " +
+        // Index doesn't exist, create it. Every name is escaped for the SQL context it lands in - an identifier, or a string
+        // literal in the metadata - so a name SQL reserves or cannot parse still works
+        database.command("sql", "CREATE INDEX ON " + Identifier.quote(settings.vertexTypeName) + " (" + Identifier.quote(
+            vectorPropertyName) + ") LSM_VECTOR " +
             "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
-            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}").close();
+            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + Expression.encodeSingle(idPropertyName) + "'}").close();
       }
 
       logger.logLine(2, "- Created schema and LSM_VECTOR index");
