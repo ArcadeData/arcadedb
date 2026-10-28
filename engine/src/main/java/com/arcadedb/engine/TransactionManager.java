@@ -28,6 +28,7 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
@@ -1487,20 +1488,64 @@ public class TransactionManager {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
     final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
+    // Spec 6.2: the pages the apply reached are marked for the columnar projections once it is done, whether it returns or throws
+    // (a version gap, a failed write): by then they are written, synchronously and outside the flush pipeline, so a pass draining
+    // the marks reads them. One volatile read when the database has no COLUMNAR index and no watched file
+    final ColumnarIndexManager columnar = columnarMarkTarget();
+    final ReachedPages reached = columnar != null ? new ReachedPages(tx.pages.length) : null;
     // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
     // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
     final PageManager pageManager = database.getPageManager();
     pageManager.beginPublication();
     try {
-      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
     } finally {
       pageManager.endPublication();
-      FullTextCorpusDeltas.replicatedApplyFinished(applying);
+      try {
+        if (reached != null)
+          reached.mark(columnar);
+      } finally {
+        FullTextCorpusDeltas.replicatedApplyFinished(applying);
+      }
     }
   }
 
+  /** The columnar manager of the database when a mark can reach a projection or a watched file, null otherwise. */
+  private ColumnarIndexManager columnarMarkTarget() {
+    if (!(database instanceof LocalDatabase local))
+      return null;
+    final ColumnarIndexManager columnar = local.getColumnarIndexManager();
+    return columnar != null && columnar.hasMarkTargets() ? columnar : null;
+  }
+
+  /** The pages one {@link #applyChanges} reached, as {@link ColumnarIndexManager#packPage} keys: one array per apply. */
+  private static final class ReachedPages {
+    private final long[] keys;
+    private       int    count;
+
+    private ReachedPages(final int capacity) {
+      keys = new long[capacity];
+    }
+
+    private void add(final int fileId, final int pageNumber) {
+      keys[count++] = ColumnarIndexManager.packPage(fileId, pageNumber);
+    }
+
+    private void mark(final ColumnarIndexManager columnar) {
+      if (count == 0)
+        return;
+      Arrays.sort(keys, 0, count);
+      columnar.markPackedPages(keys, count, new int[count], false);
+    }
+  }
+
+  /**
+   * @param reached receives every page the loop reaches, null when nothing is marked: applied, re-applied at an equal version, and
+   *                skipped as strictly older too (the mark goes before the skip, spec 6.2: a replay of an entry a crash interrupted
+   *                after its pages were written still marks them), as well as a page refused for a version gap
+   */
   private boolean applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
-      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors, final ReachedPages reached) {
     final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
@@ -1571,6 +1616,8 @@ public class TransactionManager {
         database.getPageManager().materializePendingFlushOfPage(database, pageId);
 
         final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
+        if (reached != null)
+          reached.add(txPage.fileId, txPage.pageNumber);
 
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
@@ -2308,9 +2355,12 @@ public class TransactionManager {
       // cache and without taking any lock this pass holds, so a counter read AFTER the fsync can be zero because
       // of a page the fsync did not cover. A file selected here had zero pending pages before the fsync, so every
       // one of its pages is covered by it; a file that reaches zero later waits for the next pass and its fsync.
+      // A commit between its two columnar marks keeps its file too (spec 6.2): its first mark may have been applied from the
+      // previous page images, so the file stays its only record until the second one ran. Read AFTER the pending pages: the
+      // commit raises its marks counter before publishing the pages that counter covers, which only then can reach the disk
       final List<WALFile> removable = new ArrayList<>(inactiveWALFilePool.size());
       for (final WALFile file : inactiveWALFilePool)
-        if (force || !dropFiles || file.getPendingPagesToFlush() == 0)
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0 && file.getPendingColumnarMarks() == 0)
           removable.add(file);
 
       if (removable.isEmpty())

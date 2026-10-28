@@ -254,10 +254,14 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
     final ColumnarProjection projection = manager.projection(bucketId);
 
     final AutoCloseable hold = manager.suspendApply();
-    manager.markPages(bucketId, new int[] { 2 }, 1);
+    // the commit marks its page (Task 13): the lag is observable through a snapshot while the hold keeps the passes out
+    database.transaction(() -> database.newDocument("Asset").set("brand", "held").save());
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      assertThat(snapshot.oldestPendingEpochStartMs()).isPositive();
+    }
+    assertThat(projection.tracker().isEmpty()).isFalse();
     // a short wait expected to time out: the hold keeps every pass out
     assertThat(manager.awaitCaughtUp(300)).isFalse();
-    assertThat(projection.tracker().oldestPendingEpochStartMs()).isPositive();
 
     hold.close();
     hold.close();

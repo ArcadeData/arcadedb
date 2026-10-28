@@ -31,6 +31,7 @@ import com.arcadedb.schema.LocalSchema;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -47,6 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.IntConsumer;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
@@ -65,7 +67,8 @@ import java.util.logging.Level;
  * then): a bucket that fails is logged, reported unusable and retried by later passes with a backoff, and the other buckets open.
  * <p>
  * <b>Marks.</b> {@link #markPages} is on the commit path: one volatile read and one array read for a file with no projection, an atomic
- * OR per page for a projected one. A mark on an external-property bucket goes to the owning projection's external tracker (R7). A file
+ * OR per page for a projected one; a database with no projection and no watcher is not even called ({@link #hasMarkTargets()}). A
+ * mark on an external-property bucket goes to the owning projection's external tracker (R7). A file
  * with no projection may be watched ({@link #watchFiles}): its marks bump the watcher's generation synchronously and the watcher runs
  * later on {@link ColumnarApplyPool}, coalesced.
  * <p>
@@ -166,6 +169,12 @@ public final class ColumnarIndexManager {
   private volatile Watcher[]   watchers         = new Watcher[0];
   private volatile Watcher[][] watchersByFileId = new Watcher[0][];
   private volatile boolean     watchersPending;
+
+  /** {@link #slots} or {@link #watchers} is not empty: see {@link #hasMarkTargets()}; written by {@link #refreshMarkTargets()}. */
+  private volatile boolean     markTargets;
+
+  /** Called with the file id by every mark, before it is routed (V-M16); null outside tests. */
+  static volatile IntConsumer onMarkForTesting;
 
   private final AtomicBoolean passScheduled       = new AtomicBoolean();
   private final AtomicInteger suspensions         = new AtomicInteger();
@@ -427,6 +436,15 @@ public final class ColumnarIndexManager {
     }
     slots = next;
     routes = new Routes(byFileId, external);
+    refreshMarkTargets();
+  }
+
+  /**
+   * After {@link #routes} or {@link #watchersByFileId} changed. One monitor for both publishers, so the last refresh reads both
+   * latest values whatever the interleaving of a registry and a watcher change.
+   */
+  private synchronized void refreshMarkTargets() {
+    markTargets = routes.byFileId.length > 0 || watchersByFileId.length > 0;
   }
 
   // ------------------------------------------------------------------------------------------------------------------- lookups
@@ -492,23 +510,110 @@ public final class ColumnarIndexManager {
 
   // ---------------------------------------------------------------------------------------------------------------------- marks
 
+  /**
+   * True when a mark can reach something: a projection or a watched file. The commit path, Raft apply and WAL replay read it first,
+   * so a database with no COLUMNAR index and no watcher pays this one volatile read per commit and nothing else.
+   */
+  public boolean hasMarkTargets() {
+    return markTargets;
+  }
+
+  /** The file is a projected bucket or the external-property bucket of one: its marks are what a crash must not lose. Lock free. */
+  public boolean isProjected(final int fileId) {
+    final Routes current = routes;
+    return fileId >= 0 && fileId < current.byFileId.length && current.byFileId[fileId] != null;
+  }
+
+  /** Packs a page for {@link #markPackedPages}: sorting the keys groups them by file id, then by page number. */
+  public static long packPage(final int fileId, final int pageNumber) {
+    return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
+  }
+
+  /** True when one of the first {@code count} {@link #packPage packed} keys, sorted, is on a {@link #isProjected projected} file. */
+  public boolean projectsAnyPackedPage(final long[] sortedKeys, final int count) {
+    int previous = -1;
+    for (int i = 0; i < count; i++) {
+      final int fileId = (int) (sortedKeys[i] >>> 32);
+      if (fileId != previous && isProjected(fileId))
+        return true;
+      previous = fileId;
+    }
+    return false;
+  }
+
+  /**
+   * Marks the first {@code count} {@link #packPage packed} keys, sorted, one {@link #markPages} (or {@link #markPagesWithoutWAL}) call
+   * per file. {@code buffer} receives the page numbers of one file at a time, so it holds {@code count} ints at least: nothing is
+   * allocated. Every file is marked even when the no-WAL marker of one cannot be written; the first such failure is thrown after.
+   *
+   * @throws UncheckedIOException with {@code withoutWAL}, when the {@code NOWAL} marker of a projection cannot be written
+   */
+  public void markPackedPages(final long[] sortedKeys, final int count, final int[] buffer, final boolean withoutWAL) {
+    UncheckedIOException failure = null;
+    for (int i = 0; i < count; ) {
+      final int fileId = (int) (sortedKeys[i] >>> 32);
+      int pages = 0;
+      while (i < count && (int) (sortedKeys[i] >>> 32) == fileId)
+        buffer[pages++] = (int) sortedKeys[i++];
+      if (!withoutWAL)
+        markPages(fileId, buffer, pages);
+      else
+        try {
+          markPagesWithoutWAL(fileId, buffer, pages);
+        } catch (final UncheckedIOException e) {
+          if (failure == null)
+            failure = e;
+        }
+    }
+    if (failure != null)
+      throw failure;
+  }
+
   /** Marks the pages of the file dirty (commit, Raft apply, WAL replay). No lock; nothing allocated. */
   public void markPages(final int fileId, final int[] pageNumbers, final int count) {
     mark(fileId, pageNumbers, count);
   }
 
   /**
-   * {@link #markPages} for a commit that wrote no WAL: also advances the no-WAL epoch of the projection, the record that its bucket's
-   * pages may reach the disk after a flush of the projection (R8). The {@code NOWAL} marker is written by Task 13.
+   * {@link #markPages} for a commit that wrote no WAL (R8, spec 6.5): the pages are marked, then the no-WAL epoch of the projection is
+   * advanced (in this order, so a pass cannot drain the epoch before the mark lands), then, under the projection's
+   * {@code noWalMarkerLock} and only when no marker is current, {@code <bucketDir>/NOWAL} is written synchronously before this returns
+   * (R25: one fsynced write per projection until a clean close deletes the marker; a flush never does). The marker is the record that
+   * the bucket pages of a no-WAL commit may reach the disk after the projection's rows: an unclean open finding it rebuilds.
+   *
+   * @throws UncheckedIOException when the marker cannot be written; the projection is then marked unusable, which requests its rebuild,
+   *                              and the next no-WAL mark tries the marker again
    */
   public void markPagesWithoutWAL(final int fileId, final int[] pageNumbers, final int count) {
     final ColumnarProjection projection = mark(fileId, pageNumbers, count);
-    if (projection != null)
-      projection.bumpNoWalEpoch();
+    if (projection == null)
+      return;
+    final long epoch = projection.bumpNoWalEpoch();
+    synchronized (projection.noWalMarkerLock) {
+      if (projection.noWalMarkerEpoch != -1)
+        return;
+      final Path marker = projection.bucketDir().resolve(ColumnarStore.NOWAL_MARKER);
+      try {
+        ColumnarStore.writeAtomically(marker, new byte[0]);
+        projection.noWalMarkerEpoch = epoch;
+      } catch (final IOException e) {
+        // a projection dropped meanwhile has no directory and nothing left to protect
+        if (!Files.isDirectory(projection.bucketDir()))
+          return;
+        LogManager.instance().log(this, Level.SEVERE, "Cannot write the NOWAL marker of the columnar projection of bucket '%s'", e,
+            projection.bucketName());
+        projection.markUnusable(ColumnarProjection.MISSING);
+        throw new UncheckedIOException("Cannot write the NOWAL marker of the columnar projection of bucket '" + projection.bucketName()
+            + "'", e);
+      }
+    }
   }
 
   /** Marks into the tracker the file id routes to and returns its projection; notifies the watchers of a file with no projection. */
   private ColumnarProjection mark(final int fileId, final int[] pageNumbers, final int count) {
+    final IntConsumer hook = onMarkForTesting;
+    if (hook != null)
+      hook.accept(fileId);
     final Routes current = routes;
     if (fileId >= 0 && fileId < current.byFileId.length) {
       final ColumnarProjection projection = current.byFileId[fileId];
@@ -600,6 +705,7 @@ public final class ColumnarIndexManager {
         }
       }
     watchersByFileId = byFile;
+    refreshMarkTargets();
   }
 
   // ----------------------------------------------------------------------------------------------------------------- scheduling
