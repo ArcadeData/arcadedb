@@ -437,6 +437,61 @@ class PostgresCatalogTest {
     // type - even a type called pg_something - must reach the SQL engine untouched.
     assertThat(resolveRaw("INSERT INTO pg_class SET relname = 'x'")).isSameAs(PostgresCatalog.DECLINED);
     assertThat(resolveRaw("CREATE DOCUMENT TYPE pg_notes")).isNull();
+    // Only a relation's place makes it a catalog statement: a column the user called pg_type is theirs (issue #10695)
+    assertThat(resolveRaw("DELETE FROM pg_class")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("UPDATE pg_catalog.pg_class SET relname = 'x'")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("INSERT INTO Article SET title = 'x', pg_type = 'v'")).isNull();
+    assertThat(resolveRaw("CREATE PROPERTY Article.pg_type STRING")).isNull();
+    assertThat(resolveRaw("UPDATE Article SET pg_class = 1")).isNull();
+    assertThat(resolveRaw("SELECT 1 AS pg_type")).isNull();
+    assertThat(resolveRaw("SELECT (SELECT count(*) FROM pg_class)")).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /**
+   * Issue #10695: the session probe is decided on the tokens. A statement that only holds the words in a literal, that is not a
+   * SELECT, or that reads a FROM is not one; a FROM-less SELECT qualified with pg_catalog answers one row when this catalog can
+   * compute it, and the empty set it was always given when it cannot.
+   */
+  @Test
+  void aSessionProbeIsASelectNamingTheCatalogAsAWordNotAsData() {
+    assertThat(probe("INSERT INTO Article SET title = 'pg_catalog'")).isNull();
+    assertThat(probe("INSERT INTO Article SET title = 'xxpg_typexx'")).isNull();
+    assertThat(probe("UPDATE Article SET title = 'pg_catalog' WHERE title = 'plain'")).isNull();
+    assertThat(probe("DELETE FROM Article WHERE title = 'pg_type'")).isNull();
+    assertThat(probe("SELECT title FROM Article WHERE title LIKE '%pg_catalog%'")).isNull();
+    assertThat(probe("SELECT 'pg_catalog'")).isNull();
+    assertThat(probe("SELECT pg_type FROM Article")).isNull();
+    assertThat(probe("select pg_backend_pid()")).isNull();
+
+    final PostgresCatalog.Answer schema = probe("select pg_catalog.current_schema()");
+    assertThat(schema).isNotNull();
+    assertThat(schema.rows).hasSize(1);
+    assertThat(schema.rows.get(0).values()).containsExactly(database.getName());
+
+    final PostgresCatalog.Answer setConfig = probe("SELECT pg_catalog.set_config('search_path', '', false);");
+    assertThat(setConfig.rows).hasSize(1);
+    assertThat(setConfig.rows.get(0).values()).containsExactly("");
+
+    final PostgresCatalog.Answer bound = probe("SELECT pg_catalog.set_config($1, $2, false)", "search_path", "public");
+    assertThat(bound.rows).hasSize(1);
+    assertThat(bound.rows.get(0).values()).containsExactly("public");
+
+    assertThat(probe("SELECT pg_catalog.pg_is_in_recovery()").rows.get(0).values()).containsExactly(false);
+    // a client's leading comment does not turn a probe into a statement for the SQL engine
+    assertThat(probe("/* app */ SELECT pg_catalog.set_config('search_path', '', false)").rows).hasSize(1);
+    assertThat(probe("-- app\nSELECT pg_catalog.pg_is_in_recovery()").rows.get(0).values()).containsExactly(false);
+    assertThat(probe("/* SELECT */ INSERT INTO Article SET title = 'pg_catalog'")).isNull();
+    assertThat(probe("SELECT 1 AS pg_type").rows.get(0).values()).containsExactly(1L);
+
+    // not running on a Postgres connection's thread, so there is no process id to answer, and nothing to make up either
+    final PostgresCatalog.Answer unknown = probe("SELECT pg_catalog.pg_backend_pid()");
+    assertThat(unknown).isNotNull();
+    assertThat(unknown.rows).isEmpty();
+    assertThat(probe("SELECT pg_catalog.no_such_function_10695()").rows).isEmpty();
+  }
+
+  private PostgresCatalog.Answer probe(final String query, final Object... parameters) {
+    return PostgresCatalog.resolveProbe(query, database, USER, parameters);
   }
 
   @Test
