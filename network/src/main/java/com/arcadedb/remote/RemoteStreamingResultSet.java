@@ -20,6 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
@@ -35,7 +36,8 @@ import java.util.logging.Level;
  * newline-delimited JSON line off the connection per row, so a caller iterating it holds one row at a time
  * instead of the whole result.
  * <p>
- * The stream is self-delimiting. A {@code record} line is a row; the {@code stats} line is the trailer and ends
+ * The stream is self-delimiting. A {@code record} line is a row; a {@code facets} line carries the facets of a
+ * {@code SELECT ... FACETS} query and is kept for {@link #getFacets()}; the {@code stats} line is the trailer and ends
  * the iteration; an {@code error} line is a failure the server raised after it had already answered 200, and is
  * rethrown here because the status code could no longer carry it. A stream that ends without any of the three -
  * a dropped connection - is reported as such rather than silently read as an empty or complete result, which is
@@ -56,9 +58,10 @@ public class RemoteStreamingResultSet implements ResultSet {
   private final boolean                                warnOnTruncation;
   private final Function<JSONObject, RuntimeException> errorMapper;
 
-  private Result  next;
-  private boolean closed;
-  private boolean trailerSeen;
+  private Result       next;
+  private boolean      closed;
+  private boolean      trailerSeen;
+  private FacetResults facets;
 
   /**
    * @param reader    the response body, one JSON event per line
@@ -96,8 +99,9 @@ public class RemoteStreamingResultSet implements ResultSet {
 
     // A loop rather than a recursive call: blank lines are how the server says it is alive while the next row is slow to
     // produce (issue #8565), and a proxy or a hostile peer can send any number of them, so recursing once per line would
-    // turn that into a StackOverflowError.
+    // turn that into a StackOverflowError. The facets line is not a row either and is read past the same way.
     String line;
+    JSONObject event;
     while (true) {
       try {
         line = reader.readLine();
@@ -116,30 +120,39 @@ public class RemoteStreamingResultSet implements ResultSet {
         return false;
       }
 
-      if (!line.isBlank())
-        break;
-    }
+      if (line.isBlank())
+        continue;
 
-    // Every exit below closes the connection, including the failures. A parse error or an unrecognized event is
-    // exactly what a server that predates #7306 produces - it ignores Accept and answers the buffered envelope -
-    // and leaving the response body open on that path would leak a connection per attempt.
-    final JSONObject event;
-    try {
-      event = new JSONObject(line);
-    } catch (final RuntimeException e) {
-      close();
-      throw new RemoteException("Unparseable line in the streamed result: the server did not send the "
-          + "newline-delimited JSON encoding this driver asked for", e);
-    }
-
-    try {
-      if (event.has("record")) {
-        next = rowMapper.apply(event.getJSONObject("record"));
-        return true;
+      // Every exit below closes the connection, including the failures. A parse error or an unrecognized event is
+      // exactly what a server that predates #7306 produces - it ignores Accept and answers the buffered envelope -
+      // and leaving the response body open on that path would leak a connection per attempt.
+      try {
+        event = new JSONObject(line);
+      } catch (final RuntimeException e) {
+        close();
+        throw new RemoteException("Unparseable line in the streamed result: the server did not send the "
+            + "newline-delimited JSON encoding this driver asked for", e);
       }
-    } catch (final RuntimeException e) {
-      close();
-      throw new RemoteException("Error while converting a row of the streamed result", e);
+
+      try {
+        if (event.has("record")) {
+          next = rowMapper.apply(event.getJSONObject("record"));
+          return true;
+        }
+      } catch (final RuntimeException e) {
+        close();
+        throw new RemoteException("Error while converting a row of the streamed result", e);
+      }
+
+      if (!event.has("facets"))
+        break;
+      try {
+        // Kept for getFacets(), parsed into the one shape every transport shares; the stats trailer still follows
+        facets = FacetResults.fromJSON(event.getJSONObject("facets"));
+      } catch (final RuntimeException e) {
+        close();
+        throw new RemoteException("Error while reading the facets of the streamed result", e);
+      }
     }
 
     if (event.has("stats")) {
@@ -161,6 +174,16 @@ public class RemoteStreamingResultSet implements ResultSet {
 
     close();
     throw new RemoteException("Unrecognized event in the streamed result: " + line);
+  }
+
+  /**
+   * The facets of a {@code SELECT ... FACETS} query, from the {@code facets} line the server sends after the last row. Null until
+   * the rows have been consumed up to that line (this result set never reads ahead of the caller to find it), and null for any
+   * other statement.
+   */
+  @Override
+  public FacetResults getFacets() {
+    return facets;
   }
 
   @Override

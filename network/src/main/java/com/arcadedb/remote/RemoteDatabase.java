@@ -38,6 +38,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -1721,6 +1722,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject result = resultArray.getJSONObject(i);
       ((InternalResultSet) resultSet).add(json2Result(result));
     }
+    // The facets of a SELECT ... FACETS query, in the one shape every transport shares
+    if (response.has("facets"))
+      ((InternalResultSet) resultSet).setFacets(FacetResults.fromJSON(response.getJSONObject("facets")));
     return resultSet;
   }
 

@@ -33,6 +33,9 @@ import java.util.concurrent.locks.ReentrantLock;
  * <ul>
  * <li>{@code {"record": { ... }}} - one result row, serialized exactly as it would appear inside the
  *     {@code result} array of the buffered {@code application/json} response;</li>
+ * <li>{@code {"facets": {"meta": {...}, "<alias>": {...}}}} - the facets of a {@code SELECT ... FACETS} query, exactly the
+ *     {@code facets} member of the buffered response. At most one, after the last {@code record} line and before the
+ *     {@code stats} trailer; absent for any other statement;</li>
  * <li>{@code {"stats": {"limit": n, "returned": n, "truncated": b}}} - the trailer, carrying the same three
  *     numbers the buffered response reports at top level. Always the last line of a successful stream;</li>
  * <li>{@code {"error": {"message": "...", "status": n, "exception": "...", "exceptionArgs": "...", "retryAfter": n}}}
@@ -116,6 +119,14 @@ public final class NdJsonResultStream implements AutoCloseable {
    */
   public void writeRecord(final JSONObject row) throws IOException {
     writeLine(new JSONObject().put("record", row), false);
+  }
+
+  /**
+   * Emits the facets of a {@code SELECT ... FACETS} query, exactly the {@code facets} member of the buffered response
+   * ({@code FacetResults.toJSON()}). Not flushed on its own: the {@code stats} trailer follows at once and flushes both.
+   */
+  public void writeFacets(final JSONObject facets) throws IOException {
+    writeEvent(AbstractQueryHandler.FACETS_FIELD, facets, false);
   }
 
   /**

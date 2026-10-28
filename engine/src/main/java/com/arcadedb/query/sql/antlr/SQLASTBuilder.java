@@ -338,6 +338,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /** The facet FILTERs form an int bit mask per row. */
   private static final int    MAX_FACET_FILTERS    = 31;
 
+  /** The message of a FACETS clause written after SKIP or LIMIT; the HTTP auto-limit recognizes it so it does not append a second LIMIT. */
+  public static final String FACETS_AFTER_LIMIT_MESSAGE = "FACETS must come before SKIP and LIMIT";
+
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
 
@@ -554,7 +557,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // FACETS clause: before SKIP and LIMIT, and only on the outermost SELECT
     if (ctx.lateFacets != null)
-      throw new CommandSQLParsingException("FACETS must come before SKIP and LIMIT");
+      throw new CommandSQLParsingException(FACETS_AFTER_LIMIT_MESSAGE);
     if (ctx.facets != null) {
       requireOutermost(ctx);
       stmt.facets = visitFacetsClause(ctx.facets);
