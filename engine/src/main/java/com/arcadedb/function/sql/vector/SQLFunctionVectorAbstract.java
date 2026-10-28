@@ -432,6 +432,21 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
+   * The pre-filter of a k-NN search: the allow-list the {@code filter} and {@code where} options build together, tested by the
+   * index as it meets each candidate rather than on the k rows it answered. Shared by {@code vector.neighbors} and the
+   * Cypher {@code db.index.vector.queryNodes} (issue #10685), so both read the two options the same way.
+   *
+   * @return {@code null} when neither option is set (no filter); an EMPTY set when no record can satisfy them, which the
+   * caller must answer with no rows (issue #8959)
+   */
+  public static Set<RID> parsePreFilter(final List<?> filter, final Object where, final String functionName,
+      final CommandContext context) {
+    // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of listing
+    // every RID in scope up front as a `filter` subquery has to (issue #10169)
+    return RecordPredicateRidSet.of(where, parseRidFilter(filter, functionName, context), functionName, context);
+  }
+
+  /**
    * Reads the {@code filter} option into the set of RIDs the search is allowed to answer. Besides a bare {@link RID},
    * an {@link Identifiable} or a RID string, an element may be the row a subquery produced (issue #7125): a
    * {@link Result} that wraps a record, or that projects exactly one RID-valued column such as {@code SELECT @rid}. One
