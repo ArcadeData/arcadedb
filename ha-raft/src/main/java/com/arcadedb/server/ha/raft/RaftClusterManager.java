@@ -269,6 +269,9 @@ class RaftClusterManager {
     try {
       return readCommittedConfiguration("check the membership of peer " + peerId).contains(peerId.toString());
     } catch (final RuntimeException unreadable) {
+      LogManager.instance().log(this, Level.FINE,
+          "Membership of peer %s could not be confirmed (%s): treated as not a member, so its declared HTTP address is withdrawn",
+          peerId, unreadable.getMessage());
       return false;
     }
   }
