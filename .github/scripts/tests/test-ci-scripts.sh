@@ -51,6 +51,7 @@ NATIVEMARCH="$SCRIPTS/check-native-march.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 WRAPPER="$SCRIPTS/check-maven-wrapper.py"
+PROMPTMUT="$SCRIPTS/check-claude-prompt-mutations.py"
 PINCOMMENTS="$SCRIPTS/check-action-pin-comments.py"
 CHAOSSUMMARY="$SCRIPTS/chaos-run-summary.sh"
 
@@ -2367,6 +2368,101 @@ if grep -q 'chaos-run-summary.sh' .github/workflows/ha-chaos-tests.yml && ! grep
     pass "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
 else
     fail "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
+fi
+
+echo
+echo "check-claude-prompt-mutations.py"
+
+mkdir -p "$work/promptmut"
+# Writes a claude-code-action workflow: $1 file, $2 job permissions block, $3 allowed tools, $4 prompt line.
+promptmut_workflow() {
+    cat >"$work/promptmut/$1" <<YAML
+name: Review
+on: [ pull_request ]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+$2
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Please review this pull request.
+            $4
+          claude_args: '--model m --allowed-tools "$3"'
+YAML
+}
+READ_PERMS=$'    permissions:\n      contents: read\n      pull-requests: read'
+WRITE_PERMS=$'    permissions:\n      contents: read\n      pull-requests: write'
+READ_TOOLS='Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)'
+LABEL_TOOLS='Bash(gh pr comment:*),Bash(gh pr edit:*)'
+
+# The #10600 shape: read scope, read-only allowlist, and an instruction to label the PR.
+promptmut_workflow issue10600.yml "$READ_PERMS" "$READ_TOOLS" '- If a security hazard is added then add the label "do to not merge" to he pr'
+expect "rejects a label instruction with neither the scope nor the tool (#10600)" 1 "asks the model to label" \
+    "$PROMPTMUT" "$work/promptmut/issue10600.yml"
+promptmut_workflow scope-only.yml "$WRITE_PERMS" "$READ_TOOLS" '- If a security hazard is added then add the label "do not merge".'
+expect "rejects a label instruction whose allowlist has no labelling tool" 1 "a tool in --allowed-tools" \
+    "$PROMPTMUT" "$work/promptmut/scope-only.yml"
+promptmut_workflow tool-only.yml "$READ_PERMS" "$LABEL_TOOLS" '- If a security hazard is added then add the label "do not merge".'
+expect "rejects a label instruction whose job holds only read scope" 1 "a \`write\` permission on pull-requests or issues" \
+    "$PROMPTMUT" "$work/promptmut/tool-only.yml"
+promptmut_workflow both.yml "$WRITE_PERMS" "$LABEL_TOOLS" '- If a security hazard is added then add the label "do not merge".'
+expect "accepts a label instruction backed by both the scope and the tool" 0 "1 prompt(s)" \
+    "$PROMPTMUT" "$work/promptmut/both.yml"
+promptmut_workflow broad-tool.yml "$WRITE_PERMS" 'Bash(gh:*)' '- Then add a label to the pull request.'
+expect "accepts a broader Bash pattern that covers the labelling command" 0 "" \
+    "$PROMPTMUT" "$work/promptmut/broad-tool.yml"
+promptmut_workflow negated.yml "$READ_PERMS" "$READ_TOOLS" '- Do not try to add a label yourself: a later step does that from your verdict.'
+expect "does not read a prohibition as an instruction" 0 "" \
+    "$PROMPTMUT" "$work/promptmut/negated.yml"
+promptmut_workflow merge.yml "$WRITE_PERMS" "$READ_TOOLS" '- When everything is green, merge the PR.'
+expect "rejects a merge instruction with no merge tool and no contents scope" 1 "asks the model to merge" \
+    "$PROMPTMUT" "$work/promptmut/merge.yml"
+promptmut_workflow close.yml "$READ_PERMS" "$READ_TOOLS" '- If it is spam, close this issue.'
+expect "rejects a close instruction on a read-only job" 1 "asks the model to close" \
+    "$PROMPTMUT" "$work/promptmut/close.yml"
+
+# A job with no permissions block inherits the workflow's.
+cat >"$work/promptmut/inherited.yml" <<'YAML'
+name: Review
+on: [ pull_request ]
+permissions:
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Add the label "reviewed" to the PR.
+          claude_args: '--allowed-tools "Bash(gh pr edit:*)"'
+YAML
+expect "falls back to the workflow's permissions when the job sets none" 0 "" \
+    "$PROMPTMUT" "$work/promptmut/inherited.yml"
+
+cat >"$work/promptmut/broken.yml" <<'YAML'
+name: broken
+on: [workflow_dispatch
+jobs:
+  build:
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$PROMPTMUT" "$work/promptmut/broken.yml"
+expect "reports a workflow it cannot find" 1 "not found" \
+    "$PROMPTMUT" "$work/promptmut/missing.yml"
+
+# The repository's own workflows must pass - this is the case that would have caught #10600.
+expect "the repository's own claude-code-action prompts are executable" 0 "prompts are executable" \
+    "$PROMPTMUT"
+
+# The label the review flags with must be the one the repository has: `do not merge`, with spaces.
+# #10600's instruction named "do to not merge", and its own report then named `do-not-merge`.
+if grep -qF "labels[]=do not merge'" .github/workflows/claude-code-review.yml; then
+    pass "the review flags a hazardous PR with the repository's 'do not merge' label"
+else
+    fail "the review flags a hazardous PR with the repository's 'do not merge' label"
 fi
 
 echo
