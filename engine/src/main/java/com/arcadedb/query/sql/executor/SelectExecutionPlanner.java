@@ -40,6 +40,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.facet.FacetFilterEvaluator;
 import com.arcadedb.query.facet.FacetSpec;
 import com.arcadedb.query.facet.FacetSpecCompiler;
+import com.arcadedb.query.sql.executor.ColumnarGroupByPlanner.ColumnarGroupByPlan;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
@@ -235,6 +236,11 @@ public class SelectExecutionPlanner {
     // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
     if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
       info.whereClause = null;
+
+    // decided before the WHERE is planned: an index search or an indexed function consumes info.whereClause, and a WHERE answered by an
+    // index is still a WHERE (ColumnarGroupByPlanner)
+    info.whereless = info.whereClause == null;
+    info.writtenGroupBy = info.groupBy;
 
     initFacets(context);
   }
@@ -457,6 +463,8 @@ public class SelectExecutionPlanner {
 
       chainFacetCollect(selectExecutionPlan, context);
 
+      tryColumnarGroupBy(selectExecutionPlan, context);
+
       handleProjectionsBlock(selectExecutionPlan, info, context);
 
       if (rangeMinMaxSource != null)
@@ -525,6 +533,25 @@ public class SelectExecutionPlanner {
     handleProjectionsBlock(plan, info, context);
 
     chainTimeout(plan, info, context);
+  }
+
+  /**
+   * Chains a {@link ColumnarGroupByStep} in place of the aggregation steps when the GROUP BY is one the COLUMNAR projection can answer
+   * ({@link ColumnarGroupByPlanner#analyze}): the step carries those steps, built here exactly as {@link #handleProjectionsBlock} would
+   * build them, as its fallback, and decides per execution which of the two answers. ORDER BY, SKIP and LIMIT are chained after it by
+   * {@link #handleProjectionsBlock} as before. Any other statement is left untouched.
+   */
+  private void tryColumnarGroupBy(final SelectExecutionPlan plan, final CommandContext context) {
+    // projections already calculated by a push-down leave no aggregation chain to carry
+    if (info.groupBy == null || info.facets != null || info.projectionsCalculated)
+      return;
+    final ColumnarGroupByPlan columnar = ColumnarGroupByPlanner.analyze(statement.getProjection(), info, context);
+    if (columnar == null)
+      return;
+    final SelectExecutionPlan fallback = new SelectExecutionPlan(context, 0);
+    // chains the pre-aggregate projection, the aggregation and the post-aggregate projection, and marks them calculated
+    handleProjections(fallback, info, context);
+    plan.chain(new ColumnarGroupByStep(columnar, fallback, context));
   }
 
   /** Chains the statement's own {@code TIMEOUT} clause, last, so that it wraps everything the statement does. */

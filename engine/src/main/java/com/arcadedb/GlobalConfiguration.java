@@ -442,6 +442,9 @@ public enum GlobalConfiguration {
           + "property with no COLUMNAR index, or on a bucket whose projection is unusable). Read when the database is opened. "
           + "Default is 2", Integer.class, 2),
 
+  COLUMNAR_GROUP_BY_ACCELERATION("arcadedb.columnar.groupByAcceleration", SCOPE.DATABASE,
+      "Answer eligible GROUP BY queries from the COLUMNAR projection", Boolean.class, true),
+
   FLUSH_ALL_PAGES_TIMEOUT("arcadedb.flushAllPagesTimeout", SCOPE.DATABASE,
       """
       Milliseconds of NO FLUSH PROGRESS after which waiting for all of a database's pages to reach the \
