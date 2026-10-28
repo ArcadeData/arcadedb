@@ -411,6 +411,11 @@ public class PostgresCatalog {
     // function, a sequence, a role membership, a foreign table and a default privilege do not exist here; pg_class already
     // answers relhasrules and relhastriggers false for every relation, so pg_rewrite and pg_trigger agree with it. An ArcadeDB
     // schema trigger is not a PostgreSQL trigger: it calls no function of pg_proc and no client can read it as one.
+    // The trade-off, accepted on purpose: a real PostgreSQL also has system rows in pg_proc (its built-in functions) and pg_depend
+    // (the dependencies of its own catalog). Those are PostgreSQL's implementation, not objects of this database: this server has
+    // no function with a pg_proc identity (an OID, a signature a client could bind), so "is gen_random_uuid defined" answering none
+    // is the true answer for it, and the listings that read these relations (psql's \df, pgjdbc's getFunctions and getImportedKeys) exclude the
+    // system rows anyway. A relation whose rows describe this server's own state (pg_stat_activity, pg_locks) is still refused.
     relation("pg_proc", null, "oid", "proname", "pronamespace", "proowner", "prolang", "procost", "prorows", "provariadic",
         "prosupport", "prokind", "prosecdef", "proleakproof", "proisstrict", "proretset", "provolatile", "proparallel", "pronargs",
         "pronargdefaults", "prorettype", "proargtypes", "proallargtypes", "proargmodes", "proargnames", "proargdefaults",
