@@ -430,6 +430,26 @@ class Issue10708ContinuousAggregateOwnTransactionTest extends TestHelper {
     assertThat(database.lookupByRID(rid, true).asDocument().getInteger("x")).isEqualTo(2);
   }
 
+  /** An Error escaping an after-commit callback still propagates, and the transaction, committed, still runs what its end owes. */
+  @Test
+  void anErrorInAnAfterCommitCallbackDoesNotSkipTheAfterCompletionCallbacks() {
+    final class CallbackError extends Error {
+    }
+
+    database.begin();
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    final AtomicBoolean completed = new AtomicBoolean();
+    tx.addAfterCommitCallback(() -> {
+      throw new CallbackError();
+    });
+    tx.addAfterCompletionCallbackIfAbsent("k", () -> completed.set(true));
+
+    assertThatThrownBy(() -> database.commit()).hasRootCauseInstanceOf(CallbackError.class);
+
+    assertThat(completed.get()).isTrue();
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
   /**
    * A block retried after a conflict: each attempt's append is durable (#7410), the second attempt appends again, and each attempt
    * owes its own refresh - the one rolled back too. The aggregate follows the source through both.

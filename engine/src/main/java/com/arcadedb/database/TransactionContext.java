@@ -1320,8 +1320,9 @@ public class TransactionContext implements Transaction {
       if (completionOwner == Thread.currentThread())
         fireAfterCompletionCallbacks(completion);
       else
-        LogManager.instance().log(this, Level.FINE,
-            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them",
+        LogManager.instance().log(this, Level.INFO,
+            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
+                + "the continuous aggregates they would have refreshed catch up at their next refresh",
             null, completion.size());
     }
   }
@@ -1481,25 +1482,30 @@ public class TransactionContext implements Transaction {
         throw e;
       }
     }
-    if (callbacks != null) {
-      int next = 0;
-      try {
-        while (next < callbacks.size()) {
-          final Runnable callback = callbacks.get(next++);
-          try {
-            callback.run();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+    try {
+      if (callbacks != null) {
+        int next = 0;
+        try {
+          while (next < callbacks.size()) {
+            final Runnable callback = callbacks.get(next++);
+            try {
+              callback.run();
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+            }
           }
+        } finally {
+          // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
+          if (commitPointWasReached && next < callbacks.size())
+            abandonOrderedCallbacks(callbacks, next);
         }
-      } finally {
-        // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
-        if (commitPointWasReached && next < callbacks.size())
-          abandonOrderedCallbacks(callbacks, next);
       }
+    } finally {
+      // the transaction is committed and durable here: an Error escaping an after-commit callback still propagates, but does not cost
+      // the work owed by the transaction ending
+      if (completion != null)
+        fireAfterCompletionCallbacks(completion);
     }
-    if (completion != null)
-      fireAfterCompletionCallbacks(completion);
   }
 
   /**
