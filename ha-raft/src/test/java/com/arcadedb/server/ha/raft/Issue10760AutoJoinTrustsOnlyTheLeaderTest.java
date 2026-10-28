@@ -109,6 +109,23 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
     assertThat(probe.addsThrough).isEmpty();
   }
 
+  /**
+   * A leader that failed at its declared address is still asked at the address its group holds for it: a probe is keyed
+   * by the peer AND the address, so the failure at one does not skip the other for every round.
+   */
+  @Test
+  void aLeaderUnreachableAtItsDeclaredAddressIsAskedWhereItsGroupPutsIt() {
+    final RaftPeer movedB = RaftPeer.newBuilder().setId(B.getId()).setAddress("pod-b-moved:2434").build();
+    final ScriptedProbe probe = new ScriptedProbe()
+        .answer(B, new IOException("nothing listens at the declared address"))
+        .answer(C, follower(B.getId(), SELF, movedB, C))
+        .answerAt("pod-b-moved:2434", leader(movedB, C));
+
+    assertThat(autoJoin(probe).tryAutoJoin()).isEqualTo(KubernetesAutoJoin.Outcome.JOINED);
+    assertThat(probe.asked).containsExactly("B", "C", "B");
+    assertThat(probe.addsThrough).containsExactly("B");
+  }
+
   @Test
   void aNamedLeaderMissingFromTheFollowersConfigurationIsReportedNotDialled() {
     final ScriptedProbe probe = new ScriptedProbe()
@@ -201,6 +218,7 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
   /** Answers each peer from a script: a {@code GroupAnswer}, {@code null} (unsuccessful) or an exception to throw. */
   private static final class ScriptedProbe implements KubernetesAutoJoin.ClusterProbe {
     private final Map<RaftPeerId, Object> script      = new HashMap<>();
+    private final Map<String, Object>     byAddress   = new HashMap<>();
     private final List<String>            asked       = new ArrayList<>();
     private final List<String>            addsThrough = new ArrayList<>();
     private       String                  addRejection;
@@ -210,10 +228,16 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
       return this;
     }
 
+    /** An answer for one address only, taking precedence over the peer's answer by id. */
+    ScriptedProbe answerAt(final String address, final Object answer) {
+      byAddress.put(address, answer);
+      return this;
+    }
+
     @Override
     public KubernetesAutoJoin.GroupAnswer ask(final RaftPeer peer) throws Exception {
       asked.add(peer.getId().toString());
-      final Object answer = script.get(peer.getId());
+      final Object answer = byAddress.containsKey(peer.getAddress()) ? byAddress.get(peer.getAddress()) : script.get(peer.getId());
       if (answer instanceof Exception e)
         throw e;
       return (KubernetesAutoJoin.GroupAnswer) answer;

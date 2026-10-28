@@ -247,7 +247,8 @@ public class KubernetesAutoJoin {
   /**
    * Probes the declared peers until one answers as the LEADER (issue #10760). A follower that names its leader sends the
    * probe there next, even when that leader is not in this node's declared list (a member added since), using the
-   * address the follower's own configuration gives it. Each peer is asked once per round.
+   * address the follower's own configuration gives it. Each peer is asked once per round AT EACH ADDRESS: a probe that
+   * failed at the declared address does not stop the same id being asked at the address its group holds for it.
    *
    * @return the leader's configuration, or {@code null} when no peer answered as the leader
    */
@@ -258,10 +259,10 @@ public class KubernetesAutoJoin {
       if (!peer.getId().equals(localPeerId))
         toAsk.add(peer);
 
-    final Set<RaftPeerId> asked = new HashSet<>();
+    final Set<String> asked = new HashSet<>();
     while (!toAsk.isEmpty()) {
       final RaftPeer peer = toAsk.poll();
-      if (!asked.add(peer.getId()))
+      if (!asked.add(probeKey(peer)))
         continue;
 
       final GroupAnswer answer;
@@ -285,13 +286,15 @@ public class KubernetesAutoJoin {
       // The leader this follower names is asked next, at the address the follower's configuration holds for it. That
       // address is the group's, not this node's declaration, so it is held to the rule every peer address is
       // (validatePeerAddress) before it is dialled; nothing is added through it unless it then answers as the LEADER.
-      if (answer.leaderId() != null && !answer.leaderId().equals(localPeerId) && !asked.contains(answer.leaderId())) {
+      if (answer.leaderId() != null && !answer.leaderId().equals(localPeerId)) {
         RaftPeer named = null;
         for (final RaftPeer member : answer.members())
           if (member.getId().equals(answer.leaderId())) {
             named = member;
             break;
           }
+        if (named != null && asked.contains(probeKey(named)))
+          continue; // already asked there this round
         if (named == null)
           probeFailures.put(answer.leaderId().toString(),
               "leader named by " + peer.getId() + " is not in its own configuration, so it has no address to dial");
@@ -303,6 +306,11 @@ public class KubernetesAutoJoin {
       }
     }
     return null;
+  }
+
+  /** What makes two probes the same one: the peer AND the address it is dialled at. */
+  private static String probeKey(final RaftPeer peer) {
+    return peer.getId() + "@" + peer.getAddress();
   }
 
   /** Whether {@code address} passes {@link RaftPeerAddressResolver#validatePeerAddress}. */
