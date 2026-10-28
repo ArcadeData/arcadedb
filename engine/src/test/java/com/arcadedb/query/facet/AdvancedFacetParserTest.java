@@ -42,6 +42,9 @@ class AdvancedFacetParserTest extends TestHelper {
 
   @BeforeEach
   void schema() {
+    database.command("sql", "CREATE VERTEX TYPE Tag");
+    database.command("sql", "CREATE PROPERTY Tag.path STRING");
+    database.command("sql", "CREATE EDGE TYPE ParentOf");
     database.command("sql", "CREATE DOCUMENT TYPE Asset");
     database.command("sql", "CREATE PROPERTY Asset.tags LIST OF STRING");
     database.command("sql", "CREATE PROPERTY Asset.brand STRING");

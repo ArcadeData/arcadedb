@@ -48,6 +48,9 @@ class ColumnarIndexDdlTest extends TestHelper {
 
   @Override
   protected void beginTest() {
+    database.command("sql", "CREATE VERTEX TYPE Tag");
+    database.command("sql", "CREATE PROPERTY Tag.path STRING");
+    database.command("sql", "CREATE EDGE TYPE ParentOf");
     database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 3");
     database.command("sql", "CREATE PROPERTY Asset.brand STRING");
     database.command("sql", "CREATE PROPERTY Asset.author STRING");

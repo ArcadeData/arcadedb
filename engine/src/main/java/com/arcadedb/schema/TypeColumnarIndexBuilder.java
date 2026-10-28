@@ -25,6 +25,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.index.columnar.ColumnarIndexFactoryHandler;
+import com.arcadedb.index.columnar.HierarchyDefinition;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -109,6 +110,9 @@ public class TypeColumnarIndexBuilder extends TypeIndexBuilder {
     final boolean byItem = indexProperty.endsWith(ColumnarIndex.BY_ITEM_SUFFIX);
     final String property = Index.basePropertyName(indexProperty);
     checkNoOtherColumnarIndex(type, property, type.getPolymorphicIndexByProperties(metadata.propertyNames, Schema.INDEX_TYPE.COLUMNAR));
+    final HierarchyDefinition hierarchy = columnarMetadata().getHierarchyDefinition();
+    if (hierarchy != null)
+      hierarchy.validate(database.getSchema(), metadata.typeName, property);
     final Type propertyType = resolvePropertyType(type, property, byItem);
     if (propertyType != null) {
       final ColumnDefinition column = ColumnarIndex.defineColumn(-1, property, propertyType, byItem);

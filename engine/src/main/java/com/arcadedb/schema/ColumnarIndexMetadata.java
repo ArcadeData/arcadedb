@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.index.columnar.HierarchyDefinition;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Set;
@@ -50,6 +51,14 @@ public class ColumnarIndexMetadata extends IndexMetadata {
    */
   public JSONObject getHierarchy() {
     return hierarchy;
+  }
+
+  /**
+   * The hierarchy as a {@link HierarchyDefinition} ({@code parentDirection} defaulting to IN), or null when the index has none. Not
+   * validated against the schema: {@link TypeColumnarIndexBuilder#create()} does that.
+   */
+  public HierarchyDefinition getHierarchyDefinition() {
+    return HierarchyDefinition.fromJSON(hierarchy);
   }
 
   /** The distinct-value limit checked at creation, 0 to use {@code arcadedb.columnar.maxCardinality}. */
