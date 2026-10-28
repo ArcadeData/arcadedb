@@ -490,6 +490,16 @@ class PostgresCatalogTest {
     assertThat(probe("SELECT pg_catalog.no_such_function_10695()").rows).isEmpty();
   }
 
+  @Test
+  void aSessionProbeReadsTheSessionsOwnSettings() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("application_name", "probe-app");
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolveProbeForSession(
+        "SELECT (SELECT setting FROM pg_catalog.pg_settings WHERE name = 'application_name') AS app", database, USER, settings);
+    assertThat(answer.rows).hasSize(1);
+    assertThat(answer.rows.get(0).values()).containsExactly("probe-app");
+  }
+
   private PostgresCatalog.Answer probe(final String query, final Object... parameters) {
     return PostgresCatalog.resolveProbe(query, database, USER, parameters);
   }

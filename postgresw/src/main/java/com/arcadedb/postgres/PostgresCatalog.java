@@ -606,6 +606,17 @@ public class PostgresCatalog {
    */
   public static Answer resolveProbe(final String query, final Database database, final String userName,
       final Object... parameters) {
+    return resolveProbeForSession(query, database, userName, null, parameters);
+  }
+
+  /**
+   * {@link #resolveProbe} for a session: a {@code pg_settings} the probe reads (in a scalar subquery) holds the session's own
+   * values, as for {@link #resolveForSession}.
+   *
+   * @param settings the session's settings, or null for the defaults
+   */
+  public static Answer resolveProbeForSession(final String query, final Database database, final String userName,
+      final PostgresSessionSettings settings, final Object... parameters) {
     // The substrings are only a cheap pre-filter; the tokens decide. Not startsAsQuery: a probe may open with a comment
     if (query == null || database == null || !(containsIgnoreCase(query, PG_CATALOG_SCHEMA) || containsIgnoreCase(query,
         "pg_type")))
@@ -629,7 +640,7 @@ public class PostgresCatalog {
 
     Answer answer;
     try {
-      answer = project(statement, List.of(), List.of(new Row()), new Context(database, userName), Map.of(), true, null, null);
+      answer = project(statement, List.of(), List.of(new Row()), context(database, userName, settings), Map.of(), true, null);
     } catch (final PostgresCatalogExpression.BudgetExceeded e) {
       answer = null;
     }
