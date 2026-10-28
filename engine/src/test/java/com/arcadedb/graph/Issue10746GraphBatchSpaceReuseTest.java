@@ -101,6 +101,23 @@ class Issue10746GraphBatchSpaceReuseTest extends TestHelper {
   }
 
   @Test
+  void theNextFlushFillsTheFreeTailOfThePageTheLastOneLeft() {
+    database.getSchema().createVertexType("Node", 1);
+    database.getSchema().createEdgeType("Link", 1);
+
+    // NO DELETE AT ALL: ONLY THE TAIL finishBulkPage LISTS CAN KEEP THE SECOND FLUSH ON THE SAME PAGE
+    for (int flush = 0; flush < 10; flush++)
+      try (final GraphBatch batch = database.batch().build()) {
+        final RID[] vertices = batch.createVertices("Node", 2);
+        for (int k = 0; k < 5; k++)
+          batch.newEdge(vertices[0], "Link", vertices[1], "w", k);
+      }
+
+    assertThat(database.countType("Link", false)).isEqualTo(50);
+    assertThat(linkPages()).as("50 small edges written by 10 flushes fit one page").isEqualTo(1);
+  }
+
+  @Test
   void anEdgeLargerThanAPageIsWrittenAsAChunkChain() {
     database.getSchema().createVertexType("Node", 1);
     database.getSchema().createEdgeType("Link", 1);
