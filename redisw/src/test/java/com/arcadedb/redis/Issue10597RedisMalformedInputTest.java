@@ -112,6 +112,20 @@ class Issue10597RedisMalformedInputTest extends BaseRedisServerTest {
   }
 
   @Test
+  void inlineEscapesFollowRedisRules() throws Exception {
+    final String line = "a \"x\\x41\" \"\\xZZ\" \"\\x4\" 'it\\'s'";
+    final byte[] bytes = line.getBytes(StandardCharsets.ISO_8859_1);
+    // a hex escape closing the word, an invalid one kept as its letters, a truncated one, an escaped single quote
+    assertThat(RedisNetworkExecutor.splitInlineArguments(bytes, bytes.length)).containsExactly("a", "xA", "xZZ", "x4", "it's");
+  }
+
+  @Test
+  void httpRequestSentToTheRedisPortIsRefusedAtItsFirstLine() throws Exception {
+    assertOneErrorThenClosed("POST / HTTP/1.1\r\n", "cross-protocol");
+    assertOneErrorThenClosed("Host: localhost\r\n", "cross-protocol");
+  }
+
+  @Test
   void unbalancedQuotesInAnInlineCommandCloseWithOneError() throws Exception {
     assertOneErrorThenClosed("PING \"unterminated\r\n", "unbalanced quotes");
   }

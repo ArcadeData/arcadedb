@@ -1383,6 +1383,11 @@ public class RedisNetworkExecutor extends Thread {
     if (args.size() > maxMultiBulkLength)
       throw new RedisProtocolLimitException(
           "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
+    // An HTTP request sent to this port (a browser form posting cross-protocol) would otherwise be read line by line as
+    // commands: refused at its first line, as Redis refuses it
+    if (!args.isEmpty() && args.getFirst() instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
+        "HOST:")))
+      throw new RedisProtocolLimitException("Protocol error: possible cross-protocol request ('" + name + "'), refused");
     return args;
   }
 
