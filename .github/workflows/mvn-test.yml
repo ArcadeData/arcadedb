@@ -40,11 +40,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure SHA pinned actions
-        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@60e3a74c7b74a319e8e53e46bc455205f7173e1a # v5.0.8
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@c4e71056006d29f90204b2d063be337109507d62 # v5.0.10
+      # The step above checks that every reference IS a SHA, not which release that SHA is. The
+      # comment beside it is the only readable statement of that, and it drifted unnoticed (#10602):
+      # three CodeQL steps ran v4.39.x commented `# v3.29.5`. This resolves each SHA's upstream tags.
+      - name: Check SHA pin version comments
+        run: ./.github/scripts/check-action-pin-comments.py
       - name: Check test database paths
         run: ./.github/scripts/check-test-database-paths.sh
       - name: Run pre-commit
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: "pip"
@@ -117,7 +122,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
@@ -131,10 +136,10 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Get project version
         id: get-version
@@ -155,7 +160,7 @@ jobs:
       # was written and every e2e job then died on `docker load` with "No such file or directory" (#5672).
       # Artifacts are scoped to the run and are not evicted, which is the property this needs.
       - name: Upload docker image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp/arcadedb-image.tar
@@ -170,7 +175,7 @@ jobs:
         run: tar -czf /tmp/arcadedb-m2.tgz -C ~/.m2/repository com/arcadedb
 
       - name: Upload ArcadeDB Maven artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp/arcadedb-m2.tgz
@@ -189,14 +194,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -262,7 +267,7 @@ jobs:
       # nothing about the tests. The step below is what decides the job, so losing the annotations
       # no longer costs a false red - and cannot buy a false green either.
       - name: Unit Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         continue-on-error: true
         if: success() || failure()
         with:
@@ -284,7 +289,7 @@ jobs:
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload unit test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-test-reports
           path: |
@@ -296,7 +301,7 @@ jobs:
 
       - name: Upload unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-coverage-reports
           path: |
@@ -329,14 +334,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -366,7 +371,7 @@ jobs:
       # a failure here could be overwritten by the other lane's green summary, and a reader had no way to
       # tell which lane a given report described.
       - name: Slow Unit Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         continue-on-error: true
         if: success() || failure()
         with:
@@ -387,7 +392,7 @@ jobs:
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload slow unit test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: slow-unit-test-reports
           path: |
@@ -399,7 +404,7 @@ jobs:
 
       - name: Upload unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: slow-unit-coverage-reports
           path: |
@@ -428,14 +433,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -459,7 +464,7 @@ jobs:
 
       # See the unit-tests job: the reporter is allowed to fail, the check below is the verdict.
       - name: Vector Unit Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         continue-on-error: true
         if: success() || failure()
         with:
@@ -480,7 +485,7 @@ jobs:
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload vector unit test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vector-unit-test-reports
           path: |
@@ -492,7 +497,7 @@ jobs:
 
       - name: Upload vector unit test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vector-unit-coverage-reports
           path: |
@@ -520,14 +525,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -552,7 +557,7 @@ jobs:
 
       # See the unit-tests job: the reporter is allowed to fail, the check below is the verdict.
       - name: openCypher TCK Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         continue-on-error: true
         if: success() || failure()
         with:
@@ -587,7 +592,7 @@ jobs:
 
       - name: Upload openCypher TCK compliance report
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: opencypher-tck-compliance-report
           path: |
@@ -600,7 +605,7 @@ jobs:
       # surefire XML already say everything, and 28 MB per push is not worth retaining to say it again.
       - name: Upload openCypher TCK HTML report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: opencypher-tck-html-report
           path: engine/target/tck-report.html
@@ -613,7 +618,7 @@ jobs:
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload openCypher TCK test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: opencypher-tck-test-reports
           path: |
@@ -625,7 +630,7 @@ jobs:
 
       - name: Upload openCypher TCK coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: opencypher-tck-coverage-reports
           path: |
@@ -643,14 +648,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -672,7 +677,7 @@ jobs:
 
       # See the unit-tests job: the reporter is allowed to fail, the check below is the verdict.
       - name: IT Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         continue-on-error: true
         if: success() || failure()
         with:
@@ -693,7 +698,7 @@ jobs:
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload integration test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-test-reports
           path: |
@@ -706,7 +711,7 @@ jobs:
 
       - name: Upload integration test coverage reports
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-coverage-reports
           path: |
@@ -721,14 +726,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -757,14 +762,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-maven-artifacts
           path: /tmp
@@ -775,7 +780,7 @@ jobs:
           tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -794,7 +799,7 @@ jobs:
       # failing test and no check-test-results.py is needed. The reporter only publishes annotations,
       # so letting it fail removes the false red without ever hiding a real failure.
       - name: E2E Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -811,7 +816,7 @@ jobs:
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload Java E2E test reports
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: java-e2e-test-reports
           path: |
@@ -831,7 +836,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 24.9+ required: testcontainers@12 pulls archiver@8 (pure ESM), and
           # Jest's require(ESM) bridge only works on Node 24.9+ (synchronous vm module APIs).
@@ -840,7 +845,7 @@ jobs:
           cache-dependency-path: "e2e-js/package-lock.json"
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -859,7 +864,7 @@ jobs:
 
       # See the java-e2e-tests job: the test step is the verdict, the reporter is decorative.
       - name: JS E2E Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -871,7 +876,7 @@ jobs:
 
       - name: Upload JS E2E JUnit report
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: js-e2e-junit
           path: e2e-js/reports/jest-junit.xml
@@ -913,7 +918,7 @@ jobs:
           path: clients
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # testcontainers requires Node >= 22.22; the clients repository's own e2e job uses 24.
           node-version: "24"
@@ -921,7 +926,7 @@ jobs:
           cache-dependency-path: "clients/typescript/package-lock.json"
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -982,14 +987,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: "e2e-studio/package-lock.json"
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -1013,7 +1018,7 @@ jobs:
 
       # See the java-e2e-tests job: the test step is the verdict, the reporter is decorative.
       - name: Studio E2E Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -1025,7 +1030,7 @@ jobs:
 
       - name: Upload Studio E2E test artifacts
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: studio-e2e-artifacts
           path: |
@@ -1043,7 +1048,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: "pip"
@@ -1055,7 +1060,7 @@ jobs:
           uv --version
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -1076,7 +1081,7 @@ jobs:
 
       # See the java-e2e-tests job: the test step is the verdict, the reporter is decorative.
       - name: Python E2E Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -1088,7 +1093,7 @@ jobs:
 
       - name: Upload Python E2E JUnit report
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-e2e-junit
           path: e2e-python/reports/python-junit.xml
@@ -1111,7 +1116,7 @@ jobs:
           cache-dependency-path: "e2e-csharp/ArcadeDB.E2ETests/ArcadeDB.E2ETests.csproj"
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -1133,7 +1138,7 @@ jobs:
 
       # See the java-e2e-tests job: the test step is the verdict, the reporter is decorative.
       - name: C# E2E Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -1145,7 +1150,7 @@ jobs:
 
       - name: Upload C# E2E JUnit report
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: csharp-e2e-junit
           path: e2e-csharp/ArcadeDB.E2ETests/reports/csharp-junit.xml
@@ -1170,7 +1175,7 @@ jobs:
           cache-dependency-path: "e2e-go/go.sum"
 
       - name: Download docker image
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arcadedb-docker-image
           path: /tmp
@@ -1201,7 +1206,7 @@ jobs:
 
       # See the java-e2e-tests job: the test step is the verdict, the reporter is decorative.
       - name: Go E2E Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: success() || failure()
         continue-on-error: true
         with:
@@ -1213,7 +1218,7 @@ jobs:
 
       - name: Upload Go E2E JUnit report
         if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: go-e2e-junit
           path: e2e-go/reports/go-junit.xml
@@ -1266,28 +1271,28 @@ jobs:
       # continue-on-error keeps a missing artifact from failing the step with a bare "Artifact not
       # found", so the collector below can report which suite is missing and why it matters.
       - name: Download unit test coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: unit-coverage-reports
           path: unit-coverage
 
       - name: Download slow unit test coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: slow-unit-coverage-reports
           path: slow-unit-coverage
 
       - name: Download vector unit test coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: vector-unit-coverage-reports
           path: vector-unit-coverage
 
       - name: Download openCypher TCK coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: opencypher-tck-coverage-reports
@@ -1295,7 +1300,7 @@ jobs:
 
 
       - name: Download integration test coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: integration-coverage-reports
@@ -1322,7 +1327,7 @@ jobs:
           coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           fail_ci_if_error: false
           disable_search: true
