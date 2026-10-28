@@ -41,6 +41,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure SHA pinned actions
         uses: zgosalvez/github-actions-ensure-sha-pinned-actions@c4e71056006d29f90204b2d063be337109507d62 # v5.0.10
+      # The step above checks that every reference IS a SHA, not which release that SHA is. The
+      # comment beside it is the only readable statement of that, and it drifted unnoticed (#10602):
+      # three CodeQL steps ran v4.39.x commented `# v3.29.5`. This resolves each SHA's upstream tags.
+      - name: Check SHA pin version comments
+        run: ./.github/scripts/check-action-pin-comments.py
       - name: Check test database paths
         run: ./.github/scripts/check-test-database-paths.sh
       - name: Run pre-commit

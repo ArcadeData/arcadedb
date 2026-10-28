@@ -51,6 +51,7 @@ NATIVEMARCH="$SCRIPTS/check-native-march.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 WRAPPER="$SCRIPTS/check-maven-wrapper.py"
+PINCOMMENTS="$SCRIPTS/check-action-pin-comments.py"
 CHAOSSUMMARY="$SCRIPTS/chaos-run-summary.sh"
 
 work="$(mktemp -d)"
@@ -2207,6 +2208,59 @@ expect "reports a workflow it cannot find" 1 "not found" \
 # The repository's own workflows must pass - this is the case that would have caught #10134.
 expect "the repository's own workflows invoke Maven through the wrapper" 0 "Maven wrapper" \
     "$WRAPPER"
+
+echo "check-action-pin-comments.py"
+
+# Tag listings stand in for `git ls-remote --tags`, so these cases do not move with upstream tags.
+# The #10602 shape: codeql-action's SHA is v4.39.0 (and the moving `v4`), commented `# v3.29.5`.
+mkdir -p "$work/pins/tags/github" "$work/pins/tags/actions" "$work/pins/tags/graalvm"
+cat >"$work/pins/tags/github/codeql-action.txt" <<'TXT'
+1111111111111111111111111111111111111111	refs/tags/v3.29.5
+6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee	refs/tags/v4
+6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee	refs/tags/v4.39.0
+TXT
+# An annotated tag: the plain ref names the tag object, the peeled `^{}` ref names the commit.
+cat >"$work/pins/tags/actions/checkout.txt" <<'TXT'
+2222222222222222222222222222222222222222	refs/tags/v7.0.1
+3d3c42e5aac5ba805825da76410c181273ba90b1	refs/tags/v7.0.1^{}
+TXT
+cat >"$work/pins/tags/graalvm/setup-graalvm.txt" <<'TXT'
+27b360dbb857524eaf0b4c4cef364d38e5b4f173	refs/tags/v1.6.7
+TXT
+pin_workflow() {
+    cat >"$work/pins/$1.yml" <<YAML
+name: pins
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Analyze
+        uses: $2
+      - uses: ./.github/actions/local
+      - uses: docker://alpine:3
+YAML
+}
+pin_workflow drifted 'github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee          # v3.29.5'
+expect "rejects a comment naming a release that is not at the SHA" 1 "commented \`# v3.29.5\` but the tags at that SHA are [v4, v4.39.0]" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/drifted.yml"
+pin_workflow graalvm 'graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.1'
+expect "rejects a stale patch release in the comment" 1 "graalvm/setup-graalvm@27b360dbb857 is commented \`# v1.6.1\`" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/graalvm.yml"
+pin_workflow correct 'github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0'
+expect "accepts a comment naming a tag at the SHA, direct or peeled, and skips local and docker refs" 0 "2 SHA-pinned action references across 2 repositories" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/correct.yml"
+pin_workflow uncommented 'github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee'
+expect "rejects a SHA pin with no version comment" 1 "has no version comment; append \`# <tag>\` naming the release at that SHA (v4, v4.39.0)" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/uncommented.yml"
+pin_workflow unlisted 'nobody/missing@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v1.0.0'
+expect "fails closed when the tags of an action cannot be listed" 1 "no tag listing at" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/unlisted.yml"
+expect "reports a workflow it cannot find" 1 "not found" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/missing.yml"
+expect "accepts --tags-dir after the workflow arguments" 1 "commented \`# v3.29.5\`" \
+    "$PINCOMMENTS" "$work/pins/drifted.yml" --tags-dir "$work/pins/tags"
 
 echo
 echo "chaos-run-summary.sh (#10603)"
