@@ -190,6 +190,21 @@ class Discussion10893CypherVectorIndexOptionsTest extends TestHelper {
     assertThat(database.getSchema().existsIndex("g")).isFalse();
   }
 
+  @Test
+  void aPerFieldSettingOfAPropertyWithABacktickRoundTrips() {
+    // the per-field key carries the property name, so it is quoted as a property name is
+    command("CREATE FULLTEXT INDEX f FOR (n:Doc) ON EACH [n.`ti``tle`] OPTIONS {indexConfig: {`ti``tle_boost`: 3.0}}");
+    assertThat(((LSMTreeFullTextIndex) ((TypeIndex) database.getSchema().getIndexByName("f")).getIndexesOnBuckets()[0])
+        .getFullTextMetadata().getFieldBoost("ti`tle")).isEqualTo(3.0f);
+
+    final String fulltext = createStatement("f");
+    assertThat(fulltext).isEqualTo("CREATE FULLTEXT INDEX `f` FOR (n:`Doc`) ON EACH [n.`ti``tle`] OPTIONS {indexConfig: "
+        + "{`ti``tle_boost`: 3.0}}");
+    command("DROP INDEX f");
+    command(fulltext);
+    assertThat(createStatement("f")).isEqualTo(fulltext);
+  }
+
   private VectorQuantizationType quantizationOf(final String type) {
     command("DROP INDEX q IF EXISTS");
     command("CREATE VECTOR INDEX q FOR (n:Q) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.quantization.type`: "

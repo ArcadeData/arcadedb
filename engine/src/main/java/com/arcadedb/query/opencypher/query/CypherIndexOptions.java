@@ -148,6 +148,7 @@ final class CypherIndexOptions {
       }
     }
 
+    // enabled with 'none', or disabled with 'scalar' / 'binary', asks for two different indexes
     if (quantizationEnabled != null && quantizationType != null && quantizationEnabled == "none".equals(quantizationType))
       throw new CommandParsingException(
           "`" + VECTOR_QUANTIZED + "`: " + quantizationEnabled + " contradicts `" + VECTOR_QUANTIZATION_TYPE + "`: '"
@@ -274,12 +275,15 @@ final class CypherIndexOptions {
     return config;
   }
 
-  /** {@code indexConfig} written as the Cypher map literal of an {@code OPTIONS}, every key quoted. */
+  /**
+   * {@code indexConfig} written as the Cypher map literal of an {@code OPTIONS}, every key quoted: a per-field key of a
+   * full-text index ({@code <field>_boost}) carries a property name, which may hold a backtick.
+   */
   static String indexConfigLiteral(final Map<String, Object> config) {
     final StringJoiner entries = new StringJoiner(", ", "{indexConfig: {", "}}");
     for (final Map.Entry<String, Object> entry : config.entrySet()) {
       final Object value = entry.getValue();
-      entries.add("`" + entry.getKey() + "`: " + (value instanceof String s ?
+      entries.add(CypherSchemaCommands.quote(entry.getKey()) + ": " + (value instanceof String s ?
           "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'" :
           String.valueOf(value)));
     }

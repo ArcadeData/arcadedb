@@ -281,7 +281,7 @@ public final class CypherSchemaCommands {
         + " REQUIRE " + props + " " + requirement;
   }
 
-  private static String quote(final String name) {
+  static String quote(final String name) {
     return "`" + name.replace("`", "``") + "`";
   }
 
