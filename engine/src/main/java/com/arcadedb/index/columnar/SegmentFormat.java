@@ -63,4 +63,9 @@ final class SegmentFormat {
   static String deadFileName(final long segmentId, final int version) {
     return String.format("seg-%016x.dead.%d", segmentId, version);
   }
+
+  /** {@code dict-<indexFileId>.<generation>.dic}: one generation of a column's dictionary in its bucket directory. */
+  static String dictionaryFileName(final int indexFileId, final int generation) {
+    return "dict-" + indexFileId + "." + generation + ".dic";
+  }
 }

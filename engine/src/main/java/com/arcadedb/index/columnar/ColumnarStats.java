@@ -191,8 +191,14 @@ public final class ColumnarStats {
     overlayRows.cell(type, NONE).set(rows);
   }
 
-  public void setSegments(final String type, final int n) {
+  /** Test only: projections report through {@link #addSegments}, whose sums a set would overwrite. */
+  void setSegments(final String type, final int n) {
     segments.cell(type, NONE).set(n);
+  }
+
+  /** Adds {@code delta} to the type's segment count: each bucket projection reports its own change, so the gauge is the type's sum. */
+  public void addSegments(final String type, final int delta) {
+    segments.cell(type, NONE).addAndGet(delta);
   }
 
   public void setDictionarySize(final String type, final String property, final long n) {

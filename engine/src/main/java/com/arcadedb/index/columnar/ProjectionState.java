@@ -132,6 +132,11 @@ final class ProjectionState {
     return dictionaries.get(property);
   }
 
+  /** The dictionary generation of every property, as given to the constructor; immutable when the caller passed an immutable map. */
+  Map<String, GlobalDictionary> dictionaries() {
+    return dictionaries;
+  }
+
   /** The constructor's file names (V-B7). */
   Set<String> files() {
     return files;
