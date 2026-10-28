@@ -644,7 +644,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       final Set<IndexCursorEntry> set,
       final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
-    final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
@@ -702,7 +702,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
 
     for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
-      final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+      final BasePage lastPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
 
@@ -727,7 +727,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       }
 
       final PageId pageId = new PageId(database, file.getFileId(), pageNumber);
-      final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
+      final BasePage rootPage = database.getTransaction().getPageForAbsoluteReads(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);
@@ -774,7 +774,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
               continue;
 
             final BasePage currentPage = database.getTransaction()
-                .getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
+                .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
             final Binary currentPageBuffer = new Binary(currentPage.slice());
             final int count = getCount(currentPage);
 
@@ -784,7 +784,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           }
         } else {
           final int pageNum = rootPage.getPageId().getPageNumber() + 1 + pageInSeries;
-          final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
+          final BasePage currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
           final Binary currentPageBuffer = new Binary(currentPage.slice());
           final int count = getCount(currentPage);
 
@@ -799,7 +799,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         if (firstMatchingRootEntry > 0) {
           final int precedingPageNum = rootPage.getPageId().getPageNumber() + firstMatchingRootEntry;
           final BasePage precedingPage = database.getTransaction()
-              .getPage(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
+              .getPageForAbsoluteReads(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
           final Binary precedingPageBuffer = new Binary(precedingPage.slice());
           final int precedingCount = getCount(precedingPage);
 

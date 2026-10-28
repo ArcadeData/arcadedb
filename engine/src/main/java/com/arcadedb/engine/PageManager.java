@@ -1677,6 +1677,16 @@ public class PageManager extends LockContext {
     return getCachedPage(pageId, pageSize, false, false);
   }
 
+  /**
+   * {@link #getImmutablePage(PageId, int, boolean, boolean) getImmutablePage(pageId, pageSize, false, true)}, through the same
+   * funnel, but answered with the cached page's shared view ({@link CachedPage#getSharedImmutableView()}) instead of a new one per
+   * call: for a reader that reads the page at absolute positions only (#10654).
+   */
+  public ImmutablePage getSharedImmutablePage(final PageId pageId, final int pageSize) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, false, true);
+    return page != null ? page.getSharedImmutableView() : null;
+  }
+
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
