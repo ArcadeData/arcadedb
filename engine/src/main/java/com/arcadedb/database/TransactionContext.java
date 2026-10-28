@@ -411,6 +411,11 @@ public class TransactionContext implements Transaction {
   private volatile Object                             requester;
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
+  // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
+  private       Map<String, Runnable>                afterCompletionCallbacks    = null;
+  private       Thread                               afterCompletionOwner        = null;
+  // Read by begin() on the thread that runs the callbacks, which is the one that sets it
+  private       boolean                              runningAfterCompletion      = false;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
   // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
   // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
@@ -1301,7 +1306,25 @@ public class TransactionContext implements Transaction {
     for (final Record r : newRecords)
       ((RecordInternal) r).setIdentity(null);
 
+    // Taken before reset(), which drops them, and run once it is done: the work they do is owed whatever the outcome (#10687). Only
+    // by the thread that registered them: a sweep rolling back the transaction of a dead thread runs on a thread that is in the
+    // middle of work of its own, and has no business refreshing on the dead thread's behalf
+    final Map<String, Runnable> completion = afterCompletionCallbacks;
+    final Thread completionOwner = afterCompletionOwner;
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
+
     reset();
+
+    if (completion != null) {
+      if (completionOwner == Thread.currentThread())
+        fireAfterCompletionCallbacks(completion);
+      else
+        LogManager.instance().log(this, Level.INFO,
+            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
+                + "the continuous aggregates they would have refreshed catch up at their next refresh",
+            null, completion.size());
+    }
   }
 
   /**
@@ -1372,6 +1395,60 @@ public class TransactionContext implements Transaction {
     return registeredCallbackKeys != null && registeredCallbackKeys.contains(key);
   }
 
+  /**
+   * Registers, under {@code key}, work this transaction owes whether it commits or rolls back (issue #10687): the counterpart of
+   * {@link #addAfterCommitCallbackIfAbsent(String, Runnable)} for a change made beside the transaction rather than in it, which a
+   * rollback does not take back - a write to a TIMESERIES type commits its own transaction (#7410), and the refresh of the continuous
+   * aggregates over the type is owed as unconditionally as the write. Deferred to the end rather than run at once, so that every
+   * write of the transaction asks for one run.
+   * <p>
+   * The callback runs once the transaction has ended - after the after-commit callbacks of a commit, after the record state is
+   * restored by a {@link #rollback()} - with no transaction of this context active: work that writes has to begin a transaction of
+   * its own. A statement that fails inside the transaction does not take it back: what it wrote beside the transaction stays written.
+   * A conclusion that is neither a commit nor a rollback (a commit that failed past its point of no return, or whose WAL flush
+   * failed: both fence the database) drops it, and so does a rollback run by another thread than the registering one, the sweep of
+   * a dead thread. A commit runs it on the thread that concludes the commit, as it runs the after-commit callbacks. Exceptions are
+   * logged and do not affect the outcome of the transaction or the other callbacks; an {@link Error} is not caught, as it is not by
+   * the after-commit callbacks.
+   *
+   * @return true if the callback was registered, false if one is registered under {@code key} already
+   */
+  public boolean addAfterCompletionCallbackIfAbsent(final String key, final Runnable callback) {
+    if (afterCompletionCallbacks == null) {
+      afterCompletionCallbacks = new LinkedHashMap<>(4);
+      afterCompletionOwner = Thread.currentThread();
+    }
+    return afterCompletionCallbacks.putIfAbsent(key, callback) == null;
+  }
+
+  public boolean hasAfterCompletionCallbackKey(final String key) {
+    return afterCompletionCallbacks != null && afterCompletionCallbacks.containsKey(key);
+  }
+
+  /**
+   * Whether this context is running the after-completion callbacks of the transaction that just ended on it. A transaction begun
+   * meanwhile must not reuse it (see {@code LocalDatabase.begin()}): the transaction ended inside a failed commit too, whose caller
+   * is about to read {@link #getCommitCount()} to tell a retryable failure from a half-committed block (#7916), and a commit of the
+   * callback's own counted on this context would read as the latter.
+   */
+  public boolean isRunningAfterCompletionCallbacks() {
+    return runningAfterCompletion;
+  }
+
+  private void fireAfterCompletionCallbacks(final Map<String, Runnable> callbacks) {
+    runningAfterCompletion = true;
+    try {
+      for (final Runnable callback : callbacks.values())
+        try {
+          callback.run();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Error in after-completion callback: %s", e, e.getMessage());
+        }
+    } finally {
+      runningAfterCompletion = false;
+    }
+  }
+
   private void resetAndFireCallbacks() {
     // #7667: the single point both commit paths converge on once the commit has actually concluded - commit() for a
     // transaction with nothing to write (phase1 == null), and concludePhase2(committed) for every other one,
@@ -1383,6 +1460,10 @@ public class TransactionContext implements Transaction {
     final List<Runnable> callbacks = afterCommitCallbacks;
     // They run below, so reset() has no abandonment to owe on their behalf
     afterCommitCallbacks = null;
+    // ... and these after them: they are owed by the transaction ending, not by its success (#10687)
+    final Map<String, Runnable> completion = afterCompletionCallbacks;
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
     final boolean commitPointWasReached = commitPointReached;
     final long walSyncTicket = deferredWALSyncTicket;
     // reset() clears the id, which the failure of the flush has to name
@@ -1396,25 +1477,34 @@ public class TransactionContext implements Transaction {
       } catch (final RuntimeException e) {
         if (callbacks != null && commitPointWasReached)
           abandonOrderedCallbacks(callbacks, 0);
+        // the after-completion callbacks are dropped with them: the failed flush fenced the database, and the work they would begin
+        // could only be refused by the fence
         throw e;
       }
     }
-    if (callbacks != null) {
-      int next = 0;
-      try {
-        while (next < callbacks.size()) {
-          final Runnable callback = callbacks.get(next++);
-          try {
-            callback.run();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+    try {
+      if (callbacks != null) {
+        int next = 0;
+        try {
+          while (next < callbacks.size()) {
+            final Runnable callback = callbacks.get(next++);
+            try {
+              callback.run();
+            } catch (final Exception e) {
+              LogManager.instance().log(this, Level.WARNING, "Error in post-commit callback: %s", e, e.getMessage());
+            }
           }
+        } finally {
+          // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
+          if (commitPointWasReached && next < callbacks.size())
+            abandonOrderedCallbacks(callbacks, next);
         }
-      } finally {
-        // An Error escaped a callback: the ones after it will not run, and an ordered one would hold back the others queued behind it
-        if (commitPointWasReached && next < callbacks.size())
-          abandonOrderedCallbacks(callbacks, next);
       }
+    } finally {
+      // the transaction is committed and durable here: an Error escaping an after-commit callback still propagates, but does not cost
+      // the work owed by the transaction ending
+      if (completion != null)
+        fireAfterCompletionCallbacks(completion);
     }
   }
 
@@ -3988,6 +4078,9 @@ public class TransactionContext implements Transaction {
     }
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
+    // Reached with some only when the transaction ends neither by a commit nor by a rollback, which take them out first and run them
+    afterCompletionCallbacks = null;
+    afterCompletionOwner = null;
     attachments = null;
     clientManaged = false;
     commitLockTimeout = null;
