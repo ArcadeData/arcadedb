@@ -8688,10 +8688,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * Both the exact walk ({@code walk} and {@code reranker} are the stored vectors) and the PQ walk of a PRODUCT index ({@code walk} is the
    * memory-resident PQ codes, {@code reranker} the stored vectors or those same codes) take it, so a graph file written with the {@code fusedPQ}
-   * setting is read by SQL {@code vector.neighbors} and {@code db.index.vector.queryNodes} too, not only by the Java exact walk (issue #10713).
-   * The fused codes are the codes of the PQ file, encoded with the same codebook, so the walk scores a neighbour as the memory-resident codes
-   * would: what the fused feature changes is where the codes of the neighbours of a node are read from (beside its neighbour list, in the page
-   * the walk loads anyway), not the answer.
+   * setting is read by the ungrouped SQL {@code vector.neighbors} and {@code db.index.vector.queryNodes} too, not only by the Java exact walk
+   * (issue #10713). The grouped search ({@code groupBy}) keeps its exact walk and does not come here. The fused codes are encoded with the same
+   * codebook as the memory-resident ones and sit beside the neighbour list of a node, in the page the walk loads anyway; jvector decodes them
+   * with its own scorer, so the order of the walk can differ slightly from a walk on the memory-resident codes. The reranker is the same either way.
    * <p>
    * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour list, in <b>that view</b>,
    * while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the view of the searcher, as jvector's

@@ -48,7 +48,7 @@ class LSMVectorIndexMetrics {
   // graph traversal ran. Shared across all three paths; a query on any of them can bump this counter.
   private final AtomicLong preFilterSearches = new AtomicLong(0);
   // Graph walks scored on the PQ codes fused into the nodes of the graph file (jvector FusedPQ, the fusedPQ index setting),
-  // on the exact path and on the PQ path that SQL and openCypher take alike (issue #10713). Zero on an index whose graph
+  // on the exact path and on the ungrouped PQ path that SQL and openCypher take alike (issue #10713; groupBy keeps its exact walk). Zero on an index whose graph
   // file carries no fused codes, so it says whether the bytes the setting costs on disk are read.
   private final AtomicLong fusedPQWalks = new AtomicLong(0);
   // Grouped searches (vector.neighbors with groupBy) that ran out of candidate budget before they could open `limit`
