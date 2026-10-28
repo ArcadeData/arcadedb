@@ -1633,7 +1633,8 @@ public class PostgresNetworkExecutor extends Thread {
     // A set operation naming no catalog relation (issue #10228) is never a pg_type lookup.
     // The columns come from the recogniser, not from the rows: a lookup of a type that does not exist still announces the columns
     // it projected (issue #10869)
-    final PostgresCatalog.Answer types = PostgresCatalog.mightBeCatalogQuery(query) ? PostgresTypeCatalog.resolveAnswer(query) : null;
+    final PostgresCatalog.Answer types = PostgresCatalog.mightBeCatalogQuery(query) ?
+        PostgresTypeCatalog.resolveAnswer(query, () -> PostgresCatalog.rowTypes(database)) : null;
     if (types != null)
       return new CatalogAnswer(toResults(types.rows), types.columns);
 

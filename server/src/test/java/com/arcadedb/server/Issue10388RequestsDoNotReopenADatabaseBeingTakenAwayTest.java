@@ -85,7 +85,8 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
       assertThatThrownBy(() -> server.getDatabaseForOperator(NAME)).as("the binary protocols resolve through getDatabase")
           .isInstanceOf(DatabaseNotAvailableException.class);
       final HttpResponse<String> http = postQuery(NAME, "select from Doc");
-      assertThat(http.statusCode()).as("HTTP answers 'not found', not a database reopened under the delete").isEqualTo(404);
+      // 503 'being dropped' rather than the 404 of a name that is no database: the files are still there (issue #10872)
+      assertThat(http.statusCode()).as("HTTP answers 'being dropped', not a database reopened under the delete").isEqualTo(503);
       assertThat(server.getDatabaseForRequest(getDatabaseName()).isOpen()).as("any other database is unaffected").isTrue();
 
       // A create of the same name is refused too: the name is still taken until the files are gone
@@ -148,7 +149,8 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
     try {
       assertThatThrownBy(() -> server.getDatabaseForRequest(NAME)).isInstanceOf(DatabaseNotAvailableException.class)
           .hasMessageContaining("restore");
-      assertThat(postQuery(NAME, "select 1").statusCode()).isEqualTo(404);
+      // the database is there and a restore holds it: 503, not the 404 of a name that is no database (issue #10872)
+      assertThat(postQuery(NAME, "select 1").statusCode()).isEqualTo(503);
       assertThat(server.existsDatabase(NAME)).as("the request opened nothing").isFalse();
 
       // The restore itself is not a request: it resolves the target it replaces through getDatabase, and is not refused

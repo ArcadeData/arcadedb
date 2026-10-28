@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -240,6 +242,36 @@ class RemoteHttpComponentTest {
     final Exception result = component.manageException(response, "test");
 
     assertThat(result).isInstanceOf(RecordNotFoundException.class);
+  }
+
+  /**
+   * Issue #10872: a database that is there and held (503) and a name that is no database (404) come back as their own types,
+   * with the state of the first, rather than as the NeedRetryException an untyped 503 becomes and a generic RemoteException.
+   */
+  @Test
+  void manageExceptionTellsAnUnavailableDatabaseFromAMissingOne() {
+    final Exception unavailable = component.manageException(503, new JSONObject().put("error", "Database is closed")
+        .put("exception", DatabaseNotAvailableException.class.getName()).put("exceptionArgs", "CLOSED").toString(), "test");
+    assertThat(unavailable).isExactlyInstanceOf(DatabaseNotAvailableException.class);
+    assertThat(((DatabaseNotAvailableException) unavailable).getReason()).isEqualTo(DatabaseNotAvailableException.Reason.CLOSED);
+
+    // a reason this client does not know yet, from a newer server: still the type, with the generic state
+    final Exception newer = component.manageException(503, new JSONObject().put("exception",
+        DatabaseNotAvailableException.class.getName()).put("exceptionArgs", "SOMETHING_NEW").toString(), "test");
+    assertThat(((DatabaseNotAvailableException) newer).getReason()).isEqualTo(DatabaseNotAvailableException.Reason.UNAVAILABLE);
+
+    // an older server sends no reason at all, or an empty one
+    for (final String args : new String[] { null, "" }) {
+      final JSONObject body = new JSONObject().put("exception", DatabaseNotAvailableException.class.getName());
+      if (args != null)
+        body.put("exceptionArgs", args);
+      final Exception older = component.manageException(503, body.toString(), "test");
+      assertThat(((DatabaseNotAvailableException) older).getReason()).isEqualTo(DatabaseNotAvailableException.Reason.UNAVAILABLE);
+    }
+
+    final Exception missing = component.manageException(404, new JSONObject().put("error", "Database not found")
+        .put("exception", DatabaseNotFoundException.class.getName()).toString(), "test");
+    assertThat(missing).isExactlyInstanceOf(DatabaseNotFoundException.class);
   }
 
   // Issue #7716: the untyped-fallback envelope. The TimeSeries endpoints answer a refusal as {"error": "..."}

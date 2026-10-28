@@ -171,11 +171,10 @@ class Issue10869CatalogColumnTypesTest {
 
   @Test
   void aTypeLookupThatFindsNoTypeStillAnnouncesTheProjectedColumns() {
-    final PostgresCatalog.Answer byName = PostgresTypeCatalog.resolveAnswer("SELECT oid, typname, typlen FROM pg_type WHERE typname = 'int4'");
-    final PostgresCatalog.Answer noName = PostgresTypeCatalog.resolveAnswer(
-        "SELECT oid, typname, typlen FROM pg_type WHERE typname = 'nosuchtype'");
-    final PostgresCatalog.Answer byOid = PostgresTypeCatalog.resolveAnswer("SELECT oid, typname, typlen FROM pg_type WHERE oid = 23");
-    final PostgresCatalog.Answer noOid = PostgresTypeCatalog.resolveAnswer("SELECT oid, typname, typlen FROM pg_type WHERE oid = 999999");
+    final PostgresCatalog.Answer byName = typeLookup("SELECT oid, typname, typlen FROM pg_type WHERE typname = 'int4'");
+    final PostgresCatalog.Answer noName = typeLookup("SELECT oid, typname, typlen FROM pg_type WHERE typname = 'nosuchtype'");
+    final PostgresCatalog.Answer byOid = typeLookup("SELECT oid, typname, typlen FROM pg_type WHERE oid = 23");
+    final PostgresCatalog.Answer noOid = typeLookup("SELECT oid, typname, typlen FROM pg_type WHERE oid = 999999");
 
     assertThat(byName.rows).hasSize(1);
     assertThat(noName.rows).isEmpty();
@@ -185,15 +184,20 @@ class Issue10869CatalogColumnTypesTest {
           Map.entry("typlen", PostgresType.INTEGER));
 
     // the element self-join of a scalar selects nothing, under the columns it projected
-    final PostgresCatalog.Answer scalarElement = PostgresTypeCatalog.resolveAnswer(
+    final PostgresCatalog.Answer scalarElement = typeLookup(
         "SELECT e.typdelim, e.typname FROM pg_type t, pg_type e WHERE t.oid = 23 AND t.typelem = e.oid");
     assertThat(scalarElement.rows).isEmpty();
     assertThat(scalarElement.columns.keySet()).containsExactly("typdelim", "typname");
 
     // the recogniser and the relational catalog announce pg_type's columns alike
     final PostgresCatalog.Answer relational = PostgresCatalog.resolve("SELECT * FROM pg_type", database, USER);
-    assertThat(PostgresTypeCatalog.resolveAnswer("SELECT * FROM pg_type WHERE oid = 999999").columns).allSatisfy(
+    assertThat(typeLookup("SELECT * FROM pg_type WHERE oid = 999999").columns).allSatisfy(
         (name, type) -> assertThat(type).as(name).isEqualTo(relational.columns.get(name)));
+  }
+
+  /** A lookup through the pg_type recogniser, with the row types of this test's database. */
+  private PostgresCatalog.Answer typeLookup(final String query) {
+    return PostgresTypeCatalog.resolveAnswer(query, () -> PostgresCatalog.rowTypes(database));
   }
 
   private void assertSameColumns(final String matching, final String empty) {

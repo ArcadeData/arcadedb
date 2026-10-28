@@ -55,6 +55,7 @@ import com.arcadedb.utility.IPAddressBlocklist;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -64,9 +65,11 @@ import java.net.UnknownHostException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -1797,6 +1800,13 @@ public class ServerControlPlane {
    * first, with the count and the total size of the same files. Both were previously read off the scheduler's
    * retention manager and left out when the plugin was off, so the listing carried a count only when the
    * scheduler was running (issue #7392).
+   * <p>
+   * Every number in the answer is read from the file system, never a stand-in: an archive is listed only once its
+   * attributes have been read, and as a regular file, so {@code delete backup} and {@code restore backup} can act on
+   * every entry. One whose attributes cannot be read is left out, since nothing can restore it: it used to be listed
+   * with a size and a modification time of 0, a zero-byte archive dated 1970 that a retention or monitoring tool takes
+   * for a broken or the oldest backup (issue #10880). The common cause is the retention sweep deleting it under the
+   * listing, which is logged at FINE; any other failure (permissions, a broken mount) is logged as a WARNING.
    */
   public JSONObject listBackups(final String databaseName) {
     requireBackupDatabaseName(databaseName);
@@ -1805,30 +1815,45 @@ public class ServerControlPlane {
     long totalSize = 0;
 
     final Path dbBackupDir = resolveBackupDirectory().resolve(databaseName);
-    if (Files.isDirectory(dbBackupDir)) {
-      try (final var stream = Files.list(dbBackupDir)) {
-        for (final Path p : stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList()) {
-          final JSONObject backup = new JSONObject();
-          backup.put("fileName", p.getFileName().toString());
-          try {
-            final long size = Files.size(p);
-            totalSize += size;
-            backup.put("size", size);
-            backup.put("lastModified", Files.getLastModifiedTime(p).toMillis());
-          } catch (final IOException e) {
-            backup.put("size", 0);
-            backup.put("lastModified", 0);
-          }
+    // Listed without asking Files.isDirectory() first: it answers false for a directory the server cannot reach as well
+    // as for an absent one, and the first is a failure to report, not "no backups"
+    List<Path> archives;
+    try (final var stream = Files.list(dbBackupDir)) {
+      archives = stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList();
+    } catch (final NoSuchFileException e) {
+      // no backup was ever taken of this database
+      archives = List.of();
+    } catch (final IOException | UncheckedIOException e) {
+      // an UncheckedIOException is a failure while the stream walks the directory
+      throw new CommandExecutionException("Error listing backups for database '" + databaseName + "'", e);
+    }
 
-          // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
-          final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
-          backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
-
-          backups.put(backup);
-        }
+    for (final Path p : archives) {
+      // One read for both values, so the size and the time always describe the same file
+      final BasicFileAttributes attributes;
+      try {
+        attributes = Files.readAttributes(p, BasicFileAttributes.class);
+      } catch (final NoSuchFileException e) {
+        LogManager.instance().log(this, Level.FINE, "Backup archive '%s' was removed while listing the backups", p);
+        continue;
       } catch (final IOException e) {
-        throw new RuntimeException("Error listing backups for database '" + databaseName + "'", e);
+        LogManager.instance().log(this, Level.WARNING, "Cannot read the backup archive '%s', it is not listed", e, p);
+        continue;
       }
+      if (!attributes.isRegularFile())
+        continue;
+
+      final JSONObject backup = new JSONObject();
+      backup.put("fileName", p.getFileName().toString());
+      backup.put("size", attributes.size());
+      backup.put("lastModified", attributes.lastModifiedTime().toMillis());
+      totalSize += attributes.size();
+
+      // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
+      final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
+      backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
+
+      backups.put(backup);
     }
 
     final JSONObject response = new JSONObject();
