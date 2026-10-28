@@ -239,10 +239,10 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       return out;
     }
     for (final Object row : iter) {
-      final RID rid = extractRid(row);
+      final RID rid = extractRidFromRow(row);
       if (rid == null)
         continue;
-      final float score = extractScore(row);
+      final float score = extractScoreFromRow(row);
       out.add(new RidScore(rid, score));
       rememberCarried(row, rid, carried);
     }
@@ -256,55 +256,6 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final Document record = heldRecord(row, rid);
     if (record != null)
       carried.put(rid, record);
-  }
-
-  private static RID extractRid(final Object row) {
-    if (row == null)
-      return null;
-    if (row instanceof Map<?, ?> m) {
-      Object v = m.get("@rid");
-      if (v == null) v = m.get("rid");
-      if (v instanceof RID r) return r;
-      if (v instanceof Identifiable id) return id.getIdentity();
-      return null;
-    }
-    if (row instanceof Result r) {
-      if (r.getIdentity().isPresent())
-        return r.getIdentity().get();
-      Object v = r.getProperty("@rid");
-      if (v == null) v = r.getProperty("rid");
-      if (v instanceof RID rid) return rid;
-      if (v instanceof Identifiable id) return id.getIdentity();
-      return null;
-    }
-    if (row instanceof Identifiable id)
-      return id.getIdentity();
-    return null;
-  }
-
-  private static float extractScore(final Object row) {
-    // "score" and "$score" carry similarity semantics (higher = better) by convention. "distance"
-    // is the legacy key used by `vector.neighbors`; lower = better, so we flip its sign so the rest
-    // of the fusion code can assume a single direction.
-    if (row instanceof Map<?, ?> m) {
-      final Object score = m.get("score");
-      if (score instanceof Number n) return n.floatValue();
-      final Object dollar = m.get("$score");
-      if (dollar instanceof Number n) return n.floatValue();
-      final Object distance = m.get("distance");
-      if (distance instanceof Number n) return -n.floatValue();
-      return Float.NaN;
-    }
-    if (row instanceof Result r) {
-      final Object score = r.getProperty("score");
-      if (score instanceof Number n) return n.floatValue();
-      final Object dollar = r.getProperty("$score");
-      if (dollar instanceof Number n) return n.floatValue();
-      final Object distance = r.getProperty("distance");
-      if (distance instanceof Number n) return -n.floatValue();
-      return Float.NaN;
-    }
-    return Float.NaN;
   }
 
   private static void applyRRF(final List<List<RidScore>> sources, final float[] weights, final long k,

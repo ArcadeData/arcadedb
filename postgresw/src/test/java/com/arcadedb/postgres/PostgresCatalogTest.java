@@ -491,7 +491,7 @@ class PostgresCatalogTest {
   }
 
   private PostgresCatalog.Answer probe(final String query, final Object... parameters) {
-    return PostgresCatalog.resolveProbe(query, database, USER, parameters);
+    return PostgresCatalog.resolveProbe(query, database, USER, null, parameters);
   }
 
   @Test

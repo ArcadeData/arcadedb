@@ -196,11 +196,8 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     for (final Object row : rawList) {
       if (!(row instanceof Map<?, ?> m))
         continue;
-      final Object ridObj = m.get("@rid");
-      final RID rid;
-      if (ridObj instanceof Identifiable id) rid = id.getIdentity();
-      else continue;
-      if (exampleRids.contains(rid))
+      final RID rid = extractRidFromRow(m);
+      if (rid == null || exampleRids.contains(rid))
         continue;
       final float[] cVec = readCandidateEmbedding(db, rid, m, propertyName, expectedDim);
       if (cVec == null)

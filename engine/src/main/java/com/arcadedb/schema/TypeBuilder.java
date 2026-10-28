@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.log.LogManager;
@@ -264,8 +265,10 @@ public class TypeBuilder<T> {
 
       // A bucket another type owns is refused by addBucket, but only after the ones before it are attached: the refused growth
       // would keep them (issue #10317)
-      if (t.buckets.size() < buckets)
+      if (t.buckets.size() < buckets) {
         checkAutoNamedBucketsAreFree(schema, t.buckets.size());
+        checkPageSizeOfNewBuckets(schema, t.buckets.size(), t.hasExternalProperties() || anyHasExternalProperties(toLink));
+      }
 
       // ONE FRAME for the growth and the links, as for a type made from nothing (issue #10537): every bucket created and every super
       // type linked used to publish a schema entry of its own
@@ -330,9 +333,10 @@ public class TypeBuilder<T> {
 
       // The same for a bucket another type owns, or one listed twice: addBucket refuses it, but only after the type is registered,
       // which left the type behind with the buckets before it (issue #10317)
-      if (bucketInstances.isEmpty())
+      if (bucketInstances.isEmpty()) {
         checkAutoNamedBucketsAreFree(schema, 0);
-      else
+        checkPageSizeOfNewBuckets(schema, 0, superTypes != null && anyHasExternalProperties(superTypes));
+      } else
         checkBucketInstancesAreFree(schema);
 
       final LocalDocumentType c;
@@ -428,6 +432,29 @@ public class TypeBuilder<T> {
       if (schema.existsBucket(bucketName))
         schema.checkBucketIsFree(typeName, schema.getBucketByName(bucketName));
     }
+  }
+
+  /**
+   * Refuses, before the schema is touched, a page size the buckets this builder is about to create could not write a record into
+   * (issue #10876): its primary buckets from {@code firstBucket} on, the ones it does not find under their names, and with
+   * {@code pairedExternal} - the type has or inherits EXTERNAL properties - the paired external-property bucket of every bucket of
+   * the type that has none yet, which the attach or the super type link creates after the type has changed.
+   */
+  private void checkPageSizeOfNewBuckets(final LocalSchema schema, final int firstBucket, final boolean pairedExternal) {
+    for (int i = 0; i < buckets; ++i) {
+      final String bucketName = FileUtils.encode(typeName, schema.getEncoding()) + "_" + i;
+      if (i >= firstBucket && !schema.existsBucket(bucketName))
+        LocalSchema.checkBucketPageSize(bucketName, pageSize, LocalBucket.CURRENT_VERSION);
+      if (pairedExternal)
+        schema.checkPairedExternalBucketPageSize(bucketName);
+    }
+  }
+
+  private static boolean anyHasExternalProperties(final List<LocalDocumentType> types) {
+    for (final LocalDocumentType type : types)
+      if (type.hasExternalProperties())
+        return true;
+    return false;
   }
 
   /**
