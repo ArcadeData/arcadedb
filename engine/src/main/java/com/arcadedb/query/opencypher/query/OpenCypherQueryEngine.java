@@ -1600,8 +1600,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * The number of dimensions of the first vector the type's records (polymorphic) hold in {@code propertyName}, for a
    * {@code CREATE VECTOR INDEX} that does not name it (issue #10863), or -1 when the type does not exist or no record holds a
-   * vector there. The walk stops at the first vector: a record whose vector has another length is reported by the index
-   * build, as it is for an index whose statement named the dimensions.
+   * vector there. The walk stops at the first vector: a record whose vector has another length is left out of the index by its
+   * build, as it is for an index whose statement named the dimensions. A type whose records hold no vector there is read
+   * whole before the statement is refused: a DDL cost, paid only by a statement that does not name the dimensions.
    */
   private int dimensionsOfExistingVectors(final Schema schema, final String typeName, final String propertyName) {
     if (!schema.existsType(typeName))

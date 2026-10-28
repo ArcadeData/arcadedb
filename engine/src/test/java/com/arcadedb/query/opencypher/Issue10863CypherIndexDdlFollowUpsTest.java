@@ -99,6 +99,23 @@ class Issue10863CypherIndexDdlFollowUpsTest extends TestHelper {
   }
 
   @Test
+  void vectorsOfAnotherLengthThanTheInferredOneAreLeftOutAsWithNamedDimensions() {
+    command("CREATE (:L {id: 'a', e: [1.0, 0.0, 0.0]})");
+    command("CREATE (:L {id: 'b', e: [0.0, 1.0]})");
+    command("CREATE (:M {id: 'a', e: [1.0, 0.0, 0.0]})");
+    command("CREATE (:M {id: 'b', e: [0.0, 1.0]})");
+
+    // the first vector decides; the record whose vector has another length is not indexed, exactly as when the statement
+    // names that dimension itself
+    command("CREATE VECTOR INDEX inferred FOR (n:L) ON n.e");
+    command("CREATE VECTOR INDEX named FOR (n:M) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3}}");
+
+    assertThat(vectorIndex((TypeIndex) database.getSchema().getIndexByName("inferred")).getDimensions()).isEqualTo(3);
+    assertThat(nearestIds("inferred", 2, List.of(1.0, 0.0, 0.0))).containsExactly("a");
+    assertThat(nearestIds("named", 2, List.of(1.0, 0.0, 0.0))).containsExactly("a");
+  }
+
+  @Test
   void vectorIndexWithoutDimensionsOverALabelWithNoVectorIsRefused() {
     command("CREATE (:L {id: 'a', other: 1})");
 
