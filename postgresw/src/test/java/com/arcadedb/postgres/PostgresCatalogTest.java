@@ -558,7 +558,8 @@ class PostgresCatalogTest {
   void aPlainEnumerationOfPgTypeListsEveryTypeInOidOrder() {
     final PostgresCatalog.Answer answer = resolve("SELECT oid, typname FROM pg_catalog.pg_type ORDER BY oid");
 
-    assertThat(answer.rows).hasSize(PostgresType.values().length);
+    // the built-in types and the row type of every relation (issue #10873)
+    assertThat(answer.rows).hasSize(PostgresType.values().length + database.getSchema().getTypes().size());
     assertThat(names(answer.rows, "oid")).isSorted();
   }
 

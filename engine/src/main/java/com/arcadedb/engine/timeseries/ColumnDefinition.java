@@ -143,10 +143,16 @@ public final class ColumnDefinition {
    * zeros until compaction ran and 500 afterwards.
    */
   public boolean isNumericallyAggregatable() {
-    return switch (getCompressionHint()) {
-      case GORILLA_XOR, SIMPLE8B -> true;
-      default -> false;
-    };
+    return carriesBlockStatistics();
+  }
+
+  /**
+   * Whether this column carries a {@code {min, max, sum, count}} statistics entry in a sealed block header: exactly
+   * the columns stored with a numeric codec ({@link TimeSeriesCodec#isNumeric()}). Every block writer and reader
+   * asks this, never the codec directly, because the header stores the entries positionally (issue #10878).
+   */
+  public boolean carriesBlockStatistics() {
+    return getCompressionHint().isNumeric();
   }
 
   /**
@@ -203,14 +209,19 @@ public final class ColumnDefinition {
    * Dictionary columns are stored as text, so a non-STRING column sealed with this codec (a datetime
    * or boolean tag, and any pre-#5475 field that defaulted to it) has to be parsed back. An
    * unparseable entry is handed back as the raw text rather than failing the scan.
+   * <p>
+   * The empty text is what the sealed layer writes for a sample that carries no value, so for every non-STRING type it
+   * reads back as {@code null}, as the mutable layer answers for the same sample. That includes BOOLEAN: parsing it
+   * first turned an unset BOOLEAN tag into {@code false} once compacted, and a rewrite of the block then stored the text
+   * {@code "false"} for it (issue #10874).
    */
   public Object boxString(final String value) {
     if (dataType == Type.STRING || value == null)
       return value;
-    if (dataType == Type.BOOLEAN)
-      return Boolean.parseBoolean(value);
     if (value.isEmpty())
       return null;
+    if (dataType == Type.BOOLEAN)
+      return Boolean.parseBoolean(value);
     try {
       return switch (dataType) {
         case DOUBLE -> Double.valueOf(value);
@@ -664,15 +675,11 @@ public final class ColumnDefinition {
         final TimeSeriesCodec numeric = defaultCodecFor(dataType, ColumnRole.FIELD);
         yield numeric == codec ? null
             : "Column '" + name + "' of type " + dataType + " cannot use codec " + codec
-                + ", which would not read the values back unchanged. Use DICTIONARY" + (isNumericCodec(numeric) ? " or " + numeric : "");
+                + ", which would not read the values back unchanged. Use DICTIONARY" + (numeric.isNumeric() ? " or " + numeric : "");
       }
       default -> "Column '" + name + "' cannot use codec " + codec + ", which has no encoder for a " + role
           + " column. Supported codecs: GORILLA_XOR, SIMPLE8B, DICTIONARY";
     };
-  }
-
-  private static boolean isNumericCodec(final TimeSeriesCodec codec) {
-    return codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B;
   }
 
   /**

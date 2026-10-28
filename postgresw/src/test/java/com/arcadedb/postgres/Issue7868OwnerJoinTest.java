@@ -99,7 +99,8 @@ class Issue7868OwnerJoinTest {
 
     final PostgresCatalog.Answer types = resolve(
         "SELECT t.typname, t.typowner, r.oid, r.rolname FROM pg_type t JOIN pg_roles r ON r.oid = t.typowner");
-    assertThat(types.rows).hasSize(PostgresTypeCatalog.types().size());
+    // the built-in types and the row type of the one relation (issue #10873)
+    assertThat(types.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
     assertThat(types.rows).allSatisfy(row -> {
       assertThat(row.get("rolname")).isEqualTo(USER);
       assertThat(row.get("oid")).isEqualTo(row.get("typowner"));
@@ -197,7 +198,7 @@ class Issue7868OwnerJoinTest {
     assertThat(names(resolve("SELECT a.attname, r.rolname FROM pg_attribute a, pg_roles r").rows, "attname"))
         .contains("id");
     assertThat(resolve("SELECT t.typname, r.rolname FROM pg_roles r, pg_type t").rows)
-        .hasSize(PostgresTypeCatalog.types().size());
+        .hasSize(PostgresTypeCatalog.types().size() + 1);
   }
 
   /**
@@ -212,8 +213,14 @@ class Issue7868OwnerJoinTest {
         "SELECT t.typname, n.nspname, s.schema_name, s.catalog_name, p.object_schema, p.object_name, p.object_catalog "
             + "FROM pg_type t, pg_namespace n, information_schema.schemata s, information_schema.usage_privileges p");
 
-    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size());
-    assertThat(answer.rows).allSatisfy(row -> {
+    // the built-in types, in pg_catalog, and the row type of the one relation (issue #10873), which is in the relation's schema
+    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
+    assertThat(answer.rows).filteredOn(row -> "Article".equals(row.get("typname"))).singleElement().satisfies(row -> {
+      assertThat(row.get("nspname")).isEqualTo(database.getName());
+      assertThat(row.get("schema_name")).isEqualTo(database.getName());
+      assertThat(row.get("object_schema")).isEqualTo(database.getName());
+    });
+    assertThat(answer.rows).filteredOn(row -> !"Article".equals(row.get("typname"))).allSatisfy(row -> {
       assertThat(row.get("nspname")).isEqualTo("pg_catalog");
       assertThat(row.get("schema_name")).as("schemata is the information_schema spelling of pg_namespace")
           .isEqualTo("pg_catalog");

@@ -1642,8 +1642,7 @@ public class TimeSeriesShard implements AutoCloseable {
           final Object[] chunkValues = Arrays.copyOfRange(sortedColArrays[c], chunkStart, chunkEnd);
           compressedCols[c] = TimeSeriesSealedStore.compressColumn(columns.get(c), chunkValues);
 
-          final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
-          if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B)
+          if (columns.get(c).carriesBlockStatistics())
             stats.add(c, chunkValues);
         }
       }

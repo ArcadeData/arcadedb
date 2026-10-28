@@ -70,7 +70,7 @@ public class Issue10692BoltReplacedDatabaseIT extends BaseBoltServerTest {
       final ArcadeDBServer server = getServer(0);
       server.unmarkClosedByCommand(NAME);
       if (server.existsDatabase(NAME))
-        server.dropLocalDatabase(server.getDatabase(NAME).getEmbedded(), NAME);
+        server.dropLocalDatabase(server.getDatabaseForOperator(NAME).getEmbedded(), NAME);
       FileUtils.deleteRecursively(
           new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), NAME));
     } finally {

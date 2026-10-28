@@ -1386,23 +1386,44 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return retryable(databaseReopening);
     }
 
-    // 404: the wasted retry the comment above describes re-resolves the database with allowLoad=false
-    // (DatabaseAbstractHandler.execute), which raises this narrower type - not the generic
-    // DatabaseOperationException - once the registry entry is gone. Answered as an accurate "not there"
-    // instead of falling through to the generic 500 below (issue #6778).
+    // 404: the caller named a database this server does not have - permanent, and the caller's to correct. The resolver raises
+    // this narrower type for every such name, allowLoad=false included (issue #10872), so it is decided first.
+    final DatabaseNotFoundException noDatabase = firstOf(e, cause, DatabaseNotFoundException.class);
+    if (noDatabase != null) {
+      return new ErrorClassification(404, "Database not found", noDatabase, null, ErrorLogKind.USER);
+    }
+
+    // 503: the database exists and cannot serve the request now - closed by a 'close database', held by a restore (which also
+    // refuses its writes while it stays readable, issue #10689), being dropped, or a copy an HA install or resync has to reconcile
+    // first. The operator or the cluster caused it, and it clears without the caller changing anything: ErrorCategory.UNAVAILABLE,
+    // which every other wire protocol answers apart from a missing database too. It used to be the 404 of a name that is no
+    // database, with the same label and exception class, so in production mode, which conceals the detail, the two bodies were
+    // identical (issue #10872). The label names the state, since the detail is concealed, and the reason travels in
+    // exceptionArgs for the remote client to rebuild. No Retry-After: how long an operator keeps a database closed is not
+    // something the server knows.
     final DatabaseNotAvailableException notAvailable = firstOf(e, cause, DatabaseNotAvailableException.class);
     if (notAvailable != null) {
-      return new ErrorClassification(404, "Database not found", notAvailable, null, ErrorLogKind.USER);
+      return new ErrorClassification(503, notAvailable.getReason().label(), notAvailable, notAvailable.getReason().name(),
+          ErrorLogKind.RETRYABLE);
     }
 
     // The close the arm above leaves out (issue #8199). A server shutting down closes every database under the requests
     // still in flight: transient for a client, which retries on another node or once this one is back, so it keeps the
-    // 503 it has always had. Otherwise a DROP/CLOSE DATABASE closed the handle a request had resolved: permanent, a 404,
-    // not retryable against the same name.
+    // 503 it has always had. Otherwise a DROP/CLOSE DATABASE, or a restore, closed the handle a request had resolved. The
+    // answer is the one the next request gets from the resolver (issue #10872): 503 while the database is still there - closed
+    // by command, held by a restore, its files still being deleted - and 404 once nothing of it is left.
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
       if (isServerShuttingDown())
         return retryable(databaseClosed);
+      final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
+      final String closedName = databaseClosed.getDatabaseName();
+      // Reported as the typed refusal the resolver gives the next request, with its reason: an untyped 503 would reach the remote
+      // client as a NeedRetryException and have the command sent again to whatever replaces the database
+      if (server != null && closedName != null && server.isDatabaseOfServer(closedName))
+        return new ErrorClassification(503, DatabaseNotAvailableException.Reason.CLOSED.label(),
+            new DatabaseNotAvailableException(databaseClosed.getMessage(), DatabaseNotAvailableException.Reason.CLOSED),
+            DatabaseNotAvailableException.Reason.CLOSED.name(), ErrorLogKind.RETRYABLE);
       return new ErrorClassification(404, "Database is closed", databaseClosed, null, ErrorLogKind.USER);
     }
 

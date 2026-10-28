@@ -25,6 +25,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -54,6 +56,10 @@ import java.util.stream.Collectors;
  * </ul>
  * A shape not recognised here is <b>not</b> guessed at: the caller falls back to an empty result set, which
  * is the long-standing behaviour for the rest of {@code pg_catalog}.
+ * <p>
+ * Besides the built-in types, {@code pg_type} has the row type of every relation of the database, as PostgreSQL gives every
+ * table and materialized view one: {@code typtype = 'c'}, {@code typrelid} naming the relation, and the OID its
+ * {@code pg_class.reltype} names (issue #10873). The caller hands them in, since they are the schema's, not this protocol's.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -121,6 +127,11 @@ public class PostgresTypeCatalog {
       .sorted(Comparator.comparingInt(t -> t.code))
       .collect(Collectors.toUnmodifiableList());
 
+  /** {@link #TYPES_BY_OID} as rows, each answering a column by name: built once, read by every enumeration. */
+  private static final List<Function<String, Object>> BUILT_IN_ROWS = TYPES_BY_OID.stream()
+      .<Function<String, Object>>map(type -> column -> columnValue(type, column))
+      .toList();
+
   private PostgresTypeCatalog() {
   }
 
@@ -132,16 +143,56 @@ public class PostgresTypeCatalog {
     return TYPES_BY_OID;
   }
 
+  /** {@link #resolve(String, Supplier)} for a database with no relation, so with the built-in types alone. */
+  public static List<Map<String, Object>> resolve(final String query) {
+    return resolve(query, List::of);
+  }
+
   /**
    * Answers a pg_type query, or returns null when it is not a shape this catalog can answer. An empty list
    * is a real answer - "no such type" - and is not the same as null.
+   *
+   * @param rowTypes the row types of the database's relations, each the full set of {@link #COLUMNS} as
+   *                 {@link #rowTypeColumns} builds it. Asked for only by a query that reads them
    */
-  public static List<Map<String, Object>> resolve(final String query) {
-    final List<Map<String, Object>> elementRows = resolveElementJoin(query);
+  public static List<Map<String, Object>> resolve(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
+    final List<Map<String, Object>> elementRows = resolveElementJoin(query, rowTypes);
     if (elementRows != null)
       return elementRows;
 
-    return resolveProjection(query);
+    return resolveProjection(query, rowTypes);
+  }
+
+  /**
+   * The {@link #COLUMNS} of the row type of a relation, PostgreSQL's composite type of the same name (issue #10873): what
+   * {@code pg_class.reltype} names, and what {@code typrelid} leads back from. A row type converts with the generic record
+   * functions and has no array type here, since this protocol never produces a value of either.
+   */
+  static Map<String, Object> rowTypeColumns(final int oid, final String name, final int namespaceOid, final int relationOid) {
+    final Map<String, Object> columns = new LinkedHashMap<>(COLUMNS.size() * 2);
+    for (final String column : COLUMNS)
+      columns.put(column, switch (column) {
+        case "oid" -> oid;
+        case "typname" -> name;
+        case "typelem", "typarray", "typbasetype", "typndims", "typcollation" -> 0;
+        case "typdelim" -> ",";
+        case "typtype" -> "c";
+        case "typcategory" -> "C";
+        case "typlen", "typtypmod" -> -1;
+        case "typinput" -> "record_in";
+        case "typoutput" -> "record_out";
+        case "typreceive" -> "record_recv";
+        case "typsend" -> "record_send";
+        case "typnotnull", "typbyval", "typispreferred" -> Boolean.FALSE;
+        case "typnamespace" -> namespaceOid;
+        case "typrelid" -> relationOid;
+        case "typowner" -> PostgresCatalog.OWNER_OID;
+        case "typisdefined" -> Boolean.TRUE;
+        case "typalign" -> "d";
+        case "typstorage" -> "x";
+        default -> null;
+      });
+    return columns;
   }
 
   /**
@@ -150,7 +201,8 @@ public class PostgresTypeCatalog {
    * was given, which is what the join in the client's query asks for. Returns null when the query is not
    * that shape.
    */
-  private static List<Map<String, Object>> resolveElementJoin(final String query) {
+  private static List<Map<String, Object>> resolveElementJoin(final String query,
+      final Supplier<List<Map<String, Object>>> rowTypes) {
     if (!ELEMENT_JOIN.matcher(query).find())
       return null;
 
@@ -166,7 +218,10 @@ public class PostgresTypeCatalog {
     final PostgresType type = oid < 0 ? null : PostgresType.byCode(oid);
 
     final PostgresType element;
-    if (type == null)
+    if (type == null && rowTypeOf(oid, rowTypes.get()) != null)
+      // a row type has no element, as a scalar has none
+      return List.of();
+    else if (type == null)
       // An OID this protocol does not produce is still answered as text, as it always has been: a driver
       // that asks about an unknown array is better served by the delimiter and element of the most common
       // one than by an empty result it has no fallback for.
@@ -201,7 +256,8 @@ public class PostgresTypeCatalog {
    * DataRow positionally, so {@code SELECT oid, typname} and {@code SELECT typname, oid} must not come back
    * the same way round.
    */
-  private static List<Map<String, Object>> resolveProjection(final String query) {
+  private static List<Map<String, Object>> resolveProjection(final String query,
+      final Supplier<List<Map<String, Object>>> rowTypes) {
     final Matcher matcher = QUERY.matcher(query.trim());
     if (!matcher.matches())
       return null;
@@ -211,15 +267,15 @@ public class PostgresTypeCatalog {
     if (!parseProjection(matcher.group(1), requested, aliases))
       return null;
 
-    final List<PostgresType> selected = select(matcher.group(2));
+    final List<Function<String, Object>> selected = select(matcher.group(2), rowTypes);
     if (selected == null)
       return null;
 
     final List<Map<String, Object>> rows = new ArrayList<>(selected.size());
-    for (final PostgresType type : selected) {
+    for (final Function<String, Object> type : selected) {
       final Map<String, Object> row = new LinkedHashMap<>(requested.size());
       for (int i = 0; i < requested.size(); i++)
-        row.put(aliases.get(i), columnValue(type, requested.get(i)));
+        row.put(aliases.get(i), type.apply(requested.get(i)));
       rows.add(row);
     }
     return rows;
@@ -268,12 +324,20 @@ public class PostgresTypeCatalog {
 
   /**
    * The rows a WHERE clause selects: every type when there is none, the one type it names, an empty list
-   * when it names a type this protocol cannot produce, or null when the clause is not one of the two forms
-   * this catalog understands.
+   * when it names no type, or null when the clause is not one of the two forms this catalog understands. The
+   * built-in types first, in OID order, then the row types of the relations.
    */
-  private static List<PostgresType> select(final String filter) {
-    if (filter == null)
-      return TYPES_BY_OID;
+  private static List<Function<String, Object>> select(final String filter, final Supplier<List<Map<String, Object>>> rowTypes) {
+    if (filter == null) {
+      final List<Map<String, Object>> relations = rowTypes.get();
+      if (relations.isEmpty())
+        return BUILT_IN_ROWS;
+      final List<Function<String, Object>> all = new ArrayList<>(BUILT_IN_ROWS.size() + relations.size());
+      all.addAll(BUILT_IN_ROWS);
+      for (final Map<String, Object> rowType : relations)
+        all.add(rowType::get);
+      return all;
+    }
 
     final String trimmed = filter.trim();
 
@@ -281,7 +345,10 @@ public class PostgresTypeCatalog {
     if (byOid.matches()) {
       final int oid = parseOid(byOid.group(1));
       final PostgresType type = oid < 0 ? null : PostgresType.byCode(oid);
-      return type == null ? List.of() : List.of(type);
+      if (type != null)
+        return List.of(column -> columnValue(type, column));
+      final Map<String, Object> rowType = oid < 0 ? null : rowTypeOf(oid, rowTypes.get());
+      return rowType == null ? List.of() : List.of(rowType::get);
     }
 
     final Matcher byName = NAME_ONLY_FILTER.matcher(trimmed);
@@ -289,10 +356,21 @@ public class PostgresTypeCatalog {
       final String typeName = byName.group(1).toLowerCase(Locale.ENGLISH);
       for (final PostgresType type : TYPES_BY_OID)
         if (type.typeName.equals(typeName))
-          return List.of(type);
+          return List.of(column -> columnValue(type, column));
+      // a name is compared as written, as PostgreSQL compares typname: the row type of "Person" is not 'person'
+      for (final Map<String, Object> rowType : rowTypes.get())
+        if (byName.group(1).equals(rowType.get("typname")))
+          return List.of(rowType::get);
       return List.of();
     }
 
+    return null;
+  }
+
+  private static Map<String, Object> rowTypeOf(final int oid, final List<Map<String, Object>> rowTypes) {
+    for (final Map<String, Object> rowType : rowTypes)
+      if (rowType.get("oid") instanceof Integer typeOid && typeOid == oid)
+        return rowType;
     return null;
   }
 
@@ -408,7 +486,7 @@ public class PostgresTypeCatalog {
    * for this column, so an auto-generated array type copies its element's value verbatim - which is why
    * {@code _text} carries 100 and not 0, exactly as {@code text} does.
    */
-  private static int collation(final PostgresType type) {
+  static int collation(final PostgresType type) {
     if (type.isArrayType()) {
       final PostgresType element = PostgresType.byCode(type.elementCode);
       return element == null ? 0 : collation(element);

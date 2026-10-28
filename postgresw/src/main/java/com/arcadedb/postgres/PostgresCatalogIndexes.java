@@ -350,8 +350,12 @@ final class PostgresCatalogIndexes {
 
   // ---------------------------------------------------------------- rows
 
-  /** The {@code pg_index} columns of an index, name and value in turn. */
-  static Object[] indexValues(final Info index) {
+  /**
+   * The {@code pg_index} columns of an index, name and value in turn.
+   *
+   * @param collations the collation of each key column, its {@code indcollation}
+   */
+  static Object[] indexValues(final Info index, final int[] collations) {
     final int[] zeros = new int[index.columns().length];
     return new Object[] { "indexrelid", index.oid(), "indrelid", index.tableOid(), "indnatts", index.columns().length,
         "indnkeyatts", index.columns().length, "indisunique", index.unique(), "indnullsnotdistinct", Boolean.FALSE,
@@ -359,8 +363,8 @@ final class PostgresCatalogIndexes {
         "indisprimary", Boolean.FALSE, "indisexclusion", Boolean.FALSE, "indimmediate", Boolean.TRUE, "indisclustered",
         Boolean.FALSE, "indisvalid", index.ready(), "indcheckxmin", Boolean.FALSE, "indisready", index.ready(), "indislive",
         Boolean.TRUE, "indisreplident", Boolean.FALSE, "indkey", new Vector(index.attnums()),
-        // the collations and operator classes PostgreSQL numbers have no equivalent here
-        "indcollation", new Vector(zeros), "indclass", new Vector(zeros), "indoption", new Vector(zeros), "indexprs", expressions(index),
+        // the operator classes PostgreSQL numbers have no equivalent here
+        "indcollation", new Vector(collations), "indclass", new Vector(zeros), "indoption", new Vector(zeros), "indexprs", expressions(index),
         "indpred", null };
   }
 
