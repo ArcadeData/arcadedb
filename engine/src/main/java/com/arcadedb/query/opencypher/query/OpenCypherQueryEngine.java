@@ -84,6 +84,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
@@ -1470,7 +1471,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
     final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
-      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
+      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames,
+          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]));
       case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
       case RANGE -> null;
     };
@@ -1593,6 +1595,36 @@ public class OpenCypherQueryEngine implements QueryEngine {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     return EXPRESSION_EVALUATOR.evaluate(ddl.getOptions(), new ResultInternal(), context);
+  }
+
+  /**
+   * The number of dimensions of the first vector the type's records (polymorphic) hold in {@code propertyName}, for a
+   * {@code CREATE VECTOR INDEX} that does not name it (issue #10863), or -1 when the type does not exist or no record holds a
+   * vector there. The walk stops at the first vector: a record whose vector has another length is reported by the index
+   * build, as it is for an index whose statement named the dimensions.
+   */
+  private int dimensionsOfExistingVectors(final Schema schema, final String typeName, final String propertyName) {
+    if (!schema.existsType(typeName))
+      return -1;
+    final Iterator<Record> it = database.iterateType(typeName, true);
+    while (it.hasNext()) {
+      if (!(it.next() instanceof Document doc))
+        continue;
+      final Object value = doc.get(propertyName);
+      // a string is no vector here, though VectorUtils parses one written as text: '3' is not a vector of one dimension
+      if (value == null || value instanceof String)
+        continue;
+      final float[] vector;
+      try {
+        vector = VectorUtils.toFloatArray(value);
+      } catch (final IllegalArgumentException | ClassCastException e) {
+        // not a vector: no length to take from it
+        continue;
+      }
+      if (vector != null && vector.length > 0)
+        return vector.length;
+    }
+    return -1;
   }
 
   /**

@@ -446,11 +446,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   /**
    * {@code CREATE VECTOR INDEX [name] [IF NOT EXISTS] FOR (n:Label) ON n.prop [OPTIONS {...}]}, Neo4j 5 syntax, issue #10678.
    * The {@code indexConfig} in the options is read when the statement runs, so it may be a parameter.
+   * <p>
+   * {@code WITH [n.a, n.b]}, the additional filtering properties of Neo4j 2025's vector index, is accepted and builds the same
+   * index as without it (issue #10863). Neo4j stores those properties in the index so that the {@code WHERE} of a Cypher 25
+   * {@code SEARCH} clause can filter on them, and refuses a {@code WHERE} on any other property. ArcadeDB's {@code SEARCH}
+   * filters on the record itself while the index is searched (issue #10782), so its {@code WHERE} may read every property
+   * with or without the declaration: the statements a Neo4j script runs against the index answer the same.
    */
   private CypherDDLStatement handleCreateVectorIndex(final Cypher25Parser.CreateVectorIndexContext ctx) {
-    if (ctx.withProperties() != null)
-      throw new CommandParsingException("CREATE VECTOR INDEX ... WITH [...] (additional filtering properties) is not supported");
-
     final List<String> propertyNames = extractIndexPropertyNames(ctx.propertyList());
     if (propertyNames.size() != 1)
       throw new CommandParsingException("A vector index is on exactly one property, found " + propertyNames.size());

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.fulltext.StandardEnglishStopWordsAnalyzer;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
@@ -32,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.util.function.IntSupplier;
 
 /**
  * Translates the {@code OPTIONS} of Neo4j's {@code CREATE VECTOR INDEX} and {@code CREATE FULLTEXT INDEX} into the
@@ -53,12 +55,14 @@ final class CypherIndexOptions {
   static final String FULLTEXT_EVENTUALLY_CONSISTENT = "fulltext.eventually_consistent";
 
   /**
-   * The Neo4j analyzer names whose Lucene analyzer can be built without arguments, which is how a FULL_TEXT index builds its
-   * analyzer. Neo4j's {@code standard} (the standard analyzer with English stop words) has no such constructor, so it is not
-   * here: {@code standard-no-stop-words}, Neo4j's default, is the analyzer a FULL_TEXT index uses when none is named.
+   * The Neo4j analyzer names and the class of the analyzer a FULL_TEXT index builds for each, with a constructor that takes no
+   * arguments. {@code standard-no-stop-words}, Neo4j's default, is the analyzer a FULL_TEXT index uses when none is named;
+   * {@code standard}, the same analyzer with the English stop words, is {@link StandardEnglishStopWordsAnalyzer}, since
+   * Lucene's {@code StandardAnalyzer()} has none (issue #10863).
    */
   private static final Map<String, String> ANALYZERS = Map.ofEntries(//
       Map.entry("standard-no-stop-words", "org.apache.lucene.analysis.standard.StandardAnalyzer"),//
+      Map.entry("standard", StandardEnglishStopWordsAnalyzer.class.getName()),//
       Map.entry("simple", "org.apache.lucene.analysis.core.SimpleAnalyzer"),//
       Map.entry("whitespace", "org.apache.lucene.analysis.core.WhitespaceAnalyzer"),//
       Map.entry("keyword", "org.apache.lucene.analysis.core.KeywordAnalyzer"),//
@@ -80,8 +84,10 @@ final class CypherIndexOptions {
   }
 
   /**
-   * The LSM_VECTOR metadata of a {@code CREATE VECTOR INDEX}. The Neo4j settings are {@code vector.dimensions} (required,
-   * ArcadeDB sizes the index on it), {@code vector.similarity_function} ({@code cosine}, the default, or {@code euclidean}),
+   * The LSM_VECTOR metadata of a {@code CREATE VECTOR INDEX}. The Neo4j settings are {@code vector.dimensions} (ArcadeDB sizes
+   * the index on it: when the statement does not give it, it is taken from {@code existingDimensions}, the length of a vector
+   * the indexed property already holds, as newer Neo4j versions infer it from the data, issue #10863),
+   * {@code vector.similarity_function} ({@code cosine}, the default, or {@code euclidean}),
    * {@code vector.hnsw.m} (the graph degree, doubled into {@code maxConnections} since JVector does not double it at the base
    * layer as Lucene's HNSW does), {@code vector.hnsw.ef_construction} ({@code beamWidth}), {@code vector.quantization.type}
    * ({@code none}, {@code scalar} for {@code INT8}, {@code binary}) and the deprecated {@code vector.quantization.enabled}
@@ -96,7 +102,8 @@ final class CypherIndexOptions {
    * ({@code efSearch}, {@code quantization: 'PRODUCT'}, ...), and is read and checked by the same reader. Those names have no
    * dot, so they cannot be taken for a Neo4j setting; a setting named both ways is refused rather than one silently winning.
    */
-  static JSONObject vectorMetadata(final Object options, final String typeName, final String[] propertyNames) {
+  static JSONObject vectorMetadata(final Object options, final String typeName, final String[] propertyNames,
+      final IntSupplier existingDimensions) {
     final Map<String, Object> config = indexConfig(options, "CREATE VECTOR INDEX");
     final JSONObject metadata = new JSONObject();
     // the Neo4j setting each metadata key was translated from, to refuse the same metadata key named natively too
@@ -164,9 +171,15 @@ final class CypherIndexOptions {
 
     copyNativeSettings(config, metadata, translatedFrom);
 
-    if (!metadata.has("dimensions"))
-      throw new CommandParsingException(
-          "CREATE VECTOR INDEX needs the number of dimensions: OPTIONS {indexConfig: {`" + VECTOR_DIMENSIONS + "`: 768}}");
+    if (!metadata.has("dimensions")) {
+      // asked only now, so a statement that names the dimensions never reads the data
+      final int inferred = existingDimensions.getAsInt();
+      if (inferred < 1)
+        throw new CommandParsingException("CREATE VECTOR INDEX needs the number of dimensions, and " + typeName + "."
+            + propertyNames[0] + " holds no vector yet to take it from: OPTIONS {indexConfig: {`" + VECTOR_DIMENSIONS
+            + "`: 768}}");
+      metadata.put("dimensions", inferred);
+    }
     if (!metadata.has("similarity"))
       metadata.put("similarity", "COSINE");
     return checked(metadata, new LSMVectorIndexMetadata(typeName, propertyNames, -1), Schema.INDEX_TYPE.LSM_VECTOR);
@@ -176,7 +189,8 @@ final class CypherIndexOptions {
    * The FULL_TEXT metadata of a {@code CREATE FULLTEXT INDEX}: {@code fulltext.analyzer}, a Neo4j analyzer name or the class
    * name of a Lucene analyzer, and {@code fulltext.eventually_consistent}, accepted with either value since a FULL_TEXT index
    * is updated by the transaction that changes the record, which is what Neo4j's default ({@code false}) promises. Every other
-   * FULL_TEXT setting is given under its own name, as for a vector index ({@link #vectorMetadata(Object, String, String[])}).
+   * FULL_TEXT setting is given under its own name, as for a vector index ({@link #vectorMetadata(Object, String, String[],
+   * IntSupplier)}).
    */
   static JSONObject fullTextMetadata(final Object options, final String typeName, final String[] propertyNames) {
     final Map<String, Object> config = indexConfig(options, "CREATE FULLTEXT INDEX");
