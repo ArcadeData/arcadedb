@@ -7106,14 +7106,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int pos = contentOffset;
 
         // Read and skip vectorId
-        final long[] vectorIdAndSize = page.readNumberAndSize(pos);
-        pos += (int) vectorIdAndSize[1];
+        page.readNumber(pos);
+        pos += page.getLastReadNumberSize();
         // Read and skip bucketId
-        final long[] bucketIdAndSize = page.readNumberAndSize(pos);
-        pos += (int) bucketIdAndSize[1];
+        page.readNumber(pos);
+        pos += page.getLastReadNumberSize();
         // Read and skip position
-        final long[] positionAndSize = page.readNumberAndSize(pos);
-        pos += (int) positionAndSize[1];
+        page.readNumber(pos);
+        pos += page.getLastReadNumberSize();
         // Skip deleted flag
         pos += 1;
 
@@ -12502,19 +12502,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
           // Read variable-sized vectorId
-          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
-          final int id = (int) vectorIdAndSize[0];
-          currentOffset += (int) vectorIdAndSize[1];
+          final int id = (int) page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           // Read variable-sized bucketId
-          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
-          final int bucketId = (int) bucketIdAndSize[0];
-          currentOffset += (int) bucketIdAndSize[1];
+          final int bucketId = (int) page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           // Read variable-sized position
-          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
-          final long position = positionAndSize[0];
-          currentOffset += (int) positionAndSize[1];
+          final long position = page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           final RID rid = new RID(bucketId, position);
 
