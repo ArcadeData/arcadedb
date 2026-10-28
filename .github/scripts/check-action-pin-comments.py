@@ -153,7 +153,7 @@ def main(argv):
     for workflow, number, owner, repo, action, sha, comment in pins:
         where = f"{workflow}:{number}: {action}@{sha[:12]}"
         tags_by_sha, error = listings[(owner, repo)]
-        if error is not None:
+        if tags_by_sha is None:
             problems.append(f"{where}: {error}")
             continue
         tags = sorted(tags_by_sha.get(sha, ()))
