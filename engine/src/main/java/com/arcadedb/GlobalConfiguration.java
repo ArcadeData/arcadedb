@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
@@ -36,6 +37,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
 
 /**
@@ -266,15 +269,16 @@ public enum GlobalConfiguration {
       1),
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
+      "Default page size in bytes for buckets. Existing buckets keep their page size. Minimum is 8216 bytes, the room a page needs for its header, its slot table and one record. Default is 64KB",
+      Integer.class, 65_536, () -> LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)),
 
   INDEX_DEFAULT_PAGE_SIZE("arcadedb.indexDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for new plain LSM-tree indexes (not full-text, geo or vector ones) created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB. In a cluster, keep it identical on all the servers",
       Integer.class, 262_144),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Matches the LSM-index default (256KB)",
-      Integer.class, 262_144),
+      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Existing buckets keep their page size. Minimum is 1048 bytes. Matches the LSM-index default (256KB)",
+      Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
 
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
       "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
@@ -643,6 +647,15 @@ public enum GlobalConfiguration {
       never read by recovery.""",
       String.class, ""),
 
+  PAGE_SNAPSHOT_TRACK_OPENERS("arcadedb.pageSnapshotTrackOpeners", SCOPE.JVM,
+      """
+      Debug aid (issue #10657): record the stack of the code that opens each point-in-time snapshot window, so that a \
+      database close still waiting for a window after a minute names the code path that opened it and never released \
+      it. Off by default: the window is still reported with its opening thread and age, only the stack is skipped. The \
+      default follows the JVM system property of the same name, so a test run that sets it keeps it across \
+      GlobalConfiguration.resetAll().""",
+      Boolean.class, false, null, value -> Boolean.getBoolean("arcadedb.pageSnapshotTrackOpeners")),
+
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
 
@@ -681,6 +694,10 @@ public enum GlobalConfiguration {
 
   TX_STALE_READ_CHECK("arcadedb.txStaleReadCheck", SCOPE.DATABASE,
       "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Only direct property assignment and removal is checked: an in-place change to a list, map or embedded document got from the record is not. Set to false to restore the previous last-writer-wins behavior",
+      Boolean.class, true),
+
+  GRAPH_GHOST_EDGE_PROBE("arcadedb.graph.ghostEdgeProbe", SCOPE.DATABASE,
+      "Whether the walks that follow adjacency entries without loading the edge record (the openCypher variable-length hops and the reachability of path.subgraphNodes and path.subgraphAll) ask the edge bucket, once per vertex reached, whether the edge of the entry still has its record, and skip and report a ghost (a dangling entry left by a data-integrity anomaly) as the walks that load the edge do (issues #10148, #10149). The question costs one edge-bucket page read per vertex reached, which on a variable-length hop that reaches many vertices is about a quarter to a third of the query time (issue #10658). Set to false on a database known to hold no dangling entries (for example after CHECK DATABASE FIX pruned them) to follow every entry instead, as a fixed-length hop and SQL out()/in() always do: a ghost is then answered as a neighbour and not reported",
       Boolean.class, true),
 
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
@@ -2525,11 +2542,13 @@ public enum GlobalConfiguration {
       """
       Shared secret for inter-node request forwarding authentication. \
       Must be identical on all cluster nodes. \
-      If empty, a random token is auto-generated and stored in raft-storage at startup. \
-      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
-      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
-      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
-      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
+      If empty (and arcadedb.ha.clusterTokenPath is not set either), every node derives the token at each start from \
+      arcadedb.ha.clusterName and the root password (arcadedb.server.rootPassword, or the content of the file at \
+      arcadedb.server.rootPasswordPath); the derived token is never stored, so changing either input changes the token \
+      at the next start of each node, and nodes holding different tokens refuse each other's requests. \
+      SECURITY: set an explicit high-entropy value in production. The derivation uses a fixed public salt, so a weak \
+      root password plus a reachable replication HTTP port could let an attacker forge the token and impersonate the \
+      root user via forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
@@ -2538,6 +2557,18 @@ public enum GlobalConfiguration {
       Used to keep the secret off the command line (e.g. a Kubernetes Secret mounted on tmpfs). \
       Read only when arcadedb.ha.clusterToken is not set; the file content is trimmed of surrounding whitespace.""",
       String.class, ""),
+
+  HA_CLUSTER_TOKEN_ALLOW_ROTATION("arcadedb.ha.clusterTokenAllowRotation", SCOPE.SERVER,
+      """
+      Allows a node whose cluster token is derived from the root password file (arcadedb.server.rootPasswordPath, with \
+      neither arcadedb.ha.clusterToken nor arcadedb.ha.clusterTokenPath set) to start with a token that differs from \
+      the one it last ran with. A node records a fingerprint of that derived token beside its Raft storage and, by \
+      default, refuses to start when the file now derives a different one: the file was rewritten in place (e.g. a \
+      rotated Kubernetes Secret), and a node starting with the new token is refused by every peer still on the old one. \
+      Set to true on every node only to rotate the token deliberately, with a full-cluster restart, then remove it. \
+      The check needs persisted Raft storage (arcadedb.ha.raftPersistStorage): a node that discards its storage at every \
+      start keeps no record and is not protected.""",
+      Boolean.class, false),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
@@ -3505,6 +3536,12 @@ public enum GlobalConfiguration {
    * nothing enforces it and the failure is total and silent-looking.
    */
   private final        Set<Object>              allowed;
+  /**
+   * The smallest value a numeric setting accepts, or {@code null} when it has no floor. A supplier because a floor is DERIVED from
+   * what the setting sizes (a bucket page from its slot table, issue #10876), and is read only when a value is checked: resolving
+   * it here would load that class while this enum is still initializing.
+   */
+  private final        IntSupplier              minimum;
   public final static  String                   PREFIX = "arcadedb.";
   private static final Timer                    TIMER;
   // Issue #7281: set for the duration of readConfiguration(), so DUMP_CONFIG_AT_STARTUP's callback can tell a
@@ -3595,7 +3632,18 @@ public enum GlobalConfiguration {
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+                      final IntSupplier minimum) {
+    this(iKey, scope, iDescription, iType, iDefValue, null, null, null, minimum);
+  }
+
+  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
                       final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
+    this(iKey, scope, iDescription, iType, iDefValue, callback, callbackIfNoSet, allowed, null);
+  }
+
+  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+                      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed,
+                      final IntSupplier minimum) {
     this.key = iKey;
     this.scope = scope;
     this.description = iDescription;
@@ -3606,6 +3654,7 @@ public enum GlobalConfiguration {
     this.callback = callback;
     this.callbackIfNoSet = callbackIfNoSet;
     this.allowed = allowed;
+    this.minimum = minimum;
   }
 
   /**
@@ -3865,6 +3914,52 @@ public enum GlobalConfiguration {
   }
 
   /**
+   * The key this setting was declared with before it was renamed (issue #10599), or {@code null} when it never was.
+   */
+  public String getFormerKey() {
+    return FORMER_KEYS.get(this);
+  }
+
+  /**
+   * A value the process supplied for a setting: the key that carried it, which is the former key when the setting was given under
+   * the spelling it was renamed from, and whether it came from an environment variable rather than a system property.
+   */
+  public record ProcessSuppliedValue(String key, String value, boolean fromEnvironment) {
+  }
+
+  /**
+   * The value the process supplies for this setting through a system property or an environment variable, looked up the way
+   * {@link #readConfiguration()} applies it: the current key (property, then variable), then the key the setting was renamed from,
+   * only when the current one carries nothing (issue #10599).
+   * <p>
+   * The one answer to "did the operator give this setting on the command line or in the environment, and under which spelling"
+   * (issue #10738): a reader that asked with the current key alone filed a value given under the former key as one the server
+   * computed, while {@link #readConfiguration()} had applied it.
+   *
+   * @param systemProperties the system property of a key, {@code System::getProperty} outside a test
+   * @param environment      the environment variable of a key, {@code System::getenv} outside a test
+   *
+   * @return the value and the key that carried it, or {@code null} when no key of the setting carries one
+   */
+  public ProcessSuppliedValue processSuppliedValue(final Function<String, String> systemProperties,
+      final Function<String, String> environment) {
+    final ProcessSuppliedValue current = processSuppliedValue(key, systemProperties, environment);
+    if (current != null)
+      return current;
+    final String formerKey = FORMER_KEYS.get(this);
+    return formerKey != null ? processSuppliedValue(formerKey, systemProperties, environment) : null;
+  }
+
+  private static ProcessSuppliedValue processSuppliedValue(final String key, final Function<String, String> systemProperties,
+      final Function<String, String> environment) {
+    final String property = systemProperties.apply(key);
+    if (property != null)
+      return new ProcessSuppliedValue(key, property, false);
+    final String variable = environment.apply(key);
+    return variable != null ? new ProcessSuppliedValue(key, variable, true) : null;
+  }
+
+  /**
    * Uncompressed payload, in bytes, a producer may pack into one replicated Raft entry (64 MB), whatever the
    * configured caps say: every node has to materialize the entry in full to apply it, so the LZ4 compression on the
    * wire is no bound (issue #5933). The ha-raft codec enforces it ({@code RaftLogEntryCodec.MAX_ENTRY_BYTES}), and
@@ -4032,8 +4127,6 @@ public enum GlobalConfiguration {
    * type's permissive parse makes of it - which for a {@code Boolean} was {@code false}, for every input (#7222).
    */
   public static synchronized void readConfiguration() {
-    String prop;
-
     // Synchronized because the pass has state that spans it: readingConfiguration/dumpPending are JVM-wide, so two
     // interleaved passes could clear the flag while the other is still walking values() and dump mid-pass - the very
     // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
@@ -4042,28 +4135,15 @@ public enum GlobalConfiguration {
     assignedDuringPass = EnumSet.noneOf(GlobalConfiguration.class);
     try {
       for (final GlobalConfiguration config : values()) {
-        String source = "system property";
-
-        prop = System.getProperty(config.key);
-        if (prop == null) {
-          prop = System.getenv(config.key);
-          source = "environment variable";
+        // the key the setting was renamed from (issue #10599) is read only where the current one carries nothing
+        final ProcessSuppliedValue supplied = config.processSuppliedValue(System::getProperty, System::getenv);
+        if (supplied == null) {
+          config.applyConfigurationSource(null, "environment variable");
+          continue;
         }
-
-        // the key the setting was renamed from (issue #10599), only where the current one carries nothing
-        final String formerKey = FORMER_KEYS.get(config);
-        if (prop == null && formerKey != null) {
-          prop = System.getProperty(formerKey);
-          source = "system property";
-          if (prop == null) {
-            prop = System.getenv(formerKey);
-            source = "environment variable";
-          }
-          if (prop != null)
-            reportFormerKey(config);
-        }
-
-        config.applyConfigurationSource(prop, source);
+        if (!supplied.key().equals(config.key))
+          reportFormerKey(config);
+        config.applyConfigurationSource(supplied.value(), supplied.fromEnvironment() ? "environment variable" : "system property");
       }
     } finally {
       readingConfiguration = false;
@@ -4261,6 +4341,16 @@ public enum GlobalConfiguration {
     if (allowed != null && coerced != null && !allowed.contains(coerced.toString().toLowerCase(Locale.ENGLISH)))
       throw new IllegalArgumentException(
           "Global setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
+    // The floor is checked by the same two writers for the same reason (issue #10876): `ALTER DATABASE` stored a bucket page size no
+    // bucket could write a record into, and the refusal came at the first insert into a type created afterwards
+    if (minimum != null && coerced instanceof Number number && number.longValue() < minimum.getAsInt())
+      throw new IllegalArgumentException(
+          "Global setting '" + key + "=" + coerced + "' is not valid. Minimum is " + minimum.getAsInt());
+  }
+
+  /** The smallest value this setting accepts, or {@code null} when it has no floor. */
+  public Integer getMinimum() {
+    return minimum != null ? minimum.getAsInt() : null;
   }
 
   /**
@@ -4670,6 +4760,9 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
+    // A plain flag whose key happens to contain "clusterToken": an operator must be able to see it is on (issue #10601).
+    if (this == HA_CLUSTER_TOKEN_ALLOW_ROTATION)
+      return hidden;
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 

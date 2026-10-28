@@ -70,6 +70,8 @@ class Issue8592LeaveClusterHandOffTargetTest {
     raft.on("isLeader", args -> leader.get());
     raft.returns("getClusterMonitor", monitor);
     raft.returns("getLivePeers", List.of(peer(SELF, 0), peer(B, 0), peer(C, 0)));
+    // The leave reads the COMMITTED configuration for its single-node check and quorum guard (issue #10769)
+    raft.returns("getCommittedPeersOrNull", List.of(peer(SELF, 0), peer(B, 0), peer(C, 0)));
     // Both peers answered this leader recently: without it the #8556 screen drops every candidate (issue #8632)
     raft.returns("handoffReachablePeers", Set.of(B.toString(), C.toString()));
   }
@@ -118,6 +120,7 @@ class Issue8592LeaveClusterHandOffTargetTest {
   @Test
   void theHighestPriorityPeerIsTriedFirst() {
     raft.returns("getLivePeers", List.of(peer(SELF, 1), peer(B, 0), peer(C, 1)));
+    raft.returns("getCommittedPeersOrNull", List.of(peer(SELF, 1), peer(B, 0), peer(C, 1)));
 
     manager(C).leaveCluster(false);
 

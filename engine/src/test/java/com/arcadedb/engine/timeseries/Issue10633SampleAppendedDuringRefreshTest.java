@@ -64,8 +64,8 @@ class Issue10633SampleAppendedDuringRefreshTest extends TestHelper {
   }
 
   private void append(final long ts, final double v) throws Exception {
-    // the engine API does not refresh by itself, so the refreshes are the ones the test runs
-    engine().appendSamples(new long[] { ts }, new Object[] { "a" }, new Object[] { v });
+    // without the refresh the engine API runs after an append (#10686), so the refreshes are the ones the test runs
+    engine().appendSamplesWithoutRefresh(new long[] { ts }, new Object[] { "a" }, new Object[] { v });
   }
 
   private ContinuousAggregateImpl aggregate() {
@@ -208,7 +208,7 @@ class Issue10633SampleAppendedDuringRefreshTest extends TestHelper {
     refresh();
     append(H0 + 3 * HOUR + 1_000, 30);
 
-    duringARefresh(() -> engine().appendSamples(new long[] { H0 + 2_000, H0 + 2 * HOUR + 2_000, H0 + 4 * HOUR + 2_000 },
+    duringARefresh(() -> engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000, H0 + 2 * HOUR + 2_000, H0 + 4 * HOUR + 2_000 },
         new Object[] { "a", "a", "a" }, new Object[] { 1.0, 2.0, 4.0 }));
     assertThat(aggregate().getWatermarkTs()).isEqualTo(H0 + 3 * HOUR);
 

@@ -57,7 +57,7 @@ class Issue8405HostCodeSecurityViewIT extends BaseGraphServerTest {
 
   @Test
   void databaseSecurityManagerIsNotTheServerSecurityInstance() {
-    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName());
     final SecurityManager security = database.getSecurity();
 
     assertThat(security).isNotNull();
@@ -70,7 +70,7 @@ class Issue8405HostCodeSecurityViewIT extends BaseGraphServerTest {
 
   @Test
   void databaseSecurityManagerExposesOnlyTheSecurityManagerInterface() {
-    final SecurityManager security = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getSecurity();
+    final SecurityManager security = ((DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName())).getSecurity();
 
     final Set<String> allowed = new TreeSet<>();
     for (final Method m : SecurityManager.class.getMethods())
@@ -90,7 +90,7 @@ class Issue8405HostCodeSecurityViewIT extends BaseGraphServerTest {
 
   @Test
   void hostCodeCannotReachServerSecurityMutators() {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     for (final String method : SERVER_ONLY_MUTATORS)
       try (final ResultSet rs = database.command("js", "typeof database.getSecurity()." + method)) {
@@ -102,7 +102,7 @@ class Issue8405HostCodeSecurityViewIT extends BaseGraphServerTest {
 
   @Test
   void hostCodeStillReachesTheSecurityManagerInterface() {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     final ServerSecurity serverSecurity = getServer(0).getSecurity();
     final String user = "u8405host";
 
@@ -139,7 +139,7 @@ class Issue8405HostCodeSecurityViewIT extends BaseGraphServerTest {
    */
   @Test
   void hostCodeCannotMutateTheUserStateThroughTheReadMethods() {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     final ServerSecurity serverSecurity = getServer(0).getSecurity();
 
     try (final ResultSet rs = database.command("js",
@@ -157,7 +157,7 @@ class Issue8405HostCodeSecurityViewIT extends BaseGraphServerTest {
 
   @Test
   void interfaceCallsDelegateToTheServerSecurity() {
-    final SecurityManager security = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getSecurity();
+    final SecurityManager security = ((DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName())).getSecurity();
     final ServerSecurity serverSecurity = getServer(0).getSecurity();
 
     assertThat(security.getUsers()).containsExactlyInAnyOrderElementsOf(serverSecurity.getUsers());

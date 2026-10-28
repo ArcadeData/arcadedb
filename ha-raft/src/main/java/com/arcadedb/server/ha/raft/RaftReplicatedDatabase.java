@@ -137,6 +137,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1808,16 +1809,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.setWrapper(name, instance);
   }
 
-  // Global variables are NOT replicated through Raft: unlike every other mutating method on this class, the five
+  // Global variables are NOT replicated through Raft: unlike every other mutating method on this class, the seven
   // accessors below (getGlobalVariable, setGlobalVariable, setGlobalVariableIfAbsent, setGlobalVariableIfPresent,
-  // getGlobalVariables) all delegate straight to the local node's own database, with no consensus proposal
+  // computeGlobalVariable, getGlobalVariables, and getGlobalVariableStore, the raw map the Redis wrapper keys by the client's
+  // key) all delegate straight to the local node's own database, with no consensus proposal
   // involved at all. A value set on one node of an HA cluster is invisible to every other node, including after a
   // failover, so setGlobalVariableIfAbsent/setGlobalVariableIfPresent's per-node atomicity does NOT make Redis
   // "SET k v NX" (or any other caller) a real cluster-wide distributed lock. A full fix would mean replicating
-  // global variables through Raft, which none of these five methods attempt (issue #6560). Each accessor below
+  // global variables through Raft, which none of these seven methods attempt (issue #6560). Each accessor below
   // carries its own Javadoc pointer to the full caveat on DatabaseInternal, since a Javadoc comment attaches only
   // to the single declaration it precedes and would not otherwise show up in generated docs/IDE hover for the
-  // other four.
+  // other six.
 
   /**
    * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
@@ -1870,6 +1872,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Map<String, Object> getGlobalVariables() {
     return proxied.getGlobalVariables();
+  }
+
+  /**
+   * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
+   */
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return proxied.getGlobalVariableStore();
   }
 
   @Override

@@ -115,7 +115,7 @@ class Issue7450SqlExportMaintenanceSlotIT extends BaseGraphServerTest {
    */
   @Test
   void theExportSeesTheSameCoordinatorTheServersOwnEntryPointsUse() {
-    final DatabaseInternal database = getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     assertThat(MaintenanceCoordinator.boundTo(database)).isSameAs(getServer(0).getBackupCoordinator());
     assertThat(MaintenanceCoordinator.boundTo(database.getEmbedded())).isSameAs(getServer(0).getBackupCoordinator());
@@ -156,7 +156,7 @@ class Issue7450SqlExportMaintenanceSlotIT extends BaseGraphServerTest {
    */
   @Test
   void aSlotHeldTheWayTheSqlExportHoldsItRefusesTheServersOwnRestore() throws Exception {
-    final DatabaseInternal database = getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     try (final Reservation slot = MaintenanceCoordinator.reserve(database, Operation.EXPORT)) {
       assertThat(getServer(0).getBackupCoordinator().isInProgress(getDatabaseName(), Operation.EXPORT)).isTrue();
@@ -178,7 +178,7 @@ class Issue7450SqlExportMaintenanceSlotIT extends BaseGraphServerTest {
    */
   @Test
   void aSecondSqlExportOfTheSameDatabaseIsAdmitted() throws Exception {
-    final DatabaseInternal database = getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     try (final Reservation slot = MaintenanceCoordinator.reserve(database, Operation.EXPORT)) {
       final HttpResponse<String> response = postSql("EXPORT DATABASE file://second-7450.jsonl.tgz");

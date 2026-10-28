@@ -556,8 +556,7 @@ public class LocalDocumentType implements DocumentType {
     }
     schema.executeDroppingFiles("remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "'", fileIds, () -> {
       dropping[0] = true;
-      for (final String indexName : orphans)
-        schema.dropIndex(indexName);
+      schema.dropIndexes(orphans);
       return null;
     });
 
@@ -646,10 +645,38 @@ public class LocalDocumentType implements DocumentType {
    * is no enclosing rename there, so the files would move and nothing would ever publish them.
    */
   protected final void renameDocumentPart(final String newName) {
+    checkInsideRename();
+    renameInternal(newName);
+  }
+
+  /**
+   * As {@link #renameDocumentPart}, keeping the old name reserved for this type (issue #10749): for a subclass that moves files of its
+   * own afterwards, still under the old name, which a type created under that name would otherwise find and take. The subclass
+   * releases it with {@link #releaseReservedName} once its files moved, or goes back to it with {@link #restoreReservedName}.
+   */
+  protected final void renameDocumentPartKeepingOldName(final String newName) {
+    checkInsideRename();
+    renameInternal(newName, false, false);
+  }
+
+  /** The rollback of {@link #renameDocumentPartKeepingOldName}: back to the old name, which this type still holds. */
+  protected final void restoreReservedName(final String oldName) {
+    checkInsideRename();
+    renameInternal(oldName, true, true);
+  }
+
+  /** Gives up a name this type no longer answers to, if it still holds it (the two-argument remove never evicts another type). */
+  protected final void releaseReservedName(final String oldName) {
+    if (oldName.equals(name))
+      return;
+    ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()
+        .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
+  }
+
+  private void checkInsideRename() {
     if (!renameLock.isHeldByCurrentThread())
       throw new IllegalStateException("The document part of type '" + name + "' can only be renamed from inside a rename "
           + "of the type: call rename(), which publishes it");
-    renameInternal(newName);
   }
 
   /**
@@ -698,6 +725,7 @@ public class LocalDocumentType implements DocumentType {
         for (final Map.Entry<Integer, String> entry : componentNamesOfFiles(fileManager).entrySet())
           if (!entry.getValue().equals(componentNamesBefore.get(entry.getKey())))
             fileManager.recordRename(entry.getKey(), entry.getValue());
+        renamePublished(oldName);
         return null;
       });
     } catch (final RuntimeException e) {
@@ -717,14 +745,35 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * The last step of a rename, inside the session that publishes it and after the files moved (issue #10749): what a subclass
+   * keeps under the type's name besides the schema and the files. Nothing for a document type.
+   */
+  protected void renamePublished(final String oldName) {
+  }
+
+  /**
+   * The ids of the files this type keeps its data in that are neither a bucket nor a file of an index (issue #10749): the storage a
+   * kind of type owns beyond them, the components of a TIMESERIES type's engine. The one list the rename moves and records for the
+   * followers and the drop probes before it deletes anything, so the two cannot disagree on which files are the type's. None for a
+   * document type.
+   */
+  protected void collectOwnedComponentFiles(final Collection<Integer> fileIds) {
+  }
+
+  /**
    * File id to component name of every file a rename of this type can move: its buckets with the ones a subclass involves
-   * (edge buckets, stripe pool) and the components of its indexes. Only this type's files, so a concurrent rename of
-   * another type is never published early by this one. A file dropped concurrently is simply absent from the map.
+   * (edge buckets, stripe pool), the components it owns besides them ({@link #collectOwnedComponentFiles}) and the components of
+   * its indexes. Only this type's files, so a concurrent rename of another type is never published early by this one. A file
+   * dropped concurrently is simply absent from the map.
    */
   private Map<Integer, String> componentNamesOfFiles(final FileManager fileManager) {
     final Map<Integer, String> names = new LinkedHashMap<>();
     for (final Bucket bucket : getInvolvedBuckets())
       putComponentName(fileManager, bucket.getFileId(), names);
+    final List<Integer> ownedFiles = new ArrayList<>();
+    collectOwnedComponentFiles(ownedFiles);
+    for (final Integer fileId : ownedFiles)
+      putComponentName(fileManager, fileId, names);
     final List<Integer> ownBucketIds = getBucketIds(false);
     // The sub-indexes on this type's own buckets, of the indexes it declares and of the ones it inherits: those are the ones a
     // rename moves, and the ones on the buckets of a sub type are that sub type's files (issue #10317)
@@ -743,10 +792,33 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private void renameInternal(final String newName) {
-    if (schema.existsType(newName))
+    renameInternal(newName, true, false);
+  }
+
+  /**
+   * @param releaseOldName         whether the old name is released once the document part is renamed. A subclass with files of
+   *                               its own to move after it keeps the name reserved until they moved (issue #10749), so that no type
+   *                               can be created under it and take those files while they still carry it
+   * @param targetIsOwnReservation the rollback of such a rename: the target is the old name this type still holds, which is not a
+   *                               collision, and is not given up if the rollback fails
+   */
+  private void renameInternal(final String newName, final boolean releaseOldName, final boolean targetIsOwnReservation) {
+    if (schema.existsType(newName) && !(targetIsOwnReservation && schema.typeMap().get(newName) == this))
       throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type with name '" + newName + "' already exists");
 
     final String oldName = name;
+
+    // A default-named index takes the name derived from the new type name, which a manually named index of another type may hold
+    // already: refused here, before anything changes, rather than taking the name over and leaving that index unreachable by it
+    // (issue #10751)
+    for (final TypeIndex idx : getAllIndexes(false)) {
+      final String indexName = idx.nameUnderType(newName);
+      final IndexInternal holder = schema.lookupIndex(indexName);
+      if (holder != null && holder != idx)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+            "Cannot rename type '" + oldName + "' to '" + newName + "': its index '" + idx.getName() + "' would be named '" + indexName
+                + "', which is the name of an index of type '" + holder.getTypeName() + "'");
+    }
 
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
@@ -776,7 +848,8 @@ public class LocalDocumentType implements DocumentType {
       // wait for the whole database's page flush queue to drain. Refusing here unwinds through the catch below,
       // which puts the buckets renamed above back under their old names.
       ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
-        if (schema.typeMap().putIfAbsent(newName, this) != null)
+        final DocumentType holder = schema.typeMap().putIfAbsent(newName, this);
+        if (holder != null && !(targetIsOwnReservation && holder == this))
           throw new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type with name '" + newName + "' already exists");
 
         name = newName;
@@ -813,8 +886,8 @@ public class LocalDocumentType implements DocumentType {
       // concurrent CREATE TYPE on the old name is refused while the rename may still come back, and a reader
       // resolving the old name gets this type rather than nothing. schema.json is unaffected either way -
       // saveConfiguration() keys each entry by t.getName(), so two keys onto one type collapse into one entry.
-      ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()
-          .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
+      if (releaseOldName)
+        releaseReservedName(oldName);
 
       // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the buckets
       // already renamed on disk with a schema.json that still names the old files.
@@ -822,13 +895,15 @@ public class LocalDocumentType implements DocumentType {
       name = oldName;
       // ONLY OUR RESERVATION GOES, and nothing is restored: the old name was never released above, so it still
       // maps to this type. The two-argument remove() is what keeps a refusal - the putIfAbsent losing to whoever
-      // already holds the new name - from evicting that winner's entry (#7918).
-      schema.typeMap().remove(newName, this);
+      // already holds the new name - from evicting that winner's entry (#7918). A target this type held already, the old name a
+      // rollback goes back to, stays held.
+      if (!targetIsOwnReservation)
+        schema.typeMap().remove(newName, this);
 
       boolean corrupted = false;
 
-      // Unwound in reverse: indexes were renamed last, so they are restored first. 'name' is already back to the
-      // old value above, which is what TypeIndex.updateTypeName() recomputes its logic name from.
+      // Unwound in reverse: indexes were renamed last, so they are restored first. TypeIndex.updateTypeName() re-keys the schema's
+      // index map back under the old name as it goes (issue #10751).
       for (TypeIndex idx : renamedInheritedIndexes) {
         try {
           idx.updateTypeNameOfSubIndexesOn(this, oldName);
@@ -2423,10 +2498,11 @@ public class LocalDocumentType implements DocumentType {
       // Falling back to the auto-derived form keeps the public default name unchanged for all
       // callers that did not supply a manual name.
       final String customName = index.getMetadata().typeIndexName;
-      final String typeIndexName = customName != null && !customName.isEmpty() ?
-          customName :
-          name + Arrays.toString(propertyNames).replace(" ", "");
-      propIndex = new TypeIndex(typeIndexName, this);
+      final String derivedName = name + Arrays.toString(propertyNames).replace(" ", "");
+      // A REBUILD hands the derived name back as the custom one, and it is no manual name: a rename of the type has to move it. A
+      // user who spelled out the derived name (CREATE INDEX `Foo[a]` ON Foo (a)) gets the same, which is the name it already had
+      final boolean manualName = customName != null && !customName.isEmpty() && !customName.equals(derivedName);
+      propIndex = new TypeIndex(manualName ? customName : derivedName, this, manualName);
       // Staged while a schema load is in flight (issue #7213): this wrapper is the name a query resolves, and
       // publishing it here would hand a reader a TypeIndex over a bucket-level index that has not run its
       // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
@@ -2465,6 +2541,10 @@ public class LocalDocumentType implements DocumentType {
     // One lookup in the bucket-owner map rather than a walk of every type, which made each bucket attached cost O(N) and
     // the open of a schema of N types O(N^2) (issue #10247)
     schema.checkBucketIsFree(name, bucket);
+    // The paired bucket is created after the attach below: a page size it cannot have is refused before anything changes, or the
+    // type would keep a primary bucket with no pair (issue #10876)
+    if (hasExternalProperties() && !externalBucketIdByPrimaryBucketId.containsKey(bucket.getFileId()))
+      schema.checkPairedExternalBucketPageSize(bucket.getName());
 
     // If we already have a partitioned strategy in place, growing the bucket count changes the
     // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any
@@ -2968,11 +3048,12 @@ public class LocalDocumentType implements DocumentType {
     for (final TypeIndex i : getAllIndexes(false)) {
       // Persist a user-supplied TypeIndex name once per bucket entry (issue #4139). Stored on the
       // bucket-level JSON because that is what {@link LocalSchema#load} iterates and feeds back to
-      // {@link #addIndexInternal} via setMetadata. Detected by comparing the TypeIndex name to the
-      // auto-derived form so any non-LSM implementation (HashIndex, FullText, Geo, Vector, ...)
-      // gets the manual name persisted without needing each one's toJSON to know about it.
-      final String autoName = name + Arrays.toString(i.getPropertyNames().toArray()).replace(" ", "");
-      final String custom = i.getName().equals(autoName) ? null : i.getName();
+      // {@link #addIndexInternal} via setMetadata. Kept on the TypeIndex itself so any non-LSM
+      // implementation (HashIndex, FullText, Geo, Vector, ...) gets the manual name persisted without
+      // needing each one's toJSON to know about it. Not detected by comparing the name with the derived
+      // form: a type rename used to replace the manual name by the derived one, which that comparison
+      // then took for no manual name at all, and the name was gone at the next load (issue #10751).
+      final String custom = i.hasManualName() ? i.getName() : null;
       for (final IndexInternal entry : i.getIndexesOnBuckets()) {
         final JSONObject indexJSON = entry.toJSON();
         if (custom != null)

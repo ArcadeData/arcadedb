@@ -72,6 +72,25 @@ public final class PostgresBackendFunctions {
     }
   }
 
+  /**
+   * The process id of the Postgres connection the calling code works for, or null outside one. Shared by the SQL function and the
+   * catalog's answer to {@code SELECT pg_catalog.pg_backend_pid()} (issue #10695), so the two cannot disagree.
+   */
+  static Integer currentProcessId(final CommandContext context) {
+    if (Thread.currentThread() instanceof PostgresNetworkExecutor executor)
+      return executor.getProcessId();
+    // Work of a Postgres statement that runs on another thread (a parallel step, a script on the polyglot pool) carries
+    // the statement's entry, and the entry the connection's process id
+    final RunningQuery statement = context != null ? context.getRunningQuery() : RunningQuery.current();
+    if (statement != null && "postgres".equals(statement.getProtocol()) && statement.getConnectionId() != null)
+      try {
+        return Integer.parseInt(statement.getConnectionId());
+      } catch (final NumberFormatException e) {
+        return null;
+      }
+    return null;
+  }
+
   /** {@code pg_backend_pid()}: the calling connection's process id, or null outside a Postgres connection. */
   static final class BackendPid extends SQLFunctionAbstract {
     static final String NAME = "pg_backend_pid";
@@ -83,18 +102,7 @@ public final class PostgresBackendFunctions {
     @Override
     public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
         final CommandContext context) {
-      if (Thread.currentThread() instanceof PostgresNetworkExecutor executor)
-        return executor.getProcessId();
-      // Work of a Postgres statement that runs on another thread (a parallel step, a script on the polyglot pool) carries
-      // the statement's entry, and the entry the connection's process id
-      final RunningQuery statement = context != null ? context.getRunningQuery() : RunningQuery.current();
-      if (statement != null && "postgres".equals(statement.getProtocol()) && statement.getConnectionId() != null)
-        try {
-          return Integer.parseInt(statement.getConnectionId());
-        } catch (final NumberFormatException e) {
-          return null;
-        }
-      return null;
+      return currentProcessId(context);
     }
 
     @Override

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.query.sql.parser.BooleanExpression;
+
 public class IndexSearchInfo {
   private final boolean        allowsRangeQueries;
   private final boolean        map;
@@ -28,6 +30,7 @@ public class IndexSearchInfo {
   private final boolean        indexByItem;
   private final boolean        supportNull;
   private final boolean        caseInsensitive;
+  private       boolean        planDependsOnValue;
 
   public IndexSearchInfo(final String indexField, final boolean allowsRangeQueries, final boolean map, final boolean indexByKey,
       final boolean indexByValue, final boolean indexByItem,
@@ -83,5 +86,17 @@ public class IndexSearchInfo {
 
   public boolean isCaseInsensitive() {
     return caseInsensitive;
+  }
+
+  /**
+   * Called by a condition whose {@link BooleanExpression#isIndexAware(IndexSearchInfo)} answer
+   * depends on the value an input parameter is bound to: the plan then holds for this binding only and is not cached.
+   */
+  public void setPlanDependsOnValue() {
+    planDependsOnValue = true;
+  }
+
+  public boolean isPlanDependsOnValue() {
+    return planDependsOnValue;
   }
 }

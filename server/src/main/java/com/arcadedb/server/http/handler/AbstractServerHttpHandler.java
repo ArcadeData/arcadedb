@@ -717,8 +717,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
+          // Says which side of the comparison failed, and leaves where this node's token came from to its own log
+          // (issue #10601): the cluster name and the password file path are not for an unauthenticated caller.
+          HAServerPlugin.reportClusterTokenRefusal(httpServer.getServer(), String.valueOf(exchange.getSourceAddress()));
           exchange.setStatusCode(401);
-          sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+          sendErrorResponse(exchange, 401, INVALID_CLUSTER_TOKEN_MESSAGE, null, null);
           return;
         }
 
@@ -1376,7 +1379,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // DatabaseIsReopeningException subtype. A concurrent DROP/CLOSE DATABASE admin action, or a shutdown, raises the
     // plain DatabaseIsClosedException on a still in-flight request, and that close is permanent: answered as the 404
     // below, the same verdict the retry it used to be given ended in once it re-resolved the name (issues #6778,
-    // #8199). ErrorCategory draws the same line for every other wire protocol.
+    // #8199). ErrorCategory draws the same line between the two for every other wire protocol: RETRY for the reopen, and
+    // UNAVAILABLE, not a server fault, for the plain close (issue #10692).
     final DatabaseIsReopeningException databaseReopening = firstOf(e, cause, DatabaseIsReopeningException.class);
     if (databaseReopening != null) {
       return retryable(databaseReopening);
@@ -2144,6 +2148,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return "none";
     return server != null && server.existsDatabase(db) ? db : UNKNOWN_DB_TAG;
   }
+
+  /**
+   * The body of a 401 answered to a request whose cluster token does not match this node's (issue #10601). It starts
+   * with the string issue #9554 was filed about, so existing log searches still match.
+   */
+  static final String INVALID_CLUSTER_TOKEN_MESSAGE =
+      "Invalid cluster token: the caller's cluster token does not match this node's. See this node's log for where its "
+          + "token comes from";
 
   /**
    * Whether {@code providedToken} is the shared secret this cluster's members authenticate to each other

@@ -23,7 +23,6 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.schema.ContinuousAggregateRefresher;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -71,18 +70,13 @@ public class DeleteFromTimeSeriesStep extends AbstractExecutionStep {
       final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       final long deleted;
       try {
+        // the engine tells the continuous aggregates over the type which range changed (issue #10428) and refreshes them (#10686)
         deleted = engine.deleteSamples(fromTs, toTs, tagFilter);
       } catch (final IOException e) {
         // the shards before the one that failed are deleted: say so, and that running the statement again finishes the job
         throw new CommandExecutionException("Error deleting samples from the TIMESERIES type '" + tsType.getName() + "': some of the "
             + "samples may already be deleted, and running the statement again deletes the rest", e);
       }
-
-      // the engine told the continuous aggregates over the type which range changed (issue #10428); refresh them as an INSERT does.
-      // A delete that failed part way threw above and refreshes nothing: the range is recorded all the same, and the next refresh
-      // (the next INSERT triggers one) recomputes it
-      if (deleted > 0L)
-        ContinuousAggregateRefresher.refreshAggregatesOver(context.getDatabase(), tsType.getName());
 
       final ResultInternal row = new ResultInternal(context.getDatabase());
       row.setProperty("count", deleted);

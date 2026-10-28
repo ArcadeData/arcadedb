@@ -112,10 +112,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         rerank = opts.getInt("rerank", -1);
         if (opts.get("rerank") != null && rerank < 0)
           throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + rerank);
-        // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of
-        // listing every RID in scope up front as a `filter` subquery has to (issue #10169)
-        allowedRIDs = RecordPredicateRidSet.of(opts.get("where"), parseRidFilter(opts.getList("filter"), NAME, context), NAME,
-            context);
+        allowedRIDs = parsePreFilter(opts.getList("filter"), opts.get("where"), NAME, context);
         groupBy = opts.getString("groupBy", null);
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)

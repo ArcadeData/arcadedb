@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.List;
@@ -121,6 +122,30 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   public String getBackingTypeName() {
     return backingTypeName;
+  }
+
+  /**
+   * Why every refresh of this aggregate reads every row it ever wrote, with the statements that stop it, or {@code null} when it does
+   * not (issue #10804). The refresh replaces the rows of the buckets at or after the watermark, and the recompute of a range those of
+   * the range: an aggregate created before #10804 has no index on its bucket column, so each read of those rows is a scan of the
+   * backing type, paid by every append that triggers a refresh. Not built at open: under HA that is a schema change every node would make on
+   * its own, so it is named here, for the schema load to report once.
+   */
+  String getUpgradeWarning() {
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(backingTypeName))
+      return null;
+    for (final TypeIndex index : schema.getType(backingTypeName).getAllIndexes(true)) {
+      final List<String> properties = index.getPropertyNames();
+      if (index.getType() == Schema.INDEX_TYPE.LSM_TREE && !properties.isEmpty() && bucketColumn.equals(properties.getFirst()))
+        return null;
+    }
+    final String type = "`" + backingTypeName + "`";
+    final String property = "`" + bucketColumn + "`";
+    return "every refresh of continuous aggregate '" + name + "' reads all its rows, its bucket column '" + bucketColumn
+        + "' has no index. Run: " + (schema.getType(backingTypeName).existsProperty(bucketColumn) ?
+        "" :
+        "CREATE PROPERTY " + type + "." + property + " DATETIME; ") + "CREATE INDEX ON " + type + " (" + property + ") NOTUNIQUE";
   }
 
   @Override
@@ -293,8 +318,10 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   /**
    * Records the samples an append has just committed with timestamps in {@code [minTs, maxTs]}, when some of them are behind the
    * watermark (issue #10502): the incremental refresh reads only the samples at or after the watermark, so those would never reach
-   * their buckets. Called once the append has committed, never before: a refresh that read the source before the commit and cleared
-   * the record would lose the samples. The caller persists the schema when the answer is {@code true}.
+   * their buckets. Called once the append has committed: a refresh that read the source before the commit and cleared the record
+   * would lose the samples. Under HA it is also called before the commit, only to ship the record to the followers ahead of the
+   * samples (issue #10673); the call after the commit is what the leader relies on. The caller persists the schema when the answer
+   * is {@code true}.
    * <p>
    * The range recorded is widened to whole buckets on the grid the watermark is a start of, and clipped to before the watermark (the
    * samples at or after it are read by the refresh anyway). A bucket is recomputed whole whatever part of it the range covers, so

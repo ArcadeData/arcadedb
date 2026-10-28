@@ -51,9 +51,9 @@ class Issue10371DeclinedCatalogQueryIT extends PostgresWireProtocolTestBase {
   void anUngroupedCountOverAnUnmodelledRelationIsRefusedNotAnsweredWithNoRow() throws Exception {
     for (final String mode : List.of("extended", "simple")) {
       try (final Connection connection = openJdbcConnection(mode)) {
-        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_proc where proname = 'gen_random_uuid'", "pg_proc");
-        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_trigger", "pg_trigger");
-        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_extension", "pg_extension");
+        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_extension where extname = 'pgcrypto'", "pg_extension");
+        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_stat_activity", "pg_stat_activity");
+        assertRefused(mode, connection, "select count(*) from pg_catalog.pg_locks", "pg_locks");
 
         // the connection is still usable, and a modelled relation answers PostgreSQL's one row holding 0
         try (final Statement statement = connection.createStatement(); final ResultSet resultSet = statement.executeQuery(
@@ -104,12 +104,12 @@ class Issue10371DeclinedCatalogQueryIT extends PostgresWireProtocolTestBase {
   @Test
   void aRefusedCatalogQueryWithBoundParametersIsRefusedAtExecute() throws Exception {
     try (final Connection connection = openJdbcConnection("extended");
-        final PreparedStatement statement = connection.prepareStatement("select count(*) from pg_catalog.pg_proc where proname = ?")) {
-      statement.setString(1, "gen_random_uuid");
+        final PreparedStatement statement = connection.prepareStatement("select count(*) from pg_catalog.pg_extension where extname = ?")) {
+      statement.setString(1, "pgcrypto");
 
       assertThatThrownBy(statement::executeQuery).isInstanceOf(SQLException.class)
           .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("0A000"))
-          .hasMessageContaining("pg_proc");
+          .hasMessageContaining("pg_extension");
 
       // the same statement, run again on the same connection, is refused again rather than hanging or answering empty
       assertThatThrownBy(statement::executeQuery).isInstanceOf(SQLException.class)

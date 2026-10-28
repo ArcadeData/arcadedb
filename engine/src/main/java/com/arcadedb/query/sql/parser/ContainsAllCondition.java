@@ -38,22 +38,10 @@ public class ContainsAllCondition extends BooleanExpression {
   public ContainsAllCondition() {
   }
 
-  public boolean execute(Object left, Object right) {
-    if (left instanceof Collection<?> leftCollection) {
-      if (right instanceof Iterable<?> iterable)
-        right = iterable.iterator();
-      else if (right != null && right.getClass().isArray())
-        right = MultiValue.getMultiValueIterator(right);
+  public boolean execute(Object left, final Object right) {
+    if (left instanceof Collection<?> leftCollection)
+      return containsAll(leftCollection, right);
 
-      if (right instanceof Iterator<?> iterator) {
-        while (iterator.hasNext()) {
-          if (!containsItem(leftCollection, iterator.next()))
-            return false;
-        }
-        return true;
-      }
-      return containsItem(leftCollection, right);
-    }
     if (left instanceof Iterable<?> iterable)
       left = iterable.iterator();
     else if (left != null && left.getClass().isArray())
@@ -64,25 +52,59 @@ public class ContainsAllCondition extends BooleanExpression {
       final List<Object> leftItems = new ArrayList<>();
       while (leftIterator.hasNext())
         leftItems.add(leftIterator.next());
-
-      if (right instanceof Iterable<?> iterable)
-        right = iterable.iterator();
-      else if (right != null && right.getClass().isArray())
-        right = MultiValue.getMultiValueIterator(right);
-      else
-        right = Set.of(right).iterator();
-
-      final Iterator<?> rightIterator = (Iterator<?>) right;
-      while (rightIterator.hasNext()) {
-        if (!containsItem(leftItems, rightIterator.next()))
-          return false;
-      }
-      return true;
+      return containsAll(leftItems, right);
     }
 
     // A scalar left operand is the one-element collection it stands for (issue #8436, see ContainsAnyCondition): it
     // contains all of the right-hand items only when every one of them equals it. A missing value stays false.
-    return left != null && execute(Collections.singletonList(left), right);
+    return left != null && containsAll(Collections.singletonList(left), right);
+  }
+
+  private static boolean containsAll(final Collection<?> leftCollection, final Object right) {
+    final Iterator<?> items = searchedItems(right);
+    if (items == null)
+      return containsItem(leftCollection, right);
+    while (items.hasNext())
+      if (!containsItem(leftCollection, items.next()))
+        return false;
+    return true;
+  }
+
+  /**
+   * The one definition of what the right-hand operand searches for, read by the evaluator, by the planner
+   * ({@link #isIndexAware(IndexSearchInfo)}) and by the index lookup ({@link #firstLookupItem(Object)}), so that the three cannot
+   * read the same operand differently (issue #10757: an {@code int[]} was a sequence for the evaluator and one value for the
+   * planner). Any {@code Iterable} and any array is a sequence of items, but a {@code byte[]}, which is ArcadeDB's BINARY scalar and
+   * stays one value, as {@link ContainsAnyCondition} and {@link ContainsCondition} read it.
+   *
+   * @return an iterator over the items, or {@code null} when the operand is itself the one item searched for
+   */
+  public static Iterator<?> searchedItems(final Object right) {
+    if (right instanceof Iterator<?> iterator)
+      return iterator;
+    if (right instanceof Iterable<?> iterable)
+      return iterable.iterator();
+    if (MultiValue.isSequenceArray(right))
+      return MultiValue.getMultiValueIterator(right);
+    return null;
+  }
+
+  /**
+   * The item an index answers the condition by: the first item of the operand that is not null, or the operand itself when it is
+   * one value. The rows holding it are a superset of the rows the condition matches.
+   *
+   * @return null when the operand has no such item: an index cannot answer it
+   */
+  public static Object firstLookupItem(final Object right) {
+    final Iterator<?> items = searchedItems(right);
+    if (items == null)
+      return right;
+    while (items.hasNext()) {
+      final Object item = items.next();
+      if (item != null)
+        return item;
+    }
+    return null;
   }
 
   private static boolean containsItem(final Collection<?> collection, final Object item) {
@@ -244,23 +266,27 @@ public class ContainsAllCondition extends BooleanExpression {
     }
 
     if (info.getField().equals(fieldName)) {
-      // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes
+      // CONTAINSALL operator only works with BY-ITEM indexes, not regular list indexes. The index answers the rows holding ONE
+      // item (FetchFromIndexStep looks up the first one that is not null) and the condition is re-checked on them
+      // (needsRecheckAfterIndexLookup), so a multi-item operand can use it too. An operand with no such item is not: an empty one
+      // is satisfied by every collection, the empty one included, and a null item by a collection holding null, and no index
+      // entry stands for either: the scan answers them. The decision reads the operand's value, so a plan made for one binding
+      // is not reused for another (issue #10757)
       if (info.isIndexByItem() && right != null && right.isEarlyCalculated(info.getContext())) {
-        // For CONTAINSALL with multiple values, the current index execution merges results (UNION)
-        // instead of intersecting them (INTERSECTION), which gives incorrect results.
-        // Only use index for single-value CONTAINSALL; for multiple values, use full scan with filter.
-        // This is correct but suboptimal - a future optimization could implement proper intersection.
+        if (!right.isLiteral())
+          info.setPlanDependsOnValue();
         final Object rightValue = right.execute((Result) null, info.getContext());
-        if (rightValue instanceof Collection<?> collection) {
-          // Only use index if collection has exactly one element
-          return collection.size() == 1;
-        }
-        // Single value - can use index
-        return true;
+        // a one-shot Iterator would be consumed by this call and again by the lookup before the filter reads it
+        return !(rightValue instanceof Iterator) && firstLookupItem(rightValue) != null;
       }
     }
 
     return false;
+  }
+
+  @Override
+  public boolean needsRecheckAfterIndexLookup() {
+    return true;
   }
 
   @Override

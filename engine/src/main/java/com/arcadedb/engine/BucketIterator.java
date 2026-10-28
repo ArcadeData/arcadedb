@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -256,7 +257,8 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private void readSlot() {
     try {
       final int recordPositionInPage;
-      final long[] recordSize;
+      final long recordSize;
+      final int recordHeaderSize;
       try {
         recordPositionInPage = (int) currentPage.readUnsignedInt(
             LocalBucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
@@ -267,7 +269,9 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
           // check (e.g. deleteRecordInternal's recordPositionInPage < 1 throws RecordNotFoundException).
           return;
 
-        recordSize = currentPage.readNumberAndSize(recordPositionInPage);
+        // ALLOCATION-FREE: ONE long[2] PER SCANNED SLOT WAS 7.7% OF A FILTERED SCAN'S BYTES (#10656)
+        recordSize = currentPage.readNumber(recordPositionInPage);
+        recordHeaderSize = currentPage.getLastReadNumberSize();
       } catch (final RuntimeException e) {
         // CORRUPTED SLOT-TABLE ENTRY OR RECORD HEADER: these two calls only ever touch raw page bytes (no
         // application/listener code runs here), so an out-of-bounds read (IndexOutOfBoundsException /
@@ -279,12 +283,14 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         return;
       }
 
-      final boolean inPage = recordSize[0] > 0;
-      if (!inPage && recordSize[0] != LocalBucket.FIRST_CHUNK && recordSize[0] != LocalBucket.RECORD_PLACEHOLDER_POINTER)
+      final boolean inPage = recordSize > 0;
+      if (!inPage && recordSize != LocalBucket.FIRST_CHUNK && recordSize != LocalBucket.RECORD_PLACEHOLDER_POINTER)
         // DELETED, OR THE CONTENT/CHUNK OF ANOTHER RECORD: NOT A RECORD OF ITS OWN
         return;
 
-      final RID rid = new RID(bucket.fileId,
+      // BOUND TO THE DATABASE THE RECORD WILL BELONG TO, SO BaseRecord.upgradeRID KEEPS IT INSTEAD OF COPYING A BARE RID
+      // INTO A SECOND OBJECT FOR EVERY ROW OF A SCAN (#10655). IT EQUALS AND HASHES AS THE BARE RID DOES
+      final RID rid = new DatabaseRID(recordDatabase, bucket.fileId,
           ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
       // COUNTED HERE, BEFORE ANY EVENT CAN FILTER IT, AS lookupByRID() COUNTS EVERY LOOKUP ON ENTRY
       ++recordsRead;
@@ -305,13 +311,13 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
       if (inPage) {
         if (!bucket.fireBeforeReadEvents(rid))
           return;
-        content = currentPage.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
+        content = currentPage.getImmutableView(recordPositionInPage + recordHeaderSize, (int) recordSize);
         // modify() CAN SKIP ITS RELOAD WHILE THIS PAGE VERSION IS STILL THE CURRENT ONE
         pageVersion = currentPage.getVersion();
       } else {
         final Binary loaded;
         try {
-          if (recordSize[0] == LocalBucket.FIRST_CHUNK)
+          if (recordSize == LocalBucket.FIRST_CHUNK)
             // MULTI-PAGE RECORD: THE LOADER FIRES THE BEFORE-READ EVENTS AND WALKS THE CHUNK CHAIN
             loaded = bucket.getRecordInternal(rid, false);
           else {
@@ -320,7 +326,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
             // field is page corruption, not an application bug.
             final long placeholderTargetPosition;
             try {
-              placeholderTargetPosition = currentPage.readLong((int) (recordPositionInPage + recordSize[1]));
+              placeholderTargetPosition = currentPage.readLong(recordPositionInPage + recordHeaderSize);
             } catch (final RuntimeException e) {
               logSkippedRecord(e);
               return;

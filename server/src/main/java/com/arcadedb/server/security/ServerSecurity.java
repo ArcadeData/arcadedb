@@ -546,6 +546,29 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+
+    // Issue #10707: and for the file watchers' ticks, which are not on that executor. An interrupted shutdown skips this
+    // wait: the interrupt restored above makes each awaitIdle return at its first timed wait.
+    awaitWatchersIdle(2_000L);
+  }
+
+  /**
+   * The watchers' ticks do not run on {@link #permissionsRefreshExecutor}: a groups-file tick that was already sweeping when
+   * the stores were stopped runs {@link #refreshAllDatabasePermissions()} on the watcher's own thread, and a sweep that
+   * reaches {@code ArcadeDBServer.getDatabase} after the server has closed its databases opens the directory again and holds
+   * its file lock, which the next server on that directory then fails on (issue #10707). The stores are stopped by now, so a
+   * tick that has not begun does nothing; this waits, on the same short bound as the executor above, for the ones that have.
+   */
+  private void awaitWatchersIdle(final long timeoutMs) {
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+    boolean idle = usersPolicy.awaitIdle(timeoutMs);
+    if (groupRepository != null)
+      idle &= groupRepository.awaitIdle(Math.max(0L, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())));
+    if (apiTokenConfig != null)
+      idle &= apiTokenConfig.awaitIdle(Math.max(0L, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())));
+    if (!idle)
+      LogManager.instance().log(this, Level.FINE,
+          "A security file reload was still running when the security service stopped; the databases close under it");
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {
@@ -1392,7 +1415,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     for (final String databaseName : server.getDatabaseNames())
       try {
-        updateSchema(server.getDatabase(databaseName));
+        updateSchema(server.getDatabaseForOperator(databaseName));
         ++refreshed;
       } catch (final Exception e) {
         ++failures;

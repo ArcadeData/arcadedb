@@ -142,6 +142,13 @@ public class PostgresNetworkExecutor extends Thread {
 
   /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
   static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
+  /**
+   * admin_shutdown: what PostgreSQL terminates a backend with when an administrator takes its database away under it - here, a
+   * database closed, restored or dropped under a transaction the connection had open (issue #10692).
+   */
+  static final String SQLSTATE_ADMIN_SHUTDOWN       = "57P01";
+  /** invalid_catalog_name: what PostgreSQL answers a connection to a database that does not exist (issue #10795). */
+  static final String SQLSTATE_INVALID_CATALOG_NAME = "3D000";
 
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
   /**
@@ -492,7 +499,7 @@ public class PostgresNetworkExecutor extends Thread {
               consecutiveErrors = 0;
               currentMessageType = type;
 
-              if (type != 'X' && !revalidateUser())
+              if (type != 'X' && (!revalidateUser() || !rebindReplacedDatabase()))
                 return;
 
               switch (type) {
@@ -851,7 +858,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (portal.sqlStatement == null)
       // No parsed statement: a non-"sql" language (cypher/gremlin/graphql) goes straight to its own engine.
-      return database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
+      return database.command(portal.language, toEngineText(portal.language, portal.query), server.getConfiguration(),
+          getParams(portal));
 
     final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
     final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
@@ -874,7 +882,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (mustForwardToTheLeader(statement))
       // The text is parsed again there, out of the engine's statement cache, a cost only a follower's write pays. The
       // replicated command() re-checks leadership itself, so a node that became the leader meanwhile runs it locally.
-      return database.command(language, text, server.getConfiguration(), parameters);
+      return database.command(language, toEngineText(language, text), server.getConfiguration(), parameters);
     return statement.execute(database, parameters, createCommandContext());
   }
 
@@ -1456,7 +1464,7 @@ public class PostgresNetworkExecutor extends Thread {
           } else {
             admission = QueryAdmissionGate.getInstance().admit();
             statement = startStatement(query.language, query.query);
-            resultSet = database.command(query.language, query.query, server.getConfiguration());
+            resultSet = database.command(query.language, toEngineText(query.language, query.query), server.getConfiguration());
           }
         }
       }
@@ -1645,10 +1653,10 @@ public class PostgresNetworkExecutor extends Thread {
    * it just connected to.
    * <p>
    * Two recognisers share the work: {@link PostgresTypeCatalog} for {@code pg_type}, whose element-type
-   * self-join is a shape no plain projection can express, and {@link PostgresCatalog} for the rest. A shape
-   * neither of them will answer gets the empty result set that a pg_catalog query it did not understand has
-   * always been given, rather than being handed to ArcadeDB's SQL engine, which has no such tables and would
-   * answer with a syntax error.
+   * self-join is a shape no plain projection can express, and {@link PostgresCatalog} for the rest. A catalog
+   * query neither of them can answer is refused with {@code feature_not_supported} (issue #10371); a FROM-less
+   * session probe naming pg_catalog is answered by {@link PostgresCatalog#resolveProbe} (issue #10695); anything
+   * else, whatever words its text holds, is executed normally.
    *
    * @param parameters the values bound to the query's placeholders, empty at Parse time and supplied at
    *                   Execute time, when the client has sent them
@@ -1668,7 +1676,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (types != null)
       return new CatalogAnswer(types, getColumns(types));
 
-    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolveForSession(query, database, userName, sessionSettings, parameters);
     if (answer != null) {
       if (answer.rows != null)
         return new CatalogAnswer(toResults(answer.rows), answer.columns);
@@ -1678,11 +1686,13 @@ public class PostgresNetworkExecutor extends Thread {
       return refuseCatalogQuery(query, parameters);
     }
 
-    // The one deliberate compatibility shim: a statement that names pg_catalog or pg_type but reads no emulated relation -
-    // SELECT pg_catalog.set_config(...), the session probes pg_dump and friends send - is given the empty result set it has
-    // always been given, rather than handed to ArcadeDB's SQL engine, which has no such function and would fail the probe
-    if (PostgresCatalog.containsIgnoreCase(query, "pg_catalog") || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
-      return new CatalogAnswer(Collections.emptyList(), Map.of());
+    // The session probes pg_dump and friends send - SELECT pg_catalog.set_config(...), a FROM-less SELECT naming pg_catalog or
+    // pg_type - are answered here rather than handed to ArcadeDB's SQL engine, which reads pg_catalog.f() as a method call. The
+    // test is on the tokens, never on the text: a statement that merely CONTAINS those words - in a string literal, in a column
+    // name, in an INSERT - goes to the engine like any other (issue #10695)
+    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, sessionSettings, parameters);
+    if (probe != null)
+      return new CatalogAnswer(toResults(probe.rows), probe.columns);
 
     return null;
   }
@@ -2193,7 +2203,7 @@ public class PostgresNetworkExecutor extends Thread {
    * Returns null as soon as an item does not name a column on its own - a {@code *} or an exclusion, which both
    * need the row source, or an {@code expand()}, which replaces the row with whatever it expands.
    */
-  private Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
+  private static Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
     if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
       return null;
 
@@ -2324,6 +2334,21 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * The columns a SELECT projects, named and typed as a statement Describe names and types them, from {@code sourceColumns} - the
+   * declared columns of the type it reads, empty when it reads none - and never from a row: the columns of a materialized view are
+   * the ones its query projects (issue #10799), and the catalog that describes them reads no record. Null when the projection does
+   * not name its columns on its own ({@code expand()}, or a {@code *} over a source with no declared column).
+   */
+  static Map<String, PostgresType> columnsProjectedBy(final SelectStatement select, final Map<String, PostgresType> sourceColumns) {
+    if (!sourceColumns.isEmpty()) {
+      final Map<String, PostgresType> projected = applyProjection(select.getProjection(), sourceColumns);
+      if (projected != null && !projected.isEmpty())
+        return projected;
+    }
+    return getColumnsFromProjection(select.getProjection());
+  }
+
+  /**
    * Narrows the columns discovered for the queried target down to what the query really projects. The
    * discovery always looks at the whole target (a sample row or the declared properties), so without this
    * step a probe like {@code SELECT name FROM Character WHERE 1=0} would advertise every property plus the
@@ -2331,7 +2356,7 @@ public class PostgresNetworkExecutor extends Thread {
    * aliases, functions and expressions are handled the same way the executor handles them. When the query has
    * no projection ({@code SELECT FROM Type}), the full column set is returned unchanged.
    */
-  private Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
+  private static Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
     if (columns == null || columns.isEmpty())
       return columns;
 
@@ -2554,7 +2579,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     try {
       final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-      return sqlEngine.parse(query, (DatabaseInternal) database);
+      return sqlEngine.parse(toEngineText("sql", query), (DatabaseInternal) database);
     } catch (final Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: cannot parse query '%s': %s", query, e.getMessage());
@@ -2959,7 +2984,7 @@ public class PostgresNetworkExecutor extends Thread {
         QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), language, "command");
       }
     } else
-      resultSet = database.command(language, queryText, server.getConfiguration(), parameters);
+      resultSet = database.command(language, toEngineText(language, queryText), server.getConfiguration(), parameters);
 
     // From here to the end the result set is owned by this method and closed on every exit - a refusal below, a
     // failure while streaming - and NOT closed twice: browseAndCacheBoundedResultSet closes what it materializes.
@@ -3568,7 +3593,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.copyStatement = PostgresCopyStatement.parse(portal.query);
         if ("sql".equalsIgnoreCase(portal.language)) {
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-          portal.sqlStatement = sqlEngine.parse(portal.copyStatement.getQuery(), (DatabaseInternal) database);
+          portal.sqlStatement = sqlEngine.parse(toEngineText("sql", portal.copyStatement.getQuery()), (DatabaseInternal) database);
         }
 
       } else {
@@ -3627,7 +3652,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-              portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
+              portal.sqlStatement = sqlEngine.parse(toEngineText("sql", query.query), (DatabaseInternal) database);
               final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
               if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
@@ -4079,15 +4104,98 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (final DatabaseOperationException e) {
-      // A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
-      // dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the other
-      if (ErrorCategory.of(e) == ErrorCategory.UNAVAILABLE)
-        writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
-      else
-        writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+      refuseDatabase(e);
       return false;
     }
 
+    return true;
+  }
+
+  /**
+   * Answers a connection whose database the server refused to resolve, with a FATAL error: the caller closes the connection.
+   * A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
+   * dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the
+   * other. The name that is no database is answered as PostgreSQL answers it, 3D000 invalid_catalog_name (issue #10795): HV00Q
+   * is an FDW code (fdw_schema_not_found) no driver associates with a database name.
+   */
+  private void refuseDatabase(final DatabaseOperationException e) {
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (category == ErrorCategory.UNAVAILABLE)
+      writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+    else if (category == ErrorCategory.DATABASE_NOT_FOUND)
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
+    else
+      // Deliberately unchanged: any other failure to open the database (an I/O error, a corrupted directory) keeps the answer it
+      // always had. It is neither a held database nor a missing name, and giving it a code of its own is not this branch's call
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+  }
+
+  /**
+   * Re-resolves the database this connection serves when the instance it holds has been closed, before each message (issue
+   * #10692). {@link #openDatabase()} resolves the name once, at connect, while the server replaces the instance behind a name on
+   * a {@code close database} followed by {@code open database}, on a restore with {@code overwrite} and on a {@code drop database}
+   * followed by a {@code create database}. A connection that kept the closed instance answered every later statement with
+   * {@code XX000} internal_error for the rest of its life, which for a pooled connection is hours, while a fresh connection worked.
+   * <p>
+   * Three outcomes:
+   * <ul>
+   *   <li>the name resolves again: the connection serves the new instance from this message on, as a fresh connection would;</li>
+   *   <li>it does not ({@code close database} not yet followed by {@code open database}, a restore still running, a drop): the
+   *   connection is closed with the FATAL error the connect path gives for the same name - {@code 57P03} cannot_connect_now for a
+   *   database the server holds, {@code 3D000} invalid_catalog_name for one that is gone - which is how PostgreSQL treats the
+   *   backends of a database taken away under them. A pool replaces the connection, and the new one is refused at connect until
+   *   the name is served again;</li>
+   *   <li>a transaction was open on the closed instance - an explicit {@code BEGIN} block, or an extended-protocol pipeline whose
+   *   portals a Sync has not ended yet: its work went with the instance, so carrying on against the new one would let the client
+   *   commit a block of which only the later statements exist. The connection is closed with {@code 57P01} admin_shutdown, as
+   *   PostgreSQL terminates a backend whose database an administrator took away.</li>
+   * </ul>
+   * Costs one {@code isOpen()} read when nothing changed.
+   *
+   * @return false when the connection was refused and is closing
+   */
+  private boolean rebindReplacedDatabase() {
+    if (database == null || database.isOpen())
+      return true;
+
+    // Every refusal below is FATAL: shutdown ends the message loop once this message returns, as revalidateUser() does, so the
+    // connection is closed after the error instead of reading the next message against a closed instance
+    if (explicitTransactionStarted || !portals.isEmpty()) {
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL,
+          "terminating connection because database '" + databaseName + "' was closed under its open transaction",
+          SQLSTATE_ADMIN_SHUTDOWN);
+      return false;
+    }
+
+    final Database live;
+    try {
+      live = server.getDatabaseForClient(databaseName);
+      // The thread's context for the path was removed when the old instance closed: this one belongs to the new instance. The
+      // user is the one revalidateUser() has just re-resolved and checked against this database name; a user the new instance
+      // does not grant gets the engine's deny-all database user, as at connect
+      DatabaseContext.INSTANCE.init((DatabaseInternal) live).setCurrentUser(authenticatedUser.getDatabaseUser(live));
+    } catch (final DatabaseOperationException e) {
+      shutdown = true;
+      refuseDatabase(e);
+      return false;
+    } catch (final RuntimeException e) {
+      // Answered rather than left to escape: the main loop would log it and answer nothing, and the client would wait for good
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL, clientMessage("Error on reopening database '" + databaseName + "': " + e.getMessage(), e),
+          sqlStateFor(e));
+      return false;
+    }
+
+    database = live;
+    sessionSettings.setIsolationLevels(this::currentIsolationLevel, live::getTransactionIsolationLevel);
+    live.setAutoTransaction(true);
+    // The schema types memoized on the prepared statements are the closed instance's: re-resolved against the new schema on next
+    // use, and the closed instance's schema is no longer reachable from this connection
+    for (final PostgresPortal statement : preparedStatements.values()) {
+      statement.queryTargetType = null;
+      statement.queryTargetTypeResolved = false;
+    }
     return true;
   }
 
@@ -4228,7 +4336,8 @@ public class PostgresNetworkExecutor extends Thread {
         databaseName = paramValue;
         break;
       case "options":
-        // DEPRECATED, IGNORE IT
+        // libpq's PGOPTIONS / pgjdbc's "options": the run-time parameters it names with -c are set like the ones above
+        sessionSettings.setFromStartupOptions(paramValue);
         break;
       case "replication":
         // NOT SUPPORTED, IGNORE IT
@@ -4284,6 +4393,7 @@ public class PostgresNetworkExecutor extends Thread {
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
       case UNAVAILABLE -> SQLSTATE_CANNOT_CONNECT_NOW; // cannot_connect_now - a database that is held, not one that does not exist
+      case DATABASE_NOT_FOUND -> SQLSTATE_INVALID_CATALOG_NAME; // invalid_catalog_name - one that does not exist (issue #10795)
       case SERVER -> "XX000";         // internal_error
     };
   }
@@ -4673,9 +4783,21 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (QUOTED_IDENTIFIERS && ("sql".equals(language) || "sqlscript".equals(language)) && !isSessionCommand(queryText))
       // POSTGRES CLIENTS QUOTE IDENTIFIERS WITH DOUBLE QUOTES, WHILE ARCADEDB SQL USES BACK-TICKS (ISSUE #5369)
-      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText);
+      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText, sessionSettings.standardConformingStrings());
 
     return new Query(language, queryText);
+  }
+
+  /**
+   * The text the engine of {@code language} is handed for {@code text}: for SQL, every string literal written in the form
+   * the ArcadeDB lexer decodes to the value PostgreSQL reads, under this connection's {@code standard_conforming_strings}
+   * (issue #10871). Applied where the engine is called and not in {@link #getLanguageAndQuery}: the catalog, {@code COPY}
+   * and transaction-control parsers of this module read the statement with PostgreSQL's own literal rules.
+   */
+  private String toEngineText(final String language, final String text) {
+    return "sql".equalsIgnoreCase(language) || "sqlscript".equalsIgnoreCase(language) ?
+        PostgresQuotedIdentifierRewriter.toEngineLiterals(text, sessionSettings.standardConformingStrings()) :
+        text;
   }
 
   /**

@@ -79,6 +79,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -766,6 +767,11 @@ class SQLMethodTransformTest {
 
       @Override
       public Map<String, Object> getGlobalVariables() {
+        return null;
+      }
+
+      @Override
+      public ConcurrentMap<String, Object> getGlobalVariableStore() {
         return null;
       }
     });

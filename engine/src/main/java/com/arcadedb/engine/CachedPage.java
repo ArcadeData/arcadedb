@@ -38,6 +38,11 @@ public class CachedPage {
   private final int    size;
   private       int    version;
   private       long   lastAccessed = System.currentTimeMillis();
+  // #10654: built on first use, and it captures the version and the content size then. That holds because a cached page never
+  // changes them after it is published: loadMetadata() runs in PageManager.loadPage BEFORE the page enters the read cache, and the
+  // CachedPage(page, false) constructor, which shares the MutablePage's Binary instead of copying it, is used only by the
+  // synchronous flush, after which that page is never modified. A new writer of either breaks the shared view.
+  private volatile ImmutablePage sharedView;
 
   public CachedPage(final MutablePage page, final boolean copyBuffer) {
     this.pageId = page.pageId;
@@ -69,6 +74,7 @@ public class CachedPage {
   }
 
   public void loadMetadata() {
+    assert sharedView == null : "metadata of " + pageId + " reloaded after its shared view captured it (#10654)";
     version = content.getInt(BasePage.PAGE_VERSION_OFFSET);
     int contentSize = content.getInt(BasePage.PAGE_CONTENTSIZE_OFFSET);
     if (contentSize < 0 || contentSize > size) {
@@ -82,6 +88,38 @@ public class CachedPage {
 
   public ImmutablePage useAsImmutable() {
     return new ImmutablePage(pageId, size, content.getContent(), version, content.size());
+  }
+
+  /**
+   * The one view of this page every thread shares, built on first use and kept (#10654): the same bytes, version and content
+   * size as {@link #useAsImmutable()}, for a reader that reads at absolute positions. See {@link SharedImmutablePage} for what it
+   * answers that a per-call view does not. Two threads that race on the first use may each build one, and both are correct:
+   * the field is volatile, so a view is never seen before its fields are.
+   */
+  public ImmutablePage getSharedImmutableView() {
+    ImmutablePage view = sharedView;
+    if (view == null) {
+      view = new SharedImmutablePage(pageId, size, content.getContent(), version, content.size());
+      sharedView = view;
+    }
+    return view;
+  }
+
+  /** The shared view if one was built, without building it. For tests. */
+  ImmutablePage peekSharedImmutableView() {
+    return sharedView;
+  }
+
+  /**
+   * The byte {@code readByte(index)} answers on a view of this page ({@link #useAsImmutable()}), without building the view.
+   * It reads the backing array, which a view wraps whole, so it neither depends on nor moves the position of the shared buffer
+   * and is safe from many threads at once. For a reader that reads single values at absolute positions (#10654).
+   * <p>
+   * There is no bounds check beyond the array's own {@link ArrayIndexOutOfBoundsException}. The one caller, the bloom filter
+   * probe, catches every failure and answers "might contain" (TRUE), so an index out of range never hides a key.
+   */
+  public byte readByte(final int index) {
+    return content.getContent()[BasePage.PAGE_HEADER_SIZE + index];
   }
 
   public MutablePage useAsMutable() {

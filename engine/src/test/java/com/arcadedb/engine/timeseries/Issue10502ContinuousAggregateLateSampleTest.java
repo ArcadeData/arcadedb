@@ -183,14 +183,26 @@ class Issue10502ContinuousAggregateLateSampleTest extends TestHelper {
     assertThat(buckets()).containsExactly(new Bucket(d0, "a", 7), new Bucket(d0 + 3 * day, "a", 100));
   }
 
-  // ---- the paths that do not refresh by themselves: the record waits for the next refresh
+  // ---- the paths that are not statements: since #10686 they refresh by themselves, and that refresh consumes the record
 
   @Test
-  void anAppendThroughTheEngineIsAggregatedByTheNextRefresh() throws Exception {
+  void anAppendThroughTheEngineIsAggregatedByItsOwnRefresh() throws Exception {
     createSourceAndAggregate();
     twoBucketsAndARefresh();
 
     engine().appendSamples(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
+
+    assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
+    assertThat(aggregate().getInvalidation()).isNull();
+  }
+
+  /** The record alone, without the refresh of the engine API: it waits for the next refresh. */
+  @Test
+  void anAppendWithoutRefreshIsAggregatedByTheNextRefresh() throws Exception {
+    createSourceAndAggregate();
+    twoBucketsAndARefresh();
+
+    engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
     assertThat(aggregate().getInvalidation()).isNotNull();
     refresh();
 
@@ -208,32 +220,29 @@ class Issue10502ContinuousAggregateLateSampleTest extends TestHelper {
     // a late sample in each of the two buckets behind the watermark, and one at the watermark
     engine().appendBatch(new long[] { H0 + 2_000, H0 + HOUR + 2_000, H0 + 2 * HOUR + 2_000 },
         new Object[][] { { "a", "a", "a" }, { 1.0, 2.0, 3.0 } });
-    refresh();
 
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 11), new Bucket(H0 + HOUR, "a", 2),
         new Bucket(H0 + 2 * HOUR, "a", 23));
   }
 
   @Test
-  void anAsyncAppendIsAggregatedByTheNextRefresh() {
+  void anAsyncAppendIsAggregatedByItsOwnRefresh() {
     createSourceAndAggregate();
     twoBucketsAndARefresh();
 
     database.async().appendSamples("S", new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
     database.async().waitCompletion();
-    refresh();
 
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
   }
 
   @Test
-  void aLineProtocolWriteIsAggregatedByTheNextRefresh() throws Exception {
+  void aLineProtocolWriteIsAggregatedByItsOwnRefresh() throws Exception {
     createSourceAndAggregate();
     twoBucketsAndARefresh();
 
     TimeSeriesGateway.write((DatabaseInternal) database,
         new ArrayList<>(List.of(new Sample("S", Map.of("h", "a"), Map.of("v", 5.0), H0 + 2_000))));
-    refresh();
 
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
   }
@@ -246,8 +255,9 @@ class Issue10502ContinuousAggregateLateSampleTest extends TestHelper {
     twoBucketsAndARefresh();
     final long version = schemaVersion();
 
-    engine().appendSamples(new long[] { H0 + 2 * HOUR }, new Object[] { "a" }, new Object[] { 1.0 });
-    engine().appendSamples(new long[] { H0 + 5 * HOUR }, new Object[] { "a" }, new Object[] { 1.0 });
+    // the record alone: the refresh of the engine API saves the schema of its own when it moves the watermark
+    engine().appendSamplesWithoutRefresh(new long[] { H0 + 2 * HOUR }, new Object[] { "a" }, new Object[] { 1.0 });
+    engine().appendSamplesWithoutRefresh(new long[] { H0 + 5 * HOUR }, new Object[] { "a" }, new Object[] { 1.0 });
 
     assertThat(aggregate().getInvalidation()).isNull();
     assertThat(schemaVersion()).isEqualTo(version);
@@ -312,13 +322,15 @@ class Issue10502ContinuousAggregateLateSampleTest extends TestHelper {
     twoBucketsAndARefresh();
     final long version = schemaVersion();
 
-    engine().appendSamples(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 1.0 });
+    // the cost of the record alone, as an INSERT in a transaction pays it until the commit refreshes: the refresh of the engine API
+    // consumes the record after each append (#10686)
+    engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 1.0 });
     final long afterFirst = schemaVersion();
     assertThat(afterFirst).isGreaterThan(version);
 
     // later samples of the same bucket, in later batches, ascending as a backfill writes them
     for (int i = 1; i <= 20; i++)
-      engine().appendSamples(new long[] { H0 + 2_000 + i * 60_000L }, new Object[] { "a" }, new Object[] { 1.0 });
+      engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 + i * 60_000L }, new Object[] { "a" }, new Object[] { 1.0 });
     assertThat(schemaVersion()).isEqualTo(afterFirst);
 
     refresh();
@@ -332,7 +344,8 @@ class Issue10502ContinuousAggregateLateSampleTest extends TestHelper {
     createSourceAndAggregate();
     twoBucketsAndARefresh();
 
-    engine().appendSamples(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
+    // without the refresh of the engine API, which would consume the record before the restart
+    engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
     reopenDatabase();
 
     assertThat(aggregate().getInvalidation()).isNotNull();

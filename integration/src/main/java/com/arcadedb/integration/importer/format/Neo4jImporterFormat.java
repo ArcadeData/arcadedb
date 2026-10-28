@@ -40,8 +40,10 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
       new Neo4jImporter(database, context) {
         @Override
         public InputStream openInputStream() throws IOException {
-          sourceSchema.getSource().reset();
-          return sourceSchema.getSource().inputStream;
+          // THE SOURCE OF THE LOAD, WHICH THE IMPORTER CLOSES WHEN THE LOAD ENDS, AND NOT THE ONE OF THE ANALYSIS, WHICH IS CLOSED
+          // ALREADY: RE-OPENING THAT ONE LEFT A STREAM NOTHING WOULD CLOSE (ISSUE #10772)
+          parser.getSource().reset();
+          return parser.getSource().inputStream;
         }
       }.run();
 

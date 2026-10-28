@@ -105,7 +105,7 @@ class Issue7454StartupRestoreThenImportTest extends StaticBaseServerTest {
 
     assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.ONLINE);
 
-    final Database database = server.getDatabase(DB_NAME);
+    final Database database = server.getDatabaseForOperator(DB_NAME);
     assertThat(database.countType(RESTORED_TYPE, false))
         .as("the restore half of the startup command list did not land").isEqualTo(RESTORED_COUNT);
     assertThat(database.getSchema().existsType(IMPORTED_TYPE))

@@ -294,11 +294,11 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * Returns {@code null} when no recognisable RID is present so callers can skip the row instead of
    * throwing on an unfamiliar shape.
    * <p>
-   * Centralised here so the four reranker functions ({@code vector.mmr}, {@code vector.recommend},
-   * {@code vector.discover}, {@code vector.rerank} - and {@code vector.boost} via its source-row
-   * iteration) share one canonical implementation. Diverging copies in earlier patches drifted
-   * silently (e.g. one variant did not check {@code Result#getIdentity()}); a single helper makes
-   * those drifts impossible.
+   * The only reader of a row's RID in the vector functions: {@code vector.fuse}, {@code vector.mmr} and {@code vector.rerank}
+   * read the rows a caller pipes in through it, and {@code vector.recommend} / {@code vector.discover} the rows of their own
+   * inner {@code vector.neighbors} search. Diverging copies in earlier patches drifted silently (one variant did not check
+   * {@code Result#getIdentity()}), and the last private copy, in {@code vector.fuse}, was removed by issue #10879: a new
+   * function reads the RID through here, never through its own variant.
    */
   protected static RID extractRidFromRow(final Object row) {
     if (row == null)
@@ -397,17 +397,16 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
-   * Reads a candidate row's similarity score, with the same auto-flip rules as
-   * {@link SQLFunctionVectorFuse#extractScore}: prefer {@code score} or {@code $score}
+   * Reads a candidate row's similarity score: prefer {@code score} or {@code $score}
    * (similarity-shaped, higher = better), fall back to the negated {@code distance} field that
    * {@code vector.neighbors} emits (distance-shaped, lower = better - we flip the sign so the
    * rest of the pipeline can assume one direction). Returns {@link Float#NaN} when no recognisable
    * score field is present so callers can either skip the row or treat NaN as "missing score".
    * <p>
-   * Critical: every reranker function that consumes vector function output MUST go through this
-   * helper, not its own variant. A bare-{@code score}-only extractor will silently drop every row
-   * piped in from {@code vector.neighbors} (which emits {@code distance}) - exactly the
-   * silent-data-loss bug the consolidation was meant to prevent.
+   * Critical: every function that consumes vector function output ({@code vector.fuse}, {@code vector.mmr},
+   * {@code vector.boost}) MUST go through this helper, not its own variant. A bare-{@code score}-only extractor will silently
+   * drop every row piped in from {@code vector.neighbors} (which emits {@code distance}) - exactly the silent-data-loss bug the
+   * consolidation was meant to prevent. {@code vector.fuse} kept a private copy until issue #10879.
    */
   protected static float extractScoreFromRow(final Object row) {
     if (row instanceof Map<?, ?> m) {
@@ -429,6 +428,21 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
       return Float.NaN;
     }
     return Float.NaN;
+  }
+
+  /**
+   * The pre-filter of a k-NN search: the allow-list the {@code filter} and {@code where} options build together, tested by the
+   * index as it meets each candidate rather than on the k rows it answered. Shared by {@code vector.neighbors} and the
+   * Cypher {@code db.index.vector.queryNodes} (issue #10685), so both read the two options the same way.
+   *
+   * @return {@code null} when neither option is set (no filter); an EMPTY set when no record can satisfy them, which the
+   * caller must answer with no rows (issue #8959)
+   */
+  public static Set<RID> parsePreFilter(final List<?> filter, final Object where, final String functionName,
+      final CommandContext context) {
+    // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of listing
+    // every RID in scope up front as a `filter` subquery has to (issue #10169)
+    return RecordPredicateRidSet.of(where, parseRidFilter(filter, functionName, context), functionName, context);
   }
 
   /**

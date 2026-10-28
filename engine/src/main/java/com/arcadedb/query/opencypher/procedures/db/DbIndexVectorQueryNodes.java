@@ -23,6 +23,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -45,11 +47,13 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 /**
- * Neo4j-compatible procedure: db.index.vector.queryNodes(indexName, k, vector)
+ * Neo4j-compatible procedure: db.index.vector.queryNodes(indexName, k, vector[, options])
  * <p>
  * Performs an approximate nearest neighbor search using a vector index.
  * This provides compatibility with Neo4j's vector search API.
@@ -69,11 +73,31 @@ import java.util.stream.Stream;
  * RETURN node.title AS title, score
  * </pre>
  * </p>
+ * <p>
+ * The three-argument form has no filter: a {@code WHERE} after the {@code YIELD} applies to the k rows the search answered,
+ * so when the nearest neighbours belong to records it rejects, fewer than k rows come back, or none. The optional fourth
+ * argument, an ArcadeDB extension, is the pre-filter {@code vector.neighbors} takes (issue #10685): the candidates are
+ * restricted during the search, and k rows that satisfy it are answered whenever the index holds k of them.
+ * <ul>
+ *   <li>{@code where}: a map of property to value ({@code {tenant: $tenant}}) or a SQL condition that may use named
+ *   parameters ({@code 'tenant = :tenant'})</li>
+ *   <li>{@code filter}: a list of nodes or RIDs the search may answer</li>
+ * </ul>
+ * Both together answer only the records that satisfy both:
+ * <pre>
+ * CALL db.index.vector.queryNodes('Document[embedding]', 10, $vec, {where: {tenant: $tenant}})
+ * YIELD node, score
+ * RETURN node.title AS title, score
+ * </pre>
+ * </p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DbIndexVectorQueryNodes implements CypherProcedure {
   public static final String NAME = "db.index.vector.querynodes";
+  /** {@link #NAME} is lower-cased for registry lookup; error messages quote the call the way the caller wrote it. */
+  private static final String DISPLAY_NAME = "db.index.vector.queryNodes";
+  private static final Set<String> OPTIONS = Set.of("where", "filter");
 
   @Override
   public String getName() {
@@ -87,12 +111,13 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 3;
+    return 4;
   }
 
   @Override
   public String getDescription() {
-    return "Performs approximate nearest neighbor vector search using an HNSW index (Neo4j-compatible)";
+    return "Performs approximate nearest neighbor vector search using an HNSW index (Neo4j-compatible), optionally pre-filtered "
+        + "by an options map {where: <map or condition>, filter: [<node or rid>, ...]}";
   }
 
   @Override
@@ -103,30 +128,92 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
+    return search(args[0].toString(), args[1], args[2], args.length > 3 ? args[3] : null, null, context,
+        "db.index.vector.queryNodes()").stream();
+  }
 
-    final String indexSpec = args[0].toString();
-    final int limit = extractLimit(args[1]);
+  /**
+   * The k-NN search behind both {@code db.index.vector.queryNodes} and the Cypher 25 {@code SEARCH} clause (issue #10776):
+   * the {@code k} nearest live records of the index, nearest first, each as a row of {@code node} and {@code score}.
+   *
+   * @param indexSpec the index, as {@code 'Type[property]'} or as its schema name
+   * @param kArg      the rows to answer, a number or a numeric string
+   * @param vectorArg the query vector, or the key of the record whose vector it is
+   * @param filter    a predicate every answered record must pass, tested by the index as it meets each candidate rather than
+   *                  on its top k (issue #10782): the walk skips what it rejects and keeps expanding until it holds
+   *                  {@code k} matches or has met every vector it can reach, so {@code k} matching rows come back whenever
+   *                  the index holds them, however far they are. Each record is tested once per call. {@code null} for none
+   * @param caller    the name of the entry point, for error messages and the work guard
+   */
+  public static List<Result> search(final String indexSpec, final Object kArg, final Object vectorArg,
+      final Predicate<Document> filter, final CommandContext context, final String caller) {
+    return search(indexSpec, kArg, vectorArg, null, filter, context, caller);
+  }
 
-    Object key = args[2];
-    if (key == null)
+  /**
+   * The search with both pre-filters: the procedure's options map (issue #10685) and the {@code SEARCH} clause's predicate
+   * (issue #10782). Each becomes the allow-list the indexes test every candidate against; given together, a candidate must
+   * satisfy both.
+   *
+   * @param options the {@code {where, filter}} map of the procedure's fourth argument, {@code null} for none
+   */
+  private static List<Result> search(final String indexSpec, final Object kArg, Object vectorArg, final Object options,
+      final Predicate<Document> filter, final CommandContext context, final String caller) {
+    final int limit = extractLimit(kArg, caller);
+
+    if (vectorArg == null)
       throw new CommandSQLParsingException("Vector parameter is null");
-    if (key instanceof List<?> list)
-      key = list.toArray();
+    if (vectorArg instanceof List<?> list)
+      vectorArg = list.toArray();
 
     // Resolve the vector index
     final List<LSMVectorIndex> vectorIndexes = resolveVectorIndexes(indexSpec, context);
 
+    // Resolved after the index, so a bad index spec stays loud. A filter that matched nothing is not "no filter": no record can
+    // satisfy it (issue #8959)
+    final Set<RID> optionRIDs = parseOptions(options, context);
+    if (optionRIDs != null && optionRIDs.isEmpty())
+      return List.of();
+
     // Get the query vector
-    final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
+    final float[] queryVector = extractQueryVector(vectorArg, vectorIndexes.getFirst(), context);
+
+    // The filter as the indexes' allow-list (issue #10782), the plan the where option of vector.neighbors takes (#10169).
+    // Skipping a rejected candidate here and widening the search instead stopped at MAX_FETCH_CANDIDATES, so a filter that
+    // kept fewer than k of the 100,000 nearest answered short although the index held matches further away, and every
+    // widening reloaded and re-tested the candidates of the pass before it
+    final Set<RID> allowedRIDs;
+    if (filter == null)
+      allowedRIDs = optionRIDs;
+    else if (optionRIDs == null)
+      allowedRIDs = RecordPredicateRidSet.matching(filter, context);
+    else
+      allowedRIDs = RecordPredicateRidSet.matching(record -> optionRIDs.contains(record.getIdentity()) && filter.test(record),
+          context);
 
     // A record deleted by a commit that overlaps the search can still be in an index's answer (issue #9858): it is skipped,
     // and the search widened until it answers k live rows, exactly as vector.neighbors does (#9368).
     // The command's deadline and the termination of its statement, honoured inside each search and while it waits for a
     // graph build (issue #9896)
-    final WorkGuard guard = WorkGuard.forCommand(context, "db.index.vector.queryNodes()");
+    final WorkGuard guard = WorkGuard.forCommand(context, caller);
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, guard, staleSkipped,
-            saturated)).stream();
+        (fetchK, staleSkipped, saturated) -> searchAndLoad(vectorIndexes, queryVector, limit, fetchK, allowedRIDs, guard,
+            staleSkipped, saturated));
+  }
+
+  /**
+   * Reads the optional options map into the allow-list the index tests each candidate against, exactly as
+   * {@code vector.neighbors} reads its own {@code where} and {@code filter} (issue #10685). {@code null} or an empty map is
+   * the three-argument form.
+   */
+  private static Set<RID> parseOptions(final Object options, final CommandContext context) {
+    if (options == null)
+      return null;
+    if (!(options instanceof Map<?, ?> map))
+      throw new CommandSQLParsingException(
+          DISPLAY_NAME + "(): options must be a map such as {where: {tenant: $tenant}}, got " + options.getClass().getSimpleName());
+    final FunctionOptions opts = new FunctionOptions(DISPLAY_NAME, map, OPTIONS);
+    return SQLFunctionVectorAbstract.parsePreFilter(opts.getList("filter"), opts.get("where"), DISPLAY_NAME, context);
   }
 
   /**
@@ -134,13 +221,13 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * records, counting in {@code staleSkipped} the candidates whose record no longer exists.
    */
   private static List<Result> searchAndLoad(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final WorkGuard guard, final int[] staleSkipped, final boolean[] saturated) {
+      final int fetchK, final Set<RID> allowedRIDs, final WorkGuard guard, final int[] staleSkipped, final boolean[] saturated) {
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       // The search vector.neighbors takes by default: a PRODUCT index walks on its PQ codes and re-ranks as its rerankOversample
       // says (issue #10514), any other quantization walks exactly
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, -1, -1, null, guard);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighbors(queryVector, fetchK, -1, -1, allowedRIDs, guard);
       allNeighbors.addAll(neighbors);
       if (neighbors.size() >= fetchK)
         saturated[0] = true;
@@ -167,6 +254,10 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
         break;
       if (!emitted.add(neighbor.getFirst()))
         continue;
+      // The indexes answer only what the allow-list accepted. Asserted rather than skipped (PR #10834 review): a search path
+      // that ignored the allow-list would otherwise be hidden by a silent widening, and Surefire runs with -ea
+      assert allowedRIDs == null || allowedRIDs.contains(neighbor.getFirst()) :
+          "the vector index answered " + neighbor.getFirst() + ", which the pre-filter rejected";
 
       final Document record;
       try {
@@ -220,7 +311,9 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * {@code IllegalArgumentException: Illegal Capacity} that never mentions {@code k}.
    * </p>
    */
-  private static int extractLimit(final Object arg) {
+  private static int extractLimit(final Object arg, final String caller) {
+    if (arg == null)
+      throw new CommandSQLParsingException(caller + ": k must be a number, got null");
     final int limit;
     if (arg instanceof Number n)
       limit = NumberUtils.saturateToInt(n);
@@ -229,12 +322,12 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       try {
         limit = NumberUtils.saturateToInt(new BigDecimal(text));
       } catch (final NumberFormatException e) {
-        throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must be a number, got '" + text + "'", e);
+        throw new CommandSQLParsingException(caller + ": k must be a number, got '" + text + "'", e);
       }
     }
 
     if (limit < 0)
-      throw new CommandSQLParsingException("db.index.vector.queryNodes(): k must not be negative, got " + limit);
+      throw new CommandSQLParsingException(caller + ": k must not be negative, got " + limit);
 
     return limit;
   }
@@ -243,7 +336,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * Resolves the index specification to a list of LSMVectorIndex instances.
    * Supports both ArcadeDB format (Type[property]) and direct index name.
    */
-  private List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
+  private static List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
     final int bracketStart = indexSpec.indexOf('[');
     if (bracketStart > 0 && indexSpec.endsWith("]")) {
       // ArcadeDB format: Type[property]
@@ -279,7 +372,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * {@link VectorUtils#collectSubIndexesOnce(IndexInternal[], Class, java.util.function.IntPredicate)} for why the same
    * sub-index can be listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
    */
-  private List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
+  private static List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
     final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -296,7 +389,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   /**
    * Extracts a float[] query vector from the key parameter.
    */
-  private float[] extractQueryVector(final Object key, final LSMVectorIndex lsmIndex, final CommandContext context) {
+  private static float[] extractQueryVector(final Object key, final LSMVectorIndex lsmIndex, final CommandContext context) {
     if (key instanceof float[] floatArray)
       return floatArray;
 
