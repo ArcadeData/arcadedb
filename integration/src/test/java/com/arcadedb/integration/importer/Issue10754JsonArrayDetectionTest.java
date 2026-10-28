@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
@@ -171,6 +172,33 @@ class Issue10754JsonArrayDetectionTest {
       assertThat(new BigDecimal(doc.get("huge").toString())).isEqualTo(new BigDecimal("123456789012345678901234567890"));
     } finally {
       dropDatabase(databasePath);
+    }
+  }
+
+  /** An integer read as a LONG still lands as the declared type of a property the schema already holds. */
+  @Test
+  void integerIntoAnExistingDoublePropertyIsConverted() throws Exception {
+    final File source = new File("target/importer-10754-declared.json");
+    Files.writeString(source.toPath(), ONE_LINE, StandardCharsets.UTF_8);
+    final String databasePath = databasePath("importer-10754-declared.json");
+    FileUtils.deleteRecursively(new File(databasePath));
+    try (final Database setup = new DatabaseFactory(databasePath).create()) {
+      setup.getSchema().createDocumentType("Document").createProperty("count", Type.DOUBLE);
+    }
+
+    try {
+      new Importer(("-url file://" + source.getAbsolutePath() + " -database " + databasePath).split(" ")).load();
+      try (final Database db = new DatabaseFactory(databasePath).open()) {
+        try (final ResultSet rs = db.query("sql", "select from Document where id = 1")) {
+          final Document first = rs.next().getRecord().get().asDocument();
+          assertThat(first.get("count")).isEqualTo(42.0);
+          assertThat(first.get("bigId")).isEqualTo(9007199254740993L);
+        }
+      }
+    } finally {
+      dropDatabase(databasePath);
+      source.delete();
+      TestHelper.checkActiveDatabases();
     }
   }
 
