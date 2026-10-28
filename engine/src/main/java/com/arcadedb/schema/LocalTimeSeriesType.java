@@ -287,11 +287,13 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         try {
           database.getPageManager().deleteFile(database, fileId);
           database.getFileManager().dropFile(fileId);
+          // unregistered only once the file is gone, as the engine's own drop does: a file that could not be deleted stays a
+          // component of the schema, which the drop then reports as left behind rather than hiding it
+          schema.removeFile(fileId);
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.WARNING, "Error dropping the file '%s' of TIMESERIES type '%s': %s", e, componentName,
               name, e.getMessage());
         }
-        schema.removeFile(fileId);
       }
 
     // the type's own name, which the schema validated when the type was created, names the files exactly as the engine names them

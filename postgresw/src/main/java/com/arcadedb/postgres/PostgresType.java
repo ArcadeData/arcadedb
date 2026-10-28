@@ -1379,7 +1379,8 @@ public enum PostgresType {
       }
       case BYTEA -> valueAsBytes.clone();
       case NUMERIC -> parseNumericBinary(buffer);
-      case CHAR -> (char) buffer.get();
+      // "char" is one UNSIGNED byte: a bare (char) cast sign-extends, and 'é' (0xE9) came back as '￩'
+      case CHAR -> (char) (buffer.get() & 0xFF);
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
         // In PostgreSQL binary format, json is the raw UTF-8 text with no inner length prefix
@@ -1452,7 +1453,7 @@ public enum PostgresType {
       return parseNumericBinary(buf);
     // a "char"[] element is the single byte the scalar is, read as the Character the text format reads (issue #10870)
     if (elemOid == CHAR.code)
-      return (char) buf.get();
+      return (char) (buf.get() & 0xFF);
     // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592): read as the scalar is, not as its bytes' text
     if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code)
       return deserializeBinary(elemOid, bytes);

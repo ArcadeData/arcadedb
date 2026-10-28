@@ -145,7 +145,8 @@ class Issue10870ArrayTextLiteralTest {
     values.put(PostgresType.ARRAY_DOUBLE, Arrays.asList(1.5d, null, 1e300));
     values.put(PostgresType.ARRAY_NUMERIC, Arrays.asList(new BigDecimal("1.50"), null, new BigDecimal("-3")));
     values.put(PostgresType.ARRAY_BOOLEAN, Arrays.asList(true, null, false));
-    values.put(PostgresType.ARRAY_CHAR, Arrays.asList('a', null, ',', '"', '\\', '{'));
+    // 'é' is past 0x7F: the binary decoder read it sign-extended, as '￩'
+    values.put(PostgresType.ARRAY_CHAR, Arrays.asList('a', null, ',', '"', '\\', '{', 'é'));
     final List<Object> strings = Arrays.asList("a", "", null, "NULL", "b,c", "{d}", "e\"f", "g\\h", " i ");
     values.put(PostgresType.ARRAY_TEXT, strings);
     values.put(PostgresType.ARRAY_VARCHAR, strings);

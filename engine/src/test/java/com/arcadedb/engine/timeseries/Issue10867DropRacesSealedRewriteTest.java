@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,27 +63,64 @@ class Issue10867DropRacesSealedRewriteTest extends TestHelper {
 
     database.command("sql", "DROP TYPE Ticker");
 
-    // a cutoff above every block, so the rewrite needs nothing from the dropped file and reaches the swap
-    assertThatThrownBy(() -> store.truncateBefore(Long.MAX_VALUE)).isInstanceOf(IOException.class);
+    // a cutoff above every block: the rewrite of a dropped store does not even start, so it creates no temp file to leave behind
+    assertThatThrownBy(() -> store.truncateBefore(Long.MAX_VALUE)).isInstanceOf(IOException.class)
+        .hasMessageContaining("closed on purpose");
     assertNoFileOfTheTypeIsLeft();
 
     assertTheRecreatedTypeIsEmpty();
   }
 
   @Test
-  void aCompactionSwapAfterTheDropDoesNotRecreateTheSealedFile() throws Exception {
+  void aCompactionInFlightAcrossTheDropDoesNotRecreateTheSealedFile() throws Exception {
     final TimeSeriesSealedStore store = createTypeWithSmallBlocks();
 
-    database.command("sql", "DROP TYPE Ticker");
-
-    // what Phase 3 of a compaction still in its lock-free window writes after the drop: the temp file Phase 4c swaps in
+    // what Phase 3 of a compaction in its lock-free window has written when the drop runs: the temp file Phase 4c swaps in
     final File temp = new File(getDatabasePath(), "Ticker_shard_0.ts.sealed.tmp");
     assertThat(temp.createNewFile()).isTrue();
+
+    database.command("sql", "DROP TYPE Ticker");
+    assertThat(temp).as("the drop deletes the temp files of the type too").doesNotExist();
 
     assertThatThrownBy(() -> store.commitTempCompactionFile(List.of())).isInstanceOf(IOException.class)
         .hasMessageContaining("closed on purpose");
     assertNoFileOfTheTypeIsLeft();
     assertTheRecreatedTypeIsEmpty();
+  }
+
+  /**
+   * The temp paths are fixed, so once the type is created again they belong to the new store: a rewrite of the dropped store still
+   * running must neither start a temp file there nor delete, append to or install the new store's.
+   */
+  @Test
+  void aRewriteOfTheDroppedStoreLeavesTheTempFilesOfTheRecreatedTypeAlone() throws Exception {
+    final TimeSeriesSealedStore dropped = createTypeWithSmallBlocks();
+    final TimeSeriesSealedStore.MergePlan plan = dropped.prepareMerge(TimeSeriesShard.SEALED_BLOCK_SIZE, 0L, 1);
+
+    database.command("sql", "DROP TYPE Ticker");
+    database.command("sql", "CREATE TIMESERIES TYPE Ticker TIMESTAMP ts TAGS (name STRING) FIELDS (f1 DOUBLE) SHARDS 1");
+
+    // the temp files a rewrite of the new store is in the middle of writing
+    final File compactionTemp = new File(getDatabasePath(), "Ticker_shard_0.ts.sealed.tmp");
+    final File mergeTemp = new File(getDatabasePath(), "Ticker_shard_0" + TimeSeriesSealedStore.MERGE_TEMP_SUFFIX);
+    Files.writeString(compactionTemp.toPath(), "the new store's compaction");
+    Files.writeString(mergeTemp.toPath(), "the new store's merge");
+
+    assertThat(dropped.commitMerge(plan)).isFalse();
+    assertThatThrownBy(() -> dropped.commitTempCompactionFile(List.of())).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> dropped.appendBlocksToTempFile(List.<byte[][]>of(new byte[][] { {} }), List.<long[]>of(new long[] { 0L, 0L, 1L }),
+        List.of(), null, new ArrayList<>())).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> dropped.truncateBefore(Long.MAX_VALUE)).isInstanceOf(IOException.class);
+    dropped.deleteTempFileIfExists();
+    dropped.deleteMergeTempFileIfExists();
+
+    assertThat(compactionTemp).hasContent("the new store's compaction");
+    assertThat(mergeTemp).hasContent("the new store's merge");
+    assertThat(sealedFile()).as("the new store's own file, untouched by the old merge").exists();
+    assertThat(countSamples()).isZero();
+
+    Files.delete(compactionTemp.toPath());
+    Files.delete(mergeTemp.toPath());
   }
 
   /**
@@ -97,7 +136,6 @@ class Issue10867DropRacesSealedRewriteTest extends TestHelper {
     store.close();
 
     assertThat(store.commitMerge(plan)).isFalse();
-    assertThat(new File(getDatabasePath(), "Ticker_shard_0" + TimeSeriesSealedStore.MERGE_TEMP_SUFFIX)).doesNotExist();
     assertThat(sealedFile()).hasSize(sizeBefore);
 
     // the engine that opens the file next finds it as the closed store left it

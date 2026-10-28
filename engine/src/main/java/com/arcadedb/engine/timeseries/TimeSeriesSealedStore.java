@@ -3548,6 +3548,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // a store dropped since the plan was made is not the one it was derived from either (issue #10867): installing the merge
       // would re-create the file the drop deleted, for the next type of that name to adopt
       if (closed || directoryVersion != plan.directoryVersion()) {
+        // a no-op for a closed store, whose temp path may belong to a store created since (see openTempFile())
         deleteMergeTempFileIfExists();
         return false;
       }
@@ -4155,7 +4156,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw new IOException("The compaction temp file '" + tempPath
           + "' is gone: another rewrite of the sealed store removed or replaced it while this compaction was building its replacement");
 
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+    try (final RandomAccessFile tempFile = openTempFile(tempPath)) {
       // Read the current header to get existing block count and global min/max timestamps
       final ByteBuffer hdrBuf = ByteBuffer.allocate(HEADER_SIZE);
       readExactly(channelOf(tempFile), hdrBuf, 0, "the temp file header");
@@ -4193,11 +4194,33 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Called from error-recovery paths to leave a clean state.
    */
   void deleteTempFileIfExists() {
-    final File tmp = new File(basePath + ".ts.sealed.tmp");
-    if (tmp.exists() && !tmp.delete())
-      LogManager.instance().log(this, Level.WARNING,
-          "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
-          null, tmp.getAbsolutePath());
+    synchronized (channelReopenLock) {
+      // a store closed on purpose owns no file at that path any more (issue #10867): see openTempFile()
+      if (closed)
+        return;
+      final File tmp = new File(basePath + ".ts.sealed.tmp");
+      if (tmp.exists() && !tmp.delete())
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
+            null, tmp.getAbsolutePath());
+    }
+  }
+
+  /**
+   * Opens a temp file of a rewrite of the sealed file, refusing for a store closed on purpose (issue #10867). The temp paths are
+   * fixed, so after a drop they are free for the store of a type created again under the same name: a rewrite of the dropped store
+   * that was still running must neither create a file there nor, later, delete or append to one. The check and the open are atomic
+   * against {@link #close()}, which sets the flag under the same monitor, and {@link #drop()} deletes the temp files after the close,
+   * so whatever such a rewrite created before it is gone and nothing it does afterwards reaches the path again: the refused swaps
+   * and the cleanup of a failed rewrite leave the path alone for a closed store.
+   */
+  private RandomAccessFile openTempFile(final String tempPath) throws IOException {
+    synchronized (channelReopenLock) {
+      if (closed)
+        throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
+            + "' was closed on purpose (its type was dropped or its engine replaced): no rewrite of it is started");
+      return new RandomAccessFile(tempPath, "rw");
+    }
   }
 
   /**
@@ -4213,7 +4236,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #appendBlocksToTempFile} is the one writer that must NOT truncate, and it says so by not using this.
    */
   private RandomAccessFile openTempFileForRewrite(final String tempPath, final int colCount) throws IOException {
-    final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw");
+    final RandomAccessFile tempFile = openTempFile(tempPath);
     try {
       tempFile.setLength(0);
       final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
@@ -4238,9 +4261,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /** Deletes the temp file of a merge of small blocks ({@code .ts.sealed.merge.tmp}) if it exists. */
   void deleteMergeTempFileIfExists() {
-    final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
-    if (tmp.exists() && !tmp.delete())
-      LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+    synchronized (channelReopenLock) {
+      // a store closed on purpose owns no file at that path any more (issue #10867): see openTempFile()
+      if (closed)
+        return;
+      final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
+      if (tmp.exists() && !tmp.delete())
+        LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+    }
   }
 
   static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
@@ -5386,17 +5414,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Refuses to swap a rewrite in for the sealed file of a store closed on purpose (issue #10867): its type was dropped, or its engine
-   * superseded by one that has the file open itself. The temp file is deleted, so nothing is left under the type's names. Called
-   * under the directory write lock, which {@link #drop()} holds while it closes the store, and before the handles are touched: a
-   * refused swap must not reopen them.
+   * superseded by one that has the file open itself. Called under the directory write lock, which {@link #close()} holds, and before
+   * the handles are touched: a refused swap must not reopen them. The temp path is left alone: the drop deleted what this store had
+   * written there, and a file there now belongs to the store of a type created since under the same name (see {@link #openTempFile}).
    */
   private void refuseSwapOfClosedStore(final String tempPath) throws IOException {
     if (!closed)
       return;
-    final File temp = new File(tempPath);
-    if (temp.exists() && !temp.delete())
-      LogManager.instance().log(this, Level.WARNING, "Could not delete the temp file '%s' of a closed sealed store", null,
-          temp.getAbsolutePath());
     throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
         + "' was closed on purpose (its type was dropped or its engine replaced): the rewrite of it is not installed");
   }
