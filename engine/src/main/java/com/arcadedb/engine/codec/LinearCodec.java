@@ -63,13 +63,13 @@ public final class LinearCodec {
   }
 
   static int encodedSize(final long[] values, final int offset, final int length) {
-    checkSlice(values, offset, length);
+    BitPackedCodec.checkSlice(values, offset, length);
     return HEADER_BYTES + BitPackedCodec.encodedSizeOfResiduals(values, offset, length, length > 0 ? values[offset] : 0L,
         slope(values, offset, length));
   }
 
   static void encodeInto(final long[] values, final int offset, final int length, final byte[] out, final int base) {
-    checkSlice(values, offset, length);
+    BitPackedCodec.checkSlice(values, offset, length);
     final long intercept = length > 0 ? values[offset] : 0L;
     final double slope = slope(values, offset, length);
     out[base] = CODEC_ID;
@@ -127,15 +127,10 @@ public final class LinearCodec {
     return length > 1 ? ((double) values[offset + length - 1] - (double) values[offset]) / (length - 1) : 0.0;
   }
 
-  private static void checkSlice(final long[] values, final int offset, final int length) {
-    if (offset < 0 || length < 0 || (long) offset + length > values.length)
-      throw new IndexOutOfBoundsException("Slice [" + offset + ", +" + length + ") outside array of " + values.length);
-  }
-
   private static void checkHeader(final byte[] encoded, final int base) {
     if (base < 0 || encoded.length - base < HEADER_BYTES)
       throw new IllegalArgumentException("Truncated linear header");
     if (encoded[base] != CODEC_ID)
-      throw new IllegalArgumentException("Not a linear block, codec id " + encoded[base]);
+      throw new IllegalArgumentException("Not a linear block, codec id " + (encoded[base] & 0xFF));
   }
 }

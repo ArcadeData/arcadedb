@@ -36,8 +36,8 @@ import java.nio.ByteOrder;
  * {@code count} validates the id, the count and that the offset table fits the array. {@code decode} also validates
  * the offset chain, which the layout fully determines (the first block starts at the end of the table, each next one
  * where the previous ends, the last one inside the array), and refuses malformed input with
- * {@link IllegalArgumentException} before allocating anything from the count. {@code get} relies on the JVM array
- * bounds checks instead of validating the payload, to keep the point read cheap.
+ * {@link IllegalArgumentException} before allocating anything from the count. {@code get} checks the index against the
+ * count and otherwise relies on the JVM array bounds checks instead of validating the payload, to keep the point read cheap.
  */
 public final class BlockwiseLinearCodec {
   public static final byte CODEC_ID   = 3;
@@ -89,6 +89,8 @@ public final class BlockwiseLinearCodec {
   }
 
   public static long get(final byte[] encoded, final int index) {
+    if (index < 0 || index >= (int) INT_LE.get(encoded, 4))
+      throw new IndexOutOfBoundsException("Index " + index + " outside count " + (int) INT_LE.get(encoded, 4));
     final int base = (int) INT_LE.get(encoded, HEADER_SIZE + 4 * (index >>> SHIFT));
     return LinearCodec.get(encoded, base, index & (BLOCK_SIZE - 1));
   }
@@ -97,7 +99,7 @@ public final class BlockwiseLinearCodec {
     if (encoded.length < HEADER_SIZE)
       throw new IllegalArgumentException("Truncated blockwise header");
     if (encoded[0] != CODEC_ID)
-      throw new IllegalArgumentException("Not a blockwise linear block, codec id " + encoded[0]);
+      throw new IllegalArgumentException("Not a blockwise linear block, codec id " + (encoded[0] & 0xFF));
     final int count = (int) INT_LE.get(encoded, 4);
     if (count < 0)
       throw new IllegalArgumentException("Negative count " + count);
@@ -107,8 +109,7 @@ public final class BlockwiseLinearCodec {
   }
 
   static int encodedSize(final long[] values, final int offset, final int length) {
-    if (offset < 0 || length < 0 || (long) offset + length > values.length)
-      throw new IndexOutOfBoundsException("Slice [" + offset + ", +" + length + ") outside array of " + values.length);
+    BitPackedCodec.checkSlice(values, offset, length);
     final int blocks = blocks(length);
     long size = tableEnd(blocks);
     for (int b = 0; b < blocks; b++) {

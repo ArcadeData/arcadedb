@@ -165,11 +165,16 @@ public final class BitPackedCodec {
     if (base < 0 || encoded.length - base < HEADER_BYTES)
       throw new IllegalArgumentException("Truncated bit-packed header");
     if (encoded[base] != CODEC_ID)
-      throw new IllegalArgumentException("Not a bit-packed block, codec id " + encoded[base]);
+      throw new IllegalArgumentException("Not a bit-packed block, codec id " + (encoded[base] & 0xFF));
     final int count = (int) INT_LE.get(encoded, base + 4);
     if (count < 0)
       throw new IllegalArgumentException("Invalid count " + count);
     return count;
+  }
+
+  static void checkSlice(final long[] values, final int offset, final int length) {
+    if (offset < 0 || length < 0 || (long) offset + length > values.length)
+      throw new IndexOutOfBoundsException("Slice [" + offset + ", +" + length + ") outside array of " + values.length);
   }
 
   /** Greatest common divisor of two unsigned 64-bit values; {@code gcd(0, x) = x}. */
@@ -208,15 +213,15 @@ public final class BitPackedCodec {
   }
 
   /**
-   * The only analysis of a slice (or of its residuals against a line, plain values being the line 0 + 0.0 * i): one pass finds min, max and the gcd of the differences from the first value (equal to
-   * the gcd of the differences from the min, with an early exit once it is 1). Returns the bit width of the quotients;
+   * The only analysis of a slice (or of its residuals against a line, plain values being the line 0 + 0.0 * i): one
+   * pass finds min, max and the gcd of the differences from the first value (equal to the gcd of the differences from
+   * the min, with an early exit once it is 1). Returns the bit width of the quotients;
    * when {@code header} is not null it also writes the header fields (id, width, reserved, count, min, gcd) at
    * {@code base}.
    */
   private static int analyze(final long[] values, final int offset, final int length, final long intercept,
       final double slope, final byte[] header, final int base) {
-    if (offset < 0 || length < 0 || (long) offset + length > values.length)
-      throw new IndexOutOfBoundsException("Slice [" + offset + ", +" + length + ") outside array of " + values.length);
+    checkSlice(values, offset, length);
     long min = 0;
     long gcd = 1;
     int w = 0;

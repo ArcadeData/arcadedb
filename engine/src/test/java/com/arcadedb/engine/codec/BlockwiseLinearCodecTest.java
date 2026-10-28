@@ -199,4 +199,15 @@ class BlockwiseLinearCodecTest {
 
     assertThatThrownBy(() -> BlockwiseLinearCodec.decode(good, new long[10])).isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void getRefusesAnIndexOutsideTheCount() {
+    final long[] v = new long[1000];
+    for (int i = 0; i < v.length; i++)
+      v[i] = 5L * i;
+    final byte[] e = BlockwiseLinearCodec.encode(v, 0, v.length);
+    assertThatThrownBy(() -> BlockwiseLinearCodec.get(e, 1000)).isInstanceOf(IndexOutOfBoundsException.class);
+    assertThatThrownBy(() -> BlockwiseLinearCodec.get(e, 2048)).isInstanceOf(IndexOutOfBoundsException.class);
+    assertThatThrownBy(() -> BlockwiseLinearCodec.get(e, -1)).isInstanceOf(IndexOutOfBoundsException.class);
+  }
 }
