@@ -2198,12 +2198,26 @@ public class PostgresCatalog {
    * ordinal position does not depend on the order a hash set happens to iterate in.
    */
   private static List<Property> sortedProperties(final DocumentType type) {
-    final List<Property> properties = new ArrayList<>();
-    for (final Property property : type.getPolymorphicProperties())
+    final Map<String, Property> byName = new HashMap<>();
+    collectProperties(type, byName);
+    final List<Property> properties = new ArrayList<>(byName.size());
+    for (final Property property : byName.values())
       if (!property.isHidden())
         properties.add(property);
     properties.sort(Comparator.comparing(Property::getName));
     return properties;
+  }
+
+  /**
+   * The properties of {@code type} and of its super types by name, the nearest declaration of a name winning: a type that holds
+   * a name one of its super types holds too (which {@code addSuperType} only logs) has one column of that name, as PostgreSQL
+   * merges an inherited column with a local one, not two (issue #10594).
+   */
+  private static void collectProperties(final DocumentType type, final Map<String, Property> byName) {
+    for (final Property property : type.getProperties())
+      byName.putIfAbsent(property.getName(), property);
+    for (final DocumentType superType : type.getSuperTypes())
+      collectProperties(superType, byName);
   }
 
   /**

@@ -79,6 +79,11 @@ class Issue10594InheritedColumnsCatalogTest {
       schema.getType("HiddenParent").getProperty("concealed").setHidden(true);
       schema.createDocumentType("HiddenChild").addSuperType("HiddenParent").createProperty("mine", Type.STRING);
 
+      // a name held by the type and by a super type added afterwards, which addSuperType only logs: one merged column
+      schema.createDocumentType("Merged").createProperty("m", Type.STRING);
+      schema.createDocumentType("MergedParent").createProperty("m", Type.STRING);
+      schema.getType("Merged").addSuperType("MergedParent");
+
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Super", "sa");
     });
   }
@@ -130,6 +135,13 @@ class Issue10594InheritedColumnsCatalogTest {
     assertThat(attributes("Bottom")).containsExactly("l:false:1", "r:false:1", "x:false:2");
     assertThat(attributes("Flat")).containsExactly("visible:true:0");
     assertThat(attributes("HiddenChild")).containsExactly("mine:true:0", "shown:false:1");
+  }
+
+  /** A name both declared by the type and inherited is one column, local and inherited once, as PostgreSQL merges it. */
+  @Test
+  void aNameDeclaredAndInheritedIsOneMergedColumn() {
+    assertThat(attributes("Merged")).containsExactly("m:true:1");
+    assertThat(relnattsByTable().get("Merged")).isEqualTo(1);
   }
 
   /** An index's key columns are columns of the index relation itself, as in PostgreSQL: local, inherited from nothing. */
