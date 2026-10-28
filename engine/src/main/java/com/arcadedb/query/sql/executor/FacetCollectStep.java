@@ -474,8 +474,16 @@ public class FacetCollectStep extends AbstractExecutionStep {
       final FacetItem item = clause.items.get(i);
       result.append("\n").append(spaces).append("  ").append(item);
       final int filterIndex = filterIndexByFacet[i];
-      if (filterIndex >= 0 && filterIndex < evaluators.size())
-        result.append(" [").append(evaluators.get(filterIndex).kind()).append("]");
+      if (filterIndex >= 0 && filterIndex < evaluators.size()) {
+        final FacetFilterEvaluator evaluator = evaluators.get(filterIndex);
+        result.append(" [").append(evaluator.kind());
+        if (context.isProfiling() && opened && evaluator instanceof FacetFilterEvaluator.Projection projectionFilter)
+          result.append(" column=").append(projectionFilter.columnAnswers()).append(" record=").append(projectionFilter.recordAnswers());
+        else if (context.isProfiling() && opened && evaluator instanceof FacetFilterEvaluator.Index indexFilter
+            && indexFilter.fallback() != null)
+          result.append(" fallback=RECORD (").append(indexFilter.fallback()).append(")");
+        result.append("]");
+      }
       final FacetExecutionStats facetStats = specs != null && i < specs.size() ? stats.get(specs.get(i).alias()) : null;
       if (facetStats != null)
         result.append("\n").append(spaces).append("    source=").append(facetStats.source()).append(" segments=")
