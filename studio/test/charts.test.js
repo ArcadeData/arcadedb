@@ -104,14 +104,33 @@ test("no Studio page loads ApexCharts, and index.html loads ECharts before the c
   assert.ok(helper < index.indexOf('src="js/studio-database.js"'), "the helper loads before the panels that draw charts");
 });
 
-test("no Studio script uses ApexCharts, and only studio-charts.js creates an ECharts chart", () => {
-  for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {
-    const code = read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    assert.ok(!/ApexCharts|apexcharts/.test(code), file + " still uses ApexCharts");
-    if (file !== "studio-charts.js") assert.ok(!/echarts\.init\s*\(/.test(code), file + " creates a chart without studio-charts.js");
+// Issue #10703: this census used to list the directories it read (static/js, static/css, the pages) and missed
+// src/main/js, the one webpack reads its entry from, where an import of ApexCharts' stylesheet survived the migration.
+// It now walks every script, stylesheet and page under studio/src, so a directory added later is in it by construction.
+// Only dist/ is left out: webpack writes it from node_modules, and the dependency test above already pins what it copies.
+const SRC_DIR = path.join(STUDIO, "src");
+const DIST_DIR = path.join(STATIC_DIR, "dist");
+
+function studioSources(dir = SRC_DIR, found = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (full !== DIST_DIR) studioSources(full, found);
+    } else if (/\.(js|css|html)$/.test(entry.name)) found.push(full);
   }
-  const css = fs.readFileSync(path.join(STATIC_DIR, "css", "studio.css"), "utf8");
-  assert.ok(!/apexcharts/i.test(css), "studio.css keeps no ApexCharts rule");
+  return found;
+}
+
+test("no Studio source uses ApexCharts, and only studio-charts.js creates an ECharts chart", () => {
+  const sources = studioSources();
+  assert.ok(sources.includes(path.join(SRC_DIR, "main", "js", "vendor-libs.js")), "the census reaches the webpack entry");
+  assert.ok(sources.includes(path.join(JS_DIR, "studio-charts.js")), "the census reaches the page scripts");
+  for (const file of sources) {
+    const name = path.relative(STUDIO, file);
+    const code = fs.readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\S]*?-->/g, "").replace(/^\s*\/\/.*$/gm, "");
+    assert.ok(!/apexcharts/i.test(code), name + " still uses ApexCharts");
+    if (path.basename(file) !== "studio-charts.js") assert.ok(!/echarts\.init\s*\(/.test(code), name + " creates a chart without studio-charts.js");
+  }
 });
 
 // ===== studio-charts.js =====
