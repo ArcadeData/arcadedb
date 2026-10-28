@@ -20,7 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
+import com.arcadedb.engine.codec.Simple8bCodec;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
