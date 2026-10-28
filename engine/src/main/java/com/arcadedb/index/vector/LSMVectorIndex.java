@@ -173,6 +173,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       .getValueAsInteger();
   private static final Semaphore REBUILD_SEMAPHORE       = new Semaphore(MAX_CONCURRENT_REBUILDS);
 
+  /** Test access to {@link #REBUILD_SEMAPHORE}: a columnar test holds its permits to prove the columnar rebuild never waits on them. */
+  static Semaphore rebuildSemaphoreForTesting() {
+    return REBUILD_SEMAPHORE;
+  }
+
   /**
    * Longest single park of a search waiting on something another thread holds - {@link #graphBuildLock}, a build another
    * search owns, the build its own search handed off - before it checks its statement's guard again (issue #9896). None

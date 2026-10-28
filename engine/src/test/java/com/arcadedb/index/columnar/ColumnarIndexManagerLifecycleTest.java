@@ -44,13 +44,17 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -422,8 +426,24 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
         throw new IllegalStateException("injected open failure");
     };
 
-    // the failure happens inside the schema load, after its publication: the open goes on with the new generation
-    reopenDatabase();
+    // no rebuild runs before the test looked at the reopened projection: it holds every rebuild permit
+    final String failedType;
+    final int permits = ColumnarRebuilder.REBUILD_SEMAPHORE.drainPermits();
+    try {
+      // the failure happens inside the schema load, after its publication: the open goes on with the new generation
+      reopenDatabase();
+      failedType = assertFailedOpenIsRetriedAndServedOnlyRebuilt();
+    } finally {
+      ColumnarRebuilder.REBUILD_SEMAPHORE.release(permits);
+    }
+    // the retry requested the rebuild: once a permit is free it runs and the projection is served again
+    assertThat(manager().awaitCaughtUp(60_000)).isTrue();
+    assertThat(manager().getStats().rebuilds(failedType, ColumnarProjection.MISSING)).isEqualTo(1);
+    assertThat(manager().getStats().rebuildsTotal()).isEqualTo(1);
+  }
+
+  /** @return the type whose projection failed to open */
+  private String assertFailedOpenIsRetriedAndServedOnlyRebuilt() throws InterruptedException {
 
     assertThat(database.getSchema().existsIndex(INDEX)).isTrue();
     assertThat(database.getSchema().existsIndex("Other[brand]_columnar")).isTrue();
@@ -452,6 +472,7 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
     assertThat(reopened.unusableReason()).isEqualTo(ColumnarProjection.MISSING);
     assertThat(failedIndex.isUsable()).isFalse();
     assertThat(manager.projection(openBucket).isUsable()).isTrue();
+    return failedType;
   }
 
   @Test
@@ -719,6 +740,135 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
 
     assertThat(marker).exists();
     database = factory.open();
+  }
+
+  @Test
+  void cleanCloseFlushesAndLeavesEmptyRecoverySet() throws IOException {
+    createAsset(1);
+    final int bucketId = bucketIds("Asset")[0];
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("Asset").set("brand", "b" + (i % 5)).save();
+    });
+    final Path recoveryFile = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR).resolve(RecoverySetFile.FILE_NAME);
+
+    reopenDatabase();
+
+    // written by the close (no WAL file was dropped before it), naming the projected bucket with no page left
+    final Map<Integer, int[]> recovery = RecoverySetFile.read(recoveryFile);
+    assertThat(recovery).containsKey(bucketId);
+    for (final int[] pages : recovery.values())
+      assertThat(pages).isEmpty();
+    final ColumnarProjection projection = manager().projection(bucketId);
+    assertThat(projection.manifest().segments()).isNotEmpty();
+    assertThat(projection.manifest().segments().stream().mapToLong(ColumnarManifest.SegmentEntry::rows).sum()).isEqualTo(100);
+    assertThat(projection.isUsable()).isTrue();
+    assertThat(manager().getStats().rebuildsTotal()).isZero();
+  }
+
+  @Test
+  void aCloseKeepsThePagesAMarkAfterTheColumnarCloseLeft() throws IOException {
+    createAsset(1);
+    final int bucketId = bucketIds("Asset")[0];
+    final ColumnarIndexManager manager = manager();
+
+    // a commit between the columnar close and the database write lock: the close persists what the tracker holds, never an empty set
+    manager.close();
+    manager.markPages(bucketId, new int[] { 4 }, 1);
+    database.close();
+
+    final Path recoveryFile = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR).resolve(RecoverySetFile.FILE_NAME);
+    assertThat(RecoverySetFile.read(recoveryFile).get(bucketId)).containsExactly(4);
+    database = factory.open();
+    // taken back by the open: the page is applied again
+    assertThat(manager().getStats().recoveryPagesCount()).isEqualTo(1);
+  }
+
+  @Test
+  void readOnlyOpenNeverWritesTheProjection() throws Exception {
+    createAsset(1);
+    final int bucketId = bucketIds("Asset")[0];
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("Asset").set("brand", "b" + (i % 5)).save();
+    });
+    database.close();
+    final Path root = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR);
+    final Map<String, Long> before = filesWithTimes(root);
+
+    database = factory.open(ComponentFile.MODE.READ_ONLY);
+    final ColumnarProjection projection = manager().projection(bucketId);
+    assertThat(projection.isUsable()).isTrue();
+    long rows = 0;
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      for (final ColumnarSegmentView view : snapshot.segments())
+        rows += view.live().cardinality();
+    }
+    assertThat(rows).isEqualTo(100);
+    assertThat(manager().getStats().applyPasses()).isZero();
+    database.close();
+    assertThat(filesWithTimes(root)).isEqualTo(before);
+
+    // a deleted manifest: unusable, no rebuild, no file created
+    Files.delete(ColumnarStore.bucketDir(Path.of(database.getDatabasePath()), bucketId).resolve(ColumnarManifest.FILE_NAME));
+    final Map<String, Long> withoutManifest = filesWithTimes(root);
+    database = factory.open(ComponentFile.MODE.READ_ONLY);
+    assertThat(manager().projection(bucketId).isUsable()).isFalse();
+    assertThat(manager().getStats().rebuildsTotal()).isZero();
+    database.close();
+    assertThat(filesWithTimes(root)).isEqualTo(withoutManifest);
+
+    // the integrity check of the teardown writes; the writable open rebuilds the missing projection
+    database = factory.open();
+    assertThat(manager().awaitCaughtUp(60_000)).isTrue();
+    assertThat(manager().getStats().rebuilds("Asset", ColumnarProjection.MISSING)).isEqualTo(1);
+  }
+
+  @Test
+  void killDoesNoIo() throws Exception {
+    createAsset(1);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("Asset").set("brand", "b" + (i % 5)).save();
+    });
+    final ColumnarIndexManager manager = manager();
+    assertThat(manager.awaitCaughtUp(10_000)).isTrue();
+    final Path root = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR);
+    final KillPoint point = KillPoint.arm(ColumnarFlusher.FLUSH_SEGMENT_WRITTEN);
+    final AtomicReference<Throwable> flushEnded = new AtomicReference<>();
+    final Thread flusher = new Thread(() -> {
+      try {
+        manager.flushNow();
+      } catch (final Throwable e) {
+        flushEnded.set(e);
+      }
+    });
+    try {
+      flusher.start();
+      assertThat(point.awaitReached(10_000)).isTrue();
+      final Map<String, Long> atKill = filesWithTimes(root);
+
+      ((DatabaseInternal) database).kill();
+      point.releaseAsCrashed();
+      flusher.join(10_000);
+      database.close();
+
+      assertThat(flushEnded.get()).isInstanceOf(ColumnarTestHooks.SimulatedCrash.class);
+      assertThat(filesWithTimes(root)).isEqualTo(atKill);
+    } finally {
+      point.disarm();
+    }
+    database = factory.open();
+  }
+
+  /** Every regular file under the directory, by relative name, with its modification time. */
+  private static Map<String, Long> filesWithTimes(final Path dir) throws IOException {
+    final Map<String, Long> files = new TreeMap<>();
+    try (final Stream<Path> walk = Files.walk(dir)) {
+      for (final Path file : (Iterable<Path>) walk.filter(Files::isRegularFile)::iterator)
+        files.put(dir.relativize(file).toString(), Files.getLastModifiedTime(file).toMillis());
+    }
+    return files;
   }
 
   private static void scheduleAndWait(final ColumnarIndexManager manager) throws InterruptedException {

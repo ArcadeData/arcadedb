@@ -2373,6 +2373,12 @@ public class TransactionManager {
         // make it unrecoverable; abort this pass, the rotation retries later.
         return false;
 
+      // Spec 6.5 (R27): the columnar recovery set is persisted before ANY drop, whatever the caller (the housekeeping and the
+      // close pass no fsync): the pages it names are the dirty and unflushed pages of the projections, which a crash after the
+      // drop could otherwise only learn from the WAL being deleted here. A failure aborts the pass as a failed fsync does
+      if (dropFiles && !persistColumnarRecoverySet())
+        return false;
+
       for (final WALFile file : removable) {
         try {
           final Map<String, Object> fileStats = file.getStats();
@@ -2403,6 +2409,14 @@ public class TransactionManager {
       writePersistedLastTransactionId();
 
     return inactiveWALFilePool.isEmpty();
+  }
+
+  /** The columnar recovery set of the database persisted (or nothing to persist): false when it could not be written. */
+  private boolean persistColumnarRecoverySet() {
+    if (!(database instanceof LocalDatabase local))
+      return true;
+    final ColumnarIndexManager columnar = local.getColumnarIndexManager();
+    return columnar == null || columnar.persistRecoverySet();
   }
 
   /**

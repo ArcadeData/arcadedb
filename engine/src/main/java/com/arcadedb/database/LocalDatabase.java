@@ -4137,6 +4137,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         columnarIndexManager.deleteNoWalMarkersAfterCleanClose();
 
       if (!drop)
+        // spec 6.5: what the columnar trackers still hold once the pages are flushed and synced, under the write lock so no commit
+        // marks a page past it (one may have landed between the columnar close and this lock): empty after a complete close flush
+        columnarIndexManager.persistRecoverySet();
+
+      if (!drop)
         try {
           // THE LAST STEP WHILE THE DATABASE IS STILL OPEN, AFTER THE INDEX FLUSHES AND UNDER THE WRITE LOCK SO NO COMMIT MOVES
           // THE FULL-TEXT COUNTERS PAST IT: A SCHEMA SERIALIZED ONCE THE DATABASE REPORTS ITSELF CLOSED CANNOT RESOLVE THE
@@ -4493,7 +4498,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // AFTER THE WHOLE RECOVERY BLOCK, NOT INSIDE IT: A CLEAN OPEN APPLIES TOO, AND A CRASHED ONE ONLY ONCE THE WAL REPLAY MARKED
         // THE PAGES IT REWROTE
-        columnarIndexManager.startApplying();
+        columnarIndexManager.startApplying(recoveryPending);
 
         if (security != null)
           security.updateSchema(this);

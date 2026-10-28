@@ -126,6 +126,8 @@ public final class ColumnarProjection {
   private volatile String                        unusableReason;
   private volatile Consumer<String>              rebuildRequester = reason -> {
   };
+  /** {@link ColumnarRebuilder}'s coalescing state of this projection (R17): null while no rebuild is queued or running. */
+  final AtomicReference<ColumnarRebuilder.Request> rebuildRequest = new AtomicReference<>();
 
   /**
    * No-WAL marker protocol (R8, V-B3), state for Task 13: {@code markPagesWithoutWAL} marks the pages, {@link #bumpNoWalEpoch()}s,
@@ -161,6 +163,9 @@ public final class ColumnarProjection {
   private final IntHashSet               appliedSinceFreeze  = new IntHashSet();
   /** {@link #appliedSinceFreeze} of the external tracker's pages (R7), null when the bucket has no external bucket. */
   private final IntHashSet               externalAppliedSinceFreeze;
+  /** Pages the apply pass completed while a rebuild scans, marked dirty again by its publish; null while no rebuild scans. */
+  private IntHashSet                     appliedDuringRebuild;
+  private IntHashSet                     externalAppliedDuringRebuild;
   private final Set<ProjectionState>     retained            = new HashSet<>();
   private final Set<SegmentReader>       openReaders         = Collections.newSetFromMap(new IdentityHashMap<>());
   private final Map<String, SegmentFile> segmentFiles        = new HashMap<>();
@@ -646,6 +651,17 @@ public final class ColumnarProjection {
   /** Held for a whole apply pass (R13); {@link #addColumn} takes it so the overlay is re-keyed between two passes. */
   ReentrantLock applyLock() {
     return applyLock;
+  }
+
+  /** True when the current state is valid and its manifest has the column of the index file id. */
+  boolean isPublishedWith(final int indexFileId) {
+    final ColumnarManifest current = manifest;
+    if (current == null || !isUsable())
+      return false;
+    for (final ColumnDefinition column : current.columns())
+      if (column.indexFileId() == indexFileId)
+        return true;
+    return false;
   }
 
   /** True when the current state is valid: a manifest was loaded or published and no {@link #markUnusable} came after it. */
@@ -1280,24 +1296,124 @@ public final class ColumnarProjection {
    * since the freeze (V-B2).
    */
   void pagesApplied(final int[] pages, final int count) {
-    addApplied(appliedSinceFreeze, pages, count);
+    addApplied(false, pages, count);
   }
 
   /** {@link #pagesApplied} for pages of the external tracker (R7). */
   void externalPagesApplied(final int[] pages, final int count) {
-    addApplied(externalAppliedSinceFreeze, pages, count);
+    addApplied(true, pages, count);
   }
 
-  private void addApplied(final IntHashSet target, final int[] pages, final int count) {
+  private void addApplied(final boolean external, final int[] pages, final int count) {
     if (!applyLock.isHeldByCurrentThread())
       throw new IllegalStateException("Recording applied pages of bucket '" + bucketName + "' needs its apply lock");
     publishLock.lock();
     try {
-      for (int i = 0; i < count; i++)
+      final IntHashSet target = external ? externalAppliedSinceFreeze : appliedSinceFreeze;
+      final IntHashSet duringRebuild = external ? externalAppliedDuringRebuild : appliedDuringRebuild;
+      for (int i = 0; i < count; i++) {
         target.add(pages[i]);
+        if (duringRebuild != null)
+          duringRebuild.add(pages[i]);
+      }
     } finally {
       publishLock.unlock();
     }
+  }
+
+  /**
+   * Rebuild, before its scan: from now on every page an apply pass completes is recorded, so {@link #rebuildPublished} marks it dirty
+   * again and nothing applied to the old state while the scan ran is lost.
+   */
+  void beginRebuildTracking() {
+    publishLock.lock();
+    try {
+      appliedDuringRebuild = new IntHashSet();
+      externalAppliedDuringRebuild = externalTracker == null ? null : new IntHashSet();
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /** Rebuild, at its end whatever the outcome: no page is recorded any more. */
+  void endRebuildTracking() {
+    publishLock.lock();
+    try {
+      appliedDuringRebuild = null;
+      externalAppliedDuringRebuild = null;
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Rebuild of a projection with no valid manifest (missing or corrupt), before it writes anything: deletes every file of the bucket
+   * directory but the held ones, so no orphan of the old files can collide with a name the rebuild publishes. The manifest, its tmp
+   * file and the {@code NOWAL} marker are kept ({@link ColumnarStore#deleteUnreferenced}). Nothing when a manifest is current.
+   */
+  void deleteOrphansForRebuild() {
+    publishLock.lock();
+    try {
+      if (manifest == null && !readOnly && Files.isDirectory(bucketDir))
+        ColumnarStore.deleteUnreferenced(bucketDir, Set.of(), inFlightFiles);
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Rebuild, last step, under {@link #applyLock()} and {@link #publishLock()} once its manifest is renamed: the rebuilt segments,
+   * dictionaries and owner maps replace the current ones in one publish (usable), with a new empty live overlay over the current
+   * columns. The previous state's files go through the last-release path (R1/R2). Every page an apply pass completed during the scan is
+   * marked dirty again, so it is re-applied over the rebuilt state; the other unflushed pages leave the trackers (the rebuilt state holds
+   * their committed content). A frozen overlay left by a failed flush is dropped, and the unreadable page retries are forgotten.
+   *
+   * @return false, publishing nothing, when the projection is closed or dropped
+   */
+  boolean rebuildPublished(final ColumnarManifest rebuilt, final SegmentReader[] segments, final Map<String, GlobalDictionary> rebuiltDictionaries,
+      final ContentOwnerMap rebuiltOwners, final ContentOwnerMap rebuiltExternalOwners) {
+    if (!publishLock.isHeldByCurrentThread() || !applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Publishing the rebuild of bucket '" + bucketName + "' needs its apply and publish locks");
+    if (closed || dropped)
+      return false;
+    ownersLock.writeLock().lock();
+    try {
+      owners = rebuiltOwners;
+    } finally {
+      ownersLock.writeLock().unlock();
+    }
+    if (externalOwnersLock != null) {
+      externalOwnersLock.writeLock().lock();
+      try {
+        externalOwners = rebuiltExternalOwners;
+      } finally {
+        externalOwnersLock.writeLock().unlock();
+      }
+    }
+    overlay = new ColumnarOverlay(maxRecordsInPage, columns, System::currentTimeMillis);
+    frozenOverlay = null;
+    frozenView = null;
+    clearFreezeRecords();
+    publish(rebuilt, segments, new ColumnarSegmentView[] { overlay.publish() }, rebuiltDictionaries, true);
+    ownersPublished();
+    unreadablePages.clear();
+    remarkAndForgetUnflushed(tracker, appliedDuringRebuild);
+    if (externalTracker != null)
+      remarkAndForgetUnflushed(externalTracker, externalAppliedDuringRebuild);
+    appliedDuringRebuild = null;
+    externalAppliedDuringRebuild = null;
+    lastFlushMs = System.currentTimeMillis();
+    return true;
+  }
+
+  /** Marks the applied pages dirty first, then clears the unflushed ones: a page is always in one place of the tracker. */
+  private static void remarkAndForgetUnflushed(final DirtyPageTracker target, final IntHashSet applied) {
+    if (applied != null && applied.size() > 0) {
+      final int[] pages = applied.toArray();
+      target.mark(pages, pages.length);
+    }
+    final int[] unflushed = target.unflushedPages();
+    target.flushed(unflushed, unflushed.length, page -> false);
   }
 
   /**

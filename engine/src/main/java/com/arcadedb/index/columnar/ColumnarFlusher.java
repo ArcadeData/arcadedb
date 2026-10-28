@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.Lock;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -153,10 +154,11 @@ final class ColumnarFlusher {
           return;
         }
         if (segmentFile != null) {
-          attempt.reader = SegmentReader.open(segmentFile, p.supersededInFrozenCopy());
+          final SegmentReader reader = SegmentReader.open(segmentFile, p.supersededInFrozenCopy());
+          attempt.readers.add(reader);
           next = new SegmentReader[segments.length + 1];
           System.arraycopy(segments, 0, next, 0, segments.length);
-          next[segments.length] = attempt.reader;
+          next[segments.length] = reader;
           // the frozen view sits just before the live one, which stays
           final ColumnarSegmentView[] views = current.overlays();
           overlays = new ColumnarSegmentView[] { views[views.length - 1] };
@@ -261,9 +263,10 @@ final class ColumnarFlusher {
           deadSince = addDeadSince(deadSince, segments[at[i]].deadSet(), inputs[i].deadSet());
         }
         if (allFound(at)) {
-          if (rows > 0)
-            attempt.reader = SegmentReader.open(segmentFile, deadSince);
-          publish(p, replace(segments, at, attempt.reader), current.overlays(), p.manifest().lastTransactionId(), attempt, () -> {
+          final SegmentReader merged = rows > 0 ? SegmentReader.open(segmentFile, deadSince) : null;
+          if (merged != null)
+            attempt.readers.add(merged);
+          publish(p, replace(segments, at, merged), current.overlays(), p.manifest().lastTransactionId(), attempt, () -> {
           });
         }
       } finally {
@@ -483,8 +486,26 @@ final class ColumnarFlusher {
 
     final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), p.maxRecordsInPage(),
         current.columns(), segments, dictionaries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
+    publishManifest(p, manifest, attempt, () -> {
+      if (!p.publish(manifest, next, overlays, writerDictionaries, p.currentState().isUsable()))
+        return false;
+      p.ownersPublished();
+      onPublished.run();
+      return true;
+    });
+  }
+
+  /**
+   * The last step of every publish (flush, merge, rebuild): writes the manifest's tmp file outside the publish lock (the published
+   * manifest is untouched until the rename), then under the publish lock renames it and runs {@code swap}, which makes the new state
+   * current and answers whether it did. The caller holds the apply lock and has made every file the manifest names durable. A failed
+   * rename whose manifest is found on disk is adopted; otherwise the generation is recorded as uncertain and the failure thrown.
+   * {@code attempt.published} stays false when the projection was closed or dropped meanwhile.
+   */
+  static void publishManifest(final ColumnarProjection p, final ColumnarManifest manifest, final Attempt attempt, final BooleanSupplier swap)
+      throws IOException {
+    final Path dir = p.bucketDir();
     checkPublishing(p);
-    // outside the publish lock: the published manifest is untouched until the rename
     manifest.writeTmp(dir);
     p.publishLock().lock();
     try {
@@ -496,18 +517,15 @@ final class ColumnarFlusher {
       } catch (final ColumnarTestHooks.SimulatedCrash e) {
         throw e;
       } catch (final IOException | RuntimeException | Error e) {
-        if (!renamed(dir, generation)) {
-          p.publishUncertain(generation);
+        if (!renamed(dir, manifest.generation())) {
+          p.publishUncertain(manifest.generation());
           throw e;
         }
         LogManager.instance().log(ColumnarFlusher.class, Level.WARNING,
-            "Columnar manifest %d of bucket '%s' was renamed but its publish failed after; adopting it", e, generation, p.bucketName());
+            "Columnar manifest %d of bucket '%s' was renamed but its publish failed after; adopting it", e, manifest.generation(),
+            p.bucketName());
       }
-      attempt.published = p.publish(manifest, next, overlays, writerDictionaries, p.currentState().isUsable());
-      if (attempt.published) {
-        p.ownersPublished();
-        onPublished.run();
-      }
+      attempt.published = swap.getAsBoolean();
     } finally {
       p.publishLock().unlock();
     }
@@ -549,11 +567,11 @@ final class ColumnarFlusher {
     return true;
   }
 
-  /** One flush's or merge's files and how far its publish got, which decides what a failure may clean up. */
-  private static final class Attempt {
-    final List<String> written = new ArrayList<>();
-    /** The new segment's reader, owned here until a published state owns it. */
-    SegmentReader      reader;
+  /** One flush's, merge's or rebuild's files and how far its publish got, which decides what a failure may clean up. */
+  static final class Attempt {
+    final List<String>        written = new ArrayList<>();
+    /** The new segments' readers, owned here until a published state owns them. */
+    final List<SegmentReader> readers = new ArrayList<>();
     /** The manifest rename was attempted: a manifest naming {@link #written} may be on disk. */
     boolean            manifestEntered;
     boolean            published;
@@ -563,10 +581,10 @@ final class ColumnarFlusher {
    * Ends an attempt that did not crash: a published one releases its names; an unpublished one closes its reader and, unless the rename
    * was attempted, deletes and releases its files. Files a manifest on disk may name stay held, so no later publish reuses the names.
    */
-  private static void settle(final ColumnarProjection p, final Attempt attempt) {
+  static void settle(final ColumnarProjection p, final Attempt attempt) {
     if (!attempt.published) {
-      if (attempt.reader != null)
-        attempt.reader.close();
+      for (final SegmentReader reader : attempt.readers)
+        reader.close();
       if (attempt.manifestEntered)
         return;
       discard(p, attempt.written);
@@ -574,10 +592,14 @@ final class ColumnarFlusher {
     p.releaseFiles(attempt.written.toArray(new String[0]));
   }
 
-  /** Writes the owner map (under its read lock) as a new file; null, writing nothing, for an empty map. */
-  private static String writeOwnerMap(final ColumnarProjection p, final ContentOwnerMap owners, final Lock lock,
-      final String name, final List<String> written) throws IOException {
-    lock.lock();
+  /**
+   * Writes the owner map (under its read lock, null for a map no other thread writes) as a new file; null, writing nothing, for an empty
+   * map.
+   */
+  static String writeOwnerMap(final ColumnarProjection p, final ContentOwnerMap owners, final Lock lock, final String name,
+      final List<String> written) throws IOException {
+    if (lock != null)
+      lock.lock();
     try {
       if (owners.isEmpty())
         return null;
@@ -585,11 +607,12 @@ final class ColumnarFlusher {
       owners.writeTo(p.bucketDir().resolve(name));
       return name;
     } finally {
-      lock.unlock();
+      if (lock != null)
+        lock.unlock();
     }
   }
 
-  private static void hold(final ColumnarProjection p, final List<String> written, final String name) {
+  static void hold(final ColumnarProjection p, final List<String> written, final String name) {
     p.holdFiles(name);
     written.add(name);
   }
@@ -608,7 +631,7 @@ final class ColumnarFlusher {
    * Aborts the flush or merge once the projection stopped publishing ({@link ColumnarProjection#stopPublishing()}): the caller's failure
    * path then deletes what it wrote, as no rename was attempted yet.
    */
-  private static void checkPublishing(final ColumnarProjection p) {
+  static void checkPublishing(final ColumnarProjection p) {
     if (p.isClosedOrDropped())
       throw new PublishingStoppedException(p.bucketName());
   }
@@ -632,9 +655,9 @@ final class ColumnarFlusher {
    * The projection stopped publishing (its database closes or drops) while a flush or merge ran: thrown between two steps so the failure
    * path deletes what the job wrote, and swallowed by {@link #flush} and {@link #merge}.
    */
-  private static final class PublishingStoppedException extends IllegalStateException {
+  static final class PublishingStoppedException extends IllegalStateException {
     PublishingStoppedException(final String bucketName) {
-      super("The columnar projection of bucket '" + bucketName + "' stopped publishing: the flush or merge was abandoned");
+      super("The columnar projection of bucket '" + bucketName + "' stopped publishing: the flush, merge or rebuild was abandoned");
     }
   }
 }

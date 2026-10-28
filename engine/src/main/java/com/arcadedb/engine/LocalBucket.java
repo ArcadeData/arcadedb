@@ -908,6 +908,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
      * @param offPageCount   number of valid entries in {@code offPagePages}, 0 when the record is stored in place
      */
     void onSlot(long position, int kind, Binary content, int[] offPagePages, int offPageCount);
+
+    /**
+     * Called by {@link #visitCommittedPage} once the page is read, before its first slot, with the version of that committed image;
+     * nothing by default.
+     */
+    default void onPageVersion(final int pageNumber, final long version) {
+    }
   }
 
   /**
@@ -939,6 +946,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // clamped: a corrupted count must not send the loop past the slot table
       final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
       OffPagePages offPages = null;
+      visitor.onPageVersion(pageNumber, version);
       for (int slot = 0; slot < recordCountInPage; ++slot)
         offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
       return version;
