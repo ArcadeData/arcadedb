@@ -1622,7 +1622,7 @@ public class PostgresNetworkExecutor extends Thread {
     // pg_type - are answered here rather than handed to ArcadeDB's SQL engine, which reads pg_catalog.f() as a method call. The
     // test is on the tokens, never on the text: a statement that merely CONTAINS those words - in a string literal, in a column
     // name, in an INSERT - goes to the engine like any other (issue #10695)
-    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbeForSession(query, database, userName, sessionSettings, parameters);
+    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, parameters);
     if (probe != null)
       return new CatalogAnswer(toResults(probe.rows), probe.columns);
 
