@@ -82,7 +82,8 @@ class Issue10673LateSampleRecordShippedBeforeTheSamplesIT extends BaseRaftHATest
       }, "issue-10673-follower-observer");
       observer.start();
       try {
-        observer.join();
+        // bounded: awaitValue gives up on its own, this only keeps the leader's append from waiting for good on a stuck observer
+        observer.join(5 * 60_000L);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
