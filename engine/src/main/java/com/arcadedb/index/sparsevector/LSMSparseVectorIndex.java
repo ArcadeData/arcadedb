@@ -325,6 +325,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   public List<RidScore> topK(final int[] queryIndices, final float[] queryValues, final int k, final Set<RID> allowedRIDs,
       final SparseTransactionOverlay overlay) {
+    checkIsValid();
     if (queryIndices == null || queryValues == null)
       throw new IndexException("Query indices and values must not be null");
     if (queryIndices.length != queryValues.length)
@@ -659,6 +660,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   public List<RidScore> topKGrouped(final int[] queryIndices, final float[] queryValues, final int limit, final int groupSize,
       final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
+    checkIsValid();
     if (queryIndices == null || queryValues == null)
       throw new IndexException("Query indices and values must not be null");
     if (queryIndices.length != queryValues.length)
@@ -785,6 +787,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topKForGroups(final int[] queryIndices, final float[] queryValues, final Set<Object> groupKeys,
       final int groupSize, final float floor, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final SparseTransactionOverlay overlay) {
+    checkIsValid();
     if (queryIndices == null || queryValues == null)
       throw new IndexException("Query indices and values must not be null");
     if (queryIndices.length != queryValues.length)
@@ -1229,6 +1232,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   @Override
   public long countEntries() {
+    checkIsValid();
     try {
       return engine.livePostings();
     } catch (final IOException e) {
@@ -1546,6 +1550,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   @Override
   public boolean isValid() {
     return underlyingIndex.isValid();
+  }
+
+  /**
+   * Refuses to answer on an instance a drop or a {@code REBUILD INDEX} has retired, with the message the {@code TypeIndex} and the
+   * other bucket indexes give, so the caller knows to fetch the index again by name. Its engine is closed with it, and failed
+   * with an untyped "engine is closed" instead (issue #10897).
+   */
+  private void checkIsValid() {
+    if (!isValid())
+      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
   }
 
   @Override
