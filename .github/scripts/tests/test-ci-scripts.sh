@@ -52,6 +52,7 @@ RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 WRAPPER="$SCRIPTS/check-maven-wrapper.py"
 PINCOMMENTS="$SCRIPTS/check-action-pin-comments.py"
+CHAOSSUMMARY="$SCRIPTS/chaos-run-summary.sh"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -2260,6 +2261,113 @@ expect "reports a workflow it cannot find" 1 "not found" \
     "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/missing.yml"
 expect "accepts --tags-dir after the workflow arguments" 1 "commented \`# v3.29.5\`" \
     "$PINCOMMENTS" "$work/pins/drifted.yml" --tags-dir "$work/pins/tags"
+
+echo
+echo "chaos-run-summary.sh (#10603)"
+
+# The run page of the HA chaos workflow is rendered from summary.json. It used to print seven
+# hand-picked keys, so the reformat counters, the late commits and the whole ledger never reached
+# it. The renderer now walks every leaf, so a key reaches the page by existing in the report.
+mkdir -p "$work/chaos/run1"
+cat >"$work/chaos/run1/summary.json" <<'JSON'
+{
+  "seed": 42,
+  "nodes": 3,
+  "duration": "PT1H",
+  "writers": 4,
+  "faults": "kill:3,pause",
+  "result": "PASS",
+  "message": "Completed 12 steps\nsecond line",
+  "steps": 12,
+  "ledger": { "acked": 100, "ackedLate": 1, "failed": 2, "unknown": 0, "lostUnknown": 0, "inFlight": 0 },
+  "lateCommits": 5,
+  "reformats": 7,
+  "stepsWithUnreadReformats": 1,
+  "replay": "./mvnw verify -Dchaos.seed=42",
+  "addedLater": [],
+  "nothing": null
+}
+JSON
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/run1/summary.json" 2>&1)" || true
+
+if grep -qxF '### HA chaos: PASS' <<<"$chaos_out"; then
+    pass "renders the result as the heading"
+else
+    fail "renders the result as the heading" "$chaos_out"
+fi
+for leaf in seed nodes duration writers faults message steps ledger.acked ledger.ackedLate ledger.failed ledger.unknown \
+    ledger.lostUnknown ledger.inFlight lateCommits reformats stepsWithUnreadReformats replay addedLater nothing; do
+    if grep -qE "^- ${leaf//./\\.}: " <<<"$chaos_out"; then
+        pass "prints the '$leaf' field"
+    else
+        fail "prints the '$leaf' field" "$chaos_out"
+    fi
+done
+if grep -qxF -- '- reformats: `` 7 ``' <<<"$chaos_out" && grep -qxF -- '- ledger.acked: `` 100 ``' <<<"$chaos_out"; then
+    pass "prints the value next to its key"
+else
+    fail "prints the value next to its key" "$chaos_out"
+fi
+if grep -qxF -- '- message: `` Completed 12 steps second line ``' <<<"$chaos_out"; then
+    pass "keeps a multi-line message on its own bullet"
+else
+    fail "keeps a multi-line message on its own bullet" "$chaos_out"
+fi
+if grep -qE '^- result: ' <<<"$chaos_out"; then
+    fail "does not repeat the result below the heading" "$chaos_out"
+else
+    pass "does not repeat the result below the heading"
+fi
+
+# The fixture above must keep covering every key the harness writes, or the cases above stop
+# proving that the real summary reaches the page.
+chaos_keys="$(sed -n '/public void summary(/,/Files.writeString/p' \
+    e2e-ha/src/test/java/com/arcadedb/containers/ha/chaos/ChaosReport.java | grep -oE '\.put\("[a-zA-Z]+"' | sed -E 's/\.put\("(.*)"/\1/')"
+if [[ -z $chaos_keys ]]; then
+    fail "reads the keys ChaosReport.summary writes" "no .put(\"...\") found in ChaosReport.summary"
+else
+    missing_keys=""
+    for key in $chaos_keys; do
+        jq -e --arg k "$key" '[paths | map(tostring) | last] | index($k) != null' "$work/chaos/run1/summary.json" >/dev/null \
+            || missing_keys="$missing_keys $key"
+    done
+    if [[ -z $missing_keys ]]; then
+        pass "the fixture covers every key ChaosReport.summary writes"
+    else
+        fail "the fixture covers every key ChaosReport.summary writes" "missing:$missing_keys"
+    fi
+fi
+
+expect "says so when no summary was written" 0 "no summary written" \
+    "$CHAOSSUMMARY" "$work/chaos/absent/summary.json"
+if "$CHAOSSUMMARY" "$work/chaos/run1/summary.json" "$work/chaos/run1/summary.json" | grep -c '^### HA chaos: PASS$' | grep -qx 2; then
+    pass "renders one section per summary file"
+else
+    fail "renders one section per summary file"
+fi
+
+printf '{ "result": "PASS", "message": "a``b`" }' >"$work/chaos/ticks.json"
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/ticks.json" 2>&1)" || true
+if grep -qxF -- '- message: ``` a``b` ```' <<<"$chaos_out"; then
+    pass "fences a value longer than any backtick run inside it"
+else
+    fail "fences a value longer than any backtick run inside it" "$chaos_out"
+fi
+
+printf '{ "result": ' >"$work/chaos/broken.json"
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/broken.json" "$work/chaos/run1/summary.json" 2>&1)" && chaos_status=0 || chaos_status=$?
+if [[ $chaos_status -eq 0 ]] && grep -qF 'unreadable summary' <<<"$chaos_out" && grep -qxF '### HA chaos: PASS' <<<"$chaos_out"; then
+    pass "an unreadable summary does not hide the ones after it"
+else
+    fail "an unreadable summary does not hide the ones after it" "$chaos_out"
+fi
+
+# The workflow must render through the script, not through a hand-written key list again.
+if grep -q 'chaos-run-summary.sh' .github/workflows/ha-chaos-tests.yml && ! grep -qF '\(.seed)' .github/workflows/ha-chaos-tests.yml; then
+    pass "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
+else
+    fail "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
+fi
 
 echo
 if [[ $failures -gt 0 ]]; then

@@ -36,6 +36,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -642,6 +643,15 @@ public enum GlobalConfiguration {
       file is pure scratch - it is created when the RAM budget is exhausted, deleted when the window closes, and \
       never read by recovery.""",
       String.class, ""),
+
+  PAGE_SNAPSHOT_TRACK_OPENERS("arcadedb.pageSnapshotTrackOpeners", SCOPE.JVM,
+      """
+      Debug aid (issue #10657): record the stack of the code that opens each point-in-time snapshot window, so that a \
+      database close still waiting for a window after a minute names the code path that opened it and never released \
+      it. Off by default: the window is still reported with its opening thread and age, only the stack is skipped. The \
+      default follows the JVM system property of the same name, so a test run that sets it keeps it across \
+      GlobalConfiguration.resetAll().""",
+      Boolean.class, false, null, value -> Boolean.getBoolean("arcadedb.pageSnapshotTrackOpeners")),
 
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
@@ -2529,11 +2539,13 @@ public enum GlobalConfiguration {
       """
       Shared secret for inter-node request forwarding authentication. \
       Must be identical on all cluster nodes. \
-      If empty, a random token is auto-generated and stored in raft-storage at startup. \
-      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
-      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
-      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
-      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
+      If empty (and arcadedb.ha.clusterTokenPath is not set either), every node derives the token at each start from \
+      arcadedb.ha.clusterName and the root password (arcadedb.server.rootPassword, or the content of the file at \
+      arcadedb.server.rootPasswordPath); the derived token is never stored, so changing either input changes the token \
+      at the next start of each node, and nodes holding different tokens refuse each other's requests. \
+      SECURITY: set an explicit high-entropy value in production. The derivation uses a fixed public salt, so a weak \
+      root password plus a reachable replication HTTP port could let an attacker forge the token and impersonate the \
+      root user via forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
@@ -2542,6 +2554,18 @@ public enum GlobalConfiguration {
       Used to keep the secret off the command line (e.g. a Kubernetes Secret mounted on tmpfs). \
       Read only when arcadedb.ha.clusterToken is not set; the file content is trimmed of surrounding whitespace.""",
       String.class, ""),
+
+  HA_CLUSTER_TOKEN_ALLOW_ROTATION("arcadedb.ha.clusterTokenAllowRotation", SCOPE.SERVER,
+      """
+      Allows a node whose cluster token is derived from the root password file (arcadedb.server.rootPasswordPath, with \
+      neither arcadedb.ha.clusterToken nor arcadedb.ha.clusterTokenPath set) to start with a token that differs from \
+      the one it last ran with. A node records a fingerprint of that derived token beside its Raft storage and, by \
+      default, refuses to start when the file now derives a different one: the file was rewritten in place (e.g. a \
+      rotated Kubernetes Secret), and a node starting with the new token is refused by every peer still on the old one. \
+      Set to true on every node only to rotate the token deliberately, with a full-cluster restart, then remove it. \
+      The check needs persisted Raft storage (arcadedb.ha.raftPersistStorage): a node that discards its storage at every \
+      start keeps no record and is not protected.""",
+      Boolean.class, false),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
@@ -3869,6 +3893,52 @@ public enum GlobalConfiguration {
   }
 
   /**
+   * The key this setting was declared with before it was renamed (issue #10599), or {@code null} when it never was.
+   */
+  public String getFormerKey() {
+    return FORMER_KEYS.get(this);
+  }
+
+  /**
+   * A value the process supplied for a setting: the key that carried it, which is the former key when the setting was given under
+   * the spelling it was renamed from, and whether it came from an environment variable rather than a system property.
+   */
+  public record ProcessSuppliedValue(String key, String value, boolean fromEnvironment) {
+  }
+
+  /**
+   * The value the process supplies for this setting through a system property or an environment variable, looked up the way
+   * {@link #readConfiguration()} applies it: the current key (property, then variable), then the key the setting was renamed from,
+   * only when the current one carries nothing (issue #10599).
+   * <p>
+   * The one answer to "did the operator give this setting on the command line or in the environment, and under which spelling"
+   * (issue #10738): a reader that asked with the current key alone filed a value given under the former key as one the server
+   * computed, while {@link #readConfiguration()} had applied it.
+   *
+   * @param systemProperties the system property of a key, {@code System::getProperty} outside a test
+   * @param environment      the environment variable of a key, {@code System::getenv} outside a test
+   *
+   * @return the value and the key that carried it, or {@code null} when no key of the setting carries one
+   */
+  public ProcessSuppliedValue processSuppliedValue(final Function<String, String> systemProperties,
+      final Function<String, String> environment) {
+    final ProcessSuppliedValue current = processSuppliedValue(key, systemProperties, environment);
+    if (current != null)
+      return current;
+    final String formerKey = FORMER_KEYS.get(this);
+    return formerKey != null ? processSuppliedValue(formerKey, systemProperties, environment) : null;
+  }
+
+  private static ProcessSuppliedValue processSuppliedValue(final String key, final Function<String, String> systemProperties,
+      final Function<String, String> environment) {
+    final String property = systemProperties.apply(key);
+    if (property != null)
+      return new ProcessSuppliedValue(key, property, false);
+    final String variable = environment.apply(key);
+    return variable != null ? new ProcessSuppliedValue(key, variable, true) : null;
+  }
+
+  /**
    * Uncompressed payload, in bytes, a producer may pack into one replicated Raft entry (64 MB), whatever the
    * configured caps say: every node has to materialize the entry in full to apply it, so the LZ4 compression on the
    * wire is no bound (issue #5933). The ha-raft codec enforces it ({@code RaftLogEntryCodec.MAX_ENTRY_BYTES}), and
@@ -4036,8 +4106,6 @@ public enum GlobalConfiguration {
    * type's permissive parse makes of it - which for a {@code Boolean} was {@code false}, for every input (#7222).
    */
   public static synchronized void readConfiguration() {
-    String prop;
-
     // Synchronized because the pass has state that spans it: readingConfiguration/dumpPending are JVM-wide, so two
     // interleaved passes could clear the flag while the other is still walking values() and dump mid-pass - the very
     // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
@@ -4046,28 +4114,15 @@ public enum GlobalConfiguration {
     assignedDuringPass = EnumSet.noneOf(GlobalConfiguration.class);
     try {
       for (final GlobalConfiguration config : values()) {
-        String source = "system property";
-
-        prop = System.getProperty(config.key);
-        if (prop == null) {
-          prop = System.getenv(config.key);
-          source = "environment variable";
+        // the key the setting was renamed from (issue #10599) is read only where the current one carries nothing
+        final ProcessSuppliedValue supplied = config.processSuppliedValue(System::getProperty, System::getenv);
+        if (supplied == null) {
+          config.applyConfigurationSource(null, "environment variable");
+          continue;
         }
-
-        // the key the setting was renamed from (issue #10599), only where the current one carries nothing
-        final String formerKey = FORMER_KEYS.get(config);
-        if (prop == null && formerKey != null) {
-          prop = System.getProperty(formerKey);
-          source = "system property";
-          if (prop == null) {
-            prop = System.getenv(formerKey);
-            source = "environment variable";
-          }
-          if (prop != null)
-            reportFormerKey(config);
-        }
-
-        config.applyConfigurationSource(prop, source);
+        if (!supplied.key().equals(config.key))
+          reportFormerKey(config);
+        config.applyConfigurationSource(supplied.value(), supplied.fromEnvironment() ? "environment variable" : "system property");
       }
     } finally {
       readingConfiguration = false;
@@ -4674,6 +4729,9 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
+    // A plain flag whose key happens to contain "clusterToken": an operator must be able to see it is on (issue #10601).
+    if (this == HA_CLUSTER_TOKEN_ALLOW_ROTATION)
+      return hidden;
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 

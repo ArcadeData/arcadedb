@@ -189,6 +189,14 @@ public class PageManager extends LockContext {
   private final    Set<PageSnapshot> releasingSnapshots = new HashSet<>();
   /** How long {@link #beginDatabaseClose} waits between re-checks of the open windows; also its logging cadence. */
   private static final long CLOSE_WAIT_POLL_MILLIS = 10_000L;
+  /**
+   * #10657: how long {@link #beginDatabaseClose} waits before it reports, once, every window it is still waiting for -
+   * who opened it, when, in which state, and the opening stack when {@code arcadedb.pageSnapshotTrackOpeners} is on. A
+   * backup legitimately keeps a close waiting for as long as it runs, so this is not an error, but a window that is
+   * never released keeps the close waiting forever, and without the report nothing says which one it is. Not final so
+   * a test can lower it.
+   */
+  volatile long closeWaitReportMillis = 60_000L;
   /** Serializes the t0 barrier per database (NOT the windows themselves, which may overlap freely). */
   private final ConcurrentHashMap<Database, Object>              snapshotBarrierLocks = new ConcurrentHashMap<>();
   /**
@@ -902,6 +910,7 @@ public class PageManager extends LockContext {
       // SUSPENSION DEFERRED, WHICH IS PART OF WHAT OPENING THE WINDOW COSTS
       final long beginTime = System.currentTimeMillis();
       boolean suspended = false;
+      PageSnapshot published = null;
       try {
         // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK. IT IS THE LONG PART, AND MAKING COMMITTERS WAIT
         // FOR IT WOULD BE THE STALL THIS DESIGN EXISTS TO REMOVE
@@ -972,8 +981,9 @@ public class PageManager extends LockContext {
             // file dropped in the gap - which index compaction can do at any moment, taking no database lock - would
             // be physically deleted, because deferFileDrop only protects windows that are already published, and the
             // snapshot would then be holding a closed channel
-            return database.getFileManager().executeWithFileSetLocked(
+            published = database.getFileManager().executeWithFileSetLocked(
                 () -> registerSnapshot(buildSnapshot(database, spillDirectory, spillVolumeUsableSpace)));
+            return published;
           } finally {
             unlock();
           }
@@ -991,12 +1001,44 @@ public class PageManager extends LockContext {
         recordSnapshotBarrierFailure(PageSnapshotException.Reason.OTHER);
         throw e;
       } finally {
-        if (suspended)
-          thread.setSuspended(database, false);
-        // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS
-        // ONE THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
-        recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
+        try {
+          if (suspended)
+            resumeAfterBarrier(thread, database, published);
+        } finally {
+          // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS
+          // ONE THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
+          recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
+        }
       }
+    }
+  }
+
+  /**
+   * Lifts the flush suspension the t0 barrier took. Its last step, so it runs AFTER the window may already have been
+   * published: when it throws, the exception replaces {@code openSnapshot}'s return value and the caller never receives
+   * the window. Nobody else can ever close it then, and every later close or drop of the database would wait for it
+   * forever in {@link #beginDatabaseClose} (#10657). So the window is released here before the failure propagates, and
+   * the barrier is counted as failed. A {@link RuntimeException} leaves {@link #openSnapshot} wrapped in a
+   * {@link PageSnapshotException}, so its consumer falls back exactly as for any other failed barrier. An {@link Error}
+   * propagates as itself, as it does from every other step of the barrier: it is not a reason to fall back to
+   * suspend-and-freeze, but the window is released before it leaves all the same.
+   */
+  private void resumeAfterBarrier(final PageManagerFlushThread thread, final Database database,
+      final PageSnapshot published) {
+    try {
+      thread.setSuspended(database, false);
+    } catch (final RuntimeException | Error e) {
+      // WITH NO WINDOW PUBLISHED THE BARRIER ITSELF THREW FIRST, AND ITS catch ALREADY COUNTED THE FAILURE: COUNTING
+      // IT AGAIN HERE WOULD REPORT ONE FAILED BARRIER TWICE
+      if (published != null) {
+        try {
+          published.close();
+        } catch (final RuntimeException | Error closeFailure) {
+          e.addSuppressed(closeFailure);
+        }
+        recordSnapshotBarrierFailure(PageSnapshotException.Reason.OTHER);
+      }
+      throw e;
     }
   }
 
@@ -1340,11 +1382,22 @@ public class PageManager extends LockContext {
       closingDatabases.merge(database, 1, Integer::sum);
 
       boolean logged = false;
+      boolean reported = false;
+      final long waitStart = System.currentTimeMillis();
       for (int open; (open = countSnapshotWindows(database)) > 0; ) {
+        // #10657: TERMINATED BY A LINE SEPARATOR. THE FORMATTER STARTS EVERY RECORD WITH ONE INSTEAD OF ENDING WITH IT,
+        // SO THE LAST RECORD BEFORE A HANG STAYS A PARTIAL LINE THAT A CONSOLE READER (SUREFIRE) HOLDS BACK FOREVER
         LogManager.instance().log(this, logged ? Level.FINE : Level.INFO,
-            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup is reading them)",
+            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup may still be reading them)%n",
             null, database.getName(), open);
         logged = true;
+        final long waited = System.currentTimeMillis() - waitStart;
+        if (!reported && waited >= closeWaitReportMillis) {
+          reported = true;
+          LogManager.instance().log(this, Level.WARNING,
+              "Close of database '%s' has waited %d ms for %d snapshot window(s) still open; it goes on waiting until they are released:%n%s",
+              null, database.getName(), waited, open, describeSnapshotWindows(database));
+        }
         try {
           snapshotRegistryLock.wait(CLOSE_WAIT_POLL_MILLIS);
         } catch (final InterruptedException e) {
@@ -1389,18 +1442,41 @@ public class PageManager extends LockContext {
     }
   }
 
-  /** Windows still open on the database, plus the ones whose release is in progress. Under the registry lock. */
-  private int countSnapshotWindows(final Database database) {
-    int count = 0;
-    final PageSnapshot[] snapshots = activeSnapshots;
-    if (snapshots != null)
-      for (final PageSnapshot snapshot : snapshots)
+  /** Windows still open on the database, plus the ones whose release is in progress. */
+  int countSnapshotWindows(final Database database) {
+    synchronized (snapshotRegistryLock) {
+      int count = 0;
+      final PageSnapshot[] snapshots = activeSnapshots;
+      if (snapshots != null)
+        for (final PageSnapshot snapshot : snapshots)
+          if (snapshot.isFor(database))
+            ++count;
+      for (final PageSnapshot snapshot : releasingSnapshots)
         if (snapshot.isFor(database))
           ++count;
-    for (final PageSnapshot snapshot : releasingSnapshots)
-      if (snapshot.isFor(database))
-        ++count;
-    return count;
+      return count;
+    }
+  }
+
+  /**
+   * #10657: one entry per window {@link #countSnapshotWindows} counts, each ending with a line separator - the
+   * opening thread, the window's age and status and, when it was recorded, the stack that opened it. Built only when a
+   * close has waited past {@link #closeWaitReportMillis}, so it costs nothing on any other path.
+   */
+  String describeSnapshotWindows(final Database database) {
+    final String eol = System.lineSeparator();
+    final StringBuilder buffer = new StringBuilder(512);
+    synchronized (snapshotRegistryLock) {
+      final PageSnapshot[] snapshots = activeSnapshots;
+      if (snapshots != null)
+        for (final PageSnapshot snapshot : snapshots)
+          if (snapshot.isFor(database))
+            snapshot.describeOpener(buffer.append("- open window: "), eol);
+      for (final PageSnapshot snapshot : releasingSnapshots)
+        if (snapshot.isFor(database))
+          snapshot.describeOpener(buffer.append("- window still releasing: "), eol);
+    }
+    return buffer.toString();
   }
 
   void unregisterSnapshot(final PageSnapshot snapshot) {
@@ -1601,6 +1677,16 @@ public class PageManager extends LockContext {
     return getCachedPage(pageId, pageSize, false, false);
   }
 
+  /**
+   * {@link #getImmutablePage(PageId, int, boolean, boolean) getImmutablePage(pageId, pageSize, false, true)}, through the same
+   * funnel, but answered with the cached page's shared view ({@link CachedPage#getSharedImmutableView()}) instead of a new one per
+   * call: for a reader that reads the page at absolute positions only (#10654).
+   */
+  public ImmutablePage getSharedImmutablePage(final PageId pageId, final int pageSize) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, false, true);
+    return page != null ? page.getSharedImmutableView() : null;
+  }
+
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
@@ -1794,6 +1880,16 @@ public class PageManager extends LockContext {
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    publishPages(pagesToWrite, newPages, asyncFlush, null);
+  }
+
+  /**
+   * @param onPublicationStart run under the page-manager lock right before the first page is handed over, after the waits that
+   *                           can block or be interrupted with nothing published (#10768): from that call on a failure can leave
+   *                           part of the pages visible. {@code null} for none
+   */
+  public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
+      final boolean asyncFlush, final Runnable onPublicationStart) throws IOException, InterruptedException {
     // BOTH WAITS ARE OUTSIDE THE LOCK, AND THAT IS THE ENTIRE POINT (issues #6200 and #6259). Publication holds the
     // JVM-wide page-manager lock across BOTH of its halves - the page write and the flush enqueue - because the
     // snapshot t0 barrier (#6075/#6125) rests on exactly that, so the enqueue cannot move out; what can, and must, is
@@ -1825,6 +1921,8 @@ public class PageManager extends LockContext {
       if (outermost)
         ++publicationSequence;
       try {
+        if (onPublicationStart != null)
+          onPublicationStart.run();
         writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
 
         if (newPages != null)

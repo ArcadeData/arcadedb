@@ -52,7 +52,7 @@ class CompactIndexHttpIT extends BaseGraphServerTest {
   @Test
   void compactIndexViaHttpCommand() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
 
       database.transaction(() -> {
         database.command("sql", "CREATE DOCUMENT TYPE " + DOC_TYPE_NAME);

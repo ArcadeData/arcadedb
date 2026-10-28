@@ -148,7 +148,9 @@ class Issue10691MaterializedViewCatalogTest {
     assertThat(column(answer, "matviewname")).containsExactly("AggView", "PersonView");
     assertThat(column(answer, "schemaname")).containsOnly(database.getName());
     assertThat(column(answer, "matviewowner")).containsOnly(USER);
-    assertThat(column(answer, "hasindexes")).containsOnly(false);
+    // follows pg_index (issue #10473): the backing type of a continuous aggregate is indexed on its bucket column (issue #10804),
+    // the one of a materialized view is not (issue #10828)
+    assertThat(column(answer, "hasindexes")).containsExactly(true, false);
     assertThat(column(answer, "ispopulated")).containsOnly(true);
     assertThat(column(answer, "definition")).containsExactly(AGGREGATE_QUERY, VIEW_QUERY);
   }

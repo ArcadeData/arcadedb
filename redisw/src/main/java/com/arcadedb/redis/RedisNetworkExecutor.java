@@ -25,7 +25,6 @@ import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
@@ -55,16 +54,13 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
-
-  /** Commands whose arguments are opaque bytes (issue #9057); see the argument loop in the command dispatch. */
-  private static final Set<String> BINARY_SAFE_COMMANDS = Set.of("SET", "ECHO", "PING");
 
   /**
    * Commands that skip the query admission gate and the list of running statements: the ones that touch no data, and the
@@ -90,7 +86,7 @@ public class RedisNetworkExecutor extends Thread {
   // bytes the batch being built has queued, to give a grown buffer back once batches stop needing it (see flushReplies)
   private          int                 batchReplyBytes  = 0;
   private final    byte[]              tokenBytes       = new byte[MAX_TOKEN_LENGTH];
-  private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
+  private final    ConcurrentMap<String, Object> defaultBucket = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
   private          ServerSecurityUser  authenticatedUser    = null;
   private          RunningQuery.Client runningQueryClient   = null;
@@ -115,6 +111,10 @@ public class RedisNetworkExecutor extends Thread {
   // since those only fire once a token has actually been parsed (issue #5895 review, round 6).
   private static final int MAX_TOKEN_LENGTH = 64;
 
+  // The longest inline command line accepted, the bound Redis itself applies (PROTO_INLINE_MAX_SIZE): a client that sends
+  // no LF is refused once this much has arrived (issue #10597)
+  private static final int MAX_INLINE_LENGTH = 64 * 1024;
+
   /**
    * Bound of the buffer the replies of a batch are encoded into before they leave together: a larger reply is encoded into
    * its own array, and the buffer is written out when it would overflow, so one large value does not stay pinned.
@@ -123,10 +123,9 @@ public class RedisNetworkExecutor extends Thread {
   private static final int INITIAL_PENDING_REPLY_BYTES = 16 * 1024;
 
   /**
-   * Holds the resolved key and database from key resolution. With a database, {@code key} is already the variable name
-   * {@link RedisVariableKeys#toVariableName} made of the client's key; without one it is the client's key itself.
+   * The key a command names and the map it lives in: the connection's own bucket, or the global-variable store of a database.
    */
-  private record ResolvedKey(String key, DatabaseInternal database) {
+  private record ResolvedKey(String key, ConcurrentMap<String, Object> space) {
   }
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
@@ -161,8 +160,9 @@ public class RedisNetworkExecutor extends Thread {
     final String defaultDbName = server.getConfiguration().getValueAsString(GlobalConfiguration.REDIS_DEFAULT_DATABASE);
     if (defaultDbName != null && !defaultDbName.isEmpty()) {
       // A database an operator holds (a restore, a close database) is recorded too, so that getAuthorizedDatabase answers LOADING
-      // for it: left out, an unprefixed SET wrote to the connection-local bucket, answered OK and lost the value (issue #10553)
-      if (server.existsDatabase(defaultDbName) || server.isDatabaseHeld(defaultDbName))
+      // for it: left out, an unprefixed SET wrote to the connection-local bucket, answered OK and lost the value (issue #10553). So
+      // is one on disk that nothing opened yet, which its first command opens (issue #10567)
+      if (server.isDatabaseOfServer(defaultDbName))
         this.selectedDatabaseName = defaultDbName;
       else
         LogManager.instance().log(this, Level.WARNING,
@@ -346,7 +346,8 @@ public class RedisNetworkExecutor extends Thread {
       if (!(cmd instanceof String)) {
         // cmd can be null here (issue #5911: a RESP2 null bulk string, $-1, is now a legal array element),
         // so guard the diagnostic itself rather than calling getClass() on a possibly-null reference.
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
+        // FINE, not SEVERE: a pre-auth client controls how often this fires, one record per few bytes sent (issue #10597)
+        LogManager.instance().log(this, Level.FINE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
             cmd == null ? "null" : cmd.getClass());
         return;
       }
@@ -365,12 +366,10 @@ public class RedisNetworkExecutor extends Thread {
       // raw ClassCastException from the generic catch-all instead of this message. No handler actually
       // consumes a nested array argument today, so that's an obscure, already-non-crashing edge case rather
       // than a gap worth a recursive check for.
-      // Only SET, ECHO and PING carry opaque bytes (issue #9057). Every other command parses its arguments as text, where
-      // an escaped byte would be a lone surrogate, so it gets the replacement character instead.
-      // A new command that handles opaque bytes must be added here. The KEY of SET is text like the key of every lookup
-      // command (GET, EXISTS, DEL...), so it is sanitized the same way and stays findable.
-      final boolean binarySafe = BINARY_SAFE_COMMANDS.contains(cmdString);
-      final boolean keyIsText = "SET".equals(cmdString);
+      // A key and a stored value keep their bytes (issues #9057, #10752); every other argument is parsed as text, where an escaped
+      // byte would be a lone surrogate, so it gets the replacement character instead. RedisArguments is the table that says which
+      // is which: sanitizing a key made two binary keys that differ only in an invalid byte one key
+      final int[] opaque = RedisArguments.opaquePositions(cmdString);
       for (int i = 1; i < list.size(); i++) {
         final Object arg = list.get(i);
         if (arg == null) {
@@ -378,7 +377,7 @@ public class RedisNetworkExecutor extends Thread {
           appendCrLf();
           return;
         }
-        if ((!binarySafe || (keyIsText && i == 1)) && arg instanceof String str)
+        if (arg instanceof String str && !RedisArguments.isOpaque(opaque, i))
           list.set(i, RedisBinaryCodec.sanitize(str));
       }
 
@@ -534,7 +533,9 @@ public class RedisNetworkExecutor extends Thread {
       appendCrLf();
 
     } else
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+      // A top-level simple string, integer or bulk string is not a command. Logged with no reply, the client waited forever
+      // and every such message wrote a SEVERE record (issue #10597)
+      throw new RedisProtocolLimitException("Protocol error: a command must be a RESP array or an inline command");
   }
 
   /** Who this connection is, for the listing of running statements: the same for every command, so built once. */
@@ -703,8 +704,8 @@ public class RedisNetworkExecutor extends Thread {
         });
       // the two phases are not one atomic unit: variable removal cannot fail, but it is not undone with the records
       for (final String variable : variables)
-        // setGlobalVariable atomically returns the previous value
-        if (database.setGlobalVariable(RedisVariableKeys.toVariableName(variable), null) != null)
+        // the key as the client sent it, as GETDEL removes it (issue #10790)
+        if (database.getGlobalVariableStore().remove(variable) != null)
           deleted[0]++;
     } else {
       // Persistent mode: delete from database
@@ -795,12 +796,7 @@ public class RedisNetworkExecutor extends Thread {
           // BY RID - persistent mode
           if (database == null)
             database = getAuthorizedDatabase(bucketName);
-          Record record;
-          try {
-            record = database.lookupByRID(new RID(key), true);
-          } catch (final RecordNotFoundException e) {
-            record = null;
-          }
+          final Record record = RedisRecords.lookupByRid(database, RedisRecords.parseRid(key));
           values.add(record != null ? record.toJSON(true).toString() : null);
         } else
           values.add(getTransientValue(bucketName, key));
@@ -814,7 +810,7 @@ public class RedisNetworkExecutor extends Thread {
       }
     } else {
       // Persistent mode: get records from database
-      final List<Record> records = getRecords(bucketName, keys);
+      final List<Record> records = getRecordsByIndex(bucketName, keys);
 
       value.append("*");
       value.append(records.size());
@@ -834,7 +830,7 @@ public class RedisNetworkExecutor extends Thread {
     // Check if transient mode: second argument is JSON (starts with '{')
     if (secondArg.startsWith("{")) {
       // Transient mode: store JSON objects in globalVariables. Every element is parsed and validated BEFORE the first is written:
-      // setGlobalVariable is a plain map put that no transaction undoes, so a malformed element k used to leave elements 1..k-1
+      // the store is a plain map that no transaction undoes, so a malformed element k used to leave elements 1..k-1
       // stored behind an error reply (#9837). The same order as the RID parsing of hDel's transient branch. The stores that follow
       // cannot fail, but they are still one put at a time: a concurrent reader may see some of the elements and not the others
       final DatabaseInternal database = getAuthorizedDatabase(databaseName);
@@ -846,11 +842,12 @@ public class RedisNetworkExecutor extends Thread {
         if (!json.has("id")) {
           throw new RedisException("JSON object must have an 'id' field for transient storage");
         }
-        keys[i] = RedisVariableKeys.toVariableName(json.get("id").toString());
+        keys[i] = json.get("id").toString();
         values[i] = json.toString();
       }
+      final ConcurrentMap<String, Object> store = database.getGlobalVariableStore();
       for (int i = 0; i < count; i++)
-        database.setGlobalVariable(keys[i], values[i]);
+        store.put(keys[i], values[i]);
       value.append(":");
       value.append(count);
     } else {
@@ -915,8 +912,8 @@ public class RedisNetworkExecutor extends Thread {
    * NX/XX must be a single atomic check-and-set: {@code SET k v NX} is the primitive a distributed-lock client
    * builds on, and evaluating "does k exist" and "write k" as two separate calls would let two racing clients both
    * observe "absent" and both believe they acquired the lock. {@link #setVariableIfAbsent} / {@link
-   * #setVariableIfPresent} route to a single atomic map operation ({@code ConcurrentHashMap.putIfAbsent} /
-   * {@code computeIfPresent}, or their {@code DatabaseInternal} equivalents) instead of a get-then-set pair.
+   * #setVariableIfPresent} route to a single atomic map operation ({@code putIfAbsent} / {@code computeIfPresent} on the
+   * connection's bucket or on the database's global-variable store) instead of a get-then-set pair.
    */
   private void set(final List<Object> list) {
     final String k = (String) list.get(1);
@@ -1125,8 +1122,8 @@ public class RedisNetworkExecutor extends Thread {
   private void select(final List<Object> list) {
     final String dbName = (String) list.get(1);
     // A database an operator holds (a restore, a close database) is not registered but exists: getAuthorizedDatabase below answers it
-    // as unavailable, not as a name that is no database (issue #10553)
-    if (!server.existsDatabase(dbName) && !server.isDatabaseHeld(dbName))
+    // as unavailable, not as a name that is no database (issue #10553). One on disk that nothing opened yet is opened (issue #10567)
+    if (!server.isDatabaseOfServer(dbName))
       throw new RedisException("Database '" + dbName + "' not found");
 
     // Authorize access (and bind the principal) before switching the connection's current database.
@@ -1140,7 +1137,7 @@ public class RedisNetworkExecutor extends Thread {
    * Resolves a database by name, enforcing that the authenticated user is allowed to access it and
    * binding the user into {@link DatabaseContext} so the engine's per-user permission gates enforce for
    * the subsequent record/index operations. Every command that touches a database MUST resolve it
-   * through this method rather than calling {@code server.getDatabase(...)} directly, which sees past the marks an operator puts
+   * through this method rather than calling {@code server.getDatabaseForOperator(...)} directly, which sees past the marks an operator puts
    * on a name (a restore in progress, a {@code close database}): this method resolves through {@code getDatabaseForClient}.
    */
   private DatabaseInternal getAuthorizedDatabase(final String databaseName) {
@@ -1184,52 +1181,49 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   /**
-   * Resolves the database and actual key from a potentially prefixed key.
+   * Resolves the key space and actual key from a potentially prefixed key.
    * Priority: key prefix (dbname.key) > SELECT > default config > connection-local bucket.
+   * <p>
+   * A database's key space is its global-variable store, read and written by the client's key as it is
+   * ({@link DatabaseInternal#getGlobalVariableStore()}, issue #10790): the SQL accessors strip a leading {@code $} and refuse
+   * the names SQL reserves, which made {@code $k} the key {@code k} and refused {@code parent}, {@code depth}... A key SQL can name
+   * stays visible to it as {@code $key}.
    *
    * @param key the key which may contain a database prefix (e.g., "mydb.mykey")
-   * @return ResolvedKey containing the resolved key and database (database may be null if using local bucket)
    */
-  private ResolvedKey resolveKeyAndDatabase(final String key) {
+  private ResolvedKey resolveKey(final String key) {
     // Check for database prefix (dbname.key)
     final int dotPos = key.indexOf('.');
     if (dotPos > 0) {
       final String dbName = key.substring(0, dotPos);
-      final String actualKey = key.substring(dotPos + 1);
-      // A database an operator holds is one too: it is not registered, and taking its prefix for part of a plain key wrote the
-      // client's value to the connection-local bucket, answered OK, and lost it for the database (issue #10553). The ORDER matters:
-      // existsDatabase first, isDatabaseHeld second, because every hold goes up before the registry entry leaves (see isDatabaseHeld)
-      if (server.existsDatabase(dbName) || server.isDatabaseHeld(dbName))
+      // Whether the prefix names a database of this server, open or not: one an operator holds (issue #10553), and one on disk that
+      // nothing opened yet (issue #10567), which getAuthorizedDatabase opens, or refuses while a snapshot install has it pending.
+      // Taken for part of a plain key, the client's value went to the connection-local bucket, answered OK, and was lost for the
+      // database
+      if (server.isDatabaseOfServer(dbName))
         // A real database prefix: authorize access (throws if not permitted) and bind the principal.
-        return new ResolvedKey(RedisVariableKeys.toVariableName(actualKey), getAuthorizedDatabase(dbName));
+        return new ResolvedKey(key.substring(dotPos + 1), getAuthorizedDatabase(dbName).getGlobalVariableStore());
       // Not a database prefix, treat as regular key.
     }
 
     // Use selected database (from SELECT command or default config)
     if (selectedDatabaseName != null)
-      return new ResolvedKey(RedisVariableKeys.toVariableName(key), getAuthorizedDatabase(selectedDatabaseName));
+      return new ResolvedKey(key, getAuthorizedDatabase(selectedDatabaseName).getGlobalVariableStore());
 
-    return new ResolvedKey(key, null);
+    return new ResolvedKey(key, defaultBucket);
   }
 
   private Object getVariable(final String key) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null) {
-      return resolved.database().getGlobalVariable(resolved.key());
-    }
-    return defaultBucket.get(resolved.key());
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().get(resolved.key());
   }
 
   /**
    * @return the previous value of the key, or null if it had none
    */
   private Object setVariable(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().setGlobalVariable(resolved.key(), value);
-    return defaultBucket.put(resolved.key(), value);
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().put(resolved.key(), value);
   }
 
   /**
@@ -1238,11 +1232,8 @@ public class RedisNetworkExecutor extends Thread {
    * @return the existing value if the key was already set (left untouched), or null if it was absent (now set)
    */
   private Object setVariableIfAbsent(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().setGlobalVariableIfAbsent(resolved.key(), value);
-    return defaultBucket.putIfAbsent(resolved.key(), value);
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().putIfAbsent(resolved.key(), value);
   }
 
   /**
@@ -1251,13 +1242,9 @@ public class RedisNetworkExecutor extends Thread {
    * @return the previous value if the key was set (now replaced), or null if it was absent (left untouched)
    */
   private Object setVariableIfPresent(final String key, final Object value) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().setGlobalVariableIfPresent(resolved.key(), value);
-
+    final ResolvedKey resolved = resolveKey(key);
     final Object[] previous = new Object[1];
-    defaultBucket.computeIfPresent(resolved.key(), (k, current) -> {
+    resolved.space().computeIfPresent(resolved.key(), (k, current) -> {
       previous[0] = current;
       return value;
     });
@@ -1282,30 +1269,18 @@ public class RedisNetworkExecutor extends Thread {
    * @return the value {@code remapping} returned, i.e. the key's new value
    */
   private Object computeVariable(final String key, final UnaryOperator<Object> remapping) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null)
-      return resolved.database().computeGlobalVariable(resolved.key(), remapping);
-    return defaultBucket.compute(resolved.key(), (k, current) -> remapping.apply(current));
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().compute(resolved.key(), (k, current) -> remapping.apply(current));
   }
 
   private Object removeVariable(final String key) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null) {
-      // Use setGlobalVariable which atomically returns the previous value
-      return resolved.database().setGlobalVariable(resolved.key(), null);
-    }
-    return defaultBucket.remove(resolved.key());
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().remove(resolved.key());
   }
 
   private boolean containsVariable(final String key) {
-    final ResolvedKey resolved = resolveKeyAndDatabase(key);
-
-    if (resolved.database() != null) {
-      return resolved.database().getGlobalVariable(resolved.key()) != null;
-    }
-    return defaultBucket.containsKey(resolved.key());
+    final ResolvedKey resolved = resolveKey(key);
+    return resolved.space().containsKey(resolved.key());
   }
 
   private Object parseNext() throws IOException {
@@ -1367,10 +1342,144 @@ public class RedisNetworkExecutor extends Thread {
       for (int i = 0; i < arraySize; ++i)
         array.add(parseNext(depth + 1));
       return array;
-    } else {
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s'", (char) b);
-      return null;
+    } else if (depth == 0)
+      // Not a RESP type marker at the start of a command: the inline form RESP defines (a line of space-separated
+      // words), which is what nc, telnet and health probes send. Answering it is the only way to resynchronize, since
+      // a line is the one framing such a client gives (issue #10597). Stricter than Redis, which reads anything but '*'
+      // as inline: a top-level '+', ':' or '$' value is parsed as RESP and refused by executeCommand with a close
+      return parseInlineCommand(b);
+    else
+      // Inside an array RESP has no framing to resynchronize to: logging and reading on wrote two SEVERE records per
+      // byte, for as long as the client kept writing (issue #10597)
+      throw new RedisProtocolLimitException("Protocol error: expected '$', got '" + printable(b) + "'");
+  }
+
+  /**
+   * Reads an inline command: everything up to LF (a trailing CR is dropped), split into arguments the way Redis splits
+   * them, quotes included. The line is bounded like Redis bounds it, so a client that never sends LF is refused once
+   * {@link #MAX_INLINE_LENGTH} bytes have arrived instead of being buffered for as long as it keeps writing, and its
+   * arguments are bounded by {@code maxMultiBulkLength} like a RESP array's. A blank line, or a line cut short by a
+   * shutdown, is an empty command, which gets no reply.
+   */
+  private List<Object> parseInlineCommand(final byte first) throws IOException {
+    byte[] line = new byte[64];
+    int length = 0;
+    byte b = first;
+    while (b != '\n' && !shutdown) {
+      if (length >= MAX_INLINE_LENGTH)
+        throw new RedisProtocolLimitException("Protocol error: too big inline request");
+      if (length == line.length)
+        line = Arrays.copyOf(line, Math.min(MAX_INLINE_LENGTH, line.length * 2));
+      line[length++] = b;
+      b = readNext();
     }
+    if (shutdown)
+      // closed mid-line: what was read is a truncated command, never to be executed
+      return new ArrayList<>();
+    if (length > 0 && line[length - 1] == '\r')
+      --length;
+    final List<Object> args = splitInlineArguments(line, length);
+    // the configured bound on a command's arguments holds for the inline form too, not only for a RESP array
+    if (args.size() > maxMultiBulkLength)
+      throw new RedisProtocolLimitException(
+          "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
+    // An HTTP request sent to this port (a browser form posting cross-protocol) would otherwise be read line by line as
+    // commands: refused at its first line, as Redis refuses it
+    if (!args.isEmpty() && args.getFirst() instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
+        "HOST:")))
+      throw new RedisProtocolLimitException("Protocol error: possible cross-protocol request ('" + name + "'), refused");
+    return args;
+  }
+
+  /**
+   * Splits an inline command into its arguments with the rules of Redis' {@code sdssplitargs}: words separated by
+   * blanks, a double-quoted word with the {@code \n \r \t \b \a \xHH} escapes, a single-quoted word with {@code \'}.
+   * A closing quote must end the word.
+   */
+  static List<Object> splitInlineArguments(final byte[] line, final int length) throws RedisProtocolLimitException {
+    final List<Object> args = new ArrayList<>();
+    final byte[] current = new byte[length];
+    int i = 0;
+    while (true) {
+      while (i < length && isInlineBlank(line[i]))
+        ++i;
+      if (i >= length)
+        return args;
+
+      int n = 0;
+      boolean inDoubleQuotes = false;
+      boolean inSingleQuotes = false;
+      boolean done = false;
+      while (!done) {
+        if (inDoubleQuotes) {
+          if (i >= length)
+            throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+          final byte c = line[i];
+          if (c == '\\' && i + 3 < length && line[i + 1] == 'x' && hexDigit(line[i + 2]) >= 0 && hexDigit(line[i + 3]) >= 0) {
+            current[n++] = (byte) (hexDigit(line[i + 2]) * 16 + hexDigit(line[i + 3]));
+            i += 3;
+          } else if (c == '\\' && i + 1 < length) {
+            ++i;
+            current[n++] = switch (line[i]) {
+              case 'n' -> '\n';
+              case 'r' -> '\r';
+              case 't' -> '\t';
+              case 'b' -> '\b';
+              case 'a' -> 7;
+              default -> line[i];
+            };
+          } else if (c == '"') {
+            if (i + 1 < length && !isInlineBlank(line[i + 1]))
+              throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+            done = true;
+          } else
+            current[n++] = c;
+        } else if (inSingleQuotes) {
+          if (i >= length)
+            throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+          final byte c = line[i];
+          if (c == '\\' && i + 1 < length && line[i + 1] == '\'') {
+            ++i;
+            current[n++] = '\'';
+          } else if (c == '\'') {
+            if (i + 1 < length && !isInlineBlank(line[i + 1]))
+              throw new RedisProtocolLimitException("Protocol error: unbalanced quotes in request");
+            done = true;
+          } else
+            current[n++] = c;
+        } else if (i >= length || isInlineBlank(line[i]))
+          done = true;
+        else if (line[i] == '"')
+          inDoubleQuotes = true;
+        else if (line[i] == '\'')
+          inSingleQuotes = true;
+        else
+          current[n++] = line[i];
+
+        if (i < length)
+          ++i;
+      }
+      args.add(RedisBinaryCodec.decode(current, n));
+    }
+  }
+
+  private static boolean isInlineBlank(final byte b) {
+    return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == 0x0B || b == '\f';
+  }
+
+  private static int hexDigit(final byte b) {
+    if (b >= '0' && b <= '9')
+      return b - '0';
+    if (b >= 'a' && b <= 'f')
+      return b - 'a' + 10;
+    if (b >= 'A' && b <= 'F')
+      return b - 'A' + 10;
+    return -1;
+  }
+
+  /** A client byte as it can appear in an error reply: printable ASCII as is, anything else as {@code \xHH}. */
+  private static String printable(final byte b) {
+    return b >= 0x20 && b < 0x7F ? String.valueOf((char) b) : String.format("\\x%02x", b & 0xFF);
   }
 
   /**
@@ -1416,17 +1525,17 @@ public class RedisNetworkExecutor extends Thread {
     return parseLength(new String(tokenBytes, 0, length, StandardCharsets.ISO_8859_1), what);
   }
 
+  /**
+   * Consumes the CRLF that ends a bulk string. Anything else means the declared length did not match what was sent, so the
+   * stream position can no longer be trusted: refused like every other malformed message (issue #10597).
+   */
   private void skipLF() throws IOException {
     final byte b = readNext();
-    if (b == '\r') {
-      final byte b2 = readNext();
-      if (b2 == '\n') {
-      } else
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\n"
-            , (char) b2);
-    } else
-      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\r",
-          (char) b);
+    if (b != '\r')
+      throw new RedisProtocolLimitException("Protocol error: expected CRLF after the bulk string, got '" + printable(b) + "'");
+    final byte b2 = readNext();
+    if (b2 != '\n')
+      throw new RedisProtocolLimitException("Protocol error: expected CRLF after the bulk string, got CR then '" + printable(b2) + "'");
   }
 
   private String parseValueUntilLF() throws IOException {
@@ -1455,10 +1564,9 @@ public class RedisNetworkExecutor extends Thread {
       } else {
         if (b == '\n')
           break;
-        else
-          LogManager.instance().log(this, Level.SEVERE, """
-              Redis wrapper: Error on parsing value waiting for LF, but \
-              found '%s' after /r""", (char) b);
+        // A CR inside a token is never valid RESP. Logging each following byte and reading on had no bound: the
+        // MAX_TOKEN_LENGTH check only counts the bytes before the CR (issue #10597)
+        throw new RedisProtocolLimitException("Protocol error: expected CRLF, got CR then '" + printable(b) + "'");
       }
     }
     return length;
@@ -1555,8 +1663,8 @@ public class RedisNetworkExecutor extends Thread {
       final Database database = getAuthorizedDatabase(bucketName);
 
       if (key.startsWith("#")) {
-        // BY RID
-        record = (Document) database.lookupByRID(new RID(key), true);
+        // BY RID: null when there is no such record, as HMGET answers it (#10765)
+        record = RedisRecords.lookupByRid(database, RedisRecords.parseRid(key));
       } else {
         throw new RedisException(
             "Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
@@ -1581,38 +1689,26 @@ public class RedisNetworkExecutor extends Thread {
    */
   private String getTransientValue(final String databaseName, final String key) {
     final DatabaseInternal database = getAuthorizedDatabase(databaseName);
-    final Object value = database.getGlobalVariable(RedisVariableKeys.toVariableName(key));
+    final Object value = database.getGlobalVariableStore().get(key);
     return value != null ? value.toString() : null;
   }
 
-  private List<Record> getRecords(final String bucketName, final List<Object> keys) {
-    final List<Record> records = new ArrayList<>();
+  /**
+   * Gets the records an index maps {@code keys} to, null for a key that is not there. Only HMGET's {@code <database>.<index>} form
+   * reaches it: the RID form is answered by HMGET's own loop, which also resolves the transient keys mixed with the RIDs.
+   */
+  private List<Record> getRecordsByIndex(final String bucketName, final List<Object> keys) {
+    final List<Record> records = new ArrayList<>(keys.size());
 
     final int pos = bucketName.indexOf(".");
-    if (pos < 0) {
-      // BY RID
-      final Database database = getAuthorizedDatabase(bucketName);
+    final String databaseName = bucketName.substring(0, pos);
+    final String keyType = bucketName.substring(pos + 1);
 
-      for (final Object key : keys) {
-        final String k = key.toString();
-        if (k.startsWith("#"))
-          records.add((Document) database.lookupByRID(new RID(k), true));
-        else
-          throw new RedisException("""
-              Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. \
-              Example: #13:432""");
-      }
-    } else {
-      // BY INDEX
-      final String databaseName = bucketName.substring(0, pos);
-      final String keyType = bucketName.substring(pos + 1);
+    final Database database = getAuthorizedDatabase(databaseName);
 
-      final Database database = getAuthorizedDatabase(databaseName);
-
-      for (final Object key : keys) {
-        final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
-        records.add(found != null ? found.asDocument() : null);
-      }
+    for (final Object key : keys) {
+      final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
+      records.add(found != null ? found.asDocument() : null);
     }
     return records;
   }

@@ -1603,7 +1603,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (types != null)
       return new CatalogAnswer(types, getColumns(types));
 
-    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolveForSession(query, database, userName, sessionSettings, parameters);
     if (answer != null) {
       if (answer.rows != null)
         return new CatalogAnswer(toResults(answer.rows), answer.columns);
@@ -2128,7 +2128,7 @@ public class PostgresNetworkExecutor extends Thread {
    * Returns null as soon as an item does not name a column on its own - a {@code *} or an exclusion, which both
    * need the row source, or an {@code expand()}, which replaces the row with whatever it expands.
    */
-  private Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
+  private static Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
     if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
       return null;
 
@@ -2259,6 +2259,21 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * The columns a SELECT projects, named and typed as a statement Describe names and types them, from {@code sourceColumns} - the
+   * declared columns of the type it reads, empty when it reads none - and never from a row: the columns of a materialized view are
+   * the ones its query projects (issue #10799), and the catalog that describes them reads no record. Null when the projection does
+   * not name its columns on its own ({@code expand()}, or a {@code *} over a source with no declared column).
+   */
+  static Map<String, PostgresType> columnsProjectedBy(final SelectStatement select, final Map<String, PostgresType> sourceColumns) {
+    if (!sourceColumns.isEmpty()) {
+      final Map<String, PostgresType> projected = applyProjection(select.getProjection(), sourceColumns);
+      if (projected != null && !projected.isEmpty())
+        return projected;
+    }
+    return getColumnsFromProjection(select.getProjection());
+  }
+
+  /**
    * Narrows the columns discovered for the queried target down to what the query really projects. The
    * discovery always looks at the whole target (a sample row or the declared properties), so without this
    * step a probe like {@code SELECT name FROM Character WHERE 1=0} would advertise every property plus the
@@ -2266,7 +2281,7 @@ public class PostgresNetworkExecutor extends Thread {
    * aliases, functions and expressions are handled the same way the executor handles them. When the query has
    * no projection ({@code SELECT FROM Type}), the full column set is returned unchanged.
    */
-  private Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
+  private static Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
     if (columns == null || columns.isEmpty())
       return columns;
 

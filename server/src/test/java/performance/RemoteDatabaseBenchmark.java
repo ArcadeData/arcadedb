@@ -66,7 +66,7 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
 
     database.command("sql", "create vertex type User buckets " + BUCKETS);
 
-    System.out.println("BEGIN SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+    System.out.println("BEGIN SERVER " + getServer(0).getDatabaseForOperator(DATABASE_NAME).getStats());
 
     final Timer timer = spawnStatThread();
 
@@ -90,7 +90,7 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
       timer.cancel();
       printStats(System.currentTimeMillis());
       System.out.println("END CLIENT " + globalStats);
-      System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+      System.out.println("END SERVER " + getServer(0).getDatabaseForOperator(DATABASE_NAME).getStats());
       System.out.println("TOTAL TIME " + ( System.currentTimeMillis() - beginTime ));
     }
 
@@ -99,7 +99,7 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
       totalRecordsOnClusters += database.countBucket("User_" + i);
 
     final List<Long> allIds = new ArrayList<>();
-    getServer(0).getDatabase(DATABASE_NAME).iterateType("User", true)
+    getServer(0).getDatabaseForOperator(DATABASE_NAME).iterateType("User", true)
         .forEachRemaining(a -> allIds.add(a.getRecord().asVertex().getLong("id")));
     allIds.sort(Long::compareTo);
 
