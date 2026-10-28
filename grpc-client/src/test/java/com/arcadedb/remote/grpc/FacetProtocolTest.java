@@ -22,6 +22,7 @@ import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.facet.FacetResultsSamples;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.grpc.FacetProtocol;
@@ -151,7 +152,44 @@ class FacetProtocolTest {
     assertThat(proto.getResultsOrThrow("tree").getBuckets(0).getAttributesJson()).contains("\"parent\"").contains("\"depth\"");
     assertThat(proto.getResultsOrThrow("uniq").getExtensionsJson()).contains("\"value\"").contains("\"exact\"");
     assertThat(proto.getResultsOrThrow("st").getExtensionsJson()).contains("\"avg\"");
-    assertThat(proto.getResultsOrThrow("last").getExtensionsJson()).contains("\"after\"");
+    // the values of the property are typed (plan 5 Task 9): the cursor and a STATS facet's extremes
+    assertThat(proto.getResultsOrThrow("st").getExtensionsJson()).doesNotContain("\"min\"").doesNotContain("\"max\"");
+    assertThat(proto.getResultsOrThrow("st").getMin().getInt64Value()).isEqualTo(1L);
+    assertThat(proto.getResultsOrThrow("st").getMax().getInt64Value()).isEqualTo(99L);
+    assertThat(proto.getResultsOrThrow("more").getAfter().getStringValue()).isEqualTo("Nike");
+    assertThat(proto.getResultsOrThrow("more").getHasAfter()).isTrue();
+    assertThat(proto.getResultsOrThrow("last").getHasAfter()).isTrue();
+    assertThat(proto.getResultsOrThrow("last").hasAfter()).isFalse();
+    assertThat(proto.getResultsOrThrow("last").getExtensionsJson()).doesNotContain("\"after\"");
+    assertThat(proto.getResultsOrThrow("tree").getHasAfter()).isFalse();
+  }
+
+  /**
+   * Plan 5 Task 9 (R14): a STATS facet's min and max, and a cursor, are values of the property: they travel as a row's values do (a date
+   * as a timestamp, a FLOAT as a float) and come back as the row decoder gives them, not as JSON text.
+   */
+  @Test
+  void statsExtremesAndCursorTravelAsRowValues() throws Exception {
+    final LinkedHashMap<String, FacetResult> map = new LinkedHashMap<>();
+    map.put("day", FacetResult.ofStats("index", new FacetStats(2L, 1L, LocalDate.of(2020, 1, 1), LocalDate.of(2024, 2, 29), null, null))
+        .withValueType(Type.DATE));
+    map.put("ratio", FacetResult.ofStats("index", new FacetStats(2L, 0L, 0.25f, 1.5f, 1.75f, 0.875d)).withValueType(Type.FLOAT));
+    map.put("none", FacetResult.ofStats("index", new FacetStats(0L, 3L, null, null, null, null)));
+    map.put("next", FacetResult.of("terms", "index", List.of(FacetBucket.term(LocalDate.of(2021, 5, 5), 1L)), 0L, 0L)
+        .withAfter(LocalDate.of(2021, 5, 5)).withValueType(Type.DATE));
+    final GrpcFacets proto = toProto(new FacetResults(true, 0L, 0L, map));
+    assertThat(proto.getResultsOrThrow("day").getMin().getKindCase()).isEqualTo(GrpcValue.KindCase.TIMESTAMP_VALUE);
+    assertThat(proto.getResultsOrThrow("ratio").getMax().getKindCase()).isEqualTo(GrpcValue.KindCase.FLOAT_VALUE);
+    assertThat(proto.getResultsOrThrow("none").hasMin()).isFalse();
+    assertThat(proto.getResultsOrThrow("next").getAfter().getKindCase()).isEqualTo(GrpcValue.KindCase.TIMESTAMP_VALUE);
+
+    final FacetResults back = fromProto(GrpcFacets.parseFrom(proto.toByteArray()));
+    assertThat(back.get("day").stats()).isEqualTo(new FacetStats(2L, 1L, LocalDate.of(2020, 1, 1), LocalDate.of(2024, 2, 29), null, null));
+    assertThat(back.get("ratio").stats().min()).isEqualTo(0.25f);
+    assertThat(back.get("ratio").stats().max()).isEqualTo(1.5f);
+    assertThat(back.get("none").stats()).isEqualTo(new FacetStats(0L, 3L, null, null, null, null));
+    assertThat(back.get("next").after()).isEqualTo(LocalDate.of(2021, 5, 5));
+    assertThat(back.get("next").hasAfter()).isTrue();
   }
 
   /** An empty range key and DEFAULT label stay range buckets: the key field has presence, so "" is not taken for "no key". */

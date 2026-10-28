@@ -346,7 +346,8 @@ public final class FacetExecutor {
 
       for (final FacetPlan plan : plans) {
         final FacetResult result = plan.finish(db, manager, target);
-        final Type valueType = plan.spec instanceof TermsFacetSpec || plan.spec instanceof HierarchyFacetSpec ?
+        // a STATS result carries the type too: its min and max are encoded as a row's value of the property
+        final Type valueType = plan.spec instanceof TermsFacetSpec || plan.spec instanceof HierarchyFacetSpec || plan.spec instanceof StatsFacetSpec ?
             declaredType(db, target, bucketIds, plan.spec.property()) : null;
         results.put(plan.spec.alias(), valueType != null ? asRowValues(result, valueType) : result);
         stats.put(plan.spec.alias(), plan.stats);
@@ -443,8 +444,8 @@ public final class FacetExecutor {
    * @param projection the projection of one bucket of the type; no collector of this plan reads it, those of plan 5 do
    * @param matchCount the records the facet counts in the type, to size the counter
    *
-   * @throws CommandExecutionException for a kind of facet no collector computes yet, and for a range or histogram over a column it cannot
-   *                                   bucket (a string column, a bound that is not a value of the column)
+   * @throws CommandExecutionException for a range or histogram over a column it cannot bucket (a string column, a bound that is not a
+   *                                   value of the column)
    */
   public static FacetCollector collectorFor(final FacetSpec spec, final DocumentType type, final ColumnarProjection projection,
       final long matchCount) {
@@ -476,7 +477,7 @@ public final class FacetExecutor {
       case HistogramFacetSpec histogram -> new HistogramCollector(histogram, column, budgetWaitMs, db, extractor);
       case HierarchyFacetSpec hierarchy -> new HierarchyFacetCollector(hierarchy, column, matchCount, db, declaringType, budgetWaitMs);
       case DistinctFacetSpec distinct -> new DistinctFacetCollector(distinct, column, matchCount, db, declaringType, budgetWaitMs);
-      default -> throw new CommandExecutionException("FACETS " + spec.alias() + ": " + kindKeyword(spec) + " facets are not supported");
+      case StatsFacetSpec stats -> new StatsFacetCollector(stats, column, matchCount, db, budgetWaitMs);
     };
   }
 
@@ -529,8 +530,8 @@ public final class FacetExecutor {
       if (dates && FacetFallbackScanner.isUndeclared(db.getSchema().getTypeByBucketId(bucketIds[i]), source))
         plan.scanSourceOf[i] = source = FacetFallbackScanner.asDates(db, source);
       String key = source.read() == FacetFallbackScanner.Read.COLUMN ? "column " + source.column().indexFileId() : source.read().name();
-      if (source.read() == FacetFallbackScanner.Read.EPOCH)
-        // one collector per declared date type: their epoch counts are of different units
+      if (source.read() == FacetFallbackScanner.Read.EPOCH || spec instanceof StatsFacetSpec && source.column() != null)
+        // one collector per declared type: date epoch counts are of different units, and STATS returns values of the declared type
         key += " " + source.column().propertyType();
       if (spec instanceof HierarchyFacetSpec)
         // one hierarchy per declaring type: the scanned buckets of each are counted over its own view; the buckets of a type without
@@ -874,18 +875,6 @@ public final class FacetExecutor {
       case HierarchyFacetSpec h -> "hierarchy";
       case DistinctFacetSpec d -> "distinct";
       case StatsFacetSpec s -> "stats";
-    };
-  }
-
-  /** The keyword of the facet's kind, as the FACETS clause writes it. */
-  private static String kindKeyword(final FacetSpec spec) {
-    return switch (spec) {
-      case TermsFacetSpec t -> "TERMS";
-      case RangeFacetSpec r -> "RANGES";
-      case HistogramFacetSpec h -> "HISTOGRAM";
-      case HierarchyFacetSpec h -> "HIERARCHY";
-      case DistinctFacetSpec d -> "DISTINCT";
-      case StatsFacetSpec s -> "STATS";
     };
   }
 }

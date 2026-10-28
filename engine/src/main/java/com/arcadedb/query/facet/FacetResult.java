@@ -30,8 +30,9 @@ import java.util.List;
  * The answer of one facet: its buckets, the number of counts the returned buckets leave out and the number of records without a
  * value. A DISTINCT or STATS facet carries {@link #distinct()} or {@link #stats()} instead of buckets.
  * <p>
- * {@link #valueType()} is the schema type of the property a terms facet counts, when it has one: a transport encodes the values of
- * the buckets as it encodes a row's value of that property, and a client decodes them as it decodes such a row (final review C-I8).
+ * {@link #valueType()} is the schema type of the property a terms, hierarchy or stats facet counts, when it has one: a transport
+ * encodes the values of the buckets (and the min and max of a stats facet) as it encodes a row's value of that property, and a client
+ * decodes them as it decodes such a row (final review C-I8).
  */
 public final class FacetResult {
   /** The {@link #source()} of a facet that could not be computed. */
@@ -180,7 +181,10 @@ public final class FacetResult {
     return toJSON(FacetResults.AS_IS);
   }
 
-  /** @param encoder writes each value of the data (bucket values with {@link #valueType()}, bounds without a type) */
+  /**
+   * @param encoder writes each value of the data (bucket values, a STATS facet's min and max and the cursor with {@link #valueType()},
+   *                bounds without a type)
+   */
   public JSONObject toJSON(final FacetResults.ValueEncoder encoder) {
     final JSONObject json = new JSONObject();
     json.put(TYPE, kind);
@@ -191,8 +195,9 @@ public final class FacetResult {
       if (stats != null) {
         json.put(COUNT, stats.count());
         json.put(MISSING, stats.missing());
-        json.put(MIN, FacetBucket.integral(stats.min()));
-        json.put(MAX, FacetBucket.integral(stats.max()));
+        // the extremes are values of the property, encoded as a row's value of it (a date in the row's date format)
+        json.put(MIN, stats.min() == null ? null : encoder.encode(FacetBucket.integral(stats.min()), valueType));
+        json.put(MAX, stats.max() == null ? null : encoder.encode(FacetBucket.integral(stats.max()), valueType));
         json.put(SUM, FacetBucket.integral(stats.sum()));
         json.put(AVG, FacetBucket.integral(stats.avg()));
       } else {
@@ -220,7 +225,7 @@ public final class FacetResult {
   }
 
   /**
-   * @param decoder reads each value of the data back (bucket values and the cursor, with the type of the {@link #VALUE_TYPE_HINT}
+   * @param decoder reads each value of the data back (bucket values, a STATS facet's min and max and the cursor, with the type of the {@link #VALUE_TYPE_HINT}
    *                member, null without one); null to keep the values as JSON holds them, integral numbers as {@code Long}
    */
   public static FacetResult fromJSON(final JSONObject json, final FacetResults.ValueDecoder decoder) {
@@ -232,8 +237,9 @@ public final class FacetResult {
       result = unavailable(kind, json.getString(REASON, null));
     else if ("stats".equals(kind))
       result = ofStats(source,
-          new FacetStats(json.getLong(COUNT, 0L), json.getLong(MISSING, 0L), FacetBucket.integral(json.opt(MIN)), FacetBucket.integral(json.opt(MAX)),
-              (Number) FacetBucket.integral(json.opt(SUM)), FacetBucket.integral(json.opt(AVG))));
+          new FacetStats(json.getLong(COUNT, 0L), json.getLong(MISSING, 0L), FacetBucket.decode(json.opt(MIN), decoder, valueType),
+              FacetBucket.decode(json.opt(MAX), decoder, valueType), (Number) FacetBucket.integral(json.opt(SUM)),
+              FacetBucket.integral(json.opt(AVG))));
     else if ("distinct".equals(kind))
       result = ofDistinct(source, new DistinctValue(json.getLong(VALUE, 0L), json.getBoolean(EXACT, true)), json.getLong(MISSING, 0L));
     else {

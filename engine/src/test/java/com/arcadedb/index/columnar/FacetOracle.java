@@ -34,10 +34,12 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
 import java.time.Instant;
@@ -250,6 +252,35 @@ public final class FacetOracle {
     try (final ResultSet rs = db.query("sql",
         "SELECT count(DISTINCT " + quote(property) + ") AS c FROM " + quote(type) + where(where))) {
       return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  /**
+   * The answer of a STATS facet by SQL alone: {@code count(p)}, {@code min(p)}, {@code max(p)}, {@code sum(p)} and {@code avg(p)} as
+   * SQL returns them (value and Java type), missing = {@code count(@rid) - count(p)}. Over dates (or when no record has a value) sum and
+   * average are null, which SQL refuses to compute. Shares no code with the collector.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static FacetStats stats(final Database db, final String type, final String property, final String where) {
+    final String p = quote(property);
+    final long count;
+    final long total;
+    final Object min;
+    final Object max;
+    try (final ResultSet rs = db.query("sql",
+        "SELECT count(" + p + ") AS c, min(" + p + ") AS mn, max(" + p + ") AS mx, count(@rid) AS t FROM " + quote(type) + where(where))) {
+      final Result row = rs.next();
+      count = row.<Number>getProperty("c").longValue();
+      total = row.<Number>getProperty("t").longValue();
+      min = row.getProperty("mn");
+      max = row.getProperty("mx");
+    }
+    if (min == null || DateUtils.isDate(min))
+      return new FacetStats(count, total - count, min, max, null, null);
+    try (final ResultSet rs = db.query("sql", "SELECT sum(" + p + ") AS s, avg(" + p + ") AS a FROM " + quote(type) + where(where))) {
+      final Result row = rs.next();
+      return new FacetStats(count, total - count, min, max, row.getProperty("s"), row.getProperty("a"));
     }
   }
 
