@@ -72,10 +72,13 @@ class Issue10708ContinuousAggregateOwnTransactionTest extends TestHelper {
     database.command("sql", "INSERT INTO S SET ts = ?, h = 'a', v = ?", ts, v).close();
   }
 
-  /** An append that does not go through SQL, so nothing refreshes the aggregate: it is left behind the source. */
+  /**
+   * An append that skips the refresh every ingest path owes since #10686, so nothing refreshes the aggregate: it is left behind the
+   * source.
+   */
   private void appendWithoutRefresh(final long ts, final double v) throws IOException {
     ((LocalTimeSeriesType) database.getSchema().getType("S")).getEngine()
-        .appendSamples(new long[] { ts }, new Object[] { "a" }, new Object[] { v });
+        .appendSamplesWithoutRefresh(new long[] { ts }, new Object[] { "a" }, new Object[] { v });
   }
 
   private ContinuousAggregateImpl aggregate() {
