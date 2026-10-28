@@ -52,37 +52,139 @@ public final class FacetRanker {
   }
 
   /**
-   * The best {@code top} entries of the counts (the first element of each array) with at least {@code minCount}, best first. Keys
-   * are normalized once, not per comparison; the entries keep the caller's keys.
+   * The best {@code top} entries of the counts (the first element of each array) with at least {@code minCount}, best first, kept in a
+   * bounded heap of {@code min(top, counts)} slots over the caller's map: nothing is allocated per entry that does not make it. A key is
+   * normalized when it enters the heap; the entries keep the caller's keys.
    */
   public static List<Map.Entry<Object, Long>> topValues(final Map<Object, long[]> counts, final int top, final int minCount,
       final FacetOrder order) {
-    final List<Candidate> candidates = new ArrayList<>(counts.size());
+    if (top <= 0 || counts.isEmpty())
+      return new ArrayList<>(0);
+    final ValueHeap heap = new ValueHeap((int) Math.min(top, counts.size()), order);
     for (final Map.Entry<Object, long[]> e : counts.entrySet())
       if (e.getValue()[0] >= minCount)
-        candidates.add(new Candidate(e.getKey(), FacetValueComparator.normalize(e.getKey()), e.getValue()[0]));
-    final FacetValueComparator values = FacetValueComparator.INSTANCE;
-    candidates.sort((a, b) -> {
-      int cmp = switch (order) {
-        case COUNT_DESC -> Long.compare(b.count, a.count);
-        case COUNT_ASC -> Long.compare(a.count, b.count);
-        default -> 0;
-      };
-      if (cmp == 0) {
-        // null stays last in both directions
-        cmp = order == FacetOrder.VALUE_DESC && a.normalized != null && b.normalized != null ? values.compareNormalized(b.normalized,
-            a.normalized) : values.compareNormalized(a.normalized, b.normalized);
-      }
-      return cmp;
-    });
-    final int n = Math.min(Math.max(top, 0), candidates.size());
-    final List<Map.Entry<Object, Long>> result = new ArrayList<>(n);
-    for (int i = 0; i < n; i++)
-      result.add(new AbstractMap.SimpleImmutableEntry<>(candidates.get(i).key, candidates.get(i).count));
-    return result;
+        heap.offer(e.getKey(), e.getValue()[0]);
+    return heap.drainBestFirst();
   }
 
-  private record Candidate(Object key, Object normalized, long count) {
+  /** {@link TopHeap} over values: the root is the worst of the {@code top} best entries offered so far. */
+  private static final class ValueHeap {
+    private final int        top;
+    private final FacetOrder order;
+    private final Object[]   keys;
+    private final Object[]   normalized;
+    private final long[]     counts;
+    private       int        size;
+
+    ValueHeap(final int top, final FacetOrder order) {
+      this.top = top;
+      this.order = order;
+      keys = new Object[top];
+      normalized = new Object[top];
+      counts = new long[top];
+    }
+
+    void offer(final Object key, final long count) {
+      if (size < top) {
+        keys[size] = key;
+        normalized[size] = FacetValueComparator.normalize(key);
+        counts[size] = count;
+        siftUp(size++);
+        return;
+      }
+      // the count alone decides most offers: the key is normalized only on a tie, or when it enters
+      final int byCount = compareCounts(count, counts[0]);
+      if (byCount > 0)
+        return;
+      final Object candidate = FacetValueComparator.normalize(key);
+      if (byCount == 0 && compareValues(candidate, normalized[0]) >= 0)
+        return;
+      keys[0] = key;
+      normalized[0] = candidate;
+      counts[0] = count;
+      siftDown(0, size);
+    }
+
+    List<Map.Entry<Object, Long>> drainBestFirst() {
+      final Map.Entry<Object, Long>[] result = newEntries(size);
+      int n = size;
+      while (n > 0) {
+        result[n - 1] = new AbstractMap.SimpleImmutableEntry<>(keys[0], counts[0]);
+        n--;
+        move(n, 0);
+        siftDown(0, n);
+      }
+      return new ArrayList<>(Arrays.asList(result));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map.Entry<Object, Long>[] newEntries(final int n) {
+      return new Map.Entry[n];
+    }
+
+    /** Negative when count {@code a} ranks before count {@code b}. */
+    private int compareCounts(final long a, final long b) {
+      return switch (order) {
+        case COUNT_DESC -> Long.compare(b, a);
+        case COUNT_ASC -> Long.compare(a, b);
+        default -> 0;
+      };
+    }
+
+    /** Negative when value {@code a} ranks before value {@code b}; null stays last in both directions. */
+    private int compareValues(final Object a, final Object b) {
+      final FacetValueComparator values = FacetValueComparator.INSTANCE;
+      return order == FacetOrder.VALUE_DESC && a != null && b != null ? values.compareNormalized(b, a) : values.compareNormalized(a, b);
+    }
+
+    private boolean before(final int i, final int j) {
+      final int cmp = compareCounts(counts[i], counts[j]);
+      return cmp != 0 ? cmp < 0 : compareValues(normalized[i], normalized[j]) < 0;
+    }
+
+    private void siftUp(int child) {
+      while (child > 0) {
+        final int parent = (child - 1) >>> 1;
+        if (!before(parent, child))
+          return;
+        swap(parent, child);
+        child = parent;
+      }
+    }
+
+    private void siftDown(int parent, final int n) {
+      while (true) {
+        int worst = parent;
+        final int left = 2 * parent + 1;
+        final int right = left + 1;
+        if (left < n && before(worst, left))
+          worst = left;
+        if (right < n && before(worst, right))
+          worst = right;
+        if (worst == parent)
+          return;
+        swap(parent, worst);
+        parent = worst;
+      }
+    }
+
+    private void move(final int from, final int to) {
+      keys[to] = keys[from];
+      normalized[to] = normalized[from];
+      counts[to] = counts[from];
+    }
+
+    private void swap(final int i, final int j) {
+      final Object k = keys[i];
+      keys[i] = keys[j];
+      keys[j] = k;
+      final Object v = normalized[i];
+      normalized[i] = normalized[j];
+      normalized[j] = v;
+      final long c = counts[i];
+      counts[i] = counts[j];
+      counts[j] = c;
+    }
   }
 
   /** A binary heap whose root is the worst of the {@code top} best candidates seen so far. */

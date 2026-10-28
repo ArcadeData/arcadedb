@@ -24,7 +24,6 @@ import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnReader;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
-import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.index.columnar.OrdinalConsumer;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.schema.Type;
@@ -58,12 +57,14 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   /** The distinct LONG or DOUBLE terms a counter is presized for at most; it is topped up as it grows past them. */
   static final int    NUMERIC_EXPECTED_TERMS = 1 << 10;
   static final String MEMORY_BUDGET          = "memory budget";
+  /** The smallest reservation for the value map: charged in steps, not per key. */
+  static final long   FOREIGN_STEP_BYTES     = 64 * 1024;
 
   private final TermsFacetSpec      spec;
   private final ColumnKind          kind;
   private final Type                propertyType;
   private final DatabaseInternal    database;
-  private final ColumnarValueExtractor extractor;
+  private final ColumnConversion    extractor;
   private final long                matchCount;
   /** Every byte a counter holds, reserved before it is allocated; all of them together wait one window. */
   private final CollectorReservations budget;
@@ -82,8 +83,14 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   private boolean                                   unavailable;
   private boolean                                   finished;
   private long                                      missing;
-  /** Values only the patched records have, by normalized value (rare). */
+  /**
+   * Values counted by value, by normalized value: those only the patched records have (rare), and every value of a bucket the fallback
+   * scan reads.
+   */
   private Map<Object, long[]>                       foreign;
+  /** The estimated heap of {@link #foreign} and the bytes reserved for it. */
+  private long                                      foreignBytes;
+  private long                                      foreignReserved;
 
   // the bucket being counted
   private ColumnarSnapshot snapshot;
@@ -100,7 +107,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
    * @param extractor    the declaring type's extractor: converts an INCLUDE literal of a LONG column as stored values are converted
    */
   TermsCollector(final TermsFacetSpec spec, final ColumnDefinition column, final long matchCount, final long budgetWaitMs,
-      final DatabaseInternal database, final ColumnarValueExtractor extractor) {
+      final DatabaseInternal database, final ColumnConversion extractor) {
     this.spec = spec;
     this.kind = column == null ? null : column.kind();
     this.propertyType = column == null ? null : column.propertyType();
@@ -113,6 +120,14 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   @Override
   public void beginBucket(final int bucketId, final ColumnarSnapshot snapshot, final CrossBucketOrdinalMap map) {
     this.snapshot = snapshot;
+    if (snapshot == null) {
+      // a bucket the fallback scan reads: every value arrives by value through collectPatched, no ordinal is counted; a collector
+      // without a column (the raw values of a property no column holds) counts nothing but values
+      toMerged = null;
+      if (!isDictionaryKind() && kind != null && terms == null && !unavailable)
+        allocateTermsCounter();
+      return;
+    }
     if (isDictionaryKind()) {
       if (map == null)
         throw new IllegalArgumentException("FACETS " + spec.alias() + ": the dictionary column '" + spec.property() + "' needs an ordinal map");
@@ -228,9 +243,20 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
         stats.counterBytes(collector.counterBytes());
       if (others.isEmpty() && foreign == null && counter != null)
         return rankOrdinals();
+      if (others.isEmpty() && counter == null && terms == null)
+        // only values counted by value (a scanned bucket, values only patched records have): ranked over the charged map itself
+        return rankValues(foreign != null ? foreign : Map.of(), missing, false);
       // collectors whose columns differ (sibling subtypes declaring the property with other types) merge on the values the records read
       // back as, each converting its own terms; otherwise date terms stay epoch counts until the returned buckets
       final boolean converted = !sameColumnType();
+      // the merge map holds one entry per distinct value of every collector: charged before it is built
+      long entries = 0;
+      for (final TermsCollector collector : all())
+        entries += collector.distinctValues();
+      if (budget.reserve(entries * mergeEntryBytes(converted), true) == null) {
+        stats.source(FacetResult.UNAVAILABLE);
+        return FacetResult.unavailable("terms", MEMORY_BUDGET);
+      }
       final Map<Object, long[]> counts = new HashMap<>();
       long missingTotal = 0;
       for (final TermsCollector collector : all()) {
@@ -375,10 +401,71 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
     return value == 0.0 ? 0L : Double.doubleToLongBits(value);
   }
 
+  /**
+   * Counts a value by value. Every new key is charged to the budget before it is added ({@link #foreignEntryBytes}), reserved in steps
+   * of at least {@link #FOREIGN_STEP_BYTES}; a refusal makes the facet unavailable and releases everything.
+   */
   private void addForeign(final Object value) {
+    final Object key = FacetValueComparator.normalize(value);
     if (foreign == null)
       foreign = new HashMap<>();
-    foreign.computeIfAbsent(FacetValueComparator.normalize(value), k -> new long[1])[0]++;
+    final long[] count = foreign.get(key);
+    if (count != null) {
+      count[0]++;
+      return;
+    }
+    foreignBytes += foreignEntryBytes(key);
+    if (foreignBytes > foreignReserved) {
+      final FacetMemoryBudget.Reservation more = budget.reserve(Math.max(FOREIGN_STEP_BYTES, foreignBytes - foreignReserved), true);
+      if (more == null) {
+        unavailable = true;
+        counter = null;
+        growingHash = null;
+        terms = null;
+        foreign = null;
+        release();
+        return;
+      }
+      foreignReserved += more.bytes();
+      stats.reserved(more.bytes());
+    }
+    foreign.put(key, new long[] { 1L });
+  }
+
+  /** An upper bound of the distinct values this collector counted: what it adds to the merge map. */
+  private long distinctValues() {
+    long distinct = foreign == null ? 0 : foreign.size();
+    if (terms != null)
+      distinct += terms.size();
+    if (counter != null) {
+      final long[] nonZero = new long[1];
+      counter.forEachNonZero((ordinal, count) -> nonZero[0]++);
+      distinct += nonZero[0];
+    }
+    return distinct;
+  }
+
+  /**
+   * The heap one entry of the merge map holds: the map node, its table share and the count array; the key is a value the collectors
+   * already hold, except a converted date term, which is a new object.
+   */
+  private static long mergeEntryBytes(final boolean converted) {
+    return 32 + 16 + 24 + (converted ? 64 : 0);
+  }
+
+  /**
+   * The heap one more key of the value map holds: the map node, its share of the table at the default load factor, the count array,
+   * and the key (a string by its characters, a boxed number or a date by its object, anything else by a generous estimate). An
+   * estimate, not measured: it errs high for short Latin-1 strings, whose characters take one byte each with compact strings. Each
+   * collector reserves at least {@link #FOREIGN_STEP_BYTES} on its first key.
+   */
+  static long foreignEntryBytes(final Object key) {
+    final long entry = 32 + 16 + 24;
+    if (key instanceof String string)
+      return entry + 56 + 2L * string.length();
+    if (key instanceof Number)
+      return entry + 24;
+    return entry + 64;
   }
 
   private boolean anyOtherUnavailable() {
@@ -454,7 +541,7 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
 
   /**
    * An INCLUDE value as the epoch-path key it is counted under: for a LONG column the literal converted as stored values are
-   * ({@link ColumnarValueExtractor#toColumnLong}), else, or when it is unconvertible (counted 0), the literal itself, normalized.
+   * ({@link ColumnConversion#toColumnLong}), else, or when it is unconvertible (counted 0), the literal itself, normalized.
    */
   private Object includeKey(final Object value) {
     final Object literal = schemaConverted(value);

@@ -36,6 +36,11 @@ import com.arcadedb.index.columnar.PositionBitmap;
  * snapshots and drops the bitmaps only after every facet finished.
  */
 public interface FacetCollector {
+  /**
+   * Begins a bucket. A bucket the fallback scan reads ({@link FacetFallbackScanner}) is begun with a null {@code snapshot} and
+   * {@code map}: none of its segments is collected, every value of it arrives through {@link #collectPatched}, a dictionary value by
+   * value ({@link PatchedValue#unknown}).
+   */
   void beginBucket(int bucketId, ColumnarSnapshot snapshot, CrossBucketOrdinalMap map);
 
   void collect(ColumnarSegmentView segment, PositionBitmap matches);

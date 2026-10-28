@@ -26,7 +26,6 @@ import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnReader;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
-import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.index.columnar.PositionBitmap;
 
 import java.util.ArrayList;
@@ -77,7 +76,7 @@ public final class RangeCollector implements FacetCollector {
    * @throws CommandSQLParsingException when a range is empty once its bounds are in the column's encoding
    */
   RangeCollector(final RangeFacetSpec spec, final ColumnDefinition column, final long budgetWaitMs, final DatabaseInternal database,
-      final ColumnarValueExtractor extractor) {
+      final ColumnConversion extractor) {
     this.spec = spec;
     this.column = column;
     this.doubles = column != null && column.kind() == ColumnKind.DOUBLE;
@@ -234,7 +233,7 @@ public final class RangeCollector implements FacetCollector {
     return all;
   }
 
-  private void convertBounds(final DatabaseInternal database, final ColumnarValueExtractor extractor) {
+  private void convertBounds(final DatabaseInternal database, final ColumnConversion extractor) {
     if (column.kind() != ColumnKind.LONG && column.kind() != ColumnKind.DOUBLE)
       throw new CommandExecutionException(
           "FACETS " + spec.alias() + ": RANGES needs a number or date property, '" + spec.property() + "' is " + column.propertyType());

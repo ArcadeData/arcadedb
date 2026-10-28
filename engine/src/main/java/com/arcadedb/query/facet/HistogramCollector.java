@@ -26,7 +26,6 @@ import com.arcadedb.index.columnar.ColumnKind;
 import com.arcadedb.index.columnar.ColumnReader;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
-import com.arcadedb.index.columnar.ColumnarValueExtractor;
 import com.arcadedb.index.columnar.PositionBitmap;
 
 import java.time.Duration;
@@ -83,7 +82,7 @@ public final class HistogramCollector implements FacetCollector {
   /** The unit of a date column's epoch counts, null for a column that is not a date. */
   private final TimeUnit                  dateUnit;
   private final DatabaseInternal          database;
-  private final ColumnarValueExtractor    extractor;
+  private final ColumnConversion          extractor;
   private final CollectorReservations     budget;
   private final FacetExecutionStats       stats       = new FacetExecutionStats();
   private final List<HistogramCollector>  others      = new ArrayList<>();
@@ -105,7 +104,7 @@ public final class HistogramCollector implements FacetCollector {
    * @throws CommandExecutionException when the column cannot be bucketed by the interval
    */
   HistogramCollector(final HistogramFacetSpec spec, final ColumnDefinition column, final long budgetWaitMs, final DatabaseInternal database,
-      final ColumnarValueExtractor extractor) {
+      final ColumnConversion extractor) {
     this.spec = spec;
     this.column = column;
     this.database = database;
