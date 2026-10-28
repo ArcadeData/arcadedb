@@ -4556,8 +4556,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               // behind a placeholder pointer of its own, which releases its footprint minus the pointer's into the
               // free tail. One byte more than missing, so the arithmetic below holds whether this slot is the last
               // record of the page (the tail is part of its room) or not (the shift must leave a byte spare).
+              // #10669: a page with no such plain record - its tail taken by the head chunk of a record that spilled -
+              // has a CHUNK give them instead: its trailing content moves into a new continuation chunk.
               final int bytesNeeded = PLACEHOLDER_POINTER_FOOTPRINT - pointerRoom + 1;
               if (relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded,
+                      pageOccupiedInBytes, freeTailInPage)
+                      || moveAChunkTailOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded,
                       pageOccupiedInBytes, freeTailInPage)) {
                 if (slotCandidate)
                   slotTx.poisonSlotRebasePage(fileId, pageId);
@@ -6663,14 +6667,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void writeMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
                                     final int availableSpaceForFirstChunk, final int firstChunkCoverage,
                                     final int slotBytesAlreadyOwned, final boolean isPlaceHolderContent) throws IOException {
-    // DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table
-    // writes that bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED
-    // page that also holds a tracked single-slot write would let the rebase re-derive that page from the tracked
-    // slot alone and silently drop the chunk (corrupting the record). Poison every page this write touches so none
-    // of them can be rebased. Poisoning a brand-new page is harmless (new pages are never rebase-tracked). The page
-    // hosting the HEAD chunk is the caller's business (#6129): it either tracked the slot or poisoned the page.
-    final TransactionContext slotTx = database.getTransactionIfExists();
-    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+    // The page hosting the HEAD chunk is the caller's business (#6129): it either tracked the slot or poisoned the
+    // page. The pages the continuation chunks land on are poisoned by writeContinuationChunks.
     final MutablePage firstPage = currentPage;
     final int headChunkPageToAvoid = headChunkPageToAvoid(firstPage, firstChunkCoverage);
 
@@ -6710,13 +6708,37 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
     int nextChunkPointerOffset = newPosition;
 
-    newPosition += LONG_SERIALIZED_SIZE;
-
-    final byte[] content = buffer.getContent();
-    int contentOffset = buffer.getContentBeginOffset();
-
     bufferSize -= chunkSize;
-    contentOffset += chunkSize;
+    writeContinuationChunks(originalRID, currentPage, nextChunkPointerOffset, firstChunkCoverage, buffer.getContent(),
+            buffer.getContentBeginOffset() + chunkSize, bufferSize, headChunkPageToAvoid, 0L);
+  }
+
+  /**
+   * Writes {@code bufferSize} bytes of {@code content}, from {@code contentOffset}, as continuation ({@link #NEXT_CHUNK}) chunks on pages other than
+   * {@code currentPage}, linking the first one from the next-chunk pointer at {@code nextChunkPointerOffset} of
+   * {@code currentPage} and ending the last one with {@code chainTail}: 0 for a chain that ends there, or the pointer of
+   * the chunk that used to follow when the content is spliced into the middle of an existing chain (#10669).
+   * <p>
+   * DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table writes that
+   * bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED page that also holds a
+   * tracked single-slot write would let the rebase re-derive that page from the tracked slot alone and silently drop
+   * the chunk (corrupting the record). Every page a chunk lands on is poisoned so none of them can be rebased. Poisoning
+   * a brand-new page is harmless (new pages are never rebase-tracked).
+   *
+   * @param originalRID          the record the chain belongs to, named by the refusal of a link to position 0 (#10701).
+   * @param firstPointerCoverage coverage the pointer written into {@code currentPage} is declared under: the head
+   *                             chunk's coverage for a fresh spill (#6129), 0 otherwise.
+   * @param pageToAvoid          a page the chunks may not land on, or -1 (see {@link #findAvailableSpace}).
+   */
+  private void writeContinuationChunks(final RID originalRID, MutablePage currentPage, int nextChunkPointerOffset,
+                                       final int firstPointerCoverage,
+                                       final byte[] content, int contentOffset, int bufferSize, final int pageToAvoid,
+                                       final long chainTail) throws IOException {
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+    final MutablePage firstPage = currentPage;
+    int newPosition = 0;
+    int chunkSize;
 
     // WRITE ALL THE REMAINING CHUNKS IN NEW PAGES
     int txPageCounter = getTotalPages();
@@ -6727,7 +6749,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeededForChunk = chunkFootprint(CHUNK_MARKER_BUDGET, bufferSize);
 
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
-              true, headChunkPageToAvoid);
+              true, pageToAvoid);
 
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
@@ -6769,7 +6791,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
       linkNextChunk(originalRID, currentPage, nextChunkPointerOffset, nextPage, recordIdInPage,
-              currentPage == firstPage ? firstChunkCoverage : 0);
+              currentPage == firstPage ? firstPointerCoverage : 0);
 
       // The free tail this chunk is about to bite into, measured against the page's maximum content size - the same
       // base every other accounting in this class uses (#6358).
@@ -6794,7 +6816,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
       nextChunkPointerOffset = newPosition + INT_SERIALIZED_SIZE;
       if (lastChunk)
-        nextPage.writeLong(nextChunkPointerOffset, 0L);
+        nextPage.writeLong(nextChunkPointerOffset, chainTail);
 
       newPosition += INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
 
@@ -7644,6 +7666,109 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       LogManager.instance().log(this, Level.FINE,
               "Moved the record at offset %d of page %s behind a placeholder pointer to release %d bytes (threadId=%d)",
               donorPositionInPage, page, released, Thread.currentThread().threadId());
+    return true;
+  }
+
+  /**
+   * Releases exactly {@code bytesNeeded} bytes into the free tail of {@code page} by moving the trailing content of one
+   * of its chunks - a head chunk, of a record or of a placeholder's content, or a continuation chunk - into a new
+   * continuation chunk spliced into the chain right after it (#10669). It is the fallback of
+   * {@link #relocateANeighbourOffPage} for a page that holds no plain record able to give the bytes, typically because
+   * the head chunk of a record that spilled took the page's whole free tail: that very chunk is the one that gives them
+   * back.
+   * <p>
+   * The record the chunk belongs to keeps its RID and its content, one hop longer: the chunk keeps its slot, its marker
+   * and its next-chunk pointer offset, declares {@code bytesNeeded} fewer content bytes and points to the new chunk,
+   * which points to whatever the chunk pointed to before. Every chunk keeps at least one byte of content, so the chain
+   * stays one that {@code loadMultiPageRecord} and {@code check} accept. The chunk picked is the head chunk of a record
+   * of this page when there is one (see the loop for why), the one with the most content among those, and the record at
+   * {@code excludedRecordPositionInPage} is never picked.
+   * <p>
+   * As for {@link #relocateANeighbourOffPage}, the caller must poison the page for the commit-time merges when this
+   * returns true and re-derive every offset it holds on the page: the records after the chunk moved left. The page the
+   * new chunk lands on is poisoned here, as every page a continuation chunk lands on is.
+   *
+   * @return true when a chunk was shrunk and the free tail grew by {@code bytesNeeded}; false when no chunk of the page
+   * carries more than {@code bytesNeeded} bytes of content, in which case nothing has been written.
+   */
+  private boolean moveAChunkTailOffPage(final MutablePage page, final short recordCountInPage,
+                                        final int excludedRecordPositionInPage, final int bytesNeeded,
+                                        final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+    int chunkPositionInPage = -1;
+    int chunkSlot = -1;
+    int chunkMarkerSize = 0;
+    int donorChunkSize = 0;
+    boolean chunkIsRecordHead = false;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long candidateMarker = page.readNumber(candidatePositionInPage);
+      if (!isChunkHead(candidateMarker) && candidateMarker != NEXT_CHUNK)
+        continue;
+
+      final int candidateMarkerSize = page.getLastReadNumberSize();
+      final int candidateChunkSize = page.readInt(candidatePositionInPage + candidateMarkerSize);
+      if (candidateChunkSize <= bytesNeeded)
+        // THE CHUNK MUST KEEP AT LEAST ONE BYTE OF CONTENT
+        continue;
+
+      // The head chunk of a record of THIS page first, whatever its size: its chain is covered by the poison this page
+      // gets anyway. A continuation chunk, or the head of a placeholder's content, belongs to a record whose slot is on
+      // another page, and an update of that record in this same transaction compares the off-page fingerprint it took
+      // at save() with one taken at commit: for a placeholder's content a mismatch is a ConcurrentModificationException.
+      final boolean candidateIsRecordHead = candidateMarker == FIRST_CHUNK;
+      if (chunkPositionInPage < 0 || (candidateIsRecordHead && !chunkIsRecordHead)
+              || (candidateIsRecordHead == chunkIsRecordHead && candidateChunkSize > donorChunkSize)) {
+        chunkPositionInPage = candidatePositionInPage;
+        chunkSlot = pos;
+        chunkMarkerSize = candidateMarkerSize;
+        donorChunkSize = candidateChunkSize;
+        chunkIsRecordHead = candidateIsRecordHead;
+      }
+    }
+
+    if (chunkPositionInPage < 0)
+      return false;
+
+    final int chunkSizeOffset = chunkPositionInPage + chunkMarkerSize;
+    final int nextChunkPointerOffset = chunkSizeOffset + INT_SERIALIZED_SIZE;
+    final int contentOffset = nextChunkPointerOffset + LONG_SERIALIZED_SIZE;
+    final int keptChunkSize = donorChunkSize - bytesNeeded;
+
+    final byte[] movedContent = new byte[bytesNeeded];
+    page.readByteArray(contentOffset + keptChunkSize, movedContent, 0, bytesNeeded);
+    final long chainTail = page.readLong(nextChunkPointerOffset);
+
+    // Written BEFORE this page changes, and kept off it: the page has far less free tail than a chunk header. The new
+    // chunk is linked from this chunk's next-chunk pointer, whose offset the shift below does not move. Should the write
+    // fail part way, whatever it allocated lives only in this transaction's pages and goes with its rollback. The pointer
+    // is rewritten under no coverage span: the caller poisons this page, so no merge replays any write on it. The page
+    // the new chunk lands on is never this one, so the offsets the caller re-derives here are not disturbed by it.
+    // The donor chunk may be a continuation chunk of a record whose head is elsewhere: its own slot is what names it.
+    writeContinuationChunks(new RID(fileId, recordPosition(page.getPageId().getPageNumber(), maxRecordsInPage, chunkSlot)),
+            page, nextChunkPointerOffset, 0, movedContent, 0, bytesNeeded,
+            page.getPageId().getPageNumber(), chainTail);
+
+    page.writeInt(chunkSizeOffset, keptChunkSize);
+
+    final int from = chunkPositionInPage + chunkFootprint(chunkMarkerSize, donorChunkSize);
+    if (pageOccupiedInBytes > from)
+      page.move(from, from - bytesNeeded, pageOccupiedInBytes - from);
+
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int recordPositionInPage = getRecordPositionInPage(page, pos);
+      if (recordPositionInPage >= from && recordPositionInPage < pageOccupiedInBytes)
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage - bytesNeeded);
+    }
+
+    updatePageStatistics(page, freeTailInPage, bytesNeeded);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Moved the last %d bytes of the chunk at offset %d of page %s into a new continuation chunk (threadId=%d)",
+              bytesNeeded, chunkPositionInPage, page, Thread.currentThread().threadId());
     return true;
   }
 
