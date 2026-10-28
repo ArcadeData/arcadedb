@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
@@ -37,6 +38,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
 
 /**
@@ -267,15 +269,16 @@ public enum GlobalConfiguration {
       1),
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
+      "Default page size in bytes for buckets. Existing buckets keep their page size. Minimum is 8216 bytes, the room a page needs for its header, its slot table and one record. Default is 64KB",
+      Integer.class, 65_536, () -> LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)),
 
   INDEX_DEFAULT_PAGE_SIZE("arcadedb.indexDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for new plain LSM-tree indexes (not full-text, geo or vector ones) created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB. In a cluster, keep it identical on all the servers",
       Integer.class, 262_144),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Matches the LSM-index default (256KB)",
-      Integer.class, 262_144),
+      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Existing buckets keep their page size. Minimum is 1048 bytes. Matches the LSM-index default (256KB)",
+      Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
 
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
       "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
@@ -3533,6 +3536,12 @@ public enum GlobalConfiguration {
    * nothing enforces it and the failure is total and silent-looking.
    */
   private final        Set<Object>              allowed;
+  /**
+   * The smallest value a numeric setting accepts, or {@code null} when it has no floor. A supplier because a floor is DERIVED from
+   * what the setting sizes (a bucket page from its slot table, issue #10876), and is read only when a value is checked: resolving
+   * it here would load that class while this enum is still initializing.
+   */
+  private final        IntSupplier              minimum;
   public final static  String                   PREFIX = "arcadedb.";
   private static final Timer                    TIMER;
   // Issue #7281: set for the duration of readConfiguration(), so DUMP_CONFIG_AT_STARTUP's callback can tell a
@@ -3623,7 +3632,18 @@ public enum GlobalConfiguration {
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+                      final IntSupplier minimum) {
+    this(iKey, scope, iDescription, iType, iDefValue, null, null, null, minimum);
+  }
+
+  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
                       final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
+    this(iKey, scope, iDescription, iType, iDefValue, callback, callbackIfNoSet, allowed, null);
+  }
+
+  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+                      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed,
+                      final IntSupplier minimum) {
     this.key = iKey;
     this.scope = scope;
     this.description = iDescription;
@@ -3634,6 +3654,7 @@ public enum GlobalConfiguration {
     this.callback = callback;
     this.callbackIfNoSet = callbackIfNoSet;
     this.allowed = allowed;
+    this.minimum = minimum;
   }
 
   /**
@@ -4320,6 +4341,16 @@ public enum GlobalConfiguration {
     if (allowed != null && coerced != null && !allowed.contains(coerced.toString().toLowerCase(Locale.ENGLISH)))
       throw new IllegalArgumentException(
           "Global setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
+    // The floor is checked by the same two writers for the same reason (issue #10876): `ALTER DATABASE` stored a bucket page size no
+    // bucket could write a record into, and the refusal came at the first insert into a type created afterwards
+    if (minimum != null && coerced instanceof Number number && number.longValue() < minimum.getAsInt())
+      throw new IllegalArgumentException(
+          "Global setting '" + key + "=" + coerced + "' is not valid. Minimum is " + minimum.getAsInt());
+  }
+
+  /** The smallest value this setting accepts, or {@code null} when it has no floor. */
+  public Integer getMinimum() {
+    return minimum != null ? minimum.getAsInt() : null;
   }
 
   /**
