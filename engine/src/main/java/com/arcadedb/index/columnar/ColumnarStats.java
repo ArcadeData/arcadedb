@@ -103,7 +103,10 @@ public final class ColumnarStats {
   private final Table<Duration>  mergeDurations          = new Table<>("merge.duration", false, Duration::new);
   private final Table<AtomicLong> overlayRows            = gauge("overlay.rows");
   private final Table<AtomicLong> segments               = gauge("segments");
-  private final Table<AtomicLong> openFiles              = gauge("open.files");
+  private final Table<AtomicLong> openFiles              = gauge("files.open");
+  private final Table<?>[]       tables                 = { rebuilds, conversionFailures, applyPages, placeholdersResolved, flushes,
+      merges, recordsReread, unreadable, rebuildPagesReused, dictionaryCompactions, ordinalsReclaimed, flushDurations, mergeDurations,
+      overlayRows, segments, openFiles };
 
   private final LongAdder rebuildsTotal = new LongAdder();
   private final LongAdder applyPasses   = new LongAdder();
@@ -298,6 +301,14 @@ public final class ColumnarStats {
 
   public int openFiles(final String type) {
     return (int) value(openFiles.existing(type, NONE));
+  }
+
+  /** Whether any cell was ever written; {@code recovery.pages}, a database-wide counter, is not a cell. */
+  public boolean hasCells() {
+    for (final Table<?> table : tables)
+      if (!table.cells.isEmpty())
+        return true;
+    return false;
   }
 
   /**

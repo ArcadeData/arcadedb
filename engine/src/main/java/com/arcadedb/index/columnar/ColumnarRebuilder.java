@@ -275,8 +275,9 @@ final class ColumnarRebuilder {
       // a crash test cleans nothing up, as a crash would not; a close stopped the rebuild
     } catch (final RuntimeException e) {
       LogManager.instance().log(ColumnarRebuilder.class, Level.SEVERE,
-          "Rebuild (%s) of the columnar projection of bucket '%s' failed: the projection keeps its previous state", e, reason,
-          projection.bucketName());
+          "Rebuild (%s) of the columnar projection of bucket '%s' failed: the projection keeps its previous state and the rebuild is "
+              + "retried after a backoff", e, reason, projection.bucketName());
+      manager.rebuildFailed(projection, absorbed != null ? absorbed : reason);
     } finally {
       projection.endMaintenance();
     }
@@ -300,6 +301,7 @@ final class ColumnarRebuilder {
     private final RowValues                    fresh;
     private final RowValues                    old;
     private final ColumnarApplier.Sink         sink;
+    private final ColumnarValueExtractor.RecordReader reader;
     private final int[]                        rowFailures;
     private final long[]                       failures;
 
@@ -339,6 +341,7 @@ final class ColumnarRebuilder {
       this.fresh = new RowValues(columns.length);
       this.old = new RowValues(columns.length);
       this.sink = new ColumnarApplier.Sink(fresh);
+      this.reader = new ColumnarValueExtractor.RecordReader(columns);
       this.rowFailures = new int[columns.length];
       this.failures = new long[columns.length];
     }
@@ -351,6 +354,7 @@ final class ColumnarRebuilder {
       database = db.getWrappedDatabaseInstance();
       recordFactory = db.getRecordFactory();
       serializer = db.getSerializer();
+      reader.prepare(db.getSchema().getDictionary());
       extractor = new ColumnarValueExtractor(type == null ? p.typeName() : type.getName(), columns, (bucketId, property) -> {
         throw new IllegalStateException("The rebuild passes its dictionaries explicitly");
       }, p.stats());
@@ -525,10 +529,15 @@ final class ColumnarRebuilder {
         final Record record = recordFactory.newImmutableRecord(database, type, new RID(p.bucketId(), position), content, null);
         if (!(record instanceof Document document))
           return;
-        for (int k = 0; k < columns.length; k++) {
-          fresh.present[k] = false;
-          sink.k = k;
-          rowFailures[k] = extractor.extractForApplyUncounted(document, columns[k], dictionaries[k], sink);
+        reader.begin(document);
+        try {
+          for (int k = 0; k < columns.length; k++) {
+            fresh.present[k] = false;
+            sink.k = k;
+            rowFailures[k] = extractor.extractValueForApplyUncounted(reader.raw(k), columns[k], dictionaries[k], sink);
+          }
+        } finally {
+          reader.end();
         }
         externalCount = external == null ? 0 : external.collect(serializer, database, document, columns);
       } catch (final ColumnarTestHooks.SimulatedCrash | UncheckedIOException e) {

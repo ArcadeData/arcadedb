@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.MutableVertex;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -77,6 +78,14 @@ public final class ColumnarTestData {
   public int     buckets          = 1;
   /** False makes {@link #createSchema} create the type and its properties only, so a test can add a COLUMNAR index over existing data. */
   public boolean columnarIndexes  = true;
+  /** Adds {@code score DOUBLE} (in [0, 100) with 2 decimals, a COLUMNAR DOUBLE column) to the schema and to every record. */
+  public boolean doubleColumn     = false;
+  /** Adds {@code day DATE} (a LocalDate over the same 5 years, a COLUMNAR LONG column of epoch days) to the schema and every record. */
+  public boolean dateColumn       = false;
+  /** Gives {@code publishDate} a random time of day (to the millisecond) instead of midnight UTC, so it straddles zone boundaries. */
+  public boolean timeOfDay        = false;
+  /** The records without an author store an explicit null (and an update clears it to null) instead of leaving the property out. */
+  public boolean explicitNulls    = false;
 
   private final Random    random;
   private final List<RID> live = new ArrayList<>();
@@ -101,6 +110,10 @@ public final class ColumnarTestData {
     db.command("sql", "CREATE PROPERTY " + TYPE + ".publishDate DATETIME");
     db.command("sql", "CREATE PROPERTY " + TYPE + ".author STRING");
     db.command("sql", "CREATE PROPERTY " + TYPE + ".body STRING" + (externalBody ? " (EXTERNAL true)" : ""));
+    if (doubleColumn)
+      db.command("sql", "CREATE PROPERTY " + TYPE + ".score DOUBLE");
+    if (dateColumn)
+      db.command("sql", "CREATE PROPERTY " + TYPE + ".day DATE");
     if (asVertices)
       db.command("sql", "CREATE EDGE TYPE " + EDGE_TYPE);
     if (!columnarIndexes)
@@ -110,6 +123,10 @@ public final class ColumnarTestData {
     db.command("sql", "CREATE INDEX ON " + TYPE + " (fileSize) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (publishDate) COLUMNAR");
     db.command("sql", "CREATE INDEX ON " + TYPE + " (author) COLUMNAR");
+    if (doubleColumn)
+      db.command("sql", "CREATE INDEX ON " + TYPE + " (score) COLUMNAR");
+    if (dateColumn)
+      db.command("sql", "CREATE INDEX ON " + TYPE + " (day) COLUMNAR");
     // the columns of an empty bucket are published by background builds: none may still run once records exist, or it would move
     // rows a test expects in the overlay into a segment, and remark pages while a test holds the apply
     FacetOracle.awaitCaughtUp(db);
@@ -201,7 +218,14 @@ public final class ColumnarTestData {
     final String author = author();
     if (sequence % 10 != 0)
       record.set("author", author);
+    else if (explicitNulls)
+      record.set("author", null);
     record.set("body", body(db, random.nextDouble() < bigRecordRatio));
+    // drawn after every default value, so a test that leaves these knobs off keeps its seeded data
+    if (doubleColumn)
+      record.set("score", random.nextInt(10_000) / 100d);
+    if (dateColumn)
+      record.set("day", LocalDate.ofEpochDay(EPOCH_2020_MS / DAY_MS + random.nextInt(DATE_RANGE_DAYS)));
   }
 
   private void update(final Database db, final RID rid) {
@@ -213,9 +237,12 @@ public final class ColumnarTestData {
     case 2 -> record.set("fileSize", fileSize());
     case 3 -> {
       final String author = author();
-      if (random.nextBoolean())
-        record.remove("author");
-      else
+      if (random.nextBoolean()) {
+        if (explicitNulls)
+          record.set("author", null);
+        else
+          record.remove("author");
+      } else
         record.set("author", author);
     }
     default -> record.set("body", body(db, bigRecordRatio > 0 && random.nextBoolean()));
@@ -289,7 +316,8 @@ public final class ColumnarTestData {
   }
 
   private Date publishDate() {
-    return new Date(EPOCH_2020_MS + random.nextInt(DATE_RANGE_DAYS) * DAY_MS);
+    final long day = EPOCH_2020_MS + random.nextInt(DATE_RANGE_DAYS) * DAY_MS;
+    return new Date(timeOfDay ? day + random.nextInt((int) DAY_MS) : day);
   }
 
   private String author() {

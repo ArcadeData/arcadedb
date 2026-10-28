@@ -83,6 +83,106 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
   }
 
   @Test
+  void aDatabaseWithoutColumnarIndexesRegistersNoTick() {
+    // final review C-M1: nothing columnar, no ticker wake-up and no configuration read
+    final ColumnarIndexManager manager = manager();
+    assertThat(manager.isApplyingForTesting()).isTrue();
+    assertThat(manager.isTickRegisteredForTesting()).isFalse();
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 12_345L);
+    try {
+      assertThat(manager.tickIntervalForTesting().getAsLong()).as("the idle interval reads no configuration").isZero();
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 100L);
+
+      createAsset(1);
+
+      assertThat(manager.isTickRegisteredForTesting()).isTrue();
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 12_345L);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(12_345L);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 100L);
+    }
+
+    // a reopen registers the tick at once: the database has a projection
+    reopenDatabase();
+    assertThat(manager().isTickRegisteredForTesting()).isTrue();
+  }
+
+  @Test
+  void applyPacingStretchesWhilePassesLeaveMarksBehind() {
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    final long now = System.currentTimeMillis();
+    manager.paceAfterPassForTesting(now);
+    assertThat(manager.applyPacingForTesting()).as("nothing pending").isEqualTo(1);
+
+    manager.markPages(projection.bucketId(), new int[] { 0 }, 1);
+    final int[] factors = new int[4];
+    for (int i = 0; i < factors.length; i++) {
+      manager.paceAfterPassForTesting(now);
+      factors[i] = manager.applyPacingForTesting();
+    }
+    assertThat(factors).containsExactly(2, 4, ColumnarIndexManager.APPLY_PACING_MAX_FACTOR, ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+    assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(100L * ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+
+    // the oldest mark waits longer than the lag limit: back to the base interval, however sustained the ingest
+    manager.paceAfterPassForTesting(now + ColumnarIndexManager.APPLY_PACING_LAG_LIMIT_MS + 60_000L);
+    assertThat(manager.applyPacingForTesting()).isEqualTo(1);
+    assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(100L);
+  }
+
+  @Test
+  void applyPacingNeverStretchesPastTheLagLimitOrTheBase() {
+    // batch 3 r1 M1: the stretched interval is capped at max(base, 500 ms) whatever the configured interval
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    final long now = System.currentTimeMillis();
+    manager.markPages(projection.bucketId(), new int[] { 0 }, 1);
+    for (int i = 0; i < 4; i++)
+      manager.paceAfterPassForTesting(now);
+    assertThat(manager.applyPacingForTesting()).isEqualTo(ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 1_000L);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).as("a base above the limit is never stretched").isEqualTo(1_000L);
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 200L);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(ColumnarIndexManager.APPLY_PACING_LAG_LIMIT_MS);
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 50L);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(50L * ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 100L);
+    }
+  }
+
+  @Test
+  void aGrownDictionaryGetsItsRankViewRebuiltThrottled() throws InterruptedException {
+    // plan 3 rank view: rebuilt by the maintenance once more than max(1024, view / 8) values are newer than it, at most every interval
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    final long[] now = { 1_000_000L };
+    manager.setClockForTesting(() -> now[0]);
+    final GlobalDictionary dictionary = projection.dictionary("brand");
+
+    for (int i = 0; i < 1_000; i++)
+      dictionary.getOrAdd("v" + i);
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).as("below the threshold").isZero();
+
+    for (int i = 1_000; i < 1_100; i++)
+      dictionary.getOrAdd("v" + i);
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).isEqualTo(1_100);
+
+    for (int i = 1_100; i < 2_300; i++)
+      dictionary.getOrAdd("v" + i);
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).as("throttled").isEqualTo(1_100);
+
+    now[0] += ColumnarIndexManager.RANK_VIEW_MIN_INTERVAL_MS;
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).isEqualTo(2_300);
+    assertThat(dictionary.rank(dictionary.ordinalOf("v10"))).isLessThan(dictionary.rank(dictionary.ordinalOf("v2")));
+  }
+
+  @Test
   void projectionPerBucketOnlyForColumnarBuckets() {
     createAsset(3);
     database.command("sql", "CREATE DOCUMENT TYPE Other BUCKETS 2");

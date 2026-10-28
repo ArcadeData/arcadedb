@@ -88,6 +88,27 @@ class FacetOracleSelfTest extends TestHelper {
   }
 
   @Test
+  void theOptionalKnobsAreProjectedToo() {
+    // final review C-M9: a DOUBLE and a DATE column, times of day across zone boundaries, explicit nulls; plans 4-6 build on them
+    final ColumnarTestData data = new ColumnarTestData(43);
+    data.doubleColumn = true;
+    data.dateColumn = true;
+    data.timeOfDay = true;
+    data.explicitNulls = true;
+    data.createSchema(database);
+    data.insertAssets(database, 2_000);
+    data.mutate(database, 500);
+
+    for (final String property : List.of("score", "day", "publishDate", "author"))
+      FacetOracle.assertEquivalent(database, "Asset", property, null);
+    assertThat(count("SELECT count(*) AS c FROM Asset WHERE author IS NULL AND author IS DEFINED")).as("explicit nulls").isPositive();
+    assertThat(allAssets()).as("times of day").anyMatch(asset -> asset.getDate("publishDate").getTime() % 86_400_000L != 0);
+    final Map<Long, Long> days = FacetOracle.expectedHistogram(database, "Asset", "day", null);
+    assertThat(days.keySet()).allMatch(d -> d >= 18_262 && d < 18_262 + 5 * 365);
+    assertThat(FacetOracle.expectedCounts(database, "Asset", "score", null)).hasSizeGreaterThan(100);
+  }
+
+  @Test
   void staleLiveRowIsDetected() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL, TimeUnit.HOURS.toMillis(1));
     final ColumnarTestData data = new ColumnarTestData(4);
