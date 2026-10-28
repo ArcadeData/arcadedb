@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -230,6 +231,35 @@ class OpenCypherIssues10886To10892Test {
     assertThat(((Number) ordered.getFirst().getProperty("x")).intValue()).isEqualTo(2);
     final List<Result> limited = command("UNWIND [1, 2, 3] AS x WITH collect(x) AS q LIMIT 1 RETURN q");
     assertThat(limited).hasSize(1);
+  }
+
+  // #10892: SKIP and LIMIT run once, after the post-aggregation WHERE, and read parameters on the aggregation path too
+  @Test
+  void skipLimitAfterAggregatingWithWhereAndParameters() {
+    final List<Result> filtered = command(
+        "UNWIND [1, 1, 2, 3, 3, 4] AS x WITH x, count(*) AS c WHERE c > 1 ORDER BY x SKIP 1 LIMIT 1 RETURN x");
+    assertThat(filtered).hasSize(1);
+    assertThat(((Number) filtered.getFirst().getProperty("x")).intValue()).isEqualTo(3);
+
+    final List<Result> unordered = command("UNWIND [1, 1, 2, 3, 3, 4] AS x WITH x, count(*) AS c WHERE c > 1 SKIP 1 RETURN x");
+    assertThat(unordered).hasSize(1);
+
+    final List<Result> withParams = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "UNWIND [1, 2, 3, 4] AS x WITH x, count(*) AS c ORDER BY x SKIP $skip LIMIT $limit RETURN x",
+          Map.of("skip", 1, "limit", 2))) {
+        while (rs.hasNext())
+          withParams.add(rs.next());
+      }
+      try (final ResultSet rs = database.command("opencypher", "UNWIND [1, 2] AS x WITH collect(x) AS q LIMIT $limit RETURN q",
+          Map.of("limit", 0))) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+    assertThat(withParams).hasSize(2);
+    assertThat(((Number) withParams.getFirst().getProperty("x")).intValue()).isEqualTo(2);
+    assertThat(((Number) withParams.get(1).getProperty("x")).intValue()).isEqualTo(3);
   }
 
   private String explain(final String query) {

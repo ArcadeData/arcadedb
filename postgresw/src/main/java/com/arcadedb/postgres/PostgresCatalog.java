@@ -629,7 +629,7 @@ public class PostgresCatalog {
 
     Answer answer;
     try {
-      answer = project(statement, List.of(), List.of(new Row()), new Context(database, userName), Map.of(), true, null, null);
+      answer = project(statement, List.of(), List.of(new Row()), context(database, userName, null), Map.of(), true, null);
     } catch (final PostgresCatalogExpression.BudgetExceeded e) {
       answer = null;
     }

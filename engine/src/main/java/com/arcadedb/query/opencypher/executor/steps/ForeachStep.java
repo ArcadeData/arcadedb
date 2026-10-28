@@ -338,6 +338,7 @@ public class ForeachStep extends AbstractExecutionStep {
           continue;
       } else
         continue;
+      // Identity, not equals(): the written record has the same RID as the snapshot, so equals() would call them the same
       if (innerValue != outerValue)
         outer.setProperty(propName, innerValue);
     }
