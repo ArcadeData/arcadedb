@@ -84,6 +84,12 @@ class Issue10594InheritedColumnsCatalogTest {
       schema.createDocumentType("MergedParent").createProperty("m", Type.STRING);
       schema.getType("Merged").addSuperType("MergedParent");
 
+      // the same, with the parent's declaration hidden: the parent has no column m, so the child's is inherited from nothing
+      schema.createDocumentType("Shadowing").createProperty("m", Type.STRING);
+      schema.createDocumentType("HiddenMergedParent").createProperty("m", Type.STRING);
+      schema.getType("HiddenMergedParent").getProperty("m").setHidden(true);
+      schema.getType("Shadowing").addSuperType("HiddenMergedParent");
+
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Super", "sa");
     });
   }
@@ -142,6 +148,13 @@ class Issue10594InheritedColumnsCatalogTest {
   void aNameDeclaredAndInheritedIsOneMergedColumn() {
     assertThat(attributes("Merged")).containsExactly("m:true:1");
     assertThat(relnattsByTable().get("Merged")).isEqualTo(1);
+  }
+
+  /** A parent whose declaration of the name is hidden lists no such column, so the child's column inherits from no parent. */
+  @Test
+  void aHiddenParentDeclarationIsNotCountedAsInherited() {
+    assertThat(attributes("Shadowing")).containsExactly("m:true:0");
+    assertThat(attributes("HiddenMergedParent")).isEmpty();
   }
 
   /** An index's key columns are columns of the index relation itself, as in PostgreSQL: local, inherited from nothing. */

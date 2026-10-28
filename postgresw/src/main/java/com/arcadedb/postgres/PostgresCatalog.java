@@ -2182,15 +2182,31 @@ public class PostgresCatalog {
   }
 
   /**
-   * The number of direct super types of {@code type} that carry the property {@code name}, theirs or inherited: PostgreSQL's
-   * {@code attinhcount}, which counts a column merged from two parents once per parent (issue #10594).
+   * The number of direct super types of {@code type} that have a column {@code name}, theirs or inherited: PostgreSQL's
+   * {@code attinhcount}, which counts a column merged from two parents once per parent (issue #10594). A parent whose nearest
+   * declaration of the name is hidden has no such column, so it is not counted.
    */
   private static int inheritedCount(final DocumentType type, final String name) {
     int count = 0;
-    for (final DocumentType superType : type.getSuperTypes())
-      if (superType.existsPolymorphicProperty(name))
+    for (final DocumentType superType : type.getSuperTypes()) {
+      final Property property = nearestProperty(superType, name);
+      if (property != null && !property.isHidden())
         ++count;
+    }
     return count;
+  }
+
+  /** The declaration of {@code name} that {@link #collectProperties} keeps for {@code type}, or null if it has none. */
+  private static Property nearestProperty(final DocumentType type, final String name) {
+    final Property own = type.getPropertyIfExists(name);
+    if (own != null)
+      return own;
+    for (final DocumentType superType : type.getSuperTypes()) {
+      final Property inherited = nearestProperty(superType, name);
+      if (inherited != null)
+        return inherited;
+    }
+    return null;
   }
 
   /**
