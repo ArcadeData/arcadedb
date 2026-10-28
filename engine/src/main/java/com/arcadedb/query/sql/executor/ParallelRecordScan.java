@@ -26,6 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -33,15 +34,20 @@ import java.util.logging.Level;
  * its filter in the workers of the same {@link ParallelTypeScan} a SQL scan with a WHERE clause uses, so the two languages
  * share the units, the workers, the pool, the sequential row order and the rules for when a scan stays sequential.
  * <p>
- * The caller supplies a {@link RowMapper} that turns a scanned record into its row, or rejects it. It runs on several
- * threads at once, each with a context of its own, so it must not keep state between calls.
+ * The caller supplies a factory of {@link RowMapper}s that turn a scanned record into its row, or reject it. Each unit of
+ * the scan asks the factory for a mapper of its own, which only the one worker scanning that unit calls, so a mapper may
+ * keep state between its calls - the row its filter rejected, to reuse for the next record (issue #10818) - but never
+ * share it with another mapper.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class ParallelRecordScan {
   private final ParallelTypeScan scan;
 
-  /** Turns a scanned record into the row to hand on, or {@code null} to drop it. Called on the workers, concurrently. */
+  /**
+   * Turns a scanned record into the row to hand on, or {@code null} to drop it. Called on a worker, by one thread at a time:
+   * every unit of the scan has a mapper of its own.
+   */
   @FunctionalInterface
   public interface RowMapper {
     Result map(Record record, CommandContext workerContext);
@@ -63,14 +69,16 @@ public final class ParallelRecordScan {
   /**
    * Plans a parallel scan of every bucket of the type, or returns {@code null} when it must stay sequential: parallel
    * scans are disabled, the caller is in a transaction, on an async or scan thread, or there is too little to share.
+   *
+   * @param mapperPerUnit called once per unit of the scan, on the worker that scans it, for that unit's own mapper
    */
-  public static ParallelRecordScan plan(final CommandContext context, final String typeName, final RowMapper mapper) {
+  public static ParallelRecordScan plan(final CommandContext context, final String typeName, final Supplier<RowMapper> mapperPerUnit) {
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
     final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().sorted().toArray();
     final List<ExecutionStep> steps = new ArrayList<>(bucketIds.length);
     for (final int bucketId : bucketIds)
       if (bucketId > 0) // as the SQL planner's scan steps do
-        steps.add(new MappedScanStep(bucketId, mapper, context));
+        steps.add(new MappedScanStep(bucketId, mapperPerUnit, context));
 
     final ParallelTypeScan scan = ParallelTypeScan.plan(context, typeName, steps);
     return scan == null ? null : new ParallelRecordScan(scan);

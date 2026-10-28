@@ -28,6 +28,10 @@ import com.arcadedb.query.sql.executor.Result;
 public interface BooleanExpression {
   /**
    * Evaluate this boolean expression against a result row.
+   * <p>
+   * An implementation must not keep {@code result} (or anything that reads through it lazily) past its own return: a scan
+   * rebinds the row a predicate rejected to the next vertex (issue #10818), so a kept row would answer for another vertex.
+   * Values read from the row may be kept. An expression that needs a row of its own copies the bindings into a new one.
    *
    * @param result  The result row containing variable bindings
    * @param context The command execution context
