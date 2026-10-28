@@ -724,12 +724,14 @@ public class ResultInternal implements Result {
   }
 
   /**
-   * Binds {@code name} to {@code newValue} in a row that {@link #ResultInternal()} built and {@link #setProperty} bound
-   * {@code name} in, and nothing else, so an openCypher scan can evaluate its pushed predicate on one row for every vertex
-   * the predicate rejects rather than on a new row and map per vertex (issue #10818). A row that carries anything besides
-   * that one binding - another binding, a removed property, a temporary property, metadata, an element, a value - is left
-   * alone and the answer is {@code false}: what was written to it belongs to the vertex it was written for, and the caller
-   * builds a new row instead.
+   * Rebinds the row's one binding: the invariant is that the row holds exactly the binding {@code name} and no other state.
+   * Then {@code name} is bound to {@code newValue} in place and the answer is {@code true}; otherwise the row is left alone
+   * and the answer is {@code false}, so the caller builds a new row.
+   * <p>
+   * An openCypher scan uses it to evaluate its pushed predicate on one row for every vertex the predicate rejects, rather
+   * than on a new row and map per vertex (issue #10818). "No other state" means no other binding, removed property,
+   * temporary property, metadata, element or value, on a plain {@link #ResultInternal()} row: whatever was written to the
+   * row belongs to the vertex it was written for.
    */
   public boolean rebindSingleProperty(final String name, final Object newValue) {
     if (getClass() != ResultInternal.class || content == null || content.size() != 1 || !content.containsKey(name)
