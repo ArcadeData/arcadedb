@@ -156,9 +156,22 @@ public class PostgresTypeCatalog {
    *                 {@link #rowTypeColumns} builds it. Asked for only by a query that reads them
    */
   public static List<Map<String, Object>> resolve(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
-    final List<Map<String, Object>> elementRows = resolveElementJoin(query, rowTypes);
-    if (elementRows != null)
-      return elementRows;
+    final PostgresCatalog.Answer answer = resolveAnswer(query, rowTypes);
+    return answer == null ? null : answer.rows;
+  }
+
+  /**
+   * Answers a pg_type query with the columns to announce as well as the rows, or returns null when it is not a shape this catalog
+   * can answer. The columns are the ones the client projected, typed as {@link PostgresCatalog} types pg_type's columns, whatever
+   * the filter selected (issue #10869): a lookup of a type this protocol does not have answers no row under the same columns a
+   * lookup of int4 answers one row under, rather than a result set with no column a client could read by name.
+   *
+   * @param rowTypes as in {@link #resolve(String, Supplier)}
+   */
+  static PostgresCatalog.Answer resolveAnswer(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
+    final PostgresCatalog.Answer element = resolveElementJoin(query, rowTypes);
+    if (element != null)
+      return element;
 
     return resolveProjection(query, rowTypes);
   }
@@ -201,8 +214,7 @@ public class PostgresTypeCatalog {
    * was given, which is what the join in the client's query asks for. Returns null when the query is not
    * that shape.
    */
-  private static List<Map<String, Object>> resolveElementJoin(final String query,
-      final Supplier<List<Map<String, Object>>> rowTypes) {
+  private static PostgresCatalog.Answer resolveElementJoin(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
     if (!ELEMENT_JOIN.matcher(query).find())
       return null;
 
@@ -217,10 +229,15 @@ public class PostgresTypeCatalog {
     final int oid = parseOid(matcher.group(1));
     final PostgresType type = oid < 0 ? null : PostgresType.byCode(oid);
 
+    final List<String> requested = new ArrayList<>();
+    final List<String> aliases = new ArrayList<>();
+    if (!parseProjection(projection.group(1), requested, aliases))
+      return null;
+
     final PostgresType element;
     if (type == null && rowTypeOf(oid, rowTypes.get()) != null)
-      // a row type has no element, as a scalar has none
-      return List.of();
+      // a row type has no element, as a scalar has none - under the columns it projected
+      return answer(requested, aliases, List.of());
     else if (type == null)
       // An OID this protocol does not produce is still answered as text, as it always has been: a driver
       // that asks about an unknown array is better served by the delimiter and element of the most common
@@ -229,13 +246,8 @@ public class PostgresTypeCatalog {
     else if (type.isArrayType())
       element = PostgresType.byCode(type.elementCode);
     else
-      // A scalar has no element, so the join the client wrote selects nothing.
-      return List.of();
-
-    final List<String> requested = new ArrayList<>();
-    final List<String> aliases = new ArrayList<>();
-    if (!parseProjection(projection.group(1), requested, aliases))
-      return null;
+      // A scalar has no element, so the join the client wrote selects nothing - under the columns it projected.
+      return answer(requested, aliases, List.of());
 
     // Only the columns the client projected, never the ones its WHERE clause happens to mention: the join
     // condition names both oid and typelem, so reading the columns off the whole query would answer with
@@ -244,7 +256,7 @@ public class PostgresTypeCatalog {
     for (int i = 0; i < requested.size(); i++)
       row.put(aliases.get(i), columnValue(element, requested.get(i)));
 
-    return List.of(row);
+    return answer(requested, aliases, List.of(row));
   }
 
   /**
@@ -256,8 +268,7 @@ public class PostgresTypeCatalog {
    * DataRow positionally, so {@code SELECT oid, typname} and {@code SELECT typname, oid} must not come back
    * the same way round.
    */
-  private static List<Map<String, Object>> resolveProjection(final String query,
-      final Supplier<List<Map<String, Object>>> rowTypes) {
+  private static PostgresCatalog.Answer resolveProjection(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
     final Matcher matcher = QUERY.matcher(query.trim());
     if (!matcher.matches())
       return null;
@@ -278,7 +289,16 @@ public class PostgresTypeCatalog {
         row.put(aliases.get(i), type.apply(requested.get(i)));
       rows.add(row);
     }
-    return rows;
+    return answer(requested, aliases, rows);
+  }
+
+  /** The rows under the columns the client projected, each typed as pg_type declares it, whether there is a row or not. */
+  private static PostgresCatalog.Answer answer(final List<String> requested, final List<String> aliases,
+      final List<Map<String, Object>> rows) {
+    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(requested.size());
+    for (int i = 0; i < requested.size(); i++)
+      columns.put(aliases.get(i), PostgresCatalog.declaredType("pg_type", requested.get(i)));
+    return PostgresCatalog.answer(columns, rows);
   }
 
   /**
