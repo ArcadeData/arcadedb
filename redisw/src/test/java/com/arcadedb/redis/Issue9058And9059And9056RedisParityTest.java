@@ -51,12 +51,6 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
     GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
   }
 
-  @Override
-  public void endTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
   @Test
   void incrByFloatReplyAndStoredValueAreRedisDecimalText() {
     try (final Jedis jedis = connect()) {
@@ -143,7 +137,7 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
 
   @Test
   void hdelDeletesRecordsByRid() {
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.getSchema().createDocumentType("Item");
     final String[] rid = new String[4];
     db.transaction(() -> {
@@ -214,7 +208,7 @@ public class Issue9058And9059And9056RedisParityTest extends BaseRedisServerTest 
 
   @Test
   void hdelByRidIsRefusedForAUserWithoutAccessToTheDatabase() {
-    final Database db = getServer(0).getDatabase(getDatabaseName());
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
     db.getSchema().createDocumentType("Item");
     final String[] rid = new String[1];
     db.transaction(() -> rid[0] = db.newDocument("Item").set("n", 1).save().getIdentity().toString());

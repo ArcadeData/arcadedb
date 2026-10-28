@@ -136,7 +136,7 @@ class Issue7385RestoreProgressIT extends BaseGraphServerTest {
       try {
         final ArcadeDBServer server = getServer(0);
         if (server.existsDatabase(name))
-          server.getDatabase(name).getEmbedded().drop();
+          server.getDatabaseForOperator(name).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }

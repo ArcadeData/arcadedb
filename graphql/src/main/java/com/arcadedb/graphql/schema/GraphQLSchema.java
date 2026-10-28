@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graphql.parser.AbstractValue;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
@@ -39,13 +40,13 @@ import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
-import com.arcadedb.graphql.parser.TypeDefinition;
 import com.arcadedb.graphql.parser.TypeName;
 import com.arcadedb.graphql.parser.TypeSystemDefinition;
 import com.arcadedb.graphql.parser.ValueWithVariable;
 import com.arcadedb.graphql.parser.VariableDefinition;
 import com.arcadedb.graphql.parser.VariableDefinitions;
 import com.arcadedb.graphql.parser.VariableLiteral;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -83,9 +84,12 @@ public class GraphQLSchema {
   private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long", "JSON", "BigDecimal" };
   private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);
 
-  private final Database                          database;
-  private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
-  private ObjectTypeDefinition              queryDefinition;
+  private final    Database            database;
+  /**
+   * The SDL registered so far. This instance is shared by every request thread of the database, so the registry is replaced, never
+   * changed: see {@link GraphQLTypeRegistry} (issue #10764). Written only by {@link #declare}.
+   */
+  private volatile GraphQLTypeRegistry registry = GraphQLTypeRegistry.EMPTY;
 
   public GraphQLSchema(final Database database) {
     this.database = database;
@@ -120,28 +124,34 @@ public class GraphQLSchema {
           break;
         }
 
-      for (final Definition definition : definitions) {
-        if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
-          final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
-          if (type instanceof ObjectTypeDefinition obj) {
-            objectTypeDefinitionMap.put(obj.getName(), obj);
+      // THE TYPES OF THE DOCUMENT ARE DECLARED AS ONE CHANGE, BEFORE ITS OPERATION RUNS: A CONCURRENT READER SEES THE SDL BEFORE THE
+      // DOCUMENT OR AFTER IT, NEVER A PART OF IT (#10764). The operation resolves every type against the registry read here
+      final List<ObjectTypeDefinition> declared = new ArrayList<>();
+      for (final Definition definition : definitions)
+        if (definition instanceof TypeSystemDefinition typeSystemDefinition
+            && typeSystemDefinition.getTypeDefinition() instanceof ObjectTypeDefinition obj)
+          declared.add(obj);
+      final GraphQLTypeRegistry current = declared.isEmpty() ? registry : declare(declared);
 
-            if ("Query".equals(obj.getName()))
-              // SPECIAL TYPE QUERY
-              queryDefinition = obj;
-          }
-
-        } else if (definition instanceof OperationDefinition operationDefinition) {
-          final OperationDefinition op = operationDefinition;
-          if (op.isQuery()) {
-            return executeQuery(op, parameters, fragments);
-          } else
-            throw new UnsupportedOperationException("GraphQL mutations not supported yet");
+      for (final Definition definition : definitions)
+        if (definition instanceof OperationDefinition op) {
+          if (op.isQuery())
+            return executeQuery(op, parameters, fragments, current);
+          throw new UnsupportedOperationException("GraphQL mutations not supported yet");
         }
-      }
     }
 
     return new InternalResultSet();
+  }
+
+  /**
+   * Publishes the registry with {@code definitions} declared on top of the current one and answers it. Serialized, so two documents
+   * declaring types at the same time both land: each builds on what the other published, none on a registry already replaced.
+   */
+  private synchronized GraphQLTypeRegistry declare(final List<ObjectTypeDefinition> definitions) {
+    final GraphQLTypeRegistry next = registry.with(definitions);
+    registry = next;
+    return next;
   }
 
   /**
@@ -176,7 +186,7 @@ public class GraphQLSchema {
   }
 
   private ResultSet executeQuery(final OperationDefinition op, final Map<String, Object> parameters,
-      final GraphQLFragments documentFragments) {
+      final GraphQLFragments documentFragments, final GraphQLTypeRegistry registry) {
     String from = null;
 
     SelectionSet projection = null;
@@ -212,16 +222,17 @@ public class GraphQLSchema {
 
       // HANDLE INTROSPECTION QUERIES
       if ("__schema".equals(queryName))
-        return executeIntrospectionSchema(operationSelectionSet, fragments);
+        return executeIntrospectionSchema(operationSelectionSet, fragments, registry);
       else if ("__type".equals(queryName))
-        return executeIntrospectionType(selection, operationSelectionSet, variables, fragments);
+        return executeIntrospectionType(selection, operationSelectionSet, variables, fragments, registry);
       else if ("__typename".equals(queryName))
         return executeIntrospectionTypename(selection);
+      final ObjectTypeDefinition queryDefinition = registry.getQueryDefinition();
       if (queryDefinition != null) {
         for (final FieldDefinition f : queryDefinition.getFieldDefinitions()) {
           if (queryName.equals(f.getName())) {
             typeDefinition = f;
-            returnType = getTypeFromField(f);
+            returnType = registry.getTypeFromField(f);
             // THE ARGUMENTS DEFINITION IS OPTIONAL IN THE GRAMMAR: A FIELD DECLARED WITHOUT A PARAMETER LIST
             // (E.G. `allBooks: [Book]`) LEAVES IT NULL. SEE ISSUE #6835
             if (f.getArgumentsDefinition() != null)
@@ -246,7 +257,8 @@ public class GraphQLSchema {
             if ("sql".equals(directiveName) ||
                 "gremlin".equals(directiveName) ||
                 "cypher".equals(directiveName))
-              return parseNativeQueryDirective(directiveName, directive, selection, operationSelectionSet, returnType, variables, fragments);
+              return parseNativeQueryDirective(directiveName, directive, selection, operationSelectionSet, returnType, variables, fragments,
+                  registry);
           }
         }
       }
@@ -264,7 +276,7 @@ public class GraphQLSchema {
       final ResultSet resultSet =
           boundParameters.isEmpty() ? database.query("sql", query) : database.query("sql", query, boundParameters);
 
-      return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType,
+      return new GraphQLResultSet(this, registry, resultSet, projection != null ? projection.getSelections() : null, returnType,
           variables, fragments);
 
     } catch (final CommandParsingException | CommandExecutionException e) {
@@ -299,10 +311,17 @@ public class GraphQLSchema {
    * GraphQL document as trusted and its variables as untrusted input would otherwise be handing a caller raw SQL
    * without meaning to. Variables never resolved before issue #6834, so nothing can depend on that combination; a
    * predicate that genuinely has to vary at runtime belongs in a {@code @sql} directive with a bound parameter.
+   * <p>
+   * Every term is one parenthesised operand of the {@code and} that joins them, whoever wrote it: an {@code or} inside the
+   * predicate bound looser than that {@code and} and swallowed the equality of the other arguments, so the rows depended on
+   * the order the arguments were written in, which GraphQL leaves undefined (issue #10753). The parentheses alone are not
+   * enough for a text the module does not control: a predicate that closes them and opens new ones ({@code a > 1) or (b < 2})
+   * balances the wrapping. So the predicate must first parse as a complete condition on its own, which is exactly the
+   * guarantee that, wrapped, it is one operand.
    */
   private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames,
       final Map<String, Object> variables, final Map<String, Object> boundParameters) {
-    final StringBuilder where = new StringBuilder();
+    final List<String> terms = new ArrayList<>();
 
     if (queryArguments != null)
       for (final Argument queryArgument : queryArguments.getList()) {
@@ -319,22 +338,31 @@ public class GraphQLSchema {
 
         final Object argValue = resolveValue(argument, variables);
 
-        if (!where.isEmpty())
-          where.append(" and ");
-
         if ("where".equals(argName)) {
           final String predicate = String.valueOf(argValue);
           if (predicate.contains(BOUND_PARAMETER_PREFIX))
             throw new CommandParsingException("The 'where' predicate cannot name a parameter starting with '"
                 + BOUND_PARAMETER_PREFIX + "': that prefix is reserved for the parameters bound for the other arguments");
-          where.append(predicate);
+          try {
+            new SQLAntlrParser(database).parseCondition(predicate);
+          } catch (final CommandSQLParsingException e) {
+            throw new CommandParsingException("The 'where' predicate '" + predicate + "' is not a complete SQL condition", e);
+          }
+          terms.add(predicate);
         } else {
           final String parameterName = BOUND_PARAMETER_PREFIX + boundParameters.size();
           boundParameters.put(parameterName, argValue);
-          where.append(argName).append(" = :").append(parameterName);
+          terms.add(argName + " = :" + parameterName);
         }
       }
 
+    final StringBuilder where = new StringBuilder();
+    for (final String term : terms) {
+      if (!where.isEmpty())
+        where.append(" and ");
+      // the closing parenthesis on a line of its own: a predicate that ends in a line comment does not comment it out
+      where.append('(').append(term).append("\n)");
+    }
     return where.toString();
   }
 
@@ -476,7 +504,8 @@ public class GraphQLSchema {
   }
 
   private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection,
-      final SelectionSet selectionSet, final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
+      final SelectionSet selectionSet, final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments,
+      final GraphQLTypeRegistry registry) {
     if (directive.getArguments() == null)
       throw new CommandParsingException(language.toUpperCase(Locale.ENGLISH) + " directive has no `statement` argument");
 
@@ -500,7 +529,7 @@ public class GraphQLSchema {
 
     final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
 
-    return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType, variables,
+    return new GraphQLResultSet(this, registry, resultSet, projection != null ? projection.getSelections() : null, returnType, variables,
         fragments);
   }
 
@@ -522,7 +551,8 @@ public class GraphQLSchema {
     return arguments;
   }
 
-  private ResultSet executeIntrospectionSchema(final SelectionSet selectionSet, final GraphQLFragments fragments) {
+  private ResultSet executeIntrospectionSchema(final SelectionSet selectionSet, final GraphQLFragments fragments,
+      final GraphQLTypeRegistry registry) {
     final InternalResultSet resultSet = new InternalResultSet();
     final ResultInternal schemaResult = new ResultInternal();
 
@@ -534,9 +564,9 @@ public class GraphQLSchema {
         final String fieldName = sub.getFieldName();
         final String responseKey = sub.getName();
         if ("types".equals(fieldName))
-          setMerged(schemaResult, responseKey, buildTypeList(sub, fragments));
+          setMerged(schemaResult, responseKey, buildTypeList(sub, fragments, registry));
         else if ("queryType".equals(fieldName))
-          setMerged(schemaResult, responseKey, buildQueryTypeResult(sub.getSelectionSet(), fragments, 0));
+          setMerged(schemaResult, responseKey, buildQueryTypeResult(sub.getSelectionSet(), fragments, 0, registry));
         else if ("mutationType".equals(fieldName))
           setMerged(schemaResult, responseKey, null);
         else if ("subscriptionType".equals(fieldName))
@@ -553,8 +583,7 @@ public class GraphQLSchema {
   }
 
   private ResultSet executeIntrospectionType(final Selection selection, final SelectionSet selectionSet,
-      final Map<String, Object> variables,
-      final GraphQLFragments fragments) {
+      final Map<String, Object> variables, final GraphQLFragments fragments, final GraphQLTypeRegistry registry) {
     final Arguments arguments = selection.getArguments();
     String typeName = null;
 
@@ -568,7 +597,7 @@ public class GraphQLSchema {
     if (typeName == null)
       throw new CommandParsingException("__type query requires a 'name' argument");
 
-    final ResultInternal typeResult = buildTypeResult(typeName, selectionSet, fragments, 0);
+    final ResultInternal typeResult = buildTypeResult(typeName, selectionSet, fragments, 0, registry);
 
     if (typeResult == null)
       throw new CommandParsingException("Type '" + typeName + "' not found");
@@ -587,16 +616,17 @@ public class GraphQLSchema {
     return resultSet;
   }
 
-  private List<ResultInternal> buildTypeList(final Selection selection, final GraphQLFragments fragments) {
+  private List<ResultInternal> buildTypeList(final Selection selection, final GraphQLFragments fragments,
+      final GraphQLTypeRegistry registry) {
     final List<ResultInternal> types = new ArrayList<>();
     final Set<String> addedTypes = new HashSet<>();
 
     final SelectionSet selectionSet = selection.getSelectionSet();
 
     // Add GraphQL-defined types
-    for (final Map.Entry<String, ObjectTypeDefinition> entry : objectTypeDefinitionMap.entrySet()) {
-      types.add(buildTypeResult(entry.getKey(), selectionSet, fragments, 0));
-      addedTypes.add(entry.getKey());
+    for (final ObjectTypeDefinition objType : registry.getTypes()) {
+      types.add(buildGraphQLTypeResult(objType, selectionSet, fragments, 0, registry));
+      addedTypes.add(objType.getName());
     }
 
     // Add database types not already covered by GraphQL definitions
@@ -617,10 +647,10 @@ public class GraphQLSchema {
   }
 
   private ResultInternal buildTypeResult(final String typeName, final SelectionSet selectionSet, final GraphQLFragments fragments,
-      final int fieldsDepth) {
-    final ObjectTypeDefinition objType = objectTypeDefinitionMap.get(typeName);
+      final int fieldsDepth, final GraphQLTypeRegistry registry) {
+    final ObjectTypeDefinition objType = registry.get(typeName);
     if (objType != null)
-      return buildGraphQLTypeResult(objType, selectionSet, fragments, fieldsDepth);
+      return buildGraphQLTypeResult(objType, selectionSet, fragments, fieldsDepth, registry);
 
     // Check database types
     if (database.getSchema().existsType(typeName))
@@ -634,13 +664,13 @@ public class GraphQLSchema {
   }
 
   private ResultInternal buildGraphQLTypeResult(final ObjectTypeDefinition objType, final SelectionSet selectionSet,
-      final GraphQLFragments fragments, final int fieldsDepth) {
+      final GraphQLFragments fragments, final int fieldsDepth, final GraphQLTypeRegistry registry) {
     return buildIntrospectionType(objType.getName(), "OBJECT", selectionSet, fragments, fieldsSelection -> {
       final List<Selection> fieldSelections = expandFieldSelections(fieldsSelection, fragments, fieldsDepth);
       final List<ResultInternal> fields = new ArrayList<>();
       for (final FieldDefinition fd : objType.getFieldDefinitions())
         fields.add(buildIntrospectionField(fd.getName(), fieldSelections,
-            typeSelectionSet -> buildTypeInfo(fd.getType(), typeSelectionSet, fragments, fieldsDepth + 1)));
+            typeSelectionSet -> buildTypeInfo(fd.getType(), typeSelectionSet, fragments, fieldsDepth + 1, registry)));
       return fields;
     }, null);
   }
@@ -727,10 +757,10 @@ public class GraphQLSchema {
    * a named OBJECT with no fields to list.
    */
   private ResultInternal buildQueryTypeResult(final SelectionSet selectionSet, final GraphQLFragments fragments,
-      final int fieldsDepth) {
-    final ObjectTypeDefinition queryType = objectTypeDefinitionMap.get("Query");
+      final int fieldsDepth, final GraphQLTypeRegistry registry) {
+    final ObjectTypeDefinition queryType = registry.getQueryDefinition();
     if (queryType != null)
-      return buildGraphQLTypeResult(queryType, selectionSet, fragments, fieldsDepth);
+      return buildGraphQLTypeResult(queryType, selectionSet, fragments, fieldsDepth, registry);
     return buildIntrospectionLeafType("Query", "OBJECT", selectionSet, fragments);
   }
 
@@ -742,19 +772,19 @@ public class GraphQLSchema {
    * simple name.
    */
   private ResultInternal buildTypeInfo(final com.arcadedb.graphql.parser.Type type, final SelectionSet selectionSet,
-      final GraphQLFragments fragments, final int fieldsDepth) {
+      final GraphQLFragments fragments, final int fieldsDepth, final GraphQLTypeRegistry registry) {
     final Function<SelectionSet, ResultInternal> unwrapped;
     final boolean nonNull;
     if (type.getListType() != null) {
       final ListType listType = type.getListType();
       unwrapped = listSelectionSet -> buildIntrospectionType(null, "LIST", listSelectionSet, fragments, null,
-          ofTypeSelectionSet -> buildTypeInfo(listType.getType(), ofTypeSelectionSet, fragments, fieldsDepth));
+          ofTypeSelectionSet -> buildTypeInfo(listType.getType(), ofTypeSelectionSet, fragments, fieldsDepth, registry));
       nonNull = listType.isBang();
     } else {
       final String name = type.getTypeName().getName();
       unwrapped = namedSelectionSet -> {
         // SDL object, database type or built-in scalar, as `__type(name:)` would describe it; anything else is a custom scalar
-        final ResultInternal named = buildTypeResult(name, namedSelectionSet, fragments, fieldsDepth);
+        final ResultInternal named = buildTypeResult(name, namedSelectionSet, fragments, fieldsDepth, registry);
         return named != null ? named : buildIntrospectionLeafType(name, "SCALAR", namedSelectionSet, fragments);
       };
       nonNull = type.isBang();
@@ -918,7 +948,15 @@ public class GraphQLSchema {
    * not modeled, so they are never reported.
    */
   public boolean isObjectType(final String name) {
-    return objectTypeDefinitionMap.containsKey(name);
+    return registry.isObjectType(name);
+  }
+
+  /**
+   * Whether {@code name} is one of the built-in scalars this module publishes. A selection set written on a field of one of them
+   * is a validation error (ScalarLeafs, #10762).
+   */
+  static boolean isBuiltInScalar(final String name) {
+    return BUILT_IN_SCALAR_SET.contains(name);
   }
 
   /**
@@ -929,15 +967,6 @@ public class GraphQLSchema {
   }
 
   public ObjectTypeDefinition getTypeFromField(final FieldDefinition fieldDefinition) {
-    ObjectTypeDefinition returnType = null;
-    if (fieldDefinition.getType().getTypeName() != null) {
-      final String returnTypeName = fieldDefinition.getType().getTypeName().getName();
-      returnType = objectTypeDefinitionMap.get(returnTypeName);
-
-    } else if (fieldDefinition.getType().getListType() != null) {
-      final String returnTypeName = fieldDefinition.getType().getListType().getType().getTypeName().getName();
-      returnType = objectTypeDefinitionMap.get(returnTypeName);
-    }
-    return returnType;
+    return registry.getTypeFromField(fieldDefinition);
   }
 }

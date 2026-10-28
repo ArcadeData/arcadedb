@@ -146,7 +146,9 @@ public class PostgresNetworkExecutor extends Thread {
    * admin_shutdown: what PostgreSQL terminates a backend with when an administrator takes its database away under it - here, a
    * database closed, restored or dropped under a transaction the connection had open (issue #10692).
    */
-  static final String SQLSTATE_ADMIN_SHUTDOWN     = "57P01";
+  static final String SQLSTATE_ADMIN_SHUTDOWN       = "57P01";
+  /** invalid_catalog_name: what PostgreSQL answers a connection to a database that does not exist (issue #10795). */
+  static final String SQLSTATE_INVALID_CATALOG_NAME = "3D000";
 
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
   /**
@@ -1606,7 +1608,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (types != null)
       return new CatalogAnswer(types, getColumns(types));
 
-    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolveForSession(query, database, userName, sessionSettings, parameters);
     if (answer != null) {
       if (answer.rows != null)
         return new CatalogAnswer(toResults(answer.rows), answer.columns);
@@ -2131,7 +2133,7 @@ public class PostgresNetworkExecutor extends Thread {
    * Returns null as soon as an item does not name a column on its own - a {@code *} or an exclusion, which both
    * need the row source, or an {@code expand()}, which replaces the row with whatever it expands.
    */
-  private Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
+  private static Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
     if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
       return null;
 
@@ -2262,6 +2264,21 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * The columns a SELECT projects, named and typed as a statement Describe names and types them, from {@code sourceColumns} - the
+   * declared columns of the type it reads, empty when it reads none - and never from a row: the columns of a materialized view are
+   * the ones its query projects (issue #10799), and the catalog that describes them reads no record. Null when the projection does
+   * not name its columns on its own ({@code expand()}, or a {@code *} over a source with no declared column).
+   */
+  static Map<String, PostgresType> columnsProjectedBy(final SelectStatement select, final Map<String, PostgresType> sourceColumns) {
+    if (!sourceColumns.isEmpty()) {
+      final Map<String, PostgresType> projected = applyProjection(select.getProjection(), sourceColumns);
+      if (projected != null && !projected.isEmpty())
+        return projected;
+    }
+    return getColumnsFromProjection(select.getProjection());
+  }
+
+  /**
    * Narrows the columns discovered for the queried target down to what the query really projects. The
    * discovery always looks at the whole target (a sample row or the declared properties), so without this
    * step a probe like {@code SELECT name FROM Character WHERE 1=0} would advertise every property plus the
@@ -2269,7 +2286,7 @@ public class PostgresNetworkExecutor extends Thread {
    * aliases, functions and expressions are handled the same way the executor handles them. When the query has
    * no projection ({@code SELECT FROM Type}), the full column set is returned unchanged.
    */
-  private Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
+  private static Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
     if (columns == null || columns.isEmpty())
       return columns;
 
@@ -4025,12 +4042,18 @@ public class PostgresNetworkExecutor extends Thread {
    * Answers a connection whose database the server refused to resolve, with a FATAL error: the caller closes the connection.
    * A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
    * dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the
-   * other.
+   * other. The name that is no database is answered as PostgreSQL answers it, 3D000 invalid_catalog_name (issue #10795): HV00Q
+   * is an FDW code (fdw_schema_not_found) no driver associates with a database name.
    */
   private void refuseDatabase(final DatabaseOperationException e) {
-    if (ErrorCategory.of(e) == ErrorCategory.UNAVAILABLE)
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (category == ErrorCategory.UNAVAILABLE)
       writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+    else if (category == ErrorCategory.DATABASE_NOT_FOUND)
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
     else
+      // Deliberately unchanged: any other failure to open the database (an I/O error, a corrupted directory) keeps the answer it
+      // always had. It is neither a held database nor a missing name, and giving it a code of its own is not this branch's call
       writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
   }
 
@@ -4046,9 +4069,9 @@ public class PostgresNetworkExecutor extends Thread {
    *   <li>the name resolves again: the connection serves the new instance from this message on, as a fresh connection would;</li>
    *   <li>it does not ({@code close database} not yet followed by {@code open database}, a restore still running, a drop): the
    *   connection is closed with the FATAL error the connect path gives for the same name - {@code 57P03} cannot_connect_now for a
-   *   database the server holds, {@code HV00Q} for one that is gone - which is how PostgreSQL treats the backends of a database
-   *   taken away under them. A pool replaces the connection, and the new one is refused at connect until the name is served
-   *   again;</li>
+   *   database the server holds, {@code 3D000} invalid_catalog_name for one that is gone - which is how PostgreSQL treats the
+   *   backends of a database taken away under them. A pool replaces the connection, and the new one is refused at connect until
+   *   the name is served again;</li>
    *   <li>a transaction was open on the closed instance - an explicit {@code BEGIN} block, or an extended-protocol pipeline whose
    *   portals a Sync has not ended yet: its work went with the instance, so carrying on against the new one would let the client
    *   commit a block of which only the later statements exist. The connection is closed with {@code 57P01} admin_shutdown, as
@@ -4296,6 +4319,7 @@ public class PostgresNetworkExecutor extends Thread {
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
       case UNAVAILABLE -> SQLSTATE_CANNOT_CONNECT_NOW; // cannot_connect_now - a database that is held, not one that does not exist
+      case DATABASE_NOT_FOUND -> SQLSTATE_INVALID_CATALOG_NAME; // invalid_catalog_name - one that does not exist (issue #10795)
       case SERVER -> "XX000";         // internal_error
     };
   }

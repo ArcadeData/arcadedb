@@ -24,11 +24,14 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -55,11 +58,22 @@ public class DropIndexStatement extends DDLStatement {
     final Database db = context.getDatabase();
 
     if (all) {
-      for (final Index idx : db.getSchema().getIndexes()) {
-        db.getSchema().dropIndex(idx.getName());
+      // ONE statement, ONE drop (issue #10734): asked one index at a time, a refusal of the Nth came after the ones before it were
+      // already gone, and said "Nothing was changed". dropIndexes() asks every index and probes every file before the first drop.
+      // A bucket sub-index goes with its type index, so only the indexes that are not part of another are named
+      final Index[] indexes = db.getSchema().getIndexes();
+      final List<String> toDrop = new ArrayList<>(indexes.length);
+      for (final Index idx : indexes)
+        if (!(idx instanceof IndexInternal internal) || internal.getTypeIndex() == null)
+          toDrop.add(idx.getName());
 
+      db.getSchema().getEmbedded().dropIndexes(toDrop);
+
+      for (final Index idx : indexes) {
         final ResultInternal result = new ResultInternal(db);
         result.setProperty("operation", "drop index");
+        result.setProperty("indexName", idx.getName());
+        // kept for the clients that read it before indexName was added: it is the index name, not a bucket's
         result.setProperty("bucketName", idx.getName());
         rs.add(result);
       }

@@ -79,7 +79,7 @@ class AsyncInsertTest {
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
 
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
     database.async().setParallelLevel(CONCURRENCY_LEVEL);
 
     database.transaction(() -> {
@@ -138,7 +138,7 @@ class AsyncInsertTest {
     GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(4);
     arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
 
     final AtomicLong okCount = new AtomicLong();
     final AtomicLong errCount = new AtomicLong();

@@ -228,6 +228,11 @@ public class DatabaseChecker {
     // per-direction detail behind it plus the half-linked edges that are still reachable from one side.
 
     result.put("unreachableEdgeRecords", 0L);
+    // Issue #10741: how many of them a plain FIX linked back into their vertices' lists (their entries are counted in
+    // reconnectedEdges too, one or two per record by direction)
+    result.put("relinkedOrphanEdgeRecords", 0L);
+    // and how many a run left for the next one, to bound the memory of its relink plan
+    result.put("orphanEdgeRecordsLeftToRelink", 0L);
     result.put("edgesMissingOutReference", 0L);
     result.put("edgesMissingInReference", 0L);
     result.put("unreachableEdgeRecordsFound", new LinkedHashSet<RID>());
@@ -530,6 +535,9 @@ public class DatabaseChecker {
         // explicitly-named TypeIndex wrapper. Safe to read once, outside the retry loop below: it is a plain name
         // read off idx, unaffected by how many attempts the rebuild takes.
         final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
+        // Re-created through the type that DECLARES the index, as REBUILD INDEX does (issue #10734): through the sub type that
+        // owns the bucket it minted a wrapper of its own under the declaring index's name
+        final String declaringTypeName = ownerTypeIndex != null ? ownerTypeIndex.getTypeName() : typeName;
 
         // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
         // lock across both the drop and the create prevents a concurrent writer from observing the index
@@ -572,7 +580,7 @@ public class DatabaseChecker {
               // still held - so a single outer attempt can now take noticeably longer than before (up to
               // LOCK_MAX_ATTEMPTS internal retries with their own backoff) before it either succeeds or falls
               // through to the outer catch below.
-              database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+              database.getSchema().buildBucketIndex(declaringTypeName, bucketName, propNames.toArray(new String[propNames.size()]))
                   .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
                   .withMetadata(rebuildMetadata)
                   .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
@@ -1438,6 +1446,12 @@ public class DatabaseChecker {
    * adjacency and the thing {@code RESTORE VERTEX} rebuilds it from, so a repair that deletes them by default
    * would turn a recoverable database into an unrecoverable one. Reporting is therefore always on; removing is
    * always asked for.
+   * <p>
+   * Without this opt-in a plain {@code FIX} RELINKS them instead (issue #10741): an orphan's {@code @out} and
+   * {@code @in} name live vertices, so the record goes back into the OUT list of the first and, for a bidirectional
+   * type, the IN list of the second. That is right in both cases the detection cannot tell apart - the committed edges of
+   * a {@code GraphBatch} killed before {@code close()} linked them, and the edges of a vertex that lost its head-chunk
+   * pointer - and loses nothing even for garbage, which {@code countType()} and a scan of the type already return.
    */
   public DatabaseChecker setDeleteOrphanEdgeRecords(final boolean deleteOrphanEdgeRecords) {
     this.deleteOrphanEdgeRecords = deleteOrphanEdgeRecords;

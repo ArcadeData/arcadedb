@@ -115,10 +115,20 @@ public enum ErrorCategory {
    * {@link #RETRY}, which means "run the transaction again" and is decided on the conflict of a commit; not {@link #SERVER}, because
    * nothing is broken and it is not worth a stack trace in the log.
    * <p>
-   * {@link DatabaseNotFoundException}, the name that is no database at all, is its subtype and NOT in this category: it is permanent and the
-   * caller's to correct.
+   * {@link DatabaseNotFoundException}, the name that is no database at all, is its subtype and NOT in this category but in
+   * {@link #DATABASE_NOT_FOUND}: it is permanent and the caller's to correct.
    */
   UNAVAILABLE,
+
+  /**
+   * The caller named a database this server does not have ({@link DatabaseNotFoundException}, issue #10795): permanent, and the
+   * caller's to correct - no retry, no wait and no operator action on this server makes the same request succeed. The opposite
+   * verdict of {@link #UNAVAILABLE}, although its type extends the one {@link #UNAVAILABLE} is decided on; and not {@link #NOT_FOUND},
+   * a missing RECORD, which is what the gRPC client rebuilds that status as when no trailer names the type. It used to fall through
+   * to {@link #SERVER}, so every protocol that asks this enum reported a mistyped database name as a server fault ({@code XX000} on
+   * Postgres, {@code INTERNAL} on gRPC, an uncoded error on MongoDB) and logged it with a stack trace.
+   */
+  DATABASE_NOT_FOUND,
 
   /**
    * Anything else: the server, not the caller, is at fault.
@@ -139,9 +149,11 @@ public enum ErrorCategory {
       new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
       new Rule(QueryHeapBudgetExceededException.class, RETRY),
       new Rule(QueryAdmissionException.class, RETRY),
+      // Right above DatabaseNotAvailableException, which it extends and whose verdict it reverses: the name is no database (issue #10795)
+      new Rule(DatabaseNotFoundException.class, DATABASE_NOT_FOUND),
       // After RETRY, which a driver acts on first, and before everything that classifies the CALLER: a wrapper that parses or
       // validates (GraphQL, the query engines) must not relabel a database the server holds as the caller's mistake (issue #10553)
-      new Rule(DatabaseNotAvailableException.class, UNAVAILABLE, DatabaseNotFoundException.class),
+      new Rule(DatabaseNotAvailableException.class, UNAVAILABLE),
       // After DatabaseIsReopeningException, its subtype, which stays RETRY: a handle closed under a request by a CLOSE DATABASE, a
       // restore, a DROP or a shutdown is a database the server takes away and gives back, not a server fault (issue #10692)
       new Rule(DatabaseIsClosedException.class, UNAVAILABLE),
@@ -161,19 +173,14 @@ public enum ErrorCategory {
       new Rule(TimeoutException.class, TIMEOUT) };
 
   /**
-   * A type that, found anywhere along a cause chain, decides the chain's category, unless the chain also carries {@code except}: a
-   * narrower type that is the opposite verdict although it extends {@code type} (a {@link DatabaseNotFoundException} is permanent,
-   * the {@link DatabaseNotAvailableException} it extends clears by itself). The chain then falls through to the rules below.
+   * A type that, found anywhere along a cause chain, decides the chain's category. A narrower type that is the opposite verdict
+   * although it extends {@code type} (a {@link DatabaseNotFoundException} is permanent, the {@link DatabaseNotAvailableException}
+   * it extends clears by itself) is a rule of its own, above it.
    */
-  private record Rule(Class<? extends Throwable> type, ErrorCategory category, Class<? extends Throwable> except) {
-    Rule(final Class<? extends Throwable> type, final ErrorCategory category) {
-      this(type, category, null);
-    }
-
+  private record Rule(Class<? extends Throwable> type, ErrorCategory category) {
     /** The frame of the chain that makes this rule decide, or {@code null} when the rule does not apply to it. */
     Throwable find(final Throwable error) {
-      final Throwable found = CauseChain.find(error, type);
-      return found != null && (except == null || !CauseChain.contains(error, except)) ? found : null;
+      return CauseChain.find(error, type);
     }
   }
 
@@ -236,7 +243,8 @@ public enum ErrorCategory {
    * <p>
    * {@link #UNAVAILABLE} is decided right after them and before everything that blames the caller, so a wrapper that parses
    * or validates cannot relabel a database the server holds. {@link DatabaseNotFoundException} extends the type it is decided on and
-   * is the opposite verdict, so a chain carrying it is left to the rules below (issue #10553).
+   * is the opposite verdict, so {@link #DATABASE_NOT_FOUND} is decided right above it (issues #10553, #10795): wherever the
+   * {@link DatabaseNotFoundException} sits in the chain, the name is no database, and no wrapper changes that.
    * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an

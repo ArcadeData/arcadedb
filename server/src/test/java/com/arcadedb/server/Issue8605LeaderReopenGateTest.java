@@ -69,7 +69,7 @@ class Issue8605LeaderReopenGateTest {
       for (final String name : new String[] { MARKED, UNMARKED })
         try {
           if (server.existsDatabase(name))
-            ((DatabaseInternal) server.getDatabase(name)).getEmbedded().close();
+            ((DatabaseInternal) server.getDatabaseForOperator(name)).getEmbedded().close();
         } catch (final Exception ignore) {
           // best-effort cleanup; the @TempDir is removed regardless
         }
@@ -85,7 +85,7 @@ class Issue8605LeaderReopenGateTest {
     final HAServerPlugin ha = leader("a newer copy is held by peer-1 (applied index 42)");
     server.setHA(ha);
 
-    assertThatThrownBy(() -> server.getDatabase(MARKED))
+    assertThatThrownBy(() -> server.getDatabaseForOperator(MARKED))
         .isInstanceOf(DatabaseNotAvailableException.class)
         .hasMessageContaining("did not confirm")
         // the way out is the audited override of issue #8641, not deleting the marker by hand
@@ -105,7 +105,7 @@ class Issue8605LeaderReopenGateTest {
     final HAServerPlugin ha = leader(null);
     server.setHA(ha);
 
-    assertThat(server.getDatabase(MARKED).isOpen()).isTrue();
+    assertThat(server.getDatabaseForOperator(MARKED).isOpen()).isTrue();
     assertThat(Files.exists(marker(MARKED))).as("the verified copy is the cluster's: its mark goes").isFalse();
     verify(ha, times(1)).refuseToReopenUnverifiedClosedCopy(MARKED);
   }
@@ -119,7 +119,7 @@ class Issue8605LeaderReopenGateTest {
     server.setHA(ha);
     server.removeDatabase(UNMARKED);
 
-    assertThat(server.getDatabase(UNMARKED).isOpen()).isTrue();
+    assertThat(server.getDatabaseForOperator(UNMARKED).isOpen()).isTrue();
     verify(ha, never()).refuseToReopenUnverifiedClosedCopy(anyString());
   }
 
@@ -151,7 +151,7 @@ class Issue8605LeaderReopenGateTest {
     when(ha.isLeader()).thenReturn(false);
     server.setHA(ha);
 
-    assertThatThrownBy(() -> server.getDatabase(MARKED)).isInstanceOf(DatabaseNotAvailableException.class);
+    assertThatThrownBy(() -> server.getDatabaseForOperator(MARKED)).isInstanceOf(DatabaseNotAvailableException.class);
     verify(ha, never()).refuseToReopenUnverifiedClosedCopy(anyString());
   }
 
@@ -165,7 +165,7 @@ class Issue8605LeaderReopenGateTest {
     server.setHA(ha);
 
     assertThat(ha.refuseToReopenUnverifiedClosedCopy(MARKED)).contains("cannot compare");
-    assertThatThrownBy(() -> server.getDatabase(MARKED))
+    assertThatThrownBy(() -> server.getDatabaseForOperator(MARKED))
         .isInstanceOf(DatabaseNotAvailableException.class)
         .hasMessageContaining("did not confirm");
     assertThat(Files.exists(marker(MARKED))).isTrue();

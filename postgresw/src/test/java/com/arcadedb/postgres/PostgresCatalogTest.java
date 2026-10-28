@@ -143,9 +143,9 @@ class PostgresCatalogTest {
   void theDriversSchemaListNamesTheConnectedDatabase() {
     final PostgresCatalog.Answer answer = resolve(JDBC_GET_SCHEMAS);
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0)).containsEntry("TABLE_SCHEM", database.getName());
-    assertThat(answer.rows.get(0)).containsEntry("TABLE_CATALOG", database.getName());
+    // the database's own schema, and pg_catalog, the schema of every built-in type, which pgjdbc lists as PostgreSQL does (issue #10745)
+    assertThat(names(answer.rows, "TABLE_SCHEM")).containsExactly(database.getName(), "pg_catalog");
+    assertThat(names(answer.rows, "TABLE_CATALOG")).containsOnly(database.getName());
     // The projection order is the client's, because a DataRow is read positionally.
     assertThat(answer.columns.keySet()).containsExactly("TABLE_SCHEM", "TABLE_CATALOG");
   }
@@ -198,10 +198,10 @@ class PostgresCatalogTest {
             + "case when lower(NSPNAME)='information_schema' then 'Y' else 'N' end as IS_SYSTEM, 'N' as IS_EMPTY "
             + "from PG_CATALOG.PG_NAMESPACE order by NSPNAME asc");
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0)).containsEntry("schema_name", database.getName());
-    assertThat(answer.rows.get(0)).containsEntry("is_public", "N");
-    assertThat(answer.rows.get(0)).containsEntry("is_system", "N");
+    // the client's own CASE decides what it calls public: pg_catalog, by its spelling (issue #10745)
+    assertThat(names(answer.rows, "schema_name")).containsExactly(database.getName(), "pg_catalog");
+    assertThat(names(answer.rows, "is_public")).containsExactly("N", "Y");
+    assertThat(names(answer.rows, "is_system")).containsOnly("N");
   }
 
   @Test
@@ -276,14 +276,14 @@ class PostgresCatalogTest {
     final PostgresCatalog.Answer answer = resolve("SELECT * FROM pg_catalog.pg_namespace");
 
     assertThat(answer.columns.keySet()).contains("oid", "nspname", "nspowner", "nspacl");
-    assertThat(answer.rows.get(0)).containsEntry("nspname", database.getName());
+    assertThat(names(answer.rows, "nspname")).containsExactly("pg_catalog", database.getName());
   }
 
   // ---------------------------------------------------------------- what is not answered
 
   @Test
   void aQueryAboutARelationThisCatalogDoesNotModelIsDeclined() {
-    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_proc")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_extension")).isSameAs(PostgresCatalog.DECLINED);
   }
 
   @Test
@@ -422,10 +422,10 @@ class PostgresCatalogTest {
     // Both change what the rows are, so they are answered whole (issue #10228) rather than by the half this
     // catalog used to understand - which would be answering a different question.
     assertThat(names(resolve("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace ORDER BY 1").rows,
-        "relname")).containsExactly("Article", "Author", database.getName());
+        "relname")).containsExactly("Article", "Author", database.getName(), "pg_catalog");
     assertThat(names(resolve("SELECT relkind FROM pg_class GROUP BY relkind").rows, "relkind")).containsExactly("r");
     // A set operation with an arm this catalog cannot answer is declined whole, not answered by its other arm.
-    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT proname FROM pg_proc")).isSameAs(
+    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT extname FROM pg_extension")).isSameAs(
         PostgresCatalog.DECLINED);
     // LIMIT ALL is no limit (issue #10228).
     assertThat(names(resolve("SELECT relname FROM pg_class LIMIT ALL").rows, "relname")).containsExactly("Article", "Author");

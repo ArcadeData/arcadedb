@@ -500,8 +500,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       setMetadata(name, value);
     else
       // a primitive array nested in a list or a map (what the HTTP params parser leaves at any depth) is stored as the list it
-      // stands for, like the same value written as a literal or from Java (issue #10488)
-      map.put(name, convertValueToSchemaType(name, setTransformValue(Type.unwrapNestedPrimitiveArrays(value), name), type));
+      // stands for, like the same value written as a literal or from Java (issue #10488); a query Result, as the value or nested
+      // in it, as the record or the map it stands for, before the schema conversion sees it, so a declared property takes what an
+      // undeclared one takes (issue #10737)
+      map.put(name, convertValueToSchemaType(name, setTransformValue(Type.toRecordValue(value), name), type));
   }
 
   /**

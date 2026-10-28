@@ -96,7 +96,17 @@ public enum PostgresType {
   ARRAY_JSON(199, "_json", 114, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
   ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean)),
   // numeric[]: the one array type that holds every integer, long, float, double and BigDecimal exactly (issue #9008)
-  ARRAY_NUMERIC(1231, "_numeric", 1700, 0, Collection.class, -1, value -> parseArrayFromString(value, BigDecimal::new));
+  ARRAY_NUMERIC(1231, "_numeric", 1700, 0, Collection.class, -1, value -> parseArrayFromString(value, BigDecimal::new)),
+  // The array types of the scalars above that had none (issue #10592): each scalar's typarray named one of these OIDs, and a client
+  // resolving it - pgjdbc's createArrayOf("varchar", ...) binds a parameter of type 1015 - found no type behind it. This protocol
+  // never announces them for a column, it reads them as parameters and lists them in pg_type.
+  ARRAY_SMALLINT(1005, "_int2", 21, 0, Collection.class, -1, value -> parseArrayFromString(value, Short::parseShort)),
+  ARRAY_BYTEA(1001, "_bytea", 17, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseByteaText)),
+  ARRAY_BPCHAR(1014, "_bpchar", 1042, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_VARCHAR(1015, "_varchar", 1043, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_DATE(1182, "_date", 1082, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseDateText)),
+  ARRAY_TIMESTAMP(1115, "_timestamp", 1114, 0, Collection.class, -1,
+      value -> parseArrayFromString(value, PostgresType::parseTimestampText));
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -913,7 +923,8 @@ public enum PostgresType {
       final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
       typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
     }
-    case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC -> {
+    case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC, ARRAY_SMALLINT,
+         ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> {
       final Collection<?> elements = value instanceof Collection<?> collection ? collection
           : value.getClass().isArray() ? convertPrimitiveArrayToCollection(value) : null;
       if (elements == null)
@@ -957,7 +968,7 @@ public enum PostgresType {
       for (final Object element : elements) {
         if (element == null)
           typeBuffer.putInt(-1);
-        else if (elementType == TEXT || elementType == JSON)
+        else if (elementType == TEXT || elementType == JSON || elementType == VARCHAR || elementType == BPCHAR)
           writeString(typeBuffer, arrayElementToText(element));
         else
           try {
@@ -971,19 +982,12 @@ public enum PostgresType {
     typeBuffer.putInt(lengthPosition, typeBuffer.position() - lengthPosition - 4);
   }
 
+  /** The element type of an array type: its {@code typelem}, the one place the pairing is declared. */
   private static PostgresType elementTypeOf(final PostgresType arrayType) {
-    return switch (arrayType) {
-      case ARRAY_INT -> INTEGER;
-      case ARRAY_CHAR -> CHAR;
-      case ARRAY_LONG -> LONG;
-      case ARRAY_REAL -> REAL;
-      case ARRAY_DOUBLE -> DOUBLE;
-      case ARRAY_TEXT -> TEXT;
-      case ARRAY_JSON -> JSON;
-      case ARRAY_BOOLEAN -> BOOLEAN;
-      case ARRAY_NUMERIC -> NUMERIC;
-      default -> throw new IllegalArgumentException("Not an array type: " + arrayType);
-    };
+    final PostgresType element = arrayType.isArrayType() ? byCode(arrayType.elementCode) : null;
+    if (element == null)
+      throw new IllegalArgumentException("Not an array type: " + arrayType);
+    return element;
   }
 
   /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
@@ -1416,8 +1420,8 @@ public enum PostgresType {
         // (json_send emits it verbatim); the length is already provided by the Bind message.
         yield parseJsonText(new String(valueAsBytes, DatabaseFactory.getDefaultCharset()));
       }
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC ->
-          deserializeBinaryArray(buffer);
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC,
+           ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> deserializeBinaryArray(buffer);
     };
   }
 
@@ -1469,8 +1473,7 @@ public enum PostgresType {
       return buf.get() != 0;
     if (elemOid == LONG.code)
       return buf.getLong();
-    // int2[] (OID 1005) is not in the ARRAY_* enum, but int2 elements can appear inside
-    // any array (e.g. composite types), so we still decode them as Short here.
+    // the elements of int2[] (OID 1005, ARRAY_SMALLINT)
     if (elemOid == SMALLINT.code)
       return buf.getShort();
     if (elemOid == INTEGER.code)
@@ -1481,6 +1484,9 @@ public enum PostgresType {
       return buf.getDouble();
     if (elemOid == NUMERIC.code)
       return parseNumericBinary(buf);
+    // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592): read as the scalar is, not as its bytes' text
+    if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code)
+      return deserializeBinary(elemOid, bytes);
     // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
     return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
@@ -1489,15 +1495,9 @@ public enum PostgresType {
    * Checks if this type is an array type.
    */
   public boolean isArrayType() {
-    return this == ARRAY_INT ||
-        this == ARRAY_CHAR ||
-        this == ARRAY_LONG ||
-        this == ARRAY_DOUBLE ||
-        this == ARRAY_REAL ||
-        this == ARRAY_TEXT ||
-        this == ARRAY_JSON ||
-        this == ARRAY_BOOLEAN ||
-        this == ARRAY_NUMERIC;
+    // an array type is the one that names an element type: read off the pairing every constant declares, so a new array constant
+    // cannot be left out of a list of them (issue #10592)
+    return elementCode != 0;
   }
 
   /**

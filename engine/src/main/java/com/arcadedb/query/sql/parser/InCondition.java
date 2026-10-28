@@ -376,10 +376,13 @@ public class InCondition extends BooleanExpression {
       if (empty)
         return Boolean.FALSE;
       return sawNull ? null : Boolean.FALSE;
-    } else if (iRight.getClass().isArray()) {
-      final Object[] array = (Object[]) iRight;
+    } else if (MultiValue.isSequenceArray(iRight)) {
+      // any array but a byte[], the BINARY scalar, which is compared as one value below: a primitive array (an int[] bound to the
+      // placeholder) failed the cast to Object[] this arm used to make (issue #10721)
       boolean sawNull = false;
-      for (final Object o : array) {
+      boolean empty = true;
+      for (final Object o : MultiValue.getMultiValueIterable(iRight)) {
+        empty = false;
         if (iLeft == null || o == null) {
           sawNull = true;
           continue;
@@ -389,7 +392,7 @@ public class InCondition extends BooleanExpression {
         if (isNullSubQueryRow(o))
           sawNull = true;
       }
-      if (array.length == 0)
+      if (empty)
         return Boolean.FALSE;
       return sawNull ? null : Boolean.FALSE;
     } else if (iRight instanceof ResultSet rsRight) {

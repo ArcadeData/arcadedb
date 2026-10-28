@@ -345,7 +345,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final    AtomicInteger           mutationsSinceSerialize;
 
   // Product Quantization (PQ) for zero-disk-I/O approximate search
-  // PQ file stores codebooks and encoded vectors; pqVectors is cached in memory
+  // PQ file stores codebooks and encoded vectors; pqCodes holds them in memory
   private          LSMVectorIndexPQFile pqFile;
   /**
    * Set when a PQ file known to describe an earlier graph could not be deleted (issue #9917): the drop before a graph
@@ -354,8 +354,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the pair. Session-local: a restart forgets it, which the SEVERE log line written when it is set already warns about.
    */
   private volatile boolean             persistedPQKnownStale;
-  private volatile PQVectors            pqVectors;
-  private volatile ProductQuantization  productQuantization;
+  /**
+   * The PQ codes in hand, with the codebook that encoded them and the ordinal map they are laid out by (issue #10786).
+   * Published as one reference, so a reader never pairs the codes of one build with the codebook or the map of another.
+   * A search reads them only through {@link #pqCodesFor(int[])}, with the ordinal map it pinned beside the graph.
+   */
+  private volatile PQCodes              pqCodes;
   /** How many vectors the last codebook was trained on; -1 until one has been. */
   private volatile int                  lastPqTrainingSampleSize = -1;
   private static final long             PQ_TRAINING_SAMPLE_SEED  = 0x10514L;
@@ -1008,6 +1012,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (anyDead)
         renumberedLookups.put(renumbered, lookupOf(renumbered));
       ordinalToVectorId = renumbered;
+      // Every ordinal keeps its vector, only the id naming it changes: codes laid out by the old map are the new one's
+      // (issue #10786)
+      final PQCodes held = pqCodes;
+      if (held != null && held.ordinalMap() == oldOrdinalMap)
+        pqCodes = held.boundTo(renumbered);
     }
 
     final List<DeltaVectorEntry> renumberedDelta = new ArrayList<>(deltaVectors.size());
@@ -1514,11 +1523,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (deferredPQLoad)
           try {
             if (pqFile.loadPQ()) {
-              this.pqVectors = pqFile.getPQVectors();
-              this.productQuantization = pqFile.getProductQuantization();
+              final PQVectors loaded = pqFile.getPQVectors();
+              // Bound to no map yet: no graph is chosen, and the reopen route that chooses one adopts them only for the
+              // graph their recorded fingerprint names (issues #10698, #10786)
+              this.pqCodes = loaded != null ? new PQCodes(pqFile.getProductQuantization(), loaded, null) : null;
               LogManager.instance().log(this, Level.INFO,
                   "PQ data loaded for index %s: %d vectors ready for zero-disk-I/O search",
-                  indexName, pqVectors != null ? pqVectors.count() : 0);
+                  indexName, loaded != null ? loaded.count() : 0);
             }
           } catch (final Exception e) {
             if (LSMVectorIndexPageParser.isInterruption(e))
@@ -1860,9 +1871,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *                                 (issue #7190) - never {@code null}
    * @param tombstonedOrdinals       how many of those leading entries answer for a vector that has since been
    *                                 deleted, charged to the rebuild schedule by {@link #reuseStalePrefixGraph}
+   * @param graphFingerprint         the fingerprint the manifest certifies for the graph's own ordinals, which is the
+   *                                 identity the PQ codes paired with it must record (issue #10698)
    */
   private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] ordinalToVectorId, int graphSize,
-                                 String vectorProp, int[] unreachableOrdinals, int tombstonedOrdinals) {
+                                 String vectorProp, int[] unreachableOrdinals, int tombstonedOrdinals,
+                                 long graphFingerprint) {
   }
 
   /**
@@ -2267,7 +2281,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return new PersistedGraphCheck(false,
               // Zero by construction: this branch is only reached with no tombstones at all (issue #7842).
               new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp, persistedManifest.unreachableOrdinals(),
-                  0));
+                  0, persistedManifest.fingerprint()));
         }
         LogManager.instance().log(this, Level.INFO,
             "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
@@ -2292,9 +2306,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final List<DeltaVectorEntry> unreachableEntries = readUnreachableEntries(unreachableOrdinals,
           rebuiltOrdinalToVectorId, rebuiltOrdinalToVectorId.length, vectorProp);
 
+      // ISSUE #10698: the PQ codes were published with the locations, before any graph was chosen, so this is where
+      // they are adopted for THIS graph - and they are only if they record it. The exact-cover reopen asks the same
+      // question, but its "no" only sends the open here, and without asking again the walk paired that same graph with
+      // the very codes the question had refused. The identity is the one the manifest certifies for the array just
+      // rebuilt (the comparison above proved them equal), or, for a graph persisted without a manifest, the fingerprint
+      // of that array computed here: the same value a manifest would carry for it. That computation is one location
+      // lookup per ordinal, O(N), paid only by a PRODUCT index persisted without a manifest, on top of the walk above
+      // that already read every vector's document.
+      final long graphFingerprint = productQuantized ?
+          persistedManifest != null ? persistedManifest.fingerprint() :
+              LSMVectorIndexGraphManifest.fingerprintOf(rebuiltOrdinalToVectorId, validationLocations::getRid) : 0L;
+      final PQCodes checkedCodes = pqCodes;
+      final String pqMismatch = productQuantized ?
+          pqCodesMismatch(checkedCodes != null ? checkedCodes.codes() : null, rebuiltOrdinalToVectorId.length,
+              graphFingerprint) : null;
+
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        // In the same lock as the graph, so no search walks the new graph through codes built for another one, and the
+        // codes that were built for it are bound to its map in the same step (issue #10786)
+        if (pqMismatch != null)
+          dropProductQuantizationCodes();
+        else if (productQuantized)
+          adoptPQCodesFor(checkedCodes, rebuiltOrdinalToVectorId);
         this.graphIndex = loadedGraph;
         this.graphUnreachableOrdinals = unreachableOrdinals;
         this.ordinalToVectorId = rebuiltOrdinalToVectorId;
@@ -2317,26 +2353,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "which is the only way a search can return them (issue #7190)", queuedUnreachable,
             unreachableOrdinals.length, indexName);
 
-      // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
-      // This handles the case where graph was built before PRODUCT quantization was added
-      if (metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null && !pqFile.isPQReady()) {
+      // Build PQ when there are no codes for this graph: no PQ data at all (a graph built before PRODUCT quantization
+      // was added), or codes that were discarded just above because they were built for another graph (issue #10698)
+      if (pqMismatch != null) {
         LogManager.instance().log(this, Level.INFO,
-            "PQ not available after graph load, building PQ for index: %s", indexName);
-        try {
-          // Create vector values from the loaded vectorIndex for PQ building. One read of the array: the codes are laid
-          // out by it, and they are recorded as built for the persisted graph only while it is still the very array that
-          // graph was validated against above - which is what the manifest's fingerprint certifies (issue #10584)
-          final int[] pqOrdinals = ordinalToVectorId;
-          final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
-              metadata.dimensions, vectorProp,
-              snapshotOf(vectorIndex(), pqOrdinals), pqOrdinals, this,
-              computeGraphBuildCacheCapacity(pqOrdinals.length));
-          buildAndPersistPQ(vectors,
-              persistedManifest != null && pqOrdinals == rebuiltOrdinalToVectorId ? persistedManifest.fingerprint() : null);
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
-        }
+            "PQ codes of index %s %s: building PQ for the persisted graph (issue #10698)", indexName, pqMismatch);
+        // One read of the array: the codes are laid out by it, and they are recorded as built for the persisted graph
+        // only while it is still the very array that graph was validated against above (issue #10584)
+        final int[] pqOrdinals = ordinalToVectorId;
+        rebuildProductQuantizationFor(pqOrdinals, vectorProp,
+            pqOrdinals == rebuiltOrdinalToVectorId ? Long.valueOf(graphFingerprint) : null);
       }
 
       return PersistedGraphCheck.LOADED;
@@ -2416,11 +2442,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // otherwise leaves the decision to the caller's walk, which also builds a missing PQ.
     //
     // "codes" is a snapshot taken once, here, before the map is read, and every PQ check below is made against it and
-    // against the identity pqFile recorded for that same instance. That is deliberate: a concurrent swap of pqVectors
+    // against the identity pqFile recorded for that same instance. That is deliberate: a concurrent swap of pqCodes
     // (a rebuild publishing new codes) leaves these checks answering for the old codes, never for a mixture of old and
     // new, and a wrong answer in either direction is safe - the only outcome a stale snapshot can reach is "no reuse"
     // (the count or the identity no longer matches what the manifest and the map say), and the caller's walk decides.
-    final PQVectors codes = pqVectors;
+    final PQCodes checkedCodes = pqCodes;
+    final PQVectors codes = checkedCodes != null ? checkedCodes.codes() : null;
     if (productQuantized && (pqFile == null || !pqFile.isPQReady() || codes == null))
       return null;
 
@@ -2558,7 +2585,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           indexName, deadOrdinals, mapVectorIds.length, extended.length - mapVectorIds.length);
       return new PersistedGraphCheck(false,
           new ReuseCandidate(loadedGraph, extended, mapVectorIds.length, vectorProp, manifest.unreachableOrdinals(),
-              deadOrdinals));
+              deadOrdinals, manifest.fingerprint()));
     }
 
     // The graph covers every live vector. Read what its own build left unreachable before publishing, for the same
@@ -2571,6 +2598,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int queuedUnreachable;
     lock.writeLock().lock();
     try {
+      // The codes checked above against the fingerprint the manifest certifies for this map are the ones bound to it
+      // (issue #10786); without PRODUCT quantization there are none
+      if (productQuantized)
+        adoptPQCodesFor(checkedCodes, mapVectorIds);
       this.graphIndex = loadedGraph;
       this.graphUnreachableOrdinals = unreachableOrdinals;
       this.ordinalToVectorId = mapVectorIds;
@@ -2781,6 +2812,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           unreachableVectorIdsOf(candidate.unreachableOrdinals(), rebuiltOrdinalToVectorId, graphSize, alreadyQueued),
           vectorProp);
 
+      // ISSUE #10698: the PQ codes are adopted for this graph here, the way the up-to-date branch of
+      // loadPersistedGraphOrDecidePrefix() adopts them for its own: only if they are one per ordinal of the prefix and
+      // record the graph the manifest certifies for it. Otherwise they are dropped in the publish below and rebuilt
+      // for the prefix right after it.
+      final boolean productQuantized = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
+      final PQCodes checkedCodes = pqCodes;
+      final String pqMismatch = productQuantized ?
+          pqCodesMismatch(checkedCodes != null ? checkedCodes.codes() : null, graphSize, candidate.graphFingerprint()) : null;
+      final int[] graphOrdinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
+
       // Publish. The graph is not published for the whole unlocked read above - insert() does not wait on it -
       // so a concurrent write could have landed on this index in the meantime and already appended its own
       // entries to deltaVectors and its own count to mutationsSinceSerialize. Appending to the buffer rather
@@ -2789,9 +2830,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        if (pqMismatch != null)
+          dropProductQuantizationCodes();
+        else if (productQuantized)
+          adoptPQCodesFor(checkedCodes, graphOrdinalToVectorId);
         this.graphIndex = loadedGraph;
         this.graphUnreachableOrdinals = candidate.unreachableOrdinals();
-        this.ordinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
+        this.ordinalToVectorId = graphOrdinalToVectorId;
         queuedIntoDelta = appendToDeltaBuffer(gapEntries);
         queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
         this.graphState = GraphState.MUTABLE;
@@ -2817,6 +2862,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           queuedUnreachable > 0 ?
               ", plus %d its build left unreachable and which the delta scan has to serve (issue #7190)".formatted(
                   queuedUnreachable) : "");
+
+      // Still under graphBuildLock, which every writer of the PQ file holds. The gap is served by the delta scan and
+      // needs no code: the codes cover exactly the ordinals of the graph just published.
+      if (pqMismatch != null) {
+        LogManager.instance().log(this, Level.INFO,
+            "PQ codes of index %s %s: building PQ for the reused graph prefix (issue #10698)", indexName, pqMismatch);
+        rebuildProductQuantizationFor(graphOrdinalToVectorId, vectorProp, candidate.graphFingerprint());
+      }
     } finally {
       // ensureGraphAvailable() handed the latch over rather than clearing it at decision time, so this is where it
       // is released - after the publish above and, crucially, still under graphBuildLock, so the next thread to
@@ -4526,9 +4579,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // PQ was already computed for accelerated graph build — just persist it
               LogManager.instance().log(this, Level.INFO,
                   "Persisting PQ computed during accelerated graph build for index: %s", indexName);
-              persistProductQuantization(earlyPq, earlyPqVectors, finalActiveVectorIds.length, certifiedFingerprint);
+              persistProductQuantization(earlyPq, earlyPqVectors, finalActiveVectorIds, certifiedFingerprint);
             } else {
-              buildAndPersistPQ(vectors, vectors.size() == finalActiveVectorIds.length ? certifiedFingerprint : null);
+              buildAndPersistPQ(vectors, finalActiveVectorIds,
+                  vectors.size() == finalActiveVectorIds.length ? certifiedFingerprint : null);
             }
           }
         } catch (final Throwable e) {
@@ -4953,13 +5007,116 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * PQ codes, the codebook that encoded them, and the ordinal map they are laid out by: the code of ordinal {@code i}
+   * encodes the vector of {@code ordinalMap[i]} (issue #10786). {@code ordinalMap} is {@code null} for codes read from the
+   * PQ file before a graph was chosen: those are bound to a map only when a reopen route has checked, against the
+   * fingerprint the file records, that they were built for the graph it publishes.
+   */
+  record PQCodes(ProductQuantization quantization, PQVectors codes, int[] ordinalMap) {
+    PQCodes boundTo(final int[] map) {
+      return new PQCodes(quantization, codes, map);
+    }
+  }
+
+  /**
+   * The PQ codes a search may score the ordinals of {@code ordinalMap} with: the ones laid out by that very array, or
+   * {@code null} (issue #10786). The only way a search reaches the codes, so pairing a graph with codes built for another
+   * one cannot be written by forgetting to ask.
+   * <p>
+   * Identity, not content and not a count. Every publish of a new map is a new array, and codes are bound to the array
+   * they were encoded with ({@link #persistProductQuantization}), adopted for by a reopen route that checked their
+   * fingerprint, or carried over by the renumbering of a compaction that keeps every ordinal's vector. A count is what was
+   * asked before, and a rebuild that keeps it while reassigning the ordinals (one delete and one insert) passed it, so the
+   * new graph was walked through the previous one's codes for as long as the build took to persist its own. Comparing the
+   * content would cost O(N) per search and still say nothing about a vector id reissued by a compaction.
+   */
+  private PQCodes pqCodesFor(final int[] ordinalMap) {
+    final PQCodes held = pqCodes;
+    return held != null && ordinalMap != null && held.ordinalMap() == ordinalMap ? held : null;
+  }
+
+  /**
+   * The PQ codes in hand whatever map they are bound to, or {@code null}: for the reopen routes that decide whether to
+   * adopt them, and for the statistics. Never for scoring a graph, which is {@link #pqCodesFor(int[])}.
+   */
+  private PQVectors heldPQCodes() {
+    final PQCodes held = pqCodes;
+    return held != null ? held.codes() : null;
+  }
+
+  /**
+   * Binds the codes in hand to {@code ordinalMap}, the map of the graph a reopen route publishes, in the same write lock
+   * as that publish. Only codes the route checked: {@code checked} is the snapshot it compared against the graph, and a
+   * swap since then (which would hold codes it did not check) is left alone.
+   */
+  private void adoptPQCodesFor(final PQCodes checked, final int[] ordinalMap) {
+    if (checked != null && pqCodes == checked)
+      pqCodes = checked.boundTo(ordinalMap);
+    else
+      LogManager.instance().log(this, Level.FINE,
+          "PQ codes of index %s not adopted for the graph a reopen published: %s, so searches stay exact until a build "
+              + "publishes codes for its own map (issue #10786)", indexName,
+          checked == null ? "there were none to check" : "they were replaced while the reopen checked them");
+  }
+
+  /**
    * Forget any Product Quantization data currently associated with this index, both in memory and on disk.
    */
   private void discardProductQuantization() {
-    this.productQuantization = null;
-    this.pqVectors = null;
+    this.pqCodes = null;
     if (pqFile != null && pqFile.deletePQFile())
       persistedPQKnownStale = false;
+  }
+
+  /**
+   * Whether {@code codes} can be paired with a graph of {@code graphOrdinals} ordinals whose ordinal map has the
+   * fingerprint {@code graphFingerprint}: one code per ordinal, recorded as built for that very map (issues #10584,
+   * #10698). A count says how many, not which, so codes that record no graph cannot vouch for this one either.
+   * <p>
+   * Only for a PRODUCT-quantized index: the caller has already established that {@link #pqFile} is not {@code null}.
+   *
+   * @return {@code null} when they can, otherwise why not, worded to follow "PQ codes of index X"
+   */
+  private String pqCodesMismatch(final PQVectors codes, final int graphOrdinals, final long graphFingerprint) {
+    if (codes == null)
+      return "are not available";
+    if (codes.count() != graphOrdinals)
+      return "number %d but the graph has %d ordinals".formatted(codes.count(), graphOrdinals);
+    final Long builtFor = pqFile.graphFingerprintOf(codes);
+    if (builtFor == null)
+      return "record no graph they were built for";
+    if (builtFor.longValue() != graphFingerprint)
+      return "were built for another graph than the persisted one";
+    return null;
+  }
+
+  /**
+   * Stops searching with the PQ codes in hand because they were not built for the graph being published (issue #10698).
+   * Memory only: the file is left for the PQ rebuild that follows to replace, so a rebuild that cannot run does not turn
+   * a graph that is reusable into one the next open has to rebuild from scratch for want of a PQ file. Until it is
+   * replaced the file describes another graph, which is what {@link #persistedPQKnownStale} says to a backup.
+   */
+  private void dropProductQuantizationCodes() {
+    if (pqCodes != null)
+      persistedPQKnownStale = true;
+    this.pqCodes = null;
+    pqFile.clearPQCache();
+  }
+
+  /**
+   * Builds and persists PQ codes laid out by {@code ordinals}, recorded as built for {@code graphFingerprint}. For the
+   * reopen paths that publish a persisted graph without codes for it; under {@link #graphBuildLock}, like every writer of
+   * the PQ file. A failure leaves the index on exact scoring, which is correct, and is logged, never thrown.
+   */
+  private void rebuildProductQuantizationFor(final int[] ordinals, final String vectorProp, final Long graphFingerprint) {
+    try {
+      final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(), metadata.dimensions,
+          vectorProp, snapshotOf(vectorIndex(), ordinals), ordinals, this, computeGraphBuildCacheCapacity(ordinals.length));
+      buildAndPersistPQ(vectors, ordinals, graphFingerprint);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to build PQ after graph load for index %s: %s", indexName, e.getMessage());
+    }
   }
 
   /**
@@ -5009,17 +5166,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #loadPersistedGraphOrDecidePrefix()}, and the persist at the end of a build), which is what keeps two
    * writers of the same PQ file from racing on its temporary and its rename.
    *
-   * @param graphOrdinals    how many ordinals the graph named by {@code graphFingerprint} has
+   * @param ordinalMap       the ordinal map the codes were encoded with, which they are published bound to (issue
+   *                         #10786), or {@code null} when they are not laid out by one: searches then never use them
    * @param graphFingerprint the fingerprint certified for the ordinal map the codes were built with, or {@code null}
    */
-  private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes, final int graphOrdinals,
+  private void persistProductQuantization(final ProductQuantization pq, final PQVectors codes, final int[] ordinalMap,
       final Long graphFingerprint) {
+    // One code per ordinal, or the codes are not that map's: anything else is published bound to no map
+    final int[] boundTo = ordinalMap != null && ordinalMap.length == codes.count() ? ordinalMap : null;
+    if (boundTo == null)
+      LogManager.instance().log(this, Level.FINE,
+          "PQ codes of index %s (%d) are not one per ordinal of the map they were built with (%d): published bound to no graph, "
+              + "so searches stay exact until a build publishes codes for its own map (issue #10786)", indexName, codes.count(),
+          ordinalMap != null ? ordinalMap.length : -1);
     try {
       // Which graph these codes were built for, written into the file (issue #10584): the fingerprint certified for the
       // very ordinal map the caller encoded them with, handed over by the caller rather than re-read from the manifest
       // on disk, which would only say which graph is persisted NOW. Recorded only with exactly one code per ordinal: any
       // other pairing is not that graph's, and codes without an identity send the reopen down the walk.
-      final Long builtFor = graphFingerprint != null && graphOrdinals == codes.count() ? graphFingerprint : null;
+      final Long builtFor = graphFingerprint != null && boundTo != null ? graphFingerprint : null;
       pqFile.writePQ(pq, codes, builtFor);
       persistedPQKnownStale = false;
     } catch (final Throwable e) {
@@ -5043,8 +5208,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (e instanceof Error error)
         throw error;
     }
-    this.productQuantization = pq;
-    this.pqVectors = codes;
+    // Bound to the map they were encoded with: a search pins the map beside the graph, so a graph published since (a
+    // later build, or this build's own graph when the codes are a reopen's) is not walked through them (issue #10786)
+    this.pqCodes = new PQCodes(pq, codes, boundTo);
   }
 
   /**
@@ -5090,10 +5256,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * compressed vectors, achieving microsecond-level latency.
    *
    * @param vectors          The vector values to encode with PQ
+   * @param ordinalMap       the ordinal map {@code vectors} is laid out by, which the codes are published bound to (issue
+   *                         #10786); {@code null} when they are not laid out by one
    * @param graphFingerprint the fingerprint certified for the ordinal map {@code vectors} is laid out by, recorded with
    *                         the codes (issue #10584); {@code null} records none
    */
-  private void buildAndPersistPQ(final RandomAccessVectorValues vectors, final Long graphFingerprint) {
+  private void buildAndPersistPQ(final RandomAccessVectorValues vectors, final int[] ordinalMap, final Long graphFingerprint) {
     try {
       final int vectorCount = vectors.size();
       if (vectorCount == 0) {
@@ -5154,7 +5322,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           System.currentTimeMillis() - encodeStart, encodedVectors.count());
 
       // Persist PQ data to file and cache it in memory for immediate zero-disk-I/O search
-      persistProductQuantization(pq, encodedVectors, vectorCount, graphFingerprint);
+      persistProductQuantization(pq, encodedVectors, ordinalMap, graphFingerprint);
 
       final long totalTime = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
@@ -7106,14 +7274,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int pos = contentOffset;
 
         // Read and skip vectorId
-        final long[] vectorIdAndSize = page.readNumberAndSize(pos);
-        pos += (int) vectorIdAndSize[1];
+        page.readNumber(pos);
+        pos += page.getLastReadNumberSize();
         // Read and skip bucketId
-        final long[] bucketIdAndSize = page.readNumberAndSize(pos);
-        pos += (int) bucketIdAndSize[1];
+        page.readNumber(pos);
+        pos += page.getLastReadNumberSize();
         // Read and skip position
-        final long[] positionAndSize = page.readNumberAndSize(pos);
-        pos += (int) positionAndSize[1];
+        page.readNumber(pos);
+        pos += page.getLastReadNumberSize();
         // Skip deleted flag
         pos += 1;
 
@@ -7769,6 +7937,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return gf != null && reusePersistedGraphDespiteDeletions(gf, true) != null;
   }
 
+  /**
+   * Visible for tests: the graph fingerprint recorded for the PQ codes this index searches with now, or {@code null} when
+   * it has none or they record no graph (issue #10698).
+   */
+  Long pqCodesGraphFingerprintForTest() {
+    final LSMVectorIndexPQFile pq = pqFile;
+    return pq != null ? pq.graphFingerprintOf(heldPQCodes()) : null;
+  }
+
+  /** Visible for tests: the PQ codes in hand with the codebook and the ordinal map they are bound to (issue #10786). */
+  PQCodes pqCodesForTest() {
+    return pqCodes;
+  }
+
+  /** Visible for tests: installs PQ codes as a build or a reopen would publish them (issue #10786). */
+  void setPqCodesForTest(final PQCodes codes) {
+    this.pqCodes = codes;
+  }
+
+  /**
+   * Visible for tests: the PQ codes a search starting now would score the published graph with, or {@code null} when it
+   * would take the exact path for want of codes laid out by that graph's ordinal map (issue #10786).
+   */
+  PQVectors pqCodesForPublishedGraphForTest() {
+    final PQCodes codes = pqCodesFor(ordinalToVectorId);
+    return codes != null ? codes.codes() : null;
+  }
+
   /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
   Path getGraphFilePathForTest() {
     final LSMVectorIndexGraphFile gf = graphFile;
@@ -8010,14 +8206,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The alternative - quantizing every candidate to remove it - costs the buffer scan described above.
    */
   private void mergeWithDeltaScanApproximate(final VectorFloat<?> queryVectorFloat, final int k,
-      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay) {
-    // Pin the quantizer for the whole merge: a concurrent rebuild may swap the volatile field, and every row below
-    // has to be scored through the same codebooks the caller's graph beam is using.
-    final ProductQuantization pq = productQuantization;
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay,
+      final ProductQuantization pq) {
+    // pq is the codebook of the codes the caller's graph beam is scored with, pinned with them (issue #10786): every row
+    // below has to be scored through the same codebook, and re-reading it here could pick up a rebuild's.
     if (pq == null) {
-      // No quantizer to score through - the caller checked isPQSearchAvailable(), but a rebuild can discard it
-      // between that check and here. Exact scoring is the honest fallback: it is what the graph side degrades to
-      // as well once PQ is gone, so the two stay on one scale either way.
+      // Not reached from the PQ search, which always has a codebook beside its codes. Exact scoring is the honest
+      // fallback: it is what the graph side degrades to as well once PQ is gone, so the two stay on one scale.
       mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay));
       return;
     }
@@ -8481,6 +8676,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph that has them score the walk
    * and {@code exact} re-ranks what it finds; every other graph scores both on {@code exact}.
+   */
+  private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
+      final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
+    return scoreProviderFor(searcher, graph, queryVector, exact, exact);
+  }
+
+  /**
+   * The score provider for a walk of {@code graph} by {@code searcher}: the PQ codes fused into the nodes of an on-disk graph that has them score the walk
+   * and {@code reranker} scores what it finds; every other graph is walked on {@code walk}.
+   * <p>
+   * Both the exact walk ({@code walk} and {@code reranker} are the stored vectors) and the PQ walk of a PRODUCT index ({@code walk} is the
+   * memory-resident PQ codes, {@code reranker} the stored vectors or those same codes) take it, so a graph file written with the {@code fusedPQ}
+   * setting is read by the ungrouped SQL {@code vector.neighbors} and {@code db.index.vector.queryNodes} too, not only by the Java exact walk
+   * (issue #10713). The grouped search ({@code groupBy}) keeps its exact walk and does not come here. The fused codes are encoded with the same
+   * codebook as the memory-resident ones and sit beside the neighbour list of a node, in the page the walk loads anyway; jvector decodes them
+   * with its own scorer, so the order of the walk can differ slightly from a walk on the memory-resident codes. The reranker is the same either way.
    * <p>
    * The fused score function reads the packed codes of a node through a graph view and leaves them, with the node's neighbour list, in <b>that view</b>,
    * while the walk takes the neighbour list from <b>its own</b> view. So it has to be handed the view of the searcher, as jvector's
@@ -8489,14 +8700,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code graph.getView()}, a fresh view the walk never looks at: the walk saw no neighbours of the entry node and stopped there (issue #10514).
    */
   private DefaultSearchScoreProvider scoreProviderFor(final GraphSearcher searcher, final ImmutableGraphIndex graph,
-      final VectorFloat<?> queryVector, final ScoreFunction.ExactScoreFunction exact) {
+      final VectorFloat<?> queryVector, final ScoreFunction walk, final ScoreFunction.ExactScoreFunction reranker) {
     if (graph instanceof OnDiskGraphIndex diskGraph
         && diskGraph.getFeatureSet().contains(FeatureId.FUSED_PQ) && searcher.getView() instanceof OnDiskGraphIndex.View view) {
       final FusedPQ fusedPQ = (FusedPQ) diskGraph.getFeatures().get(FeatureId.FUSED_PQ);
-      return new DefaultSearchScoreProvider(
-          fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, exact), exact);
+      // jvector 4.0.2's FusedPQDecoder keeps the exact function it is handed but never calls it: the walk is scored on the fused
+      // codes only, and the reranker reaches the answer through the provider's re-rank step alone, so walk is not needed here
+      final DefaultSearchScoreProvider fused = new DefaultSearchScoreProvider(
+          fusedPQ.approximateScoreFunctionFor(queryVector, metadata.similarityFunction, view, reranker), reranker);
+      metrics.incrementFusedPQWalks();
+      return fused;
     }
-    return new DefaultSearchScoreProvider(exact, exact);
+    return new DefaultSearchScoreProvider(walk, reranker);
   }
 
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, int k, final int efSearch,
@@ -8735,22 +8950,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           expectedResults = Math.min(k, availableVectors);
         }
         if (results.size() < expectedResults) {
-          // Issue #6502: see shortfallIsAllowListDriven's javadoc for why this is split.
-          if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
-            LogManager.instance()
-                .log(this, Level.FINE,
-                    """
-                    Graph search returned only %d results (expected %d, available %d) for index %s - the RID \
-                    allow-list has only %d entries, which is fewer than requested, so completing the answer with a \
-                    brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""",
-                    results.size(), expectedResults, availableVectors, indexName, allowedRIDs.size());
-          else
-            LogManager.instance()
-                .log(this, Level.WARNING,
-                    """
-                    Graph search returned only %d results (expected %d, available %d) for index %s - \
-                    falling back to brute-force scan (graph may need rebuilding)""",
-                    results.size(), expectedResults, availableVectors, indexName);
+          logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
           metrics.incrementBruteForceScans();
           bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap, overlay, guard);
         }
@@ -8780,6 +8980,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The log line of the issue #3722 shortfall fallback, before the scan that completes the answer. Issue #6502: see
+   * {@link #shortfallIsAllowListDriven}'s javadoc for why it is split.
+   */
+  private void logShortfallCompletion(final int found, final int expectedResults, final int availableVectors,
+      final Set<RID> allowedRIDs) {
+    if (allowedRIDs instanceof PredicateRidSet)
+      LogManager.instance().log(this, Level.FINE, """
+              Graph search returned only %d results (expected %d, available %d) for index %s - the allow-list is a \
+              predicate the walk met too few matches of, so completing the answer with a brute-force scan is the \
+              expected cost of a selective predicate, not a sign the graph needs rebuilding""", found, expectedResults,
+          availableVectors, indexName);
+    else if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
+      LogManager.instance().log(this, Level.FINE, """
+              Graph search returned only %d results (expected %d, available %d) for index %s - the RID \
+              allow-list has only %d entries, which is fewer than requested, so completing the answer with a \
+              brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""", found,
+          expectedResults, availableVectors, indexName, allowedRIDs.size());
+    else
+      LogManager.instance().log(this, Level.WARNING, """
+              Graph search returned only %d results (expected %d, available %d) for index %s - \
+              falling back to brute-force scan (graph may need rebuilding)""", found, expectedResults, availableVectors,
+          indexName);
+  }
+
+  /**
    * Issue #6502: tells apart the two reasons the issue #3722 shortfall fallback can fire, so the log line does not
    * blame the graph for a shortfall the allow-list itself made unavoidable. An allow-list narrower than
    * {@code expectedResults} can never be filled from the graph regardless of graph quality - that is a property of
@@ -8790,7 +9015,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * which condition gets the (rare, expected) FINE line and which keeps the WARNING an operator watches for.
    */
   static boolean shortfallIsAllowListDriven(final Set<RID> allowedRIDs, final int expectedResults) {
-    return allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < expectedResults;
+    // A predicate decides its members one candidate at a time, and its size says nothing about how many it accepts: a
+    // selective one leaves every walk short whatever the graph's quality (issues #10169, #10782)
+    return allowedRIDs != null && !allowedRIDs.isEmpty() && (allowedRIDs instanceof PredicateRidSet
+        || allowedRIDs.size() < expectedResults);
   }
 
   /**
@@ -9870,13 +10098,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         // Pin BOTH halves of the pair the beam walks, and refuse the pair if they disagree. graphIndex is
-        // published under the write lock this read lock excludes, so it cannot move underneath us - but pqVectors
-        // is republished LATER and outside that lock (see buildAndPersistPQ), so a rebuild that has already
-        // installed its new, larger graph but not yet its new codes leaves the two sized differently. Walking that
-        // graph through those codes asks PQVectors for an ordinal it was never sized for, and JVector throws
+        // published under the write lock this read lock excludes, so it cannot move underneath us - but the codes
+        // are republished LATER and outside that lock (see buildAndPersistPQ), so a rebuild that has already
+        // installed its new graph but not yet its new codes leaves the two describing different ordinals. Walking a
+        // larger graph through the old codes asks PQVectors for an ordinal it was never sized for, and JVector throws
         // IndexOutOfBoundsException from inside GraphSearcher.initializeInternal - before any Bits filter can
-        // exclude the entry point, so a filter cannot close this. The ordinal map is checked too because the
-        // pre-filter branch scores ordinals from it rather than from the beam.
+        // exclude the entry point, so a filter cannot close this. Walking one of the same size scores every ordinal
+        // with another vector's code, silently (issue #10786): the codes are therefore asked for by the ordinal map
+        // pinned with the graph, and answer only for the very array they were encoded with (pqCodesFor).
         //
         // getIdUpperBound(), not size(): the question here is the ordinal SPACE the beam can hand back, and JVector
         // defines that as "highest node id seen + 1" while size() is merely how many nodes are in it. The two are
@@ -9899,16 +10128,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // between two of them and pair an ordinal's RID with a vector from a different mapping (issue #4581). The
         // guard has to check that same array for the same reason - checking one snapshot and walking another says
         // nothing.
-        final PQVectors           pinnedPq         = pqVectors;
         final ImmutableGraphIndex pinnedGraph      = graphIndex;
         final int[]               pinnedOrdinalMap = this.ordinalToVectorId;
-        if (pinnedPq != null && pinnedGraph.getIdUpperBound() <= pinnedPq.count()
-            && pinnedOrdinalMap.length <= pinnedPq.count()) {
+        final PQCodes             pinnedCodes      = pqCodesFor(pinnedOrdinalMap);
+        final PQVectors           pinnedPq         = pinnedCodes != null ? pinnedCodes.codes() : null;
+        // The codes are one per ordinal of the map they are bound to; the graph's id space is asked as well, since a graph
+        // and its map are published together but nothing but that publish ties their sizes
+        if (pinnedPq != null && pinnedGraph.getIdUpperBound() <= pinnedPq.count()) {
           // Convert query vector to VectorFloat
           final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-          // Build the memory-resident PQ score function (uses SIMD/Panama if available)
-          // This is the key to zero-disk-I/O: we use PQ scores for BOTH navigation AND final scoring
+          // Build the memory-resident PQ score function (uses SIMD/Panama if available). It scores the walk unless the graph file
+          // carries the fused codes (scoreProviderFor below), and it is what the PQ-scores-only reranker and the pre-filter plan read
           final ScoreFunction.ApproximateScoreFunction scoreFunction =
               pinnedPq.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
 
@@ -9919,9 +10150,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ScoreFunction.ExactScoreFunction reranker = rerank ?
               liveOnlyScoreFunction(queryVectorFloat, exactVectors) :
               ordinal -> scoreFunction.similarityTo(ordinal);
-
-          // Wrap in a DefaultSearchScoreProvider (concrete implementation)
-          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, reranker);
 
           // The beam: JVector keeps rerankK candidates and returns the best k of them after the reranker has scored them
           final long wanted = Math.max((long) k * rerankOversample, (long) efSearch);
@@ -9948,15 +10176,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final List<Pair<RID, Float>> results = new ArrayList<>(k);
             // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
             // so delta rows merged here are ranked against - and returned alongside - approximate scores.
-            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay);
+            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay, pinnedCodes.quantization());
             preFilterApproximate(scoreFunction, k, allowedRIDs, results, pinnedOrdinalMap, overlay);
             return results;
           }
 
           // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
           // without this the beam fills with nodes the post-filter below then drops (issue #5558).
+          // The guard as on the exact path (issue #9896): a selective allow-list keeps this walk going over most of the
+          // graph, testing a record per candidate, and the filter is the one place inside it ArcadeDB code runs (#10782)
           final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, pinnedOrdinalMap, vectorIndex(),
-              supersededRIDs(overlay));
+              supersededRIDs(overlay), guard);
 
           // Execute search using the PQ-based score provider
           // The graph structure is typically small enough to stay in OS page cache
@@ -9969,6 +10199,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final ImmutableGraphIndex pooledGraph = pinnedGraph;
           final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
           try {
+            // A graph file written with the fusedPQ setting is walked on the codes fused into its nodes, through the view of this
+            // searcher; any other graph on the memory-resident codes. The reranker is the same either way (issue #10713)
+            final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, scoreFunction, reranker);
             searchResult = rerank || efSearch > k ?
                 searcher.search(ssp, k, rerankK, 0.0f, 0.0f, bitsFilter) :
                 searcher.search(ssp, k, bitsFilter);
@@ -10010,7 +10243,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (rerank)
             mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
           else
-            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay);
+            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay, pinnedCodes.quantization());
 
           // Log performance metrics. FINE, not INFO (issue #6559 item 3): this path's entire reason to exist is
           // microsecond latency, so an unconditional per-query INFO line - on the query rate this path is built for -
@@ -10058,7 +10291,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public boolean isPQSearchAvailable() {
     vectorIndex(); // the PQ codebooks are loaded with the locations (issue #6722)
-    return pqVectors != null && productQuantization != null;
+    final PQCodes held = pqCodes;
+    return held != null && held.quantization() != null;
   }
 
   /**
@@ -10068,7 +10302,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public int getPQVectorCount() {
     vectorIndex(); // the PQ codebooks are loaded with the locations (issue #6722)
-    return pqVectors != null ? pqVectors.count() : 0;
+    final PQVectors held = heldPQCodes();
+    return held != null ? held.count() : 0;
   }
 
   @Override
@@ -12502,19 +12737,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final long entryFileOffset = pageStartOffset + BasePage.PAGE_HEADER_SIZE + currentOffset;
 
           // Read variable-sized vectorId
-          final long[] vectorIdAndSize = page.readNumberAndSize(currentOffset);
-          final int id = (int) vectorIdAndSize[0];
-          currentOffset += (int) vectorIdAndSize[1];
+          final int id = (int) page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           // Read variable-sized bucketId
-          final long[] bucketIdAndSize = page.readNumberAndSize(currentOffset);
-          final int bucketId = (int) bucketIdAndSize[0];
-          currentOffset += (int) bucketIdAndSize[1];
+          final int bucketId = (int) page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           // Read variable-sized position
-          final long[] positionAndSize = page.readNumberAndSize(currentOffset);
-          final long position = positionAndSize[0];
-          currentOffset += (int) positionAndSize[1];
+          final long position = page.readNumber(currentOffset);
+          currentOffset += page.getLastReadNumberSize();
 
           final RID rid = new RID(bucketId, position);
 

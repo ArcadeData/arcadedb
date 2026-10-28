@@ -81,7 +81,7 @@ class Issue7904RetriedAttemptRowsTest extends BaseGraphServerTest {
     config.updateFrom(clearOverrides);
     user = getServer(0).getSecurity().authenticate("root", DEFAULT_PASSWORD_FOR_TESTS, null);
 
-    embedded = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName()).getEmbedded();
+    embedded = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded();
     // The unique index on the match key is what upsert_entity's own description asks the operator for.
     final VertexType type = embedded.getSchema().getOrCreateVertexType(TYPE_NAME);
     type.getOrCreateProperty("k", Type.INTEGER);

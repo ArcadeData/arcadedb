@@ -99,7 +99,7 @@ class Issue7443SqlMaintenanceSlotIT extends BaseGraphServerTest {
    */
   @Test
   void theServerBindsItsCoordinatorToTheDatabasesItOpens() {
-    final DatabaseInternal database = getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     assertThat(MaintenanceCoordinator.boundTo(database)).isSameAs(getServer(0).getBackupCoordinator());
     assertThat(MaintenanceCoordinator.boundTo(database.getEmbedded())).isSameAs(getServer(0).getBackupCoordinator());
@@ -195,7 +195,7 @@ class Issue7443SqlMaintenanceSlotIT extends BaseGraphServerTest {
    */
   @Test
   void aSlotHeldTheWayTheSqlStatementHoldsItRefusesTheServersOwnBackup() throws Exception {
-    final DatabaseInternal database = getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     try (final Reservation slot = MaintenanceCoordinator.reserve(database, Operation.BACKUP)) {
       assertThat(getServer(0).getBackupCoordinator().isInProgress(getDatabaseName(), Operation.BACKUP)).isTrue();

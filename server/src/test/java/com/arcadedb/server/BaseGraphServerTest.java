@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -88,6 +89,8 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   @BeforeEach
   public void beginTest() {
+    checkEndTestIsALifecycleMethod();
+
     checkForActiveDatabases();
 
     setTestConfiguration();
@@ -101,6 +104,26 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     prepareDatabase();
 
     startServers();
+  }
+
+  /**
+   * JUnit runs an overriding method as a lifecycle method only when the override carries the annotation itself: an {@code endTest()}
+   * overridden without {@code @AfterEach} is never called, so the servers of every test of the class are left running, each holding
+   * its HTTP port, its Redis or Bolt listener and its databases. Nothing failed where it happened: the classes that ran after found
+   * the HTTP port range taken one port more per test, and failed with "Unable to listen to a HTTP port" or on a database locked by
+   * one of those servers (issue #10707's symptom). Refused here, at the start of the first test of such a class.
+   */
+  private void checkEndTestIsALifecycleMethod() {
+    final Method endTest;
+    try {
+      endTest = getClass().getMethod("endTest");
+    } catch (final NoSuchMethodException e) {
+      throw new IllegalStateException(e);
+    }
+    if (!endTest.isAnnotationPresent(AfterEach.class))
+      throw new IllegalStateException(endTest.getDeclaringClass().getName()
+          + " overrides endTest() without @AfterEach, so JUnit never calls it and the servers of every test are left running: "
+          + "annotate the override with @AfterEach, or remove it when it only resets settings (endTest() already resets them all)");
   }
 
   private void prepareDatabase() {
@@ -580,7 +603,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
   }
 
   protected Database getServerDatabase(final int i, final String name) {
-    return servers[i] != null ? servers[i].getDatabase(name) : null;
+    return servers[i] != null ? servers[i].getDatabaseForOperator(name) : null;
   }
 
   protected ArcadeDBServer getServer(final String name) {
@@ -624,7 +647,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
    */
   protected void corruptSealedStoreAndReopen(final int serverIndex, final String typeName) throws Exception {
     final ArcadeDBServer server = getServer(serverIndex);
-    final DatabaseInternal embedded = (DatabaseInternal) server.getDatabase(getDatabaseName()).getEmbedded();
+    final DatabaseInternal embedded = (DatabaseInternal) server.getDatabaseForOperator(getDatabaseName()).getEmbedded();
     ((LocalTimeSeriesType) embedded.getSchema().getType(typeName)).getEngine().compactAll();
 
     final File sealed = new File(getDatabasePath(serverIndex), typeName + "_shard_0.ts.sealed");
@@ -637,7 +660,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       raf.seek(0);
       raf.write(b ^ 0x01);
     }
-    server.getDatabase(getDatabaseName());
+    server.getDatabaseForOperator(getDatabaseName());
   }
 
   protected static String readResponse(final HttpURLConnection connection) throws IOException {
@@ -695,7 +718,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         if (getServer(i) != null)
           for (final String dbName : getServer(i).getDatabaseNames())
             if (getServer(i).existsDatabase(dbName))
-              ((DatabaseInternal) getServer(i).getDatabase(dbName)).getEmbedded().drop();
+              ((DatabaseInternal) getServer(i).getDatabaseForOperator(dbName)).getEmbedded().drop();
 
     TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
     TestServerHelper.deleteDatabaseFolders(getServerCount());

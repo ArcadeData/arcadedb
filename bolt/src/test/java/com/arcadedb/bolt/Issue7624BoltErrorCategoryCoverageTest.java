@@ -28,6 +28,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -115,6 +116,21 @@ class Issue7624BoltErrorCategoryCoverageTest {
         .isEqualTo(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR);
     assertThat(BoltNetworkExecutor.classifyExecutionError(new CommandParsingException("unexpected token"),
         BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.SYNTAX_ERROR);
+  }
+
+  /**
+   * Issue #10795: a name that is no database, lost under a statement rather than at the selection of the database (a DROP between
+   * the selection and the statement), is the {@code DatabaseNotFound} client error the selection answers, not the generic database
+   * error a driver logs as a server fault.
+   */
+  @Test
+  void aNameThatIsNoDatabaseIsTheCallersWhereverItIsMet() {
+    final DatabaseNotFoundException missing = new DatabaseNotFoundException("Database 'nope' does not exist");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new RuntimeException("command failed", missing),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.DATABASE_NOT_FOUND_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(missing, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltNetworkExecutor.classifyDatabaseSelectionError(missing));
+    assertThat(BoltErrorCodes.DATABASE_NOT_FOUND_ERROR).startsWith("Neo.ClientError.");
   }
 
   @Test
@@ -211,6 +227,7 @@ class Issue7624BoltErrorCategoryCoverageTest {
         new TimeoutException("deadline"),
         new QueryTerminatedException("stopped on request"),
         new DatabaseNotAvailableException("a restore of it is in progress"),
+        new DatabaseNotFoundException("Database 'nope' does not exist"),
         new IllegalStateException("something else") }) {
       final ErrorCategory category = ErrorCategory.of(sample);
       covered.add(category);
