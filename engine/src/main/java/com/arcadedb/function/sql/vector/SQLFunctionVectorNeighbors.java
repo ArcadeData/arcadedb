@@ -52,8 +52,9 @@ import java.util.Set;
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
  * <p>
  * The {@code rerank} option (issue #10514) is the number of candidates per requested neighbour that a PRODUCT index walks on
- * its PQ codes and then scores again on the stored vectors; {@code 0} returns the PQ scores. It applies to PRODUCT indexes
- * only, and is ignored for {@code groupBy} searches and for the other quantizations.
+ * its PQ codes and then scores again on the stored vectors; {@code 0} returns the PQ scores. A BINARY index takes it too, for
+ * the candidates it walks on its one-bit codes (issue #10968), and reranks at least one per neighbour. It is ignored for
+ * {@code groupBy} searches and for the other quantizations.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -107,8 +108,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (params[3] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         efSearch = opts.getInt("efSearch", -1);
-        // `rerank` is the number of candidates per requested neighbour that a PRODUCT index scores again on the stored vectors
-        // after walking its graph on the PQ codes (issue #10514): absent is the default of the index, 0 keeps the PQ scores
+        // `rerank` is the number of candidates per requested neighbour that a PRODUCT (issue #10514) or BINARY (issue #10968)
+        // index scores again on the stored vectors after walking its graph on its codes: absent is the default of the index,
+        // 0 keeps the PQ scores
         rerank = opts.getInt("rerank", -1);
         if (opts.get("rerank") != null && rerank < 0)
           throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + rerank);
@@ -456,7 +458,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public String getSyntax() {
     return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | "
         + "{ efSearch: <int>, filter: [<rid>, ...], where: { <property>: <value>, ... } | '<condition>', groupBy: <field>, "
-        + "groupSize: <int>, maxDistance: <float>, rerank: <int> }]); rerank: PRODUCT indexes only, "
+        + "groupSize: <int>, maxDistance: <float>, rerank: <int> }]); rerank: PRODUCT and BINARY indexes only, "
         + "ignored with groupBy and for other quantizations";
   }
 }

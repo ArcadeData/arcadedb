@@ -399,6 +399,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // read (or quantized page read) per hop even when repeating the very same query.
   private volatile VectorCache searchVectorCache;
   private final    Object      searchVectorCacheLock = new Object();
+  // The one-bit codes a BINARY index scores its searches on (issue #10968), keyed by vector id like searchVectorCache
+  // and cleared, evicted and released wherever that one is. Null for every other quantization.
+  private volatile BinaryCodeCache searchBinaryCodes;
 
   // Index-scoped pool of JVector graph searchers, reused across queries (issue #5413). Allocating a searcher per
   // query made its scratch state (the growable candidate heap above all) the largest single source of garbage on
@@ -1095,6 +1098,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final VectorCache staleCache = searchVectorCache;
     if (staleCache != null)
       staleCache.clear();
+    final BinaryCodeCache staleCodes = searchBinaryCodes;
+    if (staleCodes != null)
+      staleCodes.clear();
     // The replacement is the complete live set, read from the pages by the caller that built it, so it satisfies
     // the deferred load of issue #6722 outright - materialising afterwards would parse the same pages a second
     // time and then overwrite this instance with the result. Ordered after the swap: a reader that sees the flag
@@ -3455,6 +3461,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // The set on disk is untouched, so a later load reads it back from the manifest.
         this.graphUnreachableOrdinals = EMPTY_ORDINALS;
         this.searchVectorCache = null;
+        this.searchBinaryCodes = null;
         releasePooledSearchers();
       } finally {
         lock.writeLock().unlock();
@@ -7078,7 +7085,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private VectorQuantizationMetadata.BinaryQuantizationMetadata quantizeToBinary(final float[] vector) {
     // Calculate median
-    final float median = calculateMedian(vector);
+    final float median = VectorUtils.median(vector);
 
     // Quantize to binary
     final int byteCount = (vector.length + 7) / 8; // Round up to nearest byte
@@ -7109,20 +7116,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     return new VectorQuantizationMetadata.BinaryQuantizationMetadata(packed, median, vector.length);
-  }
-
-  /**
-   * Calculate median of array.
-   * Helper method for binary quantization.
-   */
-  private float calculateMedian(final float[] values) {
-    final float[] sorted = values.clone();
-    Arrays.sort(sorted);
-    if (sorted.length % 2 == 0) {
-      return (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0f;
-    } else {
-      return sorted[sorted.length / 2];
-    }
   }
 
   /**
@@ -7794,7 +7787,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private static final float UNREADABLE_NODE_SCORE = 0.0f;
 
-  /** How many candidates a BINARY search fetches per requested neighbour before reranking them on the stored vectors. */
+  /**
+   * How much a BINARY search widens its candidates when its rerank came up short (issue #9396), and how many groups and
+   * members per group the grouped one fetches per requested one (issue #9633). The ungrouped search starts from
+   * {@code k * rerankOversample} candidates (issue #10968).
+   */
   private static final int   BINARY_RERANK_OVERSAMPLE = 4;
 
   /**
@@ -7834,6 +7831,153 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return UNREADABLE_NODE_SCORE;
       return metadata.similarityFunction.compare(queryVector, vector);
     };
+  }
+
+  /**
+   * How a search scores the candidates it ranks against each other before it answers: a graph ordinal (the brute-force
+   * completion, the pre-filter plan) and a row of the delta buffer. Every candidate of one search goes through the same
+   * scorer, so the rows a graph walk, a scan and the delta buffer contribute are ranked on one scale (issue #10968).
+   */
+  private interface CandidateScorer {
+    /** @return the similarity of the vector at {@code ordinal}, or {@code NaN} when it cannot be read. */
+    float ordinal(int ordinal);
+
+    /** @return the similarity of the vector of {@code entry}, or {@code NaN} when it cannot be read. */
+    float delta(DeltaVectorEntry entry);
+  }
+
+  /** The scorer of every search but a BINARY one: the configured similarity against the vectors {@code vectors} reads. */
+  private CandidateScorer exactScorer(final VectorFloat<?> queryVector, final RandomAccessVectorValues vectors) {
+    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
+    return new CandidateScorer() {
+      @Override
+      public float ordinal(final int ordinal) {
+        // The location says the vector is live, but the read can still fail - a document whose vector property was
+        // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
+        // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
+        final VectorFloat<?> vector = vectors != null ? vectors.getVector(ordinal) : null;
+        if (vector == null || (pageValues != null && pageValues.isDeletedSentinel(vector)))
+          return Float.NaN;
+        return metadata.similarityFunction.compare(queryVector, vector);
+      }
+
+      @Override
+      public float delta(final DeltaVectorEntry entry) {
+        // Read back when the buffer declined to keep the payload (issue #7357), skipped when even that fails
+        final VectorFloat<?> vector = deltaVectorOf(entry);
+        return vector == null ? Float.NaN : metadata.similarityFunction.compare(queryVector, vector);
+      }
+    };
+  }
+
+  /**
+   * The scorer of a search: the BINARY one for a BINARY index, else {@link #exactScorer}.
+   *
+   * @param ordinalMap the ordinals the scorer resolves, the snapshot the search pins with its graph
+   */
+  private CandidateScorer candidateScorer(final float[] queryVector, final VectorFloat<?> queryVectorFloat,
+      final RandomAccessVectorValues vectors, final int[] ordinalMap) {
+    return metadata.quantizationType == VectorQuantizationType.BINARY ?
+        new BinaryQueryScorer(queryVector, ordinalMap) :
+        exactScorer(queryVectorFloat, vectors);
+  }
+
+  /**
+   * Scores a BINARY search on the one-bit codes the index pages store, as a Hamming distance between the code of the
+   * query and the code of each candidate (issue #10968), where the search used to rebuild every candidate as a float
+   * vector and score that.
+   * <p>
+   * The query is quantized by the same rule as the rows, so the number is exactly what the configured similarity gives
+   * the two reconstructions ({@link BinaryCodeCache#similarity}): every path that still scores reconstructions (a delta
+   * row read back from its page, {@link #scoreOrdinalForTest}) agrees with it, and the graph walk, the scans and the delta
+   * buffer rank their rows on one scale. The scale is the codes', not the vectors': {@link #findNeighborsFromVector}
+   * reranks what this scorer selected on the stored vectors, and that rerank is the answer.
+   * <p>
+   * Codes come from the index-scoped {@link BinaryCodeCache}, and a miss reads the row from its page into a scratch this
+   * scorer owns, so a search allocates nothing per candidate. One instance per search, used by one thread.
+   */
+  private final class BinaryQueryScorer implements CandidateScorer, ScoreFunction.ExactScoreFunction {
+    private final long[]              query;
+    private final int[]               ordinalMap;
+    private final VectorLocationIndex locations;
+    private final BinaryCodeCache     cache;
+    private final int                 words;
+    private final long[]              code;
+    private final byte[]              row;
+    private final float[]             scales = new float[2];
+
+    private BinaryQueryScorer(final float[] queryVector, final int[] ordinalMap) {
+      this.words = BinaryCodeCache.wordsFor(metadata.dimensions);
+      this.query = new long[words];
+      this.code = new long[words];
+      this.row = new byte[QuantizedBuildVectors.rowBytes(VectorQuantizationType.BINARY, metadata.dimensions)];
+      this.ordinalMap = ordinalMap;
+      this.locations = vectorIndex();
+      this.cache = getSearchBinaryCodes();
+      encode(queryVector, query);
+    }
+
+    /** The graph walk: an unreadable node scores {@link #UNREADABLE_NODE_SCORE}, as {@link #liveOnlyScoreFunction} has it. */
+    @Override
+    public float similarityTo(final int node) {
+      final float similarity = ordinal(node);
+      return Float.isNaN(similarity) ? UNREADABLE_NODE_SCORE : similarity;
+    }
+
+    @Override
+    public float ordinal(final int ordinal) {
+      if (ordinalMap == null || ordinal < 0 || ordinal >= ordinalMap.length)
+        return Float.NaN;
+      return similarity(distanceTo(ordinalMap[ordinal]));
+    }
+
+    @Override
+    public float delta(final DeltaVectorEntry entry) {
+      // A committed row has its code on its page; one of the calling transaction's own rows has none yet (issue #7378),
+      // so its vector is quantized here exactly as the page will store it
+      if (entry.vectorId != TransactionVectorOverlay.PENDING_VECTOR_ID)
+        return similarity(distanceTo(entry.vectorId));
+      final VectorFloat<?> vector = deltaVectorOf(entry);
+      if (vector == null)
+        return Float.NaN;
+      final float[] components = new float[vector.length()];
+      for (int i = 0; i < components.length; i++)
+        components[i] = vector.get(i);
+      encode(components, code);
+      return similarity(BinaryCodeCache.hammingDistance(query, code, words));
+    }
+
+    /** @return the Hamming distance to the code of {@code vectorId}, or {@code -1} when it cannot be read. */
+    private int distanceTo(final int vectorId) {
+      // A map a renumbering compaction translated holds -1 for the vectors that are gone (issue #9241)
+      if (vectorId < 0)
+        return -1;
+      if (cache != null) {
+        final int distance = cache.hammingDistance(vectorId, query);
+        if (distance >= 0)
+          return distance;
+      }
+      final long offsetAndFlag = locations.getOffsetAndFlag(vectorId);
+      if (offsetAndFlag == VectorLocationIndex.ABSENT)
+        return -1;
+      if (readQuantizedRowFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag), VectorLocationIndex.isCompactedOf(offsetAndFlag),
+          row, 0, scales) != ROW_OK)
+        return -1;
+      BinaryCodeCache.pack(row, 0, metadata.dimensions, scales[0], code, 0);
+      if (cache != null)
+        cache.put(vectorId, code, 0);
+      return BinaryCodeCache.hammingDistance(query, code, words);
+    }
+
+    private float similarity(final int distance) {
+      return distance < 0 ? Float.NaN : BinaryCodeCache.similarity(metadata.similarityFunction, distance, metadata.dimensions);
+    }
+
+    /** The code of a float vector: {@link #quantizeToBinary}, the rule the pages are written with, packed. */
+    private void encode(final float[] vector, final long[] destination) {
+      final VectorQuantizationMetadata.BinaryQuantizationMetadata quantized = quantizeToBinary(vector);
+      BinaryCodeCache.pack(quantized.packed, 0, metadata.dimensions, quantized.median, destination, 0);
+    }
   }
 
   /**
@@ -8271,6 +8415,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay));
   }
 
+  /** {@link #mergeWithDeltaScan} scoring the buffer with {@code scorer}, the scorer of the search it merges into. */
+  private void mergeWithDeltaScan(final CandidateScorer scorer, final int k, final Set<RID> allowedRIDs,
+      final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay) {
+    mergeWithDeltaScan(scorer, k, allowedRIDs, results, mergedDelta(overlay));
+  }
+
   /**
    * {@link #mergeWithDeltaScan}'s body, over a buffer view the caller has already merged. Separate so a caller
    * that needs the merged list for itself - {@link #mergeWithDeltaScanApproximate}, which walks it again to resolve
@@ -8278,6 +8428,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * committed buffer plus an allocation sized to it, on the path whose contract is microseconds.
    */
   private void mergeWithDeltaScan(final VectorFloat<?> queryVectorFloat, final int k,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta) {
+    mergeWithDeltaScan(exactScorer(queryVectorFloat, null), k, allowedRIDs, results, currentDelta);
+  }
+
+  private void mergeWithDeltaScan(final CandidateScorer scorer, final int k,
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta) {
     if (currentDelta.isEmpty() || k <= 0)
       return;
@@ -8323,17 +8478,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // read is orders of magnitude dearer than the two hash lookups, so for THAT entry they are worth asking
       // first even though they cannot change the admitted set. An entry that cannot be read back at all is
       // skipped like a tombstoned one, rather than scored against a vector that is not its own.
-      VectorFloat<?> deltaVector = delta.vector;
-      if (deltaVector == null) {
-        if (seenRIDs.contains(delta.rid) || (anyDeleted && isTombstoned(delta.vectorId, locations)))
-          continue;
-        deltaVector = deltaVectorOf(delta);
-        if (deltaVector == null)
-          continue;
-      }
+      if (delta.vector == null && (seenRIDs.contains(delta.rid) || (anyDeleted && isTombstoned(delta.vectorId, locations))))
+        continue;
+      final float score = scorer.delta(delta);
+      if (Float.isNaN(score))
+        continue;
 
       compared++;
-      final float score = similarity.compare(queryVectorFloat, deltaVector);
       final float distance = scoreToDistance(similarity, score);
 
       // Prune before allocating: a candidate no better than the current k-th best cannot make the result set.
@@ -8565,6 +8716,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results,
       final RandomAccessVectorValues vectors, final int[] ordinalMap, final TransactionVectorOverlay overlay,
       final WorkGuard guard) {
+    bruteForceScan(exactScorer(queryVectorFloat, vectors), k, allowedRIDs, results, ordinalMap, overlay, guard);
+  }
+
+  /** The scan scoring every candidate with {@code scorer}, the scorer of the search it completes. */
+  private void bruteForceScan(final CandidateScorer scorer, final int k, final Set<RID> allowedRIDs,
+      final List<Pair<RID, Float>> results, final int[] ordinalMap, final TransactionVectorOverlay overlay,
+      final WorkGuard guard) {
     // Collect already-seen RIDs to avoid duplicates
     final RidHashSet seenRIDs = new RidHashSet(results.size());
     for (final Pair<RID, Float> r : results)
@@ -8574,7 +8732,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Re-reading the volatile this.ordinalToVectorId here would risk indexing into an array that was
     // reassigned by a concurrent rebuild, pairing each ordinal's RID with a vector from a different
     // mapping (issue #4581).
-    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     boolean added = false;
 
     if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < ordinalMap.length) {
@@ -8587,14 +8744,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
       for (int i = 0; i < candidates.length; i++) {
         guard.checkPeriodically(i);
-        added |= scoreOrdinal(candidates[i], queryVectorFloat, allowedRIDs, results, vectors, ordinalMap, seenRIDs,
-            pageValues, overlay);
+        added |= scoreOrdinal(candidates[i], scorer, allowedRIDs, results, ordinalMap, seenRIDs, overlay);
       }
     } else {
       for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
         guard.checkPeriodically(ordinal);
-        added |= scoreOrdinal(ordinal, queryVectorFloat, allowedRIDs, results, vectors, ordinalMap, seenRIDs, pageValues,
-            overlay);
+        added |= scoreOrdinal(ordinal, scorer, allowedRIDs, results, ordinalMap, seenRIDs, overlay);
       }
     }
 
@@ -8650,9 +8805,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * here so the allow-list walk and the full scan cannot drift apart on the deleted, duplicate and unreadable-vector
    * guards.
    */
-  private boolean scoreOrdinal(final int ordinal, final VectorFloat<?> queryVectorFloat, final Set<RID> allowedRIDs,
-      final List<Pair<RID, Float>> results, final RandomAccessVectorValues vectors, final int[] ordinalMap,
-      final RidHashSet seenRIDs, final ArcadePageVectorValues pageValues, final TransactionVectorOverlay overlay) {
+  private boolean scoreOrdinal(final int ordinal, final CandidateScorer scorer, final Set<RID> allowedRIDs,
+      final List<Pair<RID, Float>> results, final int[] ordinalMap, final RidHashSet seenRIDs,
+      final TransactionVectorOverlay overlay) {
     final int vectorId = ordinalMap[ordinal];
     final RID rid = vectorIndex().getRid(vectorId);
     if (rid == null)
@@ -8669,14 +8824,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
       return false;
 
-    // The location says the vector is live, but the read can still fail - a document whose vector property was
-    // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
-    // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
-    final VectorFloat<?> vec = vectors.getVector(ordinal);
-    if (vec == null || (pageValues != null && pageValues.isDeletedSentinel(vec)))
+    // An unreadable vector (see exactScorer) is skipped rather than scored
+    final float score = scorer.ordinal(ordinal);
+    if (Float.isNaN(score))
       return false;
 
-    final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
     results.add(new Pair<>(bindRid(rid), scoreToDistance(metadata.similarityFunction, score)));
     return true;
   }
@@ -8811,31 +8963,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Answers a plain k-NN search by its pre-filter plan: the allow-list scored directly, merged with the delta buffer.
    */
-  private List<Pair<RID, Float>> answerByPreFilter(final PreFilterPlan preFilter, final VectorFloat<?> queryVectorFloat, final int k,
-      final RandomAccessVectorValues vectors, final int[] ordinalMap, final TransactionVectorOverlay overlay, final WorkGuard guard) {
+  private List<Pair<RID, Float>> answerByPreFilter(final PreFilterPlan preFilter, final CandidateScorer scorer, final int k,
+      final int[] ordinalMap, final TransactionVectorOverlay overlay, final WorkGuard guard) {
     metrics.incrementPreFilterSearches();
     if (preFilter.scored().isEmpty())
       return new ArrayList<>(0);
     final int scoredRows = preFilter.scoredRows(k);
     final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scoredRows, preFilter.scored().size() + 1));
-    mergeWithDeltaScan(queryVectorFloat, scoredRows, preFilter.scored(), results, overlay);
-    bruteForceScan(queryVectorFloat, scoredRows, preFilter.scored(), results, vectors, ordinalMap, overlay, guard);
+    mergeWithDeltaScan(scorer, scoredRows, preFilter.scored(), results, overlay);
+    bruteForceScan(scorer, scoredRows, preFilter.scored(), results, ordinalMap, overlay, guard);
     return preFilter.nearestMembers(results, k);
   }
 
   /**
    * Answers a grouped search by its pre-filter plan (issue #6514).
    */
-  private List<Pair<RID, Float>> answerGroupedByPreFilter(final PreFilterPlan preFilter, final VectorFloat<?> queryVectorFloat,
+  private List<Pair<RID, Float>> answerGroupedByPreFilter(final PreFilterPlan preFilter, final CandidateScorer scorer,
       final int limit, final int groupSize, final Set<Object> onlyGroups, final float maxDistance, final int maxRows,
-      final Function<RID, Object> groupKeyResolver, final RandomAccessVectorValues vectors, final int[] ordinalMap,
+      final Function<RID, Object> groupKeyResolver, final int[] ordinalMap,
       final List<DeltaVectorEntry> deltaSnapshot, final TransactionVectorOverlay overlay, final GroupedCandidates candidates,
       final WorkGuard guard) {
     metrics.incrementPreFilterSearches();
     if (preFilter.scored().isEmpty())
       return Collections.emptyList();
-    return preFilterGrouped(queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows, preFilter, groupKeyResolver,
-        vectors, ordinalMap, deltaSnapshot, overlay, candidates, guard);
+    return preFilterGrouped(scorer, limit, groupSize, onlyGroups, maxDistance, maxRows, preFilter, groupKeyResolver,
+        ordinalMap, deltaSnapshot, overlay, candidates, guard);
   }
 
   /**
@@ -8847,7 +8999,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final RandomAccessVectorValues exactVectors, final int[] ordinalMap, final PQCodes codes, final TransactionVectorOverlay overlay,
       final WorkGuard guard) {
     if (rerank)
-      return answerByPreFilter(preFilter, queryVectorFloat, k, exactVectors, ordinalMap, overlay, guard);
+      return answerByPreFilter(preFilter, exactScorer(queryVectorFloat, exactVectors), k, ordinalMap, overlay, guard);
     metrics.incrementPreFilterSearches();
     if (preFilter.scored().isEmpty())
       return new ArrayList<>(0);
@@ -8894,8 +9046,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * pool so its scratch state survives across queries (issue #5413). A walk {@code bitsFilter} or the guard stopped halfway
    * leaves the searcher mid-search, so it is discarded rather than handed to the next query (issue #9896).
    */
-  private SearchResult walkGraph(final VectorFloat<?> queryVectorFloat, final RandomAccessVectorValues vectors, final int k,
-      final int beam, final Bits bitsFilter) {
+  private SearchResult walkGraph(final VectorFloat<?> queryVectorFloat, final ScoreFunction.ExactScoreFunction scoreFunction,
+      final int k, final int beam, final Bits bitsFilter) {
     final GraphSearcherPool pool = getSearcherPool();
     final long poolEpoch = searcherPoolEpoch();
     // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must agree on which
@@ -8904,10 +9056,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
     boolean walked = false;
     try {
-      final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
       // A graph that carries the FusedPQ feature is walked on the PQ codes stored beside its nodes, and the best candidates
-      // are scored again on the stored vectors; any other graph is walked on the stored vectors (issue #10514)
-      final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, exactScoreFunction);
+      // are scored again on the stored vectors; any other graph is walked on the stored vectors (issue #10514), or on the
+      // one-bit codes of a BINARY index (issue #10968)
+      final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, scoreFunction);
       final SearchResult searchResult = searcher.search(ssp, k, beam, 0.0f, 0.0f, bitsFilter);
       walked = true;
       return searchResult;
@@ -9027,7 +9179,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
     checkIsValid();
     if (metadata.quantizationType != VectorQuantizationType.BINARY || k <= 0 || queryVector == null)
       return searchNeighbors(queryVector, k, efSearch, allowedRIDs, guard);
+    return rerankedBinarySearch(queryVector, k, efSearch, metadata.rerankOversample, allowedRIDs, guard);
+  }
 
+  /**
+   * The search of a BINARY index: the graph walk, scored on the one-bit codes (issue #10968), selects the candidates and
+   * their stored vectors put them in order.
+   *
+   * @param rerankOversample candidates per requested neighbour to rerank; at least one per neighbour is always reranked,
+   *                         since a BINARY index never answers with the distances of its codes
+   */
+  private List<Pair<RID, Float>> rerankedBinarySearch(final float[] queryVector, final int k, final int efSearch,
+      final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
     // BINARY keeps one bit per dimension, which cannot tell apart two vectors that share their bits (a record queried
     // by its own vector ties with every other record of the same signs). The graph answers with the oversampled
     // candidates and the stored float vectors put them in order, which is the "approximate search with reranking"
@@ -9037,7 +9200,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // and the rerank deletes exactly the nearest records, which are the ones the candidate list is made of. So a
     // rerank that comes up short of k while candidates were dropped asks again with a larger budget, against the
     // state committed by then, instead of answering with fewer than k although the index holds them (issue #9396).
-    int candidatesToFetch = k > Integer.MAX_VALUE / BINARY_RERANK_OVERSAMPLE ? Integer.MAX_VALUE : k * BINARY_RERANK_OVERSAMPLE;
+    //
+    // How many candidates (issue #10968): k * rerankOversample, the knob a PRODUCT index reranks by too, and the whole beam
+    // when an efSearch asks for more. The walk is scored on one-bit codes, and a wider beam only buys recall if what it
+    // finds is reranked: the budget used to be a fixed k * BINARY_RERANK_OVERSAMPLE, so a beam past it was walked and then
+    // cut back, and efSearch moved the cost of a BINARY search and never its recall.
+    int candidatesToFetch = (int) Math.min(Integer.MAX_VALUE, Math.max((long) k * Math.max(1, rerankOversample),
+        efSearch > 0 ? efSearch : metadata.efSearchConfigured ? metadata.efSearch : 0));
     List<Pair<RID, Float>> reranked = List.of();
     for (int attempt = 0; attempt < BINARY_RERANK_MAX_ATTEMPTS; attempt++) {
       final List<Pair<RID, Float>> candidates = searchNeighbors(queryVector, candidatesToFetch, efSearch, allowedRIDs, guard);
@@ -9221,6 +9390,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int[] ordinalMap = this.ordinalToVectorId;
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
+        // Scores every candidate of this search, whichever plan it takes: a BINARY index on its one-bit codes, so the
+        // walk, the scans and the delta buffer rank their rows on one scale (issue #10968)
+        final CandidateScorer scorer = candidateScorer(queryVector, queryVectorFloat, vectors, ordinalMap);
+        final ScoreFunction.ExactScoreFunction walkScore = scorer instanceof final BinaryQueryScorer binary ?
+            binary :
+            liveOnlyScoreFunction(queryVectorFloat, vectors);
 
         // The beam: an explicit efSearch (the query's or the index's), else sized to the graph (issue #3722). A short walk
         // is kept as it is: there used to be a second pass here - `if (firstPass.getNodes().length < k) searchResult =
@@ -9241,7 +9416,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // already uses - instead of duplicating it.
         final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0);
         if (preFilter != null)
-          return answerByPreFilter(preFilter, queryVectorFloat, k, vectors, ordinalMap, overlay, guard);
+          return answerByPreFilter(preFilter, scorer, k, ordinalMap, overlay, guard);
 
         // Only live vectors may enter the result heap. Accepting tombstones lets a query aimed at a deleted
         // neighbourhood fill its beam with them and stop, which is what returned an empty list (issue #5558).
@@ -9249,15 +9424,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // (issue #10921)
         SearchResult searchResult;
         try {
-          searchResult = walkGraph(queryVectorFloat, vectors, k, beam,
+          searchResult = walkGraph(queryVectorFloat, walkScore, k, beam,
               walkFilter(allowedRIDs, ordinalMap, overlay, guard, beam, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
         } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
           final PreFilterPlan listed = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
               e.listingCap);
           if (listed != null)
-            return answerByPreFilter(listed, queryVectorFloat, k, vectors, ordinalMap, overlay, guard);
+            return answerByPreFilter(listed, scorer, k, ordinalMap, overlay, guard);
           // The predicate keeps more records than the walk met where it went: the walk answers after all, unbounded
-          searchResult = walkGraph(queryVectorFloat, vectors, k, beam,
+          searchResult = walkGraph(queryVectorFloat, walkScore, k, beam,
               new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(), supersededRIDs(overlay), guard));
         }
 
@@ -9295,7 +9470,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         // Merge with delta vectors inserted since last graph rebuild
-        mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
+        mergeWithDeltaScan(scorer, k, allowedRIDs, results, overlay);
 
         // Issue #3722: if graph search + delta merge could not fill the request, fall back to a brute-force scan.
         // This handles degraded graph quality after rebuilds with corrupted pages.
@@ -9327,7 +9502,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (results.size() < expectedResults) {
           logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs);
           metrics.incrementBruteForceScans();
-          bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap, overlay, guard);
+          bruteForceScan(scorer, k, allowedRIDs, results, ordinalMap, overlay, guard);
         }
 
         LogManager.instance()
@@ -9539,16 +9714,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * The grouped twin of the BINARY rerank in {@link #findNeighborsFromVector} (issue #9633). The graph scores a
-   * one-bit-per-dimension reconstruction of each vector, so its distances can neither order the candidates nor be
+   * The grouped twin of the BINARY rerank in {@link #findNeighborsFromVector} (issue #9633). The graph scores the
+   * one-bit codes of the vectors (issue #10968), so its distances can neither order the candidates nor be
    * reported: a record queried by its own vector comes back at a non-zero distance, and a {@code maxDistance} bound
    * applied to that number drops the exact match.
    * <p>
    * Reranking what the cap already admitted would fix the reported distance but not the answer, because the cap is
    * first-come-first-served and the wrong members would already hold the slots. So the walk runs with both caps
-   * widened by {@link #BINARY_RERANK_OVERSAMPLE} - more groups, and more members per group, as the ungrouped path
-   * fetches {@code k * BINARY_RERANK_OVERSAMPLE} candidates - and with no distance bound, since an approximate
-   * distance cannot be compared with an exact one. Every candidate is then rescored on its stored float vector, and
+   * widened - more members per group by {@link #BINARY_RERANK_OVERSAMPLE}, and enough groups to hold at least the rows the
+   * ungrouped search would rerank for {@code limit * groupSize} neighbours ({@code rerankOversample} per neighbour, or the
+   * efSearch beam), and never fewer than {@code limit * BINARY_RERANK_OVERSAMPLE} - and with no distance bound, since an
+   * approximate distance cannot be compared with an exact one. Every candidate is then rescored on its stored float vector, and
    * the real cap and the real bound are applied to that rank-ordered list. The group key of each candidate is the one
    * the walk already resolved, so no record is resolved twice for it, and the exact distances are ranked in primitive
    * arrays through a {@link ScoredCandidateCursor}, which allocates nothing per candidate.
@@ -9556,9 +9732,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * A restricted search (issue #8002) is asked to fill a fixed set of groups, so there is no group count to widen: only
    * the members per group are.
    * <p>
-   * Cost: one stored-vector read per candidate, at most {@code limit * groupSize * BINARY_RERANK_OVERSAMPLE^2} of them on the
-   * first attempt (the walk clamps its rows to the vectors the index holds), against {@code k * BINARY_RERANK_OVERSAMPLE}
-   * for the ungrouped search: both caps can pick the wrong rows, so both are widened.
+   * Cost: one stored-vector read per candidate, at most {@code BINARY_RERANK_OVERSAMPLE} times the rows the ungrouped search
+   * reranks, and {@code limit * groupSize * BINARY_RERANK_OVERSAMPLE^2} at the least, on the first attempt (the walk clamps its
+   * rows to the vectors the index holds): both caps can pick the wrong rows, so both are widened.
    * <p>
    * A candidate whose record is gone by the time it is rescored is dropped, and when that leaves the answer short of
    * its groups while the widened walk stopped before it had seen everything it could reach (see
@@ -9569,11 +9745,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final Set<Object> onlyGroups, final float maxDistance, final WorkGuard guard) {
     final VectorFloat<?> query = vts.createFloatVector(queryVector);
+    // The rows the ungrouped search would rerank for limit * groupSize neighbours, held at groupSize rows a group
+    final long rows = Math.max((long) limit * groupSize * Math.max(1, metadata.rerankOversample),
+        efSearch > 0 ? efSearch : metadata.efSearchConfigured ? metadata.efSearch : 0);
+    final long groupsForRows = Math.max((long) limit * BINARY_RERANK_OVERSAMPLE, (rows + groupSize - 1) / groupSize);
     long oversample = BINARY_RERANK_OVERSAMPLE;
     List<Pair<RID, Float>> answer = Collections.emptyList();
     for (int attempt = 0; attempt < BINARY_RERANK_MAX_ATTEMPTS; attempt++) {
       // A restricted search (issue #8002) fills a fixed set of groups: only the members per group can be widened.
-      final int candidateGroups = onlyGroups != null ? limit : (int) Math.min(Integer.MAX_VALUE, limit * oversample);
+      final long widening = oversample / BINARY_RERANK_OVERSAMPLE;
+      final int candidateGroups = onlyGroups != null ? limit :
+          (int) Math.min(Integer.MAX_VALUE, groupsForRows > Long.MAX_VALUE / widening ? Long.MAX_VALUE : groupsForRows * widening);
       final int candidateGroupSize = (int) Math.min(Integer.MAX_VALUE, groupSize * oversample);
 
       final GroupedCandidates candidates = new GroupedCandidates(limit);
@@ -9711,7 +9893,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // findNeighborsFromVector extends. Before issue #6501 this returned an empty list even when every vector
           // in the index was sitting in the buffer.
           final GroupedSearchState deltaOnly = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows,
-              allowedRIDs, groupKeyResolver, queryVectorFloat, deltaSnapshot, candidates);
+              allowedRIDs, groupKeyResolver, candidateScorer(queryVector, queryVectorFloat, null, null), deltaSnapshot, candidates);
           if (!deltaOnly.mergesDelta())
             return Collections.emptyList();
           deltaOnly.drainDelta();
@@ -9726,6 +9908,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int[] ordinalMap = ordinalToVectorId;
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
+        // One scorer for the walk, the pre-filter plan and the delta buffer, as on the ungrouped path (issue #10968)
+        final CandidateScorer scorer = candidateScorer(queryVector, queryVectorFloat, vectors, ordinalMap);
 
         // Issue #6514 pre-filter plan: the grouped counterpart of the issue #6502 plan in findNeighborsFromVector -
         // see preFilterGrouped's javadoc for why it cannot simply call bruteForceScan.
@@ -9746,8 +9930,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0);
         if (preFilter != null)
-          return answerGroupedByPreFilter(preFilter, queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows,
-              groupKeyResolver, vectors, ordinalMap, deltaSnapshot, overlay, candidates, guard);
+          return answerGroupedByPreFilter(preFilter, scorer, limit, groupSize, onlyGroups, maxDistance, maxRows,
+              groupKeyResolver, ordinalMap, deltaSnapshot, overlay, candidates, guard);
 
         // Liveness-only Bits filter. Unlike the first grouped implementation, we do NOT apply
         // group-aware filtering during traversal: Bits is score-blind, so doing so lets the HNSW walk
@@ -9758,7 +9942,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         LiveVectorBitsFilter bitsFilter = walkFilter(allowedRIDs, ordinalMap, overlay, guard, effectiveEfSearch,
             GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY);
 
-        final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
+        final ScoreFunction.ExactScoreFunction exactScoreFunction = scorer instanceof final BinaryQueryScorer binary ?
+            binary :
+            liveOnlyScoreFunction(queryVectorFloat, vectors);
         final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
         final GraphSearcherPool pool = getSearcherPool();
@@ -9784,8 +9970,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final PreFilterPlan listed = preFilterPlan(allowedRIDs, ordinalMap,
                 GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, e.listingCap);
             if (listed != null)
-              return answerGroupedByPreFilter(listed, queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows,
-                  groupKeyResolver, vectors, ordinalMap, deltaSnapshot, overlay, candidates, guard);
+              return answerGroupedByPreFilter(listed, scorer, limit, groupSize, onlyGroups, maxDistance, maxRows,
+                  groupKeyResolver, ordinalMap, deltaSnapshot, overlay, candidates, guard);
             // The predicate keeps more records than the walk met where it went: the walk answers after all, unbounded
             bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(), supersededRIDs(overlay), guard);
             searcher = pool.borrow(pooledGraph, poolEpoch);
@@ -9817,7 +10003,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         boolean walked = false;
         try {
           state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows, allowedRIDs, groupKeyResolver,
-              queryVectorFloat, deltaSnapshot, candidates);
+              scorer, deltaSnapshot, candidates);
 
           final int candidateBudget = Math.min(graphSize,
               (int) Math.min(Integer.MAX_VALUE, (long) effectiveEfSearch * GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR));
@@ -10002,24 +10188,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * members only: {@link GroupedSearchState#admit} tests each in rank order, so a record is loaded only for a candidate the
    * walk reaches (issue #10921).
    */
-  private List<Pair<RID, Float>> preFilterGrouped(final VectorFloat<?> queryVectorFloat, final int limit, final int groupSize,
+  private List<Pair<RID, Float>> preFilterGrouped(final CandidateScorer scorer, final int limit, final int groupSize,
       final Set<Object> onlyGroups, final float maxDistance, final int maxRows, final PreFilterPlan preFilter,
-      final Function<RID, Object> groupKeyResolver,
-      final RandomAccessVectorValues vectors, final int[] ordinalMap, final List<DeltaVectorEntry> deltaSnapshot,
+      final Function<RID, Object> groupKeyResolver, final int[] ordinalMap, final List<DeltaVectorEntry> deltaSnapshot,
       final TransactionVectorOverlay overlay, final GroupedCandidates rerankCandidates, final WorkGuard guard) {
     final int[] candidates = collectAllowedOrdinals(preFilter.scored(), ordinalMap);
-    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     final RidHashSet seenRIDs = new RidHashSet(candidates.length);
     final List<Pair<RID, Float>> scored = new ArrayList<>(candidates.length);
     for (int i = 0; i < candidates.length; i++) {
       guard.checkPeriodically(i);
-      scoreOrdinal(candidates[i], queryVectorFloat, preFilter.scored(), scored, vectors, ordinalMap, seenRIDs, pageValues,
-          overlay);
+      scoreOrdinal(candidates[i], scorer, preFilter.scored(), scored, ordinalMap, seenRIDs, overlay);
     }
     scored.sort(Comparator.comparing(Pair::getSecond));
 
     final GroupedSearchState state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows,
-        preFilter.members(), groupKeyResolver, queryVectorFloat, deltaSnapshot, rerankCandidates);
+        preFilter.members(), groupKeyResolver, scorer, deltaSnapshot, rerankCandidates);
     for (final Pair<RID, Float> candidate : scored) {
       if (state.isFull() || candidate.getSecond() >= maxDistance)
         break;
@@ -10114,8 +10297,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     private GroupedSearchState(final int limit, final int groupSize, final Set<Object> onlyGroups, final float maxDistance,
         final int maxRows, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
-        final VectorFloat<?> queryVectorFloat, final List<DeltaVectorEntry> deltaSnapshot,
-        final GroupedCandidates rerankCandidates) {
+        final CandidateScorer scorer, final List<DeltaVectorEntry> deltaSnapshot, final GroupedCandidates rerankCandidates) {
       this.allowedRIDs = allowedRIDs;
       this.onlyGroups = onlyGroups;
       this.rerankCandidates = rerankCandidates;
@@ -10126,7 +10308,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // can address (issue #6066) - recomputing it here in int would reopen the same overflow the caller closed.
       this.results = new ArrayList<>(maxRows);
       this.deltaSnapshot = deltaSnapshot;
-      this.deltaCursor = scoreDeltaCandidates(queryVectorFloat, allowedRIDs, deltaSnapshot);
+      this.deltaCursor = scoreDeltaCandidates(scorer, allowedRIDs, deltaSnapshot);
       this.deltaCandidates = deltaCursor == null ? 0 : deltaCursor.size();
       this.admitted = deltaCursor == null ? null : new RidHashSet(maxRows);
     }
@@ -10268,7 +10450,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * buffered vector. An entry whose payload the heap budget declined costs a page read and one conversion of its
    * own (issue #7357).
    */
-  private ScoredCandidateCursor scoreDeltaCandidates(final VectorFloat<?> queryVectorFloat, final Set<RID> allowedRIDs,
+  private ScoredCandidateCursor scoreDeltaCandidates(final CandidateScorer scorer, final Set<RID> allowedRIDs,
       final List<DeltaVectorEntry> deltaSnapshot) {
     // No overlay parameter here on purpose: `deltaSnapshot` is already the merged view. The grouped search takes it
     // once, at the top of findNeighborsFromVectorGrouped, and hands the same list to every plan and to the
@@ -10299,10 +10481,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         continue;
       // Read back when the buffer declined to keep the payload, skipped when even that fails - the same answer
       // mergeWithDeltaScan gives, for the same reason (issue #7357).
-      final VectorFloat<?> vector = deltaVectorOf(entry);
-      if (vector == null)
+      final float score = scorer.delta(entry);
+      if (Float.isNaN(score))
         continue;
-      distances[kept] = scoreToDistance(similarity, similarity.compare(queryVectorFloat, vector));
+      distances[kept] = scoreToDistance(similarity, score);
       positions[kept] = i;
       kept++;
     }
@@ -10389,15 +10571,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * door a query comes in by.
    * <p>
    * A PRODUCT index walks its graph on the PQ codes and scores the best {@code k * rerankOversample} candidates on the stored
-   * vectors, as BINARY does ({@link #findNeighborsFromVectorApproximate(float[], int, int, int, Set, WorkGuard)}); every other
-   * quantization takes the exact walk of {@link #findNeighborsFromVector(float[], int, int, Set, WorkGuard)}.
+   * vectors ({@link #findNeighborsFromVectorApproximate(float[], int, int, int, Set, WorkGuard)}), and a BINARY index does the
+   * same on its one-bit codes (issue #10968); every other quantization takes the exact walk of
+   * {@link #findNeighborsFromVector(float[], int, int, Set, WorkGuard)}.
    *
    * @param rerankOversample candidates per requested neighbour to re-rank on the stored vectors; {@code 0} for the PQ scores
-   *                         alone; negative for the index's own {@link LSMVectorIndexMetadata#rerankOversample}. Ignored when the
-   *                         index is not PRODUCT
+   *                         alone (a BINARY index reranks at least one per neighbour); negative for the index's own
+   *                         {@link LSMVectorIndexMetadata#rerankOversample}. Ignored when the index is neither PRODUCT nor BINARY
    */
   public List<Pair<RID, Float>> findNeighbors(final float[] queryVector, final int k, final int efSearch,
       final int rerankOversample, final Set<RID> allowedRIDs, final WorkGuard guard) {
+    if (metadata.quantizationType == VectorQuantizationType.BINARY && k > 0 && queryVector != null) {
+      checkIsValid();
+      return rerankedBinarySearch(queryVector, k, efSearch, rerankOversample >= 0 ? rerankOversample : metadata.rerankOversample,
+          allowedRIDs, guard);
+    }
     if (metadata.quantizationType != VectorQuantizationType.PRODUCT)
       return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
     return findNeighborsFromVectorApproximate(queryVector, k, efSearch,
@@ -11152,14 +11340,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // liveness, so a forgotten id reads as perfectly live there: leaving that entry is exactly the "search
       // matches a record on an embedding no transaction committed" window this whole fix exists to close.
       if (allocated != null) {
-        final VectorCache cache = searchVectorCache;
         for (int i = 0; i < undo.allocatedCount; i++) {
           final int id = undo.allocatedIds[i];
           locations.forget(id);
           // A search that ran between the replay and the abort could have pulled the uncommitted vector into the
           // shared cache, where it would outlive the id itself (the same reason the delete path evicts, #5412).
-          if (cache != null)
-            cache.remove(id);
+          evictFromSearchCaches(id);
         }
 
         if (!deltaVectors.isEmpty()) {
@@ -11456,9 +11642,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             locations.markDeleted(vectorId);
             deletedIds.add(vectorId);
             // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
-            final VectorCache cache = searchVectorCache;
-            if (cache != null)
-              cache.remove(vectorId);
+            evictFromSearchCaches(vectorId);
           }
         }
 
@@ -12370,6 +12554,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       residentLocations.clear();
       locationsMaterialized = true;
       searchVectorCache = null; // Release the shared search cache (issue #5412)
+      searchBinaryCodes = null;
       final GraphSearcherPool searchers = searcherPool;
       if (searchers != null)
         searchers.clear(); // Release the pooled graph searchers (issue #5413)
@@ -12539,6 +12724,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // concurrency - see VectorCache for why they cannot be atomic (issue #5577).
     final VectorCache searchCache = searchVectorCache;
     stats.put("searchVectorCacheCapacity", searchCache != null ? (long) searchCache.capacity() : 0L);
+    // The one-bit codes a BINARY index scores its searches on (issue #10968): 0 for every other quantization
+    final BinaryCodeCache searchCodes = searchBinaryCodes;
+    stats.put("searchBinaryCodeCacheCapacity", searchCodes != null ? (long) searchCodes.capacity() : 0L);
     final GraphSearcherPool searchers = searcherPool;
     stats.put("pooledGraphSearchers", searchers != null ? (long) searchers.size() : 0L);
     stats.put("vectorCacheHits", searchCache != null ? searchCache.getHits() : 0L);
@@ -13213,9 +13401,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               tombstoned = new IntHashSet();
             if (tombstoned.add(id)) {
               // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
-              final VectorCache cache = searchVectorCache;
-              if (cache != null)
-                cache.remove(id);
+              evictFromSearchCaches(id);
             }
           }
         }
@@ -13387,6 +13573,72 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       return cache;
     }
+  }
+
+  /**
+   * Drops {@code vectorId} from both search caches: the materialized vectors and the BINARY codes (issue #10968). Called
+   * wherever a vector stops existing, so neither cache pins it.
+   */
+  private void evictFromSearchCaches(final int vectorId) {
+    final VectorCache cache = searchVectorCache;
+    if (cache != null)
+      cache.remove(vectorId);
+    final BinaryCodeCache codes = searchBinaryCodes;
+    if (codes != null)
+      codes.remove(vectorId);
+  }
+
+  /**
+   * Returns the one-bit codes shared by every search on a BINARY index (issue #10968), growing them when the vector ids
+   * have outgrown the current capacity, the way {@link #getSearchVectorCache} grows its cache.
+   *
+   * @return the shared codes, or {@code null} when the index is not BINARY or caching is disabled by configuration, in
+   * which case every search reads the codes it scores from the pages
+   */
+  BinaryCodeCache getSearchBinaryCodes() {
+    if (metadata.quantizationType != VectorQuantizationType.BINARY)
+      return null;
+    final int wanted = computeBinaryCodeCacheCapacity();
+    if (wanted <= 0)
+      return null;
+
+    BinaryCodeCache codes = searchBinaryCodes;
+    if (codes != null && codes.capacity() >= wanted)
+      return codes;
+
+    synchronized (searchVectorCacheLock) {
+      codes = searchBinaryCodes;
+      if (codes == null || codes.capacity() < wanted) {
+        codes = new BinaryCodeCache(metadata.dimensions, wanted);
+        searchBinaryCodes = codes;
+      }
+      return codes;
+    }
+  }
+
+  /**
+   * How many codes the BINARY search cache holds: the same {@code arcadedb.vectorIndex.searchCacheSize} and heap share
+   * as the vector cache, counted in codes, which are a thirty-second of the float vectors that cache holds. Sized to the
+   * vector ID range rather than to the live count, because the codes are addressed by id and a deleted id keeps its
+   * place in the range.
+   */
+  private int computeBinaryCodeCacheCapacity() {
+    final int configured = mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
+    if (configured < 0)
+      return 0;
+    if (configured > 0)
+      return configured;
+
+    final int heapPercent = mutable.getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT);
+    if (heapPercent <= 0)
+      return 0;
+
+    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE,
+        VectorHeapBudget.budgetBytes(heapPercent) / BinaryCodeCache.bytesPerCode(metadata.dimensions));
+    final long idRange = Math.max(MIN_SEARCH_CACHE_SIZE, Math.max(nextId.get(), vectorIndex().size()));
+    return (int) Math.min(Math.min(affordable, idRange), Integer.MAX_VALUE / 2);
   }
 
   /**

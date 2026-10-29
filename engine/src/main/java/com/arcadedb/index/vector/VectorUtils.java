@@ -27,6 +27,7 @@ import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -399,6 +400,97 @@ public final class VectorUtils {
       throw new IllegalArgumentException(
           "Array elements must be whole numbers in the int range, found: " + NumberUtils.describeRejectedNumber(number));
     }
+  }
+
+  /**
+   * The median of {@code values}: the middle element in {@link Float#compare} order, or the mean of the two middle ones
+   * for an even length. The same number sorting a copy and reading the middle gives, in linear time: BINARY quantization
+   * takes the median of every vector it stores and of every query it answers, and sorting a 1536-dimension query was a
+   * quarter of the cost of a BINARY search (issue #10968).
+   *
+   * @param values not empty; left untouched
+   */
+  public static float median(final float[] values) {
+    // Selected as ints that order like Float.compare orders the floats, so every comparison is one int compare
+    final int[] keys = new int[values.length];
+    for (int i = 0; i < keys.length; i++)
+      keys[i] = sortableKey(values[i]);
+    final int upper = keys.length >>> 1;
+    select(keys, upper);
+    final float upperValue = fromSortableKey(keys[upper]);
+    if ((keys.length & 1) == 1)
+      return upperValue;
+    // Everything before `upper` is at or below it, so the lower middle element is the largest of them
+    int lower = keys[0];
+    for (int i = 1; i < upper; i++)
+      if (keys[i] > lower)
+        lower = keys[i];
+    return (fromSortableKey(lower) + upperValue) / 2.0f;
+  }
+
+  /**
+   * An int whose signed order is {@link Float#compare}'s order of the floats: the bits of a positive float already order
+   * like its value, and flipping every bit but the sign of a negative one reverses the order of its magnitude. NaN is
+   * canonical first, as {@link Float#compare} has it, so it sorts after every number.
+   */
+  private static int sortableKey(final float value) {
+    final int bits = Float.floatToIntBits(value);
+    return bits ^ ((bits >> 31) & 0x7FFFFFFF);
+  }
+
+  private static float fromSortableKey(final int key) {
+    return Float.intBitsToFloat(key ^ ((key >> 31) & 0x7FFFFFFF));
+  }
+
+  /**
+   * Moves the {@code rank}-th smallest element of {@code a} to {@code a[rank]}, with every element before it at or below it
+   * and every element after it at or above it. Quickselect on a median-of-three pivot, which falls back to sorting the
+   * range it is left with once it has partitioned more often than a balanced run would, so a hostile input costs a sort
+   * and never a quadratic walk.
+   */
+  private static void select(final int[] a, final int rank) {
+    int low = 0;
+    int high = a.length - 1;
+    int budget = 2 * (32 - Integer.numberOfLeadingZeros(a.length));
+    while (high > low) {
+      if (--budget < 0) {
+        Arrays.sort(a, low, high + 1);
+        return;
+      }
+      final int middle = (low + high) >>> 1;
+      if (a[middle] < a[low])
+        swap(a, middle, low);
+      if (a[high] < a[low])
+        swap(a, high, low);
+      if (a[high] < a[middle])
+        swap(a, high, middle);
+      final int pivot = a[middle];
+
+      // Hoare partition: a[low..j] <= pivot <= a[j+1..high]
+      int i = low - 1;
+      int j = high + 1;
+      while (true) {
+        do
+          i++;
+        while (a[i] < pivot);
+        do
+          j--;
+        while (a[j] > pivot);
+        if (i >= j)
+          break;
+        swap(a, i, j);
+      }
+      if (rank <= j)
+        high = j;
+      else
+        low = j + 1;
+    }
+  }
+
+  private static void swap(final int[] a, final int i, final int j) {
+    final int t = a[i];
+    a[i] = a[j];
+    a[j] = t;
   }
 
   /**

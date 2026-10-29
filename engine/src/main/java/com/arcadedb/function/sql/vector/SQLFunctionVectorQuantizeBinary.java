@@ -20,9 +20,8 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import java.util.Arrays;
 
 /**
  * Quantizes a float vector to binary (1-bit per dimension) using median threshold.
@@ -68,7 +67,7 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Calculate median
-    final float median = calculateMedian(vector);
+    final float median = VectorUtils.median(vector);
 
     // Quantize to binary
     final int byteCount = (vector.length + 7) / 8; // Round up to nearest byte
@@ -84,19 +83,6 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
     }
 
     return new BinaryQuantizationResult(packed, median, vector.length);
-  }
-
-  /**
-   * Calculate median of array.
-   */
-  private float calculateMedian(final float[] values) {
-    final float[] sorted = values.clone();
-    Arrays.sort(sorted);
-    if (sorted.length % 2 == 0) {
-      return (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0f;
-    } else {
-      return sorted[sorted.length / 2];
-    }
   }
 
 
