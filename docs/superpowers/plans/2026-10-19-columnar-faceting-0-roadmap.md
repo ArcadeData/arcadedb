@@ -312,6 +312,7 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 - GROUP BY acceleration with a WHERE (deferred from plan 5 Task 13): rows filtered by the WHERE must be counted from the version the WHERE saw; design: take a second snapshot after draining the matches, decline if anything was published in between, count rows on pages pending in that snapshot from their records; re-evaluate the WHERE on any replay. Plan 5 accelerates only GROUP BY without a WHERE.
 - Read events on a FACETS query with a WHERE (final fix round 2, N3): a type with READ triggers or listeners is counted by the fallback scan, which reads every match again through `recordAt` after the rows read it, so the events fire twice per matched record; reuse the rows' records for the facet scan (one read, one firing).
 - Hierarchy build cancellation (final fix round 2, N6): `HierarchyBuilder` checks its cancel flag between the scans and every 1024 vertices, not in the sort, the BFS and the Tarjan pass, so a deadline or a close can be overrun by those passes; add checks there.
+- Apply pass vs a commit still publishing a growing chunk chain (plan 6 investigation): the pass retries the page on the next pass (converges); harden LocalBucket.assembleFromNewestCommitted to redo the walk under pageManager.executeInLock when a publication overlapped (needs a PageManager.publishPages hook to test), and report a chunked record deleted meanwhile as an empty slot.
 
 ## Pre-merge steps (before the feature branch is merged to main)
 
