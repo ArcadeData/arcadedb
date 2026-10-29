@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 /**
  * Abstract base class for text functions.
@@ -62,15 +63,15 @@ public abstract class AbstractTextFunction implements StatelessFunction {
   }
 
   /**
-   * Safely converts an argument to int, with default value for null.
+   * Reads an int argument, with a default value for null. A number has to be a whole one in the int range: intValue()
+   * read 2.9 as 2 and wrapped 4294967298 to 2, so a wrong argument answered as a plausible one (issue #10850). A text is
+   * parsed by Integer.parseInt, which refuses rather than truncates.
    */
-  protected int asInt(final Object arg, final int defaultValue) {
-    if (arg == null) {
+  protected int asInt(final Object arg, final int defaultValue, final String argumentName) {
+    if (arg == null)
       return defaultValue;
-    }
-    if (arg instanceof Number) {
-      return ((Number) arg).intValue();
-    }
+    if (arg instanceof Number)
+      return CypherFunctionHelper.requireWholeIntArgument(arg, getName(), argumentName);
     return Integer.parseInt(arg.toString());
   }
 }

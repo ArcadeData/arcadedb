@@ -60,7 +60,9 @@ public class VectorCreateFunction implements StatelessFunction {
 
     // Validate dimension if provided
     if (args.length >= 2 && args[1] != null) {
-      final int expectedDimension = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
+      // Issue #10850: a whole number or a type error - intValue() read 3.9 as 3 and 4294967299 as 3, so a dimension
+      // the caller got wrong could match the vector
+      final long expectedDimension = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "dimension");
       if (result.length != expectedDimension)
         throw new CommandExecutionException(
             "Vector dimension mismatch: expected " + expectedDimension + " but got " + result.length);

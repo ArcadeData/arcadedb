@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.NumberUtils;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -262,6 +263,44 @@ public final class CypherFunctionHelper {
       return number;
 
     throw typeMismatch(functionName, NUMERIC_DOMAIN, value);
+  }
+
+  /**
+   * Reads an argument a Cypher function declares as an INTEGER (a length, an index, a count, a depth, an amount) as a
+   * long, refusing a value that is not a whole number instead of reading it as a different one: {@code Number.intValue()}
+   * truncates {@code 2.9} to 2 and wraps {@code 3000000000} to a negative int, and {@code longValue()} truncates the same
+   * way, so a wrong argument used to answer as a plausible one (issue #10850). A whole FLOAT such as {@code 2.0} is
+   * accepted, as the parse-time check accepts an INTEGER | FLOAT there. A value past the int range is a valid Cypher
+   * INTEGER, so it is returned as it is: the caller decides what it means (past the end of a string or a list, usually).
+   * The caller handles {@code null} first, as each one propagates it in its own way.
+   *
+   * @throws CommandSemanticException when the argument is not a number, or not a whole one in the long range
+   */
+  public static long requireWholeNumberArgument(final Object value, final String functionName, final String argumentName) {
+    // the same wording as requireNumberArgument, which the parse-time check of left()/right()/substring() shares (#6609)
+    if (!(value instanceof Number number))
+      throw typeMismatch(functionName, NUMERIC_DOMAIN, value);
+    try {
+      return NumberUtils.toLongWhole(number);
+    } catch (final ArithmeticException e) {
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(value));
+    }
+  }
+
+  /**
+   * As {@link #requireWholeNumberArgument}, for an argument that has to fit an int because what it drives cannot be
+   * larger (a scale, a padding length, a character index): a value past the int range is refused rather than wrapped.
+   *
+   * @throws CommandSemanticException when the argument is not a number, or not a whole one in the int range
+   */
+  public static int requireWholeIntArgument(final Object value, final String functionName, final String argumentName) {
+    final long whole = requireWholeNumberArgument(value, functionName, argumentName);
+    if (whole != (int) whole)
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + "> in the int range, but received "
+              + NumberUtils.describeRejectedNumber(value));
+    return (int) whole;
   }
 
   /**
@@ -813,7 +852,7 @@ public final class CypherFunctionHelper {
       date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
     value = map.get("dayOfWeek");
     if (value != null)
-      date = date.with(WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
+      date = date.with(WeekFields.ISO.dayOfWeek(), TemporalUtil.toIntField("dayOfWeek", value));
     return date;
   }
 

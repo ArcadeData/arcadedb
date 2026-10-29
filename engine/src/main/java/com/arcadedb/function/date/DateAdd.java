@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.date;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -52,7 +53,10 @@ public class DateAdd extends AbstractDateFunction {
       return null;
 
     final long timestamp = toMillis(args[0]);
-    final long value = args[1] instanceof Number ? ((Number) args[1]).longValue() : Long.parseLong(args[1].toString());
+    // Issue #10850: a whole number - longValue() read 1.5 hours as 1
+    final long value = args[1] instanceof Number ?
+        CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "value") :
+        Long.parseLong(args[1].toString());
     final String unit = args[2] != null ? args[2].toString() : UNIT_MS;
 
     try {

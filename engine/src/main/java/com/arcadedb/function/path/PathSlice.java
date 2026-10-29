@@ -56,22 +56,24 @@ public class PathSlice extends AbstractPathFunction {
     // A TraversalPath in, a TraversalPath out: the path a MATCH pattern binds used to answer null (issue #9913)
     final TraversalPath path = requirePath(args[0]);
     final int relCount = path.length();
-    final int from = index(args[1], 0);
-    final int to = index(args.length > 2 ? args[2] : null, relCount);
+    final long from = index(args[1], 0);
+    final long to = index(args.length > 2 ? args[2] : null, relCount);
 
     // Clamp the bounds. An empty slice (from == to, or from == relCount, i.e. slicing at the path's
     // end) yields a zero-relationship path containing just the boundary node, not null (issue #4707).
-    final int actualFrom = Math.max(0, Math.min(from, relCount));
-    final int actualTo = Math.max(actualFrom, Math.min(relCount, to));
+    final int actualFrom = (int) Math.max(0L, Math.min(from, relCount));
+    final int actualTo = (int) Math.max(actualFrom, Math.min(relCount, to));
     return path.subPath(actualFrom, actualTo);
   }
 
   /** A relationship index, {@code defaultValue} for null; anything but a number is a type error, not a ClassCastException. */
-  private int index(final Object value, final int defaultValue) {
+  private long index(final Object value, final int defaultValue) {
     if (value == null)
       return defaultValue;
-    if (value instanceof Number number)
-      return number.intValue();
+    if (value instanceof Number)
+      // Issue #10850: a whole number - intValue() read 1.9 as 1 and wrapped 4294967297 to 1. The index stays a long until
+      // it is clamped to the path, so one past the int range means "past the end" as it should
+      return CypherFunctionHelper.requireWholeNumberArgument(value, getName(), "index");
     throw CypherFunctionHelper.typeMismatch(getName(), "an INTEGER", value);
   }
 }
