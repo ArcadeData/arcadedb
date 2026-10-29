@@ -270,8 +270,9 @@ final class CypherConstraintRegistry {
    * declaration to restore passes to it instead, and is restored when the last of them is dropped. A property the constraint
    * declared is undeclared, which is what lifts a type restriction in a schema that has no "any" type, unless another
    * constraint still needs it declared (a unique index is built over the declared type, a MANDATORY flag lives on the
-   * declaration): that one then owns the declaration, and the property is undeclared when the last of them goes. A declaration that also carries what no constraint created (a READONLY flag, a
-   * DEFAULT, bounds set with SQL) is left in place, as is anything a statement outside Cypher still depends on.
+   * declaration): that one then owns the declaration, and the property is undeclared when the last of them goes. A
+   * declaration that also carries what no constraint created (a READONLY flag, a DEFAULT, bounds set with SQL) is left in
+   * place, as is anything a statement outside Cypher still depends on.
    * <p>
    * The steps are separate schema changes, not one atomic one. Each is safe to repeat, which is what makes a retry after a
    * failure part-way through converge: the entry is removed last so the name is still there to retry with, an index
