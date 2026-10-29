@@ -845,6 +845,12 @@ public final class SnapshotInstaller {
         throw validationEx;
       }
 
+      // A snapshot never carries the columnar projection: mark the staged copy for a snapshot_install rebuild, as install()
+      // does before its reopen, so the first open rebuilds every projection with that reason (plan 3 contract) rather than
+      // reading each one as missing. Written after the read-only validation and before the publish, so the marker moves
+      // with the atomic rename; a failure discards the staging like a failed download.
+      ColumnarStore.prepareForSnapshotInstall(staging);
+
       // A stale, unregistered databases/<name>/ (e.g. from a pre-upgrade crash) would block the rename. The
       // leader's copy is authoritative for an unseen database, so clear it before publishing.
       // Safety rests on Ratis applying the log single-threaded relative to this snapshot-install path: a
