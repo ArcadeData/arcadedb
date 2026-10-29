@@ -120,7 +120,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    * Entries (one per key, per data page a key's values span) of the PUBLISHED series, or -1 while unknown: what a full
    * compaction has to read on top of the incremental round it replaces (#10919). Kept up to date by the compactions
    * that write this file and counted from the page headers the first time it is asked for otherwise (a file loaded
-   * from disk, or filled by the bulk loader). Only the compaction of the owning index writes it.
+   * from disk, or filled by the bulk loader). Only the compaction of the owning index writes it, and only after the
+   * series it accounts for are published, so a failed round never reaches it. It only times the full compaction: a
+   * count that drifted could make one start early or late, never lose an entry.
    */
   private volatile long entryCount = -1;
 

@@ -238,7 +238,7 @@ final class LSMTreeIndexCompactedStreamWriter {
     return writtenEntries;
   }
 
-    int getRootEntryCount() {
+  int getRootEntryCount() {
     return rootPage != null ? compactedIndex.getCount(rootPage) : 0;
   }
 
