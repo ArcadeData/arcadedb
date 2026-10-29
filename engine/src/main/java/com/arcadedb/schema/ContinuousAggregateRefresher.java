@@ -67,6 +67,12 @@ public class ContinuousAggregateRefresher {
   private static final int MAX_FOLLOW_UP_REFRESHES = 5;
 
   /**
+   * Test-only hook (issue #10857): runs in a refresh right after it read the appends in flight on its source, before it reads the
+   * source. Package-private, never set outside tests; the tests that set it reset it in a {@code finally}.
+   */
+  static volatile Runnable TEST_AFTER_IN_FLIGHT_READ_HOOK = null;
+
+  /**
    * Refreshes the aggregate, or has the refresh in progress do it when it ends. #10428: a refresh asked for while another one runs
    * used to be dropped, and the one running may have read the aggregate before the change that asked (a delete recording the range
    * of buckets to recompute): the change then waited for the next refresh, which nothing may ask for. When a range is waiting to be
@@ -122,8 +128,18 @@ public class ContinuousAggregateRefresher {
     try {
       final String backingTypeName = ca.getBackingTypeName();
       final String bucketColumn = ca.getBucketColumn();
+      // #10428: the range samples were removed from since the buckets behind the watermark were computed. Read once: a delete
+      // that widens it while this refresh runs makes the clearing below a no-op, and the next refresh recomputes the wider range
+      final ContinuousAggregateImpl.Invalidation invalidated = ca.getInvalidation();
+      // #10857: read once this refresh is flagged in progress, AFTER the record above and before the source is read, see
+      // clipToInFlightAppends: an append that may have added to the record read is found here
+      final long oldestInFlightTs = oldestInFlightAppendTs(database, ca);
+      final Runnable inFlightReadHook = TEST_AFTER_IN_FLIGHT_READ_HOOK;
+      if (inFlightReadHook != null)
+        inFlightReadHook.run();
       // #10634: rows in the backing type beside a watermark never set (see adoptWatermarkFromBackingRows). Before the read below
-      final boolean adoptedWatermark = !ca.isWatermarkSet() && !ca.needsCleanRebuild() && adoptWatermarkFromBackingRows(database, ca);
+      final boolean adoptedWatermark =
+          !ca.isWatermarkSet() && !ca.needsCleanRebuild() && adoptWatermarkFromBackingRows(database, ca, oldestInFlightTs);
       // ONE read of the pair: the flag decides whether to delete and the timestamp decides what, so reading them
       // through two separate getters could straddle a concurrent advance (found in review).
       final ContinuousAggregateImpl.Watermark startWatermark = ca.currentWatermark();
@@ -132,9 +148,6 @@ public class ContinuousAggregateRefresher {
       // A pre-#8152 schema whose watermark is the ambiguous 0 brings its duplicate rows with it - see
       // ContinuousAggregateImpl.needsCleanRebuild. This one refresh starts from an empty backing type.
       final boolean cleanRebuild = ca.needsCleanRebuild();
-      // #10428: the range samples were removed from since the buckets behind the watermark were computed. Read once: a delete
-      // that widens it while this refresh runs makes the clearing below a no-op, and the next refresh recomputes the wider range
-      final ContinuousAggregateImpl.Invalidation invalidated = ca.getInvalidation();
 
       // Validate interpolated names to prevent backtick injection
       if (!SAFE_COLUMN_NAME.matcher(backingTypeName).matches())
@@ -207,8 +220,12 @@ public class ContinuousAggregateRefresher {
 
         // The watermark advances to the max bucket boundary found. The FIRST bucket ever seen installs it even when
         // it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
-        if (maxBucketSeen && (cleanRebuild || !watermarkSet || maxBucketTs > watermark))
-          advancedWatermark[0] = maxBucketTs;
+        // #10857: never past the bucket of a sample an append in flight may still commit
+        if (maxBucketSeen) {
+          final long reached = clipToInFlightAppends(maxBucketTs, oldestInFlightTs, ca.bucketIntervalMs());
+          if (cleanRebuild || !watermarkSet || reached > watermark)
+            advancedWatermark[0] = reached;
+        }
       }, false);
       if (!committed)
         throw new IllegalStateException("The refresh of continuous aggregate '" + ca.getName()
@@ -217,8 +234,11 @@ public class ContinuousAggregateRefresher {
       // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
       if (advancedWatermark[0] != null)
         ca.setWatermarkTs(advancedWatermark[0]);
-      // ... and the buckets of the invalidated range are recomputed, so the record of it can go (see saveConfiguration below)
-      if (invalidated != null)
+      // ... and the buckets of the invalidated range are recomputed, so the record of it can go (see saveConfiguration below).
+      // #10857: unless an append still in flight may have added to it. Its samples were not read here, and the record is what ships
+      // them to the followers before they commit: cleared, the check made after the commit would record them again and ship that
+      // record after the samples. Kept, the next refresh recomputes those buckets once more
+      if (invalidated != null && !mayHoldInFlightSamples(invalidated, oldestInFlightTs))
         ca.clearInvalidation(invalidated);
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       ca.recordRefreshSuccess(durationMs);
@@ -275,10 +295,14 @@ public class ContinuousAggregateRefresher {
    * the newest bucket it wrote. A watermark that is set but older than the rows (the same two causes) needs nothing: the refresh
    * deletes the buckets at or after it and computes them again.
    * <p>
+   * The watermark adopted is kept at or before the bucket of a sample an append in flight may still commit, see
+   * {@link #clipToInFlightAppends}: the rows after it are replaced by the refresh, as those after any watermark are.
+   * <p>
    * A read of every row of the backing type, done once: the watermark is set by it, and by any refresh that finds a bucket. Only a
    * backing type whose rows all lack the bucket column, which no refresh writes, is read again by every refresh.
    */
-  private static boolean adoptWatermarkFromBackingRows(final Database database, final ContinuousAggregateImpl ca) {
+  private static boolean adoptWatermarkFromBackingRows(final Database database, final ContinuousAggregateImpl ca,
+      final long oldestInFlightTs) {
     final String backingTypeName = ca.getBackingTypeName();
     final String bucketColumn = ca.getBucketColumn();
     if (!database.getSchema().existsType(backingTypeName))
@@ -301,11 +325,54 @@ public class ContinuousAggregateRefresher {
     }
     if (!found)
       return false;
-    ca.setWatermarkTs(newest);
+    // #10857: not past the bucket of a sample an append in flight may still commit, as for the watermark a refresh reaches
+    ca.setWatermarkTs(clipToInFlightAppends(newest, oldestInFlightTs, ca.bucketIntervalMs()));
     LogManager.instance().log(ContinuousAggregateRefresher.class, Level.INFO,
         "Continuous aggregate '%s' had no watermark while its backing type holds rows: resuming from its newest bucket", null,
         ca.getName());
     return true;
+  }
+
+  /**
+   * The oldest timestamp an append in flight on the source of {@code ca} may still commit, {@link Long#MAX_VALUE} when none is or the
+   * source is not a TIMESERIES type with an engine (issue #10857).
+   */
+  private static long oldestInFlightAppendTs(final Database database, final ContinuousAggregateImpl ca) {
+    return database.getSchema().getTypeOrNull(ca.getSourceTypeName()) instanceof LocalTimeSeriesType sourceType
+        && sourceType.getEngine() != null ? sourceType.getEngine().oldestInFlightAppendTs() : Long.MAX_VALUE;
+  }
+
+  /**
+   * Whether an append in flight, whose oldest sample is {@code oldestInFlightTs}, may have added its samples to {@code invalidated}
+   * (issue #10857). Conservative: only the oldest sample of each append is known, so any one at or before the end of the range
+   * counts. Samples appended at the head of the series, the common case, are after it.
+   */
+  static boolean mayHoldInFlightSamples(final ContinuousAggregateImpl.Invalidation invalidated, final long oldestInFlightTs) {
+    return oldestInFlightTs <= invalidated.toTs();
+  }
+
+  /**
+   * The watermark {@code watermarkTs} a refresh reached, kept at or before the bucket of {@code oldestInFlightTs}, the oldest sample
+   * an append in flight may still commit (issue #10857). Under HA an append checks whether its samples are behind the watermark
+   * BEFORE it commits, to ship their record to the followers ahead of them (#10673). A refresh that began after that check and read
+   * the source before the commit would otherwise move the watermark past samples it did not read, which become late only once they
+   * commit: their record would then ship after the commit, and a leader lost in between leaves the followers with the samples and
+   * without their record. Kept at that bucket, the watermark leaves them to the next refresh, which reads every sample at or after
+   * it and replaces the rows of those buckets, as it does after any watermark.
+   * <p>
+   * {@code oldestInFlightTs} is read once the refresh is flagged in progress, after it read the record of late samples and before it
+   * reads the source: an append registered after that read finds the refresh in progress and records every sample whatever the
+   * watermark (#10633), in a record this refresh did not read and so does not clear, and one unregistered before it had committed,
+   * so the refresh reads its samples. One registered before it is found, and the record it may have added to is kept (see
+   * {@link #mayHoldInFlightSamples}).
+   */
+  static long clipToInFlightAppends(final long watermarkTs, final long oldestInFlightTs, final long interval) {
+    if (oldestInFlightTs >= watermarkTs)
+      return watermarkTs;
+    // no grid to find the bucket on: the sample itself, every sample at or after it is read again
+    if (interval <= 0)
+      return oldestInFlightTs;
+    return ContinuousAggregateImpl.bucketStart(oldestInFlightTs, watermarkTs, interval);
   }
 
   /**

@@ -1722,6 +1722,20 @@ public class TimeSeriesEngine implements AutoCloseable {
     return shards[index];
   }
 
+  /**
+   * The oldest timestamp an append in flight on any shard may still commit, {@link Long#MAX_VALUE} when none is: see
+   * {@link TimeSeriesShard#oldestInFlightAppendTs} (issue #10857).
+   */
+  public long oldestInFlightAppendTs() {
+    long oldest = Long.MAX_VALUE;
+    for (final TimeSeriesShard shard : shards) {
+      final long ts = shard.oldestInFlightAppendTs();
+      if (ts < oldest)
+        oldest = ts;
+    }
+    return oldest;
+  }
+
   public List<ColumnDefinition> getColumns() {
     return columns;
   }
