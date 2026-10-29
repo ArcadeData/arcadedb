@@ -607,8 +607,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   /**
    * Parses a Cypher type into its canonical {@link CypherTypeName}, shared by the {@code IS ::} predicate and the property
    * type constraint so the two cannot read one spelling two ways (#9709). {@code LIST<T>}, {@code ARRAY<T>} and the postfix
-   * {@code T LIST} are all the list of {@code T}; {@code ANY<T>} with a single {@code T} is {@code T}. A union of types and a
-   * list of lists are refused: neither the predicate nor the schema can express them.
+   * {@code T LIST} are all the list of {@code T}; {@code ANY<T>} with a single {@code T} is {@code T}. {@code VECTOR<T>(n)} and
+   * {@code VECTOR(n, T)} are the vector of coordinate type {@code T} and dimension {@code n} (#10862). A union of types, a list
+   * of lists and a list of vectors are refused: neither the predicate nor the schema can express them.
    *
    * @param where the construct being parsed, for the refusal message
    */
@@ -619,14 +620,18 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Cypher25Parser.TypeNameContext nameCtx = typePart.typeName();
     final boolean nonNull = isNonNull(typePart.typeNullability());
 
+    if (nameCtx.VECTOR() != null)
+      return wrapInListSuffixes(parseVectorTypeName(nameCtx, nonNull, where), typePart, where);
+
     if (nameCtx.type() != null) {
       // LIST<T> / ARRAY<T>, or ANY<T> (ANY VALUE<T>), which is T itself when T is a single type
       final CypherTypeName inner = parseTypeName(nameCtx.type(), where);
       if (nameCtx.ANY() != null)
-        return wrapInListSuffixes(new CypherTypeName(inner.name(), inner.elementName(), inner.nonNull() || nonNull,
-            inner.elementNonNull()), typePart, where);
+        return wrapInListSuffixes(inner.withNonNull(inner.nonNull() || nonNull), typePart, where);
       if (inner.isList())
         throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
+      if (inner.isVector())
+        throw new CommandParsingException("UnsupportedFeature: a list of vectors is not supported in " + where);
       return wrapInListSuffixes(new CypherTypeName(CypherTypeName.LIST, inner.name(), nonNull, inner.nonNull()), typePart, where);
     }
 
@@ -647,7 +652,48 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return type;
     if (suffixes.size() > 1 || type.isList())
       throw new CommandParsingException("UnsupportedFeature: a list of lists is not supported in " + where);
+    if (type.isVector())
+      throw new CommandParsingException("UnsupportedFeature: a list of vectors is not supported in " + where);
     return new CypherTypeName(CypherTypeName.LIST, type.name(), isNonNull(suffixes.getFirst().typeNullability()), type.nonNull());
+  }
+
+  /**
+   * {@code VECTOR}, {@code VECTOR<T>}, {@code VECTOR(n)}, {@code VECTOR<T>(n)} or {@code VECTOR(n, T)}: the coordinate type is
+   * reduced to its canonical name like any other numeric type ({@code INT64} is {@code INTEGER}, {@code FLOAT64} is
+   * {@code FLOAT}), and the dimension must be a positive int.
+   */
+  private static CypherTypeName parseVectorTypeName(final Cypher25Parser.TypeNameContext nameCtx, final boolean nonNull,
+      final String where) {
+    final Cypher25Parser.VectorCoordinateTypeContext coordinateCtx = nameCtx.vectorCoordinateType();
+    String coordinate = null;
+    boolean coordinateNonNull = false;
+    if (coordinateCtx != null) {
+      final StringBuilder sb = new StringBuilder();
+      for (int i = 0; i < coordinateCtx.getChildCount(); i++) {
+        if (coordinateCtx.getChild(i) instanceof Cypher25Parser.TypeNullabilityContext)
+          continue;
+        if (!sb.isEmpty())
+          sb.append(' ');
+        sb.append(coordinateCtx.getChild(i).getText().toUpperCase(Locale.ROOT));
+      }
+      coordinate = CypherTypeName.canonical(sb.toString());
+      coordinateNonNull = isNonNull(coordinateCtx.typeNullability());
+    }
+
+    int dimension = CypherTypeName.NO_DIMENSION;
+    if (nameCtx.signedIntegerLiteral() != null) {
+      final String text = nameCtx.signedIntegerLiteral().getText();
+      long value;
+      try {
+        value = Long.parseLong(text.replace("_", ""));
+      } catch (final NumberFormatException e) {
+        value = -1;
+      }
+      if (value < 1 || value > Integer.MAX_VALUE)
+        throw new CommandParsingException("The dimension of a VECTOR type in " + where + " must be a positive integer, found: " + text);
+      dimension = (int) value;
+    }
+    return new CypherTypeName(CypherTypeName.VECTOR, coordinate, nonNull, coordinateNonNull, dimension);
   }
 
   private static boolean isNonNull(final Cypher25Parser.TypeNullabilityContext nullability) {

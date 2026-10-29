@@ -345,6 +345,14 @@ public enum Type {
   }
 
   /**
+   * The name a property declaration stores the type under (its JSON {@code type}) and {@link #getTypeByName} resolves, such as
+   * {@code Float[]} for {@link #ARRAY_OF_FLOATS}: not always the constant's {@link #name()}.
+   */
+  public String getName() {
+    return name;
+  }
+
+  /**
    * Convert types based on the iTargetClass parameter.
    *
    * @param value       Value to convert
