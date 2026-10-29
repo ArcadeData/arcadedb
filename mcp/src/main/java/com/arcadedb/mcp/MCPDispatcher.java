@@ -98,11 +98,17 @@ public class MCPDispatcher {
       3. Call get_schema before querying an unfamiliar database. If your client supports MCP Resources, prefer reading arcadedb://{database}/schema instead.
       4. Use query for read-only SQL or Cypher retrieval.""";
 
-  // THE TOOLS THAT RUN WORK IN A DATABASE: THEY WAIT FOR THE QUERY ADMISSION GATE LIKE ANY OTHER CLIENT REQUEST (ISSUE #9518).
+  // THE TOOLS THAT RUN QUERIES IN A DATABASE: THEY WAIT FOR THE QUERY ADMISSION GATE LIKE ANY OTHER CLIENT REQUEST (ISSUE #9518).
   // LISTING DATABASES, READING THE SCHEMA, THE SERVER STATUS, THE PROFILER AND THE SETTINGS DO NOT: THEY MUST STAY ANSWERABLE ON
-  // A SERVER BUSY WITH QUERIES
+  // A SERVER BUSY WITH QUERIES. EVERY ONE OF THESE IS ALSO IN LISTED_TOOL_NAMES
   private static final Set<String> ADMITTED_TOOL_NAMES = Set.of("query", "execute_command", "sample_records", "vector_search",
       "full_text_search", "hybrid_search", "upsert_entity", "upsert_relationship");
+
+  // THE TOOLS THAT RUN IN A DATABASE, ADMITTED OR NOT: LISTED BY "list queries" AND STOPPED BY A TERMINATE (ISSUES #9774, #10928).
+  // A SEPARATE DECISION FROM THE ADMISSION: get_schema SKIPS THE GATE BUT STILL OPENS A DATABASE AND WALKS ITS SCHEMA. DERIVED
+  // FROM THE DEFINITIONS, SO A NEW TOOL THAT TAKES A 'database' ARGUMENT IS LISTED WITHOUT ANYBODY REMEMBERING TO ADD IT. THE
+  // SERVER-LEVEL TOOLS ARE NOT, LIKE THEIR HTTP TWINS (GET /api/v1/server, /api/v1/databases)
+  private static final Set<String> LISTED_TOOL_NAMES;
 
   private static final Set<String> RAG_TOOL_NAMES = Set.of(
       "list_databases",
@@ -147,9 +153,16 @@ public class MCPDispatcher {
     TOOLS_LIST.put(SetServerSettingTool.getDefinition());
 
     final Set<String> registered = new HashSet<>();
-    for (int i = 0; i < TOOLS_LIST.length(); i++)
-      registered.add(TOOLS_LIST.getJSONObject(i).getString("name"));
+    final Set<String> listed = new HashSet<>();
+    for (int i = 0; i < TOOLS_LIST.length(); i++) {
+      final JSONObject definition = TOOLS_LIST.getJSONObject(i);
+      final String name = definition.getString("name");
+      registered.add(name);
+      if (definition.getJSONObject("inputSchema", new JSONObject()).getJSONObject("properties", new JSONObject()).has("database"))
+        listed.add(name);
+    }
     REGISTERED_TOOL_NAMES = Set.copyOf(registered);
+    LISTED_TOOL_NAMES = Set.copyOf(listed);
   }
 
   /**
@@ -254,7 +267,7 @@ public class MCPDispatcher {
         case "tools/list" -> result(id, new JSONObject().put("tools", toolsForProfile(effectiveProfile(user))));
         case "tools/call" -> toolsCall(id, params, user, effectiveProfile(user), client);
         case "resources/list" -> resourcesList(id, user);
-        case "resources/read" -> resourcesRead(id, params, user);
+        case "resources/read" -> resourcesRead(id, params, user, client);
         case "prompts/list" -> promptsList(id, effectiveProfile(user)::allows);
         case "prompts/get" -> promptsGet(id, params, user, effectiveProfile(user)::allows);
         case "ping" -> result(id, new JSONObject());
@@ -305,7 +318,8 @@ public class MCPDispatcher {
     }
   }
 
-  private MCPResponse resourcesRead(final Object id, final JSONObject params, final ServerSecurityUser user) {
+  private MCPResponse resourcesRead(final Object id, final JSONObject params, final ServerSecurityUser user,
+      final RunningQuery.Client client) {
     // Guarded for the same reason as the request members in dispatch: a 'uri' present but of another JSON type
     // raises out of the read, which sits above the try below. A wrong shape is invalid params, distinct from the
     // resource-not-found the try answers with for a URI that is well formed but names nothing readable.
@@ -320,7 +334,14 @@ public class MCPDispatcher {
 
     LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read '%s' (user=%s)", transport, uri, user.getName());
 
+    // The same work as get_schema, listed and stopped like it (issue #10928). A URI that names no database opens nothing
+    final String databaseName = MCPResources.parseSchemaURI(uri);
+    RunningQuery entry = null;
     try {
+      if (databaseName != null) {
+        entry = server.getRunningQueries().register(databaseName, user.getName(), MCP_PROTOCOL, null, null, client);
+        entry.setStatement("mcp", () -> "resources/read " + sanitizeForLog(uri));
+      }
       return result(id, MCPResources.read(server, user, config, uri));
     } catch (final SecurityException e) {
       LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read -> permission denied: %s", transport, ErrorConcealment.describe(e));
@@ -329,6 +350,9 @@ public class MCPDispatcher {
       return error(id, -32002, ErrorConcealment.describe(e), 200);
     } catch (final Exception e) {
       return error(id, -32603, "Internal error: " + failureMessage("resources/read", e), 200);
+    } finally {
+      if (entry != null)
+        entry.close();
     }
   }
 
@@ -435,25 +459,25 @@ public class MCPDispatcher {
         throw new SecurityException(
             "Tool '" + toolName + "' is not available in " + profile.description());
 
+      // Two decisions, not one (issue #10928): whether the call waits for a slot, and whether it is listed. Admitted first,
+      // so a call waiting for its slot is not listed as running
       final JSONObject toolResult;
-      if (!ADMITTED_TOOL_NAMES.contains(toolName))
-        toolResult = runTool(toolName, user, args);
-      else {
-        final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
-        RunningQuery entry = null;
-        try {
-          // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate over the same window as the slot, like the
-          // work of every other protocol (issue #9774)
+      final QueryAdmissionGate.Ticket admission = isAdmittedTool(toolName) ? QueryAdmissionGate.getInstance().admit() : null;
+      RunningQuery entry = null;
+      try {
+        // Listed by "list queries" / SHOW TRANSACTIONS and stopped by a terminate over the same window as the slot, like the
+        // database work of every other protocol (issue #9774)
+        if (isListedTool(toolName))
           entry = registerRunningQuery(toolName, args, user, client);
-          toolResult = runTool(toolName, user, args);
-        } finally {
-          try {
+        toolResult = runTool(toolName, user, args);
+      } finally {
+        try {
+          if (admission != null)
             admission.close();
-          } finally {
-            // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
-            if (entry != null)
-              entry.close();
-          }
+        } finally {
+          // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
+          if (entry != null)
+            entry.close();
         }
       }
 
@@ -537,6 +561,16 @@ public class MCPDispatcher {
         filtered.put(definition);
     }
     return filtered;
+  }
+
+  /** Whether a call of the tool waits for a query admission slot (issue #9518). */
+  static boolean isAdmittedTool(final String toolName) {
+    return ADMITTED_TOOL_NAMES.contains(toolName);
+  }
+
+  /** Whether a call of the tool is listed by {@code list queries} and can be terminated (issues #9774, #10928). */
+  static boolean isListedTool(final String toolName) {
+    return LISTED_TOOL_NAMES.contains(toolName);
   }
 
   static boolean isToolAllowed(final MCPConfiguration.ToolProfile profile, final String toolName) {

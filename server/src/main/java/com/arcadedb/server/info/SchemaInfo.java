@@ -21,6 +21,7 @@ package com.arcadedb.server.info;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -54,8 +55,13 @@ public class SchemaInfo {
     final Schema schema = database.getSchema();
     final JSONArray types = new JSONArray();
 
-    for (final DocumentType type : schema.getTypes())
+    // The entry a caller listed this read under (MCP get_schema, issue #10928): a terminate stops the walk between two types
+    final RunningQuery runningQuery = RunningQuery.current();
+    for (final DocumentType type : schema.getTypes()) {
+      if (runningQuery != null)
+        runningQuery.checkNotTerminated("the schema read");
       types.put(typeToJSON(type));
+    }
 
     final JSONObject result = new JSONObject();
     result.put("database", databaseName);

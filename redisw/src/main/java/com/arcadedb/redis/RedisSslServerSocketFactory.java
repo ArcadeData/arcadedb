@@ -30,10 +30,14 @@ import java.net.ServerSocket;
 
 /**
  * {@link ServerSocketFactory} that produces full-TLS server sockets for the Redis wire protocol, so the
- * cleartext {@code AUTH} credentials are encrypted in transit. Unlike BOLT's opportunistic STARTTLS, the
- * Redis listener is a dedicated TLS port (matching {@code redis-server --tls}): every accepted connection
- * negotiates TLS from the first byte. The key/trust stores are the same {@code arcadedb.ssl.*} settings
- * shared with the HTTP server.
+ * cleartext {@code AUTH} credentials are encrypted in transit. With {@code arcadedb.redis.tls} on, the Redis
+ * listener is a dedicated TLS port (matching {@code redis-server --tls}): every accepted connection negotiates
+ * TLS from the first byte, and there is no plaintext mode to fall back to on that port. The other wire
+ * protocols decide per connection instead, each under its own setting: BOLT ({@code arcadedb.bolt.ssl}) has no
+ * in-band upgrade, it reads the first bytes and starts a direct TLS handshake when they are a TLS record header;
+ * Postgres ({@code arcadedb.postgres.ssl}) negotiates through the protocol's own {@code SSLRequest}. Both serve
+ * TLS and plaintext on one port with {@code OPTIONAL} and refuse plaintext with {@code REQUIRED}. The key/trust
+ * stores are the same {@code arcadedb.ssl.*} settings shared with the HTTP server.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
