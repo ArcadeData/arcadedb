@@ -891,6 +891,7 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       streamWriter.finishIfActive();
       database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
       mainIndex.splitIndex(mainIndex.getMutableIndex().getTotalPages(), compactedIndex, false);
+      compactedIndex.setEntryCount(streamWriter.getWrittenEntries());
       attached = true;
     }
 
