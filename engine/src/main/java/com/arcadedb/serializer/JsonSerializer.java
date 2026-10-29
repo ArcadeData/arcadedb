@@ -41,6 +41,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
@@ -208,7 +209,9 @@ public class JsonSerializer {
         else
           propertyType = null;
 
-        if (propertyType != null && !JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType)) {
+        // Issue #10899: a non-finite DOUBLE is NOT faithful - it goes out as a NonFiniteNumbers marker string, which a
+        // client with no hint for the column would hand back as that String instead of the number.
+        if (propertyType != null && (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value))) {
           if (!propertyTypes.isEmpty())
             propertyTypes.append(",");
           propertyTypes.append(propertyName).append(":").append(propertyType.getId());
@@ -227,7 +230,9 @@ public class JsonSerializer {
           else
             elements = null;
           if (elements != null) {
-            final Type elementType = detectHomogeneousTemporalElementType(elements);
+            Type elementType = detectHomogeneousTemporalElementType(elements);
+            if (elementType == null)
+              elementType = detectNonFiniteFloatingElementType(elements);
             if (elementType != null)
               propertyTypes.append('(').append(elementType.getId()).append(')');
           }
@@ -670,7 +675,11 @@ public class JsonSerializer {
   }
 
   private static String nonFiniteName(final double value) {
-    return Double.isNaN(value) ? "NaN" : value > 0 ? "PosInfinity" : "NegInfinity";
+    return Double.isNaN(value) ? NonFiniteNumbers.NAN : value > 0 ? NonFiniteNumbers.POSITIVE_INFINITY : NonFiniteNumbers.NEGATIVE_INFINITY;
+  }
+
+  private static boolean isNonFiniteDouble(final Object value) {
+    return value instanceof Double d && !Double.isFinite(d);
   }
 
   /**
@@ -762,6 +771,37 @@ public class JsonSerializer {
     value = convertNonNumbers(value);
 
     return value;
+  }
+
+  /**
+   * Issue #10899: returns FLOAT (DOUBLE) when every non-null element of {@code collection} is a {@link Float}
+   * ({@link Double}) and at least one of them is non-finite, or {@code null} otherwise. Such an element goes out as a
+   * {@code NonFiniteNumbers} marker string, and without the element-type hint the remote client would hand that string
+   * back instead of the number. A collection of finite numbers is left alone: JSON already carries it faithfully enough
+   * for the client, as it did before.
+   */
+  private static Type detectNonFiniteFloatingElementType(final Collection<?> collection) {
+    Class<?> elementClass = null;
+    boolean nonFinite = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (element instanceof Float f) {
+        if (elementClass == Double.class)
+          return null;
+        elementClass = Float.class;
+        nonFinite |= !Float.isFinite(f);
+      } else if (element instanceof Double d) {
+        if (elementClass == Float.class)
+          return null;
+        elementClass = Double.class;
+        nonFinite |= !Double.isFinite(d);
+      } else
+        return null;
+    }
+    if (!nonFinite)
+      return null;
+    return elementClass == Float.class ? Type.FLOAT : Type.DOUBLE;
   }
 
   /**

@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
@@ -866,7 +867,7 @@ public enum Type {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : Float.parseFloat(string);
+          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : parseFloat(string);
         else
           return narrowToFloat(asNumber(value, "FLOAT", property), property);
 
@@ -880,7 +881,7 @@ public enum Type {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : Double.parseDouble(string);
+          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
@@ -1283,6 +1284,23 @@ public enum Type {
   private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
     return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
+  }
+
+  /**
+   * Parses a FLOAT from text, accepting the {@link NonFiniteNumbers} markers the JSON writers use for a non-finite
+   * number besides what {@link Float#parseFloat} takes. {@code Float.parseFloat} already reads {@code NaN} and
+   * {@code Infinity} but refuses {@code PosInfinity}/{@code NegInfinity}, so a FLOAT the server wrote as one of them
+   * could not be read back by the remote client, nor a LIST OF FLOAT holding one (issue #10899).
+   */
+  private static float parseFloat(final String text) {
+    final Double marker = NonFiniteNumbers.decode(text);
+    return marker != null ? marker.floatValue() : Float.parseFloat(text);
+  }
+
+  /** The DOUBLE twin of {@link #parseFloat(String)} (issue #10899). */
+  private static double parseDouble(final String text) {
+    final Double marker = NonFiniteNumbers.decode(text);
+    return marker != null ? marker : Double.parseDouble(text);
   }
 
   /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */
