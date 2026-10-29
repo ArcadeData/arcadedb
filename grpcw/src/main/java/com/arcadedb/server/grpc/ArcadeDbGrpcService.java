@@ -802,7 +802,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         // No external transaction - execute on current thread
         Database db = getDatabase(req.getDatabase(), req.getCredentials());
-        response = executeCommandInternal(req, t0, db, false);
+        response = executeCommandWithRetries(req, t0, db);
       }
       resp.onNext(response);
       // Set before onCompleted(), not after: once onNext has handed a response to the observer, the RPC must
@@ -829,6 +829,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (!responded)
         resp.onError(mapError(cause, "ExecuteCommand"));
     }
+  }
+
+  /**
+   * Runs an executeCommand that is not part of a client-managed transaction. An auto-commit command (no transaction in the
+   * request and none active on the thread) is retried on a transient write conflict up to {@link GlobalConfiguration#TX_RETRIES}
+   * attempts, exactly as the HTTP handler does (issue #10942); {@code ABORTED} reaches the client only once they are used up.
+   * <p>
+   * Re-running is safe for the reason it is safe over HTTP: each failed attempt has rolled its own transaction back before the
+   * exception leaves {@code LocalDatabase.transaction}, so the next one starts from committed state. A command that carries a
+   * transaction in the request, or runs inside one already active, is never retried: the retry would discard work the
+   * client owns.
+   */
+  private ExecuteCommandResponse executeCommandWithRetries(final ExecuteCommandRequest req, final long t0, final Database db) {
+    if (req.hasTransaction() || db.isTransactionActive())
+      return executeCommandInternal(req, t0, db, false);
+
+    // LocalDatabase.transaction() owns the retry loop: the rollback between attempts and the jittered back-off that keeps
+    // contending writers from colliding again in lock step, the same call the HTTP handler makes
+    final int retries = Math.max(1, serverConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    final AtomicReference<ExecuteCommandResponse> response = new AtomicReference<>();
+    ((DatabaseInternal) db).transaction(() -> response.set(executeCommandInternal(req, t0, db, false)), false, retries);
+    return response.get();
   }
 
   /**
