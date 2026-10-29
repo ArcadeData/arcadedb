@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -65,6 +67,7 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Doc.tenant INTEGER");
       database.command("sql", "CREATE PROPERTY Doc.color STRING");
       database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.day DATE");
       database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
     });
     final Random random = new Random(10921);
@@ -74,12 +77,14 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
             .set("tenant", i % EVERY == 0 ? 1 : 0)
             .set("color", i % 3 == 0 ? "red" : "blue")
             .set("name", i % 4 == 0 ? "Alpha" : "alpha")
+            .set("day", i % EVERY == 0 ? LocalDate.of(2024, 1, 2) : LocalDate.of(2024, 1, 1))
             .set("embedding", new float[] { random.nextFloat(), random.nextFloat(), random.nextFloat(), random.nextFloat() })
             .save();
     });
     // Created over the loaded rows, so the graph is built and the search does not answer from the delta buffer alone
     database.command("sql", "CREATE INDEX ON Doc (tenant) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON Doc (name COLLATE CI) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Doc (day) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'EUCLIDEAN' }");
   }
 
@@ -268,10 +273,44 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
     assertThat(rids(neighbors("{ where: { tenant: '1' } }", Map.of()))).containsExactlyElementsOf(rids(byFilter("tenant = 1")));
   }
 
+  /**
+   * The index lists the candidates of a value only when SQL {@code =} holds the key it reads equal to the value, and skips the
+   * test only when that key is all the predicate asks: whatever the kind of the value, the answer is the one the predicate gives
+   * tested on every record, which is what the plan answers when it is disabled. Every member is asked for, so both answers are
+   * exact.
+   */
+  @Test
+  void everyValueKindAnswersWhatThePredicateTestedOnEachRecordAnswers() {
+    seed();
+
+    final Object[][] cases = {
+        { "tenant", 1 }, { "tenant", 1L }, { "tenant", 1.0d }, { "tenant", 1.5d }, { "tenant", "1" }, { "tenant", "x" },
+        { "tenant", true }, { "day", LocalDate.of(2024, 1, 2) }, { "day", "2024-01-02" }, { "day", LocalDateTime.of(2024, 1, 2, 0, 0) },
+        { "day", LocalDateTime.of(2024, 1, 2, 10, 30) }, { "day", 20240102 } };
+    for (final Object[] c : cases) {
+      final String options = "{ where: { " + c[0] + ": :value } }";
+      final Map<String, Object> params = Map.of("value", c[1]);
+      final Set<RID> planned = new HashSet<>(rids(neighbors(options, params, RECORDS / EVERY)));
+
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
+      try {
+        final Set<RID> tested = new HashSet<>(rids(neighbors(options, params, RECORDS / EVERY)));
+        assertThat(planned).as("%s = %s (%s)", c[0], c[1], c[1].getClass().getSimpleName()).isEqualTo(tested);
+      } finally {
+        database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+            GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
+      }
+    }
+  }
+
   private List<Result> neighbors(final String options, final Map<String, Object> params) {
+    return neighbors(options, params, K);
+  }
+
+  private List<Result> neighbors(final String options, final Map<String, Object> params, final int k) {
     final Map<String, Object> all = new HashMap<>(params);
     all.put("q", QUERY);
-    return query("SELECT expand(`vector.neighbors`('Doc[embedding]', :q, " + K + ", " + options + "))", all);
+    return query("SELECT expand(`vector.neighbors`('Doc[embedding]', :q, " + k + ", " + options + "))", all);
   }
 
   /** The reference answer: the same search restricted by the RIDs the condition selects, the pre-filter plan of a list. */

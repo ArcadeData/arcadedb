@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -326,7 +327,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       return null;
     IndexInternal best = null;
     for (final IndexInternal index : type.getPolymorphicBucketIndexByBucketId(bucketId, null))
-      if (bindsEveryKey(db, index, equalitiesToLookUp.equalities) && (best == null
+      if (bindsEveryKey(db, type, index, equalitiesToLookUp.equalities) && (best == null
           || index.getPropertyNames().size() > best.getPropertyNames().size()
           || (index.getPropertyNames().size() == best.getPropertyNames().size() && index.isUnique() && !best.isUnique())))
         best = index;
@@ -347,12 +348,17 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       return new Listing(Integer.MAX_VALUE, new Candidates(Set.of(), true));
     }
 
+    final DocumentType type = db.getSchema().getTypeByBucketId(bucketId);
     final List<String> properties = best.getPropertyNames();
+    final Type[] keyTypes = best.getKeyTypes();
     final Object[] keys = new Object[properties.size()];
     // A case-insensitive key lists the other spellings too: those candidates are tested
     boolean exact = equalitiesToLookUp.whole && properties.size() == equalitiesToLookUp.equalities.size();
     for (int i = 0; i < keys.length; i++) {
-      keys[i] = equalitiesToLookUp.equalities.get(properties.get(i));
+      // The value the records the equality accepts hold, and so the key the index holds them by
+      keys[i] = storedKey(db, type, properties.get(i), equalitiesToLookUp.equalities.get(properties.get(i)), keyTypes[i]);
+      if (keys[i] == null)
+        return NOT_LISTED;
       if (best.getMetadata().isCaseInsensitive(i))
         exact = false;
     }
@@ -389,10 +395,11 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
 
   /**
    * Whether {@code index} can list candidates for {@code equalities}: an exact-key index ready for queries, every property
-   * of which is a plain property the equalities bind to a value it reads as a key equal to it, so the lookup misses no
-   * record the equality accepts. A nested path or a {@code BY ITEM} property is left to the test.
+   * of which is a plain property the equalities bind to a value with a {@link #storedKey}, so the lookup misses no record the
+   * equality accepts. A nested path or a {@code BY ITEM} property is left to the test.
    */
-  private static boolean bindsEveryKey(final DatabaseInternal db, final IndexInternal index, final Map<String, Object> equalities) {
+  private static boolean bindsEveryKey(final DatabaseInternal db, final DocumentType type, final IndexInternal index,
+      final Map<String, Object> equalities) {
     try {
       final Schema.INDEX_TYPE indexType = index.getType();
       if (indexType == null || !indexType.isExactKeyLookup())
@@ -406,7 +413,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
         return false;
       for (int i = 0; i < keyTypes.length; i++) {
         final String property = properties.get(i);
-        if (property.indexOf('.') >= 0 || property.indexOf(' ') >= 0 || !isKeyEqualTo(db, equalities.get(property), keyTypes[i]))
+        if (property.indexOf('.') >= 0 || property.indexOf(' ') >= 0
+            || storedKey(db, type, property, equalities.get(property), keyTypes[i]) == null)
           return false;
       }
       return true;
@@ -416,22 +424,27 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   }
 
   /**
-   * Whether {@code value} reads as a key of {@code keyType} that the SQL {@code =} holds equal to it: the key the index
-   * looks up then stands for exactly the records the equality accepts.
+   * The value a record holds once {@code value} is written to {@code property}, when that record is the one the equality
+   * accepts, or null when there is none: the value converted the way a write converts it (a DATE keeps the day of a datetime),
+   * then held equal to {@code value} by the SQL {@code =} in the order {@link #test} asks it, stored value first. The index
+   * keys a record by its stored value, so a lookup of that value lists exactly the records the equality accepts; a value
+   * the write would change into one the equality refuses ({@code 2024-01-02T10:30} for a DATE) has none (issue #10921).
    */
-  private static boolean isKeyEqualTo(final DatabaseInternal db, final Object value, final Type keyType) {
-    if (value == null || keyType == null)
-      return false;
-    final Class<?> keyClass = keyType.getDefaultJavaType();
-    if (!Type.isScalarKeyClass(keyClass))
-      return false;
-    final Object key;
+  private static Object storedKey(final DatabaseInternal db, final DocumentType type, final String propertyName, final Object value,
+      final Type keyType) {
+    if (value == null || keyType == null || !Type.isScalarKeyClass(keyType.getDefaultJavaType()))
+      return null;
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null || property.getType() != keyType)
+      return null;
+    final Object stored;
     try {
-      key = Type.convertIndexKeyOrNull(db, value, keyClass);
-    } catch (final IllegalArgumentException e) {
-      return false;
+      stored = Type.convert(db, value, keyType.getJavaImplementation(db), property);
+    } catch (final RuntimeException e) {
+      return null;
     }
-    return key != null && keyClass.isInstance(key) && QueryOperatorEquals.equals(key, value);
+    return stored != null && Type.canBeIndexLookupKey(db, stored, keyType.getDefaultJavaType()) && QueryOperatorEquals.equals(stored,
+        value) ? stored : null;
   }
 
   private Lookup lookup() {
