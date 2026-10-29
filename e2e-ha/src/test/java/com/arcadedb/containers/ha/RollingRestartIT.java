@@ -21,6 +21,7 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.FacetDatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
@@ -35,6 +36,10 @@ import java.net.URL;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+
+import static com.arcadedb.test.support.FacetDatabaseWrapper.REBUILDS;
+import static com.arcadedb.test.support.FacetDatabaseWrapper.SEGMENTS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Rolling restart tests for Raft HA cluster zero-downtime maintenance.
@@ -282,6 +287,80 @@ class RollingRestartIT extends ContainersTestTemplate {
     db0Restart.close();
     db1Restart.close();
     db2Restart.close();
+  }
+
+  /**
+   * Every node is SIGKILLed in turn ({@code stop()}) and restarted on its persistent storage while the others keep writing. The
+   * restarted node goes through crash recovery and must reuse its node-local columnar projection: its facets converge to the
+   * {@code GROUP BY} of every node and the projection is never rebuilt. After the unclean open the projection is unusable until its
+   * page check ends, so the facets read {@code scan} for a while: the stable-read helpers tolerate it. 3000 records over 10 buckets
+   * stay far below the 1024-page {@code unclean_pages} floor; a larger ingest must keep that true.
+   */
+  @Test
+  @Timeout(value = 30, unit = TimeUnit.MINUTES) // a hang detector, sized for host stalls
+  @DisplayName("Rolling restart: every node recovers its facet projection without a rebuild")
+  void rollingRestartRecoversFacetProjectionsWithoutRebuild() throws Exception {
+    final GenericContainer<?>[] nodes = new GenericContainer<?>[3];
+    for (int i = 0; i < 3; i++)
+      nodes[i] = createPersistentArcadeContainer("arcadedb-" + i, SERVER_LIST, "majority", network);
+
+    final ServerWrapper[] servers = startCluster().toArray(new ServerWrapper[0]);
+    final FacetDatabaseWrapper[] f = new FacetDatabaseWrapper[3];
+    for (int i = 0; i < 3; i++)
+      f[i] = new FacetDatabaseWrapper(servers[i], DatabaseWrapper.Protocol.HTTP, i);
+
+    try {
+      f[0].createDatabase();
+      f[0].createSchema();
+      for (final FacetDatabaseWrapper node : f)
+        logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
+
+      logger.info("Ingested {} assets", f[0].ingest(3_000));
+      logger.info("Initial mixed ops: {}", f[0].runMixedOps(1_000));
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 120);
+
+      for (int i = 0; i < 3; i++) {
+        final int node = i;
+        logger.info("=== Restarting arcadedb-{} ===", i);
+        // something flushed to disk, so the restart has a projection to recover
+        Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).ignoreExceptions()
+            .until(() -> f[node].scrapeMetric(SEGMENTS) > 0);
+
+        // stop() removes the container, taking its log with it
+        dumpContainerLogs("rollingRestartFacets-stop" + i);
+        f[i].close();
+        f[i] = null; // closed once: the finally skips it until its successor is opened
+        nodes[i].stop();
+
+        final List<ServerWrapper> liveServers = List.of(servers[(i + 1) % 3], servers[(i + 2) % 3]);
+        Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> hasLeader(liveServers));
+        // writes continue while the node is down
+        logger.info("Mixed ops while arcadedb-{} is down: {}", i, f[(i + 1) % 3].runMixedOps(500));
+
+        nodes[i].start();
+        assertThat(waitForContainerHealthy(nodes[i], 90)).as("arcadedb-%d restarted", i).isTrue();
+        servers[i] = new ServerWrapper(nodes[i]);
+        f[i] = new FacetDatabaseWrapper(servers[i], DatabaseWrapper.Protocol.HTTP, 100 + i);
+        // metrics bound, manifest loaded
+        Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).ignoreExceptions()
+            .until(() -> f[node].scrapeMetric(SEGMENTS) > 0);
+
+        FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 180);
+        // asserted after the comparison: by then any rebuild the open scheduled has started and been counted
+        final String reasons = f[i].rebuildsByReason();
+        logger.info("arcadedb-{} rebuilds after the restart: {}", i, reasons);
+        assertThat(f[i].scrapeMetric(REBUILDS)).as("restart must not rebuild (%s)", reasons).isZero();
+      }
+    } finally {
+      dumpContainerLogs("rollingRestartFacets-end");
+      for (final FacetDatabaseWrapper wrapper : f)
+        if (wrapper != null)
+          try {
+            wrapper.close();
+          } catch (final RuntimeException e) {
+            logger.warn("Closing {} failed: {}", wrapper.describe(), e.getMessage());
+          }
+    }
   }
 
   @Test
