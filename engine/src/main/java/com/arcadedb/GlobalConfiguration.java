@@ -1283,8 +1283,27 @@ public enum GlobalConfiguration {
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
   INDEX_COMPACTION_FULL_SERIES("arcadedb.indexCompactionFullSeriesThreshold", SCOPE.DATABASE,
-      "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
+      "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. A full compaction can also start earlier, see arcadedb.indexCompactionFullDeadEntriesRatio. 0 = disabled",
       Integer.class, 10),
+
+  INDEX_COMPACTION_FULL_DEAD_ENTRIES_RATIO("arcadedb.indexCompactionFullDeadEntriesRatio", SCOPE.DATABASE,
+      """
+      Starts a full compaction of an LSM index (see arcadedb.indexCompactionFullSeriesThreshold) as soon as the dead \
+      keys its range scans have skipped since the last full compaction reach this multiple of the entries held by its \
+      compacted sub-index, whatever the series count. \
+      WHY. Incremental compactions keep every tombstone and the entry it kills, so under a delete-heavy workload \
+      (a time-ordered sliding window: insert the newest ids, delete the oldest with 'WHERE id < ?') each scan from the \
+      low end walks every key deleted since the last full compaction, and that run grows until the series count \
+      reaches its threshold (issue #10919). The skipped keys are what the dead entries actually cost; the entries of \
+      the compacted sub-index are what a full compaction costs on top of the incremental round it replaces. Starting it \
+      once the first has paid for the second bounds the scans to about twice the cost of compacting at the ideal moment, \
+      without knowing the workload in advance. \
+      An index whose deleted keys are never scanned (point lookups only) does not pay for them and is left to the \
+      series threshold, so an insert-mostly index is never rewritten for a handful of deletions. In a cluster the \
+      leader compacts and ships the result, so the scans counted are the ones the leader served. \
+      Lower values compact sooner (shorter dead runs, more rewriting), higher values later. Default 1. 0 = disabled \
+      (only the series threshold applies). Watch 'deadEntriesSkippedSinceFullCompaction' in the index statistics.""",
+      Float.class, 1f),
 
   INDEX_BLOOM_FILTER_RATE("arcadedb.indexBloomFilterRate", SCOPE.DATABASE,
       """

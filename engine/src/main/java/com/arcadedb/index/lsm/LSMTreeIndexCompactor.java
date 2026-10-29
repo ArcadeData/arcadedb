@@ -70,7 +70,7 @@ public class LSMTreeIndexCompactor {
 
     LSMTreeIndexCompacted compactedIndex = mutableIndex.getSubIndex();
 
-    if (compactedIndex != null && isFullCompactionDue(database, compactedIndex)) {
+    if (compactedIndex != null && isFullCompactionDue(database, mainIndex, compactedIndex)) {
       final Boolean fullResult = compactFull(mainIndex, mutableIndex, compactedIndex, startTime);
       if (fullResult != null)
         return fullResult;
@@ -82,6 +82,7 @@ public class LSMTreeIndexCompactor {
       // CREATE A NEW INDEX
       compactedIndex = mutableIndex.createNewForCompaction();
       mutableIndex.getDatabase().getSchema().getEmbedded().registerFile(compactedIndex);
+      compactedIndex.setEntryCount(0);
       createdCompactedIndex = true;
       LogManager.instance()
           .log(mainIndex, Level.WARNING, "- Creating sub-index '%s' with fileId=%d (threadId=%d)...", null, compactedIndex,
@@ -124,9 +125,39 @@ public class LSMTreeIndexCompactor {
     }
   }
 
-  private static boolean isFullCompactionDue(final DatabaseInternal database, final LSMTreeIndexCompacted compactedIndex) {
+  /**
+   * A full compaction is due when the compacted sub-index holds too many series, or when the range scans have already
+   * paid for the dead entries what dropping them costs (#10919). Incremental rounds keep every tombstone and the entry it
+   * kills, so the dead keys of a delete-heavy index pile up until the series threshold, and every scan crossing them
+   * skips them all. The skipped keys since the last full compaction are what the dead entries have cost so far, the
+   * entries of the compacted sub-index what a full compaction reads on top of the incremental round it replaces: buying
+   * the compaction once the rent paid equals its price keeps the total within twice the best choice made in hindsight,
+   * whatever the workload. A deleted key that no scan crosses costs nothing and starts nothing.
+   */
+  private static boolean isFullCompactionDue(final DatabaseInternal database, final LSMTreeIndex mainIndex,
+      final LSMTreeIndexCompacted compactedIndex) {
     final int threshold = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_FULL_SERIES);
-    return threshold > 0 && compactedIndex.getSeriesCount() >= threshold;
+    final int seriesCount = compactedIndex.getSeriesCount();
+    if (threshold > 0 && seriesCount >= threshold)
+      return true;
+
+    final float ratio = database.getConfiguration().getValueAsFloat(GlobalConfiguration.INDEX_COMPACTION_FULL_DEAD_ENTRIES_RATIO);
+    if (ratio <= 0)
+      return false;
+
+    final long deadEntriesSkipped = mainIndex.getDeadEntriesSkippedSinceFullCompaction();
+    // every data page holds at least one entry: below this bound the count cannot be reached, so it is not even taken
+    // (the first time it can walk the page headers of the whole file)
+    if (deadEntriesSkipped < 1 || deadEntriesSkipped < ratio * (compactedIndex.getTotalPages() - seriesCount))
+      return false;
+
+    final long entries = compactedIndex.getEntryCount();
+    final boolean due = deadEntriesSkipped >= ratio * entries;
+    if (due)
+      LogManager.instance().log(mainIndex, Level.FINE,
+          "Index '%s': scans skipped %d dead keys since the last full compaction against %d compacted entries (ratio=%s): full compaction due",
+          null, mainIndex.getName(), deadEntriesSkipped, entries, ratio);
+    return due;
   }
 
   /**
@@ -182,8 +213,9 @@ public class LSMTreeIndexCompactor {
     }
 
     LogManager.instance().log(mainIndex, Level.INFO,
-        "Full compaction of index '%s' (series=%d mutablePagesToCompact=%d threadId=%d)...", null, mainIndex.getName(),
-        seriesCount, lastImmutablePage + 1, Thread.currentThread().threadId());
+        "Full compaction of index '%s' (series=%d mutablePagesToCompact=%d deadKeysSkippedByScans=%d threadId=%d)...", null,
+        mainIndex.getName(), seriesCount, lastImmutablePage + 1, mainIndex.getDeadEntriesSkippedSinceFullCompaction(),
+        Thread.currentThread().threadId());
 
     // INPUT CURSORS ORDERED OLDEST -> NEWEST: the compacted series first (newIterators returns them newest
     // first, so reverse), then the mutable immutable pages (page 0 is the oldest). The per-key merge below
@@ -323,6 +355,8 @@ public class LSMTreeIndexCompactor {
         testHook.afterSeriesWritten(newCompacted);
 
       mainIndex.splitIndex(lastImmutablePage + 1, newCompacted);
+      newCompacted.setEntryCount(streamWriter.getWrittenEntries());
+      mainIndex.resetDeadEntriesSkippedSinceFullCompaction();
 
       // Register the compacted-file migration so a transaction that resolved the OLD compacted file id
       // before the swap converges transparently at commit: lockFilesInOrder re-resolves a locked-but-missing
@@ -576,6 +610,7 @@ public class LSMTreeIndexCompactor {
     final int oldMutableFileId = mutableIndex.getFileId();
 
     final LSMTreeIndexMutable newIndex = mainIndex.splitIndex(lastImmutablePage + 1, compactedIndex);
+    compactedIndex.addEntries(streamWriter.getWrittenEntries());
 
     LogManager.instance().log(mainIndex, Level.FINE,
         "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
