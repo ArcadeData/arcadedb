@@ -135,6 +135,14 @@ public class BinarySerializer {
    * decide what to do with a checked exception that only ever meant "this server is misconfigured".
    */
   public BinarySerializer(final ContextConfiguration configuration) {
+    readConfiguration(configuration);
+  }
+
+  /**
+   * Takes the settings the serializer depends on from {@code configuration}: at construction, and again whenever the database's
+   * configuration changes, including the {@code configuration.json} an open loads after the serializer was built.
+   */
+  public void readConfiguration(final ContextConfiguration configuration) {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
     fixedWidthFloatArraysEnabled = configuration.getValueAsBoolean(GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS);
@@ -146,7 +154,7 @@ public class BinarySerializer {
    * {@link GlobalConfiguration#SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS}: false keeps every float and double array in the varint
    * form, whatever {@link #fixedWidthFloatArrays} answers, so the files stay readable by a build before the fixed-width form.
    */
-  private final boolean fixedWidthFloatArraysEnabled;
+  private volatile boolean fixedWidthFloatArraysEnabled;
 
   /**
    * Whether a {@code float[]} / {@code double[]} is written in its fixed-width form ({@link BinaryTypes#TYPE_ARRAY_OF_FLOATS_FIXED},

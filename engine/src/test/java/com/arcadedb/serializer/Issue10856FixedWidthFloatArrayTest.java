@@ -210,6 +210,29 @@ class Issue10856FixedWidthFloatArrayTest extends TestHelper {
     assertBitsEqual((float[]) read.get("embedding"), vector);
   }
 
+  /**
+   * The setting saved in the database's {@code configuration.json} is honored as soon as it is set, and again after a
+   * reopen, where that file is loaded after the serializer was built.
+   */
+  @Test
+  void theSavedSettingIsHonoredAtOnceAndAfterAReopen() {
+    database.getSchema().createDocumentType("Doc").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+    final float[] vector = unitVector(new Random(17), DIM);
+
+    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` false").close();
+    final RID atOnce = saveInTransaction(() -> database.newDocument("Doc").set("embedding", vector));
+    assertThat(storedSize(atOnce)).as("the varint form right after the change").isGreaterThanOrEqualTo(5 * DIM);
+
+    reopenDatabase();
+    final RID afterReopen = saveInTransaction(() -> database.newDocument("Doc").set("embedding", vector));
+    assertThat(storedSize(afterReopen)).as("the varint form after a reopen").isGreaterThanOrEqualTo(5 * DIM);
+    assertBitsEqual((float[]) database.lookupByRID(afterReopen, true).asDocument().get("embedding"), vector);
+
+    database.command("sql", "ALTER DATABASE `arcadedb.serializer.fixedWidthFloatArrays` true").close();
+    final RID fixed = saveInTransaction(() -> database.newDocument("Doc").set("embedding", vector));
+    assertThat(storedSize(fixed)).as("the fixed-width form once it is set back").isLessThan(4 * DIM + 64);
+  }
+
   private RID saveInTransaction(final Supplier<MutableDocument> document) {
     final AtomicReference<RID> rid = new AtomicReference<>();
     database.transaction(() -> rid.set(document.get().save().getIdentity()));
