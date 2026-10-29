@@ -35,6 +35,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -56,6 +57,7 @@ import static com.arcadedb.postgres.PostgresCatalogRowSets.compareValues;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.distinctKey;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.MAX_NESTING;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.containsSetOperation;
+import static com.arcadedb.postgres.PostgresCatalogSyntax.isName;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.parseFrom;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.plainSpellings;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.splitConjuncts;
@@ -881,7 +883,7 @@ public class PostgresCatalog {
 
     if (shadowedByUserType(from, context))
       return null;
-    if (readsJoinedRelation(from, nested))
+    if (readsJoinedRelation(from, nested) || readsNoEntry(statement, from))
       return resolveJoined(statement, from, context, outer);
 
     final Map<String, Collection<String>> columnsByRelation = new LinkedHashMap<>();
@@ -952,8 +954,150 @@ public class PostgresCatalog {
     }
 
     context.charge(rows.size());
+    chargeUnjoinedEntries(statement, from, rows.size(), context);
 
     return project(statement, from, rows, context, columnsByRelation, toleratesUnreadableFilter, outer);
+  }
+
+  /**
+   * Whether a statement over two or more relations this catalog models reads no column of any of them: {@code select count(*) from
+   * pg_class, pg_namespace}, {@code select 1 from ...}. All it can answer is how many rows the FROM clause has, and that is the
+   * product of its entries (issue #10839), which only {@link #resolveJoined} computes: the one-row-per-entity path answers one row
+   * per entity of the most specific family, and every other entry reads the map of that same row.
+   * <p>
+   * A statement that reads a column of an entry stays on the one-row-per-entity path, whose family ranking decides what such a
+   * statement is about; {@link #chargeUnjoinedEntries} then makes the work budget see the product of the entries it does not join.
+   * Which entry a name reads is decided by {@link #markReads}, which errs towards "read": a misjudged entry keeps the statement on
+   * the path it was answered by before.
+   */
+  private static boolean readsNoEntry(final Statement statement, final List<FromEntry> from) {
+    if (from.size() < 2)
+      return false;
+    for (final FromEntry entry : from)
+      if (entry.derived != null || entry.function != null || !RELATIONS.containsKey(entry.relation))
+        return false;
+
+    final boolean[] read = new boolean[from.size()];
+    markReads(statement.projection, from, read, true);
+    markReads(statement.where, from, read, false);
+    markReads(statement.groupBy, from, read, false);
+    markReads(statement.orderBy, from, read, false);
+    for (final FromEntry entry : from) {
+      markReads(entry.on, from, read, false);
+      markUsing(entry, from, read);
+    }
+    for (final boolean entryRead : read)
+      if (entryRead)
+        return false;
+    return true;
+  }
+
+  /**
+   * Charges the work budget with the rows PostgreSQL would produce for the entries of a statement that no condition joins to any
+   * other entry (issue #10839), on top of the {@code entityRows} already charged. The one-row-per-entity path answers such a
+   * statement with one row per entity, the unjoined entries reading the map of that row rather than multiplying it: until a
+   * statement of that shape is answered with PostgreSQL's rows, one whose product is more than a statement may spend is refused
+   * with {@link WorkLimitExceeded} instead of being answered with far fewer rows than it asked for.
+   * <p>
+   * A condition joins the entries it reads, a conjunct of the WHERE clause, of an ON condition or a column of a USING list, when it
+   * reads at least two of them. Which entry a name reads is decided by {@link #markReads}, which errs towards "read": a condition
+   * misjudged as joining two entries charges less, never more.
+   */
+  private static void chargeUnjoinedEntries(final Statement statement, final List<FromEntry> from, final int entityRows,
+      final Context context) {
+    if (from.size() < 2)
+      return;
+
+    final boolean[] joined = new boolean[from.size()];
+    final boolean[] read = new boolean[from.size()];
+    if (statement.where != null)
+      for (final List<PostgresCatalogToken> conjunct : splitConjuncts(statement.where))
+        markJoined(conjunct, from, read, joined);
+    for (final FromEntry entry : from) {
+      if (entry.on != null)
+        for (final List<PostgresCatalogToken> conjunct : splitConjuncts(entry.on))
+          markJoined(conjunct, from, read, joined);
+      if (entry.using != null) {
+        Arrays.fill(read, false);
+        markUsing(entry, from, read);
+        joinIfSeveral(read, joined);
+      }
+    }
+
+    boolean anyJoined = false;
+    for (final boolean entryJoined : joined)
+      anyJoined |= entryJoined;
+
+    // What the joined entries produce is taken to be the entity rows: the product of the others multiplies it
+    long product = anyJoined ? entityRows : 1;
+    for (int i = 0; i < from.size() && product <= WORK_BUDGET; i++)
+      if (!joined[i])
+        product *= context.joinRows(from.get(i).relation).size();
+
+    if (product > entityRows)
+      context.charge((int) Math.min(product - entityRows, WORK_BUDGET + 1));
+  }
+
+  private static void markJoined(final List<PostgresCatalogToken> conjunct, final List<FromEntry> from, final boolean[] read,
+      final boolean[] joined) {
+    Arrays.fill(read, false);
+    markReads(conjunct, from, read, false);
+    joinIfSeveral(read, joined);
+  }
+
+  private static void joinIfSeveral(final boolean[] read, final boolean[] joined) {
+    int count = 0;
+    for (final boolean entryRead : read)
+      if (entryRead)
+        ++count;
+    if (count > 1)
+      for (int i = 0; i < read.length; i++)
+        joined[i] |= read[i];
+  }
+
+  /**
+   * Marks the FROM entries the tokens of a clause read a column of. A qualified name reads the entry its qualifier names; an
+   * unqualified one reads every entry whose relation has such a column, as it cannot tell which of them PostgreSQL would bind it
+   * to; a {@code *} of the projection, but for the one of {@code count(*)}, reads them all. A sub-select's names are read as if
+   * they were the statement's own, which can only mark more entries, never fewer.
+   */
+  private static void markReads(final List<PostgresCatalogToken> tokens, final List<FromEntry> from, final boolean[] read,
+      final boolean projection) {
+    if (tokens == null)
+      return;
+    final int size = tokens.size();
+    for (int i = 0; i < size; i++) {
+      final PostgresCatalogToken token = tokens.get(i);
+      if (projection && token.isSymbol("*") && (i == 0 || !tokens.get(i - 1).isSymbol("("))) {
+        Arrays.fill(read, true);
+        return;
+      }
+      if (!isName(token) || (i > 0 && tokens.get(i - 1).isSymbol(".")))
+        continue;
+
+      final String name = token.text.toLowerCase(Locale.ENGLISH);
+      if (i + 1 < size && tokens.get(i + 1).isSymbol(".")) {
+        final int index = entryIndex(from, name);
+        if (index >= 0)
+          read[index] = true;
+      } else
+        markColumn(name, from, read);
+    }
+  }
+
+  /** A USING list reads its columns in the entry it joins and in the earlier ones that have them. */
+  private static void markUsing(final FromEntry entry, final List<FromEntry> from, final boolean[] read) {
+    if (entry.using != null)
+      for (final String column : entry.using)
+        markColumn(column, from, read);
+  }
+
+  private static void markColumn(final String name, final List<FromEntry> from, final boolean[] read) {
+    for (int j = 0; j < from.size(); j++) {
+      final Set<String> columns = RELATIONS.get(from.get(j).relation);
+      if (columns != null && columns.contains(name))
+        read[j] = true;
+    }
   }
 
   /**
