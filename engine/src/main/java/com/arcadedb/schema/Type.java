@@ -756,14 +756,15 @@ public enum Type {
         // Convert Collection to float[]
         final float[] array = new float[collection.size()];
         int i = 0;
+        // a finite item that overflows to an infinity is refused, as for a FLOAT property (issue #10938)
         for (final Object item : collection)
-          array[i++] = requireNonNullNumber(item, "FLOAT", property).floatValue();
+          array[i++] = narrowToFloat(requireNonNullNumber(item, "FLOAT", property), property);
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof double[] src) {
-        // Fast path: primitive narrowing copy
+        // Fast path: primitive narrowing copy, refusing a finite item that overflows to an infinity (issue #10938)
         final float[] array = new float[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (float) src[i];
+          array[i] = narrowToFloat(src[i], property);
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof long[] src) {
         final float[] array = new float[src.length];
@@ -775,7 +776,7 @@ public enum Type {
         final double[] array = new double[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = requireNonNullNumber(item, "DOUBLE", property).doubleValue();
+          array[i++] = narrowToDouble(requireNonNullNumber(item, "DOUBLE", property), property);
         return array;
       } else if (targetClass.equals(double[].class) && value instanceof float[] src) {
         // Issue #3864 follow-up: HTTP vector params arrive as float[] from JSON parsing.
@@ -1367,6 +1368,14 @@ public enum Type {
   private static float narrowToFloat(final Number value, final Property property) {
     final float result = value.floatValue();
     if (property != null && Float.isInfinite(result) && !isInfinite(value))
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
+    return result;
+  }
+
+  /** The primitive form of {@link #narrowToFloat(Number, Property)}, for an ARRAY_OF_FLOATS item: no boxing per item. */
+  private static float narrowToFloat(final double value, final Property property) {
+    final float result = (float) value;
+    if (property != null && Float.isInfinite(result) && !Double.isInfinite(value))
       throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
     return result;
   }

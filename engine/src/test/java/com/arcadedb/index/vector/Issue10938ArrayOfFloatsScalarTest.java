@@ -29,6 +29,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Array;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -123,6 +124,16 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
           .get("longs")).containsExactly(Integer.MIN_VALUE, Integer.MAX_VALUE);
       assertThat((int[]) database.newDocument("A").set("ints", new short[] { Short.MIN_VALUE, Short.MAX_VALUE }).save()
           .get("ints")).containsExactly(Short.MIN_VALUE, Short.MAX_VALUE);
+
+      // a finite value that overflows FLOAT is refused, as for a FLOAT property, instead of being stored as an infinity
+      assertThatThrownBy(() -> database.newDocument("A").set("floats", new double[] { 1, Double.MAX_VALUE }).save())//
+          .isInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("out of range for type FLOAT");
+      assertThatThrownBy(() -> database.newDocument("A").set("floats", List.of(1, -Double.MAX_VALUE)).save())//
+          .isInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("out of range for type FLOAT");
+      assertThatThrownBy(() -> database.newDocument("A").set("doubles", List.of(1, new BigDecimal("1e400"))).save())//
+          .isInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("out of range for type DOUBLE");
+      assertThat((float[]) database.newDocument("A").set("floats", new double[] { 0.5, Float.MAX_VALUE }).save().get("floats"))//
+          .containsExactly(0.5f, Float.MAX_VALUE);
     });
   }
 
