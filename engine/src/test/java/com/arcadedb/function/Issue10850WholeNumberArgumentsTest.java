@@ -176,6 +176,26 @@ class Issue10850WholeNumberArgumentsTest extends TestHelper {
         .isInstanceOf(CommandSemanticException.class).hasMessageContaining("<depth>");
   }
 
+  /** The null check moved from the number read to the callers: a null argument still answers as it did. */
+  @Test
+  void aNullArgumentStillPropagatesOrDefaultsAsBefore() {
+    final List<Object> list = List.of("a", "b", "c");
+    assertThat(new CollInsert().execute(new Object[] { list, null, "x" }, null)).isNull();
+    assertThat(new CollRemove().execute(new Object[] { list, null }, null)).isNull();
+    assertThat(new CollRemove().execute(new Object[] { list, 0L, null }, null)).isNull();
+    assertThat(new CollFlatten().execute(new Object[] { list, null }, null)).isNull();
+    assertThat(new AggNth().execute(new Object[] { list, null }, null)).isNull();
+    // agg.slice: a null bound is the default bound, not a null answer
+    assertThat(new AggSlice().execute(new Object[] { list, null, 2L }, null)).isEqualTo(List.of("a", "b"));
+    assertThat(new AggSlice().execute(new Object[] { list, 1L, null }, null)).isEqualTo(List.of("b", "c"));
+    assertThat(new VectorCreateFunction().execute(new Object[] { List.of(1, 2), null }, null)).isNull();
+    assertThat(new TextLpad().execute(new Object[] { "x", null, "-" }, null)).isEqualTo("x");
+    assertThat(cypher("RETURN left('abc', null) AS v")).isNull();
+    assertThat(cypher("RETURN substring('abc', null) AS v")).isNull();
+    assertThat(cypher("RETURN substring('abc', 1, null) AS v")).isNull();
+    assertThat(cypher("RETURN round(1.5, null) AS v")).isNull();
+  }
+
   // ---------------------------------------------------------------- agg.nth / agg.slice
 
   @Test
