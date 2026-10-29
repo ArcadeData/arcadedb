@@ -183,7 +183,8 @@ public class PostgresCatalog {
       "pg_statistic_ext", "pg_publication", "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum",
       "information_schema.table_constraints", "information_schema.key_column_usage", "pg_proc", "pg_trigger", "pg_auth_members",
       "pg_depend", "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table", "pg_tablespace",
-      "pg_settings");
+      "pg_settings", "pg_event_trigger", "pg_foreign_data_wrapper", "pg_foreign_server", "pg_user_mappings", "pg_subscription",
+      "pg_db_role_setting", "pg_largeobject_metadata", "pg_parameter_acl");
 
   /**
    * The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema: the honest answer to a
@@ -192,7 +193,9 @@ public class PostgresCatalog {
    */
   private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
       "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum", "pg_proc", "pg_trigger", "pg_auth_members",
-      "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
+      "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table", "pg_event_trigger",
+      "pg_foreign_data_wrapper", "pg_foreign_server", "pg_user_mappings", "pg_subscription", "pg_db_role_setting",
+      "pg_largeobject_metadata", "pg_parameter_acl");
 
   /** The OID of {@code pg_class} itself, which {@code pg_depend.classid} names for a dependency of an index (issue #10842). */
   private static final int PG_CLASS_RELATION_OID      = 1259;
@@ -461,6 +464,20 @@ public class PostgresCatalog {
     relation("pg_shdescription", null, "objoid", "classoid", "description");
     relation("pg_default_acl", null, "oid", "defaclrole", "defaclnamespace", "defaclobjtype", "defaclacl");
     relation("pg_foreign_table", null, "ftrelid", "ftserver", "ftoptions");
+    // Objects a stock PostgreSQL holds no row of either, and ArcadeDB has no equivalent of (issue #10960): an event trigger, a
+    // foreign-data wrapper, a foreign server and its user mappings, a logical-replication subscription, a per-role or per-database
+    // setting, a large object, a parameter privilege. They are what psql's \dy, \dew, \des, \deu, \dRs, \drds, \lo_list and
+    // \dconfig+ read, and "none" is their true answer. Columns as of PostgreSQL 17.
+    relation("pg_event_trigger", null, "oid", "evtname", "evtevent", "evtowner", "evtfoid", "evtenabled", "evttags");
+    relation("pg_foreign_data_wrapper", null, "oid", "fdwname", "fdwowner", "fdwhandler", "fdwvalidator", "fdwacl", "fdwoptions");
+    relation("pg_foreign_server", null, "oid", "srvname", "srvowner", "srvfdw", "srvtype", "srvversion", "srvacl", "srvoptions");
+    relation("pg_user_mappings", null, "umid", "srvid", "srvname", "umuser", "usename", "umoptions");
+    relation("pg_subscription", null, "oid", "subdbid", "subskiplsn", "subname", "subowner", "subenabled", "subbinary", "substream",
+        "subtwophasestate", "subdisableonerr", "subpasswordrequired", "subrunasowner", "subfailover", "subconninfo", "subslotname",
+        "subsynccommit", "subpublications", "suborigin");
+    relation("pg_db_role_setting", null, "setdatabase", "setrole", "setconfig");
+    relation("pg_largeobject_metadata", null, "oid", "lomowner", "lomacl");
+    relation("pg_parameter_acl", null, "oid", "parname", "paracl");
     // The two tablespaces every PostgreSQL has: a relation's reltablespace of 0 is pg_default (issue #10591)
     relation("pg_tablespace", null, "oid", "spcname", "spcowner", "spcacl", "spcoptions");
     // A row per run-time parameter this connection answers SHOW for, with the value SHOW answers (issue #10591): pgjdbc reads

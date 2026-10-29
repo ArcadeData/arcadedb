@@ -77,31 +77,24 @@ class Issue10842CatalogRelationPolicyTest {
   /**
    * The relations those clients read that this catalog refuses on purpose, each with why. Every one holds rows in a stock
    * PostgreSQL, or describes an object ArcadeDB could hold and does not model yet; answering it with no rows would claim the
-   * database has none, which is the #10371 failure.
+   * database has none, which is the #10371 failure. (What a stock PostgreSQL holds no row of, and ArcadeDB has no equivalent of,
+   * is modelled with no rows instead: issue #10960.)
    */
   static final Map<String, String> REFUSED_ON_PURPOSE = Map.ofEntries(//
       Map.entry("pg_amop", "the operators of the built-in operator families (psql \\dAo)"),
       Map.entry("pg_amproc", "the support functions of the built-in operator families (psql \\dAp)"),
       Map.entry("pg_cast", "the built-in casts (psql \\dC)"),
       Map.entry("pg_conversion", "the built-in encoding conversions (psql \\dc)"),
-      Map.entry("pg_db_role_setting", "per-role and per-database settings (psql \\drds), not modelled"),
-      Map.entry("pg_event_trigger", "event triggers (psql \\dy), not modelled"),
       Map.entry("pg_extension", "plpgsql is installed in every PostgreSQL (psql \\dx)"),
-      Map.entry("pg_foreign_data_wrapper", "foreign-data wrappers (psql \\dew), not modelled"),
-      Map.entry("pg_foreign_server", "foreign servers (psql \\des), not modelled"),
       Map.entry("pg_language", "internal, c, sql and plpgsql exist in every PostgreSQL (psql \\dL)"),
-      Map.entry("pg_largeobject_metadata", "large objects (psql \\lo_list), not modelled"),
       Map.entry("pg_opclass", "the built-in operator classes (psql \\dAc)"),
       Map.entry("pg_operator", "the built-in operators (psql \\do)"),
       Map.entry("pg_opfamily", "the built-in operator families (psql \\dAf)"),
-      Map.entry("pg_parameter_acl", "parameter privileges (psql \\dconfig+), not modelled"),
-      Map.entry("pg_subscription", "logical-replication subscriptions (psql \\dRs), not modelled"),
       Map.entry("pg_ts_config", "the built-in text-search configurations (psql \\dF)"),
       Map.entry("pg_ts_config_map", "the mappings of the built-in text-search configurations (psql \\dF+)"),
       Map.entry("pg_ts_dict", "the built-in text-search dictionaries (psql \\dFd)"),
       Map.entry("pg_ts_parser", "the built-in text-search parser (psql \\dFp)"),
       Map.entry("pg_ts_template", "the built-in text-search templates (psql \\dFt)"),
-      Map.entry("pg_user_mappings", "user mappings of foreign servers (psql \\deu), not modelled"),
       Map.entry("pg_group", "the predefined roles that cannot log in exist in every PostgreSQL (psqlodbc SQLTablePrivileges)"),
       Map.entry("information_schema.column_privileges", "a row per column privilege the user holds (psqlodbc SQLColumnPrivileges)"));
 
