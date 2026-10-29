@@ -152,9 +152,9 @@ public class PageManager extends LockContext {
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
-  // Written only through beginPublication()/endPublication(), which serialize the increments on publicationGate: the page-manager lock
-  // does not cover the replicated apply (#10941), so the two kinds of publisher can overlap. A reader's two samples bracket its reads: the volatile write of the first increment is ordered before the
-  // page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
+  // Written only through beginPublication()/endPublication(), which serialize the increments on publicationGate: the page-manager
+  // lock does not cover the replicated apply (#10941), so the two kinds of publisher can overlap. A reader's two samples bracket
+  // its reads: the volatile write of the first increment is ordered before the page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
   // volatile cache reads, which is the ordering a seqlock needs without an explicit fence.
   private volatile long                               publicationSequence;
   private final    Object                             publicationGate = new Object();
@@ -2235,6 +2235,7 @@ public class PageManager extends LockContext {
    * Opens a publication: the pages of one transaction are about to reach the read cache one by one. The counter turns odd on the
    * first one in flight, nested or concurrent ones only count. Every call must be paired with {@link #endPublication()} in a
    * {@code finally}. {@link #publishPages} does it under the page-manager lock, the replicated apply (#10941) without it.
+   * Package-private: {@link TransactionManager} is the only other caller.
    */
   void beginPublication() {
     synchronized (publicationGate) {
@@ -2254,8 +2255,8 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * A counter that moves twice for every transaction published by {@link #publishPages} or applied from the log of a replica: it is odd while the pages of one are
-   * being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
+   * A counter that moves twice for every transaction published by {@link #publishPages} or applied from the log of a replica: it
+   * is odd while the pages of one are being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
    * touches two of them - an index page and the record page it points to - can see them at different commits. Sampling this
    * before the first read and again after the last tells whether a commit overlapped: the two samples must be equal and even
    * for the reads to have seen one state (#9369). Reading it costs a volatile load and takes no lock. It does not cover

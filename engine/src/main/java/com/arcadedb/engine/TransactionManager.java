@@ -1487,8 +1487,8 @@ public class TransactionManager {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
     final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
-    // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd meanwhile,
-    // as for a local commit, so a reader pairing two pages sees the overlap (#10941)
+    // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
+    // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
     final PageManager pageManager = database.getPageManager();
     pageManager.beginPublication();
     try {
