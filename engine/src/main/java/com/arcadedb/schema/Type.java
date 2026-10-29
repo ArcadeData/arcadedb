@@ -489,7 +489,11 @@ public enum Type {
     return targetClass.isInstance(converted);
   }
 
-  private static boolean isScalarKeyClass(final Class<?> targetClass) {
+  /**
+   * Whether {@code targetClass} is one of the scalar key classes the index lookup checks hold to: string, boolean, numbers and
+   * temporals.
+   */
+  public static boolean isScalarKeyClass(final Class<?> targetClass) {
     return targetClass == String.class || targetClass == Boolean.class || Number.class.isAssignableFrom(targetClass)
         || Temporal.class.isAssignableFrom(targetClass) || Date.class.isAssignableFrom(targetClass)
         || Calendar.class.isAssignableFrom(targetClass);
