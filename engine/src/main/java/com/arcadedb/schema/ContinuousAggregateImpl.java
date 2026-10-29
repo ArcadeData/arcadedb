@@ -335,6 +335,11 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * to it; the refresh that applies the record recomputes only the buckets behind its own watermark. The refresh in progress clears
    * only the record it read (by identity), so the next refresh applies this one. The flag is read BEFORE the watermark: a refresh
    * that is over by then installed its watermark first, and one that begins after it reads the source after this commit.
+   * <p>
+   * The call made before the commit under HA comes after the append registered itself in flight on its shard (issue #10857): a
+   * refresh that this call does not find in progress finds the append, and keeps its watermark at or before the bucket of the oldest
+   * sample, so samples that are not late here do not become late by the time they commit. A refresh found in progress clears the
+   * record this call made only when it did not find the append, which means it read the record before this call added to it.
    *
    * @return {@code false} when no sample is behind the watermark, or the buckets were already recorded
    */

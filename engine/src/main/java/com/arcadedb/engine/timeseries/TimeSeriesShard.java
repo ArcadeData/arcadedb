@@ -129,6 +129,14 @@ public class TimeSeriesShard implements AutoCloseable {
   // (issue #10342). A delete that failed on a later shard publishes nothing, so the followers still hold the old sealed bytes, and
   // the statement run again finds nothing left to delete here: the flag is what makes that run ship the file all the same
   private volatile boolean             sealedDeleteUnpublished = false;
+  // The oldest timestamp of every append in flight under HA, from before its check for late samples to the end of its commit (issue
+  // #10857): a refresh must not move the watermark of a continuous aggregate past samples that may commit after it read the source.
+  // A plain array under a monitor rather than a concurrent collection: a few appends at most are in flight per shard, each adds and
+  // removes one entry, and the monitor is also what orders the registration before the read of the refresh flag (see
+  // ContinuousAggregateImpl.invalidateLateSamples)
+  private final Object                 inFlightAppendsLock     = new Object();
+  private long[]                       inFlightAppendMinTs     = new long[4];
+  private int                          inFlightAppends         = 0;
 
   /**
    * Test-only hook. When non-null, fires in {@link #compactInternal()} immediately before Phase 4c
@@ -367,9 +375,11 @@ public class TimeSeriesShard implements AutoCloseable {
    * The source is read once per retry attempt, and its timestamps once more when the type has a continuous aggregate (issue
    * #10502): after the commit off HA, before it under HA (issue #10673). It is never retained.
    * <p>
-   * Under HA the late-sample record ships before the samples, judged against the watermark seen then. A refresh that starts after
-   * that check and ends before the commit can make the samples late only once they commit: their record then ships after the
-   * commit, as it did before #10673 (tracked as issue #10857).
+   * Under HA the late-sample record ships before the samples, judged against the watermark seen then. From before that check to the
+   * end of the commit the append is registered as in flight with its oldest timestamp (issue #10857), and a refresh that begins in
+   * that window does not move the watermark past the bucket of that timestamp, nor clear a record the append may have added to (see
+   * {@link #oldestInFlightAppendTs}): the samples cannot become late, or lose their record, only once they commit, which would ship
+   * their record after the commit, as before #10673.
    */
   public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
@@ -378,60 +388,67 @@ public class TimeSeriesShard implements AutoCloseable {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
 
     // Under HA the record of the samples behind a watermark ships BEFORE them (issue #10673), see shipLateSampleRecordBeforeCommit
+    // ... and the append is in flight from there to the end of its commit, see oldestInFlightAppendTs
     final LateSampleRange shippedBeforeCommit = db.isReplicated() ? shipLateSampleRecordBeforeCommit(source) : null;
 
     boolean committed = false;
-    appendLock.lock();
     try {
-      for (int attempt = 3; attempt > 0; attempt--) {
-        compactionLock.readLock().lock();
-        boolean readLockHeld = true;
-        try {
-          // Tracked rather than inferred from isTransactionActive(): after a FAILED commit the transaction begun
-          // here is already off the thread's stack, so "is a transaction active" answers for the CALLER's and
-          // rolling that back discards work this append knows nothing about (issue #7732).
-          final OwnTransaction tx = OwnTransaction.begin(db);
+      appendLock.lock();
+      try {
+        for (int attempt = 3; attempt > 0; attempt--) {
+          compactionLock.readLock().lock();
+          boolean readLockHeld = true;
           try {
-            mutableBucket.appendSamples(source);
-          } catch (final Exception e) {
-            tx.rollbackIfMine();
-            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+            // Tracked rather than inferred from isTransactionActive(): after a FAILED commit the transaction begun
+            // here is already off the thread's stack, so "is a transaction active" answers for the CALLER's and
+            // rolling that back discards work this append knows nothing about (issue #7732).
+            final OwnTransaction tx = OwnTransaction.begin(db);
+            try {
+              mutableBucket.appendSamples(source);
+            } catch (final Exception e) {
+              tx.rollbackIfMine();
+              throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+            }
+            // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
+            // why. In standalone (non-replicated) mode there is no waitForActiveRecordingSession()
+            // call in commit(), so no deadlock is possible and the read lock must be held through
+            // commit to protect Phase 4c from MVCC conflicts.
+            if (db.isReplicated()) {
+              compactionLock.readLock().unlock();
+              readLockHeld = false;
+            }
+            try {
+              tx.commit();
+              committed = true;
+              break; // success
+            } catch (final ConcurrentModificationException e) {
+              // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
+              // Roll back and retry on the freshly-cleared page. Usually a no-op - commit1stPhase has already
+              // rolled this transaction back on every arm and commit() has popped it - and never the caller's.
+              tx.rollbackIfMine();
+              if (attempt == 1)
+                throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
+              final int attemptNumber = 4 - attempt; // ascending 1..3 for human-readable logging
+              LogManager.instance().log(this, Level.FINE,
+                  "CME on TimeSeries append for shard %d (attempt %d/3) - retrying after compaction Phase 4c race",
+                  shardIndex, attemptNumber);
+              // else loop again
+            } catch (final Exception e) {
+              tx.rollbackIfMine();
+              throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+            }
+          } finally {
+            if (readLockHeld)
+              compactionLock.readLock().unlock();
           }
-          // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
-          // why. In standalone (non-replicated) mode there is no waitForActiveRecordingSession()
-          // call in commit(), so no deadlock is possible and the read lock must be held through
-          // commit to protect Phase 4c from MVCC conflicts.
-          if (db.isReplicated()) {
-            compactionLock.readLock().unlock();
-            readLockHeld = false;
-          }
-          try {
-            tx.commit();
-            committed = true;
-            break; // success
-          } catch (final ConcurrentModificationException e) {
-            // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
-            // Roll back and retry on the freshly-cleared page. Usually a no-op - commit1stPhase has already
-            // rolled this transaction back on every arm and commit() has popped it - and never the caller's.
-            tx.rollbackIfMine();
-            if (attempt == 1)
-              throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
-            final int attemptNumber = 4 - attempt; // ascending 1..3 for human-readable logging
-            LogManager.instance().log(this, Level.FINE,
-                "CME on TimeSeries append for shard %d (attempt %d/3) - retrying after compaction Phase 4c race",
-                shardIndex, attemptNumber);
-            // else loop again
-          } catch (final Exception e) {
-            tx.rollbackIfMine();
-            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
-          }
-        } finally {
-          if (readLockHeld)
-            compactionLock.readLock().unlock();
         }
+      } finally {
+        appendLock.unlock();
       }
     } finally {
-      appendLock.unlock();
+      // committed (a refresh that begins from now on reads the samples) or failed (there is nothing to read)
+      if (shippedBeforeCommit != null)
+        unregisterInFlightAppend(shippedBeforeCommit.minTs());
     }
 
     // After the commit and outside the append lock: the schema save it may do must not hold up the other appends of this shard
@@ -456,11 +473,19 @@ public class TimeSeriesShard implements AutoCloseable {
    * a leader lost between the two left the followers with the samples and without the record, and a follower promoted then never
    * aggregated them. Raft applies its entries in order: a follower holding the samples now holds their record too.
    * <p>
-   * A record shipped for samples that then fail to commit costs a recompute of buckets that did not change, nothing else. The record
-   * this makes on the leader may be cleared by a refresh that reads the source before the commit; the check made again once the
-   * samples have committed records them again, and ships that too.
+   * A record shipped for samples that then fail to commit costs a recompute of buckets that did not change, nothing else.
+   * <p>
+   * The append is registered as in flight BEFORE the check reads the watermark (issue #10857), and stays so until its commit ends
+   * (the caller unregisters it whenever this returns a range). A refresh flags itself in progress, then reads the record of late
+   * samples, then the registrations, so of the two one sees the other: either this check finds a refresh in progress and records
+   * every sample (#10633), or the refresh finds the append. A refresh that finds it keeps its watermark at or before the bucket of
+   * the oldest sample and does not clear a record the append may have added to; one that does not find it read the record before
+   * the append added to it, and does not clear what it did not read. Without the registration a refresh that began after this check
+   * and ended before the commit could move the watermark past samples that were not late here, or clear their record, and the
+   * samples late once committed had their record shipped after the commit.
    *
-   * @return {@code null} when no continuous aggregate reads this shard or the append is empty
+   * @return {@code null} when no continuous aggregate reads this shard or the append is empty; otherwise the append is registered
+   * in flight under the {@code minTs} of the range returned
    */
   private LateSampleRange shipLateSampleRecordBeforeCommit(final TimeSeriesRowSource source) {
     final int size = source.size();
@@ -472,7 +497,15 @@ public class TimeSeriesShard implements AutoCloseable {
       return null;
 
     final LateSampleRange range = timestampRange(source);
-    if (!invalidateLateSamples(schema, aggregates, range.minTs(), range.maxTs()))
+    registerInFlightAppend(range.minTs());
+    final boolean late;
+    try {
+      late = invalidateLateSamples(schema, aggregates, range.minTs(), range.maxTs());
+    } catch (final RuntimeException | Error e) {
+      unregisterInFlightAppend(range.minTs());
+      throw e;
+    }
+    if (!late)
       return range;
     try {
       schema.recordContinuousAggregateChange(NO_SCHEMA_CHANGE);
@@ -483,6 +516,45 @@ public class TimeSeriesShard implements AutoCloseable {
           "Could not ship to the replicas the record of the samples about to be appended to the TIMESERIES type '%s' behind the "
               + "watermark of a continuous aggregate, it is shipped once they commit", e, typeName);
       return new LateSampleRange(range.minTs(), range.maxTs(), false);
+    } catch (final Error e) {
+      // the caller never sees a range to unregister
+      unregisterInFlightAppend(range.minTs());
+      throw e;
+    }
+  }
+
+  private void registerInFlightAppend(final long minTs) {
+    synchronized (inFlightAppendsLock) {
+      if (inFlightAppends == inFlightAppendMinTs.length)
+        inFlightAppendMinTs = Arrays.copyOf(inFlightAppendMinTs, inFlightAppends * 2);
+      inFlightAppendMinTs[inFlightAppends++] = minTs;
+    }
+  }
+
+  private void unregisterInFlightAppend(final long minTs) {
+    synchronized (inFlightAppendsLock) {
+      for (int i = 0; i < inFlightAppends; i++)
+        if (inFlightAppendMinTs[i] == minTs) {
+          inFlightAppendMinTs[i] = inFlightAppendMinTs[--inFlightAppends];
+          return;
+        }
+    }
+  }
+
+  /**
+   * The oldest timestamp an append in flight on this shard may still commit, {@link Long#MAX_VALUE} when none is (issue #10857). An
+   * append is in flight from before its check for late samples to the end of its commit, under HA only: off HA the late samples are
+   * recorded after the commit and nothing is shipped. A refresh reads it after flagging itself in progress and before reading the
+   * source, and does not move the watermark past the bucket of the timestamp returned: an append registered later sees the refresh
+   * in progress and records every sample (#10633), one that commits before the refresh reads the source is read by it.
+   */
+  public long oldestInFlightAppendTs() {
+    synchronized (inFlightAppendsLock) {
+      long oldest = Long.MAX_VALUE;
+      for (int i = 0; i < inFlightAppends; i++)
+        if (inFlightAppendMinTs[i] < oldest)
+          oldest = inFlightAppendMinTs[i];
+      return oldest;
     }
   }
 
@@ -542,7 +614,8 @@ public class TimeSeriesShard implements AutoCloseable {
    * recomputes the buckets of those samples instead of never aggregating them. That session runs BEFORE the commit of the samples
    * ({@link #shipLateSampleRecordBeforeCommit}, issue #10673), so a leader lost right after the commit has already shipped it. This
    * check, made again after the commit, ships a second session only when the record changed since: a refresh cleared it in between,
-   * or a refresh moved the watermark past the samples while they committed, or the first session failed. The session is a
+   * or a refresh in progress at the check made after the commit recorded every sample (#10633), or the first session failed. A
+   * refresh that begins after the check made before the commit does not move the watermark past the samples (issue #10857). The session is a
    * replication round trip under the database write lock, paid once per bucket a stream of late samples reaches. Off HA the plain
    * schema save is kept, after the commit only: there is nobody to ship it to.
    *
