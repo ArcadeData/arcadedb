@@ -157,6 +157,15 @@ class Issue10960NoRowPsqlRelationsTest {
     assertThat(resolve(PSQL_LO_LIST).rows).isEmpty();
   }
 
+  /** The columns of an empty answer are announced with the type PostgreSQL gives them, not as text. */
+  @Test
+  void anEmptyAnswerAnnouncesTheTypesOfItsOidAndFlagColumns() {
+    assertThat(PostgresCatalog.declaredType("pg_subscription", "subenabled")).isEqualTo(PostgresType.BOOLEAN);
+    assertThat(PostgresCatalog.declaredType("pg_subscription", "subowner")).isEqualTo(PostgresType.INTEGER);
+    assertThat(PostgresCatalog.declaredType("pg_foreign_server", "srvfdw")).isEqualTo(PostgresType.INTEGER);
+    assertThat(PostgresCatalog.declaredType("pg_foreign_server", "srvname")).isEqualTo(PostgresType.VARCHAR);
+  }
+
   /** A relation PostgreSQL holds rows in that this catalog does not model is still refused: the change is not "answer none". */
   @Test
   void aRelationThatHoldsRowsInEveryPostgresIsStillRefused() {

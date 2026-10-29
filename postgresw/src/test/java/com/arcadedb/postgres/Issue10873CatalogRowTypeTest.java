@@ -158,7 +158,7 @@ class Issue10873CatalogRowTypeTest {
     notChecked("pg_foreign_table.ftserver", "pg_foreign_server is not modelled, and pg_foreign_table has no row");
     notChecked("pg_event_trigger.evtfoid", "pg_proc has no row, and pg_event_trigger has none either");
     notChecked("pg_subscription.subrunasowner", "a boolean: whether the subscription applies changes as the table owner, not an OID");
-    notChecked("pg_foreign_server.srvfdw","pg_foreign_data_wrapper has no row, and pg_foreign_server has none either");
+    notChecked("pg_foreign_server.srvfdw", "pg_foreign_data_wrapper has no row, and pg_foreign_server has none either");
     notChecked("pg_range.rngsubopc", "pg_opclass is not modelled, and pg_range has no row");
     notChecked("pg_range.rngcanonical", "a regproc, read as a name");
     notChecked("pg_range.rngsubdiff", "a regproc, read as a name");

@@ -525,6 +525,18 @@ public class PostgresCatalog {
     columnTypes("pg_inherits", PostgresType.BOOLEAN, "inhdetachpending");
     columnTypes("pg_depend", PostgresType.INTEGER, "classid", "objid", "objsubid", "refclassid", "refobjid", "refobjsubid");
     columnTypes("pg_tablespace", PostgresType.INTEGER, "oid", "spcowner");
+    // The no-row relations of issue #10960 announce the types PostgreSQL gives their OID and flag columns, so a typed client gets the
+    // right schema from an empty answer
+    columnTypes("pg_event_trigger", PostgresType.INTEGER, "oid", "evtowner", "evtfoid");
+    columnTypes("pg_foreign_data_wrapper", PostgresType.INTEGER, "oid", "fdwowner", "fdwhandler", "fdwvalidator");
+    columnTypes("pg_foreign_server", PostgresType.INTEGER, "oid", "srvowner", "srvfdw");
+    columnTypes("pg_user_mappings", PostgresType.INTEGER, "umid", "srvid", "umuser");
+    columnTypes("pg_subscription", PostgresType.INTEGER, "oid", "subdbid", "subowner");
+    columnTypes("pg_subscription", PostgresType.BOOLEAN, "subenabled", "subbinary", "subdisableonerr", "subpasswordrequired",
+        "subrunasowner", "subfailover");
+    columnTypes("pg_db_role_setting", PostgresType.INTEGER, "setdatabase", "setrole");
+    columnTypes("pg_largeobject_metadata", PostgresType.INTEGER, "oid", "lomowner");
+    columnTypes("pg_parameter_acl", PostgresType.INTEGER, "oid");
     columnTypes("pg_settings", PostgresType.BOOLEAN, "pending_restart");
 
     // The three lists name the same relations in three places: a relation answered with no rows must be read by the join path,
