@@ -266,10 +266,11 @@ final class CypherConstraintRegistry {
    * <p>
    * A type constraint that replaced the declaration of a property puts that declaration back first, before anything else is
    * undone: it is the one step that can be refused (a record written since does not fit the old type), and a refusal then
-   * leaves the constraint whole. A property the constraint declared is undeclared, which is what lifts a type restriction in
-   * a schema that has no "any" type, unless another constraint still needs it declared (a unique index is built over the
-   * declared type, a MANDATORY flag lives on the declaration): that one then owns the declaration, and the property is
-   * undeclared when the last of them goes. A declaration that also carries what no constraint created (a READONLY flag, a
+   * leaves the constraint whole. While another type constraint declaring the same type of the property is still there, the
+   * declaration to restore passes to it instead, and is restored when the last of them is dropped. A property the constraint
+   * declared is undeclared, which is what lifts a type restriction in a schema that has no "any" type, unless another
+   * constraint still needs it declared (a unique index is built over the declared type, a MANDATORY flag lives on the
+   * declaration): that one then owns the declaration, and the property is undeclared when the last of them goes. A declaration that also carries what no constraint created (a READONLY flag, a
    * DEFAULT, bounds set with SQL) is left in place, as is anything a statement outside Cypher still depends on.
    * <p>
    * The steps are separate schema changes, not one atomic one. Each is safe to repeat, which is what makes a retry after a
@@ -299,7 +300,7 @@ final class CypherConstraintRegistry {
     // carry an item count it cannot read. A refused restore puts them back, leaving the constraint whole (#10862)
     final List<String> clearedBounds = releaseBounds(type, key, entry);
     try {
-      restorePreviousDeclarations(type, entry, retyper);
+      restorePreviousDeclarations(type, key, entry, retyper);
     } catch (final RuntimeException e) {
       final int dimension = dimensionOf(entry);
       if (dimension != CypherTypeName.NO_DIMENSION)
@@ -411,6 +412,28 @@ final class CypherConstraintRegistry {
     return null;
   }
 
+  /**
+   * Finds a type constraint on the type, other than the one being dropped, over the property and declaring exactly the same
+   * type (element type and dimension included), or null.
+   */
+  private static String findEquivalentTyped(final DocumentType type, final String droppedKey, final String propertyName,
+      final JSONObject declared) {
+    final Type declaredType = typeOf(declared.getString("type", null));
+    if (declaredType == null)
+      return null;
+    for (final String key : type.getCustomKeys()) {
+      if (!key.startsWith(KEY_PREFIX) || key.equals(droppedKey))
+        continue;
+      final JSONObject candidate = entry(type, key);
+      if (candidate != null && kindOf(candidate) == ConstraintKind.TYPED && toStrings(
+          candidate.getJSONArray("properties", new JSONArray())).contains(propertyName) && sameDeclaration(
+          candidate.getJSONObject("declaredType", null), declaredType, declared.getString("of", null),
+          declared.getInt("dimension", CypherTypeName.NO_DIMENSION)))
+        return key;
+    }
+    return null;
+  }
+
   /** The dimension a recorded vector type constraint declared, or {@link CypherTypeName#NO_DIMENSION}. */
   private static int dimensionOf(final JSONObject entry) {
     final JSONObject declaredType = entry.getJSONObject("declaredType", null);
@@ -421,7 +444,8 @@ final class CypherConstraintRegistry {
    * Puts back the declarations a type constraint replaced, as long as the property still has the type the constraint gave
    * it: a type changed since by other means is not this constraint's to undo.
    */
-  private static void restorePreviousDeclarations(final DocumentType type, final JSONObject entry, final Retyper retyper) {
+  private static void restorePreviousDeclarations(final DocumentType type, final String droppedKey, final JSONObject entry,
+      final Retyper retyper) {
     final JSONObject previous = entry.getJSONObject("previous", null);
     final JSONObject declared = entry.getJSONObject("declaredType", null);
     if (previous == null || declared == null)
@@ -439,6 +463,20 @@ final class CypherConstraintRegistry {
       final Type oldType = old != null ? typeOf(old.getString("type", null)) : null;
       if (oldType == null)
         continue;
+
+      // another type constraint still requires what this one declared: it takes over the declaration to restore, which goes
+      // back when the last of them is dropped, rather than being restored under it (#10862)
+      final String heir = findEquivalentTyped(type, droppedKey, propertyName, declared);
+      if (heir != null) {
+        final JSONObject heirEntry = entry(type, heir);
+        final JSONObject heirPrevious = heirEntry.getJSONObject("previous", new JSONObject());
+        if (!heirPrevious.has(propertyName)) {
+          heirPrevious.put(propertyName, old);
+          heirEntry.put("previous", heirPrevious);
+          type.setCustomValue(heir, heirEntry.toString());
+        }
+        continue;
+      }
       try {
         retyper.retype(type, property, oldType, old.getString("of", null));
       } catch (final RuntimeException e) {

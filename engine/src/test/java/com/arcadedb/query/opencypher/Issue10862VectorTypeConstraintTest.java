@@ -229,6 +229,41 @@ class Issue10862VectorTypeConstraintTest extends TestHelper {
   }
 
   @Test
+  void theReplacedDeclarationWaitsForTheLastEquivalentConstraint() {
+    database.command("sql", "CREATE VERTEX TYPE L");
+    database.command("sql", "CREATE PROPERTY L.e LONG");
+    command("CREATE CONSTRAINT a FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)");
+    command("CREATE CONSTRAINT b FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)");
+
+    // b still requires the vector: dropping a neither restores LONG nor lifts the dimension
+    command("DROP CONSTRAINT a");
+    Property p = property("L", "e");
+    assertThat(p.getType()).isEqualTo(Type.ARRAY_OF_FLOATS);
+    assertThat(p.getMax()).isEqualTo("3");
+    assertThatThrownBy(() -> command("CREATE (:L {e: [0.1, 0.2]})")).isInstanceOf(RuntimeException.class);
+
+    // the last one puts the declaration a replaced back
+    command("DROP CONSTRAINT b");
+    p = property("L", "e");
+    assertThat(p.getType()).isEqualTo(Type.LONG);
+    assertThat(p.getMin()).isNull();
+    assertThat(p.getMax()).isNull();
+  }
+
+  @Test
+  void aScalarTypeConstraintAlsoHandsTheReplacedDeclarationOn() {
+    database.command("sql", "CREATE VERTEX TYPE L");
+    database.command("sql", "CREATE PROPERTY L.p LONG");
+    command("CREATE CONSTRAINT a FOR (n:L) REQUIRE n.p IS :: STRING");
+    command("CREATE CONSTRAINT b FOR (n:L) REQUIRE n.p IS :: STRING");
+
+    command("DROP CONSTRAINT a");
+    assertThat(property("L", "p").getType()).isEqualTo(Type.STRING);
+    command("DROP CONSTRAINT b");
+    assertThat(property("L", "p").getType()).isEqualTo(Type.LONG);
+  }
+
+  @Test
   void boundsAlreadyOnThePropertyThatSaySomethingElseAreRefused() {
     database.command("sql", "CREATE VERTEX TYPE L");
     database.command("sql", "CREATE PROPERTY L.e ARRAY_OF_FLOATS (MAX 10)");
