@@ -183,6 +183,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private static final long GUARDED_WAIT_SLICE_MS = 50;
 
+  // How many of the records a build cannot index its warning names (issue #10938): every one is counted
+  private static final int    MAX_REJECTED_RECORDS_REPORTED   = 10;
+  /** The statistic counting the records the last build could not index (issue #10938), summed over buckets by TypeIndex. */
+  public static final  String LAST_BUILD_SKIPPED_RECORDS_STAT = "lastBuildSkippedRecords";
+
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
   public static final int OFFSET_NUM_ENTRIES  = 4;   // 4 bytes
@@ -315,6 +320,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile boolean compactionBlockedBySharedIds;
   /** Records the last build left out of the graph for sharing a vector id; in memory only, like the block above. */
   private volatile int     recordsLeftOutBySharedIds;
+  /**
+   * Records the last {@link #build} could not index because their value is not a vector of the index's dimensions (issue
+   * #10938); in memory only, like the counter above.
+   */
+  private volatile long    lastBuildSkippedRecords;
   /**
    * Set when the location load did not read every entry on disk (a page cut short, a load that threw partway). The
    * allocator then only knows the ids it read, and the unread entries can hold higher ones: an insert would mint an id
@@ -3604,7 +3614,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
               if (vectorObj != null) {
                 try {
                   final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
-                  if (vector.length == metadata.dimensions && !isUnscorable(vector)) {
+                  // what put() refuses stays out of the graph too: a NaN or Infinity component, left out by the build that met
+                  // it (issue #10938), has a NaN distance to every other vector
+                  if (vector.length == metadata.dimensions && !isUnscorable(vector) && VectorUtils.isFinite(vector)) {
                     final int syntheticId = allocateVectorId();
                     ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
                   }
@@ -3955,7 +3967,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 if (vectorObj != null) {
                   final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
 
-                  if (vector.length == metadata.dimensions && !isUnscorable(vector)) {
+                  // what put() refuses stays out of the graph too: a NaN or Infinity component, left out by the build that met
+                  // it (issue #10938), has a NaN distance to every other vector
+                  if (vector.length == metadata.dimensions && !isUnscorable(vector) && VectorUtils.isFinite(vector)) {
                     vectorLocationSnapshot.addOrUpdate(vectorId, locationIsCompacted, locationOffset, vectorRid, false);
                     validVectorIds[validVectorCount++] = vectorId;
                     if (preloadedVectorCount < preloadBudget) {
@@ -12696,6 +12710,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[] unreachableOrdinals = graphUnreachableOrdinals;
     stats.put("compactionBlockedBySharedIds", compactionBlockedBySharedIds ? 1L : 0L);
     stats.put("recordsLeftOutBySharedIds", (long) recordsLeftOutBySharedIds);
+    stats.put(LAST_BUILD_SKIPPED_RECORDS_STAT, lastBuildSkippedRecords);
     stats.put("unreachableGraphNodes", unreachableOrdinals != null ?
         (long) unreachableOrdinals.length :
         manifestContent != null ? (long) manifestContent.unreachableOrdinals().length : 0L);
@@ -12817,6 +12832,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     lock.writeLock().lock();
     try {
       if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+        // a build that stops before its scan completes must not report the count of an earlier one (issue #10938)
+        lastBuildSkippedRecords = 0;
         try {
           final DatabaseInternal db = getDatabase();
 
@@ -12951,11 +12968,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Track bytes written for chunking
     final AtomicLong bytesInCurrentChunk = new AtomicLong(0);
 
-    // scanBucket() logs and swallows whatever its callback throws, so a failed chunk commit is parked here, the scan
-    // is stopped, and the failure is rethrown below for build() to roll back and mark the index INVALID (issue #8906).
-    // Deliberately only the commit: a record that cannot be indexed is skipped and logged by design, while a failed
-    // commit leaves the transaction unusable and every later record failing for the same reason
+    // A failed chunk commit is parked here, the scan is stopped, and the failure is rethrown below for build() to roll back
+    // and mark the index INVALID (issue #8906): it leaves the transaction unusable and every later record failing for the
+    // same reason
     final AtomicReference<RuntimeException> chunkCommitFailure = new AtomicReference<>();
+
+    // A record that cannot be indexed (a value that is not a vector of the index's dimensions, a NaN component) is left out,
+    // as Neo4j leaves out a node whose property is no vector of the index's dimension (#10863), but no longer silently
+    // (issue #10938): the build counts them all, names the first ones in ONE warning instead of a SEVERE line per record from
+    // the scan, and keeps the count for the index statistics and the CREATE INDEX result. The bucket scan calls back on this
+    // thread, one record at a time, so the plain list is safe: the atomic is only the holder a lambda can update
+    final AtomicLong rejectedRecords = new AtomicLong();
+    final List<String> rejectedSamples = new ArrayList<>(MAX_REJECTED_RECORDS_REPORTED);
 
     // A build over an index that already holds entries (a direct build() call: every schema path builds a fresh, empty
     // index) must REPLACE a record's vector, not add a second one beside it (issue #9506). A dense vector index keeps one
@@ -12984,7 +13008,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // every path into this method, and a build that owns its transaction has nothing for that transaction to
       // correct.
       final Document source = IndexInternal.buildSourceRecord(db, record, !chunkedCommitAllowed);
-      db.getIndexer().addToIndex(LSMVectorIndex.this, rid, source);
+      try {
+        db.getIndexer().addToIndex(LSMVectorIndex.this, rid, source);
+      } catch (final IllegalArgumentException e) {
+        // only the value this index refuses is a rejected record: what fails anywhere else stops the build at once
+        if (rejectedRecords.incrementAndGet() <= MAX_REJECTED_RECORDS_REPORTED)
+          rejectedSamples.add(rid + " (" + e.getMessage() + ")");
+        return true;
+      }
       total.incrementAndGet();
 
       // Estimate bytes written (rough approximation)
@@ -13024,12 +13055,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
         callback.onDocumentIndexed(source, total.get());
 
       return true;
+    }, (rid, exception) -> {
+      // a record that cannot be read, or a failure of the callback past the index write, stops the build at once, as it does
+      // for an LSM tree index, instead of being logged and skipped by the scan
+      if (exception instanceof RuntimeException re)
+        throw re;
+      throw new IndexException("Error on building vector index '" + indexName + "' at record " + rid, exception);
     });
 
     final RuntimeException failure = chunkCommitFailure.get();
     if (failure != null)
       throw new IndexException("Cannot build vector index '" + indexName
           + "': a chunk commit or the restart of its transaction failed after " + total.get() + " records were indexed", failure);
+
+    final long rejected = rejectedRecords.get();
+    lastBuildSkippedRecords = rejected;
+    if (rejected > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector index '%s': %d %s not indexed, holding a value that is not a vector of %d dimensions (first: %s). Fix or remove "
+              + "the value of %s in these records, then run REBUILD INDEX to index them", indexName, rejected,
+          rejected == 1 ? "record is" : "records are", metadata.dimensions, String.join(", ", rejectedSamples),
+          metadata.propertyNames);
 
     final long elapsed = System.currentTimeMillis() - startTime;
     LogManager.instance().log(this, Level.INFO,
@@ -13159,6 +13205,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   public int getDimensions() {
     return metadata.dimensions;
+  }
+
+  /** The records the last build of this index could not index: their value is not a vector of its dimensions (#10938). */
+  public long getLastBuildSkippedRecords() {
+    return lastBuildSkippedRecords;
   }
 
   public VectorSimilarityFunction getSimilarityFunction() {
