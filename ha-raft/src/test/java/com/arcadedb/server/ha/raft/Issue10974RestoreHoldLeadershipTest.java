@@ -108,6 +108,20 @@ class Issue10974RestoreHoldLeadershipTest {
     raft.releaseRestoreHold(DB);
   }
 
+  /** The capability probe can wait on the peers: a leadership that moves meanwhile refuses the entry before it is submitted. */
+  @Test
+  void aLeadershipThatMovesDuringTheCapabilityProbeRefusesTheEntry() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true).currentTerm(7L);
+    raft.holdForRestore(DB);
+    raft.on("peersMissingCapabilityNow", args -> {
+      raft.currentTerm(8L);
+      return List.of();
+    });
+
+    assertThatThrownBy(() -> raft.restoreFenceTerm(DB)).isInstanceOf(NeedRetryException.class).hasMessageContaining("leadership");
+    raft.releaseRestoreHold(DB);
+  }
+
   @Test
   void theFenceSurvivesTheCodecOfBothEntries() {
     final RaftLogEntryCodec.DecodedEntry drop = RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB, 7L));

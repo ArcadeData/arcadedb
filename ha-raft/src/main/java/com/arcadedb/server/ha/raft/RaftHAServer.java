@@ -3186,6 +3186,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // one as missing, leaving the restore unfenced on a cluster that can read the section. One bounded round, once per drop or
     // install of a restore
     final List<String> missing = peersMissingCapabilityNow(PeerCapabilities.RESTORE_FENCE);
+    // The probe can wait on the peers: a leadership that moved meanwhile refuses the entry here, before it is submitted with a term
+    // the next leader refuses anyway, or unfenced
+    ensureRestoreHoldStands(databaseName);
     if (!missing.isEmpty()) {
       // Once per drop or install of a restore: an operator running a mixed-version cluster is told which peers leave the restore
       // fenced by the leadership check made before the swap only
