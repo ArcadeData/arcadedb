@@ -60,6 +60,15 @@ import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
 public class FacetDatabaseWrapper implements AutoCloseable {
   private static final Logger logger = LoggerFactory.getLogger(FacetDatabaseWrapper.class);
 
+  /** Prometheus name of the columnar segments gauge: above 0 once a projection is on disk and the metrics are bound. */
+  public static final String   SEGMENTS         = "arcadedb_columnar_segments";
+  /** Prometheus name of the columnar rebuild counter, tagged {@code reason}. */
+  public static final String   REBUILDS         = "arcadedb_columnar_rebuilds_total";
+  public static final String   SNAPSHOT_INSTALL = "snapshot_install";
+  /** Every {@code reason} tag of {@link #REBUILDS}. */
+  public static final String[] REBUILD_REASONS  = { "create", SNAPSHOT_INSTALL, "missing", "corrupt", "unclean_no_wal",
+      "unclean_pages", "schema", "check_fix" };
+
   private static final long POLL_MILLIS = 500L;
 
   private enum Op {
@@ -434,6 +443,16 @@ public class FacetDatabaseWrapper implements AutoCloseable {
   /** @return the sum of the series named {@code name} carrying {@code label="value"}, 0 when absent */
   public double scrapeMetric(final String name, final String label, final String value) {
     return PrometheusScrape.sum(scrape(), name, label, value);
+  }
+
+  /** @return {@code reason=count} of the rebuild counter for every reason in {@link #REBUILD_REASONS}, for messages */
+  public String rebuildsByReason() {
+    final String metrics = scrape();
+    final StringBuilder out = new StringBuilder();
+    for (final String reason : REBUILD_REASONS)
+      out.append(out.isEmpty() ? "" : " ").append(reason).append('=')
+          .append((long) PrometheusScrape.sum(metrics, REBUILDS, "reason", reason));
+    return out.toString();
   }
 
   private String scrape() {

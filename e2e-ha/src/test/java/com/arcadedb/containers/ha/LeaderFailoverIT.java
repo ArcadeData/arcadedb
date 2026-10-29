@@ -35,6 +35,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.arcadedb.test.support.FacetDatabaseWrapper.REBUILDS;
+import static com.arcadedb.test.support.FacetDatabaseWrapper.SNAPSHOT_INSTALL;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -49,10 +51,6 @@ class LeaderFailoverIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
-  private static final String REBUILDS               = "arcadedb_columnar_rebuilds_total";
-  private static final String SNAPSHOT_INSTALL       = "snapshot_install";
-  private static final String[] REBUILD_REASONS      = { "create", SNAPSHOT_INSTALL, "missing", "corrupt", "unclean_no_wal",
-      "unclean_pages", "schema", "check_fix" };
   /** One refresh of the server's columnar metrics (5 s) plus a margin. */
   private static final long   METRICS_REFRESH_MILLIS = 6_000L;
   /** Mixed ops per round of the writer that runs during the rejoin. */
@@ -272,7 +270,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
           .ignoreExceptions()
           .until(() -> rejoined.scrapeMetric(REBUILDS, "reason", SNAPSHOT_INSTALL) >= 1.0);
       assertThat(rejoined.scrapeMetric(REBUILDS, "reason", SNAPSHOT_INSTALL)).isGreaterThanOrEqualTo(1.0);
-      logger.info("New replica rebuilds by reason: {}", rebuildsByReason(rejoined));
+      logger.info("New replica rebuilds by reason: {}", rejoined.rebuildsByReason());
 
       for (final int s : survivors)
         assertThat(settledMetric(f[s], SNAPSHOT_INSTALL)).as("survivors install nothing during the rejoin (node %d)", s)
@@ -288,14 +286,6 @@ class LeaderFailoverIT extends ContainersTestTemplate {
       for (final FacetDatabaseWrapper node : opened)
         node.close();
     }
-  }
-
-  /** @return {@code reason=count} for every rebuild reason the server registers, for the log */
-  private static String rebuildsByReason(final FacetDatabaseWrapper node) {
-    final StringBuilder out = new StringBuilder();
-    for (final String reason : REBUILD_REASONS)
-      out.append(reason).append('=').append(node.scrapeMetric(REBUILDS, "reason", reason)).append(' ');
-    return out.toString().trim();
   }
 
   /**
