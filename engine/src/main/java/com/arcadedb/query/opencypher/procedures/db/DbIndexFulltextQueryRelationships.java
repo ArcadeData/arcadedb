@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -98,20 +97,22 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
     final String queryText = args[1].toString();
     final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args);
 
-    final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(context.getDatabase(), indexName);
+    final List<TypeIndex> typeIndexes = FullTextIndexes.resolve(context.getDatabase(), indexName);
 
-    final DocumentType type = context.getDatabase().getSchema().getType(typeIndex.getTypeName());
-    if (!(type instanceof EdgeType))
-      throw new CommandSQLParsingException(
-          DISPLAY_NAME + "(): index '" + indexName + "' is a full-text index on node type '"
-              + type.getName() + "', use db.index.fulltext.queryNodes() instead");
+    for (final TypeIndex typeIndex : typeIndexes) {
+      final DocumentType type = context.getDatabase().getSchema().getType(typeIndex.getTypeName());
+      if (!(type instanceof EdgeType))
+        throw new CommandSQLParsingException(
+            DISPLAY_NAME + "(): index '" + indexName + "' is a full-text index on node type '"
+                + type.getName() + "', use db.index.fulltext.queryNodes() instead");
+    }
 
     // Asked for no rows: the index name and the query string have still been validated above, but there is nothing
     // left for the search itself to contribute.
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(context)), "relationship",
-        rid -> rid.asEdge(true)).stream();
+    return options.rows(limit -> FullTextIndexes.search(typeIndexes, queryText, limit, WorkGuard.forCommandDeadline(context)),
+        "relationship", rid -> rid.asEdge(true)).stream();
   }
 }

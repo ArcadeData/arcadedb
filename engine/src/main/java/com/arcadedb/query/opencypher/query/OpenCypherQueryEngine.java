@@ -82,10 +82,12 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
@@ -1547,13 +1549,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats,
       final Map<String, Object> parameters) {
+    if (ddl.getLabelNames().size() > 1) {
+      executeCreateMultiTypeIndex(ddl, schema, stats, parameters);
+      return;
+    }
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
     final String indexName = ddl.getConstraintName();
 
     // Checked before anything is created, so a refused statement leaves no type or property behind
     if (indexName != null) {
-      final boolean taken = schema.existsIndex(indexName);
+      final boolean taken = schema.existsIndex(indexName) || CypherMultiTypeIndexes.find(schema, indexName) != null;
       if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
         if (ddl.isIfNotExists())
           return;
@@ -1570,6 +1576,100 @@ public class OpenCypherQueryEngine implements QueryEngine {
       case RANGE -> null;
     };
 
+    final BuiltIndex built = buildTypeIndex(ddl, schema, typeName, propertyNames, indexName, indexMetadata);
+    if (!built.existedBefore())
+      stats.incIndexesAdded();
+  }
+
+  /** The index one type got from a {@code CREATE INDEX}, and whether the type already had an equivalent one. */
+  private record BuiltIndex(TypeIndex index, boolean existedBefore) {
+  }
+
+  /**
+   * {@code CREATE VECTOR INDEX} and {@code CREATE FULLTEXT INDEX} over several labels or relationship types (issue #10914):
+   * one index per type, tied together by the name {@link CypherMultiTypeIndexes} records. The name is taken like any index
+   * name; with none, one is made from the labels and the properties. A statement that fails part-way drops the indexes it
+   * built, so it leaves nothing behind but the types it named.
+   */
+  private void executeCreateMultiTypeIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats,
+      final Map<String, Object> parameters) {
+    final List<String> labels = ddl.getLabelNames();
+    final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+    final CypherDDLStatement.IndexKind kind = ddl.getIndexKind();
+    final String indexName = ddl.getConstraintName() != null ?
+        ddl.getConstraintName() :
+        String.join("_", labels) + "_" + String.join("_", propertyNames) + "_" + kind.name().toLowerCase();
+
+    final boolean taken = schema.existsIndex(indexName) || CypherMultiTypeIndexes.find(schema, indexName) != null;
+    if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
+      if (ddl.isIfNotExists())
+        return;
+      throw new AlreadyExistsException(taken ? AlreadyExistsException.Kind.INDEX : AlreadyExistsException.Kind.CONSTRAINT,
+          "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
+    }
+
+    // The OPTIONS are read for every type before anything is created, as for one type
+    final Object options = evaluateIndexOptions(ddl, parameters);
+    final List<JSONObject> metadata = new ArrayList<>(labels.size());
+    for (final String label : labels)
+      metadata.add(switch (kind) {
+        case VECTOR -> CypherIndexOptions.vectorMetadata(options, label, propertyNames,
+            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]));
+        case FULLTEXT -> CypherIndexOptions.fullTextMetadata(options, label, propertyNames);
+        case RANGE -> throw new CommandParsingException("Only a vector or a full-text index can span several labels");
+      });
+
+    final List<String> indexNames = new ArrayList<>(labels.size());
+    final List<String> owned = new ArrayList<>(labels.size());
+    try {
+      for (int i = 0; i < labels.size(); i++) {
+        final BuiltIndex built = buildTypeIndex(ddl, schema, labels.get(i), propertyNames, null, metadata.get(i));
+        indexNames.add(built.index().getName());
+        if (!built.existedBefore())
+          owned.add(built.index().getName());
+      }
+      if (kind == CypherDDLStatement.IndexKind.VECTOR)
+        requireSameVectorShape(schema, indexNames);
+      CypherMultiTypeIndexes.register(schema,
+          new CypherMultiTypeIndexes.Entry(indexName, kind, ddl.isForRelationship(), labels, ddl.getPropertyNames(), indexNames, owned));
+    } catch (final RuntimeException e) {
+      for (final String name : owned)
+        try {
+          schema.dropIndex(name);
+        } catch (final RuntimeException dropFailure) {
+          e.addSuppressed(dropFailure);
+        }
+      throw e;
+    }
+
+    if (!owned.isEmpty())
+      stats.incIndexesAdded();
+  }
+
+  /**
+   * The vector indexes one logical index spans answer one query: their distances are comparable only when they measure the
+   * same thing, so a statement whose types ended up with other dimensions or another similarity function is refused.
+   */
+  private static void requireSameVectorShape(final Schema schema, final List<String> indexNames) {
+    int dimensions = -1;
+    VectorSimilarityFunction similarity = null;
+    for (final String name : indexNames) {
+      final IndexInternal[] bucketIndexes = ((TypeIndex) schema.getIndexByName(name)).getIndexesOnBuckets();
+      if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMVectorIndex vector))
+        continue;
+      if (similarity == null) {
+        dimensions = vector.getDimensions();
+        similarity = vector.getSimilarityFunction();
+      } else if (dimensions != vector.getDimensions() || similarity != vector.getSimilarityFunction())
+        throw new CommandParsingException("A vector index over several labels needs the same vector.dimensions and "
+            + "vector.similarity_function on each of them: '" + name + "' has " + vector.getDimensions() + " and "
+            + vector.getSimilarityFunction() + ", the first has " + dimensions + " and " + similarity);
+    }
+  }
+
+  /** Builds the index of one type, creating the type and declaring the properties it needs. */
+  private BuiltIndex buildTypeIndex(final CypherDDLStatement ddl, final Schema schema, final String typeName,
+      final String[] propertyNames, final String indexName, final JSONObject indexMetadata) {
     autoCreateDDLType(schema, ddl, typeName);
 
     // Cypher properties are dynamically typed and travel over Bolt with their actual Java type
@@ -1641,8 +1741,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         if (bucketIndex instanceof LSMVectorIndex vectorIndex)
           vectorIndex.buildVectorGraphNow();
 
-    if (!existedBefore)
-      stats.incIndexesAdded();
+    return new BuiltIndex(created, existedBefore);
   }
 
   /**
@@ -1862,6 +1961,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String indexName = ddl.getConstraintName();
+    final CypherMultiTypeIndexes.Entry logical = CypherMultiTypeIndexes.find(schema, indexName);
+    if (logical != null) {
+      // the indexes the statement built go with the name; one that was there before it stays
+      CypherMultiTypeIndexes.remove(schema, indexName);
+      for (final String owned : logical.owned())
+        if (schema.existsIndex(owned))
+          schema.dropIndex(owned);
+      stats.incIndexesRemoved();
+      return;
+    }
     if (!schema.existsIndex(indexName)) {
       if (ddl.isIfExists())
         return;

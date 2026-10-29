@@ -479,8 +479,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   /**
    * The statement of a {@code CREATE VECTOR INDEX} or {@code CREATE FULLTEXT INDEX}. Neo4j lets either span several labels
-   * ({@code (n:A|B)}); an ArcadeDB index belongs to one type, so a pattern naming more than one is refused rather than indexing
-   * only the first.
+   * ({@code (n:A|B)}); an ArcadeDB index belongs to one type, so the statement builds one index per label and records the name
+   * that ties them together (issue #10914).
    */
   private CypherDDLStatement createIndexStatement(final CypherDDLStatement.IndexKind indexKind, final String statement,
       final Cypher25Parser.SymbolicNameOrStringParameterContext nameCtx, final boolean ifNotExists,
@@ -492,11 +492,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<Cypher25Parser.SymbolicNameStringContext> labels = forRelationship ?
         relPattern.symbolicNameString() :
         nodePattern.symbolicNameString();
-    if (labels.size() != 1)
-      throw new CommandParsingException(
-          statement + " over several " + (forRelationship ? "relationship types" : "labels") + " is not supported: an index "
-              + "belongs to one type, create one index per " + (forRelationship ? "relationship type" : "label"));
-    final String labelName = stripBackticks(labels.getFirst().getText());
+    final List<String> labelNames = new ArrayList<>(labels.size());
+    for (final Cypher25Parser.SymbolicNameStringContext label : labels) {
+      final String labelName = stripBackticks(label.getText());
+      if (!labelNames.contains(labelName))
+        labelNames.add(labelName);
+    }
 
     Expression options = null;
     if (optionsCtx != null) {
@@ -508,7 +509,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
             mapOrParam.parameter().getText());
     }
 
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, indexName, labelName, propertyNames, ifNotExists,
+    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, indexName, labelNames, propertyNames, ifNotExists,
         false, forRelationship, null, indexKind, options);
   }
 

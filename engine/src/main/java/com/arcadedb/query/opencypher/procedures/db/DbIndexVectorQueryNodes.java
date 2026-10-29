@@ -32,6 +32,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.query.opencypher.query.CypherMultiTypeIndexes;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -337,6 +338,18 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * Supports both ArcadeDB format (Type[property]) and direct index name.
    */
   private static List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
+    // A vector index over several labels (issue #10914) is one name for the per-type indexes it spans; they share the
+    // similarity function, so their distances merge
+    final List<TypeIndex> logical = CypherMultiTypeIndexes.resolve(context.getDatabase().getSchema(), indexSpec);
+    if (logical != null) {
+      if (logical.isEmpty())
+        throw new CommandSQLParsingException("Index '" + indexSpec + "' has no vector index left");
+      final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+      for (final TypeIndex typeIndex : logical)
+        vectorIndexes.addAll(filterVectorIndexes(typeIndex, null));
+      return vectorIndexes;
+    }
+
     final int bracketStart = indexSpec.indexOf('[');
     if (bracketStart > 0 && indexSpec.endsWith("]")) {
       // ArcadeDB format: Type[property]

@@ -379,11 +379,14 @@ public final class CypherSchemaCommands {
       final boolean allColumns) {
     final List<Object[]> found = new ArrayList<>();
     final Set<String> visited = new HashSet<>();
-    for (final DocumentType type : readableTypes(database)) {
+    final List<DocumentType> readable = readableTypes(database);
+    // the indexes a vector or full-text index over several labels built are listed once, under its name (issue #10914)
+    final Set<String> spanned = new HashSet<>(CypherMultiTypeIndexes.ownedIndexNames(database.getSchema()));
+    for (final DocumentType type : readable) {
       final boolean edge = type instanceof EdgeType;
       final Map<String, String> owners = indexOwners(type);
       for (final TypeIndex index : type.getAllIndexes(false)) {
-        if (!visited.add(index.getName()))
+        if (spanned.contains(index.getName()) || !visited.add(index.getName()))
           continue;
         final String neoType = indexType(index.getType());
         if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
@@ -392,10 +395,19 @@ public final class CypherSchemaCommands {
         if (owner == null && index.isUnique())
           // listed by SHOW CONSTRAINTS under its own name
           owner = index.getName();
-        found.add(new Object[] { index, neoType, edge, type.getName(), owner });
+        found.add(new Object[] { index, neoType, edge, List.of(type.getName()), owner, index.getName() });
       }
     }
-    found.sort(Comparator.comparing(o -> ((TypeIndex) o[0]).getName()));
+    for (final CypherMultiTypeIndexes.Entry entry : CypherMultiTypeIndexes.entries(database.getSchema())) {
+      final List<TypeIndex> members = CypherMultiTypeIndexes.resolve(database.getSchema(), entry.name());
+      if (members.isEmpty() || !readable.stream().map(DocumentType::getName).toList().containsAll(entry.labels()))
+        continue;
+      final String neoType = indexType(members.getFirst().getType());
+      if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
+        continue;
+      found.add(new Object[] { members.getFirst(), neoType, entry.relationship(), entry.labels(), null, entry.name() });
+    }
+    found.sort(Comparator.comparing(o -> (String) o[5]));
 
     final List<List<Object>> rows = new ArrayList<>(found.size());
     long id = 1;
@@ -403,18 +415,19 @@ public final class CypherSchemaCommands {
       final TypeIndex index = (TypeIndex) o[0];
       final String neoType = (String) o[1];
       final boolean edge = (Boolean) o[2];
-      final String label = (String) o[3];
+      @SuppressWarnings("unchecked") final List<String> labels = (List<String>) o[3];
       final String owner = (String) o[4];
+      final String name = (String) o[5];
       final boolean ready = index.isReadyForQueries();
-      final List<Object> row = new ArrayList<>(Arrays.asList(id++, index.getName(), ready ? "ONLINE" : "POPULATING", ready ? 100.0 : 0.0,
-          neoType, edge ? "RELATIONSHIP" : "NODE", List.of(label), new ArrayList<>(index.getPropertyNames()),
+      final List<Object> row = new ArrayList<>(Arrays.asList(id++, name, ready ? "ONLINE" : "POPULATING", ready ? 100.0 : 0.0,
+          neoType, edge ? "RELATIONSHIP" : "NODE", labels, new ArrayList<>(index.getPropertyNames()),
           indexProvider(index.getType()), owner, null, null));
       if (allColumns) {
         final Map<String, Object> indexConfig = indexConfig(index);
         row.add(null);
         row.add(Map.of("indexProvider", indexProvider(index.getType()), "indexConfig", indexConfig != null ? indexConfig : Map.of()));
         row.add("");
-        row.add(indexCreateStatement(index, neoType, edge, label, indexConfig));
+        row.add(indexCreateStatement(index, name, neoType, edge, labels, indexConfig));
       }
       rows.add(row);
     }
@@ -454,14 +467,17 @@ public final class CypherSchemaCommands {
    * them since #10678, with every setting of their {@code indexConfig}, so the statement SHOW INDEXES lists runs as it is and
    * builds the same index.
    */
-  private static String indexCreateStatement(final TypeIndex index, final String neoType, final boolean edge, final String label,
-      final Map<String, Object> indexConfig) {
+  private static String indexCreateStatement(final TypeIndex index, final String name, final String neoType, final boolean edge,
+      final List<String> labels, final Map<String, Object> indexConfig) {
     final String variable = edge ? "r" : "n";
     final StringJoiner props = new StringJoiner(", ");
     for (final String property : index.getPropertyNames())
       props.add(variable + "." + quote(property));
-    final String head = "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(index.getName()) + " FOR " + (
-        edge ? "()-[r:" + quote(label) + "]-()" : "(n:" + quote(label) + ")");
+    final StringJoiner pattern = new StringJoiner("|");
+    for (final String label : labels)
+      pattern.add(quote(label));
+    final String head = "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(name) + " FOR " + (
+        edge ? "()-[r:" + pattern + "]-()" : "(n:" + pattern + ")");
 
     final String options = indexConfig != null && !indexConfig.isEmpty() ?
         " OPTIONS " + CypherIndexOptions.indexConfigLiteral(indexConfig) :
