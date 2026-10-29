@@ -38,6 +38,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.UnidirectionalEdgeChanges;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -1660,6 +1661,14 @@ public class TransactionContext implements Transaction {
 
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
+
+    // #10929: a vertex's edge-list heads are the transaction's, not the handle's. A copy taken before an edge was appended
+    // through another handle would write back the heads it was copied with and unlink every edge appended since.
+    if (record instanceof MutableVertex vertex) {
+      final Record held = updatedRecords.get(rid);
+      vertex.adoptEdgeListHeadsOf(held != null ? held : modifiedRecordsCache.get(rid));
+    }
+
     final Record previousQueued = updatedRecords.put(rid, record);
     if (statement != null)
       statement.updatedPut(rid, previousQueued, record);
