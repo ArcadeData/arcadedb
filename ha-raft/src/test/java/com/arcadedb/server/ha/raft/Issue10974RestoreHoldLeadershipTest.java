@@ -101,7 +101,7 @@ class Issue10974RestoreHoldLeadershipTest {
   @Test
   void noFenceIsWrittenWhileAPeerCannotReadIt() {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached().leader(true).currentTerm(7L);
-    raft.returns("peersMissingCapability", List.of("peer-2"));
+    raft.returns("peersMissingCapabilityNow", List.of("peer-2"));
     raft.holdForRestore(DB);
 
     assertThat(raft.restoreFenceTerm(DB)).isEqualTo(-1L);

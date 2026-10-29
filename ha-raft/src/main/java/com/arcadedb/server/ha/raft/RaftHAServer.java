@@ -3173,14 +3173,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The term a drop or an install of {@code databaseName} is fenced to (issue #10974): the term in which this node, as the leader,
    * holds it for a restore, so the leader the entry reaches refuses it from another node or in another term. {@code -1} when no
    * restore holds it as the leader, or when a peer has not advertised {@link PeerCapabilities#RESTORE_FENCE}: a build without the
-   * extension framing halts on the section, and the restore is then fenced by {@link #ensureRestoreHoldStands} only. Only the
-   * leader running a restore writes the section, so the capability cache it fills is the one to read (see the module notes).
+   * extension framing halts on the section, and the restore is then fenced by {@link #ensureRestoreHoldStands} only, and says so at
+   * WARNING. Not refused: a restore is often the way out of an incident, and an upgrade in progress must not block it for a window
+   * as narrow as the one between that check and the drop. The capability is asked now ({@link #peersMissingCapabilityNow}), not read
+   * from the cache, which a leader elected moments ago has not filled yet.
    */
   long restoreFenceTerm(final String databaseName) {
     final Long heldInTerm = restoreHoldTerms.get(databaseName);
     if (heldInTerm == null)
       return -1L;
-    final List<String> missing = peersMissingCapability(PeerCapabilities.RESTORE_FENCE);
+    // Asked now rather than read from the cache: a leader elected moments ago has not heard from its peers yet and would read every
+    // one as missing, leaving the restore unfenced on a cluster that can read the section. One bounded round, once per drop or
+    // install of a restore
+    final List<String> missing = peersMissingCapabilityNow(PeerCapabilities.RESTORE_FENCE);
     if (!missing.isEmpty()) {
       // Once per drop or install of a restore: an operator running a mixed-version cluster is told which peers leave the restore
       // fenced by the leadership check made before the swap only
