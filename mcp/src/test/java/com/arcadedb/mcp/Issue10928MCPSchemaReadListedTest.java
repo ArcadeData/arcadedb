@@ -136,6 +136,37 @@ class Issue10928MCPSchemaReadListedTest extends BaseGraphServerTest {
     assertThat(fetched.get()).as("the first type was rendered, the walk stopped at the second").isEqualTo(2);
   }
 
+  /**
+   * The entry the walk checks has to be the one the dispatcher opened for the call, published on the thread for as long as
+   * the tool runs. The call is made on a thread that already carries a TERMINATED entry: a dispatcher that publishes its own
+   * entry hides it and the read succeeds, one that registers nothing - or opens an entry without publishing it - leaves the
+   * walk checking the terminated one, and the read fails.
+   */
+  @Test
+  void theSchemaWalkChecksTheEntryTheDispatcherPublished() {
+    final MCPConfiguration mcp = MCPPlugin.of(getServer(0)).getConfiguration();
+    final boolean savedEnabled = mcp.isEnabled();
+    final List<String> savedUsers = mcp.getAllowedUsers();
+    try (final RunningQuery outer = getServer(0).getRunningQueries()
+        .register(getDatabaseName(), "root", "test", null, null, RunningQuery.Client.NONE)) {
+      mcp.setEnabled(true);
+      mcp.setAllowedUsers(List.of("root"));
+      outer.terminate("root");
+
+      final MCPDispatcher dispatcher = new MCPDispatcher(getServer(0), mcp, "test");
+      final JSONObject request = new JSONObject().put("jsonrpc", "2.0").put("id", 1).put("method", "tools/call")
+          .put("params", new JSONObject().put("name", "get_schema")
+              .put("arguments", new JSONObject().put("database", getDatabaseName())));
+      final JSONObject response = dispatcher.dispatch(request,
+          getServer(0).getSecurity().authenticate("root", DEFAULT_PASSWORD_FOR_TESTS, null), RunningQuery.Client.NONE).json();
+
+      assertThat(response.getJSONObject("result").getBoolean("isError", false)).as(response.toString()).isFalse();
+    } finally {
+      mcp.setEnabled(savedEnabled);
+      mcp.setAllowedUsers(savedUsers);
+    }
+  }
+
   /** A view of {@code target} whose no-argument {@code method} answers {@code answer}; every other call goes to the target. */
   @SuppressWarnings("unchecked")
   private static <T> T proxy(final Class<T> type, final T target, final String method, final Object answer) {
