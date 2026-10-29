@@ -84,6 +84,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
@@ -1470,7 +1471,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
     final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
-      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
+      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames,
+          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]));
       case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
       case RANGE -> null;
     };
@@ -1593,6 +1595,46 @@ public class OpenCypherQueryEngine implements QueryEngine {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     return EXPRESSION_EVALUATOR.evaluate(ddl.getOptions(), new ResultInternal(), context);
+  }
+
+  /**
+   * The number of dimensions of the first vector the type's records (polymorphic) hold in {@code propertyName}, for a
+   * {@code CREATE VECTOR INDEX} that does not name it (issue #10863), or -1 when the type does not exist or no record holds a
+   * vector there. The walk stops at the first vector: a record whose vector has another length is left out of the index by its
+   * build, as it is for an index whose statement named the dimensions. A type whose records hold no vector there is read
+   * whole before the statement is refused: a DDL cost, paid only by a statement that does not name the dimensions.
+   */
+  private int dimensionsOfExistingVectors(final Schema schema, final String typeName, final String propertyName) {
+    if (!schema.existsType(typeName))
+      return -1;
+    final Iterator<Record> it = database.iterateType(typeName, true);
+    while (it.hasNext()) {
+      if (!(it.next() instanceof Document doc))
+        continue;
+      final int length = vectorLength(doc.get(propertyName));
+      if (length > 0)
+        return length;
+    }
+    return -1;
+  }
+
+  /**
+   * The number of dimensions of {@code value} when it is a vector - an array of primitive numbers, or an array or a list of
+   * numbers - or -1. Read off the shape, without converting the value or throwing for one that is no vector, so a walk over
+   * records that hold something else in the property costs neither an allocation nor an exception per record. A string is no
+   * vector here, though {@link VectorUtils#toFloatArray(Object)} parses one written as text: '3' is not a vector of one
+   * dimension.
+   */
+  private static int vectorLength(final Object value) {
+    return switch (value) {
+      case float[] a -> a.length;
+      case double[] a -> a.length;
+      case long[] a -> a.length;
+      case int[] a -> a.length;
+      case Object[] a -> a.length > 0 && a[0] instanceof Number ? a.length : -1;
+      case List<?> l -> !l.isEmpty() && l.getFirst() instanceof Number ? l.size() : -1;
+      case null, default -> -1;
+    };
   }
 
   /**
