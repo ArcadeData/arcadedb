@@ -3178,8 +3178,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   long restoreFenceTerm(final String databaseName) {
     final Long heldInTerm = restoreHoldTerms.get(databaseName);
-    if (heldInTerm == null || !peersMissingCapability(PeerCapabilities.RESTORE_FENCE).isEmpty())
+    if (heldInTerm == null)
       return -1L;
+    final List<String> missing = peersMissingCapability(PeerCapabilities.RESTORE_FENCE);
+    if (!missing.isEmpty()) {
+      // Once per drop or install of a restore: an operator running a mixed-version cluster is told which peers leave the restore
+      // fenced by the leadership check made before the swap only
+      LogManager.instance().log(this, Level.WARNING,
+          "The restore of database '%s' replicates its drop and install without the leadership fence of issue #10974: peer(s) %s "
+              + "have not advertised '%s'. A leadership change after the check made before the swap is not caught until every "
+              + "node is upgraded", databaseName, missing, PeerCapabilities.RESTORE_FENCE);
+      return -1L;
+    }
     return heldInTerm;
   }
 
