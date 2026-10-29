@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -103,19 +104,17 @@ public class PostgresTypeCatalog {
   private static final Pattern NAME_ONLY_FILTER = Pattern.compile(
       "^(?:[A-Za-z_][A-Za-z0-9_$]*\\s*\\.\\s*)?TYPNAME\\s*=\\s*'([^']*)'$", Pattern.CASE_INSENSITIVE);
 
-  /** {@code t.oid = 1007} anywhere in the query: the array whose element type a driver is resolving. */
-  private static final Pattern OID_FILTER = Pattern.compile("(?:[A-Za-z_][A-Za-z0-9_$]*\\.)?oid\\s*=\\s*(\\d+)",
-      Pattern.CASE_INSENSITIVE);
-
   /**
-   * The correlation {@code t.typelem = e.oid} that marks the driver self-join: it is what says the projected
-   * columns describe the element type rather than the type the OID filter selects.
+   * A necessary condition of the driver self-join, checked on the raw text so that a pg_type query of any other shape does not
+   * pay a tokenizer pass. It decides nothing: a literal or a comment can hold it too, so the self-join is recognised on the
+   * statement's tokens (issue #10882).
    */
-  private static final Pattern ELEMENT_JOIN = Pattern.compile(
-      "typelem\\s*=\\s*[A-Za-z_][A-Za-z0-9_$]*\\s*\\.\\s*oid", Pattern.CASE_INSENSITIVE);
+  private static final Pattern ELEMENT_JOIN_HINT = Pattern.compile("typelem", Pattern.CASE_INSENSITIVE);
 
-  /** The projection list of a self-join query, which {@link #QUERY} cannot match because of the second table. */
-  private static final Pattern JOIN_PROJECTION = Pattern.compile("^SELECT\\s+(.+?)\\s+FROM\\s", Pattern.CASE_INSENSITIVE);
+  /** The words that end a FROM entry rather than alias it, so {@code pg_type LEFT JOIN} is not read as a relation aliased "left". */
+  private static final Set<String> NOT_AN_ALIAS = Set.of("where", "join", "inner", "on", "left", "right", "full", "cross",
+      "natural", "group", "order", "limit", "offset", "union", "intersect", "except", "and", "or", "having", "window", "fetch",
+      "for", "using", "lateral");
 
   /**
    * The types in OID order, so that an enumeration is stable across runs and across JVMs - a client that
@@ -215,24 +214,17 @@ public class PostgresTypeCatalog {
    * that shape.
    */
   private static PostgresCatalog.Answer resolveElementJoin(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
-    if (!ELEMENT_JOIN.matcher(query).find())
+    if (!ELEMENT_JOIN_HINT.matcher(query).find())
       return null;
 
-    final Matcher projection = JOIN_PROJECTION.matcher(query.trim());
-    if (!projection.find())
+    final ElementJoin join = ElementJoin.parse(query);
+    if (join == null)
       return null;
 
-    final Matcher matcher = OID_FILTER.matcher(query);
-    if (!matcher.find())
-      return null;
-
-    final int oid = parseOid(matcher.group(1));
+    final int oid = join.oid;
     final PostgresType type = oid < 0 ? null : PostgresType.byCode(oid);
-
-    final List<String> requested = new ArrayList<>();
-    final List<String> aliases = new ArrayList<>();
-    if (!parseProjection(projection.group(1), requested, aliases))
-      return null;
+    final List<String> requested = join.requested;
+    final List<String> aliases = join.aliases;
 
     final PostgresType element;
     if (type == null && rowTypeOf(oid, rowTypes.get()) != null)
@@ -539,6 +531,298 @@ public class PostgresTypeCatalog {
       return Integer.parseInt(text);
     } catch (final NumberFormatException e) {
       return -1;
+    }
+  }
+
+  /**
+   * The driver self-join, read off the statement's tokens (issue #10882) rather than off its text, so that a string literal or a
+   * comment spelling the join out is not taken for it:
+   * <pre>
+   * SELECT a.col [[AS] alias], ... FROM [pg_catalog.]pg_type [[AS] t] , [pg_catalog.]pg_type [[AS] e] WHERE cond AND cond
+   * SELECT a.col [[AS] alias], ... FROM [pg_catalog.]pg_type [[AS] t] [INNER] JOIN [pg_catalog.]pg_type [[AS] e] ON cond [WHERE cond]
+   * </pre>
+   * The conditions, ANDed in any order and each optionally parenthesised, are exactly the correlation {@code t.typelem = e.oid} and
+   * the filter {@code t.oid = N}, either side of the {@code =}. Every projected column must belong to the element alias {@code e}:
+   * a column of {@code t} describes the array, which this recogniser does not answer, and a column of neither is ambiguous in
+   * PostgreSQL. Anything else - another predicate, an OR, an outer join, a third relation, a placeholder - is not this shape, and
+   * is left to {@link PostgresCatalog}, which evaluates a self-join with each alias bound to its own row.
+   */
+  private static final class ElementJoin {
+    private final int          oid;
+    private final List<String> requested = new ArrayList<>();
+    private final List<String> aliases   = new ArrayList<>();
+
+    private ElementJoin(final int oid) {
+      this.oid = oid;
+    }
+
+    static ElementJoin parse(final String query) {
+      final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+      if (tokens == null)
+        return null;
+
+      int end = tokens.size();
+      if (end > 0 && tokens.get(end - 1).isSymbol(";"))
+        --end;
+
+      final Cursor cursor = new Cursor(tokens, end);
+      if (!cursor.keyword("select"))
+        return null;
+
+      // the projection: alias.column [[AS] name], ...
+      final List<String> qualifiers = new ArrayList<>();
+      final List<String> columns = new ArrayList<>();
+      final List<String> names = new ArrayList<>();
+      do {
+        final String qualifier = cursor.name();
+        if (qualifier == null || !cursor.symbol("."))
+          return null;
+        final String column;
+        if (cursor.symbol("*"))
+          column = "*";
+        else {
+          final PostgresCatalogToken word = cursor.next();
+          if (word == null || word.type != PostgresCatalogToken.Type.IDENTIFIER)
+            return null;
+          column = word.text.toLowerCase(Locale.ENGLISH);
+        }
+        String name = null;
+        if (cursor.keyword("as")) {
+          name = cursor.columnAlias();
+          if (name == null)
+            return null;
+        } else if (!cursor.peekKeyword("from"))
+          name = cursor.columnAlias();
+        if ("*".equals(column) && name != null)
+          // "*" takes no alias; a client that wrote one meant something this recogniser is not parsing
+          return null;
+        qualifiers.add(qualifier);
+        columns.add(column);
+        names.add(name);
+      } while (cursor.symbol(","));
+
+      if (!cursor.keyword("from"))
+        return null;
+
+      final String array = cursor.pgTypeEntry();
+      if (array == null)
+        return null;
+
+      final List<List<PostgresCatalogToken>> conditions = new ArrayList<>();
+      final String element;
+      if (cursor.symbol(",")) {
+        element = cursor.pgTypeEntry();
+        if (element == null || !cursor.keyword("where") || !cursor.conditions(conditions))
+          return null;
+      } else {
+        cursor.keyword("inner");
+        if (!cursor.keyword("join"))
+          return null;
+        element = cursor.pgTypeEntry();
+        if (element == null || !cursor.keyword("on") || !cursor.conditions(conditions))
+          return null;
+        if (cursor.keyword("where") && !cursor.conditions(conditions))
+          return null;
+      }
+      if (!cursor.atEnd() || array.equals(element))
+        return null;
+
+      // exactly one correlation and one filter, and they say which of the two entries is the array
+      String arrayAlias = null;
+      String elementAlias = null;
+      String filtered = null;
+      int oid = -1;
+      for (final List<PostgresCatalogToken> condition : conditions) {
+        final Operand left = Operand.of(condition, 0);
+        if (left == null || condition.size() <= left.width || !condition.get(left.width).isSymbol("="))
+          return null;
+        final Operand right = Operand.of(condition, left.width + 1);
+        if (right == null || left.width + 1 + right.width != condition.size())
+          return null;
+
+        final Operand typelem = left.isColumn("typelem") ? left : right.isColumn("typelem") ? right : null;
+        if (typelem != null) {
+          final Operand other = typelem == left ? right : left;
+          if (arrayAlias != null || !other.isColumn("oid"))
+            return null;
+          arrayAlias = typelem.qualifier;
+          elementAlias = other.qualifier;
+          continue;
+        }
+
+        final Operand column = left.isColumn("oid") ? left : right.isColumn("oid") ? right : null;
+        final Operand number = column == left ? right : left;
+        if (column == null || filtered != null || number.number == null)
+          return null;
+        filtered = column.qualifier;
+        oid = parseOid(number.number);
+      }
+
+      if (arrayAlias == null || filtered == null || !arrayAlias.equals(filtered) || arrayAlias.equals(elementAlias)
+          || !(arrayAlias.equals(array) && elementAlias.equals(element) || arrayAlias.equals(element) && elementAlias.equals(array)))
+        return null;
+
+      final ElementJoin join = new ElementJoin(oid);
+      for (int i = 0; i < columns.size(); i++) {
+        if (!elementAlias.equals(qualifiers.get(i)))
+          return null;
+        final String column = columns.get(i);
+        if ("*".equals(column)) {
+          join.requested.addAll(COLUMNS);
+          join.aliases.addAll(COLUMNS);
+          continue;
+        }
+        if (!COLUMNS.contains(column))
+          return null;
+        join.requested.add(column);
+        join.aliases.add(names.get(i) != null ? names.get(i) : column);
+      }
+      return join;
+    }
+  }
+
+  /** One side of an {@code =}: a qualified column, or an unsigned integer. */
+  private static final class Operand {
+    private final String qualifier;
+    private final String column;
+    private final String number;
+    private final int    width;
+
+    private Operand(final String qualifier, final String column, final String number, final int width) {
+      this.qualifier = qualifier;
+      this.column = column;
+      this.number = number;
+      this.width = width;
+    }
+
+    boolean isColumn(final String name) {
+      return name.equals(column);
+    }
+
+    static Operand of(final List<PostgresCatalogToken> tokens, final int from) {
+      if (from >= tokens.size())
+        return null;
+      final PostgresCatalogToken first = tokens.get(from);
+      if (first.type == PostgresCatalogToken.Type.NUMBER)
+        return isDigits(first.text) ? new Operand(null, null, first.text, 1) : null;
+
+      final String qualifier = Cursor.nameOf(first);
+      if (qualifier == null || from + 2 >= tokens.size() || !tokens.get(from + 1).isSymbol(".")
+          || tokens.get(from + 2).type != PostgresCatalogToken.Type.IDENTIFIER)
+        return null;
+      return new Operand(qualifier, tokens.get(from + 2).text.toLowerCase(Locale.ENGLISH), null, 3);
+    }
+
+    /** ASCII digits only: Character.isDigit, and Integer.parseInt after it, would also read other scripts' digits as an OID. */
+    private static boolean isDigits(final String text) {
+      for (int i = 0; i < text.length(); i++)
+        if (text.charAt(i) < '0' || text.charAt(i) > '9')
+          return false;
+      return !text.isEmpty();
+    }
+  }
+
+  /** Reads {@link ElementJoin}'s tokens front to back, up to {@code end}. */
+  private static final class Cursor {
+    private final List<PostgresCatalogToken> tokens;
+    private final int                        end;
+    private       int                        position;
+
+    private Cursor(final List<PostgresCatalogToken> tokens, final int end) {
+      this.tokens = tokens;
+      this.end = end;
+    }
+
+    boolean atEnd() {
+      return position >= end;
+    }
+
+    PostgresCatalogToken next() {
+      return position < end ? tokens.get(position++) : null;
+    }
+
+    boolean keyword(final String keyword) {
+      if (position < end && tokens.get(position).isKeyword(keyword)) {
+        ++position;
+        return true;
+      }
+      return false;
+    }
+
+    boolean peekKeyword(final String keyword) {
+      return position < end && tokens.get(position).isKeyword(keyword);
+    }
+
+    boolean symbol(final String symbol) {
+      if (position < end && tokens.get(position).isSymbol(symbol)) {
+        ++position;
+        return true;
+      }
+      return false;
+    }
+
+    /** An identifier as PostgreSQL resolves it: a bare one folded to lower case, a quoted one as written. */
+    String name() {
+      final String name = position < end ? nameOf(tokens.get(position)) : null;
+      if (name != null)
+        ++position;
+      return name;
+    }
+
+    static String nameOf(final PostgresCatalogToken token) {
+      return switch (token.type) {
+        case IDENTIFIER -> token.text.toLowerCase(Locale.ENGLISH);
+        case QUOTED_IDENTIFIER -> token.text;
+        default -> null;
+      };
+    }
+
+    /** The name a projected column is announced under, if the next token is one: a quoted alias keeps its case. */
+    String columnAlias() {
+      if (position >= end)
+        return null;
+      final PostgresCatalogToken token = tokens.get(position);
+      if (token.type == PostgresCatalogToken.Type.IDENTIFIER && NOT_AN_ALIAS.contains(token.text.toLowerCase(Locale.ENGLISH)))
+        return null;
+      return name();
+    }
+
+    /** {@code [pg_catalog.]pg_type [[AS] alias]}, returning the name its columns are qualified by, or null when it is not that. */
+    String pgTypeEntry() {
+      if (position + 2 < end && tokens.get(position).isKeyword("pg_catalog") && tokens.get(position + 1).isSymbol("."))
+        position += 2;
+      if (!keyword("pg_type"))
+        return null;
+      if (keyword("as"))
+        return columnAlias();
+      final String alias = columnAlias();
+      return alias != null ? alias : "pg_type";
+    }
+
+    /**
+     * {@code cond [AND cond]...} up to the next WHERE or the end, each condition stripped of the parentheses around it. The split
+     * does not track parenthesis depth: {@code (a AND b)} becomes the fragments {@code (a} and {@code b)}, which no operand reads,
+     * so a nested conjunction declines the statement rather than being misread.
+     */
+    boolean conditions(final List<List<PostgresCatalogToken>> conditions) {
+      int start = position;
+      while (true) {
+        if (position == end || tokens.get(position).isKeyword("and") || tokens.get(position).isKeyword("where")) {
+          int from = start;
+          int to = position;
+          while (to - from >= 2 && tokens.get(from).isSymbol("(") && tokens.get(to - 1).isSymbol(")")) {
+            ++from;
+            --to;
+          }
+          if (from == to)
+            return false;
+          conditions.add(tokens.subList(from, to));
+          if (position == end || tokens.get(position).isKeyword("where"))
+            return true;
+          start = ++position;
+        } else
+          ++position;
+      }
     }
   }
 }
