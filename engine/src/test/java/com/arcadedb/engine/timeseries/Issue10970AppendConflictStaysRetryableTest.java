@@ -76,5 +76,6 @@ class Issue10970AppendConflictStaysRetryableTest extends TestHelper {
     TimeSeriesShard.TEST_APPEND_COMMIT_FAULT = null;
     final long count = ((Number) database.query("sql", "SELECT count(*) AS cnt FROM sensor").next().getProperty("cnt")).longValue();
     assertThat(count).isEqualTo(2L);
+    assertThat(attempts.get()).as("the third attempt committed").isEqualTo(3);
   }
 }
