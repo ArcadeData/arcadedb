@@ -189,6 +189,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public static final  String LAST_BUILD_SKIPPED_RECORDS_STAT = "lastBuildSkippedRecords";
 
   // Page header layout constants
+  /** Live vectors {@link #deriveDimensionsFromData} reads at most before it gives up looking for the size of an index. */
+  private static final int DIMENSIONS_DERIVATION_LIMIT = 1000;
+
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
   public static final int OFFSET_NUM_ENTRIES  = 4;   // 4 bytes
   public static final int OFFSET_MUTABLE      = 8;       // 1 byte
@@ -587,6 +590,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private          LSMVectorIndexCompacted compactedSubIndex;
   private volatile boolean                 valid      = true;
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
+  /** Guards the decision of the dimensions of an index that takes them from its first vector (issue #10915). */
+  private final Object                     dimensionsDecision = new Object();
   // A schema reload has published another instance in place of this one (issue #8310): it may still serve a query
   // that resolved it before the swap, but it starts no maintenance of its own any more. Separate from `valid`, which
   // an in-flight query must keep reading as true. Volatile for runInactivityRebuild(), the one reader outside the
@@ -1203,11 +1208,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // negative) value yields an index that silently accepts writes and never indexes a single
       // vector. Refusing it here covers all creation entry points at once - SQL METADATA, the
       // schema builders and the importers - instead of only the SQL one (issue #5607).
-      if (vectorMetadata.dimensions < 1)
+      // The exception is an index that asks to be sized by its first vector (issue #10915): the schema-before-data order of a
+      // script that creates the index and then writes its data
+      if (vectorMetadata.dimensions < 1 && !vectorMetadata.sizeOnFirstVector)
         throw new IndexException(
             "LSM_VECTOR index '" + builder.getIndexName() + "' requires a positive 'dimensions' setting (got "
                 + vectorMetadata.dimensions
-                + "): it must match the number of components of the indexed vectors, e.g. METADATA {\"dimensions\": 384}");
+                + "): it must match the number of components of the indexed vectors, e.g. METADATA {\"dimensions\": 384}, or the "
+                + "index must take them from its first vector: METADATA {\"sizeOnFirstVector\": true}");
 
       // Reject the (encoding=INT8, quantization=INT8) combination: wire/storage is already int8,
       // and JVector's internal INT8 scalar quantization re-runs the same lossy reduction on the
@@ -1968,6 +1976,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // run under it (issue #6722): the deferred parse is O(index size) page reads, and paying it inside the mutex
     // would make every other builder on this index wait out a scan that has nothing to do with graph building.
     vectorIndex();
+    deriveDimensionsFromData();
 
     // Serialize against buildGraphFromScratch() and other concurrent callers of this method, the same way
     // buildGraphFromScratchWithRetry() serializes builders against each other (issue #6713). The persisted-graph
@@ -3458,6 +3467,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // come first. A snapshot taken against an unmaterialised sequence would be 0, and every vector id would then
     // compare as "added after this build started" and be dropped from the delta scan.
     vectorIndex();
+    deriveDimensionsFromData();
 
     if (releaseResidentGraphFirst) {
       // See buildGraphFromScratchReleasingResidentGraph() for why this is safe only on that path, and why the
@@ -9322,7 +9332,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (k < 0)
         throw new IllegalArgumentException("k must be >= 0, got " + k);
 
-      if (queryVector.length != metadata.dimensions)
+      if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
@@ -9856,7 +9866,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
 
-      if (queryVector.length != metadata.dimensions)
+      if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
@@ -10658,7 +10668,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (k < 0)
         throw new IllegalArgumentException("k must be >= 0, got " + k);
 
-      if (queryVector.length != metadata.dimensions)
+      if (queryVector.length != dimensionsForQuery(queryVector.length))
         throw new IllegalArgumentException(
             "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
@@ -10920,7 +10930,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Expected float array, byte array (INT8), or supported vector type as key for vector search, got " + keys[0].getClass(), e);
     }
 
-    if (queryVector.length != metadata.dimensions)
+    if (queryVector.length != dimensionsForQuery(queryVector.length))
       throw new IllegalArgumentException(
           "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
 
@@ -11114,6 +11124,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
+      if (metadata.dimensions < 1)
+        sizeOnVector(vector.length);
+
       if (vector.length != metadata.dimensions)
         throw new IllegalArgumentException(
             "Vector dimension does not match index dimension " + metadata.dimensions + ": got "
@@ -11199,6 +11212,106 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final long elapsed = System.currentTimeMillis() - startTime;
         metrics.addInsertLatency(elapsed);
       }
+    }
+  }
+
+  /**
+   * Fixes the dimensions of an index created to take them from its first vector (issue #10915), to the length of the vector
+   * being put. Decided once, under a lock of its own: of several threads putting their first vector together the first one
+   * decides and the others compare their vector with its answer, so a vector of another length is refused as it is by any
+   * sized index. The decision outlives the transaction that made it - a rollback does not give the size back, which the
+   * other transactions may already have relied on - and is persisted with the next save of the schema. Another node learns it
+   * from the vectors it replicates ({@link #deriveDimensionsFromData}) and from the schema the leader ships, not from this call.
+   *
+   * @param length the length of the vector being put
+   */
+  private void sizeOnVector(final int length) {
+    synchronized (dimensionsDecisionLock()) {
+      if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
+        return;
+      if (length < 1)
+        throw new IllegalArgumentException("A vector must have at least one component to size index '" + indexName + "'");
+      decideDimensions(length);
+    }
+  }
+
+  /**
+   * What the decision of the dimensions is serialized on: the type index, so that the bucket indexes of one type - which a
+   * sized index would hold to the same length - decide once between them, or this index alone when it has no type index.
+   */
+  private Object dimensionsDecisionLock() {
+    final TypeIndex typeIndex = getTypeIndex();
+    return typeIndex != null ? typeIndex : dimensionsDecision;
+  }
+
+  /**
+   * Publishes {@code length} as the dimensions of this index and of its siblings on the other buckets of the type, all of
+   * which wait for it. The caller holds {@link #dimensionsDecisionLock()}.
+   */
+  private void decideDimensions(final int length) {
+    final TypeIndex typeIndex = getTypeIndex();
+    if (typeIndex != null)
+      for (final IndexInternal sibling : typeIndex.getIndexesOnBuckets())
+        if (sibling != this && sibling instanceof LSMVectorIndex other && other.metadata.dimensions < 1)
+          other.publishDimensions(length);
+    publishDimensions(length);
+    // Saved by the next schema save - the commit of the transaction that decided it, under HA shipped with the schema - and
+    // not here: this runs while a record is saved, under the lock that a schema change takes exclusively
+    getDatabase().getSchema().getEmbedded().markDirty();
+  }
+
+  private void publishDimensions(final int length) {
+    metadata.dimensions = length;
+    metadata.sizeOnFirstVector = false;
+    LogManager.instance().log(this, Level.INFO, "Vector index '%s' took its dimensions from its first vector: %d", indexName, length);
+  }
+
+  /**
+   * The dimensions a query vector of {@code queryLength} components is compared with. Those of the index, or, for an index
+   * that takes them from its first vector and has none yet, the ones of a vector it already holds when this node did not see
+   * it arrive (a follower, a restart after the schema was saved); an index that holds no vector yet has nothing to compare
+   * with, and answers like an empty one.
+   */
+  private int dimensionsForQuery(final int queryLength) {
+    final int dimensions = metadata.dimensions;
+    if (dimensions > 0 || !metadata.sizeOnFirstVector)
+      return dimensions;
+    final int derived = deriveDimensionsFromData();
+    return derived > 0 ? derived : queryLength;
+  }
+
+  /**
+   * Takes the dimensions of an index still waiting for them from the first vector its records hold, and returns them, or 0
+   * when it holds none. A node that did not run the put (a follower applying replicated pages, a database reopened after a crash
+   * before the schema was saved) sees entries for vectors that lie in records, and needs the size to search or to build.
+   */
+  private int deriveDimensionsFromData() {
+    if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
+      return metadata.dimensions;
+    synchronized (dimensionsDecisionLock()) {
+      if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
+        return metadata.dimensions;
+      final VectorLocationIndex locations = vectorIndex();
+      final String vectorProperty = vectorPropertyName();
+      final PrimitiveIterator.OfInt ids = locations.getAllVectorIds().filter(locations::isLive).iterator();
+      for (int examined = 0; ids.hasNext() && examined < DIMENSIONS_DERIVATION_LIMIT; examined++) {
+        try {
+          final RID rid = locations.getRid(ids.nextInt());
+          if (rid == null || !(getDatabase().lookupByRID(rid, false) instanceof Document doc))
+            continue;
+          final Object value = doc.get(vectorProperty);
+          if (value == null)
+            continue;
+          final int length = VectorUtils.toFloatArray(value, metadata.encoding).length;
+          if (length > 0) {
+            decideDimensions(length);
+            return length;
+          }
+        } catch (final RuntimeException e) {
+          // a record that is gone or holds no vector says nothing about the size: the next one is asked
+        }
+      }
+      return 0;
     }
   }
 
@@ -11504,6 +11617,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
             continue;
           }
         }
+
+        // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
+        // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
+        if (metadata.dimensions < 1)
+          sizeOnVector(vector.length);
 
         if (vector.length != metadata.dimensions) {
           LogManager.instance().log(this, Level.WARNING,
@@ -12166,6 +12284,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     json.put("typeName", metadata.typeName);
     json.put("properties", metadata.propertyNames);
     json.put("dimensions", metadata.dimensions);
+    if (metadata.sizeOnFirstVector)
+      json.put("sizeOnFirstVector", true);
     json.put("similarityFunction", metadata.similarityFunction.name());
 
     if (metadata.quantizationType != VectorQuantizationType.NONE)

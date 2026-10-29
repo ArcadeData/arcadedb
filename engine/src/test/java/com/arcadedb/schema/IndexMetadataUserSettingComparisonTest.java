@@ -68,12 +68,31 @@ class IndexMetadataUserSettingComparisonTest {
     samples.put("pqTrainingLimit", new Object[] { 10_000, 20_000 });
     samples.put("fusedPQ", new Object[] { true, false });
     samples.put("rerankOversample", new Object[] { 0, 10 });
+    // "sizeOnFirstVector" is compared by sizeOnFirstVectorIsSatisfiedBySizedIndex: once the index has its dimensions the setting
+    // has taken effect, so a request for it is satisfied whatever the index holds
+    samples.put("sizeOnFirstVector", null);
     // "locationCacheSize" has exactly one legal value: the setter refuses anything above 0 (issues #5559, #5568), so
     // there is no pair of distinct values to compare and no request that can differ from an existing index.
     samples.put("locationCacheSize", null);
 
     assertEverySettingIsComparable(new LSMVectorIndexMetadata("Doc", PROPERTIES, -1), samples,
         Schema.INDEX_TYPE.LSM_VECTOR);
+  }
+
+  @Test
+  void sizeOnFirstVectorIsSatisfiedBySizedIndex() {
+    final JSONObject requested = new JSONObject().put("sizeOnFirstVector", true);
+
+    final LSMVectorIndexMetadata waiting = new LSMVectorIndexMetadata("Doc", PROPERTIES, -1);
+    waiting.fromUserMetadata(requested, Schema.INDEX_TYPE.LSM_VECTOR);
+    assertThat(waiting.findUserSettingMismatches(requested, Schema.INDEX_TYPE.LSM_VECTOR)).isEmpty();
+    assertThat(waiting.findUserSettingMismatches(new JSONObject().put("sizeOnFirstVector", false), Schema.INDEX_TYPE.LSM_VECTOR))
+        .singleElement(STRING).startsWith("sizeOnFirstVector=");
+
+    // sized by its first vector: the flag is cleared, and the request written for the schema-before-data order still holds
+    waiting.dimensions = 3;
+    waiting.sizeOnFirstVector = false;
+    assertThat(waiting.findUserSettingMismatches(requested, Schema.INDEX_TYPE.LSM_VECTOR)).isEmpty();
   }
 
   @Test
