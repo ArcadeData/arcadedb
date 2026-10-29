@@ -349,6 +349,13 @@ public class RedisNetworkExecutor extends Thread {
         // FINE, not SEVERE: a pre-auth client controls how often this fires, one record per few bytes sent (issue #10597)
         LogManager.instance().log(this, Level.FINE, "Redis wrapper: Invalid command[0] %s (type=%s)", command,
             cmd == null ? "null" : cmd.getClass());
+        // Answered, not dropped: with no reply the client waited forever (issue #10845). The array was read whole, so the
+        // framing is intact and the connection goes on (Redis closes it after the reply; keeping it is the more lenient choice).
+        // Inside an array parseNext yields only a String, an Integer (':'), a List ('*') or null ($-1)
+        value.append(cmd == null ?
+            "-ERR Protocol error: the command name is a null bulk string" :
+            "-ERR Protocol error: expected '$', got '" + (cmd instanceof List ? '*' : ':') + "'");
+        appendCrLf();
         return;
       }
 
