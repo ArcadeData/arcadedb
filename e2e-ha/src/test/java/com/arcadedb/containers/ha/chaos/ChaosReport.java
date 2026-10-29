@@ -19,6 +19,7 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.BufferedWriter;
@@ -26,7 +27,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Writes the run's report under {@code target/chaos/<seed>/}. Step and trend lines are flushed as they are written,
@@ -41,6 +44,8 @@ public final class ChaosReport implements AutoCloseable {
   private       int            reformats;
   // Steps whose reformat counts could not be read, so that "none seen" is not mistaken for "none happened"
   private       int            stepsWithUnreadReformats;
+  // FACET_META findings of every checkpoint: reported, never a failure
+  private final Set<String>    facetWarnings = new LinkedHashSet<>();
 
   public ChaosReport(final Path dir, final ChaosConfig config) throws IOException {
     Files.createDirectories(dir);
@@ -85,6 +90,10 @@ public final class ChaosReport implements AutoCloseable {
     trends.flush();
   }
 
+  public synchronized void facetWarnings(final List<String> warnings) {
+    facetWarnings.addAll(warnings);
+  }
+
   public void ledgerDiff(final List<Violation> violations) throws IOException {
     final StringBuilder text = new StringBuilder();
     for (final Violation violation : violations) {
@@ -107,7 +116,7 @@ public final class ChaosReport implements AutoCloseable {
     return stepsWithUnreadReformats;
   }
 
-  public void summary(final ChaosResult result, final Ledger ledger, final long lateCommits) throws IOException {
+  public synchronized void summary(final ChaosResult result, final Ledger ledger, final long lateCommits) throws IOException {
     final JSONObject counts = new JSONObject()
         .put("acked", ledger.count(Ledger.ACKED))
         .put("ackedLate", ledger.count(Ledger.ACKED_LATE))
@@ -128,6 +137,7 @@ public final class ChaosReport implements AutoCloseable {
         .put("lateCommits", lateCommits)
         .put("reformats", reformats())
         .put("stepsWithUnreadReformats", stepsWithUnreadReformats())
+        .put("facetWarnings", new JSONArray(facetWarnings))
         .put("replay", config.replayCommand());
     Files.writeString(dir.resolve("summary.json"), summary.toString(2), StandardCharsets.UTF_8);
   }

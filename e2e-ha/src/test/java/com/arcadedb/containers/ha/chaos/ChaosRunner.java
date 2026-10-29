@@ -98,6 +98,7 @@ public final class ChaosRunner {
       }
       load.close();
       final Checkpoint.Result last = checkpoint.run();
+      report.facetWarnings(last.warnings());
       if (!last.violations().isEmpty())
         return finish(fromViolations(last.violations(), step));
       return finish(new ChaosResult(ResultKind.PASS, "Completed " + step + " steps", step, List.of()));
@@ -203,6 +204,7 @@ public final class ChaosRunner {
     } finally {
       load.resume();
     }
+    report.facetWarnings(result.warnings());
 
     // Read whatever the checkpoint found: a node that reformatted and then failed to converge is the case where the reformat is the
     // most useful diagnostic. Before the step is written, so that its line carries the count
