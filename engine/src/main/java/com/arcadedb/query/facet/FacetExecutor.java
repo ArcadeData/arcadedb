@@ -135,7 +135,7 @@ public final class FacetExecutor {
           acquired[i] = snapshots[i] != null;
         }
         if (snapshots[i] != null && snapshots[i].oldestPendingEpochStartMs() > 0)
-          lagMs = Math.max(lagMs, now - snapshots[i].oldestPendingEpochStartMs());
+          lagMs = Math.max(lagMs, lagOf(now, snapshots[i].oldestPendingEpochStartMs()));
       }
 
       // a bucket whose records fire read events answers no facet from the projection (final review B-I1), decided for this execution
@@ -197,6 +197,11 @@ public final class FacetExecutor {
    *
    * @return false when a bucket that needed patching is counted from the projection alone (the answer is not exact)
    */
+  /** Age of a pending epoch, in ms: at least 1, an epoch that is pending is never 0 ms old in meaning, even read in its own millisecond (spec 8.3). */
+  static long lagOf(final long nowMs, final long oldestPendingEpochStartMs) {
+    return Math.max(1L, nowMs - oldestPendingEpochStartMs);
+  }
+
   private static boolean planPatches(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
       final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[][] answers, final boolean[] answered,
       final PositionBitmap[] patches, final boolean[] scanned, final CollectorReservations charges) {
