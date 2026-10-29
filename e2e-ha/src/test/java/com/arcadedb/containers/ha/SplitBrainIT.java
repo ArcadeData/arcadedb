@@ -20,6 +20,8 @@ package com.arcadedb.containers.ha;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.FacetDatabaseWrapper;
+import com.arcadedb.test.support.FacetSnapshot;
 import com.arcadedb.test.support.ServerWrapper;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
@@ -30,7 +32,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static com.arcadedb.test.support.FacetDatabaseWrapper.REBUILDS;
+import static com.arcadedb.test.support.FacetDatabaseWrapper.SEGMENTS;
+import static com.arcadedb.test.support.FacetDatabaseWrapper.SNAPSHOT_INSTALL;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -46,6 +52,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SplitBrainIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+
+  // spaces the majority follower's facet samples over the write window; not a timing assertion
+  private static final long QUERY_SPACING_MILLIS = 250L;
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
@@ -174,6 +183,128 @@ class SplitBrainIT extends ContainersTestTemplate {
     dbRestarted.close();
     dbs[survivor1].close();
     dbs[survivor2].close();
+  }
+
+  /**
+   * As {@link #splitBrainPrevention()} with facet data: the leader is isolated into the minority, the majority elects a new leader
+   * and takes mixed writes while the majority follower's facet answers are always exact or carry their lag. The isolated old leader
+   * receives no writes, so after the heal (reconnect plus a SIGKILL restart, so crash recovery) it catches up from the Raft log, its
+   * facets equal the {@code GROUP BY} of every node and its projection is not rebuilt. Only a {@code snapshot_install} rebuild is
+   * tolerated, should the leader resync the node by a snapshot, which rebuilds by design (spec 6.6). The isolated node is not
+   * queried while isolated: its mapped port is unreachable from the host.
+   */
+  @Test
+  @Timeout(value = 25, unit = TimeUnit.MINUTES) // a hang detector, sized for host stalls
+  @DisplayName("Split brain: the minority leader rejoins with exact facets and rebuilds only through a snapshot install")
+  void splitBrainMinorityLeaderRejoinsWithExactFacets() throws Exception {
+    final GenericContainer<?>[] nodeContainers = new GenericContainer<?>[3];
+    for (int i = 0; i < 3; i++)
+      nodeContainers[i] = createPersistentArcadeContainer("arcadedb-" + i, SERVER_LIST, "majority", network);
+
+    final List<ServerWrapper> servers = startCluster();
+    final FacetDatabaseWrapper[] f = new FacetDatabaseWrapper[3];
+    for (int i = 0; i < 3; i++)
+      f[i] = new FacetDatabaseWrapper(servers.get(i), DatabaseWrapper.Protocol.HTTP, i);
+
+    final AtomicReference<Thread> writerThread = new AtomicReference<>();
+    try {
+      f[0].createDatabase();
+      f[0].createSchema();
+      for (final FacetDatabaseWrapper node : f)
+        logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
+
+      logger.info("Ingested {} assets", f[0].ingest(2_000));
+      logger.info("Mixed ops before the split: {}", f[0].runMixedOps(500));
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 120);
+
+      final int leaderIdx = findLeaderIndex(servers);
+      assertThat(leaderIdx).as("a leader before the split").isNotNegative();
+      final int[] majority = { (leaderIdx + 1) % 3, (leaderIdx + 2) % 3 };
+      logger.info("Leader is node {}, isolating it into the minority", leaderIdx);
+
+      disconnectFromNetwork(nodeContainers[leaderIdx]);
+      final List<ServerWrapper> majorityServers = List.of(servers.get(majority[0]), servers.get(majority[1]));
+      final int newLeaderPos = waitForRaftLeader(majorityServers, 60);
+      assertThat(newLeaderPos).as("a new leader in the majority").isNotNegative();
+      waitForAllNodesKnowLeader(majorityServers, 30);
+      final int newLeaderIdx = majority[newLeaderPos];
+      final int followerIdx = majority[1 - newLeaderPos];
+      logger.info("New leader is node {}, majority follower is node {}", newLeaderIdx, followerIdx);
+
+      final AtomicReference<Object> writerOutcome = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          writerOutcome.set(f[newLeaderIdx].runMixedOps(1_000));
+        } catch (final Throwable t) {
+          writerOutcome.set(t);
+        }
+      }, "facet-split-brain-writer");
+      writerThread.set(writer);
+      writer.start();
+
+      int samples = 0;
+      int duringWrites = 0;
+      int nonExact = 0;
+      long maxLagMs = 0L;
+      while (writer.isAlive()) {
+        final FacetSnapshot s = f[followerIdx].queryFacets("");
+        assertThat(s.metaConsistent()).as("sample %d on the majority follower: exact=%s lagMs=%d patched=%d sources=%s", samples,
+            s.exact(), s.lagMs(), s.patched(), s.sources()).isTrue();
+        samples++;
+        if (writer.isAlive())
+          duringWrites++;
+        if (!s.exact())
+          nonExact++;
+        maxLagMs = Math.max(maxLagMs, s.lagMs());
+        Thread.sleep(QUERY_SPACING_MILLIS);
+      }
+      logger.info("Majority follower: {} samples, {} while the writer ran, {} not exact, max lagMs {}", samples, duringWrites, nonExact,
+          maxLagMs);
+      assertThat(duringWrites).as("facet queries ran while the majority writer was writing").isPositive();
+
+      writer.join(TimeUnit.MINUTES.toMillis(5));
+      assertThat(writer.isAlive()).as("the majority writer ended").isFalse();
+      assertThat(writerOutcome.get()).as("the majority writer threw nothing").isInstanceOf(FacetDatabaseWrapper.OpCounts.class);
+      logger.info("Mixed ops through the new leader during the split: {}", writerOutcome.get());
+
+      // After a Docker network partition, gRPC channels between peers are stuck in exponential backoff: restart the isolated node
+      logger.info("Healing the split: reconnecting and restarting the old leader node {}", leaderIdx);
+      reconnectToNetwork(nodeContainers[leaderIdx]);
+      // stop() removes the container, taking its log with it
+      dumpContainerLogs("splitBrainFacets-stop");
+      f[leaderIdx].close();
+      f[leaderIdx] = null; // closed once: the finally skips it until its successor is opened
+      nodeContainers[leaderIdx].stop();
+      nodeContainers[leaderIdx].start();
+      assertThat(waitForContainerHealthy(nodeContainers[leaderIdx], 90)).as("old leader restarted").isTrue();
+
+      final FacetDatabaseWrapper restarted = new FacetDatabaseWrapper(new ServerWrapper(nodeContainers[leaderIdx]),
+          DatabaseWrapper.Protocol.HTTP, 100 + leaderIdx);
+      f[leaderIdx] = restarted;
+      // metrics bound, manifest loaded
+      Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).ignoreExceptions()
+          .until(() -> restarted.scrapeMetric(SEGMENTS) > 0);
+
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 180);
+      // asserted after the comparison: by then any rebuild the open or a snapshot install scheduled has started and been counted
+      final String reasons = restarted.rebuildsByReason();
+      final double installs = restarted.scrapeMetric(REBUILDS, "reason", SNAPSHOT_INSTALL);
+      logger.info("Old leader node {} rebuilds after the rejoin: {} (snapshot installs {})", leaderIdx, reasons, (long) installs);
+      assertThat(restarted.scrapeMetric(REBUILDS) - installs).as("the old leader rebuilds only through a snapshot install (%s)", reasons)
+          .isZero();
+    } finally {
+      final Thread writer = writerThread.get();
+      if (writer != null)
+        writer.join(TimeUnit.MINUTES.toMillis(5));
+      dumpContainerLogs("splitBrainFacets-end");
+      for (final FacetDatabaseWrapper wrapper : f)
+        if (wrapper != null)
+          try {
+            wrapper.close();
+          } catch (final RuntimeException e) {
+            logger.warn("Closing {} failed: {}", wrapper.describe(), e.getMessage());
+          }
+    }
   }
 
   @Test
