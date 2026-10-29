@@ -23,6 +23,7 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.util.Arrays;
 
 /**
  * The one-bit codes of a BINARY index, held on the heap by vector id so a search scores a graph node with a Hamming
@@ -34,28 +35,32 @@ import java.lang.invoke.VarHandle;
  * of the reconstruction's similarity, it IS that similarity: the reconstruction is the sign of every component at unit
  * norm, so two of them have {@code cosine = 1 - 2 * hamming / dimensions} (see {@link #similarity}).
  * <p>
- * <b>Layout.</b> Direct-mapped by vector id over two flat primitive arrays, the codes and one stamp per slot, so the
- * cache adds no object per vector for the collector to trace. Vector ids are dense and monotonic, so with a capacity at
- * least the id range every code stays resident; past it, a later id takes the slot of an earlier one. Like
- * {@link VectorCache}, it is a cache and not a store: a miss is answered by the index pages, and the owner clears it
- * whenever vector ids change meaning and evicts the id of a deleted vector.
+ * <b>Layout.</b> Direct-mapped by vector id over three flat primitive arrays, the codes, the vector id each slot holds
+ * and one version per slot, so the cache adds no object per vector for the collector to trace. Vector ids are dense and
+ * monotonic, so with a capacity at least the id range every code stays resident; past it, a later id takes the slot of an
+ * earlier one. Like {@link VectorCache}, it is a cache and not a store: a miss is answered by the index pages, and the
+ * owner clears it whenever vector ids change meaning and evicts the id of a deleted vector.
  * <p>
- * <b>Concurrency.</b> Lock-free, one sequence stamp per slot: {@code vectorId + 1} when the slot holds that vector's
- * code, {@link #EMPTY}, or {@link #WRITING} while a writer owns it. A writer claims the slot with a CAS, copies the code
- * and publishes the stamp with release semantics; a writer that loses the CAS simply does not cache. A reader checks the
- * stamp, reads the words, and checks the stamp again after an acquire fence: any write in between changed the stamp, so a
- * torn code is never scored, it is reported as a miss.
+ * <b>Concurrency.</b> Lock-free, a seqlock per slot. The version is even while the slot is stable and odd while a writer
+ * owns it: a writer claims the slot with a CAS from even to odd, writes the id and the code, and publishes the next even
+ * version with release semantics; a writer that loses the CAS simply does not cache. A reader reads the version, the id
+ * and the words, and reads the version again after an acquire fence: any write in between moved it, so a torn code is
+ * never scored, it is reported as a miss. The version, not the id, is what tells two writes apart: a slot that went from
+ * one vector to another and back while a reader was in it holds the same id but not the same version (issue #10968, the
+ * first cut keyed the check on the id alone and handed out torn codes under exactly that race).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class BinaryCodeCache {
-  private static final VarHandle STAMPS = MethodHandles.arrayElementVarHandle(int[].class);
-  private static final int       EMPTY   = 0;
-  private static final int       WRITING = -1;
+  private static final VarHandle VERSIONS = MethodHandles.arrayElementVarHandle(int[].class);
+  private static final int       EMPTY    = -1;
 
   private final int    words;
   private final int    mask;
-  private final int[]  stamps;
+  // Even: the slot is stable. Odd: a writer owns it
+  private final int[]  versions;
+  // The vector id whose code the slot holds, EMPTY for none
+  private final int[]  ids;
   private final long[] codes;
 
   /**
@@ -66,7 +71,9 @@ final class BinaryCodeCache {
     this.words = wordsFor(dimensions);
     final int capacity = tableSizeFor(Math.max(1, requestedCapacity), words);
     this.mask = capacity - 1;
-    this.stamps = new int[capacity];
+    this.versions = new int[capacity];
+    this.ids = new int[capacity];
+    Arrays.fill(ids, EMPTY);
     this.codes = new long[capacity * words];
   }
 
@@ -75,13 +82,13 @@ final class BinaryCodeCache {
     return (dimensions + 63) >>> 6;
   }
 
-  /** @return the heap one cached code costs: its words and its stamp. */
+  /** @return the heap one cached code costs: its words, its id and its version. */
   static long bytesPerCode(final int dimensions) {
-    return (long) wordsFor(dimensions) * Long.BYTES + Integer.BYTES;
+    return (long) wordsFor(dimensions) * Long.BYTES + 2L * Integer.BYTES;
   }
 
   int capacity() {
-    return stamps.length;
+    return ids.length;
   }
 
   /**
@@ -92,8 +99,8 @@ final class BinaryCodeCache {
     if (vectorId < 0)
       return -1;
     final int slot = vectorId & mask;
-    final int stamp = (int) STAMPS.getAcquire(stamps, slot);
-    if (stamp != vectorId + 1)
+    final int version = (int) VERSIONS.getAcquire(versions, slot);
+    if ((version & 1) != 0 || ids[slot] != vectorId)
       return -1;
 
     final int base = slot * words;
@@ -101,41 +108,62 @@ final class BinaryCodeCache {
     for (int w = 0; w < words; w++)
       distance += Long.bitCount(query[w] ^ codes[base + w]);
 
-    // The words must have been read before the stamp is read again: a writer that started in between moved it
+    // The id and the words must have been read before the version is read again: a writer that started in between moved it
     VarHandle.acquireFence();
-    return (int) STAMPS.getOpaque(stamps, slot) == stamp ? distance : -1;
+    return (int) VERSIONS.getOpaque(versions, slot) == version ? distance : -1;
   }
 
   /** Caches the code of {@code vectorId}, {@link #wordsFor} longs of {@code code} from {@code offset}. */
   void put(final int vectorId, final long[] code, final int offset) {
-    if (vectorId < 0 || vectorId == Integer.MAX_VALUE)
+    if (vectorId < 0)
       return;
     final int slot = vectorId & mask;
-    final int current = (int) STAMPS.getVolatile(stamps, slot);
-    if (current == vectorId + 1 || current == WRITING || !STAMPS.compareAndSet(stamps, slot, current, WRITING))
+    final int version = (int) VERSIONS.getVolatile(versions, slot);
+    if ((version & 1) != 0 || ids[slot] == vectorId || !VERSIONS.compareAndSet(versions, slot, version, version + 1))
       return;
+    ids[slot] = vectorId;
     System.arraycopy(code, offset, codes, slot * words, words);
-    STAMPS.setRelease(stamps, slot, vectorId + 1);
+    VERSIONS.setRelease(versions, slot, version + 2);
   }
 
-  /** Drops the code of {@code vectorId}, if resident: called when the vector is deleted. */
+  /**
+   * Drops the code of {@code vectorId}, if resident: called when the vector is deleted. Unlike {@link #put} it does not give
+   * up on a slot a writer owns, it waits for the writer, so a deleted vector cannot keep a code a lost race left behind.
+   */
   void remove(final int vectorId) {
-    if (vectorId < 0 || vectorId == Integer.MAX_VALUE)
+    if (vectorId < 0)
       return;
-    STAMPS.compareAndSet(stamps, vectorId & mask, vectorId + 1, EMPTY);
+    final int slot = vectorId & mask;
+    while (true) {
+      final int version = (int) VERSIONS.getVolatile(versions, slot);
+      if ((version & 1) != 0) {
+        Thread.onSpinWait();
+        continue;
+      }
+      if (ids[slot] != vectorId)
+        return;
+      if (VERSIONS.compareAndSet(versions, slot, version, version + 1)) {
+        ids[slot] = EMPTY;
+        VERSIONS.setRelease(versions, slot, version + 2);
+        return;
+      }
+    }
   }
 
-  /** Drops every code. Called under the owner's write lock, when vector ids change meaning. */
+  /**
+   * Drops every code. Called under the owner's write lock, when vector ids change meaning: no search, and so no writer, runs
+   * meanwhile.
+   */
   void clear() {
-    for (int i = 0; i < stamps.length; i++)
-      STAMPS.setVolatile(stamps, i, EMPTY);
+    Arrays.fill(ids, EMPTY);
+    VarHandle.fullFence();
   }
 
   /** @return the codes resident. O(capacity): for diagnostics and tests only. */
   int size() {
     int count = 0;
-    for (int i = 0; i < stamps.length; i++)
-      if ((int) STAMPS.getVolatile(stamps, i) > 0)
+    for (final int id : ids)
+      if (id != EMPTY)
         ++count;
     return count;
   }

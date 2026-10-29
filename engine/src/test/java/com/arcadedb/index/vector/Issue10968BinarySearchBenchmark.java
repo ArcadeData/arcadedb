@@ -70,47 +70,59 @@ class Issue10968BinarySearchBenchmark extends TestHelper {
     for (int q = 0; q < QUERIES; q++)
       truth[q] = exactTopK(rows, queries[q]);
 
-    for (final String quantization : System.getProperty("issue10968.quantizations", "NONE,BINARY").split(",")) {
-      final String type = "V" + quantization;
+    final String[] arms = System.getProperty("issue10968.quantizations", "NONE,BINARY").split(",");
+    final LSMVectorIndex[] indexes = new LSMVectorIndex[arms.length];
+    final List<List<RID>> rids = new ArrayList<>();
+    for (int a = 0; a < arms.length; a++) {
+      final String type = "V" + arms[a];
       database.command("sql", "CREATE DOCUMENT TYPE " + type + " BUCKETS 1");
       database.command("sql", "CREATE PROPERTY " + type + ".vector ARRAY_OF_FLOATS");
       database.command("sql", "CREATE INDEX ON " + type + " (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
-          + ", \"similarity\": \"COSINE\", \"quantization\": \"" + quantization + "\" }");
-      final List<RID> rids = new ArrayList<>(ROWS);
+          + ", \"similarity\": \"COSINE\", \"quantization\": \"" + arms[a] + "\" }");
+      final List<RID> armRids = new ArrayList<>(ROWS);
       for (int start = 0; start < ROWS; start += 1000) {
         final int from = start;
         database.transaction(() -> {
           for (int i = from; i < Math.min(ROWS, from + 1000); i++)
-            rids.add(database.newDocument(type).set("vector", rows[i]).save().getIdentity());
+            armRids.add(database.newDocument(type).set("vector", rows[i]).save().getIdentity());
         });
       }
-      final LSMVectorIndex index = (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName(type + "[vector]"))
-          .getIndexesOnBuckets()[0];
-      index.findNeighborsFromVector(queries[0], K, 50); // builds the graph
+      rids.add(armRids);
+      indexes[a] = (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName(type + "[vector]")).getIndexesOnBuckets()[0];
+      indexes[a].findNeighborsFromVector(queries[0], K, 50); // builds the graph
+    }
 
-      for (final int ef : new int[] { 10, 20, 50, 100, 200 }) {
-        // warm up
-        for (int round = 0; round < 3; round++)
+    for (final int ef : new int[] { 10, 20, 50, 100, 200 }) {
+      for (final LSMVectorIndex index : indexes)
+        for (int round = 0; round < 3; round++) // warm up
           for (final float[] q : queries)
             index.findNeighborsFromVector(q, K, ef);
-        int hits = 0;
-        final long start = System.nanoTime();
-        for (int round = 0; round < ROUNDS; round++)
+
+      final long[] nanos = new long[arms.length];
+      final int[] hits = new int[arms.length];
+      // The arms take turns, in the opposite order every other round, so drift in clock, caches or heap over the run
+      // lands on both of them instead of on whichever runs last
+      for (int round = 0; round < ROUNDS; round++)
+        for (int turn = 0; turn < arms.length; turn++) {
+          final int a = round % 2 == 0 ? turn : arms.length - 1 - turn;
+          final long start = System.nanoTime();
           for (int q = 0; q < QUERIES; q++) {
-            final List<Pair<RID, Float>> found = index.findNeighborsFromVector(queries[q], K, ef);
-            if (round == 0) {
+            final List<Pair<RID, Float>> found = indexes[a].findNeighborsFromVector(queries[q], K, ef);
+            if (round < 2) {
               final Set<RID> expected = new HashSet<>();
               for (final int t : truth[q])
-                expected.add(rids.get(t));
+                expected.add(rids.get(a).get(t));
               for (final Pair<RID, Float> f : found)
                 if (expected.contains(f.getFirst()))
-                  hits++;
+                  hits[a]++;
             }
           }
-        final double micros = (System.nanoTime() - start) / 1000.0 / (ROUNDS * (double) QUERIES);
-        LogManager.instance().log(this, Level.SEVERE, "Issue #10968 %s ef=%d recall@10=%.3f latency=%.1f us", quantization, ef,
-            hits / (double) (QUERIES * K), micros);
-      }
+          nanos[a] += System.nanoTime() - start;
+        }
+
+      for (int a = 0; a < arms.length; a++)
+        LogManager.instance().log(this, Level.SEVERE, "Issue #10968 %s ef=%d recall@10=%.3f latency=%.1f us", arms[a], ef,
+            hits[a] / (double) (Math.min(2, ROUNDS) * QUERIES * K), nanos[a] / 1000.0 / (ROUNDS * (double) QUERIES));
     }
   }
 

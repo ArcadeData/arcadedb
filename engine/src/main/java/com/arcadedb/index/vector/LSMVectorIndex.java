@@ -13638,7 +13638,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE,
         VectorHeapBudget.budgetBytes(heapPercent) / BinaryCodeCache.bytesPerCode(metadata.dimensions));
     final long idRange = Math.max(MIN_SEARCH_CACHE_SIZE, Math.max(nextId.get(), vectorIndex().size()));
-    return (int) Math.min(Math.min(affordable, idRange), Integer.MAX_VALUE / 2);
+    long wanted = Math.min(Math.min(affordable, idRange), Integer.MAX_VALUE / 2);
+    // The cache rounds its capacity up to a power of two and allocates it at once, so a capacity whose round-up would pass
+    // the budget is rounded down instead: the budget is a bound, never doubled
+    if (Long.highestOneBit(wanted) != wanted && Long.highestOneBit(wanted) << 1 > affordable)
+      wanted = Long.highestOneBit(wanted);
+    return (int) wanted;
   }
 
   /**

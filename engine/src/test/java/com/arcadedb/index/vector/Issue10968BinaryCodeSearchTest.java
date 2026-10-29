@@ -38,6 +38,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -141,6 +143,67 @@ class Issue10968BinaryCodeSearchTest extends TestHelper {
     assertThat(cache.size()).isEqualTo(1);
     cache.clear();
     assertThat(cache.size()).isZero();
+  }
+
+  /**
+   * Writers racing on the same slots never let a reader score a torn code: every distance a reader gets is the distance to
+   * the code of the vector it asked for, or a miss.
+   */
+  @Test
+  void concurrentWritersNeverHandOutATornCode() throws Exception {
+    final int dimensions = 1536;
+    final int words = BinaryCodeCache.wordsFor(dimensions);
+    final BinaryCodeCache cache = new BinaryCodeCache(dimensions, 8);
+    final int ids = 64; // eight vectors per slot, so writers keep evicting each other
+    final long[][] codes = new long[ids][];
+    final Random random = new Random(37);
+    for (int id = 0; id < ids; id++)
+      codes[id] = code(randomVector(random, dimensions, -1.0f));
+    final long[] query = code(randomVector(random, dimensions, -1.0f));
+    final int[] expected = new int[ids];
+    for (int id = 0; id < ids; id++)
+      expected[id] = BinaryCodeCache.hammingDistance(query, codes[id], words);
+
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicInteger hits = new AtomicInteger();
+    final AtomicInteger wrong = new AtomicInteger();
+    final List<Thread> threads = new ArrayList<>();
+    for (int t = 0; t < 3; t++) {
+      final int seed = t;
+      threads.add(new Thread(() -> {
+        final Random r = new Random(seed);
+        while (!stop.get()) {
+          final int id = r.nextInt(ids);
+          cache.put(id, codes[id], 0);
+          if (r.nextInt(16) == 0)
+            cache.remove(r.nextInt(ids));
+        }
+      }));
+    }
+    for (int t = 0; t < 3; t++) {
+      final int seed = 100 + t;
+      threads.add(new Thread(() -> {
+        final Random r = new Random(seed);
+        while (!stop.get()) {
+          final int id = r.nextInt(ids);
+          final int distance = cache.hammingDistance(id, query);
+          if (distance >= 0) {
+            hits.incrementAndGet();
+            if (distance != expected[id])
+              wrong.incrementAndGet();
+          }
+        }
+      }));
+    }
+    threads.forEach(Thread::start);
+    // Bounded by the reads it takes, not by a clock: stop once readers have seen enough hits to have raced the writers
+    while (hits.get() < 200_000 && wrong.get() == 0)
+      Thread.onSpinWait();
+    stop.set(true);
+    for (final Thread thread : threads)
+      thread.join();
+
+    assertThat(wrong.get()).isZero();
   }
 
   /**
