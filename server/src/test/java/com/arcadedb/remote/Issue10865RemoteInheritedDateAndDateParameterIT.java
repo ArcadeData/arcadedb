@@ -122,8 +122,27 @@ class Issue10865RemoteInheritedDateAndDateParameterIT extends BaseGraphServerTes
     db.command("sql", "INSERT INTO Evento SET fechas = ?", List.of(DAY, DAY.plusDays(1)));
     try (final ResultSet rs = db.query("sql", "SELECT fechas FROM Evento")) {
       final List<Object> read = rs.next().getProperty("fechas");
-      // compared as text: the remote client reads the items of a LIST OF DATE back as their text, a read-side gap of its own
-      assertThat(read).extracting(Object::toString).containsExactly(DAY.toString(), DAY.plusDays(1).toString());
+      // Issue #10909: the items come back as LocalDate, like a scalar DATE, not as their text
+      assertThat(read).containsExactly(DAY, DAY.plusDays(1));
+    }
+  }
+
+  @Test
+  void localDatesInAListOfTheDocumentRead() {
+    final RemoteDatabase db = schema();
+    db.command("sql", "INSERT INTO Evento SET fechas = ?", List.of(DAY, DAY.plusDays(1)));
+    try (final ResultSet rs = db.query("sql", "SELECT FROM Evento")) {
+      assertThat(rs.next().<List<Object>>getProperty("fechas")).containsExactly(DAY, DAY.plusDays(1));
+    }
+  }
+
+  @Test
+  void localDatesInAnUntypedProjectedList() {
+    final RemoteDatabase db = schema();
+    db.command("sql", "INSERT INTO Evento SET fechas = ?", List.of(DAY, DAY.plusDays(1)));
+    try (final ResultSet rs = db.query("sql", "SELECT fechas.asList() AS d, [fecha] AS single FROM Evento")) {
+      final Object read = rs.next().getProperty("d");
+      assertThat(read).isEqualTo(List.of(DAY, DAY.plusDays(1)));
     }
   }
 
