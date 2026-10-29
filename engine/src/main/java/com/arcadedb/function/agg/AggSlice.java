@@ -56,16 +56,16 @@ public class AggSlice extends AbstractAggFunction {
       return null;
 
     final List<Object> list = toObjectList(args[0]);
-    final int from = args[1] != null ? CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue() : 0;
-    final int to = args.length > 2 && args[2] != null ?
-        CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue() : list.size();
-
+    // Issue #10850: whole numbers or a type error - intValue() read 1.9 as 1 and wrapped 4294967297 to 1. The bounds
+    // stay longs until they are clamped to the list, so one past the int range means "past the end" as it should
+    final long from = args[1] != null ? CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "from") : 0L;
+    final long to = args.length > 2 && args[2] != null ?
+        CypherFunctionHelper.requireWholeNumberArgument(args[2], getName(), "to") : list.size();
     if (from >= list.size() || from >= to)
       return Collections.emptyList();
 
-    final int actualFrom = Math.max(0, from);
-    final int actualTo = Math.min(list.size(), to);
-
+    final int actualFrom = (int) Math.max(0L, from);
+    final int actualTo = (int) Math.min(list.size(), to);
     return list.subList(actualFrom, actualTo);
   }
 }

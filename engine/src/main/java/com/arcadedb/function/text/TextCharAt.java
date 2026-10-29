@@ -54,6 +54,6 @@ public class TextCharAt extends AbstractTextFunction {
       return null;
 
     // A character is a Unicode code point, never half of a surrogate pair (issue #10378)
-    return CypherFunctionHelper.charAtCodePoint(str, asInt(args[1], 0));
+    return CypherFunctionHelper.charAtCodePoint(str, asInt(args[1], 0, "index"));
   }
 }

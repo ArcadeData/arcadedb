@@ -52,7 +52,8 @@ public class SQLFunctionCypherRID extends SQLFunctionConfigurableAbstract {
 
     final long encoded;
     if (value instanceof Number number)
-      encoded = number.longValue();
+      // issue #10850: a Cypher id is a whole number - longValue() read 1.9 as the id 1
+      encoded = requireWholeLongArgument(NAME, number, "cypherId");
     else {
       try {
         encoded = Long.parseLong(value.toString());

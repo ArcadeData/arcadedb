@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.util;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -55,7 +56,8 @@ public class UtilSleep extends AbstractUtilFunction {
 
     final long milliseconds;
     if (args[0] instanceof Number) {
-      milliseconds = ((Number) args[0]).longValue();
+      // Issue #10850: a whole number - longValue() read 1.9 as 1
+      milliseconds = CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "milliseconds");
     } else {
       milliseconds = Long.parseLong(args[0].toString());
     }

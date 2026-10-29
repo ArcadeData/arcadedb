@@ -55,7 +55,7 @@ public class TextRpad extends AbstractTextFunction {
     if (str == null)
       return null;
 
-    final int length = asInt(args[1], 0);
+    final int length = asInt(args[1], 0, "length");
 
     // Validate length parameter
     if (length < 0) {

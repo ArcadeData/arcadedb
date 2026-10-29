@@ -59,7 +59,8 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
       // the instant as a UTC wall clock, which is how the engine stores a DATETIME - the same reading as sysdate() (issue #8892)
       date = LocalDateTime.now(ZoneOffset.UTC);
     else if (params[0] instanceof Number number)
-      date = DateUtils.millisToLocalDateTime(number.longValue(), null);
+      // issue #10850: a whole number of milliseconds - longValue() read 1.9 as 1
+      date = DateUtils.millisToLocalDateTime(requireWholeLongArgument(NAME, number, "millis"), null);
     else if (params[0] instanceof String dateAsString) {
       try {
         // params[1] can be a format string (positional) or a full options map { format, timezone }.

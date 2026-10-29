@@ -57,16 +57,16 @@ public class CollInsert extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
-    final Number indexArg = CypherFunctionHelper.requireNumberArgument(args[1], getName());
-    if (indexArg == null)
+    if (args[1] == null)
       return null;
-    final int index = indexArg.intValue();
+    // Issue #10850: a whole number or a type error - intValue() read 1.9 as 1 and 4294967297 as 1
+    final long index = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "index");
     if (index < 0)
       throw new CommandSemanticException(getName() + "() does not support negative index: " + index);
     if (index > list.size())
       throw new CommandSemanticException(getName() + "() index " + index + " is out of range for list of size " + list.size());
     final List<Object> result = new ArrayList<>(list);
-    result.add(index, args[2]);
+    result.add((int) index, args[2]);
     return result;
   }
 }

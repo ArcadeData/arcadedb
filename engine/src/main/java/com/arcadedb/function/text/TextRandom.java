@@ -52,7 +52,7 @@ public class TextRandom extends AbstractTextFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    final int length = asInt(args[0], 0);
+    final int length = asInt(args[0], 0, "length");
     if (length <= 0)
       return "";
 

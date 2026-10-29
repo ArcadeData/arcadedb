@@ -70,7 +70,10 @@ public class CollFlatten extends AbstractCollFunction {
         // A caller mistake here is a client error, exactly like every other argument in the family (issue
         // #6403) - args[1] used to fall through every branch silently and leave maxDepth at its default instead
         // of raising, so coll.flatten([[1]], 'x') answered as though depth had been omitted (code review).
-        maxDepth = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
+        // Issue #10850: a whole number - intValue() read 1.9 as 1 and wrapped 4294967297 to 1. A depth past the int
+        // range is deeper than any list nests, so clamping keeps the answer
+        maxDepth = Math.clamp(CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "depth"), Integer.MIN_VALUE,
+            Integer.MAX_VALUE);
     }
 
     if (asRange(list) != null)
