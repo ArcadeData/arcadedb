@@ -68,6 +68,8 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY Doc.color STRING");
       database.command("sql", "CREATE PROPERTY Doc.name STRING");
       database.command("sql", "CREATE PROPERTY Doc.day DATE");
+      database.command("sql", "CREATE PROPERTY Doc.weight DOUBLE");
+      database.command("sql", "CREATE PROPERTY Doc.serial LONG");
       database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
     });
     final Random random = new Random(10921);
@@ -78,6 +80,8 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
             .set("color", i % 3 == 0 ? "red" : "blue")
             .set("name", i % 4 == 0 ? "Alpha" : "alpha")
             .set("day", i % EVERY == 0 ? LocalDate.of(2024, 1, 2) : LocalDate.of(2024, 1, 1))
+            .set("weight", i % EVERY == 0 ? 1.0d : 0.5d)
+            .set("serial", i % EVERY == 0 ? 7_000_000_000L : 1L)
             .set("embedding", new float[] { random.nextFloat(), random.nextFloat(), random.nextFloat(), random.nextFloat() })
             .save();
     });
@@ -85,6 +89,8 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON Doc (tenant) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON Doc (name COLLATE CI) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON Doc (day) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Doc (weight) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Doc (serial) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'EUCLIDEAN' }");
   }
 
@@ -286,7 +292,10 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
     final Object[][] cases = {
         { "tenant", 1 }, { "tenant", 1L }, { "tenant", 1.0d }, { "tenant", 1.5d }, { "tenant", "1" }, { "tenant", "x" },
         { "tenant", true }, { "day", LocalDate.of(2024, 1, 2) }, { "day", "2024-01-02" }, { "day", LocalDateTime.of(2024, 1, 2, 0, 0) },
-        { "day", LocalDateTime.of(2024, 1, 2, 10, 30) }, { "day", 20240102 } };
+        { "day", LocalDateTime.of(2024, 1, 2, 10, 30) }, { "day", 20240102 },
+        { "weight", 1 }, { "weight", 1L }, { "weight", 1.0f }, { "weight", "1" }, { "weight", "1.0" }, { "weight", 0.9999999d },
+        { "serial", 7_000_000_000L }, { "serial", 7_000_000_000d }, { "serial", "7000000000" }, { "serial", 7.0e9f },
+        { "serial", (int) 7_000_000_000L } };
     for (final Object[] c : cases) {
       final String options = "{ where: { " + c[0] + ": :value } }";
       final Map<String, Object> params = Map.of("value", c[1]);
@@ -301,6 +310,12 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
             GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
       }
     }
+
+    // A null is no key: `= null` matches no record, whether written in the condition or bound to a parameter
+    final Map<String, Object> nullValue = new HashMap<>();
+    nullValue.put("value", null);
+    assertThat(neighbors("{ where: 'tenant = null' }", Map.of(), RECORDS / EVERY)).isEmpty();
+    assertThat(neighbors("{ where: 'tenant = :value' }", nullValue, RECORDS / EVERY)).isEmpty();
   }
 
   private List<Result> neighbors(final String options, final Map<String, Object> params) {
