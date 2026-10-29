@@ -483,11 +483,10 @@ class PostgresCatalogTest {
     assertThat(probe("/* SELECT */ INSERT INTO Article SET title = 'pg_catalog'")).isNull();
     assertThat(probe("SELECT 1 AS pg_type").rows.get(0).values()).containsExactly(1L);
 
-    // not running on a Postgres connection's thread, so there is no process id to answer, and nothing to make up either
-    final PostgresCatalog.Answer unknown = probe("SELECT pg_catalog.pg_backend_pid()");
-    assertThat(unknown).isNotNull();
-    assertThat(unknown.rows).isEmpty();
-    assertThat(probe("SELECT pg_catalog.no_such_function_10695()").rows).isEmpty();
+    // not running on a Postgres connection's thread, so there is no process id to answer, and nothing to make up either: what the
+    // catalog cannot evaluate is declined, which the executor refuses rather than answering no row (issue #10883)
+    assertThat(probe("SELECT pg_catalog.pg_backend_pid()")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(probe("SELECT pg_catalog.no_such_function_10695()")).isSameAs(PostgresCatalog.DECLINED);
   }
 
   private PostgresCatalog.Answer probe(final String query, final Object... parameters) {
