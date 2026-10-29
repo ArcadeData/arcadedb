@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
@@ -98,6 +99,122 @@ class ColumnarPendingMarksWALTest extends TestHelper {
 
       assertThat(transactionManager.cleanWALFilesForTesting(true, false, false)).isTrue();
       assertThat(targetFile).doesNotExist();
+    } finally {
+      release.countDown();
+      committer.shutdownNow();
+    }
+  }
+
+  /**
+   * The same guarantee under the group commit (#10509), which queues the WAL record and writes it to a file only at the next flush
+   * pass, after the pages are published: at the first mark no WAL file holds the record, so the file the pass writes it to must still
+   * not be dropped before the second mark.
+   */
+  @Test
+  void aGroupCommitBetweenItsMarksKeepsEveryWALFileUntilTheSecondMark() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 1);
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_GROUP_COMMIT, true);
+    database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    transactionManager.cancelHousekeepingForTesting();
+
+    final CountDownLatch paused = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    TransactionContext.afterPublishBeforeSecondMarkForTesting = () -> {
+      paused.countDown();
+      try {
+        release.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+
+    final ExecutorService committer = Executors.newSingleThreadExecutor();
+    try {
+      final Future<?> commit = committer.submit(() -> database.transaction(() -> database.newDocument("Asset").set("brand", "a").save()));
+      // a hang detector, not a latency bound
+      assertThat(paused.await(30, TimeUnit.SECONDS)).isTrue();
+      TransactionContext.afterPublishBeforeSecondMarkForTesting = null;
+
+      // the record is still queued: another commit's flush pass writes and flushes it, here this thread's
+      final long ticket = transactionManager.getPendingWALSyncTicket();
+      assertThat(ticket).as("the paused commit's WAL record is queued by the group commit").isPositive();
+      transactionManager.awaitWALDurable(ticket);
+
+      // retire every WAL file, as a rotation does, and find the one the record landed in
+      WALFile target = null;
+      for (int slot = 0; slot < TransactionManager.walFilePoolSize(database.getConfiguration()); slot++) {
+        final WALFile file = transactionManager.replaceActiveWALFileForTesting(slot, null);
+        if (file == null)
+          continue;
+        file.setActive(false);
+        transactionManager.addInactiveWALFileForTesting(file);
+        if (file.getPendingPagesToFlush() > 0 || target == null)
+          target = file;
+      }
+      assertThat(target).isNotNull();
+      assertThat(target.getPendingColumnarMarks()).as("no WAL file held the record at the first mark").isZero();
+      final File targetFile = new File(target.getFilePath());
+
+      // the published pages reach the disk: only the pending second mark protects the file now
+      for (int i = 0; i < 30_000 && target.getPendingPagesToFlush() > 0; i++)
+        Thread.sleep(1);
+      assertThat(target.getPendingPagesToFlush()).isZero();
+
+      assertThat(transactionManager.cleanWALFilesForTesting(true, false, false)).isFalse();
+      assertThat(targetFile).exists();
+
+      release.countDown();
+      commit.get(30, TimeUnit.SECONDS);
+
+      assertThat(transactionManager.cleanWALFilesForTesting(true, false, false)).isTrue();
+      assertThat(targetFile).doesNotExist();
+    } finally {
+      release.countDown();
+      committer.shutdownNow();
+    }
+  }
+
+  /**
+   * {@link TransactionManager#forceWALFiles()} runs before a projection publishes its manifest, so that the projection is never more
+   * durable than the commits it holds. A group commit's record queued after its pages were published is in no WAL file yet: the call
+   * writes and flushes it.
+   */
+  @Test
+  void forcingTheWALFilesMakesAQueuedGroupCommitDurable() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 1);
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_GROUP_COMMIT, true);
+    database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+
+    final CountDownLatch paused = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    TransactionContext.afterPublishBeforeSecondMarkForTesting = () -> {
+      paused.countDown();
+      try {
+        release.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+
+    final ExecutorService committer = Executors.newSingleThreadExecutor();
+    try {
+      final Future<?> commit = committer.submit(() -> database.transaction(() -> database.newDocument("Asset").set("brand", "a").save()));
+      // a hang detector, not a latency bound
+      assertThat(paused.await(30, TimeUnit.SECONDS)).isTrue();
+      TransactionContext.afterPublishBeforeSecondMarkForTesting = null;
+
+      assertThat(transactionManager.getPendingWALSyncTicket()).as("the paused commit's WAL record is queued").isPositive();
+      transactionManager.forceWALFiles();
+      assertThat(transactionManager.getPendingWALSyncTicket()).as("forceWALFiles left a published commit out of the WAL").isZero();
+
+      release.countDown();
+      commit.get(30, TimeUnit.SECONDS);
     } finally {
       release.countDown();
       committer.shutdownNow();
