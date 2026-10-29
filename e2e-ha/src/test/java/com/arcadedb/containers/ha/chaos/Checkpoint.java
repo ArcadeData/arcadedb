@@ -33,10 +33,19 @@ import java.util.Set;
  * the same deadline), reports keys that differ between nodes, then checks node 0 against the ledger. Counts that never
  * agree while every node's scans find the same records are a {@code COUNT_DRIFT}: the stored counters {@code count(*)}
  * reads drifted from the data. A 5xx while scanning is a SAFETY {@code SCAN_ERROR} (the node is up but cannot serve
- * its own data); any other scan failure is an AVAILABILITY {@code SCAN}.
+ * its own data); any other scan failure is an AVAILABILITY {@code SCAN}. When all of that found nothing and a
+ * {@link FacetCheck} was given, it runs last on the same converged cluster: its violations are reported like the ledger's, its
+ * warnings travel in {@link Result#warnings()} and never fail the run.
  */
 public final class Checkpoint {
-  public record Result(List<Violation> violations, long[] counts, long convergenceMillis, long durationMillis) {
+  /**
+   * @param warnings facet findings that are reported but never fail the run ({@link FacetCheck#warnings()})
+   */
+  public record Result(List<Violation> violations, long[] counts, long convergenceMillis, long durationMillis,
+                       List<String> warnings) {
+    public Result(final List<Violation> violations, final long[] counts, final long convergenceMillis, final long durationMillis) {
+      this(violations, counts, convergenceMillis, durationMillis, List.of());
+    }
   }
 
   private final NodeReader       reader;
@@ -45,6 +54,7 @@ public final class Checkpoint {
   private final int              nodes;
   private final Duration         convergenceTimeout;
   private final Duration         pollInterval;
+  private final FacetCheck       facets;
   private       long[]           lastCounts;
   private       String           lastReadError;
   private final boolean[]        lastReadable;
@@ -52,6 +62,15 @@ public final class Checkpoint {
 
   public Checkpoint(final NodeReader reader, final Ledger ledger, final InvariantChecker checker, final int nodes,
       final Duration convergenceTimeout, final Duration pollInterval) {
+    this(reader, ledger, checker, nodes, convergenceTimeout, pollInterval, null);
+  }
+
+  /**
+   * @param facets the facet check to run after the ledger checks, or null for none
+   */
+  public Checkpoint(final NodeReader reader, final Ledger ledger, final InvariantChecker checker, final int nodes,
+      final Duration convergenceTimeout, final Duration pollInterval, final FacetCheck facets) {
+    this.facets = facets;
     this.reader = reader;
     this.ledger = ledger;
     this.checker = checker;
@@ -122,6 +141,10 @@ public final class Checkpoint {
       if (divergence.keys().length > 0)
         violations.add(divergence);
       violations.addAll(checker.check(snapshots[0]));
+      if (violations.isEmpty() && facets != null) {
+        violations.addAll(facets.run());
+        return new Result(violations, current, convergenceMillis, millisSince(start), List.copyOf(facets.warnings()));
+      }
       return new Result(violations, current, convergenceMillis, millisSince(start));
     }
   }
