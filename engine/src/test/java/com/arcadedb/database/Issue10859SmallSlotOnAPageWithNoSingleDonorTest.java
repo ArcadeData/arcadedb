@@ -27,7 +27,9 @@ import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -162,6 +164,10 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
   void aPlaceholderWhoseContentGivesTheBytesIsUpdatedInTheSameTransaction() {
     final FabricatedPage page = fabricate("SameTx10859", 1, new int[0], true);
     final String rewritten = "r".repeat(60);
+    assertThat(appliedFirstAtCommit(page.small.getFirst(), page.placeholder))
+        .as("the premise: this test pins the commit applying the placeholder's update first (its content moves off the page "
+            + "before the small slot grows); the head-chunk test below pins the other order")
+        .isEqualTo(page.placeholder);
 
     database.transaction(() -> {
       page.placeholder.asDocument(true).modify().set("v", rewritten).save();
@@ -188,6 +194,10 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
     assertThat(markerOf(page.content)).as("the premise: the placeholder's content is a chunk chain").isEqualTo(-4L);
 
     final String rewritten = "r".repeat(70);
+    assertThat(appliedFirstAtCommit(page.small.get(1), page.placeholder))
+        .as("the premise: the commit applies the small slot's update first, so the placeholder's fingerprint is compared "
+            + "after its own transaction changed its content - the order that raised the exception")
+        .isEqualTo(page.small.get(1));
     database.transaction(() -> {
       page.placeholder.asDocument(true).modify().set("v", rewritten).save();
       grow(page.small.get(1));
@@ -369,6 +379,17 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
     System.arraycopy(body, 0, content, 0, Math.min(length, bodyLength));
     page.writeByteArray(end + marker, content, 0, length);
     return end + marker + length;
+  }
+
+  /**
+   * Which of two updated records a commit applies first: it walks the transaction's updated records in the iteration
+   * order of a {@link HashMap} keyed by RID ({@code TransactionContext.updatedRecords}), which this reproduces.
+   */
+  private static RID appliedFirstAtCommit(final RID first, final RID second) {
+    final Map<RID, Boolean> updated = new HashMap<>();
+    updated.put(first, true);
+    updated.put(second, true);
+    return updated.keySet().iterator().next();
   }
 
   private static void grow(final RID rid) {
