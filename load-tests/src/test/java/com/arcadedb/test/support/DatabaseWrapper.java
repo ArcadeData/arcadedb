@@ -106,6 +106,13 @@ public class DatabaseWrapper {
   }
 
   public void createDatabase() {
+    createDatabase(server);
+  }
+
+  /**
+   * Drops the test database if it exists and creates it again through {@code server}, retrying while the cluster elects a leader.
+   */
+  public static void createDatabase(final ServerWrapper server) {
     final RemoteServer httpServer = new RemoteServer(
         server.host(),
         server.httpPort(),
