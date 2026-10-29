@@ -70,6 +70,8 @@ public final class CombinedLoad implements LoadGenerator {
       } catch (final RuntimeException e) {
         if (first == null)
           first = e;
+        else
+          first.addSuppressed(e);
       }
     if (first != null)
       throw first;

@@ -37,12 +37,17 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 class FacetWorkloadTest {
-  private final AtomicInteger status   = new AtomicInteger(200);
+  private static final String NON_EXACT = "{\"result\":[],\"facets\":{\"meta\":{\"exact\":false,\"patched\":3,\"lagMs\":5}}}";
+  private static final String EXACT     = "{\"result\":[],\"facets\":{\"meta\":{\"exact\":true,\"patched\":0,\"lagMs\":0}}}";
+
+  private final AtomicInteger           status   = new AtomicInteger(200);
+  private final AtomicReference<String> answer   = new AtomicReference<>(NON_EXACT);
   private final AtomicInteger requests = new AtomicInteger();
   private final List<String>  bodies   = new CopyOnWriteArrayList<>();
   private       HttpServer    server;
@@ -54,9 +59,9 @@ class FacetWorkloadTest {
     server.createContext("/", exchange -> {
       bodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
       requests.incrementAndGet();
-      final byte[] answer = "{\"result\":[],\"facets\":{\"meta\":{\"exact\":false,\"patched\":3,\"lagMs\":5}}}".getBytes(StandardCharsets.UTF_8);
-      exchange.sendResponseHeaders(status.get(), answer.length);
-      exchange.getResponseBody().write(answer);
+      final byte[] body = answer.get().getBytes(StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(status.get(), body.length);
+      exchange.getResponseBody().write(body);
       exchange.close();
     });
     server.start();
@@ -126,6 +131,11 @@ class FacetWorkloadTest {
       assertThat(commands).as(statement).contains(statement);
     final long deletes = commands.stream().filter(FacetSchema.DELETE::equals).count();
     assertThat(deletes).isBetween(160L, 320L);
+    // 5% of the operations are facet queries: about 100 of 2000, binomial standard deviation about 10
+    final long queries = commands.stream()
+        .filter(command -> command.equals(FacetSchema.facetQuery("")) || command.equals(FacetSchema.facetQuery("fileSize >= 1024")))
+        .count();
+    assertThat(queries).isBetween(60L, 140L);
   }
 
   @Test
@@ -175,7 +185,62 @@ class FacetWorkloadTest {
       workload.start();
       await().atMost(Duration.ofSeconds(30)).until(() -> workload.stats().queries() >= 3);
       assertThat(workload.stats().nonExact()).isGreaterThan(0L);
+      assertThat(workload.stats().queryFailures()).isZero();
       assertThat(workload.acked()).isEqualTo(workload.stats().writesOk());
     }
+  }
+
+  @Test
+  void exactAnswersAreNotCountedAsNonExact() {
+    answer.set(EXACT);
+    try (final FacetWorkload workload = workload(2)) {
+      workload.start();
+      await().atMost(Duration.ofSeconds(30)).until(() -> workload.stats().queries() >= 5);
+      workload.close();
+      assertThat(workload.stats().nonExact()).isZero();
+      assertThat(workload.stats().queryFailures()).isZero();
+      assertThat(workload.stats().queryServerErrors()).isZero();
+    }
+  }
+
+  /** A query the server rejects (a broken FACETS statement answers 400) must show in the run summary, never vanish. */
+  @Test
+  void clientErrorsOnQueriesAreCounted() {
+    status.set(400);
+    try (final FacetWorkload workload = workload(2)) {
+      workload.start();
+      await().atMost(Duration.ofSeconds(30)).until(() -> workload.stats().queries() >= 3);
+      workload.close();
+      final FacetWorkload.Stats stats = workload.stats();
+      assertThat(stats.queryFailures()).isEqualTo(stats.queries());
+      assertThat(stats.queryServerErrors()).isZero();
+      assertThat(stats.nonExact()).isZero();
+    }
+  }
+
+  @Test
+  void unparsableQueryAnswersAreCounted() {
+    answer.set("not json");
+    try (final FacetWorkload workload = workload(2)) {
+      workload.start();
+      await().atMost(Duration.ofSeconds(30)).until(() -> workload.stats().queries() >= 3);
+      workload.close();
+      final FacetWorkload.Stats stats = workload.stats();
+      assertThat(stats.queryFailures()).isEqualTo(stats.queries());
+      assertThat(stats.nonExact()).isZero();
+      // writes only look at the status, so they still succeed
+      assertThat(stats.writesOk()).isGreaterThan(0L);
+    }
+  }
+
+  @Test
+  void statsAreReportedAsJson() {
+    final JSONObject json = new FacetWorkload.Stats(1, 2, 3, 4, 5, 6).toJSON();
+    assertThat(json.getLong("writesOk")).isEqualTo(1L);
+    assertThat(json.getLong("writesFailed")).isEqualTo(2L);
+    assertThat(json.getLong("queries")).isEqualTo(3L);
+    assertThat(json.getLong("queryServerErrors")).isEqualTo(4L);
+    assertThat(json.getLong("queryFailures")).isEqualTo(5L);
+    assertThat(json.getLong("nonExact")).isEqualTo(6L);
   }
 }

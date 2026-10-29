@@ -34,12 +34,14 @@ import java.util.regex.Pattern;
 
 /**
  * Immutable configuration of a chaos run, read from {@code chaos.*} system properties. The seed drives every random
- * decision of the run, so {@link #replayCommand()} reproduces the same fault sequence.
+ * decision of the run, so {@link #replayCommand()} reproduces the same fault sequence. {@code facetWriters} threads run the
+ * facet workload beside the ledger writers; 0 disables facets entirely (no facet schema, workload or check).
  */
 public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps, int writers,
                           Map<String, Integer> faultWeights, Duration holdMin, Duration holdMax, Duration calmMin,
                           Duration calmMax, Duration convergenceTimeout, Duration electionTimeout,
-                          Duration availabilityGrace, String nodeHeap, String serverOpts, String logConfig) {
+                          Duration availabilityGrace, String nodeHeap, String serverOpts, String logConfig,
+                          int facetWriters) {
 
   private static final long    MIN_NODE_HEAP_BYTES = 256L << 20;
   private static final Pattern HEAP_SIZE           = Pattern.compile("(\\d+)([mMgG])");
@@ -54,6 +56,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
       throw new IllegalArgumentException("chaos.nodes must be 3 or 5, got " + nodes);
     if (writers < 1)
       throw new IllegalArgumentException("chaos.writers must be >= 1, got " + writers);
+    if (facetWriters < 0)
+      throw new IllegalArgumentException("chaos.facetWriters must be >= 0 (0 = no facets), got " + facetWriters);
     if (maxSteps < 0)
       throw new IllegalArgumentException("chaos.maxSteps must be >= 0 (0 = unlimited), got " + maxSteps);
     if (duration.isNegative() || duration.isZero())
@@ -98,7 +102,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         duration(properties, "chaos.availabilityGrace", "PT20S"),
         properties.getProperty("chaos.nodeHeap", "1G").trim(),
         properties.getProperty("chaos.serverOpts", ""),
-        properties.getProperty("chaos.logConfig", ""));
+        properties.getProperty("chaos.logConfig", ""),
+        integer(properties, "chaos.facetWriters", 2));
   }
 
   /**
@@ -138,6 +143,7 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         + " -Dchaos.duration=" + duration
         + " -Dchaos.maxSteps=" + maxSteps
         + " -Dchaos.writers=" + writers
+        + " -Dchaos.facetWriters=" + facetWriters
         + " -Dchaos.faults=" + faultsSpec()
         + " -Dchaos.holdMin=" + holdMin
         + " -Dchaos.holdMax=" + holdMax

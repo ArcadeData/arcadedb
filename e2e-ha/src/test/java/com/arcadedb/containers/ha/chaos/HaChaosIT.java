@@ -25,6 +25,7 @@ import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
+import com.arcadedb.test.support.FacetSchema;
 import com.arcadedb.test.support.ServerWrapper;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
@@ -113,20 +114,35 @@ class HaChaosIT extends ContainersTestTemplate {
     waitForAllNodesKnowLeader(servers, 60);
 
     final DockerNodeControl control = new DockerNodeControl(nodes, raftProxies);
-    createDatabaseAndSchema(servers.get(leader), control);
+    final boolean withFacets = config.facetWriters() > 0;
+    createDatabaseAndSchema(servers.get(leader), control, withFacets);
 
     final Ledger ledger = new Ledger(config.writers());
     final InvariantChecker checker = new InvariantChecker(ledger);
     final Path reportDir = Path.of("target", "chaos", Long.toString(config.seed()));
     ChaosResult result;
     try (final ChaosReport report = new ChaosReport(reportDir, config);
-        final Workload workload = new Workload(config, ledger, control, ChaosSchema.DATABASE)) {
+        final Workload workload = new Workload(config, ledger, control, ChaosSchema.DATABASE);
+        final FacetWorkload facets = withFacets ?
+            new FacetWorkload(config.seed(), config.facetWriters(), control, ChaosSchema.DATABASE) : null) {
+      // the inherited ContainersTestTemplate.DATABASE is the template's database, never the chaos one
+      final FacetCheck facetCheck = facets == null ? null :
+          new FacetCheck(new HttpFacetReader(control, ChaosSchema.DATABASE), config.nodes(), config.convergenceTimeout(),
+              Duration.ofSeconds(1));
       final Checkpoint checkpoint = new Checkpoint(new HttpNodeReader(control, ChaosSchema.DATABASE), ledger, checker,
-          config.nodes(), config.convergenceTimeout(), Duration.ofSeconds(1));
+          config.nodes(), config.convergenceTimeout(), Duration.ofSeconds(1), facetCheck);
+      final LoadGenerator load = facets == null ? workload : new CombinedLoad(workload, facets);
       final ChaosRunner runner = new ChaosRunner(config, new ClusterState(config.nodes()), control,
-          new FaultPicker(config.faultWeights(), config.electionTimeout()), workload, ledger, checkpoint, checker, report,
+          new FaultPicker(config.faultWeights(), config.electionTimeout()), load, ledger, checkpoint, checker, report,
           control, duration -> Thread.sleep(duration.toMillis()));
       result = runner.run();
+      if (facets != null) {
+        // the runner has closed the load, so the counters are final; the summary is rewritten to carry them
+        final FacetWorkload.Stats stats = facets.stats();
+        logger.info("CHAOS facets: {}", stats);
+        report.facetStats(stats.toJSON());
+        report.summary(result, ledger, checker.lateCommits());
+      }
 
       // the evidence must be what the servers flushed on a clean shutdown, not a SIGKILL snapshot
       stopNodesGracefully(nodes);
@@ -175,7 +191,11 @@ class HaChaosIT extends ContainersTestTemplate {
     }
   }
 
-  private void createDatabaseAndSchema(final ServerWrapper leader, final DockerNodeControl control) {
+  /**
+   * Creates the chaos database and its ledger schema, plus the facet schema when {@code withFacets}, then waits until every
+   * node answers on the new types (facets settled, so no projection is still building) before any workload starts.
+   */
+  private void createDatabaseAndSchema(final ServerWrapper leader, final DockerNodeControl control, final boolean withFacets) {
     final RemoteServer server = new RemoteServer(leader.host(), leader.httpPort(), "root", PASSWORD);
     server.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     Awaitility.await("database creation").atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofSeconds(2))
@@ -191,6 +211,9 @@ class HaChaosIT extends ContainersTestTemplate {
     try {
       for (final String ddl : ChaosSchema.DDL)
         database.command("sql", ddl);
+      if (withFacets)
+        for (final String ddl : FacetSchema.DDL)
+          database.command("sql", ddl);
     } finally {
       database.close();
     }
@@ -200,6 +223,14 @@ class HaChaosIT extends ContainersTestTemplate {
       final int node = i;
       Awaitility.await("schema on node " + node).atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofSeconds(1))
           .ignoreExceptions().until(() -> reader.counts(node)[0] == 0);
+    }
+    if (!withFacets)
+      return;
+    final HttpFacetReader facetReader = new HttpFacetReader(control, ChaosSchema.DATABASE);
+    for (int i = 0; i < control.size(); i++) {
+      final int node = i;
+      Awaitility.await("facet schema on node " + node).atMost(Duration.ofSeconds(60)).pollInterval(Duration.ofSeconds(1))
+          .ignoreExceptions().until(() -> facetReader.facets(node, "").settled());
     }
   }
 

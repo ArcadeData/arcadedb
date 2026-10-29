@@ -46,6 +46,8 @@ public final class ChaosReport implements AutoCloseable {
   private       int            stepsWithUnreadReformats;
   // FACET_META findings of every checkpoint: reported, never a failure
   private final Set<String>    facetWarnings = new LinkedHashSet<>();
+  // Counters of the facet workload, set once it has stopped; null when the run had no facet workload
+  private       JSONObject     facetStats;
 
   public ChaosReport(final Path dir, final ChaosConfig config) throws IOException {
     Files.createDirectories(dir);
@@ -94,6 +96,10 @@ public final class ChaosReport implements AutoCloseable {
     facetWarnings.addAll(warnings);
   }
 
+  public synchronized void facetStats(final JSONObject stats) {
+    facetStats = stats;
+  }
+
   public void ledgerDiff(final List<Violation> violations) throws IOException {
     final StringBuilder text = new StringBuilder();
     for (final Violation violation : violations) {
@@ -129,6 +135,7 @@ public final class ChaosReport implements AutoCloseable {
         .put("nodes", config.nodes())
         .put("duration", config.duration().toString())
         .put("writers", config.writers())
+        .put("facetWriters", config.facetWriters())
         .put("faults", config.faultsSpec())
         .put("result", result.kind().name())
         .put("message", result.message())
@@ -139,6 +146,8 @@ public final class ChaosReport implements AutoCloseable {
         .put("stepsWithUnreadReformats", stepsWithUnreadReformats())
         .put("facetWarnings", new JSONArray(facetWarnings))
         .put("replay", config.replayCommand());
+    if (facetStats != null)
+      summary.put("facets", facetStats);
     Files.writeString(dir.resolve("summary.json"), summary.toString(2), StandardCharsets.UTF_8);
   }
 

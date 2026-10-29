@@ -56,10 +56,8 @@ class CombinedLoadTest {
     assertThat(other.closed).isTrue();
   }
 
-  @Test
-  void closeReachesEveryMemberWhenOneFails() {
-    final FakeLoad last = quiet(0);
-    final LoadGenerator failing = new LoadGenerator() {
+  private static LoadGenerator failingOnClose(final RuntimeException failure) {
+    return new LoadGenerator() {
       @Override
       public void start() {
       }
@@ -79,14 +77,30 @@ class CombinedLoadTest {
 
       @Override
       public void close() {
-        throw new IllegalStateException("boom");
+        throw failure;
       }
     };
+  }
+
+  @Test
+  void closeReachesEveryMemberWhenOneFails() {
+    final FakeLoad last = quiet(0);
     final FakeLoad first = quiet(0);
-    final CombinedLoad combined = new CombinedLoad(first, failing, last);
+    final CombinedLoad combined = new CombinedLoad(first, failingOnClose(new IllegalStateException("boom")), last);
     assertThatThrownBy(combined::close).isInstanceOf(IllegalStateException.class).hasMessage("boom");
     assertThat(first.closed).isTrue();
     assertThat(last.closed).isTrue();
     combined.close();
+  }
+
+  @Test
+  void laterCloseFailuresAreSuppressedIntoTheFirst() {
+    final FakeLoad last = quiet(0);
+    final IllegalStateException second = new IllegalStateException("second");
+    final CombinedLoad combined = new CombinedLoad(quiet(0), failingOnClose(new IllegalStateException("first")),
+        failingOnClose(second), last);
+    assertThatThrownBy(combined::close).isInstanceOf(IllegalStateException.class).hasMessage("first")
+        .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+    assertThat(last.closed).isTrue();
   }
 }
