@@ -8744,25 +8744,213 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Whether {@code allowedRIDs} is narrow enough, relative to {@code selectivitySetting}, to take a pre-filter plan
-   * instead of paying for a {@code Bits}-filtered HNSW walk (issue #6502, extended to the groupBy and
-   * PQ-approximate paths by issue #6514). Shared by all three call sites - {@link #findNeighborsFromVector},
+   * The pre-filter plan of {@code allowedRIDs} when it is narrow enough, relative to {@code selectivitySetting}, to take
+   * one instead of paying for a {@code Bits}-filtered HNSW walk (issue #6502, extended to the groupBy and
+   * PQ-approximate paths by issue #6514), or null for the walk. Shared by all three call sites - {@link #findNeighborsFromVector},
    * {@link #findNeighborsFromVectorGrouped} and {@link #findNeighborsFromVectorApproximate} - each gated on its own
    * {@code selectivitySetting}, so the clamp-to-1.0 and persisted-vectors-only reasoning below only has to be
    * right once instead of three times in step.
+   * <p>
+   * A {@link PredicateRidSet} (the {@code where} option) has no size of its own (issue #10921). One restricted by a short
+   * {@code filter} lists the filter, so its members are scored before they are tested. Any other one is listed only when the
+   * caller passes a {@code listingCap}: the walk found the predicate selective (see {@link LiveVectorBitsFilter}), and an index
+   * lists no more than that many candidates of it. It is not listed up front, because an index lookup of a key reads every
+   * value the key holds on a page before it applies a limit: a probe of a broad key costs as much as the walk it would decide.
    */
-  private boolean allowListQualifiesForPreFilter(final Set<RID> allowedRIDs, final int[] ordinalMap,
-      final GlobalConfiguration selectivitySetting) {
+  private PreFilterPlan preFilterPlan(final Set<RID> allowedRIDs, final int[] ordinalMap,
+      final GlobalConfiguration selectivitySetting, final int listingCap) {
+    if (allowedRIDs == null || allowedRIDs.isEmpty())
+      return null;
     // Clamped to 1.0: the setting is documented as a fraction of the index, and an operator-supplied value above
     // that would route every allow-list query - however wide - through the ordinal-resolution walk instead of the
     // graph, which is exactly the pathology this plan exists to avoid on the OTHER side of the crossover.
     final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration().getValueAsFloat(selectivitySetting));
+    if (maxSelectivity <= 0f)
+      return null;
     // Persisted/graph vectors only, same as findNeighborsFromVector's issue #3722 shortfall-budget calculation -
     // the delta buffer is not in this count. Under a large buffer relative to the graph this can overstate the
     // allow-list's selectivity against the true live set and bias toward the graph walk; per that calculation's
     // own reasoning, that only ever costs a missed optimization, never a wrong answer.
     final int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
-    return maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity;
+    final float maxCandidates = availableVectors * maxSelectivity;
+    if (allowedRIDs instanceof PredicateRidSet predicate) {
+      final int cap = allowedRIDs.size() <= maxCandidates ? (int) maxCandidates : (int) Math.min(maxCandidates, listingCap);
+      if (cap > 0) {
+        final PredicateRidSet.Candidates candidates = predicate.listCandidates(getAssociatedBucketId(), cap);
+        if (candidates != null)
+          return new PreFilterPlan(candidates.rids(), candidates.exact() ? candidates.rids() : allowedRIDs);
+      }
+    }
+    return allowedRIDs.size() <= maxCandidates ? new PreFilterPlan(allowedRIDs, allowedRIDs) : null;
+  }
+
+  /**
+   * The filter of a walk restricted by {@code allowedRIDs} with a beam of {@code beam}: live vectors of the allow-list. The walk
+   * of a predicate an index of this bucket can list is given up for the listing once it proves the predicate selective enough
+   * for the pre-filter plan of {@code selectivitySetting} (issue #10921).
+   */
+  private LiveVectorBitsFilter walkFilter(final Set<RID> allowedRIDs, final int[] ordinalMap, final TransactionVectorOverlay overlay,
+      final WorkGuard guard, final int beam, final GlobalConfiguration selectivitySetting) {
+    final int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
+    int maxCandidates = 0;
+    if (allowedRIDs instanceof PredicateRidSet predicate && predicate.listsCandidates(getAssociatedBucketId()))
+      maxCandidates = (int) (availableVectors * Math.min(1f, getDatabase().getConfiguration().getValueAsFloat(selectivitySetting)));
+    return new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(), supersededRIDs(overlay), guard, beam, availableVectors,
+        maxCandidates);
+  }
+
+  /**
+   * The beam of a walk for {@code k} neighbours: {@code efSearch} when the query or the index sets one, else sized to the
+   * graph (issue #3722).
+   */
+  private int searchBeam(final int k, final int efSearch, final int graphSize) {
+    if (efSearch > 0)
+      return Math.max(k, efSearch);
+    if (metadata.efSearchConfigured)
+      return Math.max(k, metadata.efSearch);
+    return graphSize < 10_000 ? Math.max(k, DEFAULT_SEARCH_BEAM_FLOOR) : Math.max(k * 2, DEFAULT_SEARCH_BEAM_FLOOR);
+  }
+
+  /**
+   * Answers a plain k-NN search by its pre-filter plan: the allow-list scored directly, merged with the delta buffer.
+   */
+  private List<Pair<RID, Float>> answerByPreFilter(final PreFilterPlan preFilter, final VectorFloat<?> queryVectorFloat, final int k,
+      final RandomAccessVectorValues vectors, final int[] ordinalMap, final TransactionVectorOverlay overlay, final WorkGuard guard) {
+    metrics.incrementPreFilterSearches();
+    if (preFilter.scored().isEmpty())
+      return new ArrayList<>(0);
+    final int scoredRows = preFilter.scoredRows(k);
+    final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scoredRows, preFilter.scored().size() + 1));
+    mergeWithDeltaScan(queryVectorFloat, scoredRows, preFilter.scored(), results, overlay);
+    bruteForceScan(queryVectorFloat, scoredRows, preFilter.scored(), results, vectors, ordinalMap, overlay, guard);
+    return preFilter.nearestMembers(results, k);
+  }
+
+  /**
+   * Answers a grouped search by its pre-filter plan (issue #6514).
+   */
+  private List<Pair<RID, Float>> answerGroupedByPreFilter(final PreFilterPlan preFilter, final VectorFloat<?> queryVectorFloat,
+      final int limit, final int groupSize, final Set<Object> onlyGroups, final float maxDistance, final int maxRows,
+      final Function<RID, Object> groupKeyResolver, final RandomAccessVectorValues vectors, final int[] ordinalMap,
+      final List<DeltaVectorEntry> deltaSnapshot, final TransactionVectorOverlay overlay, final GroupedCandidates candidates,
+      final WorkGuard guard) {
+    metrics.incrementPreFilterSearches();
+    if (preFilter.scored().isEmpty())
+      return Collections.emptyList();
+    return preFilterGrouped(queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows, preFilter, groupKeyResolver,
+        vectors, ordinalMap, deltaSnapshot, overlay, candidates, guard);
+  }
+
+  /**
+   * Answers a PQ search by its pre-filter plan: re-ranked, the exact path's (the PQ-scaled one returns PQ distances, issue
+   * #6502); otherwise the PQ-scored one of issue #6514.
+   */
+  private List<Pair<RID, Float>> answerApproximateByPreFilter(final PreFilterPlan preFilter, final boolean rerank,
+      final VectorFloat<?> queryVectorFloat, final int k, final ScoreFunction.ApproximateScoreFunction scoreFunction,
+      final RandomAccessVectorValues exactVectors, final int[] ordinalMap, final PQCodes codes, final TransactionVectorOverlay overlay,
+      final WorkGuard guard) {
+    if (rerank)
+      return answerByPreFilter(preFilter, queryVectorFloat, k, exactVectors, ordinalMap, overlay, guard);
+    metrics.incrementPreFilterSearches();
+    if (preFilter.scored().isEmpty())
+      return new ArrayList<>(0);
+    final int scoredRows = preFilter.scoredRows(k);
+    final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scoredRows, preFilter.scored().size() + 1));
+    // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes, so delta rows
+    // merged here are ranked against - and returned alongside - approximate scores.
+    mergeWithDeltaScanApproximate(queryVectorFloat, scoredRows, preFilter.scored(), results, overlay, codes.quantization());
+    preFilterApproximate(scoreFunction, scoredRows, preFilter.scored(), results, ordinalMap, overlay);
+    return preFilter.nearestMembers(results, k);
+  }
+
+  /**
+   * One walk of the PQ graph, on a searcher borrowed from the index-scoped pool and discarded rather than handed to the next
+   * query when the walk stops halfway (issue #9896). A graph file written with the fusedPQ setting is walked on the codes
+   * fused into its nodes, through the view of this searcher; any other graph on the memory-resident codes. The reranker is the
+   * same either way (issue #10713).
+   */
+  private SearchResult walkApproximateGraph(final ImmutableGraphIndex pinnedGraph, final VectorFloat<?> queryVectorFloat,
+      final ScoreFunction.ApproximateScoreFunction scoreFunction, final ScoreFunction.ExactScoreFunction reranker, final int k,
+      final int rerankK, final boolean wideBeam, final Bits bitsFilter) {
+    final GraphSearcherPool pool = getSearcherPool();
+    final long poolEpoch = searcherPoolEpoch();
+    final GraphSearcher searcher = pool.borrow(pinnedGraph, poolEpoch);
+    boolean walked = false;
+    try {
+      final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pinnedGraph, queryVectorFloat, scoreFunction, reranker);
+      // JVector 4.0's search method uses (scoreProvider, topK, Bits) signature
+      final SearchResult searchResult = wideBeam ?
+          searcher.search(ssp, k, rerankK, 0.0f, 0.0f, bitsFilter) :
+          searcher.search(ssp, k, bitsFilter);
+      walked = true;
+      return searchResult;
+    } finally {
+      if (walked)
+        pool.release(searcher, pinnedGraph, poolEpoch);
+      else
+        pool.discard(searcher);
+    }
+  }
+
+  /**
+   * One walk of the graph for {@code k} neighbours with a beam of {@code beam}, on a searcher borrowed from the index-scoped
+   * pool so its scratch state survives across queries (issue #5413). A walk {@code bitsFilter} or the guard stopped halfway
+   * leaves the searcher mid-search, so it is discarded rather than handed to the next query (issue #9896).
+   */
+  private SearchResult walkGraph(final VectorFloat<?> queryVectorFloat, final RandomAccessVectorValues vectors, final int k,
+      final int beam, final Bits bitsFilter) {
+    final GraphSearcherPool pool = getSearcherPool();
+    final long poolEpoch = searcherPoolEpoch();
+    // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must agree on which
+    // graph the searcher belongs to.
+    final ImmutableGraphIndex pooledGraph = graphIndex;
+    final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+    boolean walked = false;
+    try {
+      final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
+      // A graph that carries the FusedPQ feature is walked on the PQ codes stored beside its nodes, and the best candidates
+      // are scored again on the stored vectors; any other graph is walked on the stored vectors (issue #10514)
+      final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, exactScoreFunction);
+      final SearchResult searchResult = searcher.search(ssp, k, beam, 0.0f, 0.0f, bitsFilter);
+      walked = true;
+      return searchResult;
+    } finally {
+      if (walked)
+        pool.release(searcher, pooledGraph, poolEpoch);
+      else
+        pool.discard(searcher);
+    }
+  }
+
+  /**
+   * The allow-list a pre-filter plan scores, and the one its answer must belong to (issue #10921). They are the same set but
+   * for the candidates an index listed for a predicate it does not answer whole: those are all scored, which reads no
+   * record, and then tested nearest first until the plan holds enough members, so a record is loaded only for a candidate
+   * that could make the answer. An empty {@code scored} set has no member: the plan answers nothing.
+   */
+  private record PreFilterPlan(Set<RID> scored, Set<RID> members) {
+    boolean testsMembers() {
+      return members != scored;
+    }
+
+    /** How many rows the scan keeps: every candidate when they are tested afterwards, else {@code k}. */
+    int scoredRows(final int k) {
+      return testsMembers() ? (int) Math.min(Integer.MAX_VALUE, (long) scored.size() + k) : k;
+    }
+
+    /** The nearest {@code k} members of {@code ranked}, which is sorted nearest first. */
+    List<Pair<RID, Float>> nearestMembers(final List<Pair<RID, Float>> ranked, final int k) {
+      if (!testsMembers())
+        return ranked;
+      final List<Pair<RID, Float>> kept = new ArrayList<>(Math.min(k, ranked.size()));
+      for (final Pair<RID, Float> candidate : ranked) {
+        if (kept.size() >= k)
+          break;
+        if (members.contains(candidate.getFirst()))
+          kept.add(candidate);
+      }
+      return kept;
+    }
   }
 
   /**
@@ -9037,81 +9225,43 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
 
+        // The beam: an explicit efSearch (the query's or the index's), else sized to the graph (issue #3722). A short walk
+        // is kept as it is: there used to be a second pass here - `if (firstPass.getNodes().length < k) searchResult =
+        // searcher.resume(...)` - meant to widen the beam when the search came up short. It could only ever make things
+        // worse, and issue #5873 is what it cost. A short first pass means the result queue never reached rerankK, and
+        // JVector's searchOneLayer breaks early *only* once the queue is that full, so the loop must instead have run its
+        // candidate queue dry - having expanded every node reachable from the entry point. resume() pushes the (empty)
+        // evicted pile back onto that same empty queue and returns zero nodes, so the assignment threw the first pass away
+        // and handed the caller nothing. Width was never what ran out either, so a wider fresh search would have visited
+        // exactly the same nodes. What is actually left unreached at that point is whatever the graph cannot walk to, and
+        // the only thing that finds it is the brute-force scan below - which is already there, already gated on the
+        // shortfall, and now starts from the rows the graph did find instead of from nothing.
+        final int beam = searchBeam(k, efSearch, graphIndex.size());
+
         // Issue #6502 pre-filter plan: below VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY (see its javadoc for why the
         // graph walk gets more expensive, not less, as the allow-list narrows), score the allow-list directly via
         // collectAllowedOrdinals/scoreOrdinal/bruteForceScan - the same walk the issue #3722 shortfall fallback
         // already uses - instead of duplicating it.
-        if (allowedRIDs != null && !allowedRIDs.isEmpty()
-            && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
-          metrics.incrementPreFilterSearches();
-          final List<Pair<RID, Float>> results = new ArrayList<>(k);
-          mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
-          bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap, overlay, guard);
-          return results;
-        }
+        final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0);
+        if (preFilter != null)
+          return answerByPreFilter(preFilter, queryVectorFloat, k, vectors, ordinalMap, overlay, guard);
 
         // Only live vectors may enter the result heap. Accepting tombstones lets a query aimed at a deleted
         // neighbourhood fill its beam with them and stop, which is what returned an empty list (issue #5558).
-        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(),
-            supersededRIDs(overlay), guard);
-
-        // Use instance GraphSearcher with SearchScoreProvider for efSearch control. The searcher is borrowed from
-        // the index-scoped pool so its scratch state survives across queries (issue #5413).
-        final SearchResult searchResult;
-        final GraphSearcherPool pool = getSearcherPool();
-        final long poolEpoch = searcherPoolEpoch();
-        // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
-        // agree on which graph the searcher belongs to.
-        final ImmutableGraphIndex pooledGraph = graphIndex;
-        final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
-        boolean walked = false;
+        // The walk of a predicate an index can list is given up for the listing once it proves the predicate selective
+        // (issue #10921)
+        SearchResult searchResult;
         try {
-          final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
-
-          // A graph that carries the FusedPQ feature is walked on the PQ codes stored beside its nodes, and the best candidates
-          // are scored again on the stored vectors; any other graph is walked on the stored vectors (issue #10514)
-          final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, exactScoreFunction);
-
-          if (efSearch > 0) {
-            // Explicit efSearch: use fixed beam width (per-query or index default override)
-            final int effectiveEfSearch = Math.max(k, efSearch);
-            searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
-          } else if (metadata.efSearchConfigured) {
-            // User configured efSearch in index metadata: use their value
-            final int effectiveEfSearch = Math.max(k, metadata.efSearch);
-            searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
-          } else {
-            // Adaptive efSearch (issue #3722): size the beam to the graph and keep whatever it finds.
-            //
-            // There used to be a second pass here - `if (firstPass.getNodes().length < k) searchResult =
-            // searcher.resume(...)` - meant to widen the beam when the search came up short. It could only ever
-            // make things worse, and issue #5873 is what it cost. A short first pass means the result queue never
-            // reached rerankK, and JVector's searchOneLayer breaks early *only* once the queue is that full, so the
-            // loop must instead have run its candidate queue dry - having expanded every node reachable from the
-            // entry point. resume() pushes the (empty) evicted pile back onto that same empty queue and returns
-            // zero nodes, so the assignment threw the first pass away and handed the caller nothing. Width was
-            // never what ran out either, so a wider fresh search would have visited exactly the same nodes.
-            //
-            // What is actually left unreached at that point is whatever the graph cannot walk to, and the only
-            // thing that finds it is the brute-force scan below - which is already there, already gated on the
-            // shortfall, and now starts from the rows the graph did find instead of from nothing.
-            final int graphSize = graphIndex.size();
-            final int initialEfSearch;
-            if (graphSize < 10_000)
-              initialEfSearch = Math.max(k, DEFAULT_SEARCH_BEAM_FLOOR);
-            else
-              initialEfSearch = Math.max(k * 2, DEFAULT_SEARCH_BEAM_FLOOR);
-
-            searchResult = searcher.search(ssp, k, initialEfSearch, 0.0f, 0.0f, bitsFilter);
-          }
-          walked = true;
-        } finally {
-          // A walk the guard stopped halfway leaves the searcher's scratch state mid-search: it is not handed to the
-          // next query (issue #9896)
-          if (walked)
-            pool.release(searcher, pooledGraph, poolEpoch);
-          else
-            pool.discard(searcher);
+          searchResult = walkGraph(queryVectorFloat, vectors, k, beam,
+              walkFilter(allowedRIDs, ordinalMap, overlay, guard, beam, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
+        } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
+          final PreFilterPlan listed = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+              e.listingCap);
+          if (listed != null)
+            return answerByPreFilter(listed, queryVectorFloat, k, vectors, ordinalMap, overlay, guard);
+          // The predicate keeps more records than the walk met where it went: the walk answers after all, unbounded
+          searchResult = walkGraph(queryVectorFloat, vectors, k, beam,
+              new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(), supersededRIDs(overlay), guard));
         }
 
         recordGraphWalkCost(searchResult.getVisitedCount());
@@ -9582,30 +9732,73 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Issue #6514 pre-filter plan: the grouped counterpart of the issue #6502 plan in findNeighborsFromVector -
         // see preFilterGrouped's javadoc for why it cannot simply call bruteForceScan.
-        if (allowedRIDs != null && !allowedRIDs.isEmpty()
-            && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
-          metrics.incrementPreFilterSearches();
-          return preFilterGrouped(queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows, allowedRIDs,
+        final int graphSize = graphIndex.size();
+        // Beam width is chosen exactly the way the ungrouped path chooses it, with maxRows in place of k.
+        final int effectiveEfSearch;
+        if (efSearch > 0)
+          effectiveEfSearch = Math.max(maxRows, efSearch);
+        else if (metadata.efSearchConfigured)
+          effectiveEfSearch = Math.max(maxRows, metadata.efSearch);
+        else
+          // The doubling is the second multiplication issue #6066 covers. maxRows is already clamped to the
+          // index's own vector count, so it can only overflow on an index past ~1.07e9 vectors in one
+          // bucket, but the long is free and the alternative is a negative beam width.
+          effectiveEfSearch = graphSize < 10_000 ?
+              Math.max(maxRows, DEFAULT_SEARCH_BEAM_FLOOR) :
+              (int) Math.min(Integer.MAX_VALUE, Math.max((long) maxRows * 2, DEFAULT_SEARCH_BEAM_FLOOR));
+
+        final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0);
+        if (preFilter != null)
+          return answerGroupedByPreFilter(preFilter, queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows,
               groupKeyResolver, vectors, ordinalMap, deltaSnapshot, overlay, candidates, guard);
-        }
 
         // Liveness-only Bits filter. Unlike the first grouped implementation, we do NOT apply
         // group-aware filtering during traversal: Bits is score-blind, so doing so lets the HNSW walk
         // hand the per-group budget to whatever cluster the entry-point descent happened to land in
         // (issue #5761). The group cap is applied to the score-ordered output below instead.
-        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(),
-            supersededRIDs(overlay), guard);
+        // The first pass of a predicate an index can list is given up for the listing once it proves the predicate selective,
+        // as on the ungrouped path (issue #10921)
+        LiveVectorBitsFilter bitsFilter = walkFilter(allowedRIDs, ordinalMap, overlay, guard, effectiveEfSearch,
+            GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY);
 
-        final GroupedSearchState state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows,
-            allowedRIDs, groupKeyResolver, queryVectorFloat, deltaSnapshot, candidates);
+        final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
+        final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
         final GraphSearcherPool pool = getSearcherPool();
         final long poolEpoch = searcherPoolEpoch();
         // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
         // agree on which graph the searcher belongs to.
         final ImmutableGraphIndex pooledGraph = graphIndex;
-        final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
-        final int graphSize = graphIndex.size();
+        GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+
+        // topK is the whole beam, not maxRows: it is candidates, not rows, that the group cap consumes, and a
+        // narrower topK would throw away scored candidates the cap still has a use for. It costs nothing to keep
+        // them - topK never reaches the layer-0 traversal (searchLayer0 passes only rerankK to searchOneLayer) and
+        // reranking is driven by rerankK too, so every one of these was already scored and reranked.
+        SearchResult firstPass = null;
+        if (bitsFilter.givesUpForTheListing()) {
+          // Only the first pass may be given up: it has admitted nothing yet, and the passes that resume it walk a predicate
+          // the first pass found broad enough
+          try {
+            firstPass = searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+            bitsFilter.disarm();
+          } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
+            pool.discard(searcher);
+            final PreFilterPlan listed = preFilterPlan(allowedRIDs, ordinalMap,
+                GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, e.listingCap);
+            if (listed != null)
+              return answerGroupedByPreFilter(listed, queryVectorFloat, limit, groupSize, onlyGroups, maxDistance, maxRows,
+                  groupKeyResolver, vectors, ordinalMap, deltaSnapshot, overlay, candidates, guard);
+            // The predicate keeps more records than the walk met where it went: the walk answers after all, unbounded
+            bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex(), supersededRIDs(overlay), guard);
+            searcher = pool.borrow(pooledGraph, poolEpoch);
+          } catch (final RuntimeException | Error e) {
+            pool.discard(searcher);
+            throw e;
+          }
+        }
+
+        final GroupedSearchState state;
         int passes = 1;
         // Issue #6559 item 1: whether a short answer is actionable depends on whether the candidate budget cut the
         // walk short while the graph still had more to give - the case raising efSearch actually fixes - or the
@@ -9626,31 +9819,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int visited = 0;
         boolean walked = false;
         try {
-          final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
-          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
-
-          // Beam width is chosen exactly the way the ungrouped path chooses it, with maxRows in place of k.
-          final int effectiveEfSearch;
-          if (efSearch > 0)
-            effectiveEfSearch = Math.max(maxRows, efSearch);
-          else if (metadata.efSearchConfigured)
-            effectiveEfSearch = Math.max(maxRows, metadata.efSearch);
-          else
-            // The doubling is the second multiplication issue #6066 covers. maxRows is already clamped to the
-            // index's own vector count, so it can only overflow on an index past ~1.07e9 vectors in one
-            // bucket, but the long is free and the alternative is a negative beam width.
-            effectiveEfSearch = graphSize < 10_000 ?
-                Math.max(maxRows, DEFAULT_SEARCH_BEAM_FLOOR) :
-                (int) Math.min(Integer.MAX_VALUE, Math.max((long) maxRows * 2, DEFAULT_SEARCH_BEAM_FLOOR));
+          state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows, allowedRIDs, groupKeyResolver,
+              queryVectorFloat, deltaSnapshot, candidates);
 
           final int candidateBudget = Math.min(graphSize,
               (int) Math.min(Integer.MAX_VALUE, (long) effectiveEfSearch * GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR));
 
-          // topK is the whole beam, not maxRows: it is candidates, not rows, that the group cap consumes, and a
-          // narrower topK would throw away scored candidates the cap still has a use for. It costs nothing to keep
-          // them - topK never reaches the layer-0 traversal (searchLayer0 passes only rerankK to searchOneLayer) and
-          // reranking is driven by rerankK too, so every one of these was already scored and reranked.
-          SearchResult searchResult = searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+          SearchResult searchResult = firstPass != null ?
+              firstPass :
+              searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
           while (true) {
             final int returned = searchResult.getNodes().length;
             examined += returned;
@@ -9823,24 +10000,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * decided differently. Merging matters more here, not less: an allow-list is usually a set of records the caller
    * just wrote, so "narrow enough to reach this plan" and "still in the delta buffer" are the same query, and this
    * plan used to answer it empty.
+   * <p>
+   * The candidates an index listed for a predicate it does not answer whole are scored without a test, and admitted as
+   * members only: {@link GroupedSearchState#admit} tests each in rank order, so a record is loaded only for a candidate the
+   * walk reaches (issue #10921).
    */
   private List<Pair<RID, Float>> preFilterGrouped(final VectorFloat<?> queryVectorFloat, final int limit, final int groupSize,
-      final Set<Object> onlyGroups, final float maxDistance, final int maxRows, final Set<RID> allowedRIDs,
+      final Set<Object> onlyGroups, final float maxDistance, final int maxRows, final PreFilterPlan preFilter,
       final Function<RID, Object> groupKeyResolver,
       final RandomAccessVectorValues vectors, final int[] ordinalMap, final List<DeltaVectorEntry> deltaSnapshot,
       final TransactionVectorOverlay overlay, final GroupedCandidates rerankCandidates, final WorkGuard guard) {
-    final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
+    final int[] candidates = collectAllowedOrdinals(preFilter.scored(), ordinalMap);
     final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     final RidHashSet seenRIDs = new RidHashSet(candidates.length);
     final List<Pair<RID, Float>> scored = new ArrayList<>(candidates.length);
     for (int i = 0; i < candidates.length; i++) {
       guard.checkPeriodically(i);
-      scoreOrdinal(candidates[i], queryVectorFloat, allowedRIDs, scored, vectors, ordinalMap, seenRIDs, pageValues, overlay);
+      scoreOrdinal(candidates[i], queryVectorFloat, preFilter.scored(), scored, vectors, ordinalMap, seenRIDs, pageValues,
+          overlay);
     }
     scored.sort(Comparator.comparing(Pair::getSecond));
 
     final GroupedSearchState state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows,
-        allowedRIDs, groupKeyResolver, queryVectorFloat, deltaSnapshot, rerankCandidates);
+        preFilter.members(), groupKeyResolver, queryVectorFloat, deltaSnapshot, rerankCandidates);
     for (final Pair<RID, Float> candidate : scored) {
       if (state.isFull() || candidate.getSecond() >= maxDistance)
         break;
@@ -10386,58 +10568,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final long wanted = Math.max((long) k * rerankOversample, (long) efSearch);
           final int rerankK = (int) Math.min(Math.max(wanted, k), Math.max(k, pinnedGraph.size()));
 
-          // Re-ranked: the exact path's pre-filter plan, since the PQ-scaled one returns PQ distances (issue #6502)
-          if (rerank && allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs,
-              pinnedOrdinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
-            metrics.incrementPreFilterSearches();
-            final List<Pair<RID, Float>> results = new ArrayList<>(k);
-            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
-            bruteForceScan(queryVectorFloat, k, allowedRIDs, results, exactVectors, pinnedOrdinalMap, overlay, guard);
-            return results;
-          }
+          // Re-ranked: the exact path's pre-filter plan, since the PQ-scaled one returns PQ distances (issue #6502). Not
+          // re-ranked: the issue #6514 pre-filter plan, the PQ-scored counterpart of the issue #6502 plan in
+          // findNeighborsFromVector - see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by
+          // its own selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
+          // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default - see
+          // VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
+          final GlobalConfiguration selectivitySetting = rerank ?
+              GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY :
+              GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY;
 
-          // Issue #6514 pre-filter plan: the PQ-scored counterpart of the issue #6502 plan in findNeighborsFromVector -
-          // see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by its own
-          // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
-          // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
-          // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
-          if (!rerank && allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs,
-              pinnedOrdinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
-            metrics.incrementPreFilterSearches();
-            final List<Pair<RID, Float>> results = new ArrayList<>(k);
-            // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
-            // so delta rows merged here are ranked against - and returned alongside - approximate scores.
-            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay, pinnedCodes.quantization());
-            preFilterApproximate(scoreFunction, k, allowedRIDs, results, pinnedOrdinalMap, overlay);
-            return results;
-          }
+          final PreFilterPlan preFilter = preFilterPlan(allowedRIDs, pinnedOrdinalMap, selectivitySetting, 0);
+          if (preFilter != null)
+            return answerApproximateByPreFilter(preFilter, rerank, queryVectorFloat, k, scoreFunction, exactVectors, pinnedOrdinalMap,
+                pinnedCodes, overlay, guard);
 
           // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
           // without this the beam fills with nodes the post-filter below then drops (issue #5558).
           // The guard as on the exact path (issue #9896): a selective allow-list keeps this walk going over most of the
-          // graph, testing a record per candidate, and the filter is the one place inside it ArcadeDB code runs (#10782)
-          final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, pinnedOrdinalMap, vectorIndex(),
-              supersededRIDs(overlay), guard);
-
-          // Execute search using the PQ-based score provider
-          // The graph structure is typically small enough to stay in OS page cache
-          // Note: JVector 4.0's search method uses (scoreProvider, topK, Bits) signature
-          final SearchResult searchResult;
-          final GraphSearcherPool pool = getSearcherPool();
-          final long poolEpoch = searcherPoolEpoch();
-          // Pin the graph reference: a concurrent rebuild may swap the volatile field, and borrow/release must
-          // agree on which graph the searcher belongs to.
-          final ImmutableGraphIndex pooledGraph = pinnedGraph;
-          final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
+          // graph, testing a record per candidate, and the filter is the one place inside it ArcadeDB code runs (#10782).
+          // The walk of a predicate an index can list is given up for the listing once it proves the predicate selective,
+          // as on the exact path (issue #10921)
+          SearchResult searchResult;
           try {
-            // A graph file written with the fusedPQ setting is walked on the codes fused into its nodes, through the view of this
-            // searcher; any other graph on the memory-resident codes. The reranker is the same either way (issue #10713)
-            final DefaultSearchScoreProvider ssp = scoreProviderFor(searcher, pooledGraph, queryVectorFloat, scoreFunction, reranker);
-            searchResult = rerank || efSearch > k ?
-                searcher.search(ssp, k, rerankK, 0.0f, 0.0f, bitsFilter) :
-                searcher.search(ssp, k, bitsFilter);
-          } finally {
-            pool.release(searcher, pooledGraph, poolEpoch);
+            searchResult = walkApproximateGraph(pinnedGraph, queryVectorFloat, scoreFunction, reranker, k, rerankK,
+                rerank || efSearch > k,
+                walkFilter(allowedRIDs, pinnedOrdinalMap, overlay, guard, rerank || efSearch > k ? rerankK : k, selectivitySetting));
+          } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
+            final PreFilterPlan listed = preFilterPlan(allowedRIDs, pinnedOrdinalMap, selectivitySetting, e.listingCap);
+            if (listed != null)
+              return answerApproximateByPreFilter(listed, rerank, queryVectorFloat, k, scoreFunction, exactVectors, pinnedOrdinalMap,
+                  pinnedCodes, overlay, guard);
+            // The predicate keeps more records than the walk met where it went: the walk answers after all, unbounded
+            searchResult = walkApproximateGraph(pinnedGraph, queryVectorFloat, scoreFunction, reranker, k, rerankK,
+                rerank || efSearch > k, new LiveVectorBitsFilter(allowedRIDs, pinnedOrdinalMap, vectorIndex(), supersededRIDs(overlay),
+                    guard));
           }
 
           recordGraphWalkCost(searchResult.getVisitedCount());

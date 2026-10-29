@@ -52,19 +52,25 @@ public class SubstringFunction implements StatelessFunction {
     final String str = args[0].toString();
     // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
     // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
-    final int start = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
+    // Issue #10850: a whole number or a type error - intValue() read 1.9 as 1 and 3000000000 as a negative start
+    final long start = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "start");
     if (start < 0)
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching CypherSubstringFunction
       // (the executor Cypher's substring() actually resolves to) instead of silently returning "". See issue #6609.
       throw new CommandSemanticException("substring(): negative start index is not supported: " + start);
     if (args.length == 3 && args[2] != null) {
-      final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();
+      final long length = CypherFunctionHelper.requireWholeNumberArgument(args[2], getName(), "length");
       if (length < 0)
         // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching CypherSubstringFunction
         // (the executor Cypher's substring() actually resolves to) and left()/right(). See issue #5296/#5793.
         throw new CommandSemanticException("substring(): negative length is not supported: " + length);
-      return CypherFunctionHelper.substringCodePoints(str, start, length);
+      return CypherFunctionHelper.substringCodePoints(str, startCodePoint(start), length);
     }
-    return CypherFunctionHelper.substringCodePoints(str, start, Long.MAX_VALUE);
+    return CypherFunctionHelper.substringCodePoints(str, startCodePoint(start), Long.MAX_VALUE);
+  }
+
+  /** A start past the int range is past the end of any string, which the int range covers: clamping keeps that answer. */
+  private static int startCodePoint(final long start) {
+    return (int) Math.min(start, Integer.MAX_VALUE);
   }
 }

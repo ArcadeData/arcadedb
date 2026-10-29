@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
@@ -345,6 +346,14 @@ public enum Type {
   }
 
   /**
+   * The name a property declaration stores the type under (its JSON {@code type}) and {@link #getTypeByName} resolves, such as
+   * {@code Float[]} for {@link #ARRAY_OF_FLOATS}: not always the constant's {@link #name()}.
+   */
+  public String getName() {
+    return name;
+  }
+
+  /**
    * Convert types based on the iTargetClass parameter.
    *
    * @param value       Value to convert
@@ -354,6 +363,16 @@ public enum Type {
    */
   public static Object convert(final Database database, final Object value, final Class<?> targetClass) {
     return convert(database, value, targetClass, null);
+  }
+
+  /**
+   * The count of epoch days a number stands for in a conversion to a DATE. Only a value WRITTEN into a DATE property reads the
+   * milliseconds of a UTC midnight as that day (issue #10865, see {@link DateUtils#dateNumberToEpochDays(long)}): that is where
+   * a {@code LocalDate} query parameter or an HTTP client's date arrives as milliseconds. A conversion with no property behind
+   * it, a comparison above all, keeps reading every number as a count of days, so a number never equals a date (#8913).
+   */
+  private static long dateNumberToEpochDays(final long number, final Property property) {
+    return property != null ? DateUtils.dateNumberToEpochDays(number) : number;
   }
 
   /**
@@ -489,7 +508,11 @@ public enum Type {
     return targetClass.isInstance(converted);
   }
 
-  private static boolean isScalarKeyClass(final Class<?> targetClass) {
+  /**
+   * Whether {@code targetClass} is one of the scalar key classes the index lookup checks hold to: string, boolean, numbers and
+   * temporals.
+   */
+  public static boolean isScalarKeyClass(final Class<?> targetClass) {
     return targetClass == String.class || targetClass == Boolean.class || Number.class.isAssignableFrom(targetClass)
         || Temporal.class.isAssignableFrom(targetClass) || Date.class.isAssignableFrom(targetClass)
         || Calendar.class.isAssignableFrom(targetClass);
@@ -641,10 +664,15 @@ public enum Type {
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
     // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
     // validator to refuse (#9111)
-    if (isPlainScalar(item, ofType))
+    if (isPlainScalar(item, ofType)) {
+      // A number written into a LIST/MAP OF DATE is read like one written into a DATE property: the milliseconds of a UTC
+      // midnight are that day (issue #10865). Done here because the item is converted with no property, see below
+      if (ofType == DATE && ofClass == LocalDate.class && item instanceof Number number)
+        return DateUtils.date(database, DateUtils.dateNumberToEpochDays(DateUtils.numberToEpochUnits(number)), LocalDate.class);
       // the declared property is carried so a number out of the element range is refused instead of clamped; a date
       // conversion expects a date property, not the collection one
       return convert(database, item, ofClass, ofType.isDateOrDateTime() ? null : property);
+    }
 
     return item;
   }
@@ -874,7 +902,7 @@ public enum Type {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : Float.parseFloat(string);
+          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : parseFloat(string);
         else
           return narrowToFloat(asNumber(value, "FLOAT", property), property);
 
@@ -888,7 +916,7 @@ public enum Type {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : Double.parseDouble(string);
+          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
@@ -994,7 +1022,7 @@ public enum Type {
         else if (value instanceof OffsetDateTime offset)
           return offset.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
-          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
+          return DateUtils.date(database, dateNumberToEpochDays(DateUtils.numberToEpochUnits(number), property), LocalDate.class);
         else if (value instanceof Date date)
           // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
           // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
@@ -1005,7 +1033,7 @@ public enum Type {
               LocalDate.class);
         else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
-            return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
+            return DateUtils.date(database, dateNumberToEpochDays(Long.parseLong(valueAsString), property), LocalDate.class);
           else
             // The one chain, not a second copy of it: parseDateTimeKeepingWallClock already tries the schema's
             // dateTimeFormat and then its dateFormat before the built-in shapes, which is precisely what this branch
@@ -1316,6 +1344,23 @@ public enum Type {
     for (int i = 0; i < src.length; i++)
       array[i] = src[i];
     return array;
+  }
+
+  /**
+   * Parses a FLOAT from text, accepting the {@link NonFiniteNumbers} markers the JSON writers use for a non-finite
+   * number besides what {@link Float#parseFloat} takes. {@code Float.parseFloat} already reads {@code NaN} and
+   * {@code Infinity} but refuses {@code PosInfinity}/{@code NegInfinity}, so a FLOAT the server wrote as one of them
+   * could not be read back by the remote client, nor a LIST OF FLOAT holding one (issue #10899).
+   */
+  private static float parseFloat(final String text) {
+    final Double marker = NonFiniteNumbers.decode(text);
+    return marker != null ? marker.floatValue() : Float.parseFloat(text);
+  }
+
+  /** The DOUBLE twin of {@link #parseFloat(String)} (issue #10899). */
+  private static double parseDouble(final String text) {
+    final Double marker = NonFiniteNumbers.decode(text);
+    return marker != null ? marker : Double.parseDouble(text);
   }
 
   /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */

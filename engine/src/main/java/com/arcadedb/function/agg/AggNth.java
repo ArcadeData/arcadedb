@@ -55,11 +55,10 @@ public class AggNth extends AbstractAggFunction {
       return null;
 
     final List<Object> list = toObjectList(args[0]);
-    final int index = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
-
+    // Issue #10850: a whole number or a type error - intValue() read 1.9 as 1 and 4294967297 as 1
+    final long index = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "index");
     if (index < 0 || index >= list.size())
       return null;
-
-    return list.get(index);
+    return list.get((int) index);
   }
 }

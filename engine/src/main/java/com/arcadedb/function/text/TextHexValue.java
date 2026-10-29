@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -52,7 +53,8 @@ public class TextHexValue extends AbstractTextFunction {
       return null;
 
     if (args[0] instanceof Number) {
-      return Long.toHexString(((Number) args[0]).longValue());
+      // Issue #10850: a whole number - longValue() rendered 255.9 as "ff"
+      return Long.toHexString(CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "value"));
     }
 
     if (args[0] instanceof byte[]) {

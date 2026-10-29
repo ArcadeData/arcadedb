@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -40,8 +41,11 @@ import java.util.Map;
  * @see ImmutableVertex
  */
 public class MutableVertex extends MutableDocument implements VertexInternal {
-  private RID outEdges;
-  private RID inEdges;
+  private RID     outEdges;
+  private RID     inEdges;
+  // #10929: whether a head was set on THIS instance since it was last queued for update, see adoptEdgeListHeadsOf()
+  private boolean outEdgesAssigned;
+  private boolean inEdgesAssigned;
 
   /**
    * Creation constructor.
@@ -137,12 +141,45 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   public void setOutEdgesHeadChunk(final RID outEdges) {
     dirty = true;
     this.outEdges = outEdges;
+    this.outEdgesAssigned = true;
   }
 
   @Override
   public void setInEdgesHeadChunk(final RID inEdges) {
     dirty = true;
     this.inEdges = inEdges;
+    this.inEdgesAssigned = true;
+  }
+
+  /**
+   * Restores the heads a copy of this vertex was made with (Java deserialization): the same as the copy
+   * {@link ImmutableVertex#modify()} makes, not an edge-list write, so a later save still takes the heads the transaction
+   * holds (see {@link #adoptEdgeListHeadsOf}).
+   */
+  public void restoreEdgeListHeads(final RID outEdges, final RID inEdges) {
+    dirty = true;
+    this.outEdges = outEdges;
+    this.inEdges = inEdges;
+  }
+
+  /**
+   * Called when this instance is queued for update, with the instance of the same vertex the transaction already holds as
+   * written ({@code null} if none). Issue #10929: a copy taken by {@code modify()} before an edge was appended through
+   * another handle carries the heads it was copied with, and the append moved the head on the instance the transaction
+   * holds, never on the copy. Saving the copy is a property write, so it must not write those older heads back: that
+   * unlinked every edge appended since from this vertex, while the edge record and the far endpoint kept it. The heads are
+   * therefore taken from the held instance, except for a direction whose head was set on THIS instance since it was last
+   * queued: that one is a deliberate edge-list write (the graph engine, a batch load, a repair) and is kept.
+   */
+  public void adoptEdgeListHeadsOf(final Record held) {
+    if (held != this && held instanceof VertexInternal holder) {
+      if (!outEdgesAssigned)
+        outEdges = holder.getOutEdgesHeadChunk();
+      if (!inEdgesAssigned)
+        inEdges = holder.getInEdgesHeadChunk();
+    }
+    outEdgesAssigned = false;
+    inEdgesAssigned = false;
   }
 
   @Override
@@ -152,7 +189,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   @Override
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final Object... properties) {
-    return database.getGraphEngine().newEdge(this, edgeType, toVertex, properties);
+    return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, properties);
   }
 
   @Deprecated
@@ -161,13 +198,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
       throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
-    return database.getGraphEngine().newEdge(this, edgeType, toVertex, properties);
+    return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, properties);
   }
 
   @Override
   @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex) {
-    return database.getGraphEngine().newLightEdge(this, edgeType, toVertex);
+    return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);
   }
 
   @Deprecated
@@ -177,52 +214,52 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
       throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
-    return database.getGraphEngine().newLightEdge(this, edgeType, toVertex);
+    return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);
   }
 
   @Override
   public long countEdges(final DIRECTION direction, final String... edgeTypes) {
-    return database.getGraphEngine().countEdges(this, direction, edgeTypes);
+    return database.getGraphEngine().countEdges(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
   @Override
   public IterableGraph<Edge> getEdges() {
-    return database.getGraphEngine().getEdges(this);
+    return database.getGraphEngine().getEdges(getMostUpdatedVertex(this));
   }
 
   @Override
   public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
-    return database.getGraphEngine().getEdges(this, direction, edgeTypes);
+    return database.getGraphEngine().getEdges(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
   @Override
   public IterableGraph<Vertex> getVertices() {
-    return database.getGraphEngine().getVertices(this);
+    return database.getGraphEngine().getVertices(getMostUpdatedVertex(this));
   }
 
   @Override
   public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
-    return database.getGraphEngine().getVertices(this, direction, edgeTypes);
+    return database.getGraphEngine().getVertices(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
   @Override
   public Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
-    return database.getGraphEngine().getConnectedVertexRIDs(this, direction, edgeTypes);
+    return database.getGraphEngine().getConnectedVertexRIDs(getMostUpdatedVertex(this), direction, edgeTypes);
   }
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex) {
-    return database.getGraphEngine().isVertexConnectedTo(this, toVertex);
+    return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex);
   }
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction) {
-    return database.getGraphEngine().isVertexConnectedTo(this, toVertex, direction);
+    return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex, direction);
   }
 
   @Override
   public boolean isConnectedTo(final Identifiable toVertex, final DIRECTION direction, final String edgeTypes) {
-    return database.getGraphEngine().isVertexConnectedTo(this, toVertex, direction, edgeTypes);
+    return database.getGraphEngine().isVertexConnectedTo(getMostUpdatedVertex(this), toVertex, direction, edgeTypes);
   }
 
   @Override
@@ -261,6 +298,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return json;
   }
 
+  /** The heads are read from the instance the transaction holds, as {@link ImmutableVertex} does (issue #10929). */
+  private VertexInternal getMostUpdatedVertex(final VertexInternal vertex) {
+    return database.getGraphEngine().getMostUpdatedVertex(vertex);
+  }
+
   private void init() {
     // READ THE FIELD ONCE, LIKE EVERY OTHER BUFFER DEREFERENCE
     final Binary content = buffer;
@@ -279,5 +321,8 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
       this.inEdges = null;
 
     this.propertiesStartingPosition = content.position();
+    // WHAT THE BUFFER SAYS REPLACES WHATEVER WAS SET BEFORE
+    this.outEdgesAssigned = false;
+    this.inEdgesAssigned = false;
   }
 }

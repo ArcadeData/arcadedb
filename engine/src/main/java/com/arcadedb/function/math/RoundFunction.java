@@ -87,7 +87,10 @@ public class RoundFunction implements StatelessFunction {
     if (precisionArg == null)
       return null;
 
-    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precisionArg.intValue(), mode);
+    // Issue #10850: a whole number in the int range BigDecimal's scale takes - intValue() read 2.9 as 2 and wrapped
+    // 4294967298 to 2
+    final int precision = CypherFunctionHelper.requireWholeIntArgument(precisionArg, "round", "precision");
+    final BigDecimal bd = BigDecimal.valueOf(value).setScale(precision, mode);
     return bd.doubleValue();
   }
 

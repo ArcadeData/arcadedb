@@ -306,4 +306,74 @@ class PostgresTypeCatalogTest {
     assertThat(PostgresType.ARRAY_CHAR.typeName).isEqualTo("_char");
     assertThat(PostgresType.ARRAY_CHAR.elementCode).isEqualTo(PostgresType.CHAR.code);
   }
+
+  // ---------------------------------------------------------------- the element join is read off the tokens (issue #10882)
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      // the whole join in a string literal, the FROM naming a user's type
+      "SELECT typname FROM Note WHERE typname = 'pg_ typelem = e.oid and t.oid = 1007'",
+      "SELECT e.typname FROM Note e WHERE e.typname = 'pg_type t, pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid'",
+      // in a comment
+      "SELECT e.typname FROM Note e /* pg_type t WHERE t.oid = 1007 AND t.typelem = e.oid */",
+      "SELECT e.typname FROM Note e -- pg_type t WHERE t.oid = 1007 AND t.typelem = e.oid",
+      // the correlation spelled out, but over relations that are not pg_type
+      "SELECT e.typname FROM Note t, Note e WHERE t.oid = 1007 AND t.typelem = e.oid",
+      "SELECT e.typname FROM pg_type t, Note e WHERE t.oid = 1007 AND t.typelem = e.oid",
+      // the OID filter only inside a literal
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.typelem = e.oid AND t.typname = 'oid = 1007'",
+      // the correlation only inside a literal
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND t.typname = 'typelem = e.oid'" })
+  void aJoinThatIsNotInTheStatementIsNotAnElementLookup(final String query) {
+    assertThat(PostgresTypeCatalog.resolve(query)).as(query).isNull();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      // a column of the array, not of its element
+      "SELECT t.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid",
+      "SELECT e.typdelim, t.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid",
+      // a column no alias owns, which PostgreSQL refuses as ambiguous
+      "SELECT typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid",
+      // the filter on the element, which asks for the array whose element is 1007
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE e.oid = 1007 AND t.typelem = e.oid",
+      // a correlation the other way round, and one naming the same alias twice
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND e.typelem = t.oid",
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND t.typelem = t.oid",
+      // another predicate, which this recogniser would ignore rather than evaluate
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid AND e.typname = 'text'",
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 1007 OR t.typelem = e.oid",
+      // an outer join, a third relation, an unbound placeholder, an OID that is not an integer
+      "SELECT e.typname FROM pg_type t LEFT JOIN pg_type e ON t.typelem = e.oid WHERE t.oid = 1007",
+      "SELECT e.typname FROM pg_type t, pg_type e, pg_namespace n WHERE t.oid = 1007 AND t.typelem = e.oid",
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = $1 AND t.typelem = e.oid",
+      "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 1007.5 AND t.typelem = e.oid" })
+  void aStatementThisRecogniserWouldMisreadIsLeftToTheGeneralCatalog(final String query) {
+    assertThat(PostgresTypeCatalog.resolve(query)).as(query).isNull();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "SELECT e.typdelim, e.typname FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid",
+      "select e.typdelim, e.typname from pg_type t, pg_type e where t.typelem = e.oid and t.oid = 1007",
+      "SELECT e.typdelim, e.typname FROM pg_type AS t, pg_type AS e WHERE 1007 = t.oid AND e.oid = t.typelem;",
+      "SELECT e.typdelim, e.typname FROM pg_type t JOIN pg_type e ON t.typelem = e.oid WHERE t.oid = 1007",
+      "SELECT e.typdelim, e.typname FROM pg_type t INNER JOIN pg_type e ON (t.typelem = e.oid) WHERE (t.oid = 1007)",
+      "SELECT e.typdelim, e.typname FROM pg_type t JOIN pg_type e ON t.typelem = e.oid AND t.oid = 1007",
+      "SELECT e.typdelim, e.typname FROM pg_type, pg_type e WHERE pg_type.oid = 1007 AND pg_type.typelem = e.oid",
+      "SELECT e.typdelim, e.typname FROM pg_type t, pg_type e /* the driver's lookup */ WHERE t.oid = 1007 AND t.typelem = e.oid" })
+  void everySpellingOfTheDriverSelfJoinIsStillAnswered(final String query) {
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(query);
+
+    assertThat(rows).as(query).hasSize(1);
+    assertThat(rows.get(0)).as(query).containsExactly(entry("typdelim", ","), entry("typname", "int4"));
+  }
+
+  @Test
+  void theElementJoinKeepsTheAliasesTheClientProjected() {
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(
+        "SELECT e.typname AS element, e.typdelim \"Delim\" FROM pg_type t, pg_type e WHERE t.oid = 1009 AND t.typelem = e.oid");
+
+    assertThat(rows.get(0)).containsExactly(entry("element", "text"), entry("Delim", ","));
+  }
 }

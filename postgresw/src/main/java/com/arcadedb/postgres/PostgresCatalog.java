@@ -83,9 +83,19 @@ import static com.arcadedb.postgres.PostgresCatalogSyntax.unwrapParentheses;
  * differently.</li>
  * </ol>
  * A shape outside this - an unmodelled catalog relation, a projection with a construct the expression
- * evaluator does not implement - is <b>declined</b>, and the caller answers the empty result set that the
- * rest of {@code pg_catalog} has always answered. Declining is deliberate: a made-up row in a system catalog
- * is worse than no row, because the client believes it.
+ * evaluator does not implement - is <b>declined</b>, and the caller refuses it with {@code 0A000}
+ * ({@link UnsupportedCatalogQuery}). Declining is deliberate: a made-up row in a system catalog is worse than no
+ * row, because the client believes it.
+ * <p>
+ * <b>Refusal is the default for an unmodelled relation, by decision (issue #10842).</b> The alternative, answering every
+ * relation not on an explicit refusal list with no rows, was weighed and rejected: most of the relations a client could
+ * read next ({@code pg_stat_activity}, {@code pg_locks}, {@code pg_extension}, {@code pg_language}, {@code pg_opclass},
+ * most of {@code information_schema}) hold rows in every PostgreSQL, so an empty default would silently answer "none"
+ * for them, which is the empty-catalog failure of issue #10371. A relation joins the catalog one at a time: modelled
+ * with its rows, or listed in {@link #NEVER_HAVE_ROWS} when ArcadeDB can never hold one. The relations read by the
+ * client libraries this catalog is tested against (the bundled pgjdbc's {@code PgDatabaseMetaData}, psql 17's
+ * {@code describe.c}, psqlodbc's {@code info.c}) are each either modelled or listed as refused on purpose, with a reason,
+ * by the tests of issues #10591 and #10842.
  * <p>
  * <b>The WHERE clause is the one place that is permissive</b>: a predicate the evaluator cannot read does not
  * get to remove rows. Everything in this catalog is the user's own types in the one database this connection
@@ -180,7 +190,19 @@ public class PostgresCatalog {
    */
   private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
       "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum", "pg_proc", "pg_trigger", "pg_auth_members",
-      "pg_depend", "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
+      "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
+
+  /** The OID of {@code pg_class} itself, which {@code pg_depend.classid} names for a dependency of an index (issue #10842). */
+  private static final int PG_CLASS_RELATION_OID      = 1259;
+  /** The OID of {@code pg_constraint} itself, which {@code pg_depend} names for a dependency of or on a constraint (issue #10842). */
+  private static final int PG_CONSTRAINT_RELATION_OID = 2606;
+  /**
+   * The system catalogs a {@code regclass} cast names by OID, the ones {@code pg_depend} points into: {@code
+   * d.classid = 'pg_catalog.pg_class'::regclass} is how psql and pgjdbc filter it. PostgreSQL searches {@code pg_catalog} first,
+   * so the name means the catalog even where a type of the same name exists.
+   */
+  private static final Map<String, Integer> SYSTEM_CATALOG_OIDS = Map.of("pg_class", PG_CLASS_RELATION_OID, "pg_constraint",
+      PG_CONSTRAINT_RELATION_OID);
 
   /** The OID and name of the two tablespaces every PostgreSQL has, the only ones this catalog's relations can be in (issue #10591). */
   private static final Object[][] TABLESPACES = { { 1663, "pg_default" }, { 1664, "pg_global" } };
@@ -413,15 +435,14 @@ public class PostgresCatalog {
     relation("pg_enum", null, "oid", "enumtypid", "enumsortorder", "enumlabel");
 
     // What ArcadeDB has no equivalent of, so these have no rows (issue #10591): a question about them - which functions are defined,
-    // which foreign key depends on which index, whom a role is a member of - has "none" as its honest answer. A user-defined
+    // whom a role is a member of - has "none" as its honest answer. A user-defined
     // function, a sequence, a role membership, a foreign table and a default privilege do not exist here; pg_class already
     // answers relhasrules and relhastriggers false for every relation, so pg_rewrite and pg_trigger agree with it. An ArcadeDB
     // schema trigger is not a PostgreSQL trigger: it calls no function of pg_proc and no client can read it as one.
-    // The trade-off, accepted on purpose: a real PostgreSQL also has system rows in pg_proc (its built-in functions) and pg_depend
-    // (the dependencies of its own catalog). Those are PostgreSQL's implementation, not objects of this database: this server has
-    // no function with a pg_proc identity (an OID, a signature a client could bind), so "is gen_random_uuid defined" answering none
-    // is the true answer for it, and the listings that read these relations (psql's \df, pgjdbc's getFunctions and getImportedKeys) exclude the
-    // system rows anyway. A relation whose rows describe this server's own state (pg_stat_activity, pg_locks) is still refused.
+    // The trade-off, accepted on purpose: a real PostgreSQL also has system rows in pg_proc (its built-in functions). Those are
+    // PostgreSQL's implementation, not objects of this database: this server has no function with a pg_proc identity (an OID, a
+    // signature a client could bind), so "is gen_random_uuid defined" answering none is the true answer for it, and the listings that
+    // read it (psql's \df, pgjdbc's getFunctions) exclude the system rows anyway. A relation whose rows describe this server's own state (pg_stat_activity, pg_locks) is still refused.
     relation("pg_proc", null, "oid", "proname", "pronamespace", "proowner", "prolang", "procost", "prorows", "provariadic",
         "prosupport", "prokind", "prosecdef", "proleakproof", "proisstrict", "proretset", "provolatile", "proparallel", "pronargs",
         "pronargdefaults", "prorettype", "proargtypes", "proallargtypes", "proargmodes", "proargnames", "proargdefaults",
@@ -430,6 +451,8 @@ public class PostgresCatalog {
         "tgconstrrelid", "tgconstrindid", "tgconstraint", "tgdeferrable", "tginitdeferred", "tgnargs", "tgattr", "tgargs", "tgqual",
         "tgoldtable", "tgnewtable");
     relation("pg_auth_members", null, "oid", "roleid", "member", "grantor", "admin_option", "inherit_option", "set_option");
+    // The dependencies of the indexes and of the unique constraints they back, the ones a tool walking from a table to what is built
+    // on it reads (issue #10842); see dependRows for what is and is not listed
     relation("pg_depend", null, "classid", "objid", "objsubid", "refclassid", "refobjid", "refobjsubid", "deptype");
     relation("pg_rewrite", null, "oid", "rulename", "ev_class", "ev_type", "ev_enabled", "is_instead", "ev_qual", "ev_action");
     relation("pg_sequence", null, "seqrelid", "seqtypid", "seqstart", "seqincrement", "seqmax", "seqmin", "seqcache", "seqcycle");
@@ -481,6 +504,7 @@ public class PostgresCatalog {
     columnTypes("information_schema.key_column_usage", PostgresType.INTEGER, "ordinal_position");
     columnTypes("pg_inherits", PostgresType.INTEGER, "inhrelid", "inhparent", "inhseqno");
     columnTypes("pg_inherits", PostgresType.BOOLEAN, "inhdetachpending");
+    columnTypes("pg_depend", PostgresType.INTEGER, "classid", "objid", "objsubid", "refclassid", "refobjid", "refobjsubid");
     columnTypes("pg_tablespace", PostgresType.INTEGER, "oid", "spcowner");
     columnTypes("pg_settings", PostgresType.BOOLEAN, "pending_restart");
 
@@ -666,14 +690,16 @@ public class PostgresCatalog {
    * Answers a session probe: a top-level SELECT with no FROM that names {@code pg_catalog} or {@code pg_type} as an identifier -
    * {@code SELECT pg_catalog.set_config('search_path', '', false)}, {@code SELECT pg_catalog.pg_backend_pid()} - which
    * {@link #resolve} leaves alone and ArcadeDB's SQL engine cannot read, since it takes {@code pg_catalog.f()} for a method call.
-   * The projection is evaluated as the one row PostgreSQL answers; one this catalog cannot evaluate keeps the empty result set
-   * such a probe has always been given.
+   * The projection is evaluated as the one row PostgreSQL answers. One this catalog cannot evaluate - a function it does not model,
+   * an argument it cannot read - is {@link #DECLINED}, and the caller refuses it with {@link #refusalOfProbe()} (issue #10883): the
+   * empty result set it was given before read as a success that answered nothing, where PostgreSQL answers exactly one row or an
+   * error. A probe that spends more work than a statement may is refused with {@link WorkLimitExceeded}, as a catalog query is.
    * <p>
    * Decided on the tokens, never on the text (issue #10695): a statement that is not a SELECT, a SELECT with a FROM, and one that
    * merely holds the words in a string literal are not probes, and go on to the SQL engine. A substring test here once dropped
    * every INSERT whose literal said "pg_catalog" and acknowledged it as {@code INSERT 0 0}.
    *
-   * @return null when the statement is not such a probe
+   * @return null when the statement is not such a probe; {@link #DECLINED} when it is one this catalog cannot evaluate
    */
   public static Answer resolveProbe(final String query, final Database database, final String userName,
       final PostgresSessionSettings settings, final Object... parameters) {
@@ -698,15 +724,22 @@ public class PostgresCatalog {
     if (statement == null || statement.from != null)
       return null;
 
-    Answer answer;
+    final Answer answer;
     try {
       answer = project(statement, List.of(), List.of(new Row()), context(database, userName, settings), Map.of(), true, null);
     } catch (final PostgresCatalogExpression.BudgetExceeded e) {
-      answer = null;
+      throw new WorkLimitExceeded();
     }
-    if (answer != null && answer.rows != null)
-      return textOfVectors(answer);
-    return new Answer(new LinkedHashMap<>(), new ArrayList<>(), false);
+    return answer != null && answer.rows != null ? textOfVectors(answer) : DECLINED;
+  }
+
+  /**
+   * The refusal of a session probe {@link #resolveProbe} answered {@link #DECLINED} (issue #10883). It names no relation, as a
+   * FROM-less probe reads none: what it could not evaluate is its projection.
+   */
+  public static UnsupportedCatalogQuery refusalOfProbe() {
+    return new UnsupportedCatalogQuery(
+        "This session probe calls a catalog function, or passes it an argument, that this server does not evaluate");
   }
 
   /** Whether {@code pg_catalog} or {@code pg_type} is a word of the statement, rather than part of a string literal or a longer name. */
@@ -2267,6 +2300,7 @@ public class PostgresCatalog {
       case "information_schema.table_constraints" -> tableConstraintRows(context);
       case "information_schema.key_column_usage" -> keyColumnRows(context);
       case "pg_inherits" -> inheritanceRows(context);
+      case "pg_depend" -> dependRows(context);
       case "pg_tablespace" -> tablespaceRows();
       case "pg_settings" -> settingRows(context);
       default -> familyRows(relation, context);
@@ -2418,6 +2452,41 @@ public class PostgresCatalog {
           rows.add(completeMap("information_schema.key_column_usage",
               PostgresCatalogIndexes.keyColumnValues(index, context.schema(), position)));
     return rows;
+  }
+
+  /**
+   * {@code pg_depend}: what PostgreSQL's {@code index_create} records for each index (issue #10842). An index that backs a unique
+   * constraint depends on that constraint ({@code deptype 'i'}), and the constraint on each column of its key ({@code 'a'}); any
+   * other index depends on each column of its key ({@code 'a'}), and on the whole table ({@code refobjsubid} 0) when a key is an
+   * expression, which reads no column of the table.
+   * <p>
+   * The other dependencies a PostgreSQL records are not listed: a table on its schema ({@code 'n'}), a row type on its table
+   * ({@code 'i'}), and PostgreSQL's own system rows. No client this catalog is tested against reads them.
+   */
+  private static List<Map<String, Object>> dependRows(final Context context) {
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (final PostgresCatalogIndexes.Info index : context.indexes()) {
+      final int dependentClass = index.hasConstraint() ? PG_CONSTRAINT_RELATION_OID : PG_CLASS_RELATION_OID;
+      final int dependent = index.hasConstraint() ? index.constraintOid() : index.oid();
+      if (index.hasConstraint())
+        rows.add(dependRow(PG_CLASS_RELATION_OID, index.oid(), PG_CONSTRAINT_RELATION_OID, index.constraintOid(), 0, "i"));
+
+      boolean expression = false;
+      for (final int attnum : index.attnums())
+        if (attnum > 0)
+          rows.add(dependRow(dependentClass, dependent, PG_CLASS_RELATION_OID, index.tableOid(), attnum, "a"));
+        else
+          expression = true;
+      if (expression)
+        rows.add(dependRow(dependentClass, dependent, PG_CLASS_RELATION_OID, index.tableOid(), 0, "a"));
+    }
+    return rows;
+  }
+
+  private static Map<String, Object> dependRow(final int classId, final int objectId, final int refClassId, final int refObjectId,
+      final int refObjectSubId, final String type) {
+    return completeMap("pg_depend", "classid", classId, "objid", objectId, "objsubid", 0, "refclassid", refClassId, "refobjid",
+        refObjectId, "refobjsubid", refObjectSubId, "deptype", type);
   }
 
   /** {@code pg_inherits}: one row per super-type of a type, numbered in the order they are declared. */
@@ -3655,7 +3724,7 @@ public class PostgresCatalog {
         return value;
 
       if (value instanceof Number oid)
-        return context.relationNamed(oid.intValue());
+        return relationNamed(oid.intValue(), context);
 
       final String written = PostgresCatalogExpression.asString(value).trim();
       if (isDigits(written))
@@ -3668,8 +3737,25 @@ public class PostgresCatalog {
           return null;
         }
 
-      final DocumentType type = context.typeNamed(unqualify(written));
+      final String name = unqualify(written);
+      // bare or qualified by pg_catalog: a name in another schema is not the catalog's
+      final Integer systemCatalog = SYSTEM_CATALOG_OIDS.get(name);
+      if (systemCatalog != null && (written.equals(name) || written.toLowerCase(Locale.ENGLISH).equals("pg_catalog." + name)))
+        return systemCatalog;
+      final DocumentType type = context.typeNamed(name);
       return type == null ? null : oidOf(type.getName());
+    }
+
+    /**
+     * The name of the relation an OID names: a system catalog of {@link #SYSTEM_CATALOG_OIDS}, or a type or an index. The two cannot
+     * collide: every OID this catalog gives a type or an index is at least {@link #FIRST_USER_OID}, as in PostgreSQL.
+     */
+    private static String relationNamed(final int oid, final Context context) {
+      return switch (oid) {
+        case PG_CLASS_RELATION_OID -> "pg_class";
+        case PG_CONSTRAINT_RELATION_OID -> "pg_constraint";
+        default -> context.relationNamed(oid);
+      };
     }
 
     /**

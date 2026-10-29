@@ -158,11 +158,10 @@ public class JavaBinarySerializer {
     // so the pairing is checked by the compiler instead of by a cast that can only fail at runtime (#7908).
     if (document instanceof MutableVertex vertex) {
       // Edge-chain head chunks are internal pointers; bare RID is sufficient since they never leak to user code as identities.
+      // Restored rather than set: a deserialized vertex is a copy, whose save takes the heads the transaction holds (#10929)
       final RID outRID = new RID(in.readInt(), in.readLong());
-      vertex.setOutEdgesHeadChunk(outRID.isValid() ? outRID : null);
-
       final RID inRID = new RID(in.readInt(), in.readLong());
-      vertex.setInEdgesHeadChunk(inRID.isValid() ? inRID : null);
+      vertex.restoreEdgeListHeads(outRID.isValid() ? outRID : null, inRID.isValid() ? inRID : null);
 
     } else if (document instanceof MutableEdge edge) {
       // Edge endpoints are user-facing via edge.getOut()/getIn(): bind to the database so asVertex() works across threads.

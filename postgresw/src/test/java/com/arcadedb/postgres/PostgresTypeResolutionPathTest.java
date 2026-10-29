@@ -111,6 +111,27 @@ class PostgresTypeResolutionPathTest {
   }
 
   @Test
+  void listSchemaPathAgreesWithValuePathForEveryElementType() {
+    // "LIST OF <type>" is typed from the declaration when the list is empty and from its element otherwise, so the two
+    // must agree for every element type the schema can declare, or the OID depends on the rows a query matched (#10927).
+    for (final Type elementType : Type.values()) {
+      final PostgresType fromSchema = PostgresType.getTypeFromArcade(Type.LIST, elementType.name());
+      final PostgresType fromValue = PostgresType.getTypeForValue(List.of(SAMPLE_VALUES.get(elementType)));
+
+      assertThat(fromSchema)
+          .as("LIST OF %s resolves to %s from a populated list but to %s from the schema", elementType, fromValue, fromSchema)
+          .isEqualTo(fromValue);
+    }
+  }
+
+  @Test
+  void listOfBinaryIsAByteaArray() {
+    // the scalar BINARY is bytea, so a list of them is bytea[], whose elements travel as bytes rather than as JSON numbers (#10927)
+    assertThat(PostgresType.getTypeFromArcade(Type.LIST, "BINARY")).isEqualTo(PostgresType.ARRAY_BYTEA);
+    assertThat(PostgresType.getTypeForValue(List.of(new byte[] { 1, 2, 3 }))).isEqualTo(PostgresType.ARRAY_BYTEA);
+  }
+
+  @Test
   void datetimeValuePathDisagreesWithSchemaWhenConfiguredForJavaUtilDate() {
     // Type.DATETIME's runtime representation is configurable per database (GlobalConfiguration.
     // DATE_TIME_IMPLEMENTATION) and java.util.Date is one of the supported alternatives to the LocalDateTime

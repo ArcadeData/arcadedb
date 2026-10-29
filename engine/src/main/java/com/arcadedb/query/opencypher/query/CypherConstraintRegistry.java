@@ -24,6 +24,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
+import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -54,8 +55,9 @@ import java.util.logging.Level;
  *   <li>{@code declared} - the properties this constraint declared, which were undeclared before it (#9706)</li>
  *   <li>{@code previous} - for a type constraint that changed the type of a declared property, the declaration it
  *   replaced, so dropping it puts that declaration back (#9706)</li>
- *   <li>{@code declaredType} and {@code propertyType} - for a type constraint, the ArcadeDB type it declared and the Cypher
- *   type it was written with</li>
+ *   <li>{@code declaredType} and {@code propertyType} - for a type constraint, the ArcadeDB type it declared (with the
+ *   {@code dimension} of a vector) and the Cypher type it was written with</li>
+ *   <li>{@code bounds} - for a vector type constraint, the properties whose MIN and MAX it set to the dimension (#10862)</li>
  * </ul>
  * Only what the statement CREATED is owned, so dropping the constraint never removes an index, a flag or a declaration
  * that was there before it. Ownership passes to another constraint on the same type that still requires the same thing (a
@@ -85,10 +87,12 @@ final class CypherConstraintRegistry {
    * @param previous       for a type constraint, the declarations it replaced, by property
    * @param declaredType   for a type constraint, the ArcadeDB type it declared, otherwise null
    * @param declaredOfType for a type constraint over a list, its element type
+   * @param dimension      for a vector type constraint, its dimension, otherwise {@link CypherTypeName#NO_DIMENSION}
+   * @param ownedBounds    for a vector type constraint, the properties whose MIN and MAX it set to the dimension
    * @param propertyType   for a type constraint, the Cypher type it was written with
    */
   record Ownership(String ownedIndex, List<String> ownedMandatory, List<String> declared, JSONObject previous, Type declaredType,
-                   String declaredOfType, String propertyType) {
+                   String declaredOfType, int dimension, List<String> ownedBounds, String propertyType) {
   }
 
   /** A constraint as recorded, for listing. */
@@ -166,8 +170,14 @@ final class CypherConstraintRegistry {
       entry.put("declared", new JSONArray(owned.declared()));
     if (owned.previous() != null && !owned.previous().isEmpty())
       entry.put("previous", owned.previous());
-    if (owned.declaredType() != null)
-      entry.put("declaredType", declaration(owned.declaredType(), owned.declaredOfType()));
+    if (owned.declaredType() != null) {
+      final JSONObject declaredType = declaration(owned.declaredType(), owned.declaredOfType());
+      if (owned.dimension() != CypherTypeName.NO_DIMENSION)
+        declaredType.put("dimension", owned.dimension());
+      entry.put("declaredType", declaredType);
+    }
+    if (!owned.ownedBounds().isEmpty())
+      entry.put("bounds", new JSONArray(owned.ownedBounds()));
     if (owned.propertyType() != null)
       entry.put("propertyType", owned.propertyType());
     type.setCustomValue(KEY_PREFIX + name, entry.toString());
@@ -200,17 +210,18 @@ final class CypherConstraintRegistry {
 
   /**
    * The name of a constraint on the type that requires exactly the same thing, or null. A type constraint is the same only
-   * with the same declared type.
+   * with the same declared type, and a vector type constraint only with the same dimension.
    */
   static String findEquivalent(final DocumentType type, final ConstraintKind kind, final List<String> properties,
-      final Type declaredType, final String declaredOfType) {
+      final Type declaredType, final String declaredOfType, final int dimension) {
     for (final String key : type.getCustomKeys()) {
       if (!key.startsWith(KEY_PREFIX))
         continue;
       final JSONObject entry = entry(type, key);
       if (entry == null || kindOf(entry) != kind || !toStrings(entry.getJSONArray("properties", new JSONArray())).equals(properties))
         continue;
-      if (kind != ConstraintKind.TYPED || sameDeclaration(entry.getJSONObject("declaredType", null), declaredType, declaredOfType))
+      if (kind != ConstraintKind.TYPED || sameDeclaration(entry.getJSONObject("declaredType", null), declaredType, declaredOfType,
+          dimension))
         return key.substring(KEY_PREFIX.length());
     }
     return null;
@@ -222,7 +233,7 @@ final class CypherConstraintRegistry {
    * than silently replacing the first.
    */
   static String findConflictingTyped(final DocumentType type, final List<String> properties, final Type declaredType,
-      final String declaredOfType) {
+      final String declaredOfType, final int dimension) {
     for (final String key : type.getCustomKeys()) {
       if (!key.startsWith(KEY_PREFIX))
         continue;
@@ -230,7 +241,8 @@ final class CypherConstraintRegistry {
       if (entry == null || kindOf(entry) != ConstraintKind.TYPED)
         continue;
       for (final String property : toStrings(entry.getJSONArray("properties", new JSONArray())))
-        if (properties.contains(property) && !sameDeclaration(entry.getJSONObject("declaredType", null), declaredType, declaredOfType))
+        if (properties.contains(property) && !sameDeclaration(entry.getJSONObject("declaredType", null), declaredType, declaredOfType,
+            dimension))
           return key.substring(KEY_PREFIX.length());
     }
     return null;
@@ -254,11 +266,13 @@ final class CypherConstraintRegistry {
    * <p>
    * A type constraint that replaced the declaration of a property puts that declaration back first, before anything else is
    * undone: it is the one step that can be refused (a record written since does not fit the old type), and a refusal then
-   * leaves the constraint whole. A property the constraint declared is undeclared, which is what lifts a type restriction in
-   * a schema that has no "any" type, unless another constraint still needs it declared (a unique index is built over the
-   * declared type, a MANDATORY flag lives on the declaration): that one then owns the declaration, and the property is
-   * undeclared when the last of them goes. A declaration that also carries what no constraint created (a READONLY flag, a
-   * DEFAULT, bounds set with SQL) is left in place, as is anything a statement outside Cypher still depends on.
+   * leaves the constraint whole. While another type constraint declaring the same type of the property is still there, the
+   * declaration to restore passes to it instead, and is restored when the last of them is dropped. A property the constraint
+   * declared is undeclared, which is what lifts a type restriction in a schema that has no "any" type, unless another
+   * constraint still needs it declared (a unique index is built over the declared type, a MANDATORY flag lives on the
+   * declaration): that one then owns the declaration, and the property is undeclared when the last of them goes. A
+   * declaration that also carries what no constraint created (a READONLY flag, a DEFAULT, bounds set with SQL) is left in
+   * place, as is anything a statement outside Cypher still depends on.
    * <p>
    * The steps are separate schema changes, not one atomic one. Each is safe to repeat, which is what makes a retry after a
    * failure part-way through converge: the entry is removed last so the name is still there to retry with, an index
@@ -283,7 +297,26 @@ final class CypherConstraintRegistry {
       return true;
     }
 
-    restorePreviousDeclarations(type, entry, retyper);
+    // A vector's dimension bounds go first: the declaration it replaced is restored without them, so the old type never has to
+    // carry an item count it cannot read. A refused restore puts them back, leaving the constraint whole (#10862)
+    final List<String> clearedBounds = releaseBounds(type, key, entry);
+    try {
+      restorePreviousDeclarations(type, key, entry, retyper);
+    } catch (final RuntimeException e) {
+      final int dimension = dimensionOf(entry);
+      if (dimension != CypherTypeName.NO_DIMENSION)
+        for (final String propertyName : clearedBounds)
+          try {
+            final Property property = type.getPropertyIfExists(propertyName);
+            if (property != null) {
+              property.setMin(String.valueOf(dimension));
+              property.setMax(String.valueOf(dimension));
+            }
+          } catch (final RuntimeException restoreFailure) {
+            e.addSuppressed(restoreFailure);
+          }
+      throw e;
+    }
 
     final List<String> properties = toStrings(entry.getJSONArray("properties", new JSONArray()));
 
@@ -328,17 +361,100 @@ final class CypherConstraintRegistry {
   }
 
   /**
+   * Releases the MIN and MAX a vector type constraint set to its dimension: handed to another type constraint over the same
+   * property that still requires them (an equivalent one, since a conflicting one is refused), otherwise cleared, as long as
+   * they still are the dimension: bounds changed since by other means are not this constraint's to undo.
+   *
+   * @return the properties whose bounds were cleared
+   */
+  private static List<String> releaseBounds(final DocumentType type, final String droppedKey, final JSONObject entry) {
+    final List<String> bounded = toStrings(entry.getJSONArray("bounds", new JSONArray()));
+    if (bounded.isEmpty())
+      return bounded;
+    final int dimension = dimensionOf(entry);
+    final String bound = String.valueOf(dimension);
+    final List<String> cleared = new ArrayList<>(bounded.size());
+    for (final String propertyName : bounded) {
+      final String heir = findTypedHeir(type, droppedKey, propertyName, dimension);
+      if (heir != null) {
+        final JSONObject heirEntry = entry(type, heir);
+        final JSONArray heirBounds = heirEntry.getJSONArray("bounds", new JSONArray());
+        if (!toStrings(heirBounds).contains(propertyName)) {
+          heirEntry.put("bounds", heirBounds.put(propertyName));
+          type.setCustomValue(heir, heirEntry.toString());
+        }
+        continue;
+      }
+      final Property property = type.getPropertyIfExists(propertyName);
+      if (property == null || dimension == CypherTypeName.NO_DIMENSION || !bound.equals(property.getMin()) || !bound.equals(
+          property.getMax()))
+        continue;
+      property.setMin(null);
+      property.setMax(null);
+      cleared.add(propertyName);
+    }
+    return cleared;
+  }
+
+  /**
+   * Finds a vector type constraint on the type, other than the one being dropped, over the property and with the same
+   * dimension: the one that still requires the bounds.
+   */
+  private static String findTypedHeir(final DocumentType type, final String droppedKey, final String propertyName,
+      final int dimension) {
+    for (final String key : type.getCustomKeys()) {
+      if (!key.startsWith(KEY_PREFIX) || key.equals(droppedKey))
+        continue;
+      final JSONObject candidate = entry(type, key);
+      if (candidate != null && kindOf(candidate) == ConstraintKind.TYPED && dimensionOf(candidate) == dimension && toStrings(
+          candidate.getJSONArray("properties", new JSONArray())).contains(propertyName))
+        return key;
+    }
+    return null;
+  }
+
+  /**
+   * Finds a type constraint on the type, other than the one being dropped, over the property and declaring exactly the same
+   * type (element type and dimension included), or null.
+   */
+  private static String findEquivalentTyped(final DocumentType type, final String droppedKey, final String propertyName,
+      final JSONObject declared) {
+    final Type declaredType = typeOf(declared.getString("type", null));
+    if (declaredType == null)
+      return null;
+    for (final String key : type.getCustomKeys()) {
+      if (!key.startsWith(KEY_PREFIX) || key.equals(droppedKey))
+        continue;
+      final JSONObject candidate = entry(type, key);
+      if (candidate != null && kindOf(candidate) == ConstraintKind.TYPED && toStrings(
+          candidate.getJSONArray("properties", new JSONArray())).contains(propertyName) && sameDeclaration(
+          candidate.getJSONObject("declaredType", null), declaredType, declared.getString("of", null),
+          declared.getInt("dimension", CypherTypeName.NO_DIMENSION)))
+        return key;
+    }
+    return null;
+  }
+
+  /** The dimension a recorded vector type constraint declared, or {@link CypherTypeName#NO_DIMENSION}. */
+  private static int dimensionOf(final JSONObject entry) {
+    final JSONObject declaredType = entry.getJSONObject("declaredType", null);
+    return declaredType != null ? declaredType.getInt("dimension", CypherTypeName.NO_DIMENSION) : CypherTypeName.NO_DIMENSION;
+  }
+
+  /**
    * Puts back the declarations a type constraint replaced, as long as the property still has the type the constraint gave
    * it: a type changed since by other means is not this constraint's to undo.
    */
-  private static void restorePreviousDeclarations(final DocumentType type, final JSONObject entry, final Retyper retyper) {
+  private static void restorePreviousDeclarations(final DocumentType type, final String droppedKey, final JSONObject entry,
+      final Retyper retyper) {
     final JSONObject previous = entry.getJSONObject("previous", null);
     final JSONObject declared = entry.getJSONObject("declaredType", null);
     if (previous == null || declared == null)
       return;
     for (final String propertyName : previous.keySet()) {
       final Property property = type.getPropertyIfExists(propertyName);
-      if (property == null || !sameDeclaration(declared, property.getType(), property.getOfType())) {
+      if (property == null || !sameDeclaration(declared, property.getType(), property.getOfType(),
+          declared.getInt("dimension", CypherTypeName.NO_DIMENSION))) {
         LogManager.instance().log(CypherConstraintRegistry.class, Level.FINE,
             "Type constraint on '%s.%s': the property no longer has the type the constraint declared, so the declaration it "
                 + "replaced is not restored", type.getName(), propertyName);
@@ -348,6 +464,20 @@ final class CypherConstraintRegistry {
       final Type oldType = old != null ? typeOf(old.getString("type", null)) : null;
       if (oldType == null)
         continue;
+
+      // another type constraint still requires what this one declared: it takes over the declaration to restore, which goes
+      // back when the last of them is dropped, rather than being restored under it (#10862)
+      final String heir = findEquivalentTyped(type, droppedKey, propertyName, declared);
+      if (heir != null) {
+        final JSONObject heirEntry = entry(type, heir);
+        final JSONObject heirPrevious = heirEntry.getJSONObject("previous", new JSONObject());
+        if (!heirPrevious.has(propertyName)) {
+          heirPrevious.put(propertyName, old);
+          heirEntry.put("previous", heirPrevious);
+          type.setCustomValue(heir, heirEntry.toString());
+        }
+        continue;
+      }
       try {
         retyper.retype(type, property, oldType, old.getString("of", null));
       } catch (final RuntimeException e) {
@@ -438,12 +568,13 @@ final class CypherConstraintRegistry {
     return null;
   }
 
-  /** Whether a recorded declaration is the given type and element type. */
-  private static boolean sameDeclaration(final JSONObject declaration, final Type type, final String ofType) {
+  /** Whether a recorded declaration is the given type, element type and, for a vector, dimension. */
+  private static boolean sameDeclaration(final JSONObject declaration, final Type type, final String ofType, final int dimension) {
     if (declaration == null)
       return false;
     final String recordedOf = declaration.getString("of", null);
-    return type.name().equals(declaration.getString("type", null)) && (recordedOf == null ? ofType == null : recordedOf.equals(ofType));
+    return type.name().equals(declaration.getString("type", null)) && (recordedOf == null ? ofType == null : recordedOf.equals(ofType))
+        && declaration.getInt("dimension", CypherTypeName.NO_DIMENSION) == dimension;
   }
 
   /** An entry this version does not know (written by a newer one) claims nothing here, and must not abort a drop. */

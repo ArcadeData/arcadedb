@@ -41,6 +41,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
@@ -135,8 +136,7 @@ public class JsonSerializer {
       // LocalDateTime-to-Date conversion to UTC - so the old answer was the outlier: the same document read back
       // through GET /document/{db}/{rid} and through a query disagreed, and the document one moved with the
       // machine's time zone. Pinned by Issue7638DateColumnPrecisionTest#anUndeclaredDatePropertyIsAlsoUtcAnchored.
-      value = formatTemporalForPrecision(value, type != null && type.existsProperty(p) ? type.getProperty(p).getType() : null,
-          schemaDateTimeFormat, schemaDateFormat);
+      value = formatTemporalForPrecision(value, declaredType(type, p), schemaDateTimeFormat, schemaDateFormat);
 
       object.put(p, value);
     }
@@ -168,7 +168,7 @@ public class JsonSerializer {
           // Issue #4149: keep precision-aware formatting on the projection branch too.
           Object projValue = serializeObject(database, entry.getValue());
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
-          final Type propertyType = type != null && type.existsProperty(entry.getKey()) ? type.getProperty(entry.getKey()).getType() : null;
+          final Type propertyType = declaredType(type, entry.getKey());
           projValue = formatTemporalForPrecision(projValue, propertyType, schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }
@@ -208,7 +208,9 @@ public class JsonSerializer {
         else
           propertyType = null;
 
-        if (propertyType != null && !JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType)) {
+        // Issue #10899: a non-finite DOUBLE is NOT faithful - it goes out as a NonFiniteNumbers marker string, which a
+        // client with no hint for the column would hand back as that String instead of the number.
+        if (propertyType != null && (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value))) {
           if (!propertyTypes.isEmpty())
             propertyTypes.append(",");
           propertyTypes.append(propertyName).append(":").append(propertyType.getId());
@@ -227,7 +229,9 @@ public class JsonSerializer {
           else
             elements = null;
           if (elements != null) {
-            final Type elementType = detectHomogeneousTemporalElementType(elements);
+            Type elementType = detectHomogeneousTemporalElementType(elements);
+            if (elementType == null)
+              elementType = detectNonFiniteFloatingElementType(elements);
             if (elementType != null)
               propertyTypes.append('(').append(elementType.getId()).append(')');
           }
@@ -280,13 +284,11 @@ public class JsonSerializer {
 
       Object value = entry.getValue();
 
-      final Type propertyType;
-      if (type != null && type.existsProperty(propertyName))
-        propertyType = type.getProperty(propertyName).getType();
-      else if (value != null)
+      // The declaration may sit on a supertype (issue #10865): a java.util.Date for an inherited DATE fell through to
+      // getTypeByClass, which answers DATETIME, and was sent as epoch milliseconds the server reads as epoch days
+      Type propertyType = declaredType(type, propertyName);
+      if (propertyType == null && value != null)
         propertyType = Type.getTypeByClass(value.getClass());
-      else
-        propertyType = null;
 
       // Issue #5863: @props emission is gated by includeTypeHints (off by default), decoupled from
       // includeMetadata - which keeps meaning "include @rid/@type/@cat/@in/@out" only. Unlike serializeResult
@@ -545,6 +547,20 @@ public class JsonSerializer {
   }
 
   /**
+   * The type a property is declared with on {@code type} or on any of its supertypes, {@code null} when it is not declared (or
+   * there is no type). The declaration of an inherited property lives on the supertype only, so asking the record's own type
+   * missed it, and the value was rendered as if the property were undeclared (issue #10865).
+   */
+  static Type declaredType(final DocumentType type, final String propertyName) {
+    if (type == null)
+      return null;
+    if (type.existsProperty(propertyName))
+      return type.getProperty(propertyName).getType();
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    return property != null ? property.getType() : null;
+  }
+
+  /**
    * True for the values of the types that keep more than an instant: a time of day, a zoned datetime and a duration. A
    * {@code ZonedDateTime} under a DATETIME declaration is still an instant (issue #8572). Public so that
    * {@code Result#valueToJSON} asks the same question and the two renderings of one row cannot drift (issue #9810).
@@ -670,7 +686,11 @@ public class JsonSerializer {
   }
 
   private static String nonFiniteName(final double value) {
-    return Double.isNaN(value) ? "NaN" : value > 0 ? "PosInfinity" : "NegInfinity";
+    return Double.isNaN(value) ? NonFiniteNumbers.NAN : value > 0 ? NonFiniteNumbers.POSITIVE_INFINITY : NonFiniteNumbers.NEGATIVE_INFINITY;
+  }
+
+  private static boolean isNonFiniteDouble(final Object value) {
+    return value instanceof Double d && !Double.isFinite(d);
   }
 
   /**
@@ -762,6 +782,37 @@ public class JsonSerializer {
     value = convertNonNumbers(value);
 
     return value;
+  }
+
+  /**
+   * Issue #10899: returns FLOAT (DOUBLE) when every non-null element of {@code collection} is a {@link Float}
+   * ({@link Double}) and at least one of them is non-finite, or {@code null} otherwise. Such an element goes out as a
+   * {@code NonFiniteNumbers} marker string, and without the element-type hint the remote client would hand that string
+   * back instead of the number. A collection of finite numbers is left alone: JSON already carries it faithfully enough
+   * for the client, as it did before.
+   */
+  private static Type detectNonFiniteFloatingElementType(final Collection<?> collection) {
+    Class<?> elementClass = null;
+    boolean nonFinite = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (element instanceof Float f) {
+        if (elementClass == Double.class)
+          return null;
+        elementClass = Float.class;
+        nonFinite |= !Float.isFinite(f);
+      } else if (element instanceof Double d) {
+        if (elementClass == Float.class)
+          return null;
+        elementClass = Double.class;
+        nonFinite |= !Double.isFinite(d);
+      } else
+        return null;
+    }
+    if (!nonFinite)
+      return null;
+    return elementClass == Float.class ? Type.FLOAT : Type.DOUBLE;
   }
 
   /**

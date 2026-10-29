@@ -38,6 +38,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.UnidirectionalEdgeChanges;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -1660,6 +1661,14 @@ public class TransactionContext implements Transaction {
 
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
+
+    // #10929: a vertex's edge-list heads are the transaction's, not the handle's. A copy taken before an edge was appended
+    // through another handle would write back the heads it was copied with and unlink every edge appended since.
+    if (record instanceof MutableVertex vertex) {
+      final Record held = updatedRecords.get(rid);
+      vertex.adoptEdgeListHeadsOf(held != null ? held : modifiedRecordsCache.get(rid));
+    }
+
     final Record previousQueued = updatedRecords.put(rid, record);
     if (statement != null)
       statement.updatedPut(rid, previousQueued, record);
@@ -2419,6 +2428,36 @@ public class TransactionContext implements Transaction {
    */
   public Long getOffPageFingerprint(final RID rid) {
     return offPageFingerprints == null ? null : offPageFingerprints.get(rid);
+  }
+
+  /**
+   * The records of bucket {@code bucketId} this transaction holds an off-page fingerprint for, or {@code null} when it
+   * holds none: what {@link LocalBucket} re-takes across a write of its own to the off-page part of a record (#10859).
+   * A fresh array the caller may overwrite.
+   */
+  public RID[] getOffPageFingerprintedRecords(final int bucketId) {
+    if (offPageFingerprints == null || offPageFingerprints.isEmpty())
+      return null;
+
+    RID[] result = null;
+    int count = 0;
+    for (final RID rid : offPageFingerprints.keySet())
+      if (rid.getBucketId() == bucketId) {
+        if (result == null)
+          result = new RID[offPageFingerprints.size()];
+        result[count++] = rid;
+      }
+    return result == null ? null : Arrays.copyOf(result, count);
+  }
+
+  /**
+   * Replaces the off-page fingerprint of {@code rid} with the one its off-page part has after a write of THIS
+   * transaction to it (#10859), which the commit must not mistake for a concurrent modification. Only for a record
+   * whose fingerprint was taken at {@link #addUpdatedRecord(Record)} and still described it right before that write.
+   */
+  public void setOffPageFingerprint(final RID rid, final long fingerprint) {
+    if (offPageFingerprints != null && offPageFingerprints.containsKey(rid))
+      offPageFingerprints.put(rid, fingerprint);
   }
 
   /**

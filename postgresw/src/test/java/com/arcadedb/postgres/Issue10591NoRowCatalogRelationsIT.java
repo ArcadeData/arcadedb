@@ -137,7 +137,8 @@ class Issue10591NoRowCatalogRelationsIT extends PostgresWireProtocolTestBase {
           assertThat(resultSet.getArray("memberof").getArray()).as(mode).isEqualTo(new String[0]);
           assertThat(resultSet.next()).as(mode).isFalse();
         }
-        for (final String relation : List.of("pg_proc", "pg_trigger", "pg_auth_members", "pg_depend", "pg_sequence", "pg_rewrite"))
+        // pg_depend is not among them since #10842: it lists the dependencies of the indexes, which this database has
+        for (final String relation : List.of("pg_proc", "pg_trigger", "pg_auth_members", "pg_sequence", "pg_rewrite"))
           try (final ResultSet resultSet = statement.executeQuery("select count(*) from pg_catalog." + relation)) {
             assertThat(resultSet.next()).as("%s %s", mode, relation).isTrue();
             assertThat(resultSet.getLong(1)).as("%s %s", mode, relation).isZero();

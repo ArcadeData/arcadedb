@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.date;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -51,7 +52,10 @@ public class DateConvert extends AbstractDateFunction {
     if (args[0] == null)
       return null;
 
-    final long value = args[0] instanceof Number ? ((Number) args[0]).longValue() : Long.parseLong(args[0].toString());
+    // Issue #10850: a whole number - longValue() read 1.5 seconds as 1
+    final long value = args[0] instanceof Number ?
+        CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "value") :
+        Long.parseLong(args[0].toString());
     final String fromUnit = args[1] != null ? args[1].toString() : UNIT_MS;
     final String toUnit = args[2] != null ? args[2].toString() : UNIT_MS;
 

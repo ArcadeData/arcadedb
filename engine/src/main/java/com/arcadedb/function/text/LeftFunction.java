@@ -50,11 +50,13 @@ public class LeftFunction implements StatelessFunction {
     final String str = args[0].toString();
     // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
     // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
-    final int length = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
+    // Issue #10850: a whole number or a type error - intValue() read 2.9 as 2 and 3000000000 as a negative length
+    final long length = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "length");
     if (length < 0)
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching Neo4j/Memgraph.
       // CommandSemanticException extends CommandParsingException, which the HTTP handler maps to 400. See issue #5296.
       throw new CommandSemanticException("left(): negative length is not supported: " + length);
-    return CypherFunctionHelper.leftCodePoints(str, length);
+    // a string is never longer than the int range, so a longer length is the whole string
+    return CypherFunctionHelper.leftCodePoints(str, (int) Math.min(length, Integer.MAX_VALUE));
   }
 }

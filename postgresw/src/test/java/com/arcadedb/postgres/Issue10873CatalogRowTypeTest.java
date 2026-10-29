@@ -157,8 +157,8 @@ class Issue10873CatalogRowTypeTest {
     notChecked("pg_index.indclass", "pg_opclass is not modelled: the operator classes have no equivalent here");
     notChecked("pg_description.classoid", "the catalog of the object described, and pg_description has no row");
     notChecked("pg_shdescription.classoid", "the catalog of the object described, and pg_shdescription has no row");
-    notChecked("pg_depend.classid", "pg_depend has no row");
-    notChecked("pg_depend.refclassid", "pg_depend has no row");
+    notChecked("pg_depend.classid", "the OID of a system catalog (pg_class, pg_constraint), which pg_class does not list as a row");
+    notChecked("pg_depend.refclassid", "the OID of a system catalog (pg_class, pg_constraint), which pg_class does not list as a row");
     notChecked("pg_shdescription.objoid", "an object of any shared catalog, and pg_shdescription has no row");
     notChecked("pg_tables.tableowner", "the owner's name, not its OID");
     notChecked("pg_matviews.matviewowner", "the owner's name, not its OID");

@@ -19,6 +19,7 @@
 package com.arcadedb.function.temporal;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -44,8 +45,11 @@ public class DateTimeFromEpochFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    final long seconds = ((Number) args[0]).longValue();
-    final long nanos = ((Number) args[1]).longValue();
+    if (args[0] == null || args[1] == null)
+      return null;
+    // Issue #10850: whole numbers or a type error - longValue() read 1.9 as 1, and a non-number was a ClassCastException
+    final long seconds = CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "seconds");
+    final long nanos = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "nanoseconds");
     return CypherDateTime.fromEpoch(seconds, nanos);
   }
 }
