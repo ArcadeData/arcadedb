@@ -775,15 +775,15 @@ public enum Type {
           array[i] = (int) narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property);
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
-        // Convert Collection to long[]. LONG is the widest integral type, so only the NaN guard applies (no
-        // narrower range to check - see narrowToIntegral()).
+        // Convert Collection to long[]. LONG is the widest integral type: besides the NaN guard, only a value beyond the
+        // 64-bit range is refused (see narrowToIntegral()).
         final long[] array = new long[collection.size()];
         int i = 0;
         for (final Object item : collection)
           array[i++] = narrowToIntegral((Number) item, Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof double[] src) {
-        // LONG is the widest integral type, so only the NaN guard applies (no narrower range to check - see narrowToIntegral()).
+        // LONG is the widest integral type: besides the NaN guard, only a value beyond the 64-bit range is refused (see narrowToIntegral()).
         final long[] array = new long[src.length];
         for (int i = 0; i < src.length; i++)
           array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property);
@@ -1417,17 +1417,19 @@ public enum Type {
           "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
-    final long longValue;
-    if (value instanceof BigDecimal bigDecimal)
-      longValue = bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
-          : bigDecimal.compareTo(BigDecimal.valueOf(Long.MIN_VALUE)) < 0 ? Long.MIN_VALUE : bigDecimal.longValue();
-    else if (value instanceof BigInteger bigInteger)
-      longValue = bigInteger.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
-          : bigInteger.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0 ? Long.MIN_VALUE : bigInteger.longValue();
-    else
-      longValue = value.longValue();
+    // A BIG NUMBER BEYOND THE 64-BIT RANGE IS OUT OF EVERY INTEGRAL RANGE, LONG'S INCLUDED: CLAMPING IT TO Long.MAX_VALUE
+    // PASSED THE LONG CHECK BELOW AND STORED EVERY SUCH ELEMENT AS THE SAME NUMBER (issue #10756)
+    final boolean beyondLong = switch (value) {
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
+      // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
+      case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
+      case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
+      default -> false;
+    };
+    final long longValue = value.longValue();
 
-    if (longValue < min || longValue > max)
+    if (beyondLong || longValue < min || longValue > max)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
@@ -1448,8 +1450,9 @@ public enum Type {
           "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
+    // THE CAST SATURATES: 2^63 IS THE FIRST DOUBLE ABOVE THE LONG RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
     final long longValue = (long) value;
-    if (longValue < min || longValue > max)
+    if (value >= 0x1p63 || value < -0x1p63 || longValue < min || longValue > max)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
@@ -1465,7 +1468,7 @@ public enum Type {
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
     final long longValue = (long) value;
-    if (longValue < min || longValue > max)
+    if (value >= 0x1p63f || value < -0x1p63f || longValue < min || longValue > max)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));

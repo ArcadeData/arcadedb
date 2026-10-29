@@ -122,13 +122,19 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
       return refuse("the " + role + " " + peerId + " is this node itself, and dialling it would come straight back here");
 
     final String httpAddress = raft.getUnambiguousPeerHttpAddress(peerId);
-    if (httpAddress == null)
-      return new PeerDialAddress(null, null,
-          "no HTTP address identifies " + role + " " + peerId + " on its own - it is either unresolvable "
-              + "or shared with another peer, and a request sent to the wrong node answers for a node that was never "
-              + "asked. Declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " (issue #6202)",
-          sharedEndpointOf(raft, peerId));
+    if (httpAddress == null) {
+      // TWO DIFFERENT FAULTS WITH TWO DIFFERENT REMEDIES: DECLARING THE 'http' PORT FIXES A SHARED ADDRESS, AND DOES
+      // NOTHING FOR A PEER NO ADDRESS RESOLVES FOR (A PEER THAT JOINED AT RUNTIME HAS NO ENTRY IN THE SERVER LIST TO
+      // DECLARE IT IN, issue #10861)
+      final String shared = raft.getPeerHttpAddress(peerId);
+      final String reason = shared == null ?
+          "no HTTP address identifies " + role + " " + peerId + ": none resolves for it - it is not declared, not learnt "
+              + "yet, and its Raft address is unknown to this node or this node's own HTTP listener is not up" :
+          "no HTTP address identifies " + role + " " + peerId + " on its own: " + shared + " is shared with another "
+              + "peer, and a request sent to the wrong node answers for a node that was never asked. Declare each node's "
+              + "'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " (issue #6202)";
+      return new PeerDialAddress(null, null, reason, sharedEndpointOf(raft, peerId));
+    }
 
     // Resolved once and compared once: reading it twice would let the two comparisons disagree.
     final String localHttpAddress = raft.getLocalHttpAddress();

@@ -220,7 +220,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     // futures themselves never fail; join() below is safe.
     final List<CompletableFuture<JSONObject>> futures = new ArrayList<>();
     final boolean useSsl = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+    for (final RaftPeer peer : raftHAServer.knownPeers()) {
       // This node is not a peer of itself: skipped here rather than refused in queryPeer so it is absent from the
       // report instead of listed as a peer that could not be verified. Every OTHER peer is dialled through the
       // guard, because an id that is not ours says nothing about where the address resolved for it points.

@@ -2973,6 +2973,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (membershipHolder != null) {
       membershipHolder.invalidateTxPreparedAtCapability();
       membershipHolder.invalidateFullTextCorpusDeltaCapability();
+      // A peer that joins may predate the fixed-width float arrays: no record is written in that form until it answers (#10856)
+      membershipHolder.invalidateFixedWidthFloatArraysCapability();
       // A consistent read waiting here asks again whether this node is still a member (issue #9606)
       membershipHolder.notifyMembershipChanged();
     }
