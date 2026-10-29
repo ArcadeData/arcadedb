@@ -97,6 +97,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
   /**
+   * What {@link #decodeNextChunkLink} answers for a chunk that is the last of its chain. Not a value the next-chunk field
+   * stores (that is 0): the decoded link is a bucket position, where 0 is a real chunk (#10853).
+   */
+  static final           long                      NO_NEXT_CHUNK                    = -1L;
+  /**
    * The head chunk of a placeholder CONTENT record - same on-page layout as {@link #FIRST_CHUNK}, and reached through a
    * {@link #RECORD_PLACEHOLDER_POINTER} on another page instead of standing for a record of its own (#6196).
    * <p>
@@ -497,24 +502,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     private boolean incomplete;
     /**
      * Where the walk broke: the index of the chunk whose continuation pointer could not be resolved, and the value
-     * of that pointer. {@code -1}/{@code 0} while the walk has proved nothing.
+     * of that pointer, decoded ({@link #decodeNextChunkLink}). {@code -1}/{@link #NO_NEXT_CHUNK} while the walk has
+     * proved nothing.
      * <p>
      * This is what lets a SECOND walk be compared against a first one rather than merely agreed with (#6282): the
      * delete path meets a break in the transaction's view and asks the newest committed image whether the same hop,
      * to the same target, still fails. A committed image that breaks somewhere else is a record that MOVED under the
      * delete, which is contention and must keep its retry - not the permanent corruption verdict.
      * <p>
-     * Set exactly when {@link #findBrokenChunkChain} returns a reason, and back to {@code -1}/{@code 0} on every exit
-     * that proves nothing - the clean walk included.
+     * Set exactly when {@link #findBrokenChunkChain} returns a reason, and back to {@code -1}/{@link #NO_NEXT_CHUNK} on
+     * every exit that proves nothing - the clean walk included.
      */
-    private int  brokenAtChunk = -1;
-    private long brokenAtPointer;
+    private int  brokenAtChunk   = -1;
+    private long brokenAtPointer = NO_NEXT_CHUNK;
 
     private void reset() {
       chunks.clear();
       incomplete = false;
       brokenAtChunk = -1;
-      brokenAtPointer = 0;
+      brokenAtPointer = NO_NEXT_CHUNK;
     }
   }
 
@@ -1138,8 +1144,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private long walkChunkChainTail(final BasePage headChunkPage, final int headChunkHeaderPos) throws IOException {
-    long pointer = headChunkPage.readLong(headChunkHeaderPos + INT_SERIALIZED_SIZE);
-    if (pointer == 0)
+    long pointer = decodeNextChunkLink(headChunkPage.readLong(headChunkHeaderPos + INT_SERIALIZED_SIZE));
+    if (pointer == NO_NEXT_CHUNK)
       // A single-chunk record: its whole content is in the head chunk, which the pre-image check already covers.
       return EMPTY_OFF_PAGE_FINGERPRINT;
 
@@ -1153,7 +1159,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // this walk allocates nothing at all.
     LongHashSet visitedChunks = null;
 
-    for (int chunk = 0; pointer > 0; ++chunk) {
+    for (int chunk = 0; pointer != NO_NEXT_CHUNK; ++chunk) {
       if (chunk >= CHUNKS_BEFORE_LOOP_DETECTION) {
         if (visitedChunks == null)
           visitedChunks = new LongHashSet();
@@ -1189,7 +1195,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       fingerprint = fnv1a(fingerprint, chunkSize);
       fingerprint = fnv1a(fingerprint, chunkPage, headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, chunkSize);
 
-      pointer = chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE);
+      pointer = decodeNextChunkLink(chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE));
     }
 
     // A hash that lands on the "unknown" sentinel is moved onto the "no tail" one rather than being handed back as
@@ -2195,10 +2201,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         shared.add(chunk);
       MutablePage pointerPage = headPage;
       int pointerOffset = (int) (recordPositionInPage + recordSize[1] + INT_SERIALIZED_SIZE);
-      long pointer = pointerPage.readLong(pointerOffset);
+      long pointer = decodeNextChunkLink(pointerPage.readLong(pointerOffset));
       final LongHashSet visited = new LongHashSet();
       while (!shared.contains(pointer)) {
-        if (pointer <= 0 || !visited.add(pointer))
+        if (pointer == NO_NEXT_CHUNK || !visited.add(pointer))
           return;
         pointerPage = tx.getPageToModify(new PageId(database, file.getFileId(), (int) (pointer / maxRecordsInPage)), pageSize,
                 false);
@@ -2209,7 +2215,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (marker[0] != NEXT_CHUNK)
           return;
         pointerOffset = (int) (chunkPosition + marker[1] + INT_SERIALIZED_SIZE);
-        pointer = pointerPage.readLong(pointerOffset);
+        pointer = decodeNextChunkLink(pointerPage.readLong(pointerOffset));
       }
 
       // Writes no commit-time merge can replay: keep both pages out of it
@@ -4870,17 +4876,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // which does read sizes. Aligning the two indices would buy that shape a permanent verdict at the cost of
           // more index bookkeeping in the code that has already been the source of most of this issue's mistakes.
           walk.brokenAtChunk = chunkId;
-          walk.brokenAtPointer = 0;
+          walk.brokenAtPointer = NO_NEXT_CHUNK;
           return "invalid chunk size at chunk " + chunkId;
         }
 
-        final long nextChunkPointer = chunkPage.readLong(chunkHeaderPosition + INT_SERIALIZED_SIZE);
-        if (nextChunkPointer == 0) {
+        final long nextChunkPointer = decodeNextChunkLink(chunkPage.readLong(chunkHeaderPosition + INT_SERIALIZED_SIZE));
+        if (nextChunkPointer == NO_NEXT_CHUNK) {
           // REACHED THE LAST CHUNK CLEANLY. The break location is cleared rather than left pointing at the last
           // SUCCESSFUL hop: both current consumers read it only after a reason came back, but a documented invariant
           // that the code does not keep is a trap for the next one (PR review).
           walk.brokenAtChunk = -1;
-          walk.brokenAtPointer = 0;
+          walk.brokenAtPointer = NO_NEXT_CHUNK;
           return null;
         }
 
@@ -5084,10 +5090,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           MutablePage chunkPage = page;
           int chunkRecordPositionInPage = recordPositionInPage;
           for (int chunkId = 0; ; ++chunkId) {
-            final long nextChunkPointer = chunkPage.readLong(
-                    (int) (chunkRecordPositionInPage + recordHeaderSize + INT_SERIALIZED_SIZE));
+            final long nextChunkPointer = decodeNextChunkLink(chunkPage.readLong(
+                    (int) (chunkRecordPositionInPage + recordHeaderSize + INT_SERIALIZED_SIZE)));
 
-            if (nextChunkPointer == 0)
+            if (nextChunkPointer == NO_NEXT_CHUNK)
               // LAST CHUNK
               break;
 
@@ -5906,8 +5912,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
       int chunks = 0;
       // The continuation pointer the LAST traced chunk carried, so a chain the walk could not finish can be validated
-      // too: for a chain walked to its end this is 0, which is what the last chunk really holds.
-      long lastNextChunkPointer = 0L;
+      // too: for a chain walked to its end this is NO_NEXT_CHUNK, which is what the last chunk really holds.
+      long lastNextChunkPointer = NO_NEXT_CHUNK;
 
       // Set ONLY by the branches that could not PARSE the chain, never by the read-vs-write validation below: the two
       // have opposite answers and used to share one flag (#6258).
@@ -5943,8 +5949,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         while (true) {
           final int chunkSize = page.readInt((int) (currentRecordPositionInPage + currentRecordHeaderSize));
-          final long nextChunkPointer = page.readLong(
-                  (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE));
+          final long nextChunkPointer = decodeNextChunkLink(page.readLong(
+                  (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE)));
           final Binary chunk = page.getImmutableView(
                   (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
                   chunkSize);
@@ -5963,7 +5969,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           ++chunks;
           lastNextChunkPointer = nextChunkPointer;
 
-          if (nextChunkPointer == 0)
+          if (nextChunkPointer == NO_NEXT_CHUNK)
             break;
 
           final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
@@ -6154,7 +6160,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * that cannot be read at all is left alone, exactly as the version check that preceded this did - there is nothing
    * to compare against, and failing a read on it would be inventing a conflict.
    *
-   * @param lastNextChunkPointer the continuation pointer the last traced chunk carried: 0 for a chain walked to its
+   * @param lastNextChunkPointer the continuation pointer the last traced chunk carried, decoded
+   *                             ({@link #decodeNextChunkLink}): {@link #NO_NEXT_CHUNK} for a chain walked to its
    *                             end, and the pointer that could not be followed for a walk the chain broke (#6258) -
    *                             which is what lets a broken chain be validated by the same comparison as a whole one.
    * @param headMarker           the marker the head chunk carried when the walk started, {@link #FIRST_CHUNK} or
@@ -6269,7 +6276,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         long[] size = headSize;
         while (true) {
           final int chunkSize = page.readInt((int) (position + size[1]));
-          final long nextChunkPointer = page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE));
+          final long nextChunkPointer = decodeNextChunkLink(page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE)));
           record.append(page.getImmutableView((int) (position + size[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE), chunkSize));
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
@@ -6281,7 +6288,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
           ++chunks;
 
-          if (nextChunkPointer == 0) {
+          if (nextChunkPointer == NO_NEXT_CHUNK) {
             complete = true;
             break;
           }
@@ -6312,7 +6319,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       // A chain that did not walk to its end, or that a commit moved under the walk, is walked again
-      if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, 0L, headMarker) != CHAIN_READ_CHANGED) {
+      if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, NO_NEXT_CHUNK, headMarker) != CHAIN_READ_CHANGED) {
         record.position(0);
         return record;
       }
@@ -6638,7 +6645,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int headerPos = (int) (chunkPositionInPage + marker[1]);
       if (page.readInt(headerPos) != chunkSize
-              || page.readLong(headerPos + INT_SERIALIZED_SIZE) != nextChunkPointer)
+              || decodeNextChunkLink(page.readLong(headerPos + INT_SERIALIZED_SIZE)) != nextChunkPointer)
         return false;
 
       final int contentPos = headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
@@ -6759,7 +6766,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Writes {@code bufferSize} bytes of {@code content}, from {@code contentOffset}, as continuation ({@link #NEXT_CHUNK}) chunks on pages other than
    * {@code currentPage}, linking the first one from the next-chunk pointer at {@code nextChunkPointerOffset} of
    * {@code currentPage} and ending the last one with {@code chainTail}: 0 for a chain that ends there, or the pointer of
-   * the chunk that used to follow when the content is spliced into the middle of an existing chain (#10669).
+   * the chunk that used to follow when the content is spliced into the middle of an existing chain (#10669). Written
+   * back exactly as it was read, in whichever encoding the chain used (#10853), so it is never decoded here.
    * <p>
    * DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table writes that
    * bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED page that also holds a
@@ -6946,6 +6954,41 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The bucket position the "pointer to the next chunk" field of a chunk header links to, or {@link #NO_NEXT_CHUNK} when
+   * the chunk is the last of its chain (#10853). Every reader of the field goes through this and nothing else, because the
+   * field has two encodings and only this method knows both:
+   * <ul>
+   * <li>{@code 0} ends the chain. That is why a LEGACY link cannot name position 0 of the bucket (#10701);</li>
+   * <li>a positive value is a legacy link: the absolute position {@code pageNumber * maxRecordsInPage + slot}, which is
+   * what every database written so far holds;</li>
+   * <li>a negative value is the self-describing form {@code -(position + 1)} ({@link #nextChunkLinkOf}), which can name
+   * position 0. No writer ever stored a negative value in this field, so reading it as a link takes nothing away.</li>
+   * </ul>
+   * The returned value is what the walks compare, put in their loop detectors and hand to each other, so two links to
+   * the same chunk in different encodings are the same link everywhere.
+   * <p>
+   * Only the READ side of the new form exists so far: every writer still stores the legacy form, so a database written
+   * by this release stays readable by the previous one. This is the read-before-write step of the rollout, which lets a
+   * later release start writing the new form without making a downgrade by one release lose data.
+   */
+  static long decodeNextChunkLink(final long link) {
+    if (link > 0L)
+      return link;
+    return link == 0L ? NO_NEXT_CHUNK : -(link + 1L);
+  }
+
+  /**
+   * The self-describing form of a link to the chunk at {@code position}: {@code -(position + 1)}, which
+   * {@link #decodeNextChunkLink} reads back as {@code position}, position 0 included (#10853). Not written by any writer
+   * yet - see {@link #decodeNextChunkLink} for the rollout.
+   */
+  static long nextChunkLinkOf(final long position) {
+    if (position < 0L)
+      throw new IllegalArgumentException("A chunk position cannot be negative: " + position);
+    return -(position + 1L);
+  }
+
+  /**
    * Writes the "pointer to the next chunk" field of a chunk header, declaring it covered by {@code coverage}. The
    * field lives inside the chunk's own slot image, so on the page holding the HEAD chunk of the record it is part of
    * what the disjoint-slot merge replays (#6129); on any other page the caller passes 0 and the write is as
@@ -7041,7 +7084,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
     int nextChunkPointerOffset = newPosition;
-    long nextChunkPointer = currentPage.readLong(nextChunkPointerOffset);
+    long nextChunkPointer = decodeNextChunkLink(currentPage.readLong(nextChunkPointerOffset));
 
     newPosition += LONG_SERIALIZED_SIZE;
 
@@ -7052,7 +7095,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     contentOffset += chunkSize;
 
     // WRITE ALL THE REMAINING CHUNKS IN NEW PAGES
-    long chunkToDeletePointer = bufferSize > 0 ? 0L : nextChunkPointer;
+    long chunkToDeletePointer = bufferSize > 0 ? NO_NEXT_CHUNK : nextChunkPointer;
 
     while (bufferSize > 0) {
       MutablePage nextPage = null;
@@ -7067,7 +7110,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // can say so. -1 while there is no reused chunk.
       int chunkSizeBefore = -1;
 
-      if (nextChunkPointer > 0) {
+      if (nextChunkPointer != NO_NEXT_CHUNK) {
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
         final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
@@ -7088,7 +7131,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         newPosition = (int) (recordPositionInPage + recordSize[1]);
         chunkSize = nextPage.readInt(newPosition);
         chunkSizeBefore = chunkSize;
-        nextChunkPointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
+        nextChunkPointer = decodeNextChunkLink(nextPage.readLong(newPosition + INT_SERIALIZED_SIZE));
 
       } else {
         // CREATE NEW SPACE FOR THE CURRENT AND REMAINING CHUNKS
@@ -7206,7 +7249,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK TO DELETE REMAINING CHUNKS IF THE RECORD SHRUNK
-    if (chunkToDeletePointer > 0) {
+    if (chunkToDeletePointer != NO_NEXT_CHUNK) {
       // CUT THE CHAIN AT THE LAST CHUNK THAT SURVIVES, THEN FREE WHAT FOLLOWS
       writeNextChunkPointer(currentPage, nextChunkPointerOffset, 0L, currentPage == firstPage ? firstChunkCoverage : 0);
       freeChunkChain(originalRID, chunkToDeletePointer);
@@ -7271,7 +7314,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
 
     // Read BEFORE the write below overwrites the header these two come from.
-    final long chainToFree = page.readLong(chunkHeaderPos + INT_SERIALIZED_SIZE);
+    final long chainToFree = decodeNextChunkLink(page.readLong(chunkHeaderPos + INT_SERIALIZED_SIZE));
     final int previousChunkEnd = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + page.readInt(chunkHeaderPos);
 
     final int previousCoverage = page.beginCoveredWrite(chunkBaseImage != null ? MutablePage.COVERAGE_SLOT_MERGE : 0);
@@ -7331,7 +7374,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext slotTx = database.getTransactionIfExists();
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
 
-    while (chunkPointer > 0) {
+    while (chunkPointer != NO_NEXT_CHUNK) {
       final int chunkPageId = (int) (chunkPointer / maxRecordsInPage);
       final int chunkPositionInPage = (int) (chunkPointer % maxRecordsInPage);
 
@@ -7370,7 +7413,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // the chunk leaves a HOLE that the allocator cannot hand out, and what the page will really have on offer is
       // settled by the compression the commit runs on it (compressPageInternal, which reports what it packed). A
       // guess made here would have to be undone there.
-      chunkPointer = nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE);
+      chunkPointer = decodeNextChunkLink(nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE));
     }
   }
 
