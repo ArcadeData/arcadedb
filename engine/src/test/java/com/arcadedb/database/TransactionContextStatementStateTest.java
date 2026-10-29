@@ -112,6 +112,10 @@ class TransactionContextStatementStateTest {
     // statement taken back does not undo, and a build that fails drops its index, so a stale name matches no index
     CLASSIFICATION.put("bucketFirstWriteSequences", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("indexesReconciled", NOT_STATEMENT_STATE);
+    // The columnar marks of the commit (spec 6.2): scratch arrays the 2nd phase fills and reads, reused across commits; no statement
+    // writes them
+    CLASSIFICATION.put("columnarMarkKeys", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("columnarMarkPages", NOT_STATEMENT_STATE);
   }
 
   @Test

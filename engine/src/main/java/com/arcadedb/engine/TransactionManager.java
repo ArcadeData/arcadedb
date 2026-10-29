@@ -127,6 +127,10 @@ public class TransactionManager {
   private final ArrayDeque<DeferredWALWrite> deferredWALWrites = new ArrayDeque<>();
   // Writes the queued records one batch at a time, so two batches never interleave in the files
   private final ReentrantLock                deferredWALWriteLock = new ReentrantLock();
+  // Commits between their two columnar marks (spec 6.2) whose WAL record is still queued above, so no WAL file counts them in
+  // WALFile.columnarMarksStarted() yet: the record lands in a file only at the next flush pass, which may run, and see its pages
+  // flushed, before the second mark. cleanWALFiles drops no file while one is pending, since the record may be in any of them
+  private final AtomicInteger                queuedColumnarMarks  = new AtomicInteger();
   // Test hook: runs before each file a group-commit pass or forceWALFiles() flushes, so a test can make the flush fail. Per instance, so tests
   // running concurrently in one JVM do not see each other's
   volatile WALSyncFaultInjector              walSyncFaultInjector;
@@ -688,6 +692,20 @@ public class TransactionManager {
   }
 
   /**
+   * A commit whose WAL record is queued by the group commit ({@link #queueTransactionToWAL}) reached its first columnar mark: no WAL
+   * file holds the record yet, so none is dropped until {@link #queuedColumnarMarksEnded()} (spec 6.2, the queued twin of
+   * {@link WALFile#columnarMarksStarted()}). Called before the pages are published.
+   */
+  public void queuedColumnarMarksStarted() {
+    queuedColumnarMarks.incrementAndGet();
+  }
+
+  /** The second columnar mark of a commit of {@link #queuedColumnarMarksStarted()} ran, or the commit failed: called once, in a finally. */
+  public void queuedColumnarMarksEnded() {
+    queuedColumnarMarks.decrementAndGet();
+  }
+
+  /**
    * Forces every open WAL file of the pool, active and retired, to the disk: once this returns, every transaction appended before the
    * call is durable whatever {@code arcadedb.txWalFlush} says. The columnar projections call it before each manifest publish (final
    * review B-I4), so a published projection is never more durable than the commits it holds. Never called on a database without a
@@ -698,6 +716,12 @@ public class TransactionManager {
    * @throws IOException when an open file cannot be forced, now or at an earlier call (the failure sticks to the file)
    */
   public void forceWALFiles() throws IOException {
+    // Group commit (#10509) queues a WAL record and writes it to its file only in the next flush pass, after the commit published its
+    // pages: an apply pass may already hold those pages, so the queued records are written and flushed first, or the projection
+    // published next could hold a commit no WAL file has
+    final long pending = getPendingWALSyncTicket();
+    if (pending > 0)
+      awaitWALDurable(pending);
     final List<WALFile> files = new ArrayList<>();
     walMaintenanceLock.lock();
     try {
@@ -2444,7 +2468,7 @@ public class TransactionManager {
       // commit raises its marks counter before publishing the pages that counter covers, which only then can reach the disk
       final List<WALFile> removable = new ArrayList<>(inactiveWALFilePool.size());
       for (final WALFile file : inactiveWALFilePool)
-        if (force || !dropFiles || file.getPendingPagesToFlush() == 0 && file.getPendingColumnarMarks() == 0)
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0 && file.getPendingColumnarMarks() == 0 && queuedColumnarMarks.get() == 0)
           removable.add(file);
 
       if (removable.isEmpty())
