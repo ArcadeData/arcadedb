@@ -110,6 +110,19 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
         assertThatThrownBy(() -> database.newDocument("A").set(name, List.of("1", "2")).save())//
             .as("%s must refuse a list of strings, even numeric ones", name).isInstanceOf(IllegalArgumentException.class);
       }
+
+      // an int[] or a short[] goes through long[] and the range-checked narrowing: a value the target cannot hold is refused,
+      // never wrapped
+      assertThatThrownBy(() -> database.newDocument("A").set("shorts", new int[] { 1, 40_000 }).save())//
+          .isInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("40000");
+      assertThatThrownBy(() -> database.newDocument("A").set("shorts", new Integer[] { 1, -40_000 }).save())//
+          .isInstanceOf(IllegalArgumentException.class).hasStackTraceContaining("-40000");
+      assertThat((short[]) database.newDocument("A").set("shorts", new int[] { Short.MIN_VALUE, Short.MAX_VALUE }).save()
+          .get("shorts")).containsExactly(Short.MIN_VALUE, Short.MAX_VALUE);
+      assertThat((long[]) database.newDocument("A").set("longs", new int[] { Integer.MIN_VALUE, Integer.MAX_VALUE }).save()
+          .get("longs")).containsExactly(Integer.MIN_VALUE, Integer.MAX_VALUE);
+      assertThat((int[]) database.newDocument("A").set("ints", new short[] { Short.MIN_VALUE, Short.MAX_VALUE }).save()
+          .get("ints")).containsExactly(Short.MIN_VALUE, Short.MAX_VALUE);
     });
   }
 

@@ -514,8 +514,8 @@ public class RebuildIndexStatement extends DDLStatement {
             // Preserve the logical index's own name (issue #5791, follow-up to #4732/#4139): without this the
             // builder falls back to the auto-derived "typeName[properties]" form, so a REBUILD silently renames
             // any explicitly-named index and every SEARCH_INDEX / name-based lookup against the old name breaks.
-            created[0] = database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
-                .withUnique(unique).withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize)
+            created[0] = database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()]))
+                .withType(type).withUnique(unique).withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize)
                 .withMaxAttempts(maxAttempts).withNullStrategy(strategy)
                 .withMetadata(rebuildMetadata)
                 .withIndexName(idx.getName())
