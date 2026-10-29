@@ -88,6 +88,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
@@ -1963,11 +1964,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String indexName = ddl.getConstraintName();
     final CypherMultiTypeIndexes.Entry logical = CypherMultiTypeIndexes.find(schema, indexName);
     if (logical != null) {
-      // the indexes the statement built go with the name; one that was there before it stays
-      CypherMultiTypeIndexes.remove(schema, indexName);
+      // the indexes the statement built go with the name; one that was there before it stays. The name goes last, so a drop
+      // that fails part-way can be retried
       for (final String owned : logical.owned())
         if (schema.existsIndex(owned))
           schema.dropIndex(owned);
+      CypherMultiTypeIndexes.remove(schema, indexName);
       stats.incIndexesRemoved();
       return;
     }

@@ -150,6 +150,47 @@ class Issue10914MultiLabelVectorAndFulltextIndexTest extends TestHelper {
     assertThat(database.getSchema().existsType("D")).isFalse();
   }
 
+  @Test
+  void typesWithOtherVectorDimensionsAreRefusedAndNothingIsLeftBehind() {
+    command("CREATE (:Foo {id: 'f', e: [1.0, 0.0]})");
+    command("CREATE (:Bar {id: 'b', e: [1.0, 0.0, 0.0]})");
+
+    assertThatThrownBy(() -> command("CREATE VECTOR INDEX mixed FOR (n:Foo|Bar) ON n.e"))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("same vector.dimensions");
+    assertThat(database.getSchema().getType("Foo").getPolymorphicIndexByProperties("e")).isNull();
+    assertThat(database.getSchema().getType("Bar").getPolymorphicIndexByProperties("e")).isNull();
+    assertThatThrownBy(() -> nearestIds("mixed", 1, "[1.0, 0.0]")).isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
+  void ifNotExistsReusesAPerTypeIndexAlreadyThere() {
+    command("CREATE FULLTEXT INDEX pre FOR (n:Article) ON EACH [n.title, n.body]");
+
+    // the Article index is reused, the Post one is built: one index added
+    assertThat(stats(FULLTEXT_DDL).getIndexesAdded()).isEqualTo(1);
+    command("CREATE (:Article {id: 'a1', title: 'graph', body: 'x'})");
+    command("CREATE (:Post {id: 'p1', title: 'graph', body: 'y'})");
+    assertThat(fulltextIds("docs", "graph")).containsExactlyInAnyOrder("a1", "p1");
+
+    // the reused one is still listed under its own name next to the logical one
+    final List<String> names = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "SHOW INDEXES YIELD name")) {
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+    }
+    assertThat(names).containsExactlyInAnyOrder("pre", "docs");
+  }
+
+  @Test
+  void theLogicalIndexSurvivesASchemaReload() {
+    command(FULLTEXT_DDL);
+    command("CREATE (:Post {id: 'p1', title: 'graph', body: 'y'})");
+
+    reopenDatabase();
+
+    assertThat(fulltextIds("docs", "graph")).containsExactly("p1");
+  }
+
   private List<String> nearestIds(final String index, final int k, final String vector) {
     final List<String> ids = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher",

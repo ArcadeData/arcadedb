@@ -380,8 +380,16 @@ public final class CypherSchemaCommands {
     final List<Object[]> found = new ArrayList<>();
     final Set<String> visited = new HashSet<>();
     final List<DocumentType> readable = readableTypes(database);
-    // the indexes a vector or full-text index over several labels built are listed once, under its name (issue #10914)
-    final Set<String> spanned = new HashSet<>(CypherMultiTypeIndexes.ownedIndexNames(database.getSchema()));
+    // the indexes a vector or full-text index over several labels built are listed once, under its name (issue #10914). Only
+    // the ones whose name is listed are left out of the per-type rows: a user who cannot read every label sees the others
+    final List<String> readableNames = readable.stream().map(DocumentType::getName).toList();
+    final List<CypherMultiTypeIndexes.Entry> logicalEntries = new ArrayList<>();
+    final Set<String> spanned = new HashSet<>();
+    for (final CypherMultiTypeIndexes.Entry entry : CypherMultiTypeIndexes.entries(database.getSchema()))
+      if (readableNames.containsAll(entry.labels()) && !CypherMultiTypeIndexes.resolve(database.getSchema(), entry.name()).isEmpty()) {
+        logicalEntries.add(entry);
+        spanned.addAll(entry.owned());
+      }
     for (final DocumentType type : readable) {
       final boolean edge = type instanceof EdgeType;
       final Map<String, String> owners = indexOwners(type);
@@ -398,10 +406,8 @@ public final class CypherSchemaCommands {
         found.add(new Object[] { index, neoType, edge, List.of(type.getName()), owner, index.getName() });
       }
     }
-    for (final CypherMultiTypeIndexes.Entry entry : CypherMultiTypeIndexes.entries(database.getSchema())) {
+    for (final CypherMultiTypeIndexes.Entry entry : logicalEntries) {
       final List<TypeIndex> members = CypherMultiTypeIndexes.resolve(database.getSchema(), entry.name());
-      if (members.isEmpty() || !readable.stream().map(DocumentType::getName).toList().containsAll(entry.labels()))
-        continue;
       final String neoType = indexType(members.getFirst().getType());
       if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
         continue;
