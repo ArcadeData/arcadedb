@@ -62,7 +62,7 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
           .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("embedding");
     });
 
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM D")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM D")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
   }
@@ -104,6 +104,8 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
             .as("%s must refuse an array with a non-numeric item", name).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> database.newDocument("A").set(name, new Object[] { 1, null }).save())//
             .as("%s must refuse an array with a null item", name).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> database.newDocument("A").set(name, List.of("1", "2")).save())//
+            .as("%s must refuse a list of strings, even numeric ones", name).isInstanceOf(IllegalArgumentException.class);
       }
     });
   }
@@ -120,6 +122,7 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
       bad.add(database.newDocument("B").set("id", 2).set("embedding", 0.5d).save().getIdentity());
       database.newDocument("B").set("id", 3).save(); // no vector at all: not indexed, and no error
       bad.add(database.newDocument("B").set("id", 4).set("embedding", new float[] { 0.9f, 0.1f }).save().getIdentity());
+      bad.add(database.newDocument("B").set("id", 5).set("embedding", new float[] { Float.NaN, 0.1f, 0f }).save().getIdentity());
     });
 
     database.command("sql", "CREATE PROPERTY B.embedding ARRAY_OF_FLOATS");
@@ -132,9 +135,10 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
 
     assertThatThrownBy(() -> database.command("sql",
         "CREATE INDEX ON B (embedding) LSM_VECTOR METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\"}"))//
-        .hasStackTraceContaining("2 records")//
+        .hasStackTraceContaining("3 records")//
         .hasStackTraceContaining(bad.get(0).toString())//
-        .hasStackTraceContaining(bad.get(1).toString());
+        .hasStackTraceContaining(bad.get(1).toString())//
+        .hasStackTraceContaining(bad.get(2).toString());
 
     assertThat(database.getSchema().existsIndex("B[embedding]")).as("an index that could not be built is gone").isFalse();
 
@@ -151,6 +155,6 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
       while (rs.hasNext())
         found.add(rs.next().getProperty("id"));
     }
-    assertThat(found).containsExactlyInAnyOrder(1, 2, 4);
+    assertThat(found).containsExactlyInAnyOrder(1, 2, 4, 5);
   }
 }

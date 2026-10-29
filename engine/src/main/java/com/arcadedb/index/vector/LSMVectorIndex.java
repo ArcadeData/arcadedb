@@ -12609,7 +12609,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // A record that cannot be indexed (a value that is not a vector of the index's dimensions, a NaN component) fails the
     // build, as the same value fails a write once the index exists (issue #10938). Skipping it with a log line built an
     // index that silently lacked the row and reported success. The scan goes on to the end, so the error counts them all
-    // and names the first ones: the user fixes the data once, not once per build attempt
+    // and names the first ones: the user fixes the data once, not once per build attempt. The bucket scan calls back on this
+    // thread, one record at a time, so the plain list is safe: the atomic is only the holder a lambda can update
     final AtomicLong rejectedRecords = new AtomicLong();
     final List<String> rejectedSamples = new ArrayList<>(MAX_REJECTED_RECORDS_REPORTED);
 
@@ -12640,7 +12641,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // every path into this method, and a build that owns its transaction has nothing for that transaction to
       // correct.
       final Document source = IndexInternal.buildSourceRecord(db, record, !chunkedCommitAllowed);
-      db.getIndexer().addToIndex(LSMVectorIndex.this, rid, source);
+      try {
+        db.getIndexer().addToIndex(LSMVectorIndex.this, rid, source);
+      } catch (final IllegalArgumentException e) {
+        // only the value this index refuses is a rejected record: what fails anywhere else stops the build at once
+        if (rejectedRecords.incrementAndGet() <= MAX_REJECTED_RECORDS_REPORTED)
+          rejectedSamples.add(rid + " (" + e.getMessage() + ")");
+        return true;
+      }
       total.incrementAndGet();
 
       // Estimate bytes written (rough approximation)
@@ -12681,15 +12689,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       return true;
     }, (rid, exception) -> {
-      // only a value this index refuses is a rejected record: anything else (a record that cannot be read, a failure of the
-      // transaction) stops the build at once, as it does for an LSM tree index
-      if (!(exception instanceof IllegalArgumentException))
-        throw exception instanceof RuntimeException re ?
-            re :
-            new IndexException("Error on building vector index '" + indexName + "' at record " + rid, exception);
-      if (rejectedRecords.incrementAndGet() <= MAX_REJECTED_RECORDS_REPORTED)
-        rejectedSamples.add(rid + " (" + exception.getMessage() + ")");
-      return true;
+      // a record that cannot be read, or a failure of the callback past the index write, stops the build at once, as it does
+      // for an LSM tree index, instead of being logged and skipped by the scan
+      if (exception instanceof RuntimeException re)
+        throw re;
+      throw new IndexException("Error on building vector index '" + indexName + "' at record " + rid, exception);
     });
 
     final RuntimeException failure = chunkCommitFailure.get();
