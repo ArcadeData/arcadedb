@@ -141,6 +141,12 @@ test("the edge length is clamped to what the slider can produce", () => {
   assert.equal(p.linkDistance, 300);
 });
 
+test("the padding is clamped to what the slider can produce", () => {
+  const p = physicsForceParameters({ graphSpacing: 50, physicsPadding: 99 });
+
+  assert.equal(p.collidePadding, 50);
+});
+
 test("a corrupt setting cannot produce a NaN force", () => {
   const p = physicsForceParameters({ graphSpacing: "garbage" });
 

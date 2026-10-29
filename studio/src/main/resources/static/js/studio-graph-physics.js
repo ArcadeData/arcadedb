@@ -78,7 +78,8 @@ function physicsPaddingSetting() {
 /**
  * The force constants, derived from the graph settings. Pure, so the numbers can be pinned by a unit test.
  *
- * The spacing drives everything: the link distance is the same ideal edge length fcose uses, the repulsion is
+ * The spacing drives everything: the link distance is the ideal edge length fcose uses at the default edge length
+ * level and scales with it, the padding is spacing/4 at the default padding level, the repulsion is
  * scaled with it (the product keeps the same look whatever the spacing), and the charge cut-off keeps a big graph
  * cheap. The values are clamped so a corrupt setting can never produce a NaN force.
  */
@@ -105,7 +106,7 @@ function physicsForceParameters(settings) {
     chargeStrength: -repulsion * spacing, // default -400 (Neo4j Browser's order of magnitude)
     chargeDistanceMax: spacing * 20, // Barnes-Hut cut-off, keeps 1000-node graphs cheap
     gravityStrength: gravity / 100, // d3 forceX/forceY strength, default 0.05
-    collidePadding: (spacing * padding) / 20, // level 5 = spacing/4
+    collidePadding: (spacing * padding) / (PHYSICS_DEFAULT_PADDING * 4), // level 5 = spacing/4
   };
 }
 
