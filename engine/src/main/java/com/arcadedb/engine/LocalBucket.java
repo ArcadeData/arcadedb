@@ -1283,7 +1283,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return true;
       final int size = current.size();
       return size != readImage.size() || !readImage.isSameRegionAs(0, current, 0, size);
-    } catch (final ConcurrentModificationException e) {
+    } catch (final ConcurrentModificationException | RecordNotFoundException e) {
+      // #10944: A RECORD DELETED UNDER THE RE-READ IS A CHANGED RECORD TOO
       return true;
     } catch (final Exception e) {
       // FAIL CLOSED: A RECORD THAT CANNOT BE RE-READ IS NOT ONE THE UPDATE MAY BE LAID OVER
@@ -6131,14 +6132,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   walkTransaction.getPage(firstPageId, pageSize) :
                   database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
           if (refreshedFirstPage == null)
-            throw new ConcurrentModificationException(
-                    "First page of multi-page record " + originalRID + " was removed during read");
+            // #10944: THE PAGE THE RECORD LIVED ON IS GONE, SO IS THE RECORD: A DELETED RECORD, NOT A CONFLICT TO RETRY
+            throw new RecordNotFoundException("First page of multi-page record " + originalRID + " was removed during read",
+                    originalRID);
 
           firstPage = refreshedFirstPage;
           recordPositionInPage = getRecordPositionInPage(firstPage, firstChunkSlot);
           if (recordPositionInPage == 0)
-            throw new ConcurrentModificationException(
-                    "Multi-page record " + originalRID + " was deleted during read");
+            // #10944: THE HEAD SLOT WAS ZEROED UNDER THE READ, WHICH IS A DELETE. A RECORD THAT IS GONE IS NOT ONE A RETRY CAN
+            // READ, AND THE SCAN SKIPS IT (BucketIterator) AS IT DOES A SINGLE-PAGE RECORD DELETED BETWEEN SLOT AND LOAD
+            throw new RecordNotFoundException("Multi-page record " + originalRID + " was deleted during read", originalRID);
           recordMarker = firstPage.readNumber(recordPositionInPage);
           recordHeaderSize = firstPage.getLastReadNumberSize();
         }
