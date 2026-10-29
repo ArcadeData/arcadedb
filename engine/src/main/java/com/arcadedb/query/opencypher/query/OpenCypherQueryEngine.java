@@ -86,6 +86,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -754,7 +755,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     final JSONObject previous = existing.toJSON();
     final JSONObject retyped = new JSONObject(previous.toMap());
-    retyped.put("type", newType.name());
+    // the name the declaration JSON resolves, which for an ARRAY_OF_* is not the constant's name (#10862)
+    retyped.put("type", newType.getName());
     // a LIST<T> names its element type, so the declaration takes it rather than carrying the old one over (#9709)
     if (target.replacesOfType()) {
       if (target.ofType() != null)
@@ -928,11 +930,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // Neo4j, rather than silently replacing it (#9706). Checked before anything is created, like the name.
     if (isTyped && schema.existsType(typeName)) {
       final String conflicting = CypherConstraintRegistry.findConflictingTyped(schema.getType(typeName), ddl.getPropertyNames(),
-          explicitPropertyType.type(), explicitPropertyType.ofType());
+          explicitPropertyType.type(), explicitPropertyType.ofType(), explicitPropertyType.dimension());
       if (conflicting != null)
         throw new SchemaException("Constraint '" + conflicting + "' already requires another type of " + typeName + "."
             + String.join(", " + typeName + ".", ddl.getPropertyNames()) + ": drop it before requiring IS :: " + ddl.getTypedName());
     }
+
+    // A vector's dimension is the MIN and MAX of its declaration (an item count): bounds already there that say something else
+    // cannot hold it, and are not this statement's to replace. Checked before anything is created (#10862)
+    if (isTyped && explicitPropertyType.isVector() && schema.existsType(typeName))
+      for (final String propName : propertyNames) {
+        final Property existing = schema.getType(typeName).getPropertyIfExists(propName);
+        if (existing != null && (existing.getMin() != null || existing.getMax() != null) && !hasDimensionBounds(existing,
+            explicitPropertyType.dimension()))
+          throw new CommandExecutionException("Cannot require " + typeName + "." + propName + " IS :: " + ddl.getTypedName()
+              + ": the property already carries MIN " + existing.getMin() + " and MAX " + existing.getMax()
+              + ", and a vector's dimension is enforced through them. Change or remove them with ALTER PROPERTY first");
+      }
 
     autoCreateDDLType(schema, ddl, typeName);
 
@@ -962,6 +976,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // constraint is dropped (#9706)
     final List<String> declared = new ArrayList<>(propertyNames.length);
     final JSONObject previous = new JSONObject();
+    // The properties whose MIN and MAX a vector type constraint set to its dimension, cleared when it is dropped (#10862)
+    final List<String> ownedBounds = new ArrayList<>(0);
     for (int i = 0; i < propertyNames.length; i++) {
       final String propName = propertyNames[i];
       final Property existing = schema.getType(typeName).getPropertyIfExists(propName);
@@ -976,7 +992,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
           previous.put(propName, replaced);
           typedChanged = true;
         }
-      } else if (existing == null) {
+      }
+      if (isTyped && explicitPropertyType.isVector()) {
+        // the dimension, enforced on every later write as the item count of the array
+        final Property vector = schema.getType(typeName).getProperty(propName);
+        if (vector.getMin() == null && vector.getMax() == null) {
+          final String bound = String.valueOf(explicitPropertyType.dimension());
+          vector.setMin(bound);
+          vector.setMax(bound);
+          ownedBounds.add(propName);
+          typedChanged = true;
+        }
+      } else if (!isTyped && existing == null) {
         final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
         if (inferred != null) {
           schema.getType(typeName).createProperty(propName, inferred);
@@ -1072,7 +1099,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
       if (typedChanged)
-        requireStoredValuesConform(schema, typeName, propertyNames, ddl.getTypedName(), declared, previous);
+        requireStoredValuesConform(schema, typeName, propertyNames, ddl.getTypedName(), declared, previous, ownedBounds);
       changed = typedChanged;
       if (typedChanged)
         stats.incConstraintsAdded();
@@ -1089,13 +1116,37 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final Type recordedType = isTyped ? explicitPropertyType.type() : null;
     final String recordedOfType = isTyped ? explicitPropertyType.ofType() : null;
     String recordAs = constraintName;
+    final int recordedDimension = isTyped ? explicitPropertyType.dimension() : CypherTypeName.NO_DIMENSION;
     if (recordAs == null && changed && CypherConstraintRegistry.findEquivalent(constrained, kind, ddl.getPropertyNames(), recordedType,
-        recordedOfType) == null)
+        recordedOfType, recordedDimension) == null)
       recordAs = CypherConstraintRegistry.freeGeneratedName(schema, typeName, kind, ddl.getPropertyNames());
     if (recordAs != null && (changed || !ddl.isIfNotExists()))
       CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames,
           new CypherConstraintRegistry.Ownership(ownedIndex, ownedMandatory, declared, previous, recordedType, recordedOfType,
-              isTyped ? ddl.getTypedName().toString() : null));
+              recordedDimension, ownedBounds, isTyped ? ddl.getTypedName().toString() : null));
+  }
+
+  /** A stored value as a refusal names it: an array by its component type and length, which is what a vector type checks. */
+  private static String describeStoredValue(final Object value) {
+    final Class<?> component = value.getClass().getComponentType();
+    if (component != null)
+      return component.getSimpleName() + "[" + Array.getLength(value) + "]";
+    return value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")";
+  }
+
+  /** Whether the property's MIN and MAX are both the item count {@code dimension}, as a vector type constraint sets them. */
+  private static boolean hasDimensionBounds(final Property property, final int dimension) {
+    return isBound(property.getMin(), dimension) && isBound(property.getMax(), dimension);
+  }
+
+  private static boolean isBound(final String bound, final int dimension) {
+    if (bound == null)
+      return false;
+    try {
+      return Long.parseLong(bound.trim()) == dimension;
+    } catch (final NumberFormatException e) {
+      return false;
+    }
   }
 
   /**
@@ -1106,7 +1157,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * {@code IS :: type}, in one scan of the type.
    */
   private void requireStoredValuesConform(final Schema schema, final String typeName, final String[] propertyNames,
-      final CypherTypeName cypherType, final List<String> declared, final JSONObject previous) {
+      final CypherTypeName cypherType, final List<String> declared, final JSONObject previous, final List<String> ownedBounds) {
     final Iterator<Record> records = database.iterateType(typeName, true);
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
@@ -1119,8 +1170,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
         // the refusal is what the caller has to see: an undo step that fails is attached to it, never thrown in its place
         final CommandExecutionException refusal = new CommandExecutionException(
             "Cannot require " + typeName + "." + propertyName + " IS :: " + cypherType + ": record " + document.getIdentity()
-                + " holds " + value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")");
+                + " holds " + describeStoredValue(value));
         final DocumentType type = schema.getType(typeName);
+        for (final String bounded : ownedBounds)
+          try {
+            final Property property = type.getPropertyIfExists(bounded);
+            if (property != null) {
+              property.setMin(null);
+              property.setMax(null);
+            }
+          } catch (final RuntimeException e) {
+            refusal.addSuppressed(e);
+          }
         for (final String undeclared : declared)
           try {
             if (type.existsProperty(undeclared))
@@ -1147,7 +1208,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * @param replacesOfType true when the Cypher type names the element type (a {@code LIST<T>}, where {@code LIST<ANY>} names
    *                       none), so the declaration takes it instead of carrying the previous one over
    */
-  private record DeclaredType(Type type, String ofType, boolean replacesOfType) {
+  private record DeclaredType(Type type, String ofType, boolean replacesOfType, int dimension) {
+    DeclaredType(final Type type, final String ofType, final boolean replacesOfType) {
+      this(type, ofType, replacesOfType, CypherTypeName.NO_DIMENSION);
+    }
+
+    boolean isVector() {
+      return dimension != CypherTypeName.NO_DIMENSION;
+    }
+
     /**
      * Whether a property already declared satisfies the constraint, so it is left as it is. Every DATETIME precision holds a
      * LOCAL DATETIME: a property declared at a coarser precision keeps it rather than being widened behind its owner's back.
@@ -1173,6 +1242,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (cypherType.nonNull())
       throw new CommandParsingException("A property type constraint cannot require NOT NULL (`IS :: " + cypherType
           + "`): declare the type without it and add an existence constraint (`REQUIRE n.p IS NOT NULL`)");
+    if (cypherType.isVector())
+      return mapVectorType(cypherType);
     if (cypherType.isList()) {
       final String element = cypherType.elementName();
       if (element == null || "ANY".equals(element))
@@ -1210,6 +1281,28 @@ public class OpenCypherQueryEngine implements QueryEngine {
       case "POINT", "MAP" -> Type.MAP;
       default -> throw new CommandParsingException("Unsupported Cypher type in a property type constraint: " + written);
     };
+  }
+
+  /**
+   * Maps {@code VECTOR<T>(n)} onto the primitive array ArcadeDB holds a vector of {@code T} in (an {@code INT8} vector is the
+   * byte array of a BINARY), whose dimension the property's MIN and MAX enforce, as an item count, on every write (#10862).
+   * Both the coordinate type and the dimension are required: a constraint without the dimension would not be the one Neo4j
+   * enforces, and one without the coordinate type has no declaration to map to.
+   */
+  private static DeclaredType mapVectorType(final CypherTypeName cypherType) {
+    if (cypherType.elementName() == null || cypherType.dimension() == CypherTypeName.NO_DIMENSION)
+      throw new CommandParsingException("A property type constraint on a vector names its coordinate type and its dimension, "
+          + "as in `IS :: VECTOR<FLOAT32>(768)`: found `IS :: " + cypherType + "`");
+    final Type arrayType = switch (cypherType.elementName()) {
+      case "INT8" -> Type.BINARY;
+      case "INT16" -> Type.ARRAY_OF_SHORTS;
+      case "INT32" -> Type.ARRAY_OF_INTEGERS;
+      case "INTEGER" -> Type.ARRAY_OF_LONGS;
+      case "FLOAT32" -> Type.ARRAY_OF_FLOATS;
+      case "FLOAT" -> Type.ARRAY_OF_DOUBLES;
+      default -> throw new CommandParsingException("Unsupported vector coordinate type in a property type constraint: " + cypherType);
+    };
+    return new DeclaredType(arrayType, null, true, cypherType.dimension());
   }
 
   /**
