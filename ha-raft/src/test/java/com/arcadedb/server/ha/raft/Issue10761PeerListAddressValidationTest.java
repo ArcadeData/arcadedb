@@ -62,6 +62,9 @@ class Issue10761PeerListAddressValidationTest {
 
   @Test
   void theAllowlistAndTheRaftPeerDeriveOneHostFromEveryDocumentedShape() {
+    final List<String> expectedEntries = HOSTS.stream()
+        .flatMap(host -> SHAPES.stream().map(shape -> shape.formatted(host)))
+        .toList();
     final List<String> checked = new ArrayList<>();
     for (final String host : HOSTS)
       for (final String shape : SHAPES) {
@@ -82,7 +85,7 @@ class Issue10761PeerListAddressValidationTest {
         assertLegal(entry, parsed.grpcAddresses().get(peer.getId()));
         checked.add(entry);
       }
-    assertThat(checked).hasSize(SHAPES.size() * HOSTS.size());
+    assertThat(checked).containsExactlyInAnyOrderElementsOf(expectedEntries);
   }
 
   /** The two entries of the report, verbatim: the positional IPv6 form keeps its host whole in every field. */

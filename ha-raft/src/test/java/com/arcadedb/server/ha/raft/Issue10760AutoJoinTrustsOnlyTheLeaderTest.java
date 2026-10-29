@@ -143,9 +143,16 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
    */
   @Test
   void noCombinationWithoutALeaderAnswerDecidesMembership() {
-    int combinations = 0;
-    for (final Function<RaftPeer, Object> forB : NON_LEADER_ANSWERS)
-      for (final Function<RaftPeer, Object> forC : NON_LEADER_ANSWERS) {
+    final List<String> expectedCombinations = new ArrayList<>();
+    for (int b = 0; b < NON_LEADER_ANSWERS.size(); b++)
+      for (int c = 0; c < NON_LEADER_ANSWERS.size(); c++)
+        expectedCombinations.add(b + ":" + c);
+
+    final List<String> checkedCombinations = new ArrayList<>();
+    for (int b = 0; b < NON_LEADER_ANSWERS.size(); b++)
+      for (int c = 0; c < NON_LEADER_ANSWERS.size(); c++) {
+        final Function<RaftPeer, Object> forB = NON_LEADER_ANSWERS.get(b);
+        final Function<RaftPeer, Object> forC = NON_LEADER_ANSWERS.get(c);
         final ScriptedProbe probe = new ScriptedProbe().answer(B, forB.apply(B)).answer(C, forC.apply(C));
 
         final KubernetesAutoJoin.Outcome outcome = autoJoin(probe).tryAutoJoin();
@@ -153,9 +160,9 @@ class Issue10760AutoJoinTrustsOnlyTheLeaderTest {
         assertThat(outcome).as("B=%s, C=%s", probe.script.get(B.getId()), probe.script.get(C.getId()))
             .isIn(KubernetesAutoJoin.Outcome.NO_CLUSTER_FOUND, KubernetesAutoJoin.Outcome.NO_LEADER_ANSWERED);
         assertThat(probe.addsThrough).isEmpty();
-        combinations++;
+        checkedCombinations.add(b + ":" + c);
       }
-    assertThat(combinations).isEqualTo(NON_LEADER_ANSWERS.size() * NON_LEADER_ANSWERS.size());
+    assertThat(checkedCombinations).containsExactlyElementsOf(expectedCombinations);
   }
 
   @Test
