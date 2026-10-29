@@ -23,6 +23,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.AssetGenerator;
 import com.arcadedb.test.support.FacetSchema;
 import com.arcadedb.test.support.FacetSnapshot;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -41,6 +43,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * ledgered: {@link FacetCheck} compares every node with itself and with its peers.
  */
 public final class FacetWorkload implements LoadGenerator {
+  private static final Logger LOGGER = LoggerFactory.getLogger(FacetWorkload.class);
+
   private static final int  DEFAULT_CONNECT_TIMEOUT_MS = 2_000;
   private static final int  DEFAULT_READ_TIMEOUT_MS    = 15_000;
   private static final int  DEFAULT_THINK_MS           = 10;
@@ -55,26 +59,37 @@ public final class FacetWorkload implements LoadGenerator {
   private static final int DELETE_UPTO        = 90;
   private static final int LINK_UPTO          = 95;
 
-  /** Counters of the whole workload; a 5xx on a query is expected while faults are in progress and never a violation. */
-  public record Stats(long writesOk, long writesFailed, long queries, long queryServerErrors, long nonExact) {
+  /**
+   * Counters of the whole workload. A 5xx on a query or an unreachable node is expected while faults are in progress and
+   * never a violation; {@code queryFailures} counts the answers that no fault explains (a non-200, non-5xx status or a body
+   * that does not parse), so a broken facet statement shows in the run summary instead of vanishing.
+   */
+  public record Stats(long writesOk, long writesFailed, long queries, long queryServerErrors, long queryFailures,
+                      long nonExact) {
+    public JSONObject toJSON() {
+      return new JSONObject().put("writesOk", writesOk).put("writesFailed", writesFailed).put("queries", queries)
+          .put("queryServerErrors", queryServerErrors).put("queryFailures", queryFailures).put("nonExact", nonExact);
+    }
   }
 
-  private final Endpoints          endpoints;
-  private final long               seed;
-  private final int                writers;
-  private final String             commandPath;
-  private final String             queryPath;
-  private final int                connectTimeoutMs;
-  private final int                readTimeoutMs;
-  private final int                thinkMs;
-  private final ReentrantReadWriteLock gate    = new ReentrantReadWriteLock(true);
-  private final AtomicBoolean      running     = new AtomicBoolean();
-  private final List<Thread>       threads     = new ArrayList<>();
-  private final AtomicLong         writesOk    = new AtomicLong();
-  private final AtomicLong         writesFailed = new AtomicLong();
-  private final AtomicLong         queries     = new AtomicLong();
-  private final AtomicLong         queryServerErrors = new AtomicLong();
-  private final AtomicLong         nonExact    = new AtomicLong();
+  private final Endpoints              endpoints;
+  private final long                   seed;
+  private final int                    writers;
+  private final String                 commandPath;
+  private final String                 queryPath;
+  private final int                    connectTimeoutMs;
+  private final int                    readTimeoutMs;
+  private final int                    thinkMs;
+  private final ReentrantReadWriteLock gate              = new ReentrantReadWriteLock(true);
+  private final AtomicBoolean          running           = new AtomicBoolean();
+  private final List<Thread>           threads           = new ArrayList<>();
+  private final AtomicLong             writesOk          = new AtomicLong();
+  private final AtomicLong             writesFailed      = new AtomicLong();
+  private final AtomicLong             queries           = new AtomicLong();
+  private final AtomicLong             queryServerErrors = new AtomicLong();
+  private final AtomicLong             queryFailures     = new AtomicLong();
+  private final AtomicLong             nonExact          = new AtomicLong();
+  private final AtomicBoolean          failureLogged     = new AtomicBoolean();
 
   public FacetWorkload(final long seed, final int writers, final Endpoints endpoints, final String database) {
     this(seed, writers, endpoints, database, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS, DEFAULT_THINK_MS);
@@ -93,7 +108,8 @@ public final class FacetWorkload implements LoadGenerator {
   }
 
   public Stats stats() {
-    return new Stats(writesOk.get(), writesFailed.get(), queries.get(), queryServerErrors.get(), nonExact.get());
+    return new Stats(writesOk.get(), writesFailed.get(), queries.get(), queryServerErrors.get(), queryFailures.get(),
+        nonExact.get());
   }
 
   @Override
@@ -188,11 +204,23 @@ public final class FacetWorkload implements LoadGenerator {
           connectTimeoutMs, readTimeoutMs);
       if (response.status() >= 500)
         queryServerErrors.incrementAndGet();
-      else if (response.status() == 200 && !FacetSnapshot.parse(new JSONObject(response.body())).exact())
+      else if (response.status() != 200)
+        queryFailed(node, "HTTP " + response.status() + ": " + response.body());
+      else if (!FacetSnapshot.parse(new JSONObject(response.body())).exact())
         nonExact.incrementAndGet();
-    } catch (final IOException | RuntimeException e) {
-      // faults are in progress: an unreachable node or a malformed answer is not a finding of the workload
+    } catch (final IOException e) {
+      // faults are in progress: an unreachable node is not a finding of the workload
+    } catch (final RuntimeException e) {
+      queryFailed(node, e.getClass().getSimpleName() + ": " + e.getMessage());
     }
+  }
+
+  /** Counts a query answer no fault explains; the first one is logged so the summary's count comes with its cause. */
+  private void queryFailed(final int node, final String cause) {
+    queryFailures.incrementAndGet();
+    if (failureLogged.compareAndSet(false, true))
+      LOGGER.warn("Facet query on node {} failed (first of the run, further ones are only counted): {}", node,
+          cause.length() > 500 ? cause.substring(0, 500) : cause);
   }
 
   @Override
