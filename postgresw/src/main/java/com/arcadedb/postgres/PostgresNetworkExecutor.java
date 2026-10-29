@@ -5248,7 +5248,7 @@ public class PostgresNetworkExecutor extends Thread {
       case LIST -> {
         final Type elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
         yield elementType != null && switch (elementType) {
-          case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, STRING -> true;
+          case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, STRING, BINARY -> true;
           default -> false;
         };
       }
