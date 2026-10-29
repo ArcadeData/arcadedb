@@ -175,6 +175,10 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
     try (final ResultSet rs = database.command("sql", "REBUILD INDEX `R[embedding]`")) {
       assertThat(rs.next().<Long>getProperty("skipped")).isEqualTo(1L);
     }
+    // the sweep re-creates every bucket index under a new name: the count is read from the index it put in place
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX *")) {
+      assertThat(rs.next().<Long>getProperty("skipped")).isEqualTo(1L);
+    }
     try (final ResultSet rs = database.command("sql", "REBUILD INDEX `R[id]`")) {
       assertThat(rs.next().hasProperty("skipped")).as("only a vector index rebuild reports it").isFalse();
     }
