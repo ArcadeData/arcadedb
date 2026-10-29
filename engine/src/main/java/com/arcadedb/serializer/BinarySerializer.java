@@ -137,9 +137,16 @@ public class BinarySerializer {
   public BinarySerializer(final ContextConfiguration configuration) {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+    fixedWidthFloatArraysEnabled = configuration.getValueAsBoolean(GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS);
   }
 
   private static final BooleanSupplier ALWAYS = () -> true;
+
+  /**
+   * {@link GlobalConfiguration#SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS}: false keeps every float and double array in the varint
+   * form, whatever {@link #fixedWidthFloatArrays} answers, so the files stay readable by a build before the fixed-width form.
+   */
+  private final boolean fixedWidthFloatArraysEnabled;
 
   /**
    * Whether a {@code float[]} / {@code double[]} is written in its fixed-width form ({@link BinaryTypes#TYPE_ARRAY_OF_FLOATS_FIXED},
@@ -160,6 +167,8 @@ public class BinarySerializer {
    * through here; an index key is written under its declared type, so an index page never changes form.
    */
   private byte storageTypeOf(final byte type) {
+    if (!fixedWidthFloatArraysEnabled)
+      return type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
       return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
     if (type == BinaryTypes.TYPE_ARRAY_OF_DOUBLES)

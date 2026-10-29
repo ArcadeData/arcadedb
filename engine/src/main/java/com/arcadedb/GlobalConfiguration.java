@@ -212,6 +212,10 @@ public enum GlobalConfiguration {
       "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate, java.time.LocalDateTime",
       Class.class, LocalDate.class),
 
+  SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS("arcadedb.serializer.fixedWidthFloatArrays", SCOPE.DATABASE,
+      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so set it to false to keep the files readable by such a build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
+      Boolean.class, true),
+
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd"),
 

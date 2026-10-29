@@ -18,6 +18,8 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
@@ -182,6 +184,30 @@ class Issue10856FixedWidthFloatArrayTest extends TestHelper {
     final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
     assertThat(bucket.getPageSize()).isEqualTo(65536);
     assertThat(bucket.getTotalPages()).as("%d rows at 9 per page", rows).isLessThanOrEqualTo(rows / 9 + 1);
+  }
+
+  /**
+   * {@code arcadedb.serializer.fixedWidthFloatArrays=false} keeps the varint form a build before #10856 reads, whatever the
+   * HA policy answers: the rollback path of a deployment that may have to go back to such a build.
+   */
+  @Test
+  void theSettingKeepsTheVarintFormForARollback() {
+    database.getSchema().createDocumentType("Doc").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+    final float[] vector = unitVector(new Random(13), DIM);
+    final MutableDocument doc = database.newDocument("Doc").set("embedding", vector);
+
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS, false);
+    final BinarySerializer varintOnly = new BinarySerializer(configuration);
+    varintOnly.setFixedWidthFloatArrays(() -> true);
+
+    final Binary content = varintOnly.serialize((DatabaseInternal) database, doc).copyOfContent();
+    assertThat(content.size()).as("the varint form, 5 bytes per float").isGreaterThanOrEqualTo(5 * DIM);
+
+    // AND THE DATABASE'S OWN SERIALIZER, WITH THE DEFAULT, READS IT
+    content.position(Binary.BYTE_SERIALIZED_SIZE); // PAST THE RECORD TYPE
+    final Map<String, Object> read = serializer().deserializeProperties(database, content, null, null);
+    assertBitsEqual((float[]) read.get("embedding"), vector);
   }
 
   private RID saveInTransaction(final Supplier<MutableDocument> document) {
