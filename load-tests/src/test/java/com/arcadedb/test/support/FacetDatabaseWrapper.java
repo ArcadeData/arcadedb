@@ -18,6 +18,8 @@
  */
 package com.arcadedb.test.support;
 
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -46,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.SortedMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
@@ -70,13 +73,25 @@ public class FacetDatabaseWrapper implements AutoCloseable {
       "unclean_pages", "schema", "check_fix" };
 
   private static final long POLL_MILLIS = 500L;
+  /**
+   * Attempts after the first for a request that failed with a {@link NeedRetryException}, as the HTTP server's own auto-commit retry
+   * ({@code arcadedb.txRetries}, default 3), which the gRPC server leaves to the client. The exception does not prove that nothing was
+   * applied: gRPC {@code ABORTED} also carries a failed rollback or a replication refusal, after which the write may have committed. A
+   * retry is still safe because every operation is idempotent by key: the updates and the delete match the same {@code aid} again, and an
+   * INSERT whose first attempt did commit fails its retry with a duplicate key, which {@link #duplicateMeansAcked} counts as acked.
+   */
+  public static final int  RETRIES     = 3;
 
   private enum Op {
     INSERT, INSERT_NO_BRAND, UPDATE_VALUES, REMOVE_BRAND, GROW, UPDATE_GROWN, DELETE
   }
 
-  /** @param acked operations the server acknowledged @param failed operations that raised an error */
-  public record OpCounts(long acked, long failed) {
+  /**
+   * @param acked   operations the server acknowledged
+   * @param failed  operations that raised an error (after the retries)
+   * @param retries attempts run again after a {@link NeedRetryException}, by the operations of this count
+   */
+  public record OpCounts(long acked, long failed, long retries) {
   }
 
   private record Stable(FacetSnapshot facets, SortedMap<String, Long> groupBy) {
@@ -112,9 +127,13 @@ public class FacetDatabaseWrapper implements AutoCloseable {
   private final KeyList        live  = new KeyList();
   private final KeyList        grown = new KeyList();
   private       long           nextSeq;
+  private       long           writeRetryCount;
+  private       long           queryRetryCount;
 
   private final Timer[]             writeTimers = new Timer[Op.values().length];
   private final Counter             writeErrors;
+  private final Counter             writeRetries;
+  private final Counter             queryRetries;
   private final Timer               queryTimer;
   private final DistributionSummary lagSummary;
   private final DistributionSummary patchedSummary;
@@ -136,6 +155,8 @@ public class FacetDatabaseWrapper implements AutoCloseable {
     for (final Op op : Op.values())
       writeTimers[op.ordinal()] = Metrics.timer("arcadedb.test.facets.write", "op", op.name().toLowerCase());
     writeErrors = Metrics.counter("arcadedb.test.facets.write.error");
+    writeRetries = Metrics.counter("arcadedb.test.facets.write.retry");
+    queryRetries = Metrics.counter("arcadedb.test.facets.query.retry");
     queryTimer = Timer.builder("arcadedb.test.facets.query").publishPercentiles(0.5, 0.95, 0.99).register(Metrics.globalRegistry);
     lagSummary = DistributionSummary.builder("arcadedb.test.facets.lagMs").publishPercentiles(0.5, 0.95, 0.99)
         .register(Metrics.globalRegistry);
@@ -164,6 +185,7 @@ public class FacetDatabaseWrapper implements AutoCloseable {
 
   @Override
   public void close() {
+    logger.info("Facet client {} (writer {}): {} write retries, {} query retries", describe(), writerId, writeRetryCount, queryRetryCount);
     db.close();
   }
 
@@ -216,6 +238,7 @@ public class FacetDatabaseWrapper implements AutoCloseable {
   }
 
   public OpCounts runMixedOps(final int ops) {
+    final long retriesBefore = writeRetryCount;
     long acked = 0L;
     long failed = 0L;
     for (int i = 0; i < ops; i++) {
@@ -224,7 +247,7 @@ public class FacetDatabaseWrapper implements AutoCloseable {
       else
         failed++;
     }
-    return new OpCounts(acked, failed);
+    return new OpCounts(acked, failed, writeRetryCount - retriesBefore);
   }
 
   private boolean mixedOp() {
@@ -269,34 +292,83 @@ public class FacetDatabaseWrapper implements AutoCloseable {
 
   private boolean write(final Op op, final String sql, final Map<String, Object> params) {
     final long start = System.nanoTime();
-    try (final ResultSet rs = db.command("sql", sql, params)) {
-      while (rs.hasNext())
-        rs.next();
-    } catch (final RuntimeException e) {
-      writeErrors.increment();
-      logger.debug("{} on {} failed: {}", op, describe(), e.getMessage());
-      return false;
+    for (int attempt = 0; ; attempt++) {
+      try (final ResultSet rs = db.command("sql", sql, params)) {
+        while (rs.hasNext())
+          rs.next();
+        break;
+      } catch (final NeedRetryException e) {
+        if (attempt < RETRIES) {
+          writeRetries.increment();
+          writeRetryCount++;
+          backOff(attempt);
+          continue;
+        }
+        writeErrors.increment();
+        logger.debug("{} on {} failed after {} retries: {}", op, describe(), RETRIES, e.getMessage());
+        return false;
+      } catch (final RuntimeException e) {
+        if (duplicateMeansAcked(op == Op.INSERT || op == Op.INSERT_NO_BRAND, attempt, e)) {
+          logger.info("{} on {}: the retry found the key already inserted, so an earlier attempt committed: {}", op, describe(),
+              e.getMessage());
+          break;
+        }
+        writeErrors.increment();
+        logger.debug("{} on {} failed: {}", op, describe(), e.getMessage());
+        return false;
+      }
     }
     writeTimers[op.ordinal()].record(System.nanoTime() - start, TimeUnit.NANOSECONDS);
     return true;
   }
 
+  /**
+   * @return true when a write that failed with {@code e} on attempt {@code attempt} (0 = the first) did commit: an INSERT retried after a
+   * retryable error that finds its own key already there. Its first attempt committed although it answered with the error
+   */
+  static boolean duplicateMeansAcked(final boolean insert, final int attempt, final RuntimeException e) {
+    return insert && attempt > 0 && e instanceof DuplicatedKeyException;
+  }
+
+  /** Full-jitter exponential back-off before retry {@code attempt + 1}, as the server's own transaction retry. */
+  private void backOff(final int attempt) {
+    try {
+      // not opRandom: a retry must not shift the seeded operation sequence
+      Thread.sleep(ThreadLocalRandom.current().nextInt(5 << attempt) + 1L);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("Interrupted while backing off a retry", e);
+    }
+  }
+
   /** Runs the {@code FACETS} query matching {@code where} and records the client metrics. */
   public FacetSnapshot queryFacets(final String where) {
     final long start = System.nanoTime();
-    final FacetSnapshot snapshot;
-    try (final ResultSet rs = db.query("sql", FacetSchema.facetQuery(where))) {
-      // the facets ride after the last row: read the rows first
-      while (rs.hasNext())
-        rs.next();
-      final FacetResults results = rs.getFacets();
-      if (results == null)
-        throw new IllegalStateException("No facets in the response of " + describe());
-      // exact for string/long keys only (FacetAsset): read the HTTP JSON instead if a temporal facet is added
-      snapshot = FacetSnapshot.of(results);
-    } catch (final RuntimeException e) {
-      queryErrors.increment();
-      throw e;
+    FacetSnapshot snapshot = null;
+    for (int attempt = 0; snapshot == null; attempt++) {
+      try (final ResultSet rs = db.query("sql", FacetSchema.facetQuery(where))) {
+        // the facets ride after the last row: read the rows first
+        while (rs.hasNext())
+          rs.next();
+        final FacetResults results = rs.getFacets();
+        if (results == null)
+          throw new IllegalStateException("No facets in the response of " + describe());
+        // exact for string/long keys only (FacetAsset): read the HTTP JSON instead if a temporal facet is added
+        snapshot = FacetSnapshot.of(results);
+      } catch (final NeedRetryException e) {
+        if (attempt >= RETRIES) {
+          queryErrors.increment();
+          throw e;
+        }
+        queryRetries.increment();
+        queryRetryCount++;
+        // a read that met a record changed under it (a multi-page record deleted during the scan): logged, as it is a read-path defect
+        logger.warn("Facet query on {} where='{}' retried (attempt {} of {}): {}", describe(), where, attempt + 1, RETRIES, e.getMessage());
+        backOff(attempt);
+      } catch (final RuntimeException e) {
+        queryErrors.increment();
+        throw e;
+      }
     }
     queryTimer.record(System.nanoTime() - start, TimeUnit.NANOSECONDS);
     lagSummary.record(snapshot.lagMs());

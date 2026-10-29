@@ -230,12 +230,14 @@ class LeaderFailoverIT extends ContainersTestTemplate {
         try {
           long acked = 0L;
           long failed = 0L;
+          long retries = 0L;
           while (!rebuilt.get() || acked + failed < 1_000) {
             final FacetDatabaseWrapper.OpCounts chunk = rebuildWriter.runMixedOps(WRITER_CHUNK);
             acked += chunk.acked();
             failed += chunk.failed();
+            retries += chunk.retries();
           }
-          writerOutcome.set(new FacetDatabaseWrapper.OpCounts(acked, failed));
+          writerOutcome.set(new FacetDatabaseWrapper.OpCounts(acked, failed, retries));
         } catch (final Throwable t) {
           writerOutcome.set(t);
         }
