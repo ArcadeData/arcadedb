@@ -2422,6 +2422,36 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * The records of bucket {@code bucketId} this transaction holds an off-page fingerprint for, or {@code null} when it
+   * holds none: what {@link LocalBucket} re-takes across a write of its own to the off-page part of a record (#10859).
+   * A fresh array the caller may overwrite.
+   */
+  public RID[] getOffPageFingerprintedRecords(final int bucketId) {
+    if (offPageFingerprints == null || offPageFingerprints.isEmpty())
+      return null;
+
+    RID[] result = null;
+    int count = 0;
+    for (final RID rid : offPageFingerprints.keySet())
+      if (rid.getBucketId() == bucketId) {
+        if (result == null)
+          result = new RID[offPageFingerprints.size()];
+        result[count++] = rid;
+      }
+    return result == null ? null : Arrays.copyOf(result, count);
+  }
+
+  /**
+   * Replaces the off-page fingerprint of {@code rid} with the one its off-page part has after a write of THIS
+   * transaction to it (#10859), which the commit must not mistake for a concurrent modification. Only for a record
+   * whose fingerprint was taken at {@link #addUpdatedRecord(Record)} and still described it right before that write.
+   */
+  public void setOffPageFingerprint(final RID rid, final long fingerprint) {
+    if (offPageFingerprints != null && offPageFingerprints.containsKey(rid))
+      offPageFingerprints.put(rid, fingerprint);
+  }
+
+  /**
    * Tells whether the chunk chain of {@code rid} still holds, past its head chunk, exactly what it held when this
    * transaction took the record for update (#6129). The head chunk is the only part of a multi-page record that lives
    * on the page the slot merge would replay, so it is the only part the pre-image check can see; this is what closes

@@ -154,6 +154,7 @@ class Issue10669SmallSlotShrinksAChunkTest extends BucketPageLayoutTestSupport {
         empties.add(database.newDocument("Several10669").save().getIdentity());
       sealer[0] = database.newDocument("Several10669").set("v", "s").save().getIdentity();
     });
+    empties.forEach(this::shrinkToUnpaddedSize);
     seal(sealer[0], "Several10669");
     final long countBefore = countRecordsFromCounter("Several10669");
 
@@ -185,6 +186,7 @@ class Issue10669SmallSlotShrinksAChunkTest extends BucketPageLayoutTestSupport {
         empties.add(database.newDocument("Repeated10669").save().getIdentity());
       sealer[0] = database.newDocument("Repeated10669").set("v", "s").save().getIdentity();
     });
+    empties.forEach(this::shrinkToUnpaddedSize);
     seal(sealer[0], "Repeated10669");
     final long chunksBefore = (Long) bucketStats("Repeated10669").get("totalChunks");
 
@@ -253,6 +255,7 @@ class Issue10669SmallSlotShrinksAChunkTest extends BucketPageLayoutTestSupport {
       rids[0] = database.newDocument(typeName).save().getIdentity();
       rids[1] = database.newDocument(typeName).set("v", "s").save().getIdentity();
     });
+    shrinkToUnpaddedSize(rids[0]);
     seal(rids[1], typeName);
     return rids;
   }

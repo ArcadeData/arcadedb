@@ -165,6 +165,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       PLACEHOLDER_POINTER_FOOTPRINT    =
           Binary.getNumberSpace(RECORD_PLACEHOLDER_POINTER) + LONG_SERIALIZED_SIZE;
   /**
+   * The content size every record of its own is padded to when it is written (#10859): with its one-byte size marker
+   * it takes exactly a {@link #PLACEHOLDER_POINTER_FOOTPRINT}, so the day it outgrows its page the slot turns into a
+   * pointer IN PLACE, without asking any other record of the page for the bytes it misses (#10617, #10637, #10669).
+   * Padding is what the reader already tolerates below {@link #MINIMUM_RECORD_SIZE}: a record's deserializer stops at
+   * the property count it reads, not at the end of the slot. A placeholder's CONTENT record is not padded to it: its
+   * slot is referenced from another page and never becomes a pointer itself.
+   */
+  private static final   int                       MINIMUM_PADDED_RECORD_SIZE       = PLACEHOLDER_POINTER_FOOTPRINT - 1;
+  /**
+   * Bytes the smallest head chunk of a placeholder's content takes: its marker, the chunk header and one byte of
+   * content. A content record holding more than this can give the rest to its page by becoming one (#10859).
+   */
+  private static final   int                       PLACEHOLDER_CONTENT_HEAD_MINIMUM_FOOTPRINT =
+          chunkFootprint(Binary.getNumberSpace(FIRST_CHUNK_PLACEHOLDER_CONTENT), 1);
+  /**
    * No fingerprint could be taken of the part of a record that lives off its own page: see
    * {@link #offPageContentFingerprint(RID, BasePage, boolean)}.
    */
@@ -2811,6 +2826,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return 0;
   }
 
+  /** Appends blanks to {@code buffer} until it holds {@code size} bytes: see {@link #MINIMUM_PADDED_RECORD_SIZE}. */
+  private static void padRecord(final Binary buffer, final int size) {
+    while (buffer.size() < size)
+      buffer.append((byte) 0);
+  }
+
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
     final Binary buffer = database.getSerializer().serialize(database, record);
     final RID rid = createRecordInternal(buffer, isPlaceHolder);
@@ -2829,11 +2850,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
-    // but it is padded to the same floor, as it always has been. Fill the difference with blanks, which the
-    // deserializer stops before: it reads the property count, not the slot length.
-    while (buffer.size() < MINIMUM_RECORD_SIZE || (isPlaceHolder && buffer.size() == MINIMUM_RECORD_SIZE)) {
-      buffer.append((byte) 0);
-    }
+    // but it is padded to MINIMUM_PADDED_RECORD_SIZE, so its slot can always become a placeholder pointer in place
+    // (#10859). Fill the difference with blanks, which the deserializer stops before: it reads the property count, not
+    // the slot length.
+    padRecord(buffer, isPlaceHolder ? MINIMUM_RECORD_SIZE + 1 : MINIMUM_PADDED_RECORD_SIZE);
 
     final int bufferSize = buffer.size();
 
@@ -3037,8 +3057,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final MutablePage selectedPage = checkRestoreTargetIsFree(position);
 
       final Binary buffer = database.getSerializer().serialize(database, record);
-      while (buffer.size() < MINIMUM_RECORD_SIZE)
-        buffer.append((byte) 0);
+      padRecord(buffer, MINIMUM_PADDED_RECORD_SIZE);
       final int bufferSize = buffer.size();
       final int spaceNeeded = Binary.getNumberSpace(bufferSize) + bufferSize;
 
@@ -4143,8 +4162,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     try {
       for (int i = from; i < to; i++) {
         final Binary buffer = buffers[i];
-        while (buffer.size() < MINIMUM_RECORD_SIZE)
-          buffer.append((byte) 0);
+        padRecord(buffer, MINIMUM_PADDED_RECORD_SIZE);
 
         final int actualSize = buffer.size();
         final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
@@ -4224,8 +4242,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // record it creates behind a new pointer. It matters on every write that gives such a slot its size back - the
     // in-place overwrite far below, and since #6286 the collapse of a content chain into this very shape.
     if (updatePlaceholderContent)
-      while (buffer.size() <= MINIMUM_RECORD_SIZE)
-        buffer.append((byte) 0);
+      padRecord(buffer, MINIMUM_RECORD_SIZE + 1);
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
@@ -4393,6 +4410,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // by the tracking further down, and poisoning it up front would have cost it that for nothing (PR review).
         final boolean legacyAmbiguousContentHead = updatePlaceholderContent && !placeholderContentHead;
 
+        if (!updatePlaceholderContent)
+          // #10859: a record collapsing back into its slot is written as a record created now is. The region is at
+          // least a chunk header plus a byte, so the padding always fits it.
+          padRecord(buffer, MINIMUM_PADDED_RECORD_SIZE);
+
         if (collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
                 chunkRegionEnd, legacyAmbiguousContentHead ? null : chunkBaseImage, updatePlaceholderContent, slotTx)) {
           // The slot changed and no tracked image accounts for it: a page rebased from some OTHER slot's write would
@@ -4440,6 +4462,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         isPlaceHolder = true;
         recordSize[0] *= -1L;
       }
+
+      if (!isPlaceHolder)
+        // #10859: a record of its own keeps the slot it has, up to a pointer's footprint, however short its new content:
+        // padded to that, an in-place overwrite never turns a slot that could host a pointer into one that cannot, and
+        // a slot that already holds less (written before #10859) is never asked to grow for padding's sake alone.
+        padRecord(buffer, (int) Math.min(MINIMUM_PADDED_RECORD_SIZE, recordSize[0]));
 
       final int bufferSize = buffer.size();
       if (bufferSize > recordSize[0]) {
@@ -4575,10 +4603,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               // #10669: a page with no such plain record - its tail taken by the head chunk of a record that spilled -
               // has a CHUNK give them instead: its trailing content moves into a new continuation chunk.
               final int bytesNeeded = PLACEHOLDER_POINTER_FOOTPRINT - pointerRoom + 1;
-              if (relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded,
-                      pageOccupiedInBytes, freeTailInPage)
-                      || moveAChunkTailOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded,
-                      pageOccupiedInBytes, freeTailInPage)) {
+              // #10859: and a page with neither has a placeholder's CONTENT record give them, or several records a part each.
+              if (releaseBytesFromOtherRecords(page, recordCountInPage, positionInPage, bytesNeeded, recordSize)) {
                 if (slotCandidate)
                   slotTx.poisonSlotRebasePage(fileId, pageId);
 
@@ -7617,33 +7643,125 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Releases at least {@code bytesNeeded} bytes into the free tail of {@code page} by moving one of its plain records
-   * behind a placeholder POINTER (#10637): the record's content is re-created as placeholder content on another page,
-   * its slot keeps its RID and now holds the 9-byte pointer, and everything stored after it moves left by the bytes
-   * the slot no longer needs. The donor is the SMALLEST plain record that can release enough, so the fewest bytes leave
-   * the page; the record at {@code excludedRecordPositionInPage} - the one the caller is making room for - is never
-   * picked, and neither is a record that already lives behind a pointer, a pointer, or a chunk.
+   * Releases at least {@code bytesNeeded} bytes into the free tail of {@code page} on behalf of the record in slot
+   * {@code positionInPage}, which needs them to host a placeholder pointer, by having OTHER records of the page give them
+   * (#10637, #10669, #10859). One donor is preferred, in this order: a plain record moved behind a pointer of its own
+   * ({@link #relocateANeighbourOffPage}), the trailing content of a chunk moved into a new continuation chunk
+   * ({@link #moveAChunkTailOffPage}), a placeholder's CONTENT record turned into the head of a chunk chain
+   * ({@link #chunkAPlaceholderContentOffPage}). When no single record can give all the bytes, several give a part each:
+   * only when the bytes every record of the page can give add up to less than what is missing is nothing written at all.
+   * <p>
+   * The caller must poison the page for the commit-time merges when this returns true, and must re-derive every offset
+   * it holds on the page: the records after each donor moved left, possibly its own.
+   *
+   * @param recordSize the size and marker size of the record being made room for, unchanged by the donors.
+   *
+   * @return true when the free tail grew by at least {@code bytesNeeded}; false when the records of the page cannot
+   * release them, in which case nothing has been written.
+   */
+  private boolean releaseBytesFromOtherRecords(final MutablePage page, final short recordCountInPage, final int positionInPage,
+                                               final int bytesNeeded, final long[] recordSize) throws IOException {
+    int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+    int pageOccupiedInBytes = getPageOccupiedInBytes(page, getLastRecordPositionInPage(page, recordCountInPage),
+            recordPositionInPage, recordSize);
+    if (relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded, bytesNeeded,
+            pageOccupiedInBytes, page.getMaxContentSize() - pageOccupiedInBytes) > 0
+            || moveAChunkTailOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded, false,
+            pageOccupiedInBytes, page.getMaxContentSize() - pageOccupiedInBytes) > 0
+            || chunkAPlaceholderContentOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded, false,
+            pageOccupiedInBytes, page.getMaxContentSize() - pageOccupiedInBytes) > 0)
+      return true;
+
+    // #10859: no record can give every byte on its own. Several can, each a part, as long as together they hold enough:
+    // checked up front so that a page that cannot is refused with nothing written, as it always was.
+    if (releasableBytesInPage(page, recordCountInPage, recordPositionInPage) < bytesNeeded)
+      return false;
+
+    int remaining = bytesNeeded;
+    while (remaining > 0) {
+      // The donors before this record moved it left: every offset is re-derived from the page itself on each round.
+      recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      pageOccupiedInBytes = getPageOccupiedInBytes(page, getLastRecordPositionInPage(page, recordCountInPage),
+              recordPositionInPage, recordSize);
+      final int freeTailInPage = page.getMaxContentSize() - pageOccupiedInBytes;
+
+      int released = relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, remaining, 1,
+              pageOccupiedInBytes, freeTailInPage);
+      if (released == 0)
+        released = moveAChunkTailOffPage(page, recordCountInPage, recordPositionInPage, remaining, true,
+                pageOccupiedInBytes, freeTailInPage);
+      if (released == 0)
+        released = chunkAPlaceholderContentOffPage(page, recordCountInPage, recordPositionInPage, remaining, true,
+                pageOccupiedInBytes, freeTailInPage);
+      if (released == 0)
+        // Unreachable while releasableBytesInPage and the three donors agree on what each record can give: every round
+        // takes at least one byte from a record that had it, and gives nothing back. Refused, rather than looping.
+        throw new DatabaseOperationException(
+                "Cannot release " + remaining + " more bytes on page " + page.getPageId() + " of bucket '" + componentName
+                        + "' although its records were counted able to");
+      remaining -= released;
+    }
+    return true;
+  }
+
+  /**
+   * Bytes the records of {@code page} other than the one at {@code excludedRecordPositionInPage} can release into its
+   * free tail between them: a plain record its footprint beyond a pointer's, a chunk all of its content but one byte,
+   * a placeholder's CONTENT record its footprint beyond that of a head chunk carrying one byte. Exactly what
+   * {@link #relocateANeighbourOffPage}, {@link #moveAChunkTailOffPage} and {@link #chunkAPlaceholderContentOffPage}
+   * take from each, so the sum is what the three can release together, and what one of them takes from a record is
+   * taken from this sum.
+   */
+  private int releasableBytesInPage(final MutablePage page, final short recordCountInPage,
+                                    final int excludedRecordPositionInPage) throws IOException {
+    int releasable = 0;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long[] candidateSize = page.readNumberAndSize(candidatePositionInPage);
+      if (candidateSize[0] > 0)
+        releasable += Math.max(0, (int) (candidateSize[0] + candidateSize[1]) - PLACEHOLDER_POINTER_FOOTPRINT);
+      else if (isChunkHead(candidateSize[0]) || candidateSize[0] == NEXT_CHUNK)
+        releasable += Math.max(0, page.readInt(candidatePositionInPage + (int) candidateSize[1]) - 1);
+      else if (candidateSize[0] < RECORD_PLACEHOLDER_CONTENT)
+        releasable += Math.max(0, (int) (candidateSize[1] - candidateSize[0]) - PLACEHOLDER_CONTENT_HEAD_MINIMUM_FOOTPRINT);
+    }
+    return releasable;
+  }
+
+  /**
+   * Releases bytes into the free tail of {@code page} by moving one of its plain records behind a placeholder POINTER
+   * (#10637): the record's content is re-created as placeholder content on another page, its slot keeps its RID and now
+   * holds the 9-byte pointer, and everything stored after it moves left by the bytes the slot no longer needs. The donor
+   * is the SMALLEST plain record that can release at least {@code minimumRelease} bytes, so the fewest bytes leave the
+   * page; the record at {@code excludedRecordPositionInPage} - the one the caller is making room for - is never picked,
+   * and neither is a record that already lives behind a pointer, a pointer, or a chunk.
    * <p>
    * This is the shape every reader already understands: it is what an update spilling a small record writes, and the
-   * reads follow the pointer. The caller must poison the page for the commit-time merges when this returns true, and
-   * must re-derive every offset it holds on the page - the records after the donor, possibly its own, have moved.
+   * reads follow the pointer. The caller must poison the page for the commit-time merges when this releases anything,
+   * and must re-derive every offset it holds on the page - the records after the donor, possibly its own, have moved.
    *
    * @param page                         the page to release bytes on.
    * @param recordCountInPage            number of slot-table entries.
    * @param excludedRecordPositionInPage content offset of the record that needs the bytes.
-   * @param bytesNeeded                  the bytes the free tail must gain.
+   * @param bytesNeeded                  the bytes the free tail must gain: a donor releasing that many is preferred.
+   * @param minimumRelease               the fewest bytes a donor may release: {@code bytesNeeded} for a single donor,
+   *                                     1 when several share the bytes (#10859).
    * @param pageOccupiedInBytes          the byte at which the page's used content ends.
    * @param freeTailInPage               the page's free tail before the release.
    *
-   * @return true when a record was moved and the free tail grew by at least {@code bytesNeeded}; false when no record
-   * of the page could release them, in which case nothing has been written.
+   * @return the bytes released, at least {@code minimumRelease}; 0 when no record of the page could release them, in
+   * which case nothing has been written.
    */
-  private boolean relocateANeighbourOffPage(final MutablePage page, final short recordCountInPage,
-                                            final int excludedRecordPositionInPage, final int bytesNeeded,
-                                            final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+  private int relocateANeighbourOffPage(final MutablePage page, final short recordCountInPage,
+                                        final int excludedRecordPositionInPage, final int bytesNeeded, final int minimumRelease,
+                                        final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
     int donorPositionInPage = -1;
     long[] donorSize = null;
     int donorFootprint = Integer.MAX_VALUE;
+    boolean donorReleasesAll = false;
     for (int pos = 0; pos < recordCountInPage; ++pos) {
       final int candidatePositionInPage = getRecordPositionInPage(page, pos);
       if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
@@ -7655,15 +7773,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         continue;
 
       final int footprint = (int) (candidateSize[0] + candidateSize[1]);
-      if (footprint - PLACEHOLDER_POINTER_FOOTPRINT >= bytesNeeded && footprint < donorFootprint) {
+      final int releasable = footprint - PLACEHOLDER_POINTER_FOOTPRINT;
+      if (releasable < minimumRelease)
+        continue;
+
+      // The smallest record releasing every byte needed; failing that (several donors share them), the biggest part.
+      final boolean releasesAll = releasable >= bytesNeeded;
+      if (donorPositionInPage < 0 || (releasesAll && !donorReleasesAll)//
+              || (releasesAll && footprint < donorFootprint) || (!releasesAll && !donorReleasesAll && footprint > donorFootprint)) {
         donorPositionInPage = candidatePositionInPage;
         donorSize = candidateSize;
         donorFootprint = footprint;
+        donorReleasesAll = releasesAll;
       }
     }
 
     if (donorPositionInPage < 0)
-      return false;
+      return 0;
 
     // Created BEFORE this page changes: the page has less free tail than the donor's content, so it cannot land here
     final byte[] donorContent = new byte[(int) donorSize[0]];
@@ -7674,50 +7800,43 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     page.writeLong(donorPositionInPage + markerSize, contentRID.getPosition());
 
     final int released = donorFootprint - markerSize - LONG_SERIALIZED_SIZE;
-    final int from = donorPositionInPage + donorFootprint;
-    if (pageOccupiedInBytes > from)
-      page.move(from, from - released, pageOccupiedInBytes - from);
-
-    for (int pos = 0; pos < recordCountInPage; ++pos) {
-      final int recordPositionInPage = getRecordPositionInPage(page, pos);
-      if (recordPositionInPage >= from && recordPositionInPage < pageOccupiedInBytes)
-        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage - released);
-    }
-
-    updatePageStatistics(page, freeTailInPage, released);
+    releaseBytesAfter(page, recordCountInPage, donorPositionInPage + donorFootprint, released, pageOccupiedInBytes,
+            freeTailInPage);
 
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE,
               "Moved the record at offset %d of page %s behind a placeholder pointer to release %d bytes (threadId=%d)",
               donorPositionInPage, page, released, Thread.currentThread().threadId());
-    return true;
+    return released;
   }
 
   /**
-   * Releases exactly {@code bytesNeeded} bytes into the free tail of {@code page} by moving the trailing content of one
-   * of its chunks - a head chunk, of a record or of a placeholder's content, or a continuation chunk - into a new
-   * continuation chunk spliced into the chain right after it (#10669). It is the fallback of
-   * {@link #relocateANeighbourOffPage} for a page that holds no plain record able to give the bytes, typically because
-   * the head chunk of a record that spilled took the page's whole free tail: that very chunk is the one that gives them
-   * back.
+   * Releases bytes into the free tail of {@code page} by moving the trailing content of one of its chunks - a head
+   * chunk, of a record or of a placeholder's content, or a continuation chunk - into a new continuation chunk spliced
+   * into the chain right after it (#10669). It is the fallback of {@link #relocateANeighbourOffPage} for a page that
+   * holds no plain record able to give the bytes, typically because the head chunk of a record that spilled took the
+   * page's whole free tail: that very chunk is the one that gives them back.
    * <p>
    * The record the chunk belongs to keeps its RID and its content, one hop longer: the chunk keeps its slot, its marker
-   * and its next-chunk pointer offset, declares {@code bytesNeeded} fewer content bytes and points to the new chunk,
-   * which points to whatever the chunk pointed to before. Every chunk keeps at least one byte of content, so the chain
-   * stays one that {@code loadMultiPageRecord} and {@code check} accept. The chunk picked is the head chunk of a record
-   * of this page when there is one (see the loop for why), the one with the most content among those, and the record at
+   * and its next-chunk pointer offset, declares fewer content bytes and points to the new chunk, which points to
+   * whatever the chunk pointed to before. Every chunk keeps at least one byte of content, so the chain stays one that
+   * {@code loadMultiPageRecord} and {@code check} accept. The chunk picked is the head chunk of a record of this page
+   * when there is one (see the loop for why), the one with the most content among those, and the record at
    * {@code excludedRecordPositionInPage} is never picked.
    * <p>
    * As for {@link #relocateANeighbourOffPage}, the caller must poison the page for the commit-time merges when this
-   * returns true and re-derive every offset it holds on the page: the records after the chunk moved left. The page the
-   * new chunk lands on is poisoned here, as every page a continuation chunk lands on is.
+   * releases anything and re-derive every offset it holds on the page: the records after the chunk moved left. The
+   * page the new chunk lands on is poisoned here, as every page a continuation chunk lands on is.
    *
-   * @return true when a chunk was shrunk and the free tail grew by {@code bytesNeeded}; false when no chunk of the page
-   * carries more than {@code bytesNeeded} bytes of content, in which case nothing has been written.
+   * @param bytesNeeded the bytes the free tail must gain; at most these are taken.
+   * @param partial     false to take all of {@code bytesNeeded} from one chunk or none; true to take what the chunk
+   *                    with the most content can spare, up to {@code bytesNeeded} (several donors, #10859).
+   *
+   * @return the bytes released; 0 when no chunk of the page can give them, in which case nothing has been written.
    */
-  private boolean moveAChunkTailOffPage(final MutablePage page, final short recordCountInPage,
-                                        final int excludedRecordPositionInPage, final int bytesNeeded,
-                                        final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+  private int moveAChunkTailOffPage(final MutablePage page, final short recordCountInPage,
+                                    final int excludedRecordPositionInPage, final int bytesNeeded, final boolean partial,
+                                    final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
     int chunkPositionInPage = -1;
     int chunkSlot = -1;
     int chunkMarkerSize = 0;
@@ -7734,14 +7853,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int candidateMarkerSize = page.getLastReadNumberSize();
       final int candidateChunkSize = page.readInt(candidatePositionInPage + candidateMarkerSize);
-      if (candidateChunkSize <= bytesNeeded)
+      if (candidateChunkSize <= (partial ? 1 : bytesNeeded))
         // THE CHUNK MUST KEEP AT LEAST ONE BYTE OF CONTENT
         continue;
 
       // The head chunk of a record of THIS page first, whatever its size: its chain is covered by the poison this page
       // gets anyway. A continuation chunk, or the head of a placeholder's content, belongs to a record whose slot is on
       // another page, and an update of that record in this same transaction compares the off-page fingerprint it took
-      // at save() with one taken at commit: for a placeholder's content a mismatch is a ConcurrentModificationException.
+      // at save() with one taken at commit: carryOffPageFingerprints keeps that comparison about OTHER transactions
+      // (#10859), but the record that already lives on this page is still the cheaper one to lengthen.
       final boolean candidateIsRecordHead = candidateMarker == FIRST_CHUNK;
       if (chunkPositionInPage < 0 || (candidateIsRecordHead && !chunkIsRecordHead)
               || (candidateIsRecordHead == chunkIsRecordHead && candidateChunkSize > donorChunkSize)) {
@@ -7754,16 +7874,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     if (chunkPositionInPage < 0)
-      return false;
+      return 0;
 
+    final int released = Math.min(bytesNeeded, donorChunkSize - 1);
     final int chunkSizeOffset = chunkPositionInPage + chunkMarkerSize;
     final int nextChunkPointerOffset = chunkSizeOffset + INT_SERIALIZED_SIZE;
     final int contentOffset = nextChunkPointerOffset + LONG_SERIALIZED_SIZE;
-    final int keptChunkSize = donorChunkSize - bytesNeeded;
+    final int keptChunkSize = donorChunkSize - released;
 
-    final byte[] movedContent = new byte[bytesNeeded];
-    page.readByteArray(contentOffset + keptChunkSize, movedContent, 0, bytesNeeded);
+    final byte[] movedContent = new byte[released];
+    page.readByteArray(contentOffset + keptChunkSize, movedContent, 0, released);
     final long chainTail = page.readLong(nextChunkPointerOffset);
+
+    final RID[] fingerprintsToCarry = offPageFingerprintsStillCurrent();
 
     // Written BEFORE this page changes, and kept off it: the page has far less free tail than a chunk header. The new
     // chunk is linked from this chunk's next-chunk pointer, whose offset the shift below does not move. Should the write
@@ -7772,28 +7895,168 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // the new chunk lands on is never this one, so the offsets the caller re-derives here are not disturbed by it.
     // The donor chunk may be a continuation chunk of a record whose head is elsewhere: its own slot is what names it.
     writeContinuationChunks(new RID(fileId, recordPosition(page.getPageId().getPageNumber(), maxRecordsInPage, chunkSlot)),
-            page, nextChunkPointerOffset, 0, movedContent, 0, bytesNeeded,
+            page, nextChunkPointerOffset, 0, movedContent, 0, released,
             page.getPageId().getPageNumber(), chainTail);
 
     page.writeInt(chunkSizeOffset, keptChunkSize);
 
-    final int from = chunkPositionInPage + chunkFootprint(chunkMarkerSize, donorChunkSize);
-    if (pageOccupiedInBytes > from)
-      page.move(from, from - bytesNeeded, pageOccupiedInBytes - from);
+    releaseBytesAfter(page, recordCountInPage, chunkPositionInPage + chunkFootprint(chunkMarkerSize, donorChunkSize),
+            released, pageOccupiedInBytes, freeTailInPage);
 
-    for (int pos = 0; pos < recordCountInPage; ++pos) {
-      final int recordPositionInPage = getRecordPositionInPage(page, pos);
-      if (recordPositionInPage >= from && recordPositionInPage < pageOccupiedInBytes)
-        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage - bytesNeeded);
-    }
-
-    updatePageStatistics(page, freeTailInPage, bytesNeeded);
+    carryOffPageFingerprints(fingerprintsToCarry);
 
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE,
               "Moved the last %d bytes of the chunk at offset %d of page %s into a new continuation chunk (threadId=%d)",
-              bytesNeeded, chunkPositionInPage, page, Thread.currentThread().threadId());
-    return true;
+              released, chunkPositionInPage, page, Thread.currentThread().threadId());
+    return released;
+  }
+
+  /**
+   * Releases bytes into the free tail of {@code page} by turning one of its placeholder CONTENT records into the head of
+   * a chunk chain (#10859): the slot keeps its RID - the one the pointer on another page holds - and becomes a
+   * {@link #FIRST_CHUNK_PLACEHOLDER_CONTENT} head carrying the start of the content, the rest moving into a new
+   * continuation chunk on another page. That is the shape a placeholder whose content no page could host has had since
+   * #6196, so every reader already follows it. A content record cannot be moved behind a pointer of its own (the pointer
+   * referencing it is on another page, and nothing points back to it), which is why it was the one record a page could
+   * not ask for bytes before.
+   * <p>
+   * The record picked is the one with the most bytes to spare; a content record too short to carry a chunk header plus
+   * one byte in less room than it holds now is never picked. As for {@link #relocateANeighbourOffPage}, the caller must
+   * poison the page and re-derive its offsets when this releases anything.
+   *
+   * @param bytesNeeded the bytes the free tail must gain; at most these are taken.
+   * @param partial     as for {@link #moveAChunkTailOffPage}.
+   *
+   * @return the bytes released; 0 when no content record of the page can give them, in which case nothing has been
+   * written.
+   */
+  private int chunkAPlaceholderContentOffPage(final MutablePage page, final short recordCountInPage,
+                                              final int excludedRecordPositionInPage, final int bytesNeeded,
+                                              final boolean partial, final int pageOccupiedInBytes, final int freeTailInPage)
+          throws IOException {
+    int donorPositionInPage = -1;
+    int donorSlot = -1;
+    long[] donorSize = null;
+    int donorReleasable = 0;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long[] candidateSize = page.readNumberAndSize(candidatePositionInPage);
+      if (candidateSize[0] >= RECORD_PLACEHOLDER_CONTENT)
+        continue;
+
+      final int releasable = (int) (candidateSize[1] - candidateSize[0]) - PLACEHOLDER_CONTENT_HEAD_MINIMUM_FOOTPRINT;
+      if (releasable >= (partial ? 1 : bytesNeeded) && releasable > donorReleasable) {
+        donorPositionInPage = candidatePositionInPage;
+        donorSlot = pos;
+        donorSize = candidateSize;
+        donorReleasable = releasable;
+      }
+    }
+
+    if (donorPositionInPage < 0)
+      return 0;
+
+    final int released = Math.min(bytesNeeded, donorReleasable);
+    final int contentSize = (int) -donorSize[0];
+    final int footprint = (int) donorSize[1] + contentSize;
+    final byte[] content = new byte[contentSize];
+    page.readByteArray(donorPositionInPage + (int) donorSize[1], content, 0, contentSize);
+
+    final int headMarkerSize = Binary.getNumberSpace(FIRST_CHUNK_PLACEHOLDER_CONTENT);
+    final int keptChunkSize = footprint - released - chunkFootprint(headMarkerSize, 0);
+    final int nextChunkPointerOffset = donorPositionInPage + headMarkerSize + INT_SERIALIZED_SIZE;
+
+    final RID[] fingerprintsToCarry = offPageFingerprintsStillCurrent();
+
+    // The content is in hand, so the pointer the continuation chunk writes over its bytes loses nothing. Kept off this
+    // page, exactly as moveAChunkTailOffPage keeps the chunk it writes.
+    writeContinuationChunks(new RID(fileId, recordPosition(page.getPageId().getPageNumber(), maxRecordsInPage, donorSlot)),
+            page, nextChunkPointerOffset, 0, content, keptChunkSize, contentSize - keptChunkSize,
+            page.getPageId().getPageNumber(), 0L);
+
+    final int markerSize = page.writeNumber(donorPositionInPage, FIRST_CHUNK_PLACEHOLDER_CONTENT);
+    assert markerSize == headMarkerSize;
+    page.writeInt(donorPositionInPage + markerSize, keptChunkSize);
+    page.writeByteArray(nextChunkPointerOffset + LONG_SERIALIZED_SIZE, content, 0, keptChunkSize);
+
+    releaseBytesAfter(page, recordCountInPage, donorPositionInPage + footprint, released, pageOccupiedInBytes,
+            freeTailInPage);
+
+    carryOffPageFingerprints(fingerprintsToCarry);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Turned the placeholder content at offset %d of page %s into a chunk chain to release %d bytes (threadId=%d)",
+              donorPositionInPage, page, released, Thread.currentThread().threadId());
+    return released;
+  }
+
+  /**
+   * Moves everything stored from {@code from} to the end of the page's content {@code released} bytes to the left,
+   * fixes the slot-table offsets of the records that moved and hands the bytes to the free tail: the second half of
+   * every donor above, whose own footprint just shrank by {@code released} bytes ending at {@code from}.
+   */
+  private void releaseBytesAfter(final MutablePage page, final short recordCountInPage, final int from, final int released,
+                                 final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+    if (pageOccupiedInBytes > from)
+      page.move(from, from - released, pageOccupiedInBytes - from);
+
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int recordPositionInPage = getRecordPositionInPage(page, pos);
+      if (recordPositionInPage >= from && recordPositionInPage < pageOccupiedInBytes)
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage - released);
+    }
+
+    updatePageStatistics(page, freeTailInPage, released);
+  }
+
+  /**
+   * The records of this bucket the current transaction took for update with an off-page fingerprint that still
+   * describes them, taken right before one of this transaction's own writes changes the part of a record kept off its
+   * page (#10859): shrinking a continuation chunk or a placeholder's content head, or turning a placeholder's content
+   * into a chunk chain. Such a write is not a concurrent modification, but the fingerprint taken at {@code save()}
+   * cannot tell: compared at commit it would refuse the update of that record - for a placeholder's content with a
+   * {@link com.arcadedb.exception.ConcurrentModificationException}, which a retry meets again. A fingerprint that no
+   * longer matches here was already changed by another transaction, and is left as it is so the commit still says so.
+   *
+   * @return the records to {@link #carryOffPageFingerprints carry}, or null when there is none.
+   */
+  private RID[] offPageFingerprintsStillCurrent() throws IOException {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null)
+      return null;
+
+    final RID[] fingerprinted = tx.getOffPageFingerprintedRecords(fileId);
+    if (fingerprinted == null)
+      return null;
+
+    int current = 0;
+    for (final RID rid : fingerprinted) {
+      final Long captured = tx.getOffPageFingerprint(rid);
+      if (captured != null && captured == offPageContentFingerprint(rid, recordPageInTransaction(rid), tx.isSlotMergeEnabled()))
+        fingerprinted[current++] = rid;
+    }
+    return current == 0 ? null : Arrays.copyOf(fingerprinted, current);
+  }
+
+  /** Re-takes, after this transaction's own write, the fingerprints {@link #offPageFingerprintsStillCurrent} vouched for. */
+  private void carryOffPageFingerprints(final RID[] rids) throws IOException {
+    if (rids == null)
+      return;
+
+    final TransactionContext tx = database.getTransaction();
+    for (final RID rid : rids)
+      tx.setOffPageFingerprint(rid, offPageContentFingerprint(rid, recordPageInTransaction(rid), tx.isSlotMergeEnabled()));
+  }
+
+  /** The page holding {@code rid}'s slot, as the current transaction sees it, without taking it for modification. */
+  private BasePage recordPageInTransaction(final RID rid) throws IOException {
+    return database.getTransaction()
+            .getPage(new PageId(database, fileId, (int) (rid.getPosition() / maxRecordsInPage)), pageSize);
   }
 
   /**

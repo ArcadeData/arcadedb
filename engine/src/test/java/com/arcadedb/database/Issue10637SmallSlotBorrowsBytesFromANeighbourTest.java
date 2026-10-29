@@ -49,6 +49,7 @@ class Issue10637SmallSlotBorrowsBytesFromANeighbourTest extends BucketPageLayout
       empty[0] = database.newDocument("Donor10637").save().getIdentity();
       neighbour[0] = database.newDocument("Donor10637").set("v", "a short neighbour").save().getIdentity();
     });
+    shrinkToUnpaddedSize(empty[0]);
     final RID sealer = sealFirstPage("Donor10637");
     final List<RID> fillers = fillersOfPageZero(neighbour[0], sealer);
 
@@ -87,6 +88,7 @@ class Issue10637SmallSlotBorrowsBytesFromANeighbourTest extends BucketPageLayout
       empty[0] = database.newDocument("Ordinary10637").save().getIdentity();
       neighbour[0] = database.newDocument("Ordinary10637").set("v", "a short neighbour").save().getIdentity();
     });
+    shrinkToUnpaddedSize(empty[0]);
     sealFirstPage("Ordinary10637");
     final long countBefore = countRecordsFromCounter("Ordinary10637");
 
@@ -123,6 +125,7 @@ class Issue10637SmallSlotBorrowsBytesFromANeighbourTest extends BucketPageLayout
         empties.add(database.newDocument("Several10637").save().getIdentity());
       neighbour[0] = database.newDocument("Several10637").set("v", "a short neighbour").save().getIdentity();
     });
+    empties.forEach(this::shrinkToUnpaddedSize);
     sealFirstPage("Several10637");
     final long countBefore = countRecordsFromCounter("Several10637");
 

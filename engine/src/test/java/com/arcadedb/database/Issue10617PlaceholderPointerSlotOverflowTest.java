@@ -55,6 +55,7 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
       empty[0] = database.newDocument("Sealed10617").save().getIdentity();
       neighbour[0] = database.newDocument("Sealed10617").set("v", "neighbour").save().getIdentity();
     });
+    shrinkToUnpaddedSize(empty[0]);
     sealFirstPage("Sealed10617");
 
     assertThat(footprintOf(empty[0])).as("the premise: an empty document takes a slot too small for a pointer")
@@ -86,6 +87,7 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
       empty[0] = database.newDocument("Enlarged10617").save().getIdentity();
       neighbour[0] = database.newDocument("Enlarged10617").set("v", "neighbour").save().getIdentity();
     });
+    shrinkToUnpaddedSize(empty[0]);
     final RID filler = fillFirstPage("Enlarged10617");
     leaveFreeTail(filler, 5);
 
@@ -160,6 +162,7 @@ class Issue10617PlaceholderPointerSlotOverflowTest extends BucketPageLayoutTestS
 
     final RID[] empty = new RID[1];
     database.transaction(() -> empty[0] = database.newDocument(typeName).save().getIdentity());
+    shrinkToUnpaddedSize(empty[0]);
     assertThat(empty[0].getPosition()).as("the premise: the empty document lands right after the fillers on page 0")
         .isEqualTo(lastFiller.getPosition() + 1);
     final int footprint = footprintOf(empty[0]);
