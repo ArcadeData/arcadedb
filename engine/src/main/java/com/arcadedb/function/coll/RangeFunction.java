@@ -62,9 +62,10 @@ public class RangeFunction implements StatelessFunction {
       if (!(args[i] instanceof Number) || args[i] instanceof Double || args[i] instanceof Float)
         throw CypherFunctionHelper.typeMismatch("range", "an INTEGER", args[i]);
     }
-    final long start = ((Number) args[0]).longValue();
-    final long end = ((Number) args[1]).longValue();
-    final long step = args.length == 3 ? ((Number) args[2]).longValue() : 1L;
+    // Issue #10850: FLOAT is refused above, and a BigDecimal fraction is refused here rather than truncated by longValue()
+    final long start = CypherFunctionHelper.requireWholeNumberArgument(args[0], "range", "start");
+    final long end = CypherFunctionHelper.requireWholeNumberArgument(args[1], "range", "end");
+    final long step = args.length == 3 ? CypherFunctionHelper.requireWholeNumberArgument(args[2], "range", "step") : 1L;
 
     // A zero step is determined entirely by the supplied argument, so it is a client error (HTTP 400) rather
     // than a CommandExecutionException (HTTP 500). See issue #5794.

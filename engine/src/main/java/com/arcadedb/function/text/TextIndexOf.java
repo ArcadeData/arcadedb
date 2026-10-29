@@ -58,7 +58,7 @@ public class TextIndexOf extends AbstractTextFunction {
     if (substring == null)
       return null;
 
-    final int start = args.length > 2 ? asInt(args[2], 0) : 0;
+    final int start = args.length > 2 ? asInt(args[2], 0, "start") : 0;
     // The position of a character, not of a UTF-16 code unit (issue #10378)
     return (long) CypherFunctionHelper.indexOfCodePoints(str, substring, start);
   }

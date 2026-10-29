@@ -255,6 +255,27 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
   }
 
   /**
+   * The long counterpart of {@link #requireWholeIntArgument(Object, String)}, for a number argument read as a long - an
+   * amount, an epoch instant, an encoded id: {@code Number.longValue()} truncates {@code 2.5} to 2, so a fraction the
+   * caller wrote was answered as a different, plausible value (issue #10850). {@code 7.0} is accepted.
+   *
+   * @param functionName the function's name, for the error message
+   * @param value        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @throws IllegalArgumentException if the value is not a whole number in the long range
+   */
+  protected static long requireWholeLongArgument(final String functionName, final Number value, final String argumentName) {
+    try {
+      return NumberUtils.toLongWhole(value);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException(
+          functionName + "() requires a whole number <" + argumentName + "> in the long range, but received "
+              + NumberUtils.describeRejectedNumber(value));
+    }
+  }
+
+  /**
    * Converts various input types (float[], double[], Object[], List) to a float array.
    * Delegates to {@link com.arcadedb.index.vector.VectorUtils#toFloatArray(Object)}.
    *

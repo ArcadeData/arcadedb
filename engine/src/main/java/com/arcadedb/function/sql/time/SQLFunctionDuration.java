@@ -80,7 +80,8 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
 
   private static long getAmount(final Object param) {
     if (param instanceof Number number)
-      return number.longValue();
+      // issue #10850: longValue() read duration(2.5, 'hours') as 2 hours
+      return requireWholeLongArgument(NAME, number, "amount");
     else if (param instanceof String string) {
       try {
         return Long.parseLong(string.trim());

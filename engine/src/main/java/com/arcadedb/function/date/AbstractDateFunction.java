@@ -19,6 +19,7 @@
 package com.arcadedb.function.date;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.utility.DateUtils;
 
 import java.time.Instant;
@@ -67,7 +68,8 @@ public abstract class AbstractDateFunction implements StatelessFunction {
       return (Long) timestamp;
     }
     if (timestamp instanceof Number) {
-      return ((Number) timestamp).longValue();
+      // Issue #10850: a whole number of milliseconds - longValue() read 1.9 as 1
+      return CypherFunctionHelper.requireWholeNumberArgument(timestamp, getName(), "timestamp");
     }
     if (timestamp instanceof Date) {
       return ((Date) timestamp).getTime();

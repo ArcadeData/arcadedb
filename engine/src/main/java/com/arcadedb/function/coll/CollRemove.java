@@ -63,19 +63,22 @@ public class CollRemove extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
-    final Number indexArg = CypherFunctionHelper.requireNumberArgument(args[1], getName());
-    if (indexArg == null)
+    if (args[1] == null)
       return null;
 
-    final int index = indexArg.intValue();
-    if (index < 0)
-      throw new CommandSemanticException(getName() + "() does not support negative index: " + index);
-    if (index >= list.size())
-      throw new CommandSemanticException(getName() + "() index " + index + " is out of range for list of size " + list.size());
-    final Number countArg = args.length > 2 ? CypherFunctionHelper.requireNumberArgument(args[2], getName()) : null;
-    if (args.length > 2 && countArg == null)
+    // Issue #10850: a whole number or a type error - intValue() read 1.9 as 1 and 4294967297 as 1
+    final long longIndex = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "index");
+    if (longIndex < 0)
+      throw new CommandSemanticException(getName() + "() does not support negative index: " + longIndex);
+    if (longIndex >= list.size())
+      throw new CommandSemanticException(getName() + "() index " + longIndex + " is out of range for list of size " + list.size());
+    final int index = (int) longIndex;
+    if (args.length > 2 && args[2] == null)
       return null;
-    final int count = countArg != null ? countArg.intValue() : 1;
+    // a count past the int range removes the rest of the list, which the int range covers: clamping keeps that answer
+    final int count = args.length > 2 ?
+        Math.clamp(CypherFunctionHelper.requireWholeNumberArgument(args[2], getName(), "count"), Integer.MIN_VALUE, Integer.MAX_VALUE) :
+        1;
     final LongRangeList range = asRange(list);
     if (range != null) {
       // The loop below stops at the end of the list, so it removes min(count, size - index) elements.
