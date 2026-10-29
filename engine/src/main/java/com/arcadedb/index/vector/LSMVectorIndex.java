@@ -188,10 +188,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** The statistic counting the records the last build could not index (issue #10938), summed over buckets by TypeIndex. */
   public static final  String LAST_BUILD_SKIPPED_RECORDS_STAT = "lastBuildSkippedRecords";
 
-  // Page header layout constants
   /** Live vectors {@link #deriveDimensionsFromData} reads at most before it gives up looking for the size of an index. */
-  private static final int DIMENSIONS_DERIVATION_LIMIT = 1000;
+  private static final int    DIMENSIONS_DERIVATION_LIMIT     = 1000;
 
+  // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
   public static final int OFFSET_NUM_ENTRIES  = 4;   // 4 bytes
   public static final int OFFSET_MUTABLE      = 8;       // 1 byte
@@ -11322,6 +11322,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     if (length < 1) {
+      // said once: a search against an index that holds entries but no vector to size it on answers as an empty one
+      if (derivationMissedAtId == -1 && idsAtThisLook > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector index '%s' waits for its dimensions and none of its first %d entries leads to a vector: searches return no "
+                + "result until a vector is written", indexName, DIMENSIONS_DERIVATION_LIMIT);
       derivationMissedAtId = idsAtThisLook;
       return 0;
     }

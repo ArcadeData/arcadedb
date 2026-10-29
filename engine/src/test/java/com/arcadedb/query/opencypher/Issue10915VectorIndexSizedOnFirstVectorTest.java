@@ -230,6 +230,19 @@ class Issue10915VectorIndexSizedOnFirstVectorTest extends TestHelper {
     assertThat(nearestIds("emb", 1, List.of(19.0, 1.0, 1.0, 0.5))).containsExactly("d19");
   }
 
+  @Test
+  void aProductQuantizedIndexSizedOnItsFirstVectorBuildsItsCodebooksWithThatSize() {
+    command("CREATE VECTOR INDEX emb FOR (n:Doc) ON n.embedding OPTIONS {indexConfig: {quantization: 'PRODUCT', pqClusters: 16}}");
+    for (int i = 0; i < 100; i++)
+      command("CREATE (:Doc {id: 'd" + i + "', embedding: [" + i + ".0, " + (100 - i) + ".0, " + (i % 7) + ".0, 1.0, 0.5, "
+          + (i % 3) + ".0, 2.0, 0.25]})");
+
+    reopenDatabase();
+
+    assertThat(vectorIndex("emb").getDimensions()).isEqualTo(8);
+    assertThat(nearestIds("emb", 1, List.of(99.0, 1.0, 1.0, 1.0, 0.5, 0.0, 2.0, 0.25))).containsExactly("d99");
+  }
+
   private LSMVectorIndex vectorIndex(final String name) {
     for (final IndexInternal bucketIndex : ((TypeIndex) database.getSchema().getIndexByName(name)).getIndexesOnBuckets())
       if (bucketIndex instanceof LSMVectorIndex vector)
