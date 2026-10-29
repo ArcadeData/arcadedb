@@ -106,8 +106,12 @@ public class JsonGraphSerializer extends JsonSerializer {
           // JSON supports none of NaN / +Infinity / -Infinity: they travel as the marker strings of
           // NonFiniteNumbers, which is also what every reader of this output substitutes back.
           value = NonFiniteNumbers.encode(value);
-        else if (type != null && isEncodableTemporal(value) && type.existsProperty(prop.getKey()))
-          value = encodeTemporalForWriteBack(value, type.getProperty(prop.getKey()).getType());
+        else if (type != null && isEncodableTemporal(value)) {
+          // the declaration may sit on a supertype (issue #10865)
+          final Type declared = JsonSerializer.declaredType(type, prop.getKey());
+          if (declared != null)
+            value = encodeTemporalForWriteBack(value, declared);
+        }
       }
       properties.put(prop.getKey(), value);
     }
