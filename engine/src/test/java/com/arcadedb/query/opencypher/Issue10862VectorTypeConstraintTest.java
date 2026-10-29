@@ -136,6 +136,22 @@ class Issue10862VectorTypeConstraintTest extends TestHelper {
   }
 
   @Test
+  void aRefusalOverADeclaredPropertyTakesBackTheBoundsItSet() {
+    database.command("sql", "CREATE VERTEX TYPE L");
+    database.command("sql", "CREATE PROPERTY L.e ARRAY_OF_FLOATS");
+    database.transaction(() -> database.newVertex("L").set("e", new float[] { 1F, 2F }).save());
+
+    // the declaration was there before: the refusal keeps it, without the MIN and MAX the statement set
+    assertThatThrownBy(() -> command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)")).hasMessageContaining(
+        "holds float[2]");
+    final Property p = property("L", "e");
+    assertThat(p.getType()).isEqualTo(Type.ARRAY_OF_FLOATS);
+    assertThat(p.getMin()).isNull();
+    assertThat(p.getMax()).isNull();
+    assertThat(names("SHOW CONSTRAINTS YIELD name")).doesNotContain("t");
+  }
+
+  @Test
   void aStoredListIsNotAVectorSoTheConstraintIsRefused() {
     // a list written before any declaration stays a list: it answers false to IS :: VECTOR, as in Neo4j
     command("CREATE (:L {e: [1.0, 2.0, 3.0]})");
