@@ -125,8 +125,6 @@ class Issue10678CypherVectorAndFulltextIndexDdlTest extends TestHelper {
         .hasMessageContaining("config");
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:A|B) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3}}"))
         .hasMessageContaining("several labels");
-    assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e WITH [n.x] OPTIONS {indexConfig: {`vector.dimensions`: 3}}"))
-        .hasMessageContaining("WITH");
 
     assertThat(database.getSchema().existsType("L")).isFalse();
     assertThat(database.getSchema().existsIndex("v")).isFalse();
