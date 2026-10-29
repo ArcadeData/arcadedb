@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.IndexKind;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -26,7 +27,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Remembers the vector and full-text indexes that Cypher created over several labels or relationship types (issue #10914):
@@ -84,7 +88,7 @@ public final class CypherMultiTypeIndexes {
   /** Every logical index of the database, in no particular order. */
   public static List<Entry> entries(final Schema schema) {
     final List<Entry> entries = new ArrayList<>();
-    final List<String> seen = new ArrayList<>();
+    final Set<String> seen = new HashSet<>();
     for (final DocumentType type : schema.getTypes())
       for (final String key : type.getCustomKeys()) {
         if (!key.startsWith(KEY_PREFIX))
@@ -150,6 +154,8 @@ public final class CypherMultiTypeIndexes {
           strings(json.getJSONArray("indexes", new JSONArray())), strings(json.getJSONArray("owned", new JSONArray())));
     } catch (final RuntimeException e) {
       // unreadable: not a logical index
+      LogManager.instance().log(CypherMultiTypeIndexes.class, Level.WARNING, "Unreadable record of logical index '%s': %s", name,
+          e.getMessage());
       return null;
     }
   }
