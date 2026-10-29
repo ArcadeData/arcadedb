@@ -18,20 +18,30 @@
  */
 package com.arcadedb.mcp;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.info.SchemaInfo;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.AbstractCollection;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -78,6 +88,66 @@ class Issue10928MCPSchemaReadListedTest extends BaseGraphServerTest {
     // nothing registered: the walk runs as it always did
     assertThat(SchemaInfo.toJSON(getServer(0).getDatabaseForOperator(getDatabaseName()), getDatabaseName()).getJSONArray("types")
         .length()).isGreaterThan(0);
+  }
+
+  /**
+   * A terminate that arrives once the walk has started stops it at the next type, not only one that was there before it
+   * began: the real database and schema are seen through proxies whose type collection terminates the entry when the walk
+   * fetches its second type, so a check hoisted in front of the loop would let the walk run to the end and fail this.
+   */
+  @Test
+  void aSchemaReadTerminatedMidWalkStopsAtTheNextType() {
+    final Database real = getServer(0).getDatabaseForOperator(getDatabaseName());
+    final List<DocumentType> types = new ArrayList<>(real.getSchema().getTypes());
+    assertThat(types.size()).as("the fixture needs at least two types").isGreaterThanOrEqualTo(2);
+
+    final AtomicInteger fetched = new AtomicInteger();
+    try (final RunningQuery entry = getServer(0).getRunningQueries()
+        .register(getDatabaseName(), "root", MCPDispatcher.MCP_PROTOCOL, null, null, RunningQuery.Client.NONE)) {
+      final Collection<DocumentType> terminatingTypes = new AbstractCollection<>() {
+        @Override
+        public Iterator<DocumentType> iterator() {
+          final Iterator<DocumentType> delegate = types.iterator();
+          return new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+              return delegate.hasNext();
+            }
+
+            @Override
+            public DocumentType next() {
+              if (fetched.incrementAndGet() == 2)
+                entry.terminate("root");
+              return delegate.next();
+            }
+          };
+        }
+
+        @Override
+        public int size() {
+          return types.size();
+        }
+      };
+      final Schema schema = proxy(Schema.class, real.getSchema(), "getTypes", terminatingTypes);
+      final Database database = proxy(Database.class, real, "getSchema", schema);
+
+      assertThatThrownBy(() -> SchemaInfo.toJSON(database, getDatabaseName())).isInstanceOf(QueryTerminatedException.class);
+    }
+    assertThat(fetched.get()).as("the first type was rendered, the walk stopped at the second").isEqualTo(2);
+  }
+
+  /** A view of {@code target} whose no-argument {@code method} answers {@code answer}; every other call goes to the target. */
+  @SuppressWarnings("unchecked")
+  private static <T> T proxy(final Class<T> type, final T target, final String method, final Object answer) {
+    return (T) Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type }, (self, invoked, args) -> {
+      if (method.equals(invoked.getName()) && invoked.getParameterCount() == 0)
+        return answer;
+      try {
+        return invoked.invoke(target, args);
+      } catch (final InvocationTargetException e) {
+        throw e.getCause();
+      }
+    });
   }
 
   /**
