@@ -113,9 +113,11 @@ public class RedisRespCorrectnessTest extends BaseRedisServerTest {
       socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
 
-      // The null-bulk command itself has no valid command name, so it produces no reply at all; the very
-      // next bytes on the wire must be AUTH's clean "+OK", followed by PING's clean "+PONG" - proving the
-      // parser stayed in sync instead of drifting into the following command's bytes.
+      // The null-bulk command itself has no valid command name, so it gets a protocol error (issue #10845: it used to get
+      // no reply at all, leaving the client waiting forever); the very next bytes on the wire must be AUTH's clean "+OK",
+      // followed by PING's clean "+PONG" - proving the parser stayed in sync instead of drifting into the following
+      // command's bytes.
+      assertThat(readReply(socket)).startsWith("-ERR Protocol error");
       assertThat(readReply(socket)).isEqualTo("+OK");
       assertThat(readReply(socket)).isEqualTo("+PONG");
     }
@@ -138,8 +140,41 @@ public class RedisRespCorrectnessTest extends BaseRedisServerTest {
       socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
 
+      assertThat(readReply(socket)).startsWith("-ERR Protocol error");
       assertThat(readReply(socket)).isEqualTo("+OK");
       assertThat(readReply(socket)).isEqualTo("+PONG");
+    }
+  }
+
+  @Test
+  void commandNameThatIsNotAStringGetsAnErrorReply() throws Exception {
+    // Issue #10845: a RESP array whose first element is not a string (an integer, a null bulk string, a nested array)
+    // was logged and answered with nothing, so the client blocked forever. The framing is intact, so each one gets an
+    // error and the connection goes on: the PING after them must still be answered, before and after authentication
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
+      socket.setSoTimeout(10_000);
+
+      for (int round = 0; round < 2; round++) {
+        sendRaw(socket, "*1\r\n:1\r\n");
+        assertThat(readReply(socket)).isEqualTo("-ERR Protocol error: expected '$', got ':'");
+
+        sendRaw(socket, "*1\r\n$-1\r\n");
+        assertThat(readReply(socket)).isEqualTo("-ERR Protocol error: the command name is a null bulk string");
+
+        sendRaw(socket, "*1\r\n*0\r\n");
+        assertThat(readReply(socket)).isEqualTo("-ERR Protocol error: expected '$', got '*'");
+
+        sendRaw(socket, "*2\r\n*1\r\n$4\r\nPING\r\n$1\r\nx\r\n");
+        assertThat(readReply(socket)).isEqualTo("-ERR Protocol error: expected '$', got '*'");
+
+        if (round == 0) {
+          sendCommand(socket, "AUTH", "root", PASSWORD);
+          assertThat(readReply(socket)).isEqualTo("+OK");
+        }
+
+        sendCommand(socket, "PING");
+        assertThat(readReply(socket)).isEqualTo("+PONG");
+      }
     }
   }
 
