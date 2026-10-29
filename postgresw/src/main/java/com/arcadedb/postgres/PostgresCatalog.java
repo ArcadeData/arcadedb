@@ -198,13 +198,17 @@ public class PostgresCatalog {
   private static final int PG_CLASS_RELATION_OID      = 1259;
   /** The OID of {@code pg_constraint} itself, which {@code pg_depend} names for a dependency of or on a constraint (issue #10842). */
   private static final int PG_CONSTRAINT_RELATION_OID = 2606;
+  /** The OID of {@code pg_namespace} itself, which {@code pg_depend.refclassid} names for a table's dependency on its schema (issue #10961). */
+  private static final int PG_NAMESPACE_RELATION_OID  = 2615;
+  /** The OID of {@code pg_type} itself, which {@code pg_depend.classid} names for the dependency of a row type on its table (issue #10961). */
+  private static final int PG_TYPE_RELATION_OID       = 1247;
   /**
    * The system catalogs a {@code regclass} cast names by OID, the ones {@code pg_depend} points into: {@code
    * d.classid = 'pg_catalog.pg_class'::regclass} is how psql and pgjdbc filter it. PostgreSQL searches {@code pg_catalog} first,
    * so the name means the catalog even where a type of the same name exists.
    */
   private static final Map<String, Integer> SYSTEM_CATALOG_OIDS = Map.of("pg_class", PG_CLASS_RELATION_OID, "pg_constraint",
-      PG_CONSTRAINT_RELATION_OID);
+      PG_CONSTRAINT_RELATION_OID, "pg_namespace", PG_NAMESPACE_RELATION_OID, "pg_type", PG_TYPE_RELATION_OID);
 
   /** The OID and name of the two tablespaces every PostgreSQL has, the only ones this catalog's relations can be in (issue #10591). */
   private static final Object[][] TABLESPACES = { { 1663, "pg_default" }, { 1664, "pg_global" } };
@@ -2604,11 +2608,18 @@ public class PostgresCatalog {
    * other index depends on each column of its key ({@code 'a'}), and on the whole table ({@code refobjsubid} 0) when a key is an
    * expression, which reads no column of the table.
    * <p>
-   * The other dependencies a PostgreSQL records are not listed: a table on its schema ({@code 'n'}), a row type on its table
-   * ({@code 'i'}), and PostgreSQL's own system rows. No client this catalog is tested against reads them.
+   * Each relation also depends on its schema ({@code classid pg_class}, {@code refclassid pg_namespace}, {@code 'n'}), and its row
+   * type on it ({@code classid pg_type}, {@code refclassid pg_class}, {@code 'i'}), as {@code heap_create_with_catalog} records
+   * (issue #10961). Not listed: the rewrite rule of a materialized view on what it reads (this catalog has no {@code pg_rewrite}
+   * rows), and PostgreSQL's own system rows.
    */
   private static List<Map<String, Object>> dependRows(final Context context) {
     final List<Map<String, Object>> rows = new ArrayList<>();
+    for (final DocumentType type : sortedTypes(context)) {
+      final String name = type.getName();
+      rows.add(dependRow(PG_CLASS_RELATION_OID, oidOf(name), PG_NAMESPACE_RELATION_OID, SCHEMA_OID, 0, "n"));
+      rows.add(dependRow(PG_TYPE_RELATION_OID, rowTypeOidOf(name), PG_CLASS_RELATION_OID, oidOf(name), 0, "i"));
+    }
     for (final PostgresCatalogIndexes.Info index : context.indexes()) {
       final int dependentClass = index.hasConstraint() ? PG_CONSTRAINT_RELATION_OID : PG_CLASS_RELATION_OID;
       final int dependent = index.hasConstraint() ? index.constraintOid() : index.oid();
@@ -3898,6 +3909,8 @@ public class PostgresCatalog {
       return switch (oid) {
         case PG_CLASS_RELATION_OID -> "pg_class";
         case PG_CONSTRAINT_RELATION_OID -> "pg_constraint";
+        case PG_NAMESPACE_RELATION_OID -> "pg_namespace";
+        case PG_TYPE_RELATION_OID -> "pg_type";
         default -> context.relationNamed(oid);
       };
     }
