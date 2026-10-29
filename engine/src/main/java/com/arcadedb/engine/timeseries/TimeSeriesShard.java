@@ -129,13 +129,14 @@ public class TimeSeriesShard implements AutoCloseable {
   // (issue #10342). A delete that failed on a later shard publishes nothing, so the followers still hold the old sealed bytes, and
   // the statement run again finds nothing left to delete here: the flag is what makes that run ship the file all the same
   private volatile boolean             sealedDeleteUnpublished = false;
-  // The oldest timestamp of every append in flight under HA, from before its check for late samples to the end of its commit (issue
-  // #10857): a refresh must not move the watermark of a continuous aggregate past samples that may commit after it read the source.
-  // A plain array under a monitor rather than a concurrent collection: a few appends at most are in flight per shard, each adds and
-  // removes one entry, and the monitor is also what orders the registration before the read of the refresh flag (see
+  // Every append in flight under HA, from before its check for late samples to the end of its commit (issue #10857): a refresh must
+  // not move the watermark of a continuous aggregate past samples that may commit after it read the source. Every one, whatever the
+  // aggregates over the type when it checks (issue #10940): an aggregate created after the check refreshes before the commit. A plain
+  // array under a monitor rather than a concurrent collection: a few appends at most are in flight per shard, each adds and removes
+  // one entry, and the monitor is also what orders the registration before the read of the aggregates and of the refresh flag (see
   // ContinuousAggregateImpl.invalidateLateSamples)
   private final Object                 inFlightAppendsLock     = new Object();
-  private long[]                       inFlightAppendMinTs     = new long[4];
+  private InFlightAppend[]             inFlightAppendList      = new InFlightAppend[4];
   private int                          inFlightAppends         = 0;
 
   /**
@@ -373,13 +374,15 @@ public class TimeSeriesShard implements AutoCloseable {
    * before, since there is no recording-session deadlock.
    * <p>
    * The source is read once per retry attempt, and its timestamps once more when the type has a continuous aggregate (issue
-   * #10502): after the commit off HA, before it under HA (issue #10673). It is never retained.
+   * #10502): after the commit off HA, before it under HA (issue #10673). It is not retained past the append.
    * <p>
    * Under HA the late-sample record ships before the samples, judged against the watermark seen then. From before that check to the
-   * end of the commit the append is registered as in flight with its oldest timestamp (issue #10857), and a refresh that begins in
-   * that window does not move the watermark past the bucket of that timestamp, nor clear a record the append may have added to (see
+   * end of the commit the append is registered as in flight (issue #10857), and a refresh that begins in that window does not move
+   * the watermark past the bucket of its oldest timestamp, nor clear a record the append may have added to (see
    * {@link #oldestInFlightAppendTs}): the samples cannot become late, or lose their record, only once they commit, which would ship
-   * their record after the commit, as before #10673.
+   * their record after the commit, as before #10673. Registered whatever the aggregates, before reading them (issue #10940): the first
+   * refresh of an aggregate created between the check and the commit finds the append too. Without an aggregate the timestamps are
+   * not scanned here; only a refresh that finds the append in flight scans them.
    */
   public void appendSamples(final TimeSeriesRowSource source) throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
@@ -387,12 +390,15 @@ public class TimeSeriesShard implements AutoCloseable {
     // getWrappedDatabaseInstance() returns the same instance.
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
 
-    // Under HA the record of the samples behind a watermark ships BEFORE them (issue #10673), see shipLateSampleRecordBeforeCommit
-    // ... and the append is in flight from there to the end of its commit, see oldestInFlightAppendTs
-    final LateSampleRange shippedBeforeCommit = db.isReplicated() ? shipLateSampleRecordBeforeCommit(source) : null;
-
+    // Under HA the append is in flight from before its check for late samples to the end of its commit, see oldestInFlightAppendTs
+    final InFlightAppend inFlight = db.isReplicated() && source.size() > 0 ? registerInFlightAppend(source) : null;
+    LateSampleRange shippedBeforeCommit = null;
     boolean committed = false;
     try {
+      // Under HA the record of the samples behind a watermark ships BEFORE them (issue #10673), see shipLateSampleRecordBeforeCommit
+      if (inFlight != null)
+        shippedBeforeCommit = shipLateSampleRecordBeforeCommit(source, inFlight);
+
       appendLock.lock();
       try {
         for (int attempt = 3; attempt > 0; attempt--) {
@@ -447,8 +453,8 @@ public class TimeSeriesShard implements AutoCloseable {
       }
     } finally {
       // committed (a refresh that begins from now on reads the samples) or failed (there is nothing to read)
-      if (shippedBeforeCommit != null)
-        unregisterInFlightAppend(shippedBeforeCommit.minTs());
+      if (inFlight != null)
+        unregisterInFlightAppend(inFlight);
     }
 
     // After the commit and outside the append lock: the schema save it may do must not hold up the other appends of this shard
@@ -475,37 +481,30 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * A record shipped for samples that then fail to commit costs a recompute of buckets that did not change, nothing else.
    * <p>
-   * The append is registered as in flight BEFORE the check reads the watermark (issue #10857), and stays so until its commit ends
-   * (the caller unregisters it whenever this returns a range). A refresh flags itself in progress, then reads the record of late
+   * The append is registered as in flight by the caller BEFORE this reads the aggregates and the watermark (issues #10857, #10940),
+   * and stays so until its commit ends. A refresh flags itself in progress, then reads the record of late
    * samples, then the registrations, so of the two one sees the other: either this check finds a refresh in progress and records
    * every sample (#10633), or the refresh finds the append. A refresh that finds it keeps its watermark at or before the bucket of
    * the oldest sample and does not clear a record the append may have added to; one that does not find it read the record before
    * the append added to it, and does not clear what it did not read. Without the registration a refresh that began after this check
    * and ended before the commit could move the watermark past samples that were not late here, or clear their record, and the
    * samples late once committed had their record shipped after the commit.
+   * <p>
+   * An aggregate created after this found none over the type is the same race (issue #10940): the append was registered before the
+   * aggregate was published, so its first refresh, which reads the registrations after the publication, finds it, and scans its
+   * timestamps since this did not.
    *
-   * @return {@code null} when no continuous aggregate reads this shard or the append is empty; otherwise the append is registered
-   * in flight under the {@code minTs} of the range returned
+   * @return {@code null} when no continuous aggregate reads this shard
    */
-  private LateSampleRange shipLateSampleRecordBeforeCommit(final TimeSeriesRowSource source) {
-    final int size = source.size();
-    if (size == 0)
-      return null;
+  private LateSampleRange shipLateSampleRecordBeforeCommit(final TimeSeriesRowSource source, final InFlightAppend inFlight) {
     final LocalSchema schema = (LocalSchema) database.getSchema();
     final ContinuousAggregate[] aggregates = schema.getContinuousAggregates();
     if (!hasAggregateOverThisShard(schema, aggregates))
       return null;
 
     final LateSampleRange range = timestampRange(source);
-    registerInFlightAppend(range.minTs());
-    final boolean late;
-    try {
-      late = invalidateLateSamples(schema, aggregates, range.minTs(), range.maxTs());
-    } catch (final RuntimeException | Error e) {
-      unregisterInFlightAppend(range.minTs());
-      throw e;
-    }
-    if (!late)
+    inFlight.scanned(range.minTs());
+    if (!invalidateLateSamples(schema, aggregates, range.minTs(), range.maxTs()))
       return range;
     try {
       schema.recordContinuousAggregateChange(NO_SCHEMA_CHANGE);
@@ -516,26 +515,54 @@ public class TimeSeriesShard implements AutoCloseable {
           "Could not ship to the replicas the record of the samples about to be appended to the TIMESERIES type '%s' behind the "
               + "watermark of a continuous aggregate, it is shipped once they commit", e, typeName);
       return new LateSampleRange(range.minTs(), range.maxTs(), false);
-    } catch (final Error e) {
-      // the caller never sees a range to unregister
-      unregisterInFlightAppend(range.minTs());
-      throw e;
     }
   }
 
-  private void registerInFlightAppend(final long minTs) {
+  /**
+   * An append in flight under HA (issues #10857, #10940): its samples, and their oldest timestamp once scanned. The append scans them
+   * itself when an aggregate reads the type; otherwise the first refresh that finds it in flight does, so an append to a type without
+   * aggregates pays a registration and nothing more. The source is fully built before it is registered and only read afterwards, and
+   * the registration is published under {@link #inFlightAppendsLock}, so a refresh thread may read it.
+   */
+  private static final class InFlightAppend {
+    private final    TimeSeriesRowSource source;
+    private volatile long                minTs;
+    // Written after minTs: a reader that sees it set sees the timestamp too. Two threads scanning at once write the same value
+    private volatile boolean             scanned;
+
+    private InFlightAppend(final TimeSeriesRowSource source) {
+      this.source = source;
+    }
+
+    private void scanned(final long minTs) {
+      this.minTs = minTs;
+      this.scanned = true;
+    }
+
+    private long minTs() {
+      if (!scanned)
+        scanned(timestampRange(source).minTs());
+      return minTs;
+    }
+  }
+
+  private InFlightAppend registerInFlightAppend(final TimeSeriesRowSource source) {
+    final InFlightAppend inFlight = new InFlightAppend(source);
     synchronized (inFlightAppendsLock) {
-      if (inFlightAppends == inFlightAppendMinTs.length)
-        inFlightAppendMinTs = Arrays.copyOf(inFlightAppendMinTs, inFlightAppends * 2);
-      inFlightAppendMinTs[inFlightAppends++] = minTs;
+      if (inFlightAppends == inFlightAppendList.length)
+        inFlightAppendList = Arrays.copyOf(inFlightAppendList, inFlightAppends * 2);
+      inFlightAppendList[inFlightAppends++] = inFlight;
     }
+    return inFlight;
   }
 
-  private void unregisterInFlightAppend(final long minTs) {
+  private void unregisterInFlightAppend(final InFlightAppend inFlight) {
     synchronized (inFlightAppendsLock) {
       for (int i = 0; i < inFlightAppends; i++)
-        if (inFlightAppendMinTs[i] == minTs) {
-          inFlightAppendMinTs[i] = inFlightAppendMinTs[--inFlightAppends];
+        if (inFlightAppendList[i] == inFlight) {
+          inFlightAppendList[i] = inFlightAppendList[--inFlightAppends];
+          // not retained: the source is the caller's, and can be large
+          inFlightAppendList[inFlightAppends] = null;
           return;
         }
     }
@@ -546,16 +573,24 @@ public class TimeSeriesShard implements AutoCloseable {
    * append is in flight from before its check for late samples to the end of its commit, under HA only: off HA the late samples are
    * recorded after the commit and nothing is shipped. A refresh reads it after flagging itself in progress and before reading the
    * source, and does not move the watermark past the bucket of the timestamp returned: an append registered later sees the refresh
-   * in progress and records every sample (#10633), one that commits before the refresh reads the source is read by it.
+   * in progress and records every sample (#10633), one that commits before the refresh reads the source is read by it. Every append
+   * is registered, whatever the aggregates over the type (issue #10940); the timestamps of one that found none are scanned here, out
+   * of the monitor, so the appends of this shard never wait on the scan.
    */
   public long oldestInFlightAppendTs() {
+    final InFlightAppend[] inFlight;
     synchronized (inFlightAppendsLock) {
-      long oldest = Long.MAX_VALUE;
-      for (int i = 0; i < inFlightAppends; i++)
-        if (inFlightAppendMinTs[i] < oldest)
-          oldest = inFlightAppendMinTs[i];
-      return oldest;
+      if (inFlightAppends == 0)
+        return Long.MAX_VALUE;
+      inFlight = Arrays.copyOf(inFlightAppendList, inFlightAppends);
     }
+    long oldest = Long.MAX_VALUE;
+    for (final InFlightAppend append : inFlight) {
+      final long ts = append.minTs();
+      if (ts < oldest)
+        oldest = ts;
+    }
+    return oldest;
   }
 
   /** The oldest and newest timestamps of a source that is not empty, as a range reported shipped. */

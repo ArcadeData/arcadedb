@@ -155,7 +155,9 @@ class Issue10673LateSampleRecordBeforeCommitTest extends TestHelper {
   }
 
   private void appendAt(final long ts) throws Exception {
-    engine().appendSamples(new long[] { ts }, new Object[] { "h0" }, new Object[] { 1.0 });
+    // Without the refresh every ingest path runs once the samples commit (#10686): it recomputes the buckets and clears the record
+    // this test asserts on, which is not what ships the record to the followers
+    engine().appendSamplesWithoutRefresh(new long[] { ts }, new Object[] { "h0" }, new Object[] { 1.0 });
   }
 
   private long samples() {

@@ -551,6 +551,20 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public void holdReplicatedWritesForRestore(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.holdForRestore(databaseName);
+  }
+
+  @Override
+  public void releaseReplicatedWritesForRestore(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.releaseRestoreHold(databaseName);
+  }
+
+  @Override
   public void registerAPI(final HttpServer httpServer, final PluginRoutes routes) {
     // Every route is declared with its method, so any other method is answered 405 before a handler runs: these
     // operations change the cluster, and GET is the method link prefetchers, crawlers and a browser replaying the
