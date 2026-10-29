@@ -184,7 +184,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private static final long GUARDED_WAIT_SLICE_MS = 50;
 
   // How many of the records a build cannot index its warning names (issue #10938): every one is counted
-  private static final int MAX_REJECTED_RECORDS_REPORTED = 10;
+  private static final int    MAX_REJECTED_RECORDS_REPORTED   = 10;
+  /** The statistic counting the records the last build could not index (issue #10938), summed over buckets by TypeIndex. */
+  public static final  String LAST_BUILD_SKIPPED_RECORDS_STAT = "lastBuildSkippedRecords";
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
@@ -12523,7 +12525,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[] unreachableOrdinals = graphUnreachableOrdinals;
     stats.put("compactionBlockedBySharedIds", compactionBlockedBySharedIds ? 1L : 0L);
     stats.put("recordsLeftOutBySharedIds", (long) recordsLeftOutBySharedIds);
-    stats.put("lastBuildSkippedRecords", lastBuildSkippedRecords);
+    stats.put(LAST_BUILD_SKIPPED_RECORDS_STAT, lastBuildSkippedRecords);
     stats.put("unreachableGraphNodes", unreachableOrdinals != null ?
         (long) unreachableOrdinals.length :
         manifestContent != null ? (long) manifestContent.unreachableOrdinals().length : 0L);

@@ -211,6 +211,31 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
     }
   }
 
+  @Test
+  void aTypeOverSeveralBucketsCountsTheRecordsLeftOutOfEveryBucket() {
+    database.command("sql", "CREATE DOCUMENT TYPE M BUCKETS 3");
+    database.transaction(() -> {
+      database.newDocument("M").set("embedding", new float[] { 0.9f, 0.1f, 0f }).save();
+      for (int i = 0; i < 6; i++)
+        database.newDocument("M").set("embedding", i).save();
+    });
+    database.command("sql", "CREATE PROPERTY M.embedding ARRAY_OF_FLOATS");
+
+    try (final ResultSet rs = database.command("sql",
+        "CREATE INDEX ON M (embedding) LSM_VECTOR METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\"}")) {
+      assertThat(rs.next().<Long>getProperty("skipped")).isEqualTo(6L);
+    }
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("M[embedding]");
+    int bucketsWithASkip = 0;
+    for (final Index index : typeIndex.getIndexesOnBuckets())
+      if (((LSMVectorIndex) index).getLastBuildSkippedRecords() > 0)
+        ++bucketsWithASkip;
+    assertThat(bucketsWithASkip).as("the records are spread over the buckets").isGreaterThan(1);
+    assertThat(typeIndex.getStats().get(LSMVectorIndex.LAST_BUILD_SKIPPED_RECORDS_STAT)).as("summed, not the last bucket's")
+        .isEqualTo(6L);
+  }
+
   private long skippedInStats() {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("B[embedding]");
     long skipped = 0;
