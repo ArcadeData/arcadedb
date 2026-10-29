@@ -11240,6 +11240,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * What the decision of the dimensions is serialized on: the type index, so that the bucket indexes of one type - which a
    * sized index would hold to the same length - decide once between them, or this index alone when it has no type index.
+   * No other code synchronizes on a {@link TypeIndex}, and nothing is called while holding it that waits for an index lock
+   * ({@code decideDimensions} only writes metadata and marks the schema dirty), so it cannot take part in a lock cycle.
    */
   private Object dimensionsDecisionLock() {
     final TypeIndex typeIndex = getTypeIndex();
