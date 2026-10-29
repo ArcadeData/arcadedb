@@ -592,6 +592,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
   /** Guards the decision of the dimensions of an index that takes them from its first vector (issue #10915). */
   private final Object                     dimensionsDecision = new Object();
+  /** The id counter at the last look for the dimensions in the records that found no vector, or -1 (issue #10915). */
+  private volatile int                     derivationMissedAtId = -1;
   // A schema reload has published another instance in place of this one (issue #8310): it may still serve a query
   // that resolved it before the swap, but it starts no maintenance of its own any more. Separate from `valid`, which
   // an in-flight query must keep reading as true. Volatile for runInactivityRebuild(), the one reader outside the
@@ -11255,6 +11257,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (sibling != this && sibling instanceof LSMVectorIndex other && other.metadata.dimensions < 1)
           other.publishDimensions(length);
     publishDimensions(length);
+    LogManager.instance().log(this, Level.INFO, "Vector index '%s' took its dimensions from its first vector: %d", indexName, length);
     // Saved by the next schema save - the commit of the transaction that decided it, under HA shipped with the schema - and
     // not here: this runs while a record is saved, under the lock that a schema change takes exclusively
     getDatabase().getSchema().getEmbedded().markDirty();
@@ -11263,7 +11266,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void publishDimensions(final int length) {
     metadata.dimensions = length;
     metadata.sizeOnFirstVector = false;
-    LogManager.instance().log(this, Level.INFO, "Vector index '%s' took its dimensions from its first vector: %d", indexName, length);
   }
 
   /**
@@ -11288,30 +11290,45 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private int deriveDimensionsFromData() {
     if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
       return metadata.dimensions;
-    synchronized (dimensionsDecisionLock()) {
-      if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
-        return metadata.dimensions;
-      final VectorLocationIndex locations = vectorIndex();
-      final String vectorProperty = vectorPropertyName();
-      final PrimitiveIterator.OfInt ids = locations.getAllVectorIds().filter(locations::isLive).iterator();
-      for (int examined = 0; ids.hasNext() && examined < DIMENSIONS_DERIVATION_LIMIT; examined++) {
-        try {
-          final RID rid = locations.getRid(ids.nextInt());
-          if (rid == null || !(getDatabase().lookupByRID(rid, false) instanceof Document doc))
-            continue;
-          final Object value = doc.get(vectorProperty);
-          if (value == null)
-            continue;
-          final int length = VectorUtils.toFloatArray(value, metadata.encoding).length;
-          if (length > 0) {
-            decideDimensions(length);
-            return length;
-          }
-        } catch (final RuntimeException e) {
-          // a record that is gone or holds no vector says nothing about the size: the next one is asked
-        }
-      }
+
+    // Nothing was added since the last look that found no vector: the answer is the same, and a search must not read the records
+    // again to be told so
+    // Materialised first: the id counter is only meaningful once the deferred load has run
+    final VectorLocationIndex locations = vectorIndex();
+    final int idsAtThisLook = nextId.get();
+    if (derivationMissedAtId == idsAtThisLook)
       return 0;
+
+    // Read BEFORE the decision lock is taken, and decided under it alone: the records are read through the location index and
+    // the database, which a thread holding the lock of this index may be waiting on while it waits for the decision (putBatch)
+    final String vectorProperty = vectorPropertyName();
+    final PrimitiveIterator.OfInt ids = locations.getAllVectorIds().filter(locations::isLive).iterator();
+    int length = 0;
+    for (int examined = 0; length < 1 && ids.hasNext() && examined < DIMENSIONS_DERIVATION_LIMIT; examined++) {
+      try {
+        final RID rid = locations.getRid(ids.nextInt());
+        if (rid == null || !(getDatabase().lookupByRID(rid, false) instanceof Document doc))
+          continue;
+        final Object value = doc.get(vectorProperty);
+        if (value != null)
+          length = VectorUtils.toFloatArray(value, metadata.encoding).length;
+      } catch (final RuntimeException e) {
+        // a record that is gone or holds no vector says nothing about the size: the next one is asked
+        LogManager.instance().log(this, Level.FINE, "Vector index '%s' cannot take its dimensions from a record: %s", indexName,
+            e.getMessage());
+      }
+    }
+
+    if (length < 1) {
+      derivationMissedAtId = idsAtThisLook;
+      return 0;
+    }
+
+    synchronized (dimensionsDecisionLock()) {
+      // a put may have decided in the meantime, and its answer wins
+      if (metadata.dimensions < 1 && metadata.sizeOnFirstVector)
+        decideDimensions(length);
+      return metadata.dimensions;
     }
   }
 
