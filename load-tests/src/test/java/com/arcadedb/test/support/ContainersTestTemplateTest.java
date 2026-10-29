@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.support;
 
+import io.micrometer.core.instrument.Metrics;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 
@@ -75,5 +76,22 @@ class ContainersTestTemplateTest {
     for (final boolean nativeImage : new boolean[] { false, true })
       assertThat(ContainersTestTemplate.configureServer(new GenericContainer<>("arcadedata/arcadedb:latest"),
           Map.of("arcadedb.server.name", "n"), "-Xmx1G", nativeImage).getEnvMap()).doesNotContainKey("JAVA_OPTS");
+  }
+
+  /** A step registry reports only the last completed step, so the sum must come from a cumulative registry (#10945). */
+  @Test
+  void sumCounterIsCumulativeNotLastStep() {
+    final ContainersTestTemplate template = new ContainersTestTemplate() {
+    };
+    template.initMetrics();
+    try {
+      Metrics.counter("arcadedb.test.sumcounter.cumulative").increment(3);
+      Metrics.counter("arcadedb.test.sumcounter.cumulative").increment(4);
+
+      assertThat(template.sumCounter("arcadedb.test.sumcounter.cumulative")).isEqualTo(7.0);
+    } finally {
+      Metrics.removeRegistry(template.loggingMeterRegistry);
+      Metrics.removeRegistry(template.cumulativeMeterRegistry);
+    }
   }
 }
