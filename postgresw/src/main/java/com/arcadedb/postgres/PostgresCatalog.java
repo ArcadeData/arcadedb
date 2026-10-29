@@ -666,14 +666,16 @@ public class PostgresCatalog {
    * Answers a session probe: a top-level SELECT with no FROM that names {@code pg_catalog} or {@code pg_type} as an identifier -
    * {@code SELECT pg_catalog.set_config('search_path', '', false)}, {@code SELECT pg_catalog.pg_backend_pid()} - which
    * {@link #resolve} leaves alone and ArcadeDB's SQL engine cannot read, since it takes {@code pg_catalog.f()} for a method call.
-   * The projection is evaluated as the one row PostgreSQL answers; one this catalog cannot evaluate keeps the empty result set
-   * such a probe has always been given.
+   * The projection is evaluated as the one row PostgreSQL answers. One this catalog cannot evaluate - a function it does not model,
+   * an argument it cannot read - is {@link #DECLINED}, and the caller refuses it with {@link #refusalOfProbe()} (issue #10883): the
+   * empty result set it was given before read as a success that answered nothing, where PostgreSQL answers exactly one row or an
+   * error. A probe that spends more work than a statement may is refused with {@link WorkLimitExceeded}, as a catalog query is.
    * <p>
    * Decided on the tokens, never on the text (issue #10695): a statement that is not a SELECT, a SELECT with a FROM, and one that
    * merely holds the words in a string literal are not probes, and go on to the SQL engine. A substring test here once dropped
    * every INSERT whose literal said "pg_catalog" and acknowledged it as {@code INSERT 0 0}.
    *
-   * @return null when the statement is not such a probe
+   * @return null when the statement is not such a probe; {@link #DECLINED} when it is one this catalog cannot evaluate
    */
   public static Answer resolveProbe(final String query, final Database database, final String userName,
       final PostgresSessionSettings settings, final Object... parameters) {
@@ -698,15 +700,22 @@ public class PostgresCatalog {
     if (statement == null || statement.from != null)
       return null;
 
-    Answer answer;
+    final Answer answer;
     try {
       answer = project(statement, List.of(), List.of(new Row()), context(database, userName, settings), Map.of(), true, null);
     } catch (final PostgresCatalogExpression.BudgetExceeded e) {
-      answer = null;
+      throw new WorkLimitExceeded();
     }
-    if (answer != null && answer.rows != null)
-      return textOfVectors(answer);
-    return new Answer(new LinkedHashMap<>(), new ArrayList<>(), false);
+    return answer != null && answer.rows != null ? textOfVectors(answer) : DECLINED;
+  }
+
+  /**
+   * The refusal of a session probe {@link #resolveProbe} answered {@link #DECLINED} (issue #10883). It names no relation, as a
+   * FROM-less probe reads none: what it could not evaluate is its projection.
+   */
+  public static UnsupportedCatalogQuery refusalOfProbe() {
+    return new UnsupportedCatalogQuery(
+        "This session probe calls a catalog function, or passes it an argument, that this server does not evaluate");
   }
 
   /** Whether {@code pg_catalog} or {@code pg_type} is a word of the statement, rather than part of a string literal or a longer name. */

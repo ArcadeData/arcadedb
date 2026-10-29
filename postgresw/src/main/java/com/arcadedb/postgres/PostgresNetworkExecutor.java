@@ -1645,14 +1645,18 @@ public class PostgresNetworkExecutor extends Thread {
 
       // An answer with no rows to send is a refusal, whatever the reason: a new reason cannot fall into the empty result set by
       // default, which would read as an empty catalog and lose the one row of an ungrouped count (issue #10371)
-      return refuseCatalogQuery(query, parameters);
+      return refuseCatalogQuery(query, parameters, false);
     }
 
     // The session probes pg_dump and friends send - SELECT pg_catalog.set_config(...), a FROM-less SELECT naming pg_catalog or
     // pg_type - are answered here rather than handed to ArcadeDB's SQL engine, which reads pg_catalog.f() as a method call. The
     // test is on the tokens, never on the text: a statement that merely CONTAINS those words - in a string literal, in a column
     // name, in an INSERT - goes to the engine like any other (issue #10695)
+    // A probe this catalog cannot evaluate is refused like a declined catalog query, not answered with no row: PostgreSQL answers
+    // a FROM-less SELECT with exactly one row or an error (issue #10883)
     final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, sessionSettings, parameters);
+    if (probe == PostgresCatalog.DECLINED)
+      return refuseCatalogQuery(query, parameters, true);
     if (probe != null)
       return new CatalogAnswer(toResults(probe.rows), probe.columns);
 
@@ -1666,10 +1670,10 @@ public class PostgresNetworkExecutor extends Thread {
    * an empty one and asked again at Execute, where the same refusal is final. The lookups a driver sends to name a type it does not
    * know are answered from {@link PostgresType} like any other catalog query (issue #10495): there is no exemption for them.
    */
-  private static CatalogAnswer refuseCatalogQuery(final String query, final Object[] parameters) {
+  private static CatalogAnswer refuseCatalogQuery(final String query, final Object[] parameters, final boolean probe) {
     if (parameters.length < PostgresCatalog.countPlaceholders(query))
       return new CatalogAnswer(Collections.emptyList(), Map.of());
-    throw PostgresCatalog.refusalOf(query);
+    throw probe ? PostgresCatalog.refusalOfProbe() : PostgresCatalog.refusalOf(query);
   }
 
   private static List<Result> toResults(final List<Map<String, Object>> rows) {
