@@ -159,7 +159,8 @@ public class VectorCreateFunction implements StatelessFunction {
     }
     if (coordinate instanceof Number number) {
       final double value = number.doubleValue();
-      if (value != Math.rint(value) || Double.isInfinite(value) || value < min || value > max)
+      // 2^63 is the double that (double) Long.MAX_VALUE rounds up to, which the long cast would saturate
+      if (value != Math.rint(value) || Double.isInfinite(value) || value < min || value > max || value >= 0x1p63)
         throw new CommandExecutionException("Vector coordinate " + value + " is not a whole number of " + type);
       return (long) value;
     }

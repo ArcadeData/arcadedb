@@ -70,6 +70,24 @@ class Issue10917VectorCoordinateTypeTest extends TestHelper {
   }
 
   @Test
+  void theBoundariesOfTheTypeAreKeptAndWhatIsPastThemIsRefused() {
+    try (final ResultSet rs = database.query("opencypher",
+        "RETURN vector([-2147483648, 2147483647], 2, INT32) AS i, vector([-9223372036854775807, 9223372036854775807], 2, INTEGER) AS l")) {
+      final Result r = rs.next();
+      assertThat((int[]) r.getProperty("i")).containsExactly(Integer.MIN_VALUE, Integer.MAX_VALUE);
+      assertThat((long[]) r.getProperty("l")).containsExactly(-Long.MAX_VALUE, Long.MAX_VALUE);
+    }
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN vector([2147483648], 1, INT32) AS v").next())
+        .hasMessageContaining("INT32");
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN vector([9.223372036854775807E18], 1, INTEGER) AS v").next())
+        .hasMessageContaining("INTEGER");
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN vector([0.0 / 0.0], 1, INT16) AS v").next())
+        .hasMessageContaining("INT16");
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN vector([1.0 / 0.0], 1, INT16) AS v").next())
+        .hasMessageContaining("INT16");
+  }
+
+  @Test
   void theDimensionIsStillChecked() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN vector([1, 2], 3, INT16) AS v").next())
         .hasMessageContaining("dimension");
