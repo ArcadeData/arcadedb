@@ -74,6 +74,14 @@ public final class VectorUtils {
     return true;
   }
 
+  /** Whether every component is a finite number: no similarity can rank a NaN or an Infinity (issue #8962). */
+  public static boolean isFinite(final float[] vector) {
+    for (final float v : vector)
+      if (!Float.isFinite(v))
+        return false;
+    return true;
+  }
+
   /**
    * Checks if a JVector vector is all zeros, for callers that already hold the converted representation and
    * would otherwise have to materialize a {@code float[]} copy just to run the check.

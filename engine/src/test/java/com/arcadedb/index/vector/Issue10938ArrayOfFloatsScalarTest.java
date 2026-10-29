@@ -21,6 +21,8 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -39,8 +41,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #10938: an {@code ARRAY_OF_FLOATS} property accepted a scalar (and any other value that is not an array of numbers),
  * stored it as it came, and a later {@code CREATE INDEX ... LSM_VECTOR} skipped that row with a SEVERE log line and reported
  * success with an index that silently lacked it. A write to a declared {@code ARRAY_OF_*} property now refuses a value that is
- * not an array of numbers, whether or not an index exists yet, and a vector index build refuses rows it cannot index, naming
- * them, instead of building an index without them.
+ * not an array of numbers, whether or not an index exists yet. A vector index build still leaves out the rows it cannot index,
+ * as Neo4j does (#10863), but says so: one warning naming them, the count in the CREATE INDEX / REBUILD INDEX result and in
+ * the index statistics.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -111,7 +114,7 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
   }
 
   @Test
-  void aVectorIndexBuildRefusesRowsItCannotIndex() {
+  void aVectorIndexBuildReportsTheRowsItCannotIndex() {
     // A row an older version let through: written while the property was not declared yet, so nothing converted it
     database.command("sql", "CREATE DOCUMENT TYPE B");
     database.command("sql", "CREATE PROPERTY B.id INTEGER");
@@ -133,28 +136,67 @@ class Issue10938ArrayOfFloatsScalarTest extends TestHelper {
       bad.get(0).asDocument().modify().set("note", "touched").save();
     });
 
-    assertThatThrownBy(() -> database.command("sql",
-        "CREATE INDEX ON B (embedding) LSM_VECTOR METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\"}"))//
-        .hasStackTraceContaining("3 records")//
-        .hasStackTraceContaining(bad.get(0).toString())//
-        .hasStackTraceContaining(bad.get(1).toString())//
-        .hasStackTraceContaining(bad.get(2).toString());
+    // the build leaves the 3 records out, as Neo4j leaves out a node holding no vector of the index's dimension (#10863), and
+    // says so: in the result of the statement and in the index statistics. The record with no value is not counted
+    try (final ResultSet rs = database.command("sql",
+        "CREATE INDEX ON B (embedding) LSM_VECTOR METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\"}")) {
+      assertThat(rs.next().<Long>getProperty("skipped")).isEqualTo(3L);
+    }
+    assertThat(skippedInStats()).isEqualTo(3L);
+    assertThat(neighbours()).containsExactly(1);
 
-    assertThat(database.getSchema().existsIndex("B[embedding]")).as("an index that could not be built is gone").isFalse();
-
-    // once the rows are fixed the build succeeds and every vector is searchable
+    // once the rows are fixed they are indexed by the write, and a rebuild has nothing left to skip
     database.transaction(() -> {
       for (final RID rid : bad)
         rid.asDocument().modify().set("embedding", new float[] { 0.8f, 0.2f, 0f }).save();
     });
+    assertThat(neighbours()).containsExactlyInAnyOrder(1, 2, 4, 5);
 
-    database.command("sql", "CREATE INDEX ON B (embedding) LSM_VECTOR METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\"}");
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX `B[embedding]`")) {
+      assertThat(rs.next().<Long>getProperty("skipped")).isZero();
+    }
+    assertThat(skippedInStats()).isZero();
+    assertThat(neighbours()).containsExactlyInAnyOrder(1, 2, 4, 5);
+  }
 
+  @Test
+  void aRebuildReportsTheRecordsItLeftOutAndOtherIndexesKeepTheirResult() {
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.transaction(() -> {
+      database.newDocument("R").set("id", 1).set("embedding", new float[] { 0.9f, 0.1f, 0f }).save();
+      database.newDocument("R").set("id", 2).set("embedding", "not a vector").save();
+    });
+    database.command("sql", "CREATE PROPERTY R.id INTEGER");
+    database.command("sql", "CREATE PROPERTY R.embedding ARRAY_OF_FLOATS");
+    database.command("sql", "CREATE PROPERTY R.name STRING");
+    database.command("sql", "CREATE INDEX ON R (id) UNIQUE");
+    database.command("sql", "CREATE INDEX ON R (embedding) LSM_VECTOR METADATA {\"dimensions\": 3, \"similarity\": \"COSINE\"}");
+
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX `R[embedding]`")) {
+      assertThat(rs.next().<Long>getProperty("skipped")).isEqualTo(1L);
+    }
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX `R[id]`")) {
+      assertThat(rs.next().hasProperty("skipped")).as("only a vector index rebuild reports it").isFalse();
+    }
+    try (final ResultSet rs = database.command("sql", "CREATE INDEX ON R (name) NOTUNIQUE")) {
+      assertThat(rs.next().hasProperty("skipped")).isFalse();
+    }
+  }
+
+  private long skippedInStats() {
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("B[embedding]");
+    long skipped = 0;
+    for (final Index index : typeIndex.getIndexesOnBuckets())
+      skipped += ((LSMVectorIndex) index).getStats().get("lastBuildSkippedRecords");
+    return skipped;
+  }
+
+  private List<Integer> neighbours() {
     final List<Integer> found = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", "SELECT expand(vector.neighbors('B[embedding]', [0.9, 0.1, 0.0], 5))")) {
       while (rs.hasNext())
         found.add(rs.next().getProperty("id"));
     }
-    assertThat(found).containsExactlyInAnyOrder(1, 2, 4, 5);
+    return found;
   }
 }

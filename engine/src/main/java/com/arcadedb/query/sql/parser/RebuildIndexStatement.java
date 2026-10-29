@@ -36,6 +36,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -216,6 +217,8 @@ public class RebuildIndexStatement extends DDLStatement {
       // gone) must not abort the whole sweep and leave every healthy index un-rebuilt. Record each failure, keep
       // going, and surface the list. A named single-index rebuild keeps failing loudly (rethrown below).
       final List<String> failedIndexes = new ArrayList<>();
+      // -1 while no vector index was rebuilt, so the result of any other rebuild keeps its shape
+      long vectorSkipped = -1;
 
       int stepIndex = 0;
       for (final Index idx : targetIndexes) {
@@ -262,11 +265,17 @@ public class RebuildIndexStatement extends DDLStatement {
         progress.onProgress(stepName, step, targetIndexes.size(), recordsTotal > 0 ? recordsTotal : stepDone.get(),
             recordsTotal > 0 ? recordsTotal : stepDone.get());
         indexList.add(idx.getName());
+        final long skipped = lastBuildSkippedRecords(database, idx.getName());
+        if (skipped > -1)
+          vectorSkipped = Math.max(vectorSkipped, 0) + skipped;
       }
       result.setProperty("indexes", indexList);
       if (!failedIndexes.isEmpty())
         result.setProperty("failedIndexes", failedIndexes);
       result.setProperty("totalIndexed", total.get());
+      // the records a vector index rebuild left out, holding no vector of its dimensions (issue #10938)
+      if (vectorSkipped > -1)
+        result.setProperty("skipped", vectorSkipped);
       result.setProperty("recordsMisplaced", misplaced.get());
 
       // Raise needsRepartition once per affected type and tell the operator how to fix it. Doing
@@ -375,6 +384,25 @@ public class RebuildIndexStatement extends DDLStatement {
               "Cannot restore index '%s' after a failed rebuild. The index is now missing: create it again", restoreError,
           indexName);
     }
+  }
+
+  /**
+   * The records the rebuild of the index named {@code indexName} left out because they hold no vector of its dimensions, read
+   * from the index the rebuild put in place (a rebuild recreates it), or -1 when it is no vector index (issue #10938).
+   */
+  private static long lastBuildSkippedRecords(final Database database, final String indexName) {
+    if (!database.getSchema().existsIndex(indexName))
+      return -1;
+    final Index rebuilt = database.getSchema().getIndexByName(indexName);
+    if (rebuilt instanceof LSMVectorIndex vectorIndex)
+      return vectorIndex.getLastBuildSkippedRecords();
+    if (!(rebuilt instanceof TypeIndex typeIndex) || typeIndex.getType() != Schema.INDEX_TYPE.LSM_VECTOR)
+      return -1;
+    long skipped = 0;
+    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
+      if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+        skipped += vectorIndex.getLastBuildSkippedRecords();
+    return skipped;
   }
 
   private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,

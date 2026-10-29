@@ -545,6 +545,15 @@ public class CreateIndexStatement extends DDLStatement {
     result.setProperty("type", indexType);
     result.setProperty("created", created);
     result.setProperty("totalIndexed", total.get());
+    // the records a vector index build left out, holding no vector of its dimensions: a build that did not index every
+    // record says so to the caller, not only in the server log (issue #10938)
+    if (created && indexType == Schema.INDEX_TYPE.LSM_VECTOR) {
+      long skipped = 0;
+      for (final Index idx : resultingIndex.getIndexesOnBuckets())
+        if (idx instanceof LSMVectorIndex vectorIndex)
+          skipped += vectorIndex.getLastBuildSkippedRecords();
+      result.setProperty("skipped", skipped);
+    }
 
     rs.add(result);
     return rs;
