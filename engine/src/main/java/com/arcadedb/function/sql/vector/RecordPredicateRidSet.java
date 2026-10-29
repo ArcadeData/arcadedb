@@ -126,7 +126,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private final WorkGuard                       guard;
   private final ConcurrentHashMap<RID, Boolean> decided = new ConcurrentHashMap<>();
   // What an index lists of each bucket this call asked about, kept for the call (issue #10921): the grouped plan and the
-  // sparse fan-out ask a bucket more than once
+  // sparse fan-out ask a bucket more than once. An instance is built for one call of the function and dropped with it, so a
+  // listing never outlives the statement, its transaction or the index it was read from, as the memo of `decided` does not
   private final ConcurrentHashMap<Integer, Listing> listings = new ConcurrentHashMap<>();
   // The equalities an index may answer, extracted on the first listing: null until then
   private volatile Lookup                       lookup;
@@ -375,7 +376,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
         if (rid.getBucketId() != bucketId || (restrictTo != null && !restrictTo.contains(rid)))
           continue;
         if (count == positions.length)
-          positions = Arrays.copyOf(positions, Math.max(1, count * 2));
+          // count < read <= maxCandidates here, so the array never grows past what the listing may hold
+          positions = Arrays.copyOf(positions, Math.min(maxCandidates, Math.max(1, count * 2)));
         positions[count++] = rid.getPosition();
       }
     } catch (final IndexException e) {
