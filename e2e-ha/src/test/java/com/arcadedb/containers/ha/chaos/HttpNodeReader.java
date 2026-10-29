@@ -46,6 +46,13 @@ public final class HttpNodeReader implements NodeReader {
     }
   }
 
+  /** The node rejected the request with a 4xx: the harness sent something the server does not accept. */
+  public static final class ClientErrorException extends IOException {
+    public ClientErrorException(final int node, final int status, final String body) {
+      super("node " + node + " query failed with HTTP " + status + ": " + body);
+    }
+  }
+
   interface PageFetcher {
     JSONArray fetch(long last) throws IOException;
   }
@@ -113,17 +120,25 @@ public final class HttpNodeReader implements NodeReader {
   }
 
   private JSONArray query(final int node, final String sql, final JSONObject params) throws IOException {
+    return post(endpoints, node, queryPath, sql, params).getJSONArray("result");
+  }
+
+  /** Posts a SQL query to the node's query endpoint and returns the whole response body, after the status check. */
+  static JSONObject post(final Endpoints endpoints, final int node, final String queryPath, final String sql,
+      final JSONObject params) throws IOException {
     final Endpoint endpoint = endpoints.endpoint(node);
     final String payload = new JSONObject().put("language", "sql").put("command", sql).put("params", params).toString();
     final ChaosHttp.Response response = ChaosHttp.post(endpoint.host(), endpoint.port(), queryPath, payload,
         CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
     checkStatus(node, response.status(), response.body());
-    return new JSONObject(response.body()).getJSONArray("result");
+    return new JSONObject(response.body());
   }
 
   static void checkStatus(final int node, final int status, final String body) throws IOException {
     if (status >= 500)
       throw new ServerErrorException(node, status, body);
+    if (status >= 400)
+      throw new ClientErrorException(node, status, body);
     if (status != 200)
       throw new IOException("node " + node + " query failed with HTTP " + status + ": " + body);
   }
