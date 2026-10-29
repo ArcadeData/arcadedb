@@ -146,6 +146,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -191,7 +192,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   private final    AtomicInteger           commitsInFlightOutsideLock = new AtomicInteger();
   private final    Object                  commitsInFlightDrained     = new Object();
+  // Changed only under commitsInFlightDrained; read without it by endCommitInFlight(), so a decrement that finds no waiter skips
+  // the monitor. A waiter arriving just after that read re-checks the counter under the monitor, and waits timed anyway
   private volatile int                     commitsInFlightWaiters;
+  private static final long                COMMITS_IN_FLIGHT_WARNING_NANOS = TimeUnit.SECONDS.toNanos(10);
 
   /**
    * @param unavailable {@code true} when the refusal lasts as long as an operator's operation (a restore), and so is answered
@@ -4673,9 +4677,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     synchronized (commitsInFlightDrained) {
       commitsInFlightWaiters++;
       try {
+        // Normally bounded by the quorum timeout of the commits waited for. Said at WARNING while it lasts, so a wait that does not
+        // end (a commit wedged on its way to the cluster) is visible to the operator whose restore it is holding up
+        long nextWarning = System.nanoTime() + COMMITS_IN_FLIGHT_WARNING_NANOS;
         // Timed only as a backstop: endCommitInFlight() notifies as the counter reaches zero
-        while (commitsInFlightOutsideLock.get() > 0)
+        while (commitsInFlightOutsideLock.get() > 0) {
           commitsInFlightDrained.wait(100);
+          if (System.nanoTime() - nextWarning >= 0 && commitsInFlightOutsideLock.get() > 0) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Still waiting for %d commit(s) in flight on database '%s' to reach the cluster and end before going on", null,
+                commitsInFlightOutsideLock.get(), name);
+            nextWarning = System.nanoTime() + COMMITS_IN_FLIGHT_WARNING_NANOS;
+          }
+        }
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new DatabaseOperationException(
