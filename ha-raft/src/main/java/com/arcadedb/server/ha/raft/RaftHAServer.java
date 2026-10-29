@@ -593,6 +593,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // The databases a restore on this server holds (issue #10974), see ArcadeStateMachine.holdForRestore. Owned here for the same
   // reason as the recorder above: a hold taken before an in-place restart must still refuse entries on the machine built by it
   private final    Set<String>               databasesHeldForRestore = ConcurrentHashMap.newKeySet();
+  // The Raft term in which this node, as the leader, took each hold: a hold is this node's only, so it stands while that leadership
+  // does (see ensureRestoreHoldStands)
+  private final    Map<String, Long>         restoreHoldTerms        = new ConcurrentHashMap<>();
   private final    AtomicInteger             formatRestartCount    = new AtomicInteger();
   private volatile BootstrapElection         bootstrapElection;
   private final    UnverifiedClosedCopyCheck unverifiedClosedCopyCheck;
@@ -3131,6 +3134,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    *                            stands, and the caller's release ends it
    */
   void holdForRestore(final String databaseName) {
+    if (isLeader())
+      restoreHoldTerms.put(databaseName, getCurrentTerm());
     final ArcadeStateMachine sm = stateMachine;
     if (sm == null) {
       // No machine to accept anything yet; the hold is in place for the one created later
@@ -3142,8 +3147,30 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           + "leader, so the restore cannot replace it safely right now. Please retry");
   }
 
+  /**
+   * Refuses, before the restore replaces anything, when the hold {@link #holdForRestore} took as the leader no longer stands: this
+   * node is not the leader in the term it took it in any more (review of PR #10979). The hold refuses entries on this node only,
+   * so a leader elected during the download accepted the other nodes' writes, and the swap and the snapshot the restore forces
+   * would destroy them. A hold taken off the leadership is not checked: there was no leadership to lose.
+   * <p>
+   * A leadership that moves between this check and the swap is not caught: the window is the length of one method call, against
+   * the download this one covers.
+   *
+   * @throws NeedRetryException when the leadership has moved since the hold was taken
+   */
+  void ensureRestoreHoldStands(final String databaseName) {
+    final Long heldInTerm = restoreHoldTerms.get(databaseName);
+    if (heldInTerm == null)
+      return;
+    if (!isLeader() || getCurrentTerm() != heldInTerm)
+      throw new NeedRetryException("Database '" + databaseName + "' was not replaced: the leadership of the cluster moved while it "
+          + "was being restored, so the writes the new leader accepted meanwhile would be lost. Nothing was changed. Please retry "
+          + "the restore on the current leader");
+  }
+
   /** Ends the hold {@link #holdForRestore} took; a database not held is left alone. */
   void releaseRestoreHold(final String databaseName) {
+    restoreHoldTerms.remove(databaseName);
     databasesHeldForRestore.remove(databaseName);
   }
 

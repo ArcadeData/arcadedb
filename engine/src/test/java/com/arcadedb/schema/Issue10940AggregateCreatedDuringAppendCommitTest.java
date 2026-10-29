@@ -88,7 +88,7 @@ class Issue10940AggregateCreatedDuringAppendCommitTest extends TestHelper {
 
     assertThat(watermarkAfterCreation.get()).as("kept at the bucket of the sample in flight").isEqualTo(H0 + 2 * HOUR);
     assertThat(samplesAtEachSession).as("the sample is not late, nothing ships after its commit").isEmpty();
-    assertThat(inFlightWhileCommitting.get()).as("in flight with no aggregate over the type, scanned by the reader")
+    assertThat(inFlightWhileCommitting.get()).as("in flight although no aggregate read the type")
         .isEqualTo(H0 + 2 * HOUR + 60_000);
     assertThat(aggregate().getInvalidation()).isNull();
     assertThat(engine().oldestInFlightAppendTs()).as("the append is in flight no more").isEqualTo(Long.MAX_VALUE);
@@ -167,7 +167,8 @@ class Issue10940AggregateCreatedDuringAppendCommitTest extends TestHelper {
   }
 
   private long samples() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM sensor")) {
+    // count(), not count(*): the rows, not the cached counter
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM sensor")) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }

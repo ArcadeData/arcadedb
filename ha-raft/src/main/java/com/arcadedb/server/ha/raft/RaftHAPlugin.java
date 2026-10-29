@@ -558,6 +558,13 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public void ensureReplicatedWritesHeldForRestore(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.ensureRestoreHoldStands(databaseName);
+  }
+
+  @Override
   public void releaseReplicatedWritesForRestore(final String databaseName) {
     final RaftHAServer raft = raftHAServer;
     if (raft != null)

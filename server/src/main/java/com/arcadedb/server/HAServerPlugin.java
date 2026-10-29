@@ -900,6 +900,17 @@ public interface HAServerPlugin extends ServerPlugin {
     // No-op by default; Raft implementation overrides.
   }
 
+  /**
+   * Refuses, before a restore replaces anything, when the hold {@link #holdReplicatedWritesForRestore} took no longer stands: it was
+   * taken by this node as the leader, and the leadership has moved since (issue #10974), so the new leader may have accepted writes
+   * the swap would destroy. Default is a no-op for non-HA setups.
+   *
+   * @throws NeedRetryException when the hold no longer stands
+   */
+  default void ensureReplicatedWritesHeldForRestore(final String databaseName) {
+    // No-op by default; Raft implementation overrides.
+  }
+
   /** Ends the hold {@link #holdReplicatedWritesForRestore} took, if any. Default is a no-op for non-HA setups. */
   default void releaseReplicatedWritesForRestore(final String databaseName) {
     // No-op by default; Raft implementation overrides.
