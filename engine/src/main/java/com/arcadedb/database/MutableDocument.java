@@ -675,6 +675,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       content.position(propertiesStartingPosition);
+      // THE FLAG IS KEPT AS IS WHEN THE MAP IS ALREADY LOADED (SEE THE CHECK ABOVE): IT DESCRIBES THE CONTENT THE MAP CAME FROM
       final String[] damage = new String[1];
       this.map = this.database.getSerializer().deserializePropertiesReportingDamage(this.database, content,
           new EmbeddedModifierObject(this), rid, damage);
@@ -689,11 +690,11 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    *
    * @throws SerializationException naming the record and the property that cannot be decoded
    */
-  public void checkContentIsComplete() {
+  void checkContentIsComplete() {
     final String damage = undecodableContent;
     if (damage != null)
       throw new SerializationException("Cannot save the record: " + damage
-          + ": saving would erase what could not be read. Repair the record (CHECK DATABASE) or overwrite its whole content");
+          + ": saving would erase what could not be read. Restore the record from its source or overwrite its whole content");
   }
 
   protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
