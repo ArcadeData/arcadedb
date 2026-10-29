@@ -3746,12 +3746,16 @@ public class PostgresCatalog {
       return type == null ? null : oidOf(type.getName());
     }
 
-    /** The name of the relation an OID names: a system catalog of {@link #SYSTEM_CATALOG_OIDS}, or a type or an index. */
+    /**
+     * The name of the relation an OID names: a system catalog of {@link #SYSTEM_CATALOG_OIDS}, or a type or an index. The two cannot
+     * collide: every OID this catalog gives a type or an index is at least {@link #FIRST_USER_OID}, as in PostgreSQL.
+     */
     private static String relationNamed(final int oid, final Context context) {
-      for (final Map.Entry<String, Integer> catalog : SYSTEM_CATALOG_OIDS.entrySet())
-        if (catalog.getValue() == oid)
-          return catalog.getKey();
-      return context.relationNamed(oid);
+      return switch (oid) {
+        case PG_CLASS_RELATION_OID -> "pg_class";
+        case PG_CONSTRAINT_RELATION_OID -> "pg_constraint";
+        default -> context.relationNamed(oid);
+      };
     }
 
     /**
