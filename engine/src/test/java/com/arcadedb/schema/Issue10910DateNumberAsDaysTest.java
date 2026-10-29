@@ -73,6 +73,34 @@ class Issue10910DateNumberAsDaysTest extends TestHelper {
   }
 
   @Test
+  void calendarAndListRefuseADayCountThatOverflowsMillis() {
+    serializer().setDateImplementation(Calendar.class);
+    createType();
+    database.transaction(() -> database.getSchema().getType("D").createProperty("ds", Type.LIST, "DATE"));
+
+    assertThatThrownBy(() -> written(200_000_000_000L)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> inTx(() -> database.newDocument("D").set("ds", List.of(200_000_000_000L)).get("ds"))).isInstanceOf(
+        IllegalArgumentException.class);
+  }
+
+  @Test
+  void aNegativeDayCountIsAPreEpochDay() {
+    serializer().setDateImplementation(Date.class);
+    createType();
+
+    assertThat(((Date) written(-10L)).getTime()).isEqualTo(-10 * 86_400_000L);
+  }
+
+  @Test
+  void aSmallNonMidnightMillisValueIsADayCount() {
+    serializer().setDateImplementation(Date.class);
+    createType();
+
+    // the ambiguity window, as for the LocalDate implementation: a number below ~1.07e11 is days
+    assertThat(((Date) written(1_000_000L)).getTime()).isEqualTo(1_000_000L * 86_400_000L);
+  }
+
+  @Test
   void calendarReadsANumberAsDays() {
     serializer().setDateImplementation(Calendar.class);
     createType();

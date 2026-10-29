@@ -388,6 +388,9 @@ public enum Type {
    * True when a day count (see {@link DateUtils#dateNumberToEpochDays(long)}) is a day a {@code LocalDate} can hold. A number
    * beyond that was never a day count, and a DATE held as a {@code java.util.Date}, {@code Calendar} or {@code LocalDateTime}
    * kept reading it as epoch milliseconds before issue #10910, so it still is (a "now" in milliseconds is such a number).
+   * <p>
+   * The reading is a heuristic and has a window: a non-midnight milliseconds value small enough to be a day count (below about
+   * 1.07e11, that is before 1973 as milliseconds) is a day count, as it is for the default {@code LocalDate} implementation.
    */
   private static boolean isDayCount(final long days) {
     return days >= LocalDate.MIN.toEpochDay() && days <= LocalDate.MAX.toEpochDay();
