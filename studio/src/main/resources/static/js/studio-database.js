@@ -3050,6 +3050,8 @@ function populateSettingsPanel() {
   let physicsChecked = physicsEnabled() ? "checked" : "";
   let physicsRepulsionVal = physicsRepulsionSetting();
   let physicsGravityVal = physicsGravitySetting();
+  let physicsEdgeLengthVal = physicsEdgeLengthSetting();
+  let physicsPaddingVal = physicsPaddingSetting();
 
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Graph Settings</div>";
@@ -3071,6 +3073,10 @@ function populateSettingsPanel() {
   html += "<input type='range' class='form-range' id='settingPhysicsRepulsion' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsRepulsionVal + "'" + studioAction("applyPhysicsRepulsion", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Gravity: <span id='settingPhysicsGravityVal'>" + physicsGravityVal + "</span></label>";
   html += "<input type='range' class='form-range' id='settingPhysicsGravity' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsGravityVal + "'" + studioAction("applyPhysicsGravity", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<div class='settings-row'><label>Edge Length: <span id='settingPhysicsEdgeLengthVal'>" + physicsEdgeLengthVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingPhysicsEdgeLength' min='1' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsEdgeLengthVal + "'" + studioAction("applyPhysicsEdgeLength", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<div class='settings-row'><label>Node Padding: <span id='settingPhysicsPaddingVal'>" + physicsPaddingVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingPhysicsPadding' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsPaddingVal + "'" + studioAction("applyPhysicsPadding", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Cumulative Selection</label>";
   html += "<input type='checkbox' class='form-check-input' id='settingCumulativeSelection' " + cumulativeChecked + studioAction("applyCumulativeSelection", [STUDIO_ARG_CHECKED], "change") + "></div>";
   html += "</div>";
@@ -3119,6 +3125,14 @@ function applyPhysicsRepulsion(value) {
 
 function applyPhysicsGravity(value) {
   applyPhysicsLevel("physicsGravity", value, "#settingPhysicsGravityVal");
+}
+
+function applyPhysicsEdgeLength(value) {
+  applyPhysicsLevel("physicsEdgeLength", value, "#settingPhysicsEdgeLengthVal");
+}
+
+function applyPhysicsPadding(value) {
+  applyPhysicsLevel("physicsPadding", value, "#settingPhysicsPaddingVal");
 }
 
 /**

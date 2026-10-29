@@ -63,6 +63,18 @@ function physicsGravitySetting() {
   return isNaN(value) ? PHYSICS_DEFAULT_GRAVITY : value;
 }
 
+/** The edge length the graph runs with: the setting, or the default when it was never saved. */
+function physicsEdgeLengthSetting() {
+  let value = parseInt(globalGraphSettings.physicsEdgeLength);
+  return isNaN(value) ? PHYSICS_DEFAULT_EDGE_LENGTH : value;
+}
+
+/** The node padding the graph runs with: the setting, or the default when it was never saved. */
+function physicsPaddingSetting() {
+  let value = parseInt(globalGraphSettings.physicsPadding);
+  return isNaN(value) ? PHYSICS_DEFAULT_PADDING : value;
+}
+
 /**
  * The force constants, derived from the graph settings. Pure, so the numbers can be pinned by a unit test.
  *
@@ -80,12 +92,20 @@ function physicsForceParameters(settings) {
     settings.physicsGravity == null
       ? PHYSICS_DEFAULT_GRAVITY
       : Math.min(PHYSICS_MAX_LEVEL, Math.max(0, parseInt(settings.physicsGravity) || 0));
+  let edgeLength =
+    settings.physicsEdgeLength == null
+      ? PHYSICS_DEFAULT_EDGE_LENGTH
+      : Math.min(PHYSICS_MAX_LEVEL, Math.max(1, parseInt(settings.physicsEdgeLength) || 1));
+  let padding =
+    settings.physicsPadding == null
+      ? PHYSICS_DEFAULT_PADDING
+      : Math.min(PHYSICS_MAX_LEVEL, Math.max(0, parseInt(settings.physicsPadding) || 0));
   return {
-    linkDistance: spacing * 3, // same as fcose idealEdgeLength
+    linkDistance: (spacing * 3 * edgeLength) / PHYSICS_DEFAULT_EDGE_LENGTH, // level 10 = fcose idealEdgeLength (spacing*3)
     chargeStrength: -repulsion * spacing, // default -400 (Neo4j Browser's order of magnitude)
     chargeDistanceMax: spacing * 20, // Barnes-Hut cut-off, keeps 1000-node graphs cheap
     gravityStrength: gravity / 100, // d3 forceX/forceY strength, default 0.05
-    collidePadding: spacing / 4,
+    collidePadding: (spacing * padding) / 20, // level 5 = spacing/4
   };
 }
 
@@ -429,11 +449,33 @@ function physicsUpdateControls() {
   let gravity = physicsGravitySetting();
   $("#settingPhysicsGravity").val(gravity);
   $("#settingPhysicsGravityVal").text(gravity);
+  let edgeLength = physicsEdgeLengthSetting();
+  $("#settingPhysicsEdgeLength").val(edgeLength);
+  $("#settingPhysicsEdgeLengthVal").text(edgeLength);
+  let padding = physicsPaddingSetting();
+  $("#settingPhysicsPadding").val(padding);
+  $("#settingPhysicsPaddingVal").text(padding);
 }
 
 /** The toolbar button: live physics on or off. */
 function togglePhysics() {
   physicsSetEnabled(!physicsEnabled());
+}
+
+/** The toolbar button: every pinned node floats again. Works with the physics on or off. */
+function physicsUnpinAll() {
+  if (globalCy == null) return;
+
+  if (globalPhysics != null && globalPhysics.cy === globalCy) {
+    let nodes = globalPhysics.nodes;
+    for (let i = 0; i < nodes.length; i++) {
+      delete nodes[i].fx;
+      delete nodes[i].fy;
+    }
+  }
+
+  globalCy.nodes("." + PHYSICS_PINNED_CLASS).removeClass(PHYSICS_PINNED_CLASS);
+  physicsReheat();
 }
 
 /** The physics part of the settings, in the shape the settings store keeps them. */
@@ -442,6 +484,8 @@ function physicsSettings() {
     physics: physicsEnabled(),
     physicsRepulsion: physicsRepulsionSetting(),
     physicsGravity: physicsGravitySetting(),
+    physicsEdgeLength: physicsEdgeLengthSetting(),
+    physicsPadding: physicsPaddingSetting(),
   };
 }
 
@@ -450,6 +494,8 @@ function physicsLoadSettings(parsed) {
   if (parsed.physics != null) globalGraphSettings.physics = parsed.physics;
   if (parsed.physicsRepulsion != null) globalGraphSettings.physicsRepulsion = parsed.physicsRepulsion;
   if (parsed.physicsGravity != null) globalGraphSettings.physicsGravity = parsed.physicsGravity;
+  if (parsed.physicsEdgeLength != null) globalGraphSettings.physicsEdgeLength = parsed.physicsEdgeLength;
+  if (parsed.physicsPadding != null) globalGraphSettings.physicsPadding = parsed.physicsPadding;
 }
 
 // THE TOOLBAR BUTTON IS PART OF THE PAGE FROM THE START, BUT THIS SCRIPT RUNS BEFORE THE MARKUP IS PARSED: THE

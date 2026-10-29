@@ -103,6 +103,12 @@ test("the forces follow the settings", () => {
   assert.equal(p.linkDistance, 300);
   assert.equal(p.chargeStrength, -1200);
   assert.equal(p.gravityStrength, 0.09);
+
+  const longer = physicsForceParameters({ graphSpacing: 50, physicsEdgeLength: 20 });
+  assert.equal(longer.linkDistance, 300);
+
+  assert.equal(physicsForceParameters({ graphSpacing: 50, physicsPadding: 0 }).collidePadding, 0);
+  assert.equal(physicsForceParameters({ graphSpacing: 50, physicsPadding: 20 }).collidePadding, 50);
 });
 
 test("a gravity of zero is honoured, not turned back into the default", () => {
@@ -121,6 +127,18 @@ test("the repulsion is clamped to what the slider can produce", () => {
   const p = physicsForceParameters({ graphSpacing: 50, physicsRepulsion: 99 });
 
   assert.equal(p.chargeStrength, -PHYSICS_MAX_LEVEL * 50);
+});
+
+test("an edge length of zero is held at the shortest the slider allows", () => {
+  const p = physicsForceParameters({ graphSpacing: 50, physicsEdgeLength: 0 });
+
+  assert.equal(p.linkDistance, 15);
+});
+
+test("the edge length is clamped to what the slider can produce", () => {
+  const p = physicsForceParameters({ graphSpacing: 50, physicsEdgeLength: 99 });
+
+  assert.equal(p.linkDistance, 300);
 });
 
 test("a corrupt setting cannot produce a NaN force", () => {

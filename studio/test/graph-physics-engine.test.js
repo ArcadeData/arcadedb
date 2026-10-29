@@ -105,6 +105,7 @@ function buildPage(elements, settings, stored) {
       "\nreturn { physicsEnabled, physicsForceParameters, physicsStart, physicsStop, physicsTick, physicsSync," +
       " physicsScheduleSync, physicsAttach, physicsSetEnabled, physicsUpdateControls, physicsReheat," +
       " physicsSettings, physicsLoadSettings, physicsRepulsionSetting, physicsGravitySetting, togglePhysics," +
+      " physicsEdgeLengthSetting, physicsPaddingSetting, physicsUnpinAll," +
       " physicsLinks, get globalPhysics() { return globalPhysics; } }; }"
   );
 
@@ -149,6 +150,12 @@ function positions(sandbox) {
 function chargeStrength(sandbox) {
   const strength = sandbox.globalPhysics.sim.force("charge").strength();
   return typeof strength === "function" ? strength() : strength;
+}
+
+/** d3 keeps the link distance as a function too (it can be a different one per link), so the number is read through it. */
+function linkDistance(sandbox) {
+  const distance = sandbox.globalPhysics.sim.force("link").distance();
+  return typeof distance === "function" ? distance() : distance;
 }
 
 test("the simulation starts on the nodes of the graph and moves them", () => {
@@ -253,6 +260,47 @@ test("a click on a pinned node keeps it pinned", () => {
   assert.ok(node.hasClass(constants.PHYSICS_PINNED_CLASS), "the node still shows it is pinned");
 });
 
+test("unpin all releases every pinned node", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  for (const id of ["a", "b"]) {
+    const node = sandbox.globalCy.getElementById(id);
+    node.emit("grab");
+    node.position({ x: 300, y: 200 });
+    node.emit("drag");
+    node.emit("free");
+    assert.equal(sandbox.globalPhysics.byId[id].fx, 300, "node " + id + " is pinned");
+    assert.ok(node.hasClass(constants.PHYSICS_PINNED_CLASS));
+  }
+  sandbox.globalPhysics.sim.alpha(0);
+
+  sandbox.physicsUnpinAll();
+
+  for (const id of ["a", "b"]) {
+    assert.equal(sandbox.globalPhysics.byId[id].fx, undefined, "node " + id + " floats again");
+    assert.equal(sandbox.globalPhysics.byId[id].fy, undefined);
+  }
+  assert.equal(sandbox.globalCy.nodes("." + constants.PHYSICS_PINNED_CLASS).length, 0, "no node shows it is pinned");
+  assert.ok(sandbox.globalPhysics.sim.alpha() > 0.01, "the graph started moving again");
+});
+
+test("unpin all with the physics off only clears the pins on the graph", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  sandbox.physicsSetEnabled(false);
+  const node = sandbox.globalCy.getElementById("a");
+  node.addClass(constants.PHYSICS_PINNED_CLASS);
+
+  sandbox.physicsUnpinAll();
+
+  assert.ok(!node.hasClass(constants.PHYSICS_PINNED_CLASS), "the pin is gone");
+  assert.equal(sandbox.globalPhysics, null, "no simulation was started");
+});
+
 test("the simulation writes its positions back to the graph", () => {
   const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
 
@@ -320,13 +368,34 @@ test("a new setting reaches the running simulation", () => {
   assert.equal(after, -15 * 50, "the new repulsion is the one the slider asks for");
 });
 
+test("the edge length slider reaches the running simulation", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  assert.equal(linkDistance(sandbox), 150);
+
+  sandbox.globalGraphSettings.physicsEdgeLength = 20;
+  sandbox.physicsReheat();
+
+  assert.equal(linkDistance(sandbox), 300);
+});
+
 test("the settings of the graph keep the physics ones", () => {
-  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], { physicsRepulsion: 11, physicsGravity: 3 });
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], {
+    physicsRepulsion: 11,
+    physicsGravity: 3,
+    physicsEdgeLength: 7,
+    physicsPadding: 2,
+  });
 
   assert.equal(sandbox.physicsSettings().physicsRepulsion, 11);
   assert.equal(sandbox.physicsSettings().physicsGravity, 3);
+  assert.equal(sandbox.physicsSettings().physicsEdgeLength, 7);
+  assert.equal(sandbox.physicsSettings().physicsPadding, 2);
   assert.equal(sandbox.physicsRepulsionSetting(), 11);
   assert.equal(sandbox.physicsGravitySetting(), 3);
+  assert.equal(sandbox.physicsEdgeLengthSetting(), 7);
+  assert.equal(sandbox.physicsPaddingSetting(), 2);
 
   // A settings file without the physics keys leaves the defaults in place
   sandbox.physicsLoadSettings({ graphSpacing: 50 });
@@ -345,12 +414,18 @@ test("a corrupt setting cannot put anything but a number in the settings panel",
   const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }], {
     physicsRepulsion: '8" onmouseover="alert(1)',
     physicsGravity: "not a number",
+    physicsEdgeLength: "not a number",
+    physicsPadding: '2" onmouseover="alert(1)',
   });
 
   assert.equal(sandbox.physicsRepulsionSetting(), 8, "the repulsion is the number the setting starts with");
   assert.equal(sandbox.physicsGravitySetting(), 5, "the gravity falls back to the default");
   assert.equal(typeof sandbox.physicsRepulsionSetting(), "number");
   assert.equal(typeof sandbox.physicsGravitySetting(), "number");
+  assert.equal(sandbox.physicsEdgeLengthSetting(), 10, "the edge length falls back to the default");
+  assert.equal(sandbox.physicsPaddingSetting(), 2, "the padding is the number the setting starts with");
+  assert.equal(typeof sandbox.physicsEdgeLengthSetting(), "number");
+  assert.equal(typeof sandbox.physicsPaddingSetting(), "number");
 });
 
 test("physics turned on during a layout waits for the layout to finish", () => {
