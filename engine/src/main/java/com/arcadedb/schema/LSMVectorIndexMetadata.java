@@ -104,8 +104,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public boolean                  pqCenterGlobally         = true;  // Whether to globally center vectors before PQ encoding
   // Whether the graph file stores the PQ codes of the neighbours inline in every node (jvector FusedPQ); PRODUCT only
   public boolean                  fusedPQ                  = false;
-  // PRODUCT only: candidates per requested neighbour that a search walking on the PQ codes scores again on the stored vectors
-  // (0 = the PQ scores alone, no stored vector read); the default of every search that does not say otherwise (issue #10514)
+  // PRODUCT and BINARY: candidates per requested neighbour that a search walking on the PQ (or one-bit) codes scores again on
+  // the stored vectors (0 = the PQ scores alone, no stored vector read; BINARY reranks at least one per neighbour); the
+  // default of every search that does not say otherwise (issues #10514, #10968)
   public int                      rerankOversample         = LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE;
   public int                      pqTrainingLimit          = 128000; // Max vectors the PQ codebook is trained on, a sample (JVector caps it at 128K)
 
