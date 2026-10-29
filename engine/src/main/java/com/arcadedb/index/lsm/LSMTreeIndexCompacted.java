@@ -117,6 +117,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   private volatile boolean bloomFilterEnabled = true;
 
   /**
+   * Entries (one per key, per data page a key's values span) of the PUBLISHED series, or -1 while unknown: what a full
+   * compaction has to read on top of the incremental round it replaces (#10919). Kept up to date by the compactions
+   * that write this file and counted from the page headers the first time it is asked for otherwise (a file loaded
+   * from disk, or filled by the bulk loader). Only the compaction of the owning index writes it.
+   */
+  private volatile long entryCount = -1;
+
+  /**
    * Scratch buffer for the bloom key hash, one per THREAD and shared by every index - deliberately static.
    * <p>
    * A per-instance ThreadLocal would leave one Binary pinned in every worker thread's map for every compacted index
@@ -1081,6 +1089,48 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       LogManager.instance().log(this, Level.WARNING,
           "Reclaimed %d cursor(s) on compacted index '%s' that were garbage collected without being closed: the file "
               + "could not be dropped until now. Please report this, the scan that opened them is leaking.", leaked, getName());
+  }
+
+  /**
+   * Number of entries held by the data pages of the published series, counted from the page headers the first time it
+   * is asked for when no compaction has kept it up to date.
+   */
+  long getEntryCount() {
+    long count = entryCount;
+    if (count > -1)
+      return count;
+
+    final int totalPages = getTotalPages();
+    count = 0;
+    if (totalPages > 0) {
+      try {
+        final BasePage mainPage = database.getPageManager()
+            .getImmutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);
+        final int effectivePageCount = Math.min(getCompactedPageNumberOfSeries(mainPage), totalPages);
+        // page 0 is the root of the first series; past it a root page carries 0 where a data page carries its position
+        for (int pageNumber = 1; pageNumber < effectivePageCount; ++pageNumber) {
+          final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+          if (getCompactedPageNumberOfSeries(page) > 0)
+            count += getCount(page);
+        }
+      } catch (final IOException e) {
+        throw new IndexException("Error on counting the entries of compacted index '" + getName() + "'", e);
+      }
+    }
+    entryCount = count;
+    return count;
+  }
+
+  /** Sets the entry count of a file whose whole content the caller has just written. */
+  void setEntryCount(final long entryCount) {
+    this.entryCount = entryCount;
+  }
+
+  /** Adds the entries of a series just published, unless the count is still unknown (it is then counted in full). */
+  void addEntries(final long entries) {
+    if (entryCount > -1)
+      entryCount += entries;
   }
 
   /**

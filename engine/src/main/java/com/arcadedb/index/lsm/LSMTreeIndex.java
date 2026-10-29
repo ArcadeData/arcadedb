@@ -92,6 +92,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
   /** Cumulative dead (tombstone-resolved) keys skipped by scans since this index was loaded. */
   private final        AtomicLong                    statsDeadEntriesSkipped = new AtomicLong();
+  /**
+   * The same keys counted since the last FULL compaction (or the load): the price the scans have paid so far for the
+   * dead entries only a full compaction can drop, which is what starts one early (#10919, see
+   * {@link com.arcadedb.GlobalConfiguration#INDEX_COMPACTION_FULL_DEAD_ENTRIES_RATIO}).
+   */
+  private final        AtomicLong                    deadEntriesSkippedSinceFullCompaction = new AtomicLong();
   private              TypeIndex                     typeIndex;
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
@@ -786,6 +792,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public Map<String, Long> getStats() {
     final Map<String, Long> stats = mutable.getStats();
     stats.put("deadEntriesSkipped", statsDeadEntriesSkipped.get());
+    stats.put("deadEntriesSkippedSinceFullCompaction", deadEntriesSkippedSinceFullCompaction.get());
     return stats;
   }
 
@@ -797,6 +804,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    */
   void addDeadEntriesSkipped(final long skipped) {
     statsDeadEntriesSkipped.addAndGet(skipped);
+    deadEntriesSkippedSinceFullCompaction.addAndGet(skipped);
+  }
+
+  long getDeadEntriesSkippedSinceFullCompaction() {
+    return deadEntriesSkippedSinceFullCompaction.get();
+  }
+
+  /** Called once a full compaction is published: the dead entries the scans were paying for are gone. */
+  void resetDeadEntriesSkippedSinceFullCompaction() {
+    deadEntriesSkippedSinceFullCompaction.set(0);
   }
 
   /**
