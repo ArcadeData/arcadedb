@@ -36,6 +36,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -216,6 +217,9 @@ public class RebuildIndexStatement extends DDLStatement {
       // gone) must not abort the whole sweep and leave every healthy index un-rebuilt. Record each failure, keep
       // going, and surface the list. A named single-index rebuild keeps failing loudly (rethrown below).
       final List<String> failedIndexes = new ArrayList<>();
+      // reported only when a vector index was rebuilt, so the result of any other rebuild keeps its shape
+      boolean vectorRebuilt = false;
+      long vectorSkipped = 0;
 
       int stepIndex = 0;
       for (final Index idx : targetIndexes) {
@@ -245,8 +249,9 @@ public class RebuildIndexStatement extends DDLStatement {
             progress.onProgress(stepName, step, targetIndexes.size(), done, recordsTotal);
         };
 
+        final Index rebuilt;
         try {
-          buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
+          rebuilt = buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
         } catch (final Exception e) {
           // A named single-index rebuild must still fail loudly; only the '*' sweep tolerates a broken index.
           if (!all)
@@ -262,11 +267,19 @@ public class RebuildIndexStatement extends DDLStatement {
         progress.onProgress(stepName, step, targetIndexes.size(), recordsTotal > 0 ? recordsTotal : stepDone.get(),
             recordsTotal > 0 ? recordsTotal : stepDone.get());
         indexList.add(idx.getName());
+        final long skipped = lastBuildSkippedRecords(rebuilt);
+        if (skipped > -1) {
+          vectorRebuilt = true;
+          vectorSkipped += skipped;
+        }
       }
       result.setProperty("indexes", indexList);
       if (!failedIndexes.isEmpty())
         result.setProperty("failedIndexes", failedIndexes);
       result.setProperty("totalIndexed", total.get());
+      // the records a vector index rebuild left out, holding no vector of its dimensions (issue #10938)
+      if (vectorRebuilt)
+        result.setProperty("skipped", vectorSkipped);
       result.setProperty("recordsMisplaced", misplaced.get());
 
       // Raise needsRepartition once per affected type and tell the operator how to fix it. Doing
@@ -377,7 +390,24 @@ public class RebuildIndexStatement extends DDLStatement {
     }
   }
 
-  private static void buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
+  /**
+   * The records the rebuild that put {@code rebuilt} in place left out because they hold no vector of its dimensions, or -1
+   * when it is no vector index (issue #10938).
+   */
+  private static long lastBuildSkippedRecords(final Index rebuilt) {
+    if (rebuilt instanceof LSMVectorIndex vectorIndex)
+      return vectorIndex.getLastBuildSkippedRecords();
+    if (!(rebuilt instanceof TypeIndex typeIndex) || typeIndex.getType() != Schema.INDEX_TYPE.LSM_VECTOR)
+      return -1;
+    long skipped = 0;
+    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
+      if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+        skipped += vectorIndex.getLastBuildSkippedRecords();
+    return skipped;
+  }
+
+  /** @return the index the rebuild put in place: a bucket index is re-created under a new name */
+  private static Index buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
       final int batchSize) {
     if (idx == null)
       throw new CommandExecutionException("Index name is null");
@@ -478,20 +508,21 @@ public class RebuildIndexStatement extends DDLStatement {
 
         // Creates the index with the definition of the one being rebuilt. Used for the rebuild itself and, with the
         // callback left out, to put the old index back when the rebuild fails (#9254)
+        final Index[] created = new Index[1];
         final BiConsumer<LSMTreeIndexAbstract.NULL_STRATEGY, Index.BuildIndexCallback> createIndex = (strategy, buildCallback) -> {
           if (typeIndexRebuild) {
             // Preserve the logical index's own name (issue #5791, follow-up to #4732/#4139): without this the
             // builder falls back to the auto-derived "typeName[properties]" form, so a REBUILD silently renames
             // any explicitly-named index and every SEARCH_INDEX / name-based lookup against the old name breaks.
-            database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
-                .withUnique(unique).withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize)
+            created[0] = database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()]))
+                .withType(type).withUnique(unique).withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize)
                 .withMaxAttempts(maxAttempts).withNullStrategy(strategy)
                 .withMetadata(rebuildMetadata)
                 .withIndexName(idx.getName())
                 .create();
 
           } else {
-            database.getSchema()
+            created[0] = database.getSchema()
                 .buildBucketIndex(declaringTypeName, bucketName,
                     propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
                 .withPageSize(pageSize).withCallback(buildCallback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
@@ -520,7 +551,7 @@ public class RebuildIndexStatement extends DDLStatement {
         }
 
         // OK
-        return;
+        return created[0];
 
       } catch (NeedRetryException e) {
         if (droppedThisAttempt[0])
