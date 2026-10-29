@@ -12642,6 +12642,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     lock.writeLock().lock();
     try {
       if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
+        // a build that stops before its scan completes must not report the count of an earlier one (issue #10938)
+        lastBuildSkippedRecords = 0;
         try {
           final DatabaseInternal db = getDatabase();
 
