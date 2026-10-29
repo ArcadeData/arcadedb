@@ -147,6 +147,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -182,6 +183,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private volatile WriteRefusal[]          writeRefusals     = NO_WRITE_REFUSAL;
   private final    Object                  writeRefusalLock  = new Object();
   private static final WriteRefusal[]      NO_WRITE_REFUSAL  = new WriteRefusal[0];
+  /**
+   * The commits that passed the write refusal's check under this database's lock and go on completing after they left it (issue
+   * #10881): an HA leader replicates between its two commit phases with no lock held, and a schema session ships its entry after
+   * the write lock is released. {@link #awaitCommitsInFlight()} waits for them as well as for the holders of the shared lock. One
+   * atomic increment and decrement per replicated commit, a quorum round trip, and nothing at all on a standalone commit.
+   */
+  private final    AtomicInteger           commitsInFlightOutsideLock = new AtomicInteger();
+  private final    Object                  commitsInFlightDrained     = new Object();
+  private volatile int                     commitsInFlightWaiters;
 
   /**
    * @param unavailable {@code true} when the refusal lasts as long as an operator's operation (a restore), and so is answered
@@ -3094,7 +3104,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
     // A schema change is a write too (issue #8270): refused before anything is created or saved.
     checkWritesAccepted();
-    return (RET) executeInWriteLock(callback);
+    return (RET) executeInWriteLock(() -> {
+      // Again under the lock (issue #10881): a refusal raised while this caller waited for the lock was followed by an
+      // awaitCommitsInFlight() that took the lock first and returned, so the check above is all that would have stood between
+      // this schema change and a restore that has already stopped waiting for writers
+      checkWritesAccepted();
+      return callback.call();
+    });
   }
 
   @Override
@@ -4642,11 +4658,55 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * Returns once every commit that was already running has ended. A commit checks the write refusal and writes its pages under
    * the shared lock, so taking the exclusive one waits exactly for the commits that may have passed the check before a
    * {@link #refuseWrites} and are still writing: after this, no commit can complete that did not see the refusal (issue
-   * #10689). An HA leader replicates between its two commit phases, outside this lock, so a commit already replicating is not
-   * waited for. Must not be called holding the shared lock.
+   * #10689). A commit that goes on after leaving the lock - an HA leader replicating between its two commit phases, a schema
+   * session shipping its entry - is registered with {@link #beginCommitInFlight()} before it leaves, and waited for too (issue
+   * #10881). Must not be called holding the shared lock.
+   *
+   * @throws DatabaseOperationException when interrupted while a commit is still in flight; the interrupt flag is set again
    */
   public void awaitCommitsInFlight() {
     executeInWriteLock(() -> null);
+    // Every commit that passed the refusal's check under the lock and goes on outside it registered itself before releasing the
+    // lock, so after the exclusive section above the counter holds all of them, and any commit registering later saw the refusal
+    if (commitsInFlightOutsideLock.get() == 0)
+      return;
+    synchronized (commitsInFlightDrained) {
+      commitsInFlightWaiters++;
+      try {
+        // Timed only as a backstop: endCommitInFlight() notifies as the counter reaches zero
+        while (commitsInFlightOutsideLock.get() > 0)
+          commitsInFlightDrained.wait(100);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new DatabaseOperationException(
+            "Interrupted while waiting for " + commitsInFlightOutsideLock.get() + " commit(s) in flight on database '" + name
+                + "' to end", e);
+      } finally {
+        commitsInFlightWaiters--;
+      }
+    }
+  }
+
+  /**
+   * Registers a commit that has passed the write refusal's check and will go on after it releases this database's lock (issue
+   * #10881), so {@link #awaitCommitsInFlight()} waits for it to end. Must be called holding this database's lock (shared or
+   * exclusive), after the check, and paired with exactly one {@link #endCommitInFlight()} in a {@code finally}.
+   */
+  public void beginCommitInFlight() {
+    commitsInFlightOutsideLock.incrementAndGet();
+  }
+
+  /** Ends what {@link #beginCommitInFlight()} registered, whatever the outcome of the commit. */
+  public void endCommitInFlight() {
+    if (commitsInFlightOutsideLock.decrementAndGet() == 0 && commitsInFlightWaiters > 0)
+      synchronized (commitsInFlightDrained) {
+        commitsInFlightDrained.notifyAll();
+      }
+  }
+
+  /** The commits registered with {@link #beginCommitInFlight()} that have not ended yet. */
+  public int getCommitsInFlight() {
+    return commitsInFlightOutsideLock.get();
   }
 
   /** The reason of the first refusal {@link #refuseWrites(String)} put in place, or {@code null} when this database accepts writes. */
