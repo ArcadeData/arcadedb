@@ -2414,6 +2414,11 @@ public class ServerControlPlane {
     // released here, since the caller's finally that releases it is entered only after this method returns
     try {
       server.awaitCommitsInFlightOn(databaseName);
+      // Under HA the hold just taken on the writes of the other nodes has to be the leader's (issue #10974): refused now, before the
+      // download, rather than after it, before the swap
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null)
+        ha.ensureReplicatedWritesHeldForRestore(databaseName);
     } catch (final RuntimeException | Error e) {
       server.releaseDatabaseNameReservedForRestore(databaseName);
       throw e;

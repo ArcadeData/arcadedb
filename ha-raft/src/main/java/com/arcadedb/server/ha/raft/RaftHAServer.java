@@ -3148,24 +3148,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Refuses, before the restore replaces anything, when the hold {@link #holdForRestore} took as the leader no longer stands: this
-   * node is not the leader in the term it took it in any more (review of PR #10979). The hold refuses entries on this node only,
-   * so a leader elected during the download accepted the other nodes' writes, and the swap and the snapshot the restore forces
-   * would destroy them. A hold taken off the leadership is not checked: there was no leadership to lose.
+   * Refuses a restore that replaces a database cluster-wide when the hold {@link #holdForRestore} took does not stand (review of
+   * PR #10979): it was not taken by this node as the leader, or this node is not the leader in the term it took it in any more.
+   * The hold refuses entries on this node only, so a leader elected meanwhile accepted the other nodes' writes, and the swap and
+   * the snapshot the restore forces would destroy them. Asked right after the claim, so a restore that cannot hold is refused
+   * before its download, and again right before the swap.
    * <p>
-   * A leadership that moves between this check and the swap is not caught: the window is the length of one method call, against
-   * the download this one covers.
+   * A restore that replaces a database cluster-wide has to run on the leader anyway: the snapshot it forces makes every other
+   * node pull the LEADER's copy. A leadership that moves after the check made before the swap is caught by the leader the drop
+   * and the install reach, through the term they are fenced to ({@link #restoreFenceTerm}).
    *
-   * @throws NeedRetryException when the leadership has moved since the hold was taken
+   * @throws NeedRetryException when the hold does not stand
    */
   void ensureRestoreHoldStands(final String databaseName) {
     final Long heldInTerm = restoreHoldTerms.get(databaseName);
-    if (heldInTerm == null)
-      return;
-    if (!isLeader() || getCurrentTerm() != heldInTerm)
-      throw new NeedRetryException("Database '" + databaseName + "' was not replaced: the leadership of the cluster moved while it "
-          + "was being restored, so the writes the new leader accepted meanwhile would be lost. Nothing was changed. Please retry "
-          + "the restore on the current leader");
+    if (heldInTerm == null || !isLeader() || getCurrentTerm() != heldInTerm)
+      throw new NeedRetryException("Database '" + databaseName + "' was not replaced: "
+          + (heldInTerm == null ? "this server was not the leader of the cluster when the restore claimed it" :
+          "the leadership of the cluster moved while it was being restored") + ", so the writes the leader accepted meanwhile "
+          + "would be lost. Nothing was changed. Please retry the restore on the current leader");
+  }
+
+  /**
+   * The term a drop or an install of {@code databaseName} is fenced to (issue #10974): the term in which this node, as the leader,
+   * holds it for a restore, so the leader the entry reaches refuses it from another node or in another term. {@code -1} when no
+   * restore holds it as the leader, or when a peer has not advertised {@link PeerCapabilities#RESTORE_FENCE}: a build without the
+   * extension framing halts on the section, and the restore is then fenced by {@link #ensureRestoreHoldStands} only. Only the
+   * leader running a restore writes the section, so the capability cache it fills is the one to read (see the module notes).
+   */
+  long restoreFenceTerm(final String databaseName) {
+    final Long heldInTerm = restoreHoldTerms.get(databaseName);
+    if (heldInTerm == null || !peersMissingCapability(PeerCapabilities.RESTORE_FENCE).isEmpty())
+      return -1L;
+    return heldInTerm;
   }
 
   /** Ends the hold {@link #holdForRestore} took; a database not held is left alone. */

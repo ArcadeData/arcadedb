@@ -1487,6 +1487,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
     }
 
+    // The drop and the install of a restore are fenced to the leadership that held the database for it (issue #10974): a restore
+    // whose leader lost the leadership would otherwise reach the next leader through the Ratis client's resend, and replace the
+    // database under the writes that leader accepted. Decoded only for these two types, which carry nothing but a name and a flag
+    if (localClientId != null && content != null && !content.isEmpty()) {
+      final RaftLogEntryType type = RaftLogEntryType.fromId(content.byteAt(0));
+      if (type == RaftLogEntryType.DROP_DATABASE_ENTRY || type == RaftLogEntryType.INSTALL_DATABASE_ENTRY) {
+        final NeedRetryException refusal;
+        try {
+          final RaftLogEntryCodec.DecodedEntry fenced = RaftLogEntryCodec.decode(content);
+          refusal = staleRestoreRefusal(fenced.databaseName(), fenced.restoreFenceTerm(), isLocalOrigin);
+        } catch (final RuntimeException e) {
+          return context.build().setException(e);
+        }
+        if (refusal != null) {
+          LogManager.instance().log(this, Level.WARNING, "%s", refusal.getMessage());
+          return context.build().setException(refusal);
+        }
+      }
+    }
+
     // A transaction entry is validated here against the page versions the log has assigned so far (issue #6965):
     // one validated on its originating node against a version the log has already moved past is refused before Ratis
     // touches it, through the context's exception. That reply is exactly the retryable
@@ -1635,6 +1655,32 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return new NeedRetryException("Refused a schema change on database '" + databaseName + "' allocated in Raft term "
           + sessionTerm + " while this leader is in term " + term + ": entries committed by the leaders in between can "
           + "already use the file ids it allocated. Please retry");
+    return null;
+  }
+
+  /**
+   * Why the leader must not append a drop or an install of {@code databaseName} fenced to {@code restoreFenceTerm}, or {@code null}
+   * when it may (issue #10974). A restore fences them to the term in which its leader held the database: from another node the
+   * entry is the resend of a leader that lost the leadership during the restore, and in another term this leader was elected again
+   * after an interim leader accepted writes; either way the swap it completes would destroy them. An entry without the fence (a
+   * drop or an install no restore made, or one written by a build without the section) is not refused here.
+   * <p>
+   * The term is read here, before Ratis appends: if this node is deposed in between, Ratis itself refuses the append, because a
+   * leader only appends in its own term. Refused through the context, so the entry reaches no node.
+   */
+  // @VisibleForTesting
+  NeedRetryException staleRestoreRefusal(final String databaseName, final long restoreFenceTerm, final boolean isLocalOrigin) {
+    if (restoreFenceTerm < 0)
+      return null;
+    if (!isLocalOrigin)
+      return new NeedRetryException("Refused the drop or install of database '" + databaseName + "' of a restore run by another "
+          + "node: a restore replaces a database from the leader, so this is the resend of a node that lost the leadership while "
+          + "restoring it, and the writes accepted since would be destroyed. Please retry the restore on the leader");
+    final long term = currentRaftTerm();
+    if (term != restoreFenceTerm)
+      return new NeedRetryException("Refused the drop or install of database '" + databaseName + "' of a restore that held it in "
+          + "Raft term " + restoreFenceTerm + " while this leader is in term " + term + ": the leaders in between may have accepted "
+          + "writes the restore would destroy. Please retry the restore");
     return null;
   }
 

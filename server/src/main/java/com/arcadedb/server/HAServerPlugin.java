@@ -901,9 +901,10 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
-   * Refuses, before a restore replaces anything, when the hold {@link #holdReplicatedWritesForRestore} took no longer stands: it was
-   * taken by this node as the leader, and the leadership has moved since (issue #10974), so the new leader may have accepted writes
-   * the swap would destroy. Default is a no-op for non-HA setups.
+   * Refuses a restore that replaces a database cluster-wide when the hold {@link #holdReplicatedWritesForRestore} took does not
+   * stand (issue #10974): this node was not the leader when it took it, or the leadership has moved since, so another leader may
+   * have accepted writes the swap would destroy. Asked right after the claim and again right before the swap. Default is a no-op
+   * for non-HA setups.
    *
    * @throws NeedRetryException when the hold no longer stands
    */
