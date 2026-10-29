@@ -183,6 +183,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private static final long GUARDED_WAIT_SLICE_MS = 50;
 
+  // How many of the records a build cannot index its error names (issue #10938): every one is counted
+  private static final int MAX_REJECTED_RECORDS_REPORTED = 10;
+
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
   public static final int OFFSET_NUM_ENTRIES  = 4;   // 4 bytes
@@ -12598,11 +12601,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Track bytes written for chunking
     final AtomicLong bytesInCurrentChunk = new AtomicLong(0);
 
-    // scanBucket() logs and swallows whatever its callback throws, so a failed chunk commit is parked here, the scan
-    // is stopped, and the failure is rethrown below for build() to roll back and mark the index INVALID (issue #8906).
-    // Deliberately only the commit: a record that cannot be indexed is skipped and logged by design, while a failed
-    // commit leaves the transaction unusable and every later record failing for the same reason
+    // A failed chunk commit is parked here, the scan is stopped, and the failure is rethrown below for build() to roll back
+    // and mark the index INVALID (issue #8906): it leaves the transaction unusable and every later record failing for the
+    // same reason
     final AtomicReference<RuntimeException> chunkCommitFailure = new AtomicReference<>();
+
+    // A record that cannot be indexed (a value that is not a vector of the index's dimensions, a NaN component) fails the
+    // build, as the same value fails a write once the index exists (issue #10938). Skipping it with a log line built an
+    // index that silently lacked the row and reported success. The scan goes on to the end, so the error counts them all
+    // and names the first ones: the user fixes the data once, not once per build attempt
+    final AtomicLong rejectedRecords = new AtomicLong();
+    final List<String> rejectedSamples = new ArrayList<>(MAX_REJECTED_RECORDS_REPORTED);
 
     // A build over an index that already holds entries (a direct build() call: every schema path builds a fresh, empty
     // index) must REPLACE a record's vector, not add a second one beside it (issue #9506). A dense vector index keeps one
@@ -12671,12 +12680,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
         callback.onDocumentIndexed(source, total.get());
 
       return true;
+    }, (rid, exception) -> {
+      // only a value this index refuses is a rejected record: anything else (a record that cannot be read, a failure of the
+      // transaction) stops the build at once, as it does for an LSM tree index
+      if (!(exception instanceof IllegalArgumentException))
+        throw exception instanceof RuntimeException re ?
+            re :
+            new IndexException("Error on building vector index '" + indexName + "' at record " + rid, exception);
+      if (rejectedRecords.incrementAndGet() <= MAX_REJECTED_RECORDS_REPORTED)
+        rejectedSamples.add(rid + " (" + exception.getMessage() + ")");
+      return true;
     });
 
     final RuntimeException failure = chunkCommitFailure.get();
     if (failure != null)
       throw new IndexException("Cannot build vector index '" + indexName
           + "': a chunk commit or the restart of its transaction failed after " + total.get() + " records were indexed", failure);
+
+    final long rejected = rejectedRecords.get();
+    if (rejected > 0)
+      throw new IndexException("Cannot build vector index '" + indexName + "': " + rejected + (rejected == 1 ? " record holds" : " records hold")
+          + " a value that cannot be indexed as a vector of " + metadata.dimensions + " dimensions (first: "
+          + String.join(", ", rejectedSamples) + "). Fix or remove the value of " + metadata.propertyNames
+          + " in these records, then build the index again");
 
     final long elapsed = System.currentTimeMillis() - startTime;
     LogManager.instance().log(this, Level.INFO,
