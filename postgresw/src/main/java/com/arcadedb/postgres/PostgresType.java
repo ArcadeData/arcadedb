@@ -700,6 +700,8 @@ public enum PostgresType {
       case FLOAT -> ARRAY_REAL;
       case DOUBLE -> ARRAY_DOUBLE;
       case DECIMAL -> ARRAY_NUMERIC;
+      // A BINARY is a bytea, so a list of them is a bytea[] (issue #10927)
+      case BINARY -> ARRAY_BYTEA;
       // Nested collections (issue #5365) join maps and embedded documents in being carried as a JSON document:
       // a Postgres array is rectangular and homogeneous, an ArcadeDB nested list is neither.
       case MAP, EMBEDDED, LIST, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> JSON;
@@ -1281,6 +1283,9 @@ public enum PostgresType {
       return ARRAY_NUMERIC;
     if (element instanceof String)
       return ARRAY_TEXT;
+    // A BINARY element is a bytea, as the scalar is, and not the JSON array of its bytes a primitive array is (issue #10927)
+    if (element instanceof byte[] || element instanceof Binary)
+      return ARRAY_BYTEA;
     // A list of documents is advertised as a single json value holding a JSON array, not as json[] (issue
     // #5366). A json[] forces every element to travel as a quoted string inside a Postgres array literal, and
     // JDBC-based clients (DBeaver, DataGrip/PhpStorm, DbVisualizer) then show the escaped text instead of the

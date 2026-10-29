@@ -130,7 +130,8 @@ class CreateDocumentTypeStatementExecutionTest {
   void edgeTypePageSize() throws Exception {
     TestHelper.executeInNewDatabase(db -> {
       final String typeName = "testEdgePageSize";
-      final int customPageSize = 8192; // 8KB
+      // 24KB: an 8KB page is refused since #10876, its slot table alone takes the whole page
+      final int customPageSize = 24576;
       final ResultSet result = db.command("sql", "create edge type " + typeName + " pagesize " + customPageSize);
       final Schema schema = db.getSchema();
       final EdgeType type = (EdgeType) schema.getType(typeName);
