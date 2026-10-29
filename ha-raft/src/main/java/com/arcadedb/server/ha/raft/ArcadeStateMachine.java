@@ -1546,6 +1546,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // refusal on the leader's target (issue #10689), and a replica commits its phase 1 locally, where nothing knows of it, so
     // its entry would be acknowledged during the download and destroyed by the swap. The leader's own commits are refused in
     // the database itself. Lock-free: one volatile read of the refusals. Repeated after the reservation below.
+    // Issue10965ReplicaEntryRefusedDuringRestoreClaimTest counts the databaseFor() lookups of this method (this one is the first,
+    // the validation lookup below the second): adding a lookup before the reservation means updating that test.
     if (!isLocalOrigin && databaseName != null) {
       final NeedRetryException writesRefused = writesRefusedOnLeader(databaseForValidation(databaseName));
       if (writesRefused != null) {
