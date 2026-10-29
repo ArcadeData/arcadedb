@@ -7290,7 +7290,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Frees every chunk of a chain, starting at {@code chunkPointer}, by zeroing its slot-table entry on the page that
-   * holds it. Poisons every page it visits: the freed slot is a change no tracked slot image accounts for, so a page
+   * holds it - and only once that slot is proven, from the page itself, to hold a continuation chunk (#10875): a slot
+   * that is free, or holds anything but a {@code NEXT_CHUNK}, stops the walk with nothing written on it. Poisons every
+   * page it frees a chunk on: the freed slot is a change no tracked slot image accounts for, so a page
    * that also carries a tracked write could otherwise be re-derived from that write alone and quietly resurrect the
    * chunk. Never throws on a chain it cannot walk - a broken pointer is logged and the walk stops there, exactly as
    * it did when this was inlined in {@link #updateMultiPageRecord} (the record's own slot has already been rewritten
@@ -7311,26 +7313,32 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
       final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
 
-      if (poisonSlots)
-        slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
-
-      // DELETE THE CHUNK AS RECORD IN THE PAGE
-      nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE, 0L);
-      freedWithoutClaiming(nextPage);
-
+      // #10875: the slot is proven to hold a continuation chunk BEFORE its slot-table entry is touched - the same two
+      // conditions updateMultiPageRecord checks on the same chain before it writes. Zeroing first and checking after
+      // freed whatever the slot held when the check failed: harmless for a slot already free, but a slot a concurrent
+      // insert had reused lost its record (gone from scan, count and lookup, in a transaction that committed normally).
       if (recordPositionInPage == 0) {
-        LogManager.instance()
-                .log(this, Level.WARNING, "Error on deleting extra part of multi-page record %s after it shrunk", originalRID);
+        LogManager.instance().log(this, Level.WARNING,
+                "Stopped freeing the chunk chain of multi-page record %s after it shrunk: the next chunk pointer %d reaches slot %d of page %d, which is already free. The slot was left untouched",
+                originalRID, chunkPointer, chunkPositionInPage, chunkPageId);
         break;
       }
 
       final long[] recordSize = nextPage.readNumberAndSize(recordPositionInPage);
 
       if (recordSize[0] != NEXT_CHUNK) {
-        LogManager.instance()
-                .log(this, Level.WARNING, "Error on deleting extra part of multi-page record %s after it shrunk", originalRID);
+        LogManager.instance().log(this, Level.WARNING,
+                "Stopped freeing the chunk chain of multi-page record %s after it shrunk: the next chunk pointer %d reaches slot %d of page %d, which does not hold a continuation chunk (marker %d). The slot was left untouched",
+                originalRID, chunkPointer, chunkPositionInPage, chunkPageId, recordSize[0]);
         break;
       }
+
+      if (poisonSlots)
+        slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
+
+      // DELETE THE CHUNK AS RECORD IN THE PAGE
+      nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE, 0L);
+      freedWithoutClaiming(nextPage);
 
       // #6339: nothing is told to the free-space statistics here, deliberately. The bytes are the page's again, but
       // the chunk leaves a HOLE that the allocator cannot hand out, and what the page will really have on offer is
