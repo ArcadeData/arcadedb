@@ -3541,8 +3541,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
   private void configurationChanged() {
-    serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
-    serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+    serializer.readConfiguration(configuration);
 
     // ALL FOUR QUERY CACHES, THE PLAN CACHES TOO: A SETTING READ AT PLANNING TIME IS BAKED INTO THE PLAN (issue #10155). ONE
     // SETTING SIZES BOTH SQL CACHES, AS IN THE CONSTRUCTOR
@@ -4419,8 +4418,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452)
           schema.load(mode, true, recoveryPending);
 
-        serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
-        serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+        serializer.readConfiguration(configuration);
 
         // The configuration this open read may hold dates as another class than the one a REGEXP was declared against, and the
         // schema load does not search the text forms (that is paid at the declaration, not at every open). An open must not fail

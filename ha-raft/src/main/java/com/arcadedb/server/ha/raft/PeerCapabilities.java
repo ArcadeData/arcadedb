@@ -131,13 +131,24 @@ public final class PeerCapabilities {
   public static final String TX_FULLTEXT_CORPUS_DELTAS = "tx-fulltext-corpus-deltas";
 
   /**
+   * This node reads the fixed-width binary form of a {@code float[]} / {@code double[]} record value
+   * ({@code BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED} / {@code TYPE_ARRAY_OF_DOUBLES_FIXED}, issue #10856).
+   * <p>
+   * Not a Raft entry and not a section: the form lives in the record bytes of the pages a transaction replicates, and a
+   * build that predates it applies those pages and then fails every read of the record ("unknown type"). So no node writes
+   * the form while any peer has not advertised this token, and the varint form every build reads is written instead.
+   * Withholding is harmless: it costs the bytes the fixed form saves, nothing else, and both forms are always read.
+   */
+  public static final String FIXED_WIDTH_FLOAT_ARRAYS = "fixed-width-float-arrays";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
       SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES, DATABASE_CONFIGURATION_ENTRY,
-      TX_FULLTEXT_CORPUS_DELTAS);
+      TX_FULLTEXT_CORPUS_DELTAS, FIXED_WIDTH_FLOAT_ARRAYS);
 
   private PeerCapabilities() {
     // utility class

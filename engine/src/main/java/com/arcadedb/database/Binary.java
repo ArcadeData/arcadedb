@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.logging.Level;
@@ -286,6 +287,66 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public void putFloat(final float value) {
     checkForAllocation(buffer.position(), FLOAT_SERIALIZED_SIZE);
     buffer.putFloat(value);
+  }
+
+  /**
+   * Writes {@code values} at the current position as raw little-endian IEEE-754 floats, 4 bytes each, in one bulk copy. Little
+   * endian because it is the order of every CPU this runs on, so the copy needs no byte swap (issue #10856).
+   */
+  public void putFloatArray(final float[] values) {
+    final int bytes = arrayBytes(values.length, FLOAT_SERIALIZED_SIZE);
+    final int position = buffer.position();
+    checkForAllocation(position, bytes);
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(values);
+    buffer.position(position + bytes);
+  }
+
+  /** Reads {@code count} floats written by {@link #putFloatArray(float[])}. */
+  public float[] getFloatArray(final int count) {
+    final int bytes = arrayBytes(count, FLOAT_SERIALIZED_SIZE);
+    checkForFetching(bytes);
+    if (readableBytes() < bytes)
+      throw new BufferUnderflowException();
+    final float[] values = new float[count];
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(values);
+    buffer.position(buffer.position() + bytes);
+    return values;
+  }
+
+  /** The double twin of {@link #putFloatArray(float[])}: raw little-endian IEEE-754 doubles, 8 bytes each. */
+  public void putDoubleArray(final double[] values) {
+    final int bytes = arrayBytes(values.length, DOUBLE_SERIALIZED_SIZE);
+    final int position = buffer.position();
+    checkForAllocation(position, bytes);
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().put(values);
+    buffer.position(position + bytes);
+  }
+
+  /** Reads {@code count} doubles written by {@link #putDoubleArray(double[])}. */
+  public double[] getDoubleArray(final int count) {
+    final int bytes = arrayBytes(count, DOUBLE_SERIALIZED_SIZE);
+    checkForFetching(bytes);
+    if (readableBytes() < bytes)
+      throw new BufferUnderflowException();
+    final double[] values = new double[count];
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().get(values);
+    buffer.position(buffer.position() + bytes);
+    return values;
+  }
+
+  private static int arrayBytes(final int count, final int elementSize) {
+    final long bytes = (long) count * elementSize;
+    if (count < 0 || bytes > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("Invalid array length " + count);
+    return (int) bytes;
+  }
+
+  /**
+   * The bytes a bulk read may consume: up to the logical content ({@code size}) as well as the buffer's limit, so a count
+   * read from corrupt content cannot pull in the bytes of a backing array that lie past the content.
+   */
+  private int readableBytes() {
+    return Math.min(size, buffer.limit()) - buffer.position();
   }
 
   @Override

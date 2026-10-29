@@ -509,11 +509,29 @@ class TypeTest extends TestHelper {
     assertThatThrownBy(() -> Type.convert(database, new float[] { 3_000_000_000.0f }, short[].class))
         .isInstanceOf(IllegalArgumentException.class);
 
-    // double[]/float[] -> long[]: NaN only (LONG is the widest integral type, no narrower range to check)
+    // double[]/float[] -> long[]: NaN, and a magnitude past the 64-bit range, which the cast saturates to Long.MAX_VALUE
     assertThatThrownBy(() -> Type.convert(database, new double[] { Double.NaN }, long[].class))
         .isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> Type.convert(database, new float[] { Float.NaN }, long[].class))
         .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new double[] { 1e30 }, long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new float[] { -1e30f }, long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    // the extremes of the range are still converted
+    assertThat((long[]) Type.convert(database, new double[] { -0x1p63, 0x1p62 }, long[].class))
+        .containsExactly(Long.MIN_VALUE, 1L << 62);
+
+    // Collection -> long[]: a big number past the 64-bit range used to be clamped to Long.MAX_VALUE, so every such element
+    // was stored as the same number (issue #10756)
+    assertThatThrownBy(() -> Type.convert(database, List.of(new BigDecimal("18446744073709551617")), long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(new BigInteger("-18446744073709551617")), long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, List.of(1e30), long[].class))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThat((long[]) Type.convert(database, List.of(new BigDecimal(Long.MAX_VALUE), BigInteger.valueOf(Long.MIN_VALUE), 7),
+        long[].class)).containsExactly(Long.MAX_VALUE, Long.MIN_VALUE, 7L);
 
     // long[] -> int[]/short[]: out of range wraps via plain bit truncation, not saturation
     assertThatThrownBy(() -> Type.convert(database, new long[] { 3_000_000_000L }, int[].class))

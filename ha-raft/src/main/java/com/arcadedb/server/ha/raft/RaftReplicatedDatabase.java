@@ -571,6 +571,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           : HttpClient.newHttpClient();
     }
     this.proxied.setWrappedDatabaseInstance(this);
+    // A peer of a build that predates the fixed-width float arrays could not read a record holding one (issue #10856)
+    final BinarySerializer serializer = proxied.getSerializer();
+    if (serializer != null)
+      serializer.setFixedWidthFloatArrays(this::fixedWidthFloatArraysAllowed);
+  }
+
+  /**
+   * Whether a record of this database may hold a float or double array in its fixed-width form: only once every peer has
+   * advertised that it reads it (issue #10856). Asked on every write of such an array; the answer is cached for a second.
+   */
+  private boolean fixedWidthFloatArraysAllowed() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null && raft.canWriteFixedWidthFloatArrays();
   }
 
   @Override

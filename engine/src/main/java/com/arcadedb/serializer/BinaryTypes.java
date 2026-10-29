@@ -81,6 +81,12 @@ public class BinaryTypes {
   public final static byte TYPE_LOCAL_TIME               = 33; // @SINCE 26.10.2 - LocalTime: nanoOfDay (Cypher localtime())
   public final static byte TYPE_ZONED_DATETIME           = 34; // @SINCE 26.10.2 - ZonedDateTime: epochSecond, nano, zone (Cypher datetime())
   public final static byte TYPE_DURATION                 = 35; // @SINCE 26.10.2 - months, days, seconds, nanos (Cypher duration())
+  // @SINCE 26.11.1 - float[] / double[] as the element count (unsigned varint) then the raw little-endian IEEE-754 elements,
+  // 4 / 8 bytes each. TYPE_ARRAY_OF_FLOATS/DOUBLES varint-encode each element's BIT PATTERN, which for any ordinary non-zero
+  // value is a large integer: 5 bytes per float and 9-10 per double, plus one varint decode per element on every read
+  // (issue #10856). Those two are still read, so existing records need no migration; an update rewrites a value in this form.
+  public final static byte TYPE_ARRAY_OF_FLOATS_FIXED    = 36;
+  public final static byte TYPE_ARRAY_OF_DOUBLES_FIXED   = 37;
   public final static byte TYPE_EXTERNAL_COMPRESSED_MAX  = 31; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL_COMPRESSED_FAST but compressed with LZ4 HC (high compression, ~10pp smaller output, 8-20x slower compress; decompression is identical to FAST since LZ4 HC uses the same format).
 
   // Geometry subtypes for TYPE_COMPRESSED_GEOMETRY
@@ -348,8 +354,8 @@ public class BinaryTypes {
       case BinaryTypes.TYPE_ARRAY_OF_SHORTS -> short[].class;
       case BinaryTypes.TYPE_ARRAY_OF_INTEGERS -> int[].class;
       case BinaryTypes.TYPE_ARRAY_OF_LONGS -> long[].class;
-      case BinaryTypes.TYPE_ARRAY_OF_FLOATS -> float[].class;
-      case BinaryTypes.TYPE_ARRAY_OF_DOUBLES -> double[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_FLOATS, BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED -> float[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_DOUBLES, BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED -> double[].class;
       case BinaryTypes.TYPE_COMPRESSED_GEOMETRY -> Shape.class;
       case BinaryTypes.TYPE_BINARY -> byte[].class;
       // UNKNOWN
