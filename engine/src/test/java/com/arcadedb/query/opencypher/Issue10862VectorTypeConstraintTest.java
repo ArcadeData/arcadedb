@@ -136,6 +136,33 @@ class Issue10862VectorTypeConstraintTest extends TestHelper {
   }
 
   @Test
+  void aStoredListIsNotAVectorSoTheConstraintIsRefused() {
+    // a list written before any declaration stays a list: it answers false to IS :: VECTOR, as in Neo4j
+    command("CREATE (:L {e: [1.0, 2.0, 3.0]})");
+
+    assertThatThrownBy(() -> command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)")).hasMessageContaining(
+        "(LIST<ANY>)");
+    assertThat(database.getSchema().getType("L").getPropertyIfExists("e")).isNull();
+  }
+
+  @Test
+  void aDropWhoseRestoreIsRefusedLeavesTheDimensionInPlace() {
+    database.command("sql", "CREATE VERTEX TYPE L");
+    database.command("sql", "CREATE PROPERTY L.e LONG");
+    command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)");
+    command("CREATE (:L {e: [0.1, 0.2, 0.3]})");
+
+    // the LONG declaration the constraint replaced cannot hold the stored vector: the drop is refused and changes nothing
+    assertThatThrownBy(() -> command("DROP CONSTRAINT t")).isInstanceOf(RuntimeException.class);
+    final Property p = property("L", "e");
+    assertThat(p.getType()).isEqualTo(Type.ARRAY_OF_FLOATS);
+    assertThat(p.getMin()).isEqualTo("3");
+    assertThat(p.getMax()).isEqualTo("3");
+    assertThat(names("SHOW CONSTRAINTS YIELD name")).containsExactly("t");
+    assertThatThrownBy(() -> command("CREATE (:L {e: [0.1, 0.2]})")).isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
   void dropConstraintGivesTheDeclarationBack() {
     command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)");
     command("DROP CONSTRAINT t");

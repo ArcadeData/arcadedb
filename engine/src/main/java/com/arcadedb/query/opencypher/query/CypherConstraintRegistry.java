@@ -301,9 +301,7 @@ final class CypherConstraintRegistry {
     try {
       restorePreviousDeclarations(type, entry, retyper);
     } catch (final RuntimeException e) {
-      final JSONObject declaredType = entry.getJSONObject("declaredType", null);
-      final int dimension = declaredType != null ? declaredType.getInt("dimension", CypherTypeName.NO_DIMENSION) :
-          CypherTypeName.NO_DIMENSION;
+      final int dimension = dimensionOf(entry);
       if (dimension != CypherTypeName.NO_DIMENSION)
         for (final String propertyName : clearedBounds)
           try {
@@ -371,11 +369,11 @@ final class CypherConstraintRegistry {
     final List<String> bounded = toStrings(entry.getJSONArray("bounds", new JSONArray()));
     if (bounded.isEmpty())
       return bounded;
-    final JSONObject declaredType = entry.getJSONObject("declaredType", null);
-    final String dimension = declaredType != null ? String.valueOf(declaredType.getInt("dimension", CypherTypeName.NO_DIMENSION)) : null;
+    final int dimension = dimensionOf(entry);
+    final String bound = String.valueOf(dimension);
     final List<String> cleared = new ArrayList<>(bounded.size());
     for (final String propertyName : bounded) {
-      final String heir = findTypedHeir(type, droppedKey, propertyName);
+      final String heir = findTypedHeir(type, droppedKey, propertyName, dimension);
       if (heir != null) {
         final JSONObject heirEntry = entry(type, heir);
         final JSONArray heirBounds = heirEntry.getJSONArray("bounds", new JSONArray());
@@ -386,7 +384,8 @@ final class CypherConstraintRegistry {
         continue;
       }
       final Property property = type.getPropertyIfExists(propertyName);
-      if (property == null || dimension == null || !dimension.equals(property.getMin()) || !dimension.equals(property.getMax()))
+      if (property == null || dimension == CypherTypeName.NO_DIMENSION || !bound.equals(property.getMin()) || !bound.equals(
+          property.getMax()))
         continue;
       property.setMin(null);
       property.setMax(null);
@@ -395,17 +394,27 @@ final class CypherConstraintRegistry {
     return cleared;
   }
 
-  /** Finds a type constraint on the type, other than the one being dropped, over the property. */
-  private static String findTypedHeir(final DocumentType type, final String droppedKey, final String propertyName) {
+  /**
+   * Finds a vector type constraint on the type, other than the one being dropped, over the property and with the same
+   * dimension: the one that still requires the bounds.
+   */
+  private static String findTypedHeir(final DocumentType type, final String droppedKey, final String propertyName,
+      final int dimension) {
     for (final String key : type.getCustomKeys()) {
       if (!key.startsWith(KEY_PREFIX) || key.equals(droppedKey))
         continue;
       final JSONObject candidate = entry(type, key);
-      if (candidate != null && kindOf(candidate) == ConstraintKind.TYPED && toStrings(
+      if (candidate != null && kindOf(candidate) == ConstraintKind.TYPED && dimensionOf(candidate) == dimension && toStrings(
           candidate.getJSONArray("properties", new JSONArray())).contains(propertyName))
         return key;
     }
     return null;
+  }
+
+  /** The dimension a recorded vector type constraint declared, or {@link CypherTypeName#NO_DIMENSION}. */
+  private static int dimensionOf(final JSONObject entry) {
+    final JSONObject declaredType = entry.getJSONObject("declaredType", null);
+    return declaredType != null ? declaredType.getInt("dimension", CypherTypeName.NO_DIMENSION) : CypherTypeName.NO_DIMENSION;
   }
 
   /**

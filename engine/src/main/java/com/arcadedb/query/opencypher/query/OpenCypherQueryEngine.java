@@ -1261,6 +1261,27 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * dropped the zone and the sub-millisecond digits), STRING and LONG, which refused every duration. A POINT is the map
    * {@code point()} produces, as it is stored when no type is declared.
    */
+  private static Type mapScalarCypherType(final String name, final CypherTypeName written) {
+    return switch (name) {
+      case "BOOLEAN" -> Type.BOOLEAN;
+      case "STRING" -> Type.STRING;
+      case "INT8" -> Type.BYTE;
+      case "INT16" -> Type.SHORT;
+      case "INT32" -> Type.INTEGER;
+      case "INTEGER" -> Type.LONG;
+      case "FLOAT32" -> Type.FLOAT;
+      case "FLOAT" -> Type.DOUBLE;
+      case "DATE" -> Type.DATE;
+      case "LOCAL DATETIME" -> Type.DATETIME_NANOS;
+      case "ZONED DATETIME" -> Type.ZONED_DATETIME;
+      case "LOCAL TIME" -> Type.LOCAL_TIME;
+      case "ZONED TIME" -> Type.OFFSET_TIME;
+      case "DURATION" -> Type.DURATION;
+      case "POINT", "MAP" -> Type.MAP;
+      default -> throw new CommandParsingException("Unsupported Cypher type in a property type constraint: " + written);
+    };
+  }
+
   /**
    * Maps {@code VECTOR<T>(n)} onto the primitive array ArcadeDB holds a vector of {@code T} in (an {@code INT8} vector is the
    * byte array of a BINARY), whose dimension the property's MIN and MAX enforce, as an item count, on every write (#10862).
@@ -1281,27 +1302,6 @@ public class OpenCypherQueryEngine implements QueryEngine {
       default -> throw new CommandParsingException("Unsupported vector coordinate type in a property type constraint: " + cypherType);
     };
     return new DeclaredType(arrayType, null, true, cypherType.dimension());
-  }
-
-  private static Type mapScalarCypherType(final String name, final CypherTypeName written) {
-    return switch (name) {
-      case "BOOLEAN" -> Type.BOOLEAN;
-      case "STRING" -> Type.STRING;
-      case "INT8" -> Type.BYTE;
-      case "INT16" -> Type.SHORT;
-      case "INT32" -> Type.INTEGER;
-      case "INTEGER" -> Type.LONG;
-      case "FLOAT32" -> Type.FLOAT;
-      case "FLOAT" -> Type.DOUBLE;
-      case "DATE" -> Type.DATE;
-      case "LOCAL DATETIME" -> Type.DATETIME_NANOS;
-      case "ZONED DATETIME" -> Type.ZONED_DATETIME;
-      case "LOCAL TIME" -> Type.LOCAL_TIME;
-      case "ZONED TIME" -> Type.OFFSET_TIME;
-      case "DURATION" -> Type.DURATION;
-      case "POINT", "MAP" -> Type.MAP;
-      default -> throw new CommandParsingException("Unsupported Cypher type in a property type constraint: " + written);
-    };
   }
 
   /**
