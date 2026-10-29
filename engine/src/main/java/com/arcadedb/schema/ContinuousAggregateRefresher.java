@@ -346,6 +346,10 @@ public class ContinuousAggregateRefresher {
    * Whether an append in flight, whose oldest sample is {@code oldestInFlightTs}, may have added its samples to {@code invalidated}
    * (issue #10857). Conservative: only the oldest sample of each append is known, so any one at or before the end of the range
    * counts. Samples appended at the head of the series, the common case, are after it.
+   * <p>
+   * The cost: an append in flight with a very old timestamp holds the watermark back, and keeps the record, until its commit ends.
+   * The next refresh recomputes those buckets, so nothing is lost and no entry outlives its append (the registration is released in
+   * a {@code finally} of {@code TimeSeriesShard.appendSamples}).
    */
   static boolean mayHoldInFlightSamples(final ContinuousAggregateImpl.Invalidation invalidated, final long oldestInFlightTs) {
     return oldestInFlightTs <= invalidated.toTs();
