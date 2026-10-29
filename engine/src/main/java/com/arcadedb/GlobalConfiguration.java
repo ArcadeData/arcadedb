@@ -3259,7 +3259,7 @@ public enum GlobalConfiguration {
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
   POSTGRES_SSL("arcadedb.postgres.ssl", SCOPE.SERVER,
-      "TLS mode for Postgres wire protocol connections, negotiated through the protocol's own SSLRequest handshake and using the shared SSL key/trust store settings (arcadedb.ssl.*): DISABLED (no TLS, default), OPTIONAL (TLS or plaintext, the client chooses), REQUIRED (TLS only, plaintext startup is refused)",
+      "TLS mode for Postgres wire protocol connections, negotiated through the protocol's own SSLRequest handshake and using the shared SSL key/trust store settings (arcadedb.ssl.*): DISABLED (no TLS, default), OPTIONAL (TLS or plaintext, the client chooses: a client that falls back to plaintext sends its password in the clear), REQUIRED (TLS only, plaintext startup is refused; recommended once certificates are in place)",
       String.class, "DISABLED"),
 
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
@@ -3309,7 +3309,7 @@ public enum GlobalConfiguration {
       "Maximum number of concurrent BOLT connections. 0 means unlimited. Default is 0", Integer.class, 0),
 
   BOLT_SSL("arcadedb.bolt.ssl", SCOPE.SERVER,
-      "TLS mode for BOLT connections: DISABLED (no TLS, default), OPTIONAL (auto-detect TLS or plaintext), REQUIRED (TLS only)",
+      "TLS mode for BOLT connections, using the shared SSL key/trust store settings (arcadedb.ssl.*). There is no in-band upgrade: the listener reads the first bytes of a connection and starts a direct TLS handshake when they are a TLS record header. DISABLED (no TLS, default), OPTIONAL (TLS and plaintext on the same port, detected per connection: a client that falls back to plaintext sends its LOGON credentials in the clear), REQUIRED (TLS only, a plaintext connection is closed; recommended once certificates are in place)",
       String.class, "DISABLED"),
 
   BOLT_WEBSOCKET_MAX_FRAME_SIZE("arcadedb.bolt.websocket.maxFrameSize", SCOPE.SERVER,
