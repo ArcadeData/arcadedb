@@ -743,8 +743,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
           // Read before the commit concludes: the accumulator is released with the transaction
           final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
-          return new ReplicationPayload(tx, phase1, walData, bucketDeltas,
+          final ReplicationPayload prepared = new ReplicationPayload(tx, phase1, walData, bucketDeltas,
               corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
+          // Issue #10881: phase 1 checked the write refusal under this lock, and the rest of the commit - quorum, publication,
+          // acknowledgement - runs after it is released. Registered here, still under the lock, so a restore that refuses
+          // writes and then awaits the commits in flight waits for this one too, instead of swapping its target away after
+          // the client has been told the commit succeeded. The last statement of the arm: nothing below can throw past it
+          proxied.beginCommitInFlight();
+          return prepared;
         }
 
         // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
@@ -775,7 +781,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // The state machine publishes this node's own entry at its position in the Raft log (issue #6965): the prepared
     // transaction is registered with it right before the entry is dispatched, and this thread finishes the commit once
     // the entry is acknowledged. Only the leader has a state machine that applies its own entries this way.
-    replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+    try {
+      replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+    } finally {
+      proxied.endCommitInFlight();
+    }
   }
 
   /**
@@ -2772,6 +2782,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // failure that stops the final entry leaves the callback's change unpublished here.
     Throwable sessionFailure = null;
     boolean callbackReturned = false;
+    // Set once the session registered itself as a commit in flight (issue #10881), so the finally below ends it exactly once
+    final boolean[] sessionInFlight = { false };
 
     try {
       // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. The wait for
@@ -2789,7 +2801,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
-      final RET result = proxied.recordFileChanges(callback);
+      // Issue #10881: the callback runs under the write lock, where LocalDatabase.recordFileChanges has just checked the write
+      // refusal, and the entry that makes the change durable is shipped below, after the lock is released. Registered from
+      // inside the lock, so a restore claiming the database waits for this session to publish rather than swapping its
+      // target away under a schema change the caller is about to be told succeeded. Ended in the finally below.
+      final RET result = proxied.recordFileChanges(() -> {
+        proxied.beginCommitInFlight();
+        sessionInFlight[0] = true;
+        return callback.call();
+      });
       callbackReturned = true;
 
       // Issue #9555: an instalment of this session was definitely refused, and the callback went on as if it had not (it
@@ -2963,7 +2983,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           proxied.getFileManager().stopRecordingChanges();
         }
       } finally {
-        endLeaderExclusive(exclusiveOn);
+        try {
+          endLeaderExclusive(exclusiveOn);
+        } finally {
+          // Last: the session's entry is published, or the session failed and was wound down, either way nothing of it is
+          // still on its way to the cluster (issue #10881)
+          if (sessionInFlight[0])
+            proxied.endCommitInFlight();
+        }
       }
     }
   }

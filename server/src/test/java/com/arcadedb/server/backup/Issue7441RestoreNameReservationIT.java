@@ -20,7 +20,9 @@ package com.arcadedb.server.backup;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -28,6 +30,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +44,9 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -373,6 +378,46 @@ class Issue7441RestoreNameReservationIT extends BaseGraphServerTest {
 
     assertThat(getServer(0).existsDatabase(getDatabaseName())).isTrue();
     assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(1);
+  }
+
+  /**
+   * Issue #10881: the claim's wait for the commits in flight can now last as long as a quorum timeout, and an interrupt ends it
+   * with an exception. That is thrown inside {@code reserveRestoreTarget}, before the caller's {@code finally} that releases the
+   * claim is entered, so the claim is released there: a leaked one would refuse every write to the database and every create of
+   * its name until the server restarts.
+   */
+  @Test
+  void anInterruptedWaitForTheCommitsInFlightReleasesTheClaim() throws Exception {
+    final String archive = triggerBackupAndGetFileName();
+    final ServerControlPlane controlPlane = new ServerControlPlane(getServer(0));
+    final LocalDatabase local = (LocalDatabase) getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded();
+
+    // A commit that left the database lock and is still on its way to the cluster, as an HA leader's is
+    local.executeInReadLock(() -> {
+      local.beginCommitInFlight();
+      return null;
+    });
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread restore = new Thread(() -> {
+      try {
+        controlPlane.restoreBackup(getDatabaseName(), archive, getDatabaseName(), true, ServerControlPlane.ProgressListener.NOOP);
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+    try {
+      restore.start();
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> getServer(0).isDatabaseNameReservedForRestore(getDatabaseName())
+          && restore.getState() == Thread.State.TIMED_WAITING);
+      restore.interrupt();
+      restore.join(30_000);
+    } finally {
+      local.endCommitInFlight();
+    }
+
+    assertThat(failure.get()).isInstanceOf(DatabaseOperationException.class).hasMessageContaining("in flight");
+    assertThat(getServer(0).isDatabaseNameReservedForRestore(getDatabaseName())).as("the claim is released").isFalse();
+    assertThat(local.getWriteRefusal()).as("and so is the refusal it put on the database").isNull();
   }
 
   // -------------------------------------------------------------------------------------------

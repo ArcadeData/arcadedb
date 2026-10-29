@@ -2409,8 +2409,15 @@ public class ServerControlPlane {
       server.reserveDatabaseNameForRestore(databaseName);
     }
     // Out of the registry lock: an existing target now refuses writes, and the commits already past that check are waited for,
-    // so none of them is acknowledged during the download and destroyed by the swap (issue #10689)
-    server.awaitCommitsInFlightOn(databaseName);
+    // so none of them is acknowledged during the download and destroyed by the swap (issue #10689). On an HA leader that includes
+    // the commits still on their way to quorum (issue #10881), so the wait can be interrupted: the claim taken above is then
+    // released here, since the caller's finally that releases it is entered only after this method returns
+    try {
+      server.awaitCommitsInFlightOn(databaseName);
+    } catch (final RuntimeException | Error e) {
+      server.releaseDatabaseNameReservedForRestore(databaseName);
+      throw e;
+    }
   }
 
   /**
