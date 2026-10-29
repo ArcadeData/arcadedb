@@ -115,8 +115,10 @@ class Issue10944ScanSkipsDeletedChunkedRecordTest extends TestHelper {
     }
 
     stop.set(true);
-    for (final Thread scanner : scanners)
+    for (final Thread scanner : scanners) {
       scanner.join(60_000);
+      assertThat(scanner.isAlive()).as("scanner %s did not finish", scanner.getName()).isFalse();
+    }
 
     assertThat(failures).as("scans failed: %s", failures.stream().map(Issue10944ScanSkipsDeletedChunkedRecordTest::describe).toList())
         .isEmpty();
@@ -125,8 +127,10 @@ class Issue10944ScanSkipsDeletedChunkedRecordTest extends TestHelper {
 
   private static String describe(final Throwable e) {
     final StringBuilder chain = new StringBuilder();
-    for (Throwable t = e; t != null; t = t.getCause())
-      chain.append(t.getClass().getSimpleName()).append(": ").append(t.getMessage() == null ? "" : t.getMessage(), 0, t.getMessage() == null ? 0 : Math.min(200, t.getMessage().length())).append(" <- ");
+    for (Throwable t = e; t != null; t = t.getCause()) {
+      final String message = t.getMessage() == null ? "" : t.getMessage();
+      chain.append(t.getClass().getSimpleName()).append(": ").append(message, 0, Math.min(200, message.length())).append(" <- ");
+    }
     return chain.toString();
   }
 }
