@@ -137,6 +137,15 @@ class Issue10865RemoteInheritedDateAndDateParameterIT extends BaseGraphServerTes
   }
 
   @Test
+  void anEmptyListOfDatesStillReads() {
+    final RemoteDatabase db = schema();
+    db.command("sql", "INSERT INTO Evento SET fechas = []");
+    try (final ResultSet rs = db.query("sql", "SELECT FROM Evento")) {
+      assertThat(rs.next().<List<Object>>getProperty("fechas")).isEmpty();
+    }
+  }
+
+  @Test
   void localDatesInAnUntypedProjectedList() {
     final RemoteDatabase db = schema();
     db.command("sql", "INSERT INTO Evento SET fechas = ?", List.of(DAY, DAY.plusDays(1)));
