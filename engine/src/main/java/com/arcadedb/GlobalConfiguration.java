@@ -1183,33 +1183,28 @@ public enum GlobalConfiguration {
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
-      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the dense \
-      working set it builds beside the graph: the random-walk buffers of algo.node2vec (walksPerNode x nodeCount \
-      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory \
-      (one row of iterations entries per node), the nodeCount x dimension embedding matrices of algo.node2vec, \
-      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, \
-      algo.simRank, algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and \
-      terminal-pair arrays of algo.steinerTree. None of these has a graph-derived ceiling to clamp against - \
-      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int, a \
-      terminal list of any length, or simply a large graph, would otherwise reach the allocator unchecked, or \
-      wrap the int product on the way there and surface as a NegativeArraySizeException from inside the \
-      algorithm. Every estimate is computed in saturating long arithmetic and reserved BEFORE anything is \
-      allocated, and reservations accumulate over the call, so what is bounded is the working set of the whole \
-      call rather than one allocation of it: a call over the budget is rejected as a client error naming the \
-      component and the knobs that produced the estimate, together with this setting. Negative number means no \
-      limit. When left at the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), \
-      so the working set of a legitimate large run stays a fraction of the heap it shares with the rest of the \
-      query.""",
-      Long.class, 64 * 1024 * 1024L, null, value -> {
-        // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
-        // typical run (a few million walk entries, or a mid-sized graph at the default embedding dimension)
-        // keeps working on small footprints.
-        final long maxHeap = Runtime.getRuntime().maxMemory();
-        if (maxHeap == Long.MAX_VALUE)
-          // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
-          return 64 * 1024 * 1024L;
-        return Math.max(64 * 1024 * 1024L, maxHeap / 8);
-      }),
+      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the working \
+      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (one record per \
+      vertex and the RID index over them), the adjacency lists, weighted adjacency lists and degree buffers it \
+      materialises from the records or from a view, the edge arrays of algo.mst and algo.msa, the visited sets and \
+      traversal state of the walks (algo.bfs, algo.dfs, the path searches), the neighbour bitsets of the clique, \
+      triangle and truss algorithms, the random-walk buffers of algo.node2vec (walksPerNode x nodeCount walks of \
+      walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory (one row of \
+      iterations entries per node), the nodeCount x dimension embedding and feature matrices of algo.node2vec, \
+      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, algo.simRank, \
+      algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and terminal-pair arrays of \
+      algo.steinerTree. Most of these have no graph-derived ceiling to clamp against - unlike a top-k bound, which \
+      is capped by the node count - so a large but perfectly in-range int, a terminal list of any length, or simply \
+      a large graph, would otherwise reach the allocator unchecked, or wrap the int product on the way there and \
+      surface as a NegativeArraySizeException from inside the algorithm. Every estimate is computed in saturating \
+      long arithmetic and reserved BEFORE anything is allocated, and reservations accumulate over the call, so what \
+      is bounded is the working set of the whole call rather than one allocation of it: a call over the budget is \
+      rejected as a client error naming the component and the knobs that produced the estimate, together with this \
+      setting. Negative number means no limit. 0 (the default) sizes the budget at each call from the heap the call \
+      can actually get: half of what is free after the last collection plus the page cache, which the call takes \
+      back from the cache before it allocates, and never less than one eighth of the maximum heap (64MB at least), \
+      the fixed budget it replaces (issue #11011). A positive number is a fixed budget.""",
+      Long.class, 0L),
 
   // GRAPHQL
   GRAPHQL_MAX_NESTING_DEPTH("arcadedb.graphql.maxNestingDepth", SCOPE.DATABASE,
@@ -3544,6 +3539,16 @@ public enum GlobalConfiguration {
       full graph scan (issue #6583). Any commit in between invalidates the certificate and falls back to the \
       previous behavior: an async rebuild triggered on open. Set to false to disable persisting the CSR file \
       (e.g. to avoid its disk footprint or the extra write at close)""",
+      Boolean.class, true),
+
+  GAV_BUILD_RELEASES_PAGES("arcadedb.gavBuildReleasesPages", SCOPE.DATABASE,
+      """
+      When true (default), the pages a Graph Analytical View build reads from disk leave the page cache when the build \
+      ends, unless another reader used them meanwhile: the view answers what they hold, so keeping them would hold the \
+      graph twice, and the page cache is on the heap (arcadedb.maxPageRAM, a quarter of it by default). While the \
+      build runs they are the first pages evicted, so a build does not push the pages queries are using out of the \
+      cache either. Pages the cache held before the build stay. Set to false to keep the pages a build read, for a \
+      workload that reads the same records through the record API right after (issue #11011)""",
       Boolean.class, true),
 
   GAV_CCH_MAX_ARCS_PER_EDGE("arcadedb.gavCchMaxArcsPerEdge", SCOPE.DATABASE,

@@ -84,12 +84,22 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
             r.setProperty("contractionHierarchies", hierarchyStats);
           }
         } else {
-          r.setProperty("status", liveStatus != null ? liveStatus.name() : "NOT_BUILT");
+          // A view whose background build failed has left the registry, which frees its name: the failure it recorded is
+          // what tells this row FAILED, and why, apart from a view never built (issue #11011)
+          final Throwable failure = liveView == null ? GraphAnalyticalViewRegistry.getFailure(database, name) : null;
+          if (failure != null)
+            r.setProperty("status", GraphAnalyticalView.Status.FAILED.name());
+          else
+            r.setProperty("status", liveStatus != null ? liveStatus.name() : "NOT_BUILT");
           r.setProperty("nodeCount", 0);
           r.setProperty("edgeCount", 0);
           r.setProperty("memoryUsageBytes", 0L);
           r.setProperty("buildDurationMs", 0L);
         }
+        // Why the last build failed, the view still serving its previous snapshot (STALE) or holding none (FAILED)
+        final Throwable buildError = liveView != null ? liveView.getBuildError() : GraphAnalyticalViewRegistry.getFailure(database, name);
+        if (buildError != null)
+          r.setProperty("buildError", GraphAnalyticalView.describeBuildError(buildError));
 
         context.setVariable("current", r);
       }

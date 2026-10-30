@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.Edge;
@@ -38,6 +39,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -45,6 +47,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.utility.HeapUsage;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -55,6 +58,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -385,6 +389,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    */
   protected static final long OLTP_VERTEX_BYTES = 96L;
 
+  /** The smallest working-memory budget a call gets, whatever the heap. */
+  static final long MIN_WORKING_MEMORY = 64 * 1024 * 1024L;
+
   /**
    * Heap cost of a {@link java.util.BitSet} object on top of the {@code long[]} of words it wraps: the object
    * header, the {@code words} reference, the {@code wordsInUse} int, the {@code sizeIsSticky} flag and padding.
@@ -438,11 +445,70 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * every component priced here lives to the end of it.
    */
   protected final class MemoryBudget {
-    private final long limit;
-    private       long reserved;
+    private       long    limit;
+    private       long    reserved;
+    // Sized from the heap (issue #11011): the limit starts at the fixed floor and is raised, the first time a reservation needs
+    // more, to what the heap can give the call. Small calls never read the heap
+    private final boolean auto;
+    private       boolean sizedFromHeap;
+    private       long    freeHeap       = -1L;
+    private       long    pageCache;
+    // What the call can take without giving up any page of the cache
+    private       long    withoutReclaim = Long.MAX_VALUE;
 
-    private MemoryBudget(final long limit) {
+    private MemoryBudget(final long limit, final boolean auto) {
       this.limit = limit;
+      this.auto = auto;
+    }
+
+    /**
+     * Raises an automatic budget to half of the heap free after the last collection plus the page read cache, which is on
+     * the heap and evictable: a call that needs part of it takes it back before it allocates ({@link #reclaimPageCacheFor}).
+     * Half, because the call shares the heap with the queries running beside it and with the collector's own headroom. An
+     * unknown reading keeps the floor. It is an estimate, not a reservation of the heap: calls sized at the same moment each
+     * see the same free heap, and the half is what leaves room for a second one.
+     */
+    private void sizeFromHeap() {
+      sizedFromHeap = true;
+      // The reading that never under-reports what is live: a young collection does not refresh the old generation's
+      // post-collection figure, and a stale one would credit the call with heap that is not free
+      freeHeap = HeapUsage.conservativeAvailableHeapBytes();
+      if (freeHeap < 0)
+        return;
+      pageCache = PageManager.INSTANCE.getReadCacheRAM();
+      withoutReclaim = Math.max(limit, freeHeap / 2);
+      limit = Math.max(limit, saturatingSum(freeHeap, pageCache) / 2);
+    }
+
+    /**
+     * Takes back from the page cache what a working set of {@code total} bytes needs beyond the free heap: the cache was
+     * counted as free when the budget was sized, which is true only once its pages are gone. No collection would take
+     * them, they are strongly referenced.
+     */
+    private void reclaimPageCacheFor(final long total) {
+      // Signed: a cache that grew since the sizing must first give back its growth, so the request includes it
+      final long needed = pageCacheToReclaim(total, freeHeap, withoutReclaim, cacheNetReduction());
+      if (needed > 0) {
+        // In steps of a quarter of the cache at least: a walk that grows as it goes must not sort the cache once per item
+        final long freed = PageManager.INSTANCE.reclaimReadCacheRAM(Math.max(needed, pageCache / 4));
+        // Pages queries may be using leave the cache: traceable when a latency blip follows
+        LogManager.instance().log(this, Level.FINE, "%s(): gave up %d bytes of page cache for a working set of %d bytes", getName(),
+            freed, total);
+      }
+    }
+
+    /**
+     * How much smaller the page cache is now than when the budget was sized: the heap the cache has really given back. Not the
+     * sum of what was evicted: a walk that reads records caches pages again, and every one it caches takes back from the call
+     * what its eviction gave it.
+     */
+    private long cacheGivenBack() {
+      return Math.max(0L, cacheNetReduction());
+    }
+
+    /** The page cache's size when the budget was sized minus its size now: negative when it grew meanwhile. */
+    private long cacheNetReduction() {
+      return pageCache - PageManager.INSTANCE.getReadCacheRAM();
     }
 
     /**
@@ -464,15 +530,43 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       // caller survives a refusal to observe that, since the exception aborts the call; this keeps the
       // invariant true for the one that eventually does.
       final long total = saturatingSum(reserved, estimatedBytes);
+      if (total > limit && auto && !sizedFromHeap)
+        sizeFromHeap();
       if (total <= limit) {
+        if (sizedFromHeap)
+          ensureAllocatable(total, estimatedBytes, component, detail);
         reserved = total;
         return;
       }
-      throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
+      throw refusal(estimatedBytes, component, detail);
+    }
+
+    /**
+     * Takes back from the page cache what a working set of {@code total} bytes needs, and refuses the call when the cache
+     * could not give it: the cache was counted in the budget, and holding its pages while allocating past the free heap is
+     * the out-of-memory error the budget exists to prevent. The cache gives back less than it was counted for when other
+     * readers emptied it meanwhile.
+     */
+    private void ensureAllocatable(final long total, final long estimatedBytes, final String component, final String detail) {
+      reclaimPageCacheFor(total);
+      if (total > allocatableLimit())
+        throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
+            + " bytes (" + detail + ")"
+            + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
+            + ", more than the " + allocatableLimit() + " bytes the heap can give it: " + freeHeap
+            + " bytes were free after the last collection and the page cache gave back " + cacheGivenBack() + " of the " + pageCache
+            + " bytes it held. Set " + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
+    }
+
+    private IllegalArgumentException refusal(final long estimatedBytes, final String component, final String detail) {
+      return new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
           + " bytes (" + detail + ")"
           + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
-          + ", more than the " + limit + " bytes allowed. Set "
-          + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
+          + ", more than the " + limit + " bytes allowed"
+          + (auto && freeHeap >= 0 ?
+          " (half of the " + freeHeap + " bytes of heap free after the last collection and the " + pageCache
+              + " bytes of page cache)" : "")
+          + ". Set " + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
     }
 
     /**
@@ -491,7 +585,36 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     public long capacityFor(final long bytesPerItem) {
       if (limit < 0 || bytesPerItem <= 0)
         return Long.MAX_VALUE;
-      return (limit - reserved) / bytesPerItem;
+      if (auto && !sizedFromHeap)
+        sizeFromHeap();
+      // Only what is free now: past the free heap, what the page cache already gave back. A walk that reaches the capacity asks
+      // for more with extendCapacity(), which takes the cache back first, so nothing is allocated against cached pages
+      return Math.max(0L, (allocatableLimit() - reserved) / bytesPerItem);
+    }
+
+    /**
+     * For a walk that sizes its own working set by {@link #capacityFor}: it has reached {@code items} items of
+     * {@code bytesPerItem}, the capacity it was given. Refuses the call when they do not fit the budget, with the message
+     * {@link #reserve} gives, or when the page cache cannot give back what they need, and otherwise answers the new capacity,
+     * at least {@code items}. Nothing is reserved: the walk reserves what it holds once it knows.
+     */
+    public long extendCapacity(final long items, final long bytesPerItem, final String component, final String detail) {
+      if (limit < 0 || bytesPerItem <= 0)
+        return Long.MAX_VALUE;
+      final long estimate = saturatingProduct(items, bytesPerItem);
+      final long total = saturatingSum(reserved, estimate);
+      if (total > limit)
+        throw refusal(estimate, component, detail);
+      if (sizedFromHeap)
+        ensureAllocatable(total, estimate, component, detail);
+      return Math.max(items, capacityFor(bytesPerItem));
+    }
+
+    /** The ceiling a working set can grow to without holding a page the cache has not given back yet. */
+    private long allocatableLimit() {
+      if (!sizedFromHeap || freeHeap < 0)
+        return limit;
+      return Math.min(limit, Math.max(withoutReclaim, saturatingSum(freeHeap, cacheGivenBack()) / 2));
     }
 
     /**
@@ -635,7 +758,37 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}.
    */
   protected MemoryBudget newMemoryBudget(final Database db) {
-    return new MemoryBudget(db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY));
+    final long configured = db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY);
+    if (configured != 0)
+      return new MemoryBudget(configured, false);
+    // 0: sized from the heap the call can get, never below the fixed budget it replaces (issue #11011)
+    return new MemoryBudget(fixedBudgetFloor(), true);
+  }
+
+  /**
+   * How many bytes of page cache an automatic budget must give up before a working set of {@code total} bytes is allocated:
+   * the budget lets a call take half of the free heap plus the cache, so past {@code withoutReclaim} the call holds pages
+   * the collector cannot take, and the cache must shrink until twice the working set fits the free heap and what it gave up.
+   * {@code alreadyReclaimed} is how much smaller the cache is than when the budget was sized, negative when it grew: the
+   * growth is given back too before it counts.
+   *
+   * @return the bytes still to reclaim, 0 when none
+   */
+  static long pageCacheToReclaim(final long total, final long freeHeap, final long withoutReclaim, final long alreadyReclaimed) {
+    if (total <= withoutReclaim || freeHeap < 0)
+      return 0L;
+    return Math.max(0L, saturatingProduct(total, 2) - freeHeap - alreadyReclaimed);
+  }
+
+  /**
+   * The floor of an automatic budget, and the fixed budget that used to be the default: one eighth of the maximum heap, never
+   * below 64MB, and 64MB when the heap is unbounded.
+   */
+  static long fixedBudgetFloor() {
+    final long maxHeap = HeapUsage.maxHeapBytes();
+    if (maxHeap == Long.MAX_VALUE)
+      return MIN_WORKING_MEMORY;
+    return Math.max(MIN_WORKING_MEMORY, maxHeap / 8);
   }
 
   /** Multiplies two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping. */
@@ -728,12 +881,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * @param memory     the call's budget
    */
   protected List<Vertex> loadVertices(final Database db, final String[] nodeLabels, final MemoryBudget memory) {
-    final long maxVertices = memory.capacityFor(OLTP_VERTEX_BYTES);
+    long maxVertices = memory.capacityFor(OLTP_VERTEX_BYTES);
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
     while (iter.hasNext()) {
       if (vertices.size() >= maxVertices)
-        memory.reserve(saturatingProduct(vertices.size() + 1L, OLTP_VERTEX_BYTES), "the loaded graph",
+        maxVertices = memory.extendCapacity(vertices.size() + 1L, OLTP_VERTEX_BYTES, "the loaded graph",
             "at least " + (vertices.size() + 1) + " nodes");
       vertices.add(iter.next());
     }

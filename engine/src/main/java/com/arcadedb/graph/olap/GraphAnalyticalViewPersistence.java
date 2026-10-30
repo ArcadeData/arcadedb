@@ -75,6 +75,7 @@ public class GraphAnalyticalViewPersistence {
    * Removes a GAV definition from the schema.
    */
   public static void remove(final Database database, final String name) {
+    GraphAnalyticalViewRegistry.clearFailure(database, name);
     final JSONObject allGavs = database.getSchema().getExtension(EXTENSION_KEY);
     if (allGavs != null && allGavs.has(name)) {
       allGavs.remove(name);

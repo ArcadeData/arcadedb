@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexMaintenanceSuspension;
@@ -362,9 +363,21 @@ public class GraphImporter implements AutoCloseable {
     for (final GraphAnalyticalView gav : GraphAnalyticalViewRegistry.getAll(database).values()) {
       if (gav.getStatus() != GraphAnalyticalView.Status.READY) {
         LogManager.instance().log(GraphImporter.class, Level.INFO, "Waiting for GraphAnalyticalView '%s' to finish building...", gav.getName());
-        gav.awaitReady(10, TimeUnit.MINUTES);
-        LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+        if (gav.awaitReady(10, TimeUnit.MINUTES))
+          LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+        else
+          // FAILED with its cause, or still building past the wait (issue #11011)
+          LogManager.instance().log(GraphImporter.class, Level.WARNING, "GraphAnalyticalView '%s' is not ready: %s%s", gav.getName(),
+              gav.getStatus(), gav.getBuildError() != null ? " (" + GraphAnalyticalView.describeBuildError(gav.getBuildError()) + ")" : "");
       }
+    }
+    // A view whose build failed before the loop above has left the registry, and only its recorded failure is left to report
+    for (final String name : GraphAnalyticalViewPersistence.getDefinitions(database).keySet()) {
+      final Throwable failure = GraphAnalyticalViewRegistry.get(database, name) == null ?
+          GraphAnalyticalViewRegistry.getFailure(database, name) : null;
+      if (failure != null)
+        LogManager.instance().log(GraphImporter.class, Level.WARNING, "GraphAnalyticalView '%s' is not ready: FAILED (%s)", name,
+            GraphAnalyticalView.describeBuildError(failure));
     }
   }
 

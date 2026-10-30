@@ -4697,6 +4697,9 @@ function showGavDetail(gavName) {
   // Status badge
   let statusClass = mvStatusBadgeClass(gav.status);
   html += "<p><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(gav.status || "UNKNOWN") + "</span></p>";
+  // Why the last build failed: the view holds nothing (FAILED) or serves its previous snapshot (STALE)
+  if (gav.buildError)
+    html += "<div class='mv-info-row text-danger'><span class='mv-info-label'>Build Error:</span> " + escapeHtml(gav.buildError) + "</div>";
 
   // Configuration info
   html += "<div class='mv-info-row'><span class='mv-info-label'>Vertex Types:</span> ";
@@ -5298,7 +5301,8 @@ function mvStatusDotClass(status) {
   if (s == "VALID" || s == "READY") return "mv-status-dot-valid";
   if (s == "BUILDING") return "mv-status-dot-building";
   if (s == "STALE") return "mv-status-dot-stale";
-  if (s == "ERROR") return "mv-status-dot-error";
+  // FAILED: a Graph Analytical View whose build threw and that has nothing to serve (issue #11011)
+  if (s == "ERROR" || s == "FAILED") return "mv-status-dot-error";
   return "mv-status-dot-valid";
 }
 
@@ -5307,7 +5311,7 @@ function mvStatusBadgeClass(status) {
   if (s == "VALID" || s == "READY") return "mv-status-badge-valid";
   if (s == "BUILDING") return "mv-status-badge-building";
   if (s == "STALE") return "mv-status-badge-stale";
-  if (s == "ERROR") return "mv-status-badge-error";
+  if (s == "ERROR" || s == "FAILED") return "mv-status-badge-error";
   return "mv-status-badge-valid";
 }
 
