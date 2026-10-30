@@ -83,8 +83,11 @@ class Issue10591NoRowCatalogRelationsTest {
       WHERE r.rolname !~ '^pg_'
       ORDER BY 1;""";
 
-  /** The relations ArcadeDB has no equivalent of, whose honest answer is no row at all. */
-  private static final List<String> NO_ROW_RELATIONS = List.of("pg_proc", "pg_trigger", "pg_auth_members", "pg_depend", "pg_rewrite",
+  /**
+   * The relations ArcadeDB has no equivalent of, whose honest answer is no row at all. pg_depend is not among them: it lists the
+   * dependencies of the indexes (issue #10842) and of every table on its schema and its row type (issue #10961).
+   */
+  private static final List<String> NO_ROW_RELATIONS = List.of("pg_proc", "pg_trigger", "pg_auth_members", "pg_rewrite",
       "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
 
   /** Functions, schema names and pgjdbc's own prefixes that match the relation pattern but name no relation. */

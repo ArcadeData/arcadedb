@@ -56,6 +56,9 @@ class Issue10842CatalogRelationPolicyTest {
   /** {@code pg_class} and {@code pg_constraint} as relations, the values pg_depend's classid and refclassid hold. */
   private static final int PG_CLASS      = 1259;
   private static final int PG_CONSTRAINT = 2606;
+  /** pg_namespace and pg_type, the other catalogs pg_depend names since issue #10961. */
+  private static final int PG_NAMESPACE  = 2615;
+  private static final int PG_TYPE       = 1247;
 
   /**
    * The catalog relations psql 17's {@code src/bin/psql/describe.c} reads (REL_17_STABLE), extracted from its SQL text: every
@@ -251,8 +254,8 @@ class Issue10842CatalogRelationPolicyTest {
       reached.add((String) row.get("relname"));
     assertThat(reached).containsExactly("Account[code,region]", "Account[note]", "Account[secret]");
 
-    // a table with no index has nothing depending on it
-    assertThat(resolve("select * from pg_depend where refobjid = " + oidOfClass("Plain")).rows).isEmpty();
+    // a table with no index has no index depending on it: only its row type does (issue #10961)
+    assertThat(resolve("select * from pg_depend where refobjid = " + oidOfClass("Plain") + " and classid = " + PG_CLASS).rows).isEmpty();
   }
 
   /**
@@ -297,15 +300,20 @@ class Issue10842CatalogRelationPolicyTest {
   void everyObjectPgDependNamesExists() {
     final Set<Integer> classes = oids("select oid from pg_class");
     final Set<Integer> constraints = oids("select oid from pg_constraint");
+    final Set<Integer> namespaces = oids("select oid from pg_namespace");
+    final Set<Integer> types = oids("select oid from pg_type");
     final List<Map<String, Object>> rows = resolve("select * from pg_depend").rows;
-    // the constraint index: its constraint, and the constraint's two columns; the plain index's column; the expression index's table
-    assertThat(rows).hasSize(5);
+    // the constraint index: its constraint, and the constraint's two columns; the plain index's column; the expression index's table;
+    // and for each of the two tables its schema and its row type on it (issue #10961)
+    assertThat(rows).hasSize(9);
     for (final Map<String, Object> row : rows) {
-      assertThat(of(number(row, "classid"), classes, constraints)).as("objid of %s", row).contains(number(row, "objid"));
-      assertThat(of(number(row, "refclassid"), classes, constraints)).as("refobjid of %s", row).contains(number(row, "refobjid"));
+      assertThat(of(number(row, "classid"), classes, constraints, namespaces, types)).as("objid of %s", row)
+          .contains(number(row, "objid"));
+      assertThat(of(number(row, "refclassid"), classes, constraints, namespaces, types)).as("refobjid of %s", row)
+          .contains(number(row, "refobjid"));
     }
     // and the count agrees with the rows
-    assertThat(number(resolve("select count(*) as n from pg_depend").rows.getFirst(), "n")).isEqualTo(5);
+    assertThat(number(resolve("select count(*) as n from pg_depend").rows.getFirst(), "n")).isEqualTo(9);
   }
 
   /** The columns of pg_depend are announced with PostgreSQL's types: oid and int4, and deptype as text. */
@@ -319,8 +327,15 @@ class Issue10842CatalogRelationPolicyTest {
 
   // ------------------------------------------------------------------------------------------------- helpers
 
-  private static Set<Integer> of(final int catalog, final Set<Integer> classes, final Set<Integer> constraints) {
-    return catalog == PG_CLASS ? classes : catalog == PG_CONSTRAINT ? constraints : Set.of();
+  private static Set<Integer> of(final int catalog, final Set<Integer> classes, final Set<Integer> constraints,
+      final Set<Integer> namespaces, final Set<Integer> types) {
+    return switch (catalog) {
+      case PG_CLASS -> classes;
+      case PG_CONSTRAINT -> constraints;
+      case PG_NAMESPACE -> namespaces;
+      case PG_TYPE -> types;
+      default -> Set.of();
+    };
   }
 
   private Set<Integer> oids(final String query) {
