@@ -2227,13 +2227,25 @@ public class PageManager extends LockContext {
     final ConcurrentMap<PageId, CachedPage> cache = readCache;
     if (cache == null)
       return;
-    for (final CachedPage page : cache.values())
-      // Conditional on the instance: a newer version a commit put in its place is not the scan's
-      if (page.getLoadedByBulkScan() == scan && cache.remove(page.getPageId(), page)) {
+    final boolean[] removed = new boolean[1];
+    for (final CachedPage page : cache.values()) {
+      if (page.getLoadedByBulkScan() != scan)
+        continue;
+      // Conditional on the instance, not on equals(), which matches any instance of the same version: a page another reader
+      // loaded and cached in its place is not the scan's, and neither is a newer version a commit put there
+      removed[0] = false;
+      cache.computeIfPresent(page.getPageId(), (id, current) -> {
+        if (current != page || current.getLoadedByBulkScan() != scan)
+          return current;
+        removed[0] = true;
+        return null;
+      });
+      if (removed[0]) {
         totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
         ++scan.releasedPages;
         scan.releasedBytes += page.getPhysicalSize();
       }
+    }
   }
 
   public void removePageFromCache(final PageId pageId) {
