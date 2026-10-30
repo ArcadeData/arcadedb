@@ -86,7 +86,8 @@ final class CypherIndexOptions {
   /**
    * The LSM_VECTOR metadata of a {@code CREATE VECTOR INDEX}. The Neo4j settings are {@code vector.dimensions} (ArcadeDB sizes
    * the index on it: when the statement does not give it, it is taken from {@code existingDimensions}, the length of a vector
-   * the indexed property already holds, as newer Neo4j versions infer it from the data, issue #10863),
+   * the indexed property already holds, as newer Neo4j versions infer it from the data, issue #10863, or, when the property
+   * holds none yet, from the first vector the index receives, issue #10915),
    * {@code vector.similarity_function} ({@code cosine}, the default, or {@code euclidean}),
    * {@code vector.hnsw.m} (the graph degree, doubled into {@code maxConnections} since JVector does not double it at the base
    * layer as Lucene's HNSW does), {@code vector.hnsw.ef_construction} ({@code beamWidth}), {@code vector.quantization.type}
@@ -174,11 +175,12 @@ final class CypherIndexOptions {
     if (!metadata.has("dimensions")) {
       // asked only now, so a statement that names the dimensions never reads the data
       final int inferred = existingDimensions.getAsInt();
-      if (inferred < 1)
-        throw new CommandParsingException("CREATE VECTOR INDEX needs the number of dimensions, and " + typeName + "."
-            + propertyNames[0] + " holds no vector yet to take it from: OPTIONS {indexConfig: {`" + VECTOR_DIMENSIONS
-            + "`: 768}}");
-      metadata.put("dimensions", inferred);
+      if (inferred > 0)
+        metadata.put("dimensions", inferred);
+      else
+        // no vector yet to take them from, the order of a script that creates the schema before the data: the index takes them
+        // from the first vector it receives (issue #10915)
+        metadata.put("sizeOnFirstVector", true);
     }
     if (!metadata.has("similarity"))
       metadata.put("similarity", "COSINE");
@@ -241,7 +243,9 @@ final class CypherIndexOptions {
     final Map<String, Object> settings = metadata.getUserSettingsDifferingFrom(
         new LSMVectorIndexMetadata(metadata.typeName, null, -1));
     final Map<String, Object> config = new LinkedHashMap<>();
-    config.put(VECTOR_DIMENSIONS, metadata.dimensions);
+    // an index still waiting for its first vector has none to list: its settings carry sizeOnFirstVector instead
+    if (metadata.dimensions > 0)
+      config.put(VECTOR_DIMENSIONS, metadata.dimensions);
     config.put(VECTOR_SIMILARITY, metadata.similarityFunction.name().toLowerCase(Locale.ROOT));
     settings.remove("dimensions");
     settings.remove("similarity");

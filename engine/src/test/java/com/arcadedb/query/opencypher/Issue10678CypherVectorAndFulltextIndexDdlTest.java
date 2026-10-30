@@ -111,8 +111,6 @@ class Issue10678CypherVectorAndFulltextIndexDdlTest extends TestHelper {
 
   @Test
   void aRefusedVectorIndexLeavesNothingBehind() {
-    assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e"))
-        .isInstanceOf(CommandParsingException.class).hasMessageContaining("vector.dimensions");
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3, "
         + "`vector.similarity_function`: 'manhattan'}}")).hasMessageContaining("manhattan");
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3, "
