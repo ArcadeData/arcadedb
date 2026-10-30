@@ -29,6 +29,7 @@ import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
@@ -73,11 +74,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // that score what getVector() returns must ask isDeletedSentinel() first and substitute their own floor.
   private final VectorFloat<?> deletedSentinelVector;
 
-  // Cache for graph building and search - dramatically speeds up repeated vector access.
-  // Lock-free and boxing-free to avoid mutex contention and Integer allocation on the hottest path of the
-  // engine (issue #5412). During search this instance is owned by the LSMVectorIndex and shared by every
-  // query, so a resident working set is not thrown away when a query ends.
+  // Cache for graph building - dramatically speeds up repeated vector access. Lock-free and boxing-free to avoid
+  // mutex contention and Integer allocation on the hottest path of the engine (issue #5412). Null for a search.
   private final VectorCache vectorCache;
+
+  // Cache for search, owned by the LSMVectorIndex and shared by every query, so a resident working set is not thrown
+  // away when a query ends (issue #5412). Flat storage scored in place (issue #11003): a search asks for a similarity
+  // ({@link #similarity}), not for a vector. Null for a build, and for a search with caching disabled.
+  private final FlatVectorCache searchCache;
 
   /**
    * Vectors by ordinal, only for a graph build whose cache holds the whole corpus (issue #9233). jvector asks for the
@@ -93,7 +97,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private ArcadePageVectorValues(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex locations, final boolean graphBuilding,
       final int[] ordinalToVectorId, final LSMVectorIndex lsmIndex, final VectorCache vectorCache,
-      final VectorFloat<?>[] byOrdinal) {
+      final FlatVectorCache searchCache, final VectorFloat<?>[] byOrdinal) {
     this.database = database;
     this.dimensions = dimensions;
     this.vectorPropertyName = vectorPropertyName;
@@ -102,6 +106,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     this.ordinalToVectorId = ordinalToVectorId;
     this.lsmIndex = lsmIndex;
     this.vectorCache = vectorCache;
+    this.searchCache = searchCache != null && searchCache.dimensions() == dimensions ? searchCache : null;
     this.byOrdinal = byOrdinal;
     this.deletedSentinelVector = createDeletedSentinelVector(dimensions);
   }
@@ -130,11 +135,11 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * its own 1024-entry one and dropped it on completion, so a graph traversal re-read from disk every vector any
    * previous query had already materialized.
    */
-  public static ArcadePageVectorValues forSearch(final DatabaseInternal database, final int dimensions,
+  static ArcadePageVectorValues forSearch(final DatabaseInternal database, final int dimensions,
       final String vectorPropertyName, final VectorLocationIndex locations, final int[] ordinalToVectorId,
-      final LSMVectorIndex lsmIndex, final VectorCache sharedCache) {
+      final LSMVectorIndex lsmIndex, final FlatVectorCache sharedCache) {
     return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, locations, false, ordinalToVectorId,
-        lsmIndex, sharedCache, null);
+        lsmIndex, null, sharedCache, null);
   }
 
   /**
@@ -177,7 +182,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     }
 
     return new ArcadePageVectorValues(database, dimensions, vectorPropertyName, snapshot, true, ordinalToVectorId, lsmIndex,
-        cache, flat);
+        cache, null, flat);
   }
 
   /**
@@ -219,13 +224,46 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
     final int vectorId = ordinalToVectorId[ordinal];
 
-    // Check cache first: during search this is the index-scoped cache shared by every query
+    // Check cache first: the build's own, or during search the index-scoped cache shared by every query
     if (vectorCache != null) {
       final VectorFloat<?> cached = vectorCache.get(vectorId);
       if (cached != null)
         return cached;
+    } else if (searchCache != null) {
+      final VectorFloat<?> cached = searchCache.get(vectorId);
+      if (cached != null)
+        return cached;
     }
 
+    return load(ordinal, vectorId);
+  }
+
+  /**
+   * The similarity {@code function} gives {@code query} and the vector at {@code ordinal}, or {@code NaN} when that vector
+   * cannot be read: the ordinals {@link #getVector} answers with the deleted sentinel.
+   * <p>
+   * This is how a search scores a graph node (issue #11003). A resident vector is scored where it lies in the index-scoped
+   * {@link FlatVectorCache}, with no vector materialized; one that is not is read as {@link #getVector} reads it, cached, and
+   * scored by the same kernel, so the walk ranks every node on the same numbers wherever its vector came from.
+   */
+  float similarity(final int ordinal, final VectorFloat<?> query, final VectorSimilarityFunction function) {
+    if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
+      return Float.NaN;
+
+    if (searchCache != null) {
+      final float resident = searchCache.similarity(ordinalToVectorId[ordinal], query, function);
+      if (!Float.isNaN(resident))
+        return resident;
+      final VectorFloat<?> vector = load(ordinal, ordinalToVectorId[ordinal]);
+      return vector == deletedSentinelVector ? Float.NaN : FlatVectorCache.similarity(function, query, vector, 0, dimensions);
+    }
+
+    final VectorFloat<?> vector = getVector(ordinal);
+    return vector == deletedSentinelVector ? Float.NaN : function.compare(query, vector);
+  }
+
+  /** Reads the vector of {@code vectorId} from where it is stored, and caches it. {@link #getVector} after its cache missed. */
+  private VectorFloat<?> load(final int ordinal, final int vectorId) {
     // One lookup, one word: the offset and the compacted flag come out together so they cannot be read from two
     // different generations, and nothing is materialized for an ordinal this method is only going to reject.
     final long offsetAndFlag = locations == null ? VectorLocationIndex.ABSENT : locations.getOffsetAndFlag(vectorId);
@@ -250,8 +288,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
             // Track fetch source for metrics
             lsmIndex.metrics.incrementVectorFetchFromGraph();
 
-            if (vectorCache != null)
-              vectorCache.put(vectorId, vector);
+            cache(vectorId, vector);
 
             return vector;
           }
@@ -279,8 +316,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           // Cache the result. The cache has a fixed capacity and evicts on collision, so it cannot grow
           // past its budget (issue #3144) and it adapts to the working set instead of freezing on the
           // first vectors loaded (issue #5412).
-          if (vectorCache != null)
-            vectorCache.put(vectorId, result);
+          cache(vectorId, result);
 
           return result;
         }
@@ -355,8 +391,8 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       // hold, until the database is closed. The search that read it still gets the value it read - the
       // transaction's own view of its own write is not this method's business to withhold - it simply does not
       // become everybody else's.
-      if (vectorCache != null && !isWrittenByCallingTransaction(rid))
-        vectorCache.put(vectorId, result);
+      if ((vectorCache != null || searchCache != null) && !isWrittenByCallingTransaction(rid))
+        cache(vectorId, result);
 
       return result;
 
@@ -369,6 +405,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, rid, e.getMessage());
       return deletedSentinelVector;
     }
+  }
+
+  private void cache(final int vectorId, final VectorFloat<?> vector) {
+    if (vectorCache != null)
+      vectorCache.put(vectorId, vector);
+    else if (searchCache != null)
+      searchCache.put(vectorId, vector);
   }
 
   /**

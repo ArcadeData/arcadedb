@@ -29,6 +29,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -167,6 +168,112 @@ class ContiguousPageIOTest {
 
       reader.close();
 
+    }
+  }
+
+  /**
+   * Issue #11003: the bulk reads ({@code read(int[])}, {@code read(float[])}, {@code readFully(long[])}) read a run of values
+   * off each page in one go, and the single-value reads take a fast path inside the page held. Pages of 256 bytes and a
+   * one-byte prefix put a value across every page boundary, so each bulk read has to split its run at every page and read the
+   * straddling value byte by byte, and must still return exactly what the writer wrote.
+   */
+  @Test
+  void bulkAndSingleReadsAgreeWithTheWriterAcrossPageBoundaries() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    try (Database database = factory.create()) {
+      final DatabaseInternal dbInternal = (DatabaseInternal) database;
+      database.begin();
+
+      final int pageSize = 256;
+      final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(dbInternal, "test-bulk-io", dbInternal.getDatabasePath(),
+          ComponentFile.MODE.READ_WRITE, pageSize);
+      final ContiguousPageWriter writer = new ContiguousPageWriter(dbInternal, graphFile.getFileId(), pageSize);
+
+      final int[] ints = new int[300];
+      final float[] floats = new float[300];
+      final long[] longs = new long[100];
+      for (int i = 0; i < ints.length; i++)
+        ints[i] = i * 0x01010101 - 7;
+      for (int i = 0; i < floats.length; i++)
+        floats[i] = i * -1.25f + 0.5f;
+      for (int i = 0; i < longs.length; i++)
+        longs[i] = i * 0x0102030405060708L + 3;
+
+      writer.write(0x5A);
+      final long intsAt = writer.position();
+      for (final int v : ints)
+        writer.writeInt(v);
+      final long floatsAt = writer.position();
+      for (final float v : floats)
+        writer.writeFloat(v);
+      final long longsAt = writer.position();
+      for (final long v : longs)
+        writer.writeLong(v);
+      final long totalBytes = writer.position();
+      writer.close();
+      database.commit();
+
+      final ContiguousPageReader reader = new ContiguousPageReader(dbInternal, graphFile.getFileId(), pageSize, totalBytes, 0L);
+
+      // Bulk, from the start of each run, and from an offset into the destination array
+      final int[] readInts = new int[ints.length + 3];
+      reader.seek(intsAt);
+      reader.read(readInts, 3, ints.length);
+      for (int i = 0; i < ints.length; i++)
+        assertThat(readInts[i + 3]).as("int %d", i).isEqualTo(ints[i]);
+      assertThat(reader.getPosition()).isEqualTo(floatsAt);
+
+      final float[] readFloats = new float[floats.length];
+      reader.read(readFloats, 0, floats.length);
+      assertThat(readFloats).containsExactly(floats);
+
+      final long[] readLongs = new long[longs.length];
+      reader.readFully(readLongs);
+      assertThat(readLongs).containsExactly(longs);
+      assertThat(reader.getPosition()).isEqualTo(totalBytes);
+
+      // One at a time, in reverse order so every read seeks
+      for (int i = ints.length - 1; i >= 0; i--) {
+        reader.seek(intsAt + (long) i * Integer.BYTES);
+        assertThat(reader.readInt()).as("int %d", i).isEqualTo(ints[i]);
+      }
+      for (int i = floats.length - 1; i >= 0; i--) {
+        reader.seek(floatsAt + (long) i * Float.BYTES);
+        assertThat(reader.readFloat()).as("float %d", i).isEqualTo(floats[i]);
+      }
+      for (int i = longs.length - 1; i >= 0; i--) {
+        reader.seek(longsAt + (long) i * Long.BYTES);
+        assertThat(reader.readLong()).as("long %d", i).isEqualTo(longs[i]);
+      }
+
+      // The byte reads agree with each other, into an array and into heap and direct buffers
+      final byte[] all = new byte[(int) totalBytes];
+      reader.seek(0);
+      reader.readFully(all);
+      assertThat(all[0]).isEqualTo((byte) 0x5A);
+      final ByteBuffer heap = ByteBuffer.allocate(all.length + 2);
+      heap.position(2);
+      reader.seek(0);
+      reader.readFully(heap);
+      assertThat(heap.position()).isEqualTo(all.length + 2);
+      final ByteBuffer direct = ByteBuffer.allocateDirect(all.length);
+      reader.seek(0);
+      reader.readFully(direct);
+      for (int i = 0; i < all.length; i++) {
+        assertThat(heap.get(i + 2)).as("heap byte %d", i).isEqualTo(all[i]);
+        assertThat(direct.get(i)).as("direct byte %d", i).isEqualTo(all[i]);
+      }
+
+      // Past the end of the data fails, whether the value would fit the page or not
+      reader.seek(totalBytes - 2);
+      assertThatThrownBy(reader::readInt).isInstanceOf(IOException.class);
+      reader.seek(longsAt);
+      assertThatThrownBy(() -> reader.read(new int[longs.length * 2 + 1], 0, longs.length * 2 + 1)).isInstanceOf(IOException.class);
+
+      reader.close();
     }
   }
 
