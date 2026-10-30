@@ -819,8 +819,8 @@ public class JsonSerializer {
    * Issue #4849: returns the temporal {@link Type} shared by every non-null element of {@code
    * collection} (the items of a LIST column or the values of a MAP column), or {@code null} when the
    * collection is empty, contains a non-temporal element, or mixes temporal types. Only the {@code
-   * DATETIME} family is reported: {@link
-   * Type#getTypeByClass(Class)} collapses every datetime variant onto {@code DATETIME}, which matches
+   * DATETIME} family is reported, plus {@code DATE} for {@link LocalDate} items (issue #10909).
+   * {@link Type#getTypeByClass(Class)} collapses every datetime variant onto {@code DATETIME}, which matches
    * the millisecond encoding that {@link com.arcadedb.serializer.json.JSONObject#objectToElement} uses
    * for array items, so the remote client can safely rebuild each item from the epoch-millis Number.
    */
@@ -832,7 +832,8 @@ public class JsonSerializer {
       if (!(element instanceof Temporal || element instanceof Date || element instanceof Calendar))
         return null;
       final Type t = Type.getTypeByClass(element.getClass());
-      if (t != Type.DATETIME)
+      // Issue #10909: a LocalDate item is a DATE, and goes out as its text, so it needs its hint as much as a DATETIME one
+      if (t != Type.DATETIME && !(t == Type.DATE && element instanceof LocalDate))
         return null;
       if (elementType == null)
         elementType = t;
