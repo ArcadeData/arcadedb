@@ -210,7 +210,13 @@ public class JsonSerializer {
 
         // Issue #10899: a non-finite DOUBLE is NOT faithful - it goes out as a NonFiniteNumbers marker string, which a
         // client with no hint for the column would hand back as that String instead of the number.
-        if (propertyType != null && (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value))) {
+        // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
+        // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
+        // tells the client the marker string stands for a number. Every other element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
+        if (propertyType != null && (type == null ?
+            (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
+            hintElementRow)) {
           if (!propertyTypes.isEmpty())
             propertyTypes.append(",");
           propertyTypes.append(propertyName).append(":").append(propertyType.getId());
@@ -254,7 +260,7 @@ public class JsonSerializer {
     // collapse it to Integer when it fits). Element rows already carry their type via @type and
     // the schema, so adding @props there would only change existing JSON shapes without benefit.
     // Issue #5812: gated behind includeTypeHints (off by default) - see the field javadoc.
-    if (type == null && propertyTypes != null && !propertyTypes.isEmpty())
+    if (propertyTypes != null && !propertyTypes.isEmpty())
       object.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes.toString());
 
     return object;
@@ -694,6 +700,22 @@ public class JsonSerializer {
   }
 
   /**
+   * Issue #10905: true when {@code value} is a non-finite {@code Float}/{@code Double}, or a LIST/MAP one of whose
+   * elements is - the values that go out as a {@code NonFiniteNumbers} marker string.
+   */
+  private static boolean carriesNonFinite(final Object value) {
+    if (value instanceof Double d)
+      return !Double.isFinite(d);
+    if (value instanceof Float f)
+      return !Float.isFinite(f);
+    if (value instanceof Collection<?> collection)
+      return detectNonFiniteFloatingElementType(collection) != null;
+    if (value instanceof Map<?, ?> map)
+      return detectNonFiniteFloatingElementType(map.values()) != null;
+    return false;
+  }
+
+  /**
    * Issue #8624: a primitive array is written straight into the JSON array. A vector embedding is a {@code float[]} of a
    * thousand elements or more, serialized once per search hit, and it used to be boxed into an intermediate list first,
    * each element then going back through the whole {@link #serializeObject} dispatch and {@link #convertNonNumbers}.
@@ -790,29 +812,38 @@ public class JsonSerializer {
    * {@code NonFiniteNumbers} marker string, and without the element-type hint the remote client would hand that string
    * back instead of the number. A collection of finite numbers is left alone: JSON already carries it faithfully enough
    * for the client, as it did before.
+   * <p>
+   * Issue #10905: a collection that mixes {@code Float} and {@code Double} (and integers a double holds exactly)
+   * reports DOUBLE: the hint is one type for the whole collection, and widening each of those to a double loses
+   * nothing. A collection holding any other kind of element (a {@code Long} a double cannot hold exactly, a
+   * {@code BigDecimal}, a string, ...) has no single type to name and still reports {@code null}.
    */
   private static Type detectNonFiniteFloatingElementType(final Collection<?> collection) {
-    Class<?> elementClass = null;
+    boolean floats = false;
+    boolean doubles = false;
+    boolean others = false;
     boolean nonFinite = false;
     for (final Object element : collection) {
       if (element == null)
         continue;
       if (element instanceof Float f) {
-        if (elementClass == Double.class)
-          return null;
-        elementClass = Float.class;
+        floats = true;
         nonFinite |= !Float.isFinite(f);
       } else if (element instanceof Double d) {
-        if (elementClass == Float.class)
-          return null;
-        elementClass = Double.class;
+        doubles = true;
         nonFinite |= !Double.isFinite(d);
-      } else
+      } else if (element instanceof Integer || element instanceof Short || element instanceof Byte)
+        others = true;
+      else if (element instanceof Long l && (long) (double) l == l)
+        others = true;
+      else
         return null;
     }
     if (!nonFinite)
       return null;
-    return elementClass == Float.class ? Type.FLOAT : Type.DOUBLE;
+    if (floats && !doubles && !others)
+      return Type.FLOAT;
+    return Type.DOUBLE;
   }
 
   /**
