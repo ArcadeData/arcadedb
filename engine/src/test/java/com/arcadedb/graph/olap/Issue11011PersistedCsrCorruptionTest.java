@@ -65,10 +65,15 @@ class Issue11011PersistedCsrCorruptionTest extends TestHelper {
       final int flips = 1 + random.nextInt(3);
       for (int f = 0; f < flips; f++)
         corrupt[random.nextInt(corrupt.length)] ^= (byte) (1 + random.nextInt(255));
-      // A flipped byte of the payload never reaches a caller: the checksum refuses what the bounds let through
-      final GraphAnalyticalView.Snapshot loaded = load(file, corrupt, txId);
-      if (loaded != null)
-        assertThat(loaded.nodeMapping.size()).isEqualTo(200);
+      // A flipped byte never reaches a caller: the checksum, over the whole file, refuses what the bounds let through
+      assertThat(load(file, corrupt, txId)).isNull();
+    }
+    // The header decides what the restored view claims to cover (its scanned edge types, the buckets of the edges it does
+    // not hold): every one of its bytes is checked, one at a time, since random flips rarely land there
+    for (int position = 0; position < Math.min(original.length, 512); position++) {
+      final byte[] corrupt = original.clone();
+      corrupt[position] ^= (byte) 0x5A;
+      assertThat(load(file, corrupt, txId)).as("byte %d flipped", position).isNull();
     }
     for (int i = 0; i < 100; i++)
       assertThat(load(file, Arrays.copyOf(original, random.nextInt(original.length)), txId)).isNull();

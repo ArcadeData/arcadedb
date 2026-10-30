@@ -520,12 +520,29 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       if (total > limit && auto && !sizedFromHeap)
         sizeFromHeap();
       if (total <= limit) {
-        reserved = total;
         if (sizedFromHeap)
-          reclaimPageCacheFor(total);
+          ensureAllocatable(total, estimatedBytes, component, detail);
+        reserved = total;
         return;
       }
       throw refusal(estimatedBytes, component, detail);
+    }
+
+    /**
+     * Takes back from the page cache what a working set of {@code total} bytes needs, and refuses the call when the cache
+     * could not give it: the cache was counted in the budget, and holding its pages while allocating past the free heap is
+     * the out-of-memory error the budget exists to prevent. The cache gives back less than it was counted for when other
+     * readers emptied it meanwhile.
+     */
+    private void ensureAllocatable(final long total, final long estimatedBytes, final String component, final String detail) {
+      reclaimPageCacheFor(total);
+      if (total > allocatableLimit())
+        throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
+            + " bytes (" + detail + ")"
+            + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
+            + ", more than the " + allocatableLimit() + " bytes the heap can give it: " + freeHeap
+            + " bytes were free after the last collection and the page cache gave back " + reclaimed + " of the " + pageCache
+            + " bytes it held. Set " + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
     }
 
     private IllegalArgumentException refusal(final long estimatedBytes, final String component, final String detail) {
@@ -565,8 +582,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     /**
      * For a walk that sizes its own working set by {@link #capacityFor}: it has reached {@code items} items of
      * {@code bytesPerItem}, the capacity it was given. Refuses the call when they do not fit the budget, with the message
-     * {@link #reserve} gives, and otherwise takes back from the page cache what they need and answers the new capacity, at
-     * least {@code items}. Nothing is reserved: the walk reserves what it holds once it knows.
+     * {@link #reserve} gives, or when the page cache cannot give back what they need, and otherwise answers the new capacity,
+     * at least {@code items}. Nothing is reserved: the walk reserves what it holds once it knows.
      */
     public long extendCapacity(final long items, final long bytesPerItem, final String component, final String detail) {
       if (limit < 0 || bytesPerItem <= 0)
@@ -576,7 +593,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       if (total > limit)
         throw refusal(estimate, component, detail);
       if (sizedFromHeap)
-        reclaimPageCacheFor(total);
+        ensureAllocatable(total, estimate, component, detail);
       return Math.max(items, capacityFor(bytesPerItem));
     }
 

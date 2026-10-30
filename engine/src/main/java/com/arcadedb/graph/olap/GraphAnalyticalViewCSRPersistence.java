@@ -51,6 +51,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
+import java.util.zip.CheckedInputStream;
+import java.util.zip.CheckedOutputStream;
 
 /**
  * Reads and writes a {@link GraphAnalyticalView}'s built CSR (adjacency indexes, node ID mapping and columnar
@@ -145,7 +147,10 @@ class GraphAnalyticalViewCSRPersistence {
       Files.createDirectories(parent.toPath());
     final File tmp = new File(parent, target.getName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
 
-    try (final DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(tmp), IO_BUFFER_SIZE))) {
+    // One checksum over the whole file, the header included: a header byte decides what the restored view claims to cover
+    final CRC32 crc = new CRC32();
+    try (final DataOutputStream out = new DataOutputStream(
+        new CheckedOutputStream(new BufferedOutputStream(new FileOutputStream(tmp), IO_BUFFER_SIZE), crc))) {
       out.writeInt(MAGIC);
       out.writeInt(FORMAT_VERSION);
       writeString(out, viewName);
@@ -161,8 +166,7 @@ class GraphAnalyticalViewCSRPersistence {
       // The payload is streamed to the file in frames rather than assembled in memory first: a buffer of the whole payload
       // held the view a second time, and its growth and the copy out of it a third, while the view was being written
       // (issue #11011)
-      final CRC32 crc = new CRC32();
-      final FramedOutputStream frames = new FramedOutputStream(out, crc, encryption);
+      final FramedOutputStream frames = new FramedOutputStream(out, encryption);
       final DataOutputStream payloadOut = new DataOutputStream(frames);
       writeNodeMapping(payloadOut, snapshot.nodeMapping);
       writeBucketColumns(payloadOut, snapshot.bucketColumns);
@@ -171,7 +175,8 @@ class GraphAnalyticalViewCSRPersistence {
       writeOptionalIntArrayMap(payloadOut, snapshot.bwdToFwd);
       payloadOut.flush();
       frames.finish();
-      out.writeLong(crc.getValue());
+      final long checksum = crc.getValue();
+      out.writeLong(checksum);
     } catch (final IOException | RuntimeException e) {
       Files.deleteIfExists(tmp.toPath());
       throw e;
@@ -375,7 +380,9 @@ class GraphAnalyticalViewCSRPersistence {
 
     // Every length the file declares is checked against what the file can hold before it sizes an allocation: the payload
     // is parsed as it is read, so its checksum is known only once the arrays are built
-    try (final BoundedInput in = new BoundedInput(new BufferedInputStream(new FileInputStream(file), IO_BUFFER_SIZE), file.length())) {
+    final CRC32 crc = new CRC32();
+    try (final BoundedInput in = new BoundedInput(
+        new CheckedInputStream(new BufferedInputStream(new FileInputStream(file), IO_BUFFER_SIZE), crc), file.length())) {
       if (in.readInt() != MAGIC || in.readInt() != FORMAT_VERSION)
         return null;
       if (!viewName.equals(readString(in))
@@ -396,8 +403,7 @@ class GraphAnalyticalViewCSRPersistence {
 
       // The payload is parsed while it streams in, frame by frame, so the view is held once while it is read back, not
       // once as the bytes read and again as the arrays built from them (issue #11011)
-      final CRC32 crc = new CRC32();
-      final FramedInputStream frames = new FramedInputStream(in, crc, encrypted ? encryption : null);
+      final FramedInputStream frames = new FramedInputStream(in, encrypted ? encryption : null);
       final BoundedInput payloadIn = new BoundedInput(frames, file.length());
       final NodeIdMapping mapping = readNodeMapping(payloadIn);
       final ColumnStore[] bucketColumns = readBucketColumns(payloadIn);
@@ -406,8 +412,10 @@ class GraphAnalyticalViewCSRPersistence {
       final Map<String, int[]> bwdToFwd = readOptionalIntArrayMap(payloadIn);
       frames.finish();
 
+      // Taken before the stored value is read, which the checked stream would add to it
+      final long computedCrc = crc.getValue();
       final long storedCrc = in.readLong();
-      if (crc.getValue() != storedCrc) {
+      if (computedCrc != storedCrc) {
         LogManager.instance().log(GraphAnalyticalViewCSRPersistence.class, Level.WARNING,
             "Persisted CSR for GraphAnalyticalView '%s' failed checksum verification, discarding and falling back to rebuild",
             null, viewName);
@@ -630,19 +638,17 @@ class GraphAnalyticalViewCSRPersistence {
 
   /**
    * Writes the payload as a sequence of frames of at most {@link #FRAME_SIZE} bytes, each prefixed with its stored length
-   * and encrypted on its own when the database encrypts, followed by a {@code -1} end marker. Every byte written goes
-   * through {@code crc}. Only one frame is held in memory, whatever the payload's size (issue #11011).
+   * and encrypted on its own when the database encrypts, followed by a {@code -1} end marker. The stream under it checksums
+   * what it writes. Only one frame is held in memory, whatever the payload's size (issue #11011).
    */
   private static final class FramedOutputStream extends OutputStream {
     private final DataOutputStream out;
-    private final CRC32            crc;
     private final DataEncryption   encryption;
     private final byte[]           frame = new byte[FRAME_SIZE];
     private       int              fill;
 
-    private FramedOutputStream(final DataOutputStream out, final CRC32 crc, final DataEncryption encryption) {
+    private FramedOutputStream(final DataOutputStream out, final DataEncryption encryption) {
       this.out = out;
-      this.crc = crc;
       this.encryption = encryption;
     }
 
@@ -669,7 +675,7 @@ class GraphAnalyticalViewCSRPersistence {
     /** Writes the last frame and the end marker. */
     void finish() throws IOException {
       writeFrame();
-      writeLength(-1);
+      out.writeInt(-1);
     }
 
     private void writeFrame() throws IOException {
@@ -677,31 +683,23 @@ class GraphAnalyticalViewCSRPersistence {
         return;
       final byte[] stored = encryption != null ? encryption.encrypt(Arrays.copyOf(frame, fill)) : frame;
       final int length = encryption != null ? stored.length : fill;
-      writeLength(length);
-      out.write(stored, 0, length);
-      crc.update(stored, 0, length);
-      fill = 0;
-    }
-
-    private void writeLength(final int length) throws IOException {
       out.writeInt(length);
-      updateWithInt(crc, length);
+      out.write(stored, 0, length);
+      fill = 0;
     }
   }
 
-  /** Reads what {@link FramedOutputStream} wrote, one frame in memory at a time, every byte through {@code crc}. */
+  /** Reads what {@link FramedOutputStream} wrote, one frame in memory at a time. */
   private static final class FramedInputStream extends InputStream {
     private final DataInputStream in;
-    private final CRC32           crc;
     private final DataEncryption  encryption;
     private       byte[]          frame = new byte[0];
     private       int             position;
     private       int             limit;
     private       boolean         ended;
 
-    private FramedInputStream(final DataInputStream in, final CRC32 crc, final DataEncryption encryption) {
+    private FramedInputStream(final DataInputStream in, final DataEncryption encryption) {
       this.in = in;
-      this.crc = crc;
       this.encryption = encryption;
     }
 
@@ -736,7 +734,6 @@ class GraphAnalyticalViewCSRPersistence {
       if (ended)
         return false;
       final int length = in.readInt();
-      updateWithInt(crc, length);
       if (length < 0) {
         ended = true;
         return false;
@@ -748,7 +745,6 @@ class GraphAnalyticalViewCSRPersistence {
       // consumed (position == limit), and nothing keeps a reference to its bytes
       final byte[] stored = encryption == null && frame.length >= length ? frame : new byte[length];
       in.readFully(stored, 0, length);
-      crc.update(stored, 0, length);
       if (encryption != null) {
         frame = encryption.decrypt(stored);
         limit = frame.length;
@@ -759,13 +755,5 @@ class GraphAnalyticalViewCSRPersistence {
       position = 0;
       return true;
     }
-  }
-
-  /** Feeds the four big-endian bytes of {@code value} to {@code crc}, as {@link DataOutputStream#writeInt} writes them. */
-  private static void updateWithInt(final CRC32 crc, final int value) {
-    crc.update(value >>> 24);
-    crc.update(value >>> 16);
-    crc.update(value >>> 8);
-    crc.update(value);
   }
 }
