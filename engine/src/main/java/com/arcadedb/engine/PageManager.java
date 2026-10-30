@@ -152,11 +152,14 @@ public class PageManager extends LockContext {
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
-  // Written under the page-manager lock only, hence the plain increments: no other writer may be added without making the
-  // increments atomic. A reader's two samples bracket its reads: the volatile write of the first increment is ordered before the
-  // page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
+  // Written only through beginPublication()/endPublication(), which serialize the increments on publicationGate: the page-manager
+  // lock does not cover the replicated apply (#10941), so the two kinds of publisher can overlap. A reader's two samples bracket
+  // its reads: the volatile write of the first increment is ordered before the page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
   // volatile cache reads, which is the ordering a seqlock needs without an explicit fence.
   private volatile long                               publicationSequence;
+  private final    Object                             publicationGate = new Object();
+  // Publications in flight, guarded by publicationGate: the sequence is odd exactly while this is above zero
+  private          int                                publicationsInFlight;
   private volatile int                                freePageRAM;
 
   /**
@@ -1916,10 +1919,9 @@ public class PageManager extends LockContext {
       // ODD WHILE THE PAGES OF ONE TRANSACTION ARE BEING PUBLISHED (#9369): they reach the read cache one by one, so a reader
       // can see the index page of the commit and the record page of the previous one. See getPublicationSequence().
       // Only the outermost publication moves the counter: the lock is reentrant, and an inner call that turned it even again while the
-      // outer one is still publishing would let a reader accept a torn state
-      final boolean outermost = (publicationSequence & 1) == 0;
-      if (outermost)
-        ++publicationSequence;
+      // outer one is still publishing would let a reader accept a torn state. beginPublication() counts the nesting, and it also
+      // keeps the counter odd while a replicated apply (#10941), which does not hold this lock, publishes at the same time
+      beginPublication();
       try {
         if (onPublicationStart != null)
           onPublicationStart.run();
@@ -1936,8 +1938,7 @@ public class PageManager extends LockContext {
       } finally {
         // Even again also when the publication failed midway: the cache then holds a partial publish, a failure path in which
         // the database is fenced anyway, and a sequence left odd would stall every lookup that waits for it
-        if (outermost)
-          ++publicationSequence;
+        endPublication();
       }
 
     } finally {
@@ -2231,8 +2232,31 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * A counter that moves twice for every transaction published by {@link #publishPages}: it is odd while the pages of one are
-   * being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
+   * Opens a publication: the pages of one transaction are about to reach the read cache one by one. The counter turns odd on the
+   * first one in flight, nested or concurrent ones only count. Every call must be paired with {@link #endPublication()} in a
+   * {@code finally}. {@link #publishPages} does it under the page-manager lock, the replicated apply (#10941) without it.
+   * Package-private: {@link TransactionManager} is the only other caller.
+   */
+  void beginPublication() {
+    synchronized (publicationGate) {
+      if (publicationsInFlight++ == 0)
+        ++publicationSequence;
+    }
+  }
+
+  /**
+   * Closes a publication opened by {@link #beginPublication()}: the counter turns even again when the last one in flight ends.
+   */
+  void endPublication() {
+    synchronized (publicationGate) {
+      if (--publicationsInFlight == 0)
+        ++publicationSequence;
+    }
+  }
+
+  /**
+   * A counter that moves twice for every transaction published by {@link #publishPages} or applied from the log of a replica: it
+   * is odd while the pages of one are being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
    * touches two of them - an index page and the record page it points to - can see them at different commits. Sampling this
    * before the first read and again after the last tells whether a commit overlapped: the two samples must be equal and even
    * for the reads to have seen one state (#9369). Reading it costs a volatile load and takes no lock. It does not cover
