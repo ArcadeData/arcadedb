@@ -241,6 +241,24 @@ class Issue11009DistinctSemiJoinTest {
     }
   }
 
+  /**
+   * The no-argument temporal functions answer from one clock per statement, so they are functions of nothing in a
+   * RETURN item and keep the semi-join: still one row per host.
+   */
+  @Test
+  void aStatementClockInTheReturnKeepsOneRowPerHost() {
+    final String query = BASE.replace("AS v", "AS v, datetime() AS t, date() AS d");
+    assertThat(explain(query, Map.of())).contains("SEMI JOIN");
+    assertThat(column(query, Map.of(), "v")).isEqualTo(
+        new ArrayList<>(new LinkedHashSet<>(column(BASE.replace("DISTINCT ", ""), Map.of(), "v"))));
+  }
+
+  @Test
+  void aTwoClauseQueryHasNoChainToRun() {
+    // MATCH ... RETURN DISTINCT has no clause between the binding and the RETURN: nothing to test per row
+    assertThat(explain("MATCH (h:Host) RETURN DISTINCT h.name AS v", Map.of())).doesNotContain("SEMI JOIN");
+  }
+
   @Test
   void anUncorrelatedChainRunsOnce() {
     // The chain reads nothing of its input row: its answer is the same for every row, and it is asked once
