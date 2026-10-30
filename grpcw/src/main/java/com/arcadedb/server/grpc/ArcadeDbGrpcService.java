@@ -819,7 +819,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (e instanceof ExecutionException && e.getCause() != null) {
         cause = e.getCause();
       }
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
+      GrpcErrorMapper.logFailure(this, "ERROR in executeCommand", cause);
 
       // Every failure now goes through GrpcErrorMapper and a gRPC error status, the same as createRecord,
       // beginTransaction, commitTransaction and graphBatchLoad - not just the leader refusal that needed the
@@ -1063,7 +1063,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     } catch (Exception e) {
 
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommandInternal", e);
+      // Not logged here: the exception is rethrown below and executeCommand logs it once, at the level its category earns (issue #10943)
 
       // Best-effort rollback if we began here and failed (only for non-external transactions)
       try {
@@ -1152,7 +1152,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         resp.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
+        GrpcErrorMapper.logFailure(this, "ERROR in createRecord (external tx)", cause);
         // Preserve the engine exception type (e.g. DuplicatedKeyException -> ALREADY_EXISTS with index/keys)
         // so the client can reconstruct it instead of receiving an opaque INTERNAL.
         if (!responded)
@@ -1168,7 +1168,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responded = true;
       resp.onCompleted();
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
+      GrpcErrorMapper.logFailure(this, "ERROR in createRecord", e);
       if (!responded)
         resp.onError(mapError(e, "CreateRecord"));
     }
@@ -1369,7 +1369,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", GrpcErrorMapper.unwrap(e));
+        GrpcErrorMapper.logFailure(this, "ERROR in updateRecord (external tx)", e);
         // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
@@ -1386,7 +1386,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responded = true;
       resp.onCompleted();
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
+      GrpcErrorMapper.logFailure(this, "ERROR in updateRecord", e);
       if (!responded)
         resp.onError(mapError(e, "UpdateRecord"));
     }
@@ -1519,7 +1519,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       throw e;
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
+      // Not logged here: rethrown to updateRecord, which logs it once (issue #10943)
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
       }
@@ -1559,7 +1559,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", GrpcErrorMapper.unwrap(e));
+        GrpcErrorMapper.logFailure(this, "ERROR in deleteRecord (external tx)", e);
         // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
@@ -1576,7 +1576,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responded = true;
       resp.onCompleted();
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
+      GrpcErrorMapper.logFailure(this, "ERROR in deleteRecord", e);
       if (!responded)
         resp.onError(mapError(e, "DeleteRecord"));
     }
@@ -1674,7 +1674,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (!txResponded)
             responseObserver.onError(sre);
         } else {
-          LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+          GrpcErrorMapper.logFailure(this, "Error executing query", cause);
           if (!txResponded)
             responseObserver.onError(mapError(cause, "Query execution failed"));
         }
@@ -1701,7 +1701,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (!responded)
         responseObserver.onError(e);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
+      GrpcErrorMapper.logFailure(this, "Error executing query", e);
       if (!responded)
         responseObserver.onError(mapError(e, "Query execution failed"));
     }

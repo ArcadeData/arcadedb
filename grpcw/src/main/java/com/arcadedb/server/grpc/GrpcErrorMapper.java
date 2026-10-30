@@ -367,6 +367,25 @@ public final class GrpcErrorMapper {
   }
 
   /**
+   * The level a failed RPC is logged at: {@code SEVERE} only for a fault the SERVER is responsible for, {@code FINE} for
+   * everything the caller can act on - above all a retryable conflict ({@link ErrorCategory#RETRY}, answered {@code ABORTED}),
+   * which a concurrent write workload produces by the hundred and the client simply repeats (issue #10943). The same split
+   * {@link #logConcealed} draws.
+   */
+  static Level failureLevel(final Throwable cause) {
+    return ErrorCategory.of(unwrap(cause)) == ErrorCategory.SERVER ? Level.SEVERE : Level.FINE;
+  }
+
+  /**
+   * Logs a failed RPC once, at {@link #failureLevel}. A handler that rethrows to the one that answers the client must not log
+   * as well: each failure used to be written twice (issue #10943).
+   */
+  static void logFailure(final Object requester, final String context, final Throwable cause) {
+    final Throwable root = unwrap(cause);
+    LogManager.instance().log(requester, failureLevel(root), context, root);
+  }
+
+  /**
    * The index name stays (schema metadata a driver needs to rebuild the typed exception); the KEY VALUES are stored
    * data, so in production the trailer carries {@link ArcadeDBServer#CONCEALED_DUPLICATED_KEYS} instead, the same
    * placeholder the HTTP {@code exceptionArgs} carries, so a client reads one value on either transport (issue #7760).
