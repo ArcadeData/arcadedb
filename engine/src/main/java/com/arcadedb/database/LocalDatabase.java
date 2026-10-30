@@ -1778,8 +1778,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
     try {
-      if (record instanceof MutableDocument document)
+      if (record instanceof MutableDocument document) {
+        // #10955: NEVER SAVE BACK A RECORD THAT LOST A PROPERTY IT COULD NOT DECODE
+        document.checkContentIsComplete();
         document.validate();
+      }
 
       // INVOKE EVENT CALLBACKS
       if (fireEvents) {
