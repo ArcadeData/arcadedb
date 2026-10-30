@@ -75,6 +75,31 @@ class Issue10905NonFiniteElementRowHintTest extends TestHelper {
   }
 
   @Test
+  void collectionWithALongADoubleCannotHoldExactlyGetsNoHint() {
+    // (double) Long.MAX_VALUE is 2^63, which the cast back to long saturates to Long.MAX_VALUE: the round trip only looks exact
+    final MutableDocument doc = document();
+    final List<Object> list = new ArrayList<>();
+    list.add(Double.NaN);
+    list.add(Long.MAX_VALUE);
+    doc.set("l", list);
+    assertThat(serialize(doc, true).has("@props")).isFalse();
+  }
+
+  @Test
+  void integerKindsADoubleHoldsExactlyKeepTheDoubleElementHint() {
+    final MutableDocument doc = document();
+    final List<Object> list = new ArrayList<>();
+    list.add(Double.NaN);
+    list.add((byte) 1);
+    list.add((short) 2);
+    list.add(3);
+    list.add(4L);
+    list.add(Long.MIN_VALUE);
+    doc.set("l", list);
+    assertThat(serialize(doc, true).getString("@props")).isEqualTo("l:" + Type.LIST.getId() + "(" + Type.DOUBLE.getId() + ")");
+  }
+
+  @Test
   void rowWithoutAnUndeclaredNonFiniteValueKeepsItsShape() {
     final MutableDocument doc = document();
     doc.set("declared", Double.NaN).set("u", 1.5D).set("s", "NaN");

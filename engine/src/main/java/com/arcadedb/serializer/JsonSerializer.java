@@ -214,9 +214,10 @@ public class JsonSerializer {
         // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
         // tells the client the marker string stands for a number. Every other element row keeps its shape.
         final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
-        if (propertyType != null && (type == null ?
+        final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
-            hintElementRow)) {
+            hintElementRow);
+        if (hint) {
           if (!propertyTypes.isEmpty())
             propertyTypes.append(",");
           propertyTypes.append(propertyName).append(":").append(propertyType.getId());
@@ -258,7 +259,8 @@ public class JsonSerializer {
     // Issue #4267: emit per-column type hints for synthetic (non-element) result rows so HTTP
     // clients can restore the original Java type (e.g. count(*) is a long; JSON would otherwise
     // collapse it to Integer when it fits). Element rows already carry their type via @type and
-    // the schema, so adding @props there would only change existing JSON shapes without benefit.
+    // the schema, so they get @props only for a property the schema does not declare whose value is non-finite
+    // (issue #10905); every other element row keeps its shape.
     // Issue #5812: gated behind includeTypeHints (off by default) - see the field javadoc.
     if (propertyTypes != null && !propertyTypes.isEmpty())
       object.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes.toString());
@@ -834,7 +836,8 @@ public class JsonSerializer {
         nonFinite |= !Double.isFinite(d);
       } else if (element instanceof Integer || element instanceof Short || element instanceof Byte)
         others = true;
-      else if (element instanceof Long l && (long) (double) l == l)
+      // (double) Long.MAX_VALUE is 2^63, which the cast back saturates to Long.MAX_VALUE: the round trip only looks exact
+      else if (element instanceof Long l && l != Long.MAX_VALUE && (long) (double) l == l)
         others = true;
       else
         return null;
