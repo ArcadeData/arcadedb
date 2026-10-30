@@ -150,6 +150,7 @@ import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.VertexPredicate;
 import com.arcadedb.query.opencypher.executor.steps.QuantifiedPathStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
+import com.arcadedb.query.opencypher.executor.steps.SemiJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
@@ -179,6 +180,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
+import com.arcadedb.query.sql.executor.ExecutionStepInternal;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -236,6 +238,8 @@ public class CypherExecutionPlan {
 
   // Query-level counter for unique anonymous variable names across MATCH clauses
   private int anonymousVarCounter = 0;
+  // Set when a semi-join chain was planned but did not read the row it is handed: the plan is then built without one
+  private boolean semiJoinDisabled = false;
 
   /** See {@link #foldedCountPlan()}: null until computed, empty when there is nothing to fold. */
   private volatile Optional<CypherExecutionPlan> foldedCountPlan;
@@ -1823,8 +1827,20 @@ public class CypherExecutionPlan {
     // The one-row source the clauses start from (the dummy row, or the seed row of a CALL subquery body), or null
     final AbstractExecutionStep singleRowSource = currentStep;
 
+    // The clauses a RETURN DISTINCT needs only for whether a row survives run as the chain of a SemiJoinStep (#11009).
+    // A look-ahead that consumes the start clause together with the one before it leaves the plan as it was.
+    final DistinctSemiJoin.Plan semiJoin =
+        initialStep == null && !semiJoinDisabled ? DistinctSemiJoin.plan(statement, clausesInOrder) : null;
+    AbstractExecutionStep semiJoinOuter = null;
+    SemiJoinStep.ChainInputStep semiJoinInput = null;
+
     // Process clauses in order (indexed loop to support look-ahead for optimizations)
     for (int entryIndex = 0; entryIndex < clausesInOrder.size(); entryIndex++) {
+      if (semiJoin != null && entryIndex == semiJoin.start() && currentStep != null) {
+        semiJoinOuter = currentStep;
+        semiJoinInput = new SemiJoinStep.ChainInputStep(context);
+        currentStep = semiJoinInput;
+      }
       final ClauseEntry entry = clausesInOrder.get(entryIndex);
       switch (entry.getType()) {
       case UNWIND:
@@ -2074,6 +2090,19 @@ public class CypherExecutionPlan {
       }
     }
 
+    if (semiJoinOuter != null) {
+      if (!feedsFrom(currentStep, semiJoinInput)) {
+        // A step that started a source of its own instead of reading the row it was handed would answer the same for
+        // every input row: plan the statement again without the semi-join rather than risk it
+        semiJoinDisabled = true;
+        return buildExecutionStepsWithOrder(context, clausesInOrder, initialStep, correlation, seedVariableNames);
+      }
+      final SemiJoinStep semiJoinStep = new SemiJoinStep(semiJoinInput, currentStep, semiJoin.distinctKey(),
+          semiJoin.memoKey(), context);
+      semiJoinStep.setPrevious(semiJoinOuter);
+      currentStep = semiJoinStep;
+    }
+
     // Apply statement-level WHERE clause if present
     if (statement.getWhereClause() != null && currentStep != null) {
       final FilterPropertiesStep filterStep = new FilterPropertiesStep(statement.getWhereClause(), context);
@@ -2162,6 +2191,15 @@ public class CypherExecutionPlan {
     }
 
     return currentStep;
+  }
+
+  /** Whether {@code source} is reached from {@code end} through the steps' previous links. */
+  private static boolean feedsFrom(final AbstractExecutionStep end, final AbstractExecutionStep source) {
+    for (ExecutionStepInternal step = end; step != null; step = step instanceof AbstractExecutionStep abstractStep ?
+        abstractStep.getPrev() : null)
+      if (step == source)
+        return true;
+    return false;
   }
 
   /**

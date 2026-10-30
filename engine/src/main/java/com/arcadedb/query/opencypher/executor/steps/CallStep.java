@@ -270,10 +270,13 @@ public class CallStep extends AbstractExecutionStep {
           if (currentIter != null && currentIter.hasNext()) {
             final ResultInternal converted = convertItemToResult(currentIter.next());
             if (hasYield) {
-              final ResultInternal filtered = applyYieldToSingleResult(converted);
-              if (filtered != null) {
+              // YIELD ... WHERE sees every variable in scope, not only the yielded ones, so it is evaluated against
+              // the merged row: evaluated against the yielded fields alone, a predicate on an outer variable read it
+              // as null and dropped every row (issue #11008)
+              final ResultInternal merged = mergeWithInputRow(currentInputRow, projectYield(converted));
+              if (passesYieldWhere(merged)) {
                 currentYielded = true;
-                next = mergeWithInputRow(currentInputRow, filtered);
+                next = merged;
                 return true;
               }
             } else {
@@ -706,21 +709,20 @@ public class CallStep extends AbstractExecutionStep {
    * Returns null if the result is filtered out by YIELD WHERE.
    */
   private ResultInternal applyYieldToSingleResult(final ResultInternal input) {
+    final ResultInternal output = projectYield(input);
+    return passesYieldWhere(output) ? output : null;
+  }
+
+  /** Renames the yielded fields to their output names, dropping the fields YIELD does not name. */
+  private ResultInternal projectYield(final ResultInternal input) {
     final ResultInternal output = new ResultInternal();
-
-    for (final CallClause.YieldItem yieldItem : callClause.getYieldItems()) {
-      final Object value = input.getProperty(yieldItem.getFieldName());
-      output.setProperty(yieldItem.getOutputName(), value);
-    }
-
-    // Apply YIELD WHERE if present
-    if (callClause.getYieldWhere() != null) {
-      final boolean matches = callClause.getYieldWhere().getConditionExpression().evaluate(output, context);
-      if (!matches)
-        return null;
-    }
-
+    for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
+      output.setProperty(yieldItem.getOutputName(), input.getProperty(yieldItem.getFieldName()));
     return output;
+  }
+
+  private boolean passesYieldWhere(final Result row) {
+    return callClause.getYieldWhere() == null || callClause.getYieldWhere().getConditionExpression().evaluate(row, context);
   }
 
   /**

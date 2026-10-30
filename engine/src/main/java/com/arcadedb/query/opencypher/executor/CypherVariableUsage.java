@@ -19,11 +19,13 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -133,100 +135,11 @@ public final class CypherVariableUsage {
     //    whitespace (e.g. "any(item IN r0.k8 WHERE ...)" becomes "any(itemINr0.k8WHERE...)"), which
     //    silently defeats a word-boundary text scan whenever a keyword ends right where the variable
     //    begins - "r0" no longer starts a word once it is glued to the "N" of "IN" (issue #6567).
-    //    Use clausesInOrder to cover everything: RETURN, WHERE, WITH, UNWIND, SET, DELETE, etc.
-    if (statement.getClausesInOrder() != null) {
-      for (final ClauseEntry entry : statement.getClausesInOrder()) {
-        switch (entry.getType()) {
-        case RETURN: {
-          final ReturnClause rc = entry.getTypedClause();
-          for (final ReturnClause.ReturnItem item : rc.getReturnItems())
-            if (expressionReferencesVariable(item.getExpression(), variable))
-              return true;
-          break;
-        }
-        case WITH: {
-          final WithClause wc = entry.getTypedClause();
-          for (final ReturnClause.ReturnItem item : wc.getItems())
-            if (expressionReferencesVariable(item.getExpression(), variable))
-              return true;
-          if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null)
-            if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable))
-              return true;
-          break;
-        }
-        case UNWIND: {
-          final UnwindClause uc = entry.getTypedClause();
-          if (expressionReferencesVariable(uc.getListExpression(), variable))
-            return true;
-          break;
-        }
-        case SET: {
-          // The edge variable can be the assignment target (SET r.prop = ...) or appear inside the
-          // value/target expression (SET u.x = CASE WHEN r IS NOT NULL ...). Checking only the target
-          // variable dropped the edge binding when it was used solely on the right-hand side (issue #5137).
-          final SetClause sc = entry.getTypedClause();
-          for (final SetClause.SetItem item : sc.getItems()) {
-            if (variable.equals(item.getVariable()))
-              return true;
-            if (item.getValueExpression() != null
-                && expressionReferencesVariable(item.getValueExpression(), variable))
-              return true;
-            if (item.getTargetExpression() != null
-                && expressionReferencesVariable(item.getTargetExpression(), variable))
-              return true;
-            if (labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
-              return true;
-          }
-          break;
-        }
-        case REMOVE: {
-          // REMOVE r.prop / REMOVE r:Label keeps the edge binding alive. Missing this dropped the
-          // edge binding, so a top-level REMOVE on a relationship property silently found no edge
-          // and became a no-op unless the edge was also projected through WITH (issue #5013).
-          final RemoveClause rc = entry.getTypedClause();
-          for (final RemoveClause.RemoveItem item : rc.getItems())
-            if (variable.equals(item.getVariable())
-                || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
-              return true;
-          break;
-        }
-        case DELETE: {
-          final DeleteClause dc = entry.getTypedClause();
-          if (deleteReferencesVariable(dc, variable))
-            return true;
-          break;
-        }
-        case FOREACH: {
-          // FOREACH can reference the edge variable in its list expression (e.g. FOREACH (x IN [r] | ...))
-          // or inside any of its inner write clauses. Missing this dropped the edge binding, so DELETE
-          // inside FOREACH silently found no edge (issue #4912).
-          final ForeachClause fc = entry.getTypedClause();
-          if (foreachReferencesVariable(fc, variable))
-            return true;
-          break;
-        }
-        case SUBQUERY: {
-          // A scoped CALL (r) { ... } imports the edge variable, and CALL { WITH r ... } references it in
-          // the inner statement. Missing this dropped the edge binding, so DELETE inside a CALL subquery
-          // silently found no edge (issue #4913).
-          final SubqueryClause sq = entry.getTypedClause();
-          if (subqueryReferencesVariable(sq, variable))
-            return true;
-          break;
-        }
-        case CREATE:
-        case MERGE:
-          // Inline property expressions inside a top-level CREATE/MERGE pattern may reference the
-          // variable (e.g. CREATE (c {prop: r.x})). Enumerating them cheaply is awkward, so stay
-          // conservative like foreachReferencesVariable's own CREATE/MERGE case: keep the edge binding.
-          // A false positive only forgoes the CSR/GAV fast path; a false negative would silently drop
-          // a still-referenced edge (the class of bug this method exists to prevent - issue #6573).
+    //    Use clausesInOrder to cover everything: RETURN, WHERE, WITH, UNWIND, SET, DELETE, CALL, etc.
+    if (statement.getClausesInOrder() != null)
+      for (final ClauseEntry entry : statement.getClausesInOrder())
+        if (clauseReadsVariable(entry, variable))
           return true;
-        default:
-          break;
-        }
-      }
-    }
 
     // 3. Check statement-level WHERE, ORDER BY (may not be in clausesInOrder)
     if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
@@ -272,53 +185,10 @@ public final class CypherVariableUsage {
     if (foreachClause.getListExpression() != null
         && expressionReferencesVariable(foreachClause.getListExpression(), variable))
       return true;
-    if (foreachClause.getInnerClauses() != null) {
-      for (final ClauseEntry inner : foreachClause.getInnerClauses()) {
-        switch (inner.getType()) {
-        case DELETE:
-          if (deleteReferencesVariable(inner.getTypedClause(), variable))
-            return true;
-          break;
-        case SET: {
-          final SetClause sc = inner.getTypedClause();
-          for (final SetClause.SetItem item : sc.getItems()) {
-            if (variable.equals(item.getVariable()))
-              return true;
-            if (item.getValueExpression() != null
-                && expressionReferencesVariable(item.getValueExpression(), variable))
-              return true;
-            if (item.getTargetExpression() != null
-                && expressionReferencesVariable(item.getTargetExpression(), variable))
-              return true;
-            if (labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
-              return true;
-          }
-          break;
-        }
-        case REMOVE: {
-          final RemoveClause rc = inner.getTypedClause();
-          for (final RemoveClause.RemoveItem item : rc.getItems())
-            if (variable.equals(item.getVariable())
-                || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
-              return true;
-          break;
-        }
-        case FOREACH:
-          if (foreachReferencesVariable(inner.getTypedClause(), variable))
-            return true;
-          break;
-        case CREATE:
-        case MERGE:
-          // Inline property expressions inside CREATE/MERGE patterns may reference the variable.
-          // Enumerating them cheaply is awkward, so stay conservative: keep the edge binding.
-          // A false positive only forgoes the GAV/CSR fast path; a false negative would silently
-          // drop a still-referenced edge (the class of bug this method exists to prevent).
+    if (foreachClause.getInnerClauses() != null)
+      for (final ClauseEntry inner : foreachClause.getInnerClauses())
+        if (clauseReadsVariable(inner, variable))
           return true;
-        default:
-          break;
-        }
-      }
-    }
     return false;
   }
 
@@ -355,69 +225,92 @@ public final class CypherVariableUsage {
     }
     if (inner.getClausesInOrder() == null)
       return false;
-    for (final ClauseEntry entry : inner.getClausesInOrder()) {
-      switch (entry.getType()) {
-      case WITH: {
-        final WithClause wc = entry.getTypedClause();
-        for (final ReturnClause.ReturnItem item : wc.getItems())
-          if (expressionReferencesVariable(item.getExpression(), variable))
-            return true;
-        if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null
-            && expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable))
-          return true;
-        break;
-      }
-      case UNWIND:
-        if (expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression(), variable))
-          return true;
-        break;
-      case SET: {
-        final SetClause sc = entry.getTypedClause();
-        for (final SetClause.SetItem item : sc.getItems()) {
-          if (variable.equals(item.getVariable()))
-            return true;
-          if (item.getValueExpression() != null
-              && expressionReferencesVariable(item.getValueExpression(), variable))
-            return true;
-          if (item.getTargetExpression() != null
-              && expressionReferencesVariable(item.getTargetExpression(), variable))
-            return true;
-          if (labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
-            return true;
-        }
-        break;
-      }
-      case REMOVE: {
-        final RemoveClause rc = entry.getTypedClause();
-        for (final RemoveClause.RemoveItem item : rc.getItems())
-          if (variable.equals(item.getVariable())
-              || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
-            return true;
-        break;
-      }
-      case DELETE:
-        if (deleteReferencesVariable(entry.getTypedClause(), variable))
-          return true;
-        break;
-      case RETURN: {
-        final ReturnClause rc = entry.getTypedClause();
-        for (final ReturnClause.ReturnItem item : rc.getReturnItems())
-          if (expressionReferencesVariable(item.getExpression(), variable))
-            return true;
-        break;
-      }
-      case FOREACH:
-        if (foreachReferencesVariable(entry.getTypedClause(), variable))
-          return true;
-        break;
-      case SUBQUERY:
-        if (subqueryReferencesVariable(entry.getTypedClause(), variable))
-          return true;
-        break;
-      default:
-        break;
-      }
+    for (final ClauseEntry entry : inner.getClausesInOrder())
+      if (clauseReadsVariable(entry, variable))
+        return true;
+    return false;
+  }
+
+  /**
+   * Returns true if one clause reads {@code variable} in an expression of its own. This is the one place that
+   * answers it per clause type, for the statement, for a {@code CALL} body and for a {@code FOREACH} body alike, and
+   * it is a switch EXPRESSION over every {@link ClauseEntry.ClauseType} on purpose: a new clause type does not
+   * compile until it states what it reads here. The hand-rolled statement switches this replaced each had a
+   * {@code default} that answered "reads nothing", which is how a relationship read only by a procedure
+   * {@code CALL}'s arguments or {@code YIELD ... WHERE}, or by a {@code LOAD CSV} URL, lost its binding and was
+   * read as {@code null} (issue #11008).
+   * <p>
+   * A {@code MATCH} answers false here because the caller reads it differently: a re-mention of the variable in a
+   * pattern is counted against the pattern that binds it, and a {@code MATCH ... WHERE} is checked with the
+   * statement's own predicates.
+   */
+  private static boolean clauseReadsVariable(final ClauseEntry entry, final String variable) {
+    return switch (entry.getType()) {
+    case MATCH, FINISH -> false;
+    case RETURN -> returnItemsReadVariable(((ReturnClause) entry.getTypedClause()).getReturnItems(), variable);
+    case WITH -> {
+      final WithClause wc = entry.getTypedClause();
+      yield returnItemsReadVariable(wc.getItems(), variable)
+          || wc.getWhereClause() != null && expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable);
     }
+    case UNWIND -> expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression(), variable);
+    // The edge variable can be the assignment target (SET r.prop = ...) or appear inside the value/target
+    // expression (SET u.x = CASE WHEN r IS NOT NULL ...). Checking only the target variable dropped the edge
+    // binding when it was used solely on the right-hand side (issue #5137).
+    case SET -> setReadsVariable(entry.getTypedClause(), variable);
+    // REMOVE r.prop / REMOVE r:Label keeps the edge binding alive. Missing this dropped the edge binding, so a
+    // top-level REMOVE on a relationship property silently found no edge and became a no-op unless the edge was
+    // also projected through WITH (issue #5013).
+    case REMOVE -> removeReadsVariable(entry.getTypedClause(), variable);
+    case DELETE -> deleteReferencesVariable(entry.getTypedClause(), variable);
+    // FOREACH can reference the edge variable in its list expression (e.g. FOREACH (x IN [r] | ...)) or inside any
+    // of its inner write clauses. Missing this dropped the edge binding, so DELETE inside FOREACH silently found no
+    // edge (issue #4912).
+    case FOREACH -> foreachReferencesVariable(entry.getTypedClause(), variable);
+    // A scoped CALL (r) { ... } imports the edge variable, and CALL { WITH r ... } references it in the inner
+    // statement. Missing this dropped the edge binding, so DELETE inside a CALL subquery silently found no edge
+    // (issue #4913).
+    case SUBQUERY -> subqueryReferencesVariable(entry.getTypedClause(), variable);
+    // A procedure call reads the row in its arguments, and its YIELD ... WHERE reads it too (issue #11008).
+    case CALL -> {
+      final CallClause cc = entry.getTypedClause();
+      boolean found = cc.getYieldWhere() != null
+          && expressionReferencesVariable(cc.getYieldWhere().getConditionExpression(), variable);
+      for (int i = 0; !found && i < cc.getArguments().size(); i++)
+        found = expressionReferencesVariable(cc.getArguments().get(i), variable);
+      yield found;
+    }
+    // LOAD CSV FROM r.url: the URL is an expression of the row (issue #11008).
+    case LOAD_CSV -> expressionReferencesVariable(((LoadCSVClause) entry.getTypedClause()).getUrlExpression(), variable);
+    // Inline property expressions inside a CREATE/MERGE pattern may reference the variable (e.g.
+    // CREATE (c {prop: r.x})). Enumerating them cheaply is awkward, so stay conservative: keep the edge binding.
+    // A false positive only forgoes the CSR/GAV fast path; a false negative would silently drop a still-referenced
+    // edge (the class of bug this method exists to prevent - issue #6573).
+    case CREATE, MERGE -> true;
+    };
+  }
+
+  private static boolean returnItemsReadVariable(final List<ReturnClause.ReturnItem> items, final String variable) {
+    for (final ReturnClause.ReturnItem item : items)
+      if (expressionReferencesVariable(item.getExpression(), variable))
+        return true;
+    return false;
+  }
+
+  private static boolean removeReadsVariable(final RemoveClause removeClause, final String variable) {
+    for (final RemoveClause.RemoveItem item : removeClause.getItems())
+      if (variable.equals(item.getVariable()) || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+        return true;
+    return false;
+  }
+
+  private static boolean setReadsVariable(final SetClause setClause, final String variable) {
+    for (final SetClause.SetItem item : setClause.getItems())
+      if (variable.equals(item.getVariable())
+          || expressionReferencesVariable(item.getValueExpression(), variable)
+          || expressionReferencesVariable(item.getTargetExpression(), variable)
+          || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+        return true;
     return false;
   }
 
