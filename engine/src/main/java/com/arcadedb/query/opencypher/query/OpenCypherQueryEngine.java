@@ -1582,8 +1582,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       stats.incIndexesAdded();
   }
 
-  /** The index one type got from a {@code CREATE INDEX}, and whether the type already had an equivalent one. */
-  private record BuiltIndex(TypeIndex index, boolean existedBefore) {
+  /**
+   * The index one type got from a {@code CREATE INDEX}, whether the type already had an equivalent one, and the properties the
+   * statement declared on the type for it (what a later failure of the same statement has to take back).
+   */
+  private record BuiltIndex(TypeIndex index, boolean existedBefore, String typeName, List<String> declared) {
   }
 
   /**
@@ -1622,9 +1625,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     final List<String> indexNames = new ArrayList<>(labels.size());
     final List<String> owned = new ArrayList<>(labels.size());
+    final List<BuiltIndex> builtSoFar = new ArrayList<>(labels.size());
     try {
       for (int i = 0; i < labels.size(); i++) {
         final BuiltIndex built = buildTypeIndex(ddl, schema, labels.get(i), propertyNames, null, metadata.get(i));
+        builtSoFar.add(built);
         indexNames.add(built.index().getName());
         if (!built.existedBefore())
           owned.add(built.index().getName());
@@ -1640,6 +1645,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
         } catch (final RuntimeException dropFailure) {
           e.addSuppressed(dropFailure);
         }
+      // the properties the statement declared for the indexes it just dropped go too, or the types keep a declaration nobody
+      // asked for, which coerces every later write (issue #8999)
+      for (final BuiltIndex built : builtSoFar)
+        for (final String declared : built.declared())
+          try {
+            final DocumentType type = schema.getType(built.typeName());
+            if (type.existsProperty(declared))
+              type.dropProperty(declared);
+          } catch (final RuntimeException dropFailure) {
+            e.addSuppressed(dropFailure);
+          }
       throw e;
     }
 
@@ -1742,7 +1758,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         if (bucketIndex instanceof LSMVectorIndex vectorIndex)
           vectorIndex.buildVectorGraphNow();
 
-    return new BuiltIndex(created, existedBefore);
+    return new BuiltIndex(created, existedBefore, typeName, declaredHere);
   }
 
   /**

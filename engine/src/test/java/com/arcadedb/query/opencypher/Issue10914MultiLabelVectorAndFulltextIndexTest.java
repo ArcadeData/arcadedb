@@ -163,6 +163,20 @@ class Issue10914MultiLabelVectorAndFulltextIndexTest extends TestHelper {
   }
 
   @Test
+  void aFailedStatementDropsThePropertiesItDeclaredOnTheTypesItAlreadyBuilt() {
+    command("CREATE (:Foo {id: 'f', e: [1.0, 0.0]})");
+    command("CREATE (:Bar {id: 'b', e: [1.0, 0.0, 0.0]})");
+    // the vector property is declared by the statement on a type that has none yet; the failing second type must undo it
+    database.getSchema().getType("Foo").dropProperty("e");
+    database.getSchema().getType("Bar").dropProperty("e");
+
+    assertThatThrownBy(() -> command("CREATE VECTOR INDEX mixed FOR (n:Foo|Bar) ON n.e"))
+        .isInstanceOf(CommandParsingException.class);
+    assertThat(database.getSchema().getType("Foo").existsProperty("e")).isFalse();
+    assertThat(database.getSchema().getType("Bar").existsProperty("e")).isFalse();
+  }
+
+  @Test
   void ifNotExistsReusesAPerTypeIndexAlreadyThere() {
     command("CREATE FULLTEXT INDEX pre FOR (n:Article) ON EACH [n.title, n.body]");
 
