@@ -150,6 +150,7 @@ import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.VertexPredicate;
 import com.arcadedb.query.opencypher.executor.steps.QuantifiedPathStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
+import com.arcadedb.query.opencypher.executor.steps.SemiJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
@@ -1823,8 +1824,18 @@ public class CypherExecutionPlan {
     // The one-row source the clauses start from (the dummy row, or the seed row of a CALL subquery body), or null
     final AbstractExecutionStep singleRowSource = currentStep;
 
+    // The clauses from semiJoinStart on only decide whether a row survives: they run as the chain of a SemiJoinStep
+    final int semiJoinStart = initialStep == null ? semiJoinStart(clausesInOrder) : -1;
+    AbstractExecutionStep semiJoinOuter = null;
+    SemiJoinStep.ChainInputStep semiJoinInput = null;
+
     // Process clauses in order (indexed loop to support look-ahead for optimizations)
     for (int entryIndex = 0; entryIndex < clausesInOrder.size(); entryIndex++) {
+      if (entryIndex == semiJoinStart && currentStep != null) {
+        semiJoinOuter = currentStep;
+        semiJoinInput = new SemiJoinStep.ChainInputStep(context);
+        currentStep = semiJoinInput;
+      }
       final ClauseEntry entry = clausesInOrder.get(entryIndex);
       switch (entry.getType()) {
       case UNWIND:
@@ -2074,6 +2085,12 @@ public class CypherExecutionPlan {
       }
     }
 
+    if (semiJoinOuter != null) {
+      final SemiJoinStep semiJoinStep = new SemiJoinStep(semiJoinInput, currentStep, context);
+      semiJoinStep.setPrevious(semiJoinOuter);
+      currentStep = semiJoinStep;
+    }
+
     // Apply statement-level WHERE clause if present
     if (statement.getWhereClause() != null && currentStep != null) {
       final FilterPropertiesStep filterStep = new FilterPropertiesStep(statement.getWhereClause(), context);
@@ -2162,6 +2179,122 @@ public class CypherExecutionPlan {
     }
 
     return currentStep;
+  }
+
+  /**
+   * The index of the first clause a read-only {@code RETURN DISTINCT} needs only for whether a row survives, or -1.
+   * <p>
+   * From that clause on nothing binds a name the RETURN items or the ORDER BY read: every row the remaining clauses
+   * produce carries its input row's values for those names, unchanged, and DISTINCT folds all those rows into one. Only
+   * whether there is one decides the result, so they run as the chain of a {@link SemiJoinStep}, which stops at the
+   * first. The remaining clauses are MATCH and OPTIONAL MATCH, and WITHs that forward every read name as it is and
+   * neither aggregate, deduplicate, order, skip nor limit: those all look across rows, which a per-row test can't do.
+   * The earliest such clause is taken, the one that answers for every row of the fewest variables.
+   */
+  private int semiJoinStart(final List<ClauseEntry> clausesInOrder) {
+    final ReturnClause returnClause = statement.getReturnClause();
+    final int returnIndex = clausesInOrder.size() - 1;
+    if (returnClause == null || !returnClause.isDistinct() || returnClause.hasAggregations() || returnClause.isReturnAll()
+        || statement.getWhereClause() != null || !statement.isReadOnly() || returnIndex < 2
+        || clausesInOrder.get(returnIndex).getType() != ClauseEntry.ClauseType.RETURN)
+      return -1;
+
+    final Set<String> readNames = new HashSet<>();
+    final Set<String> returnNames = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (item.isStar() || !addReadNames(item.getExpression(), readNames))
+        return -1;
+      returnNames.add(item.getOutputName());
+    }
+    if (statement.getOrderByClause() != null)
+      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+        final Set<String> orderNames = new HashSet<>();
+        if (!addReadNames(item.getExpressionAST(), orderNames))
+          return -1;
+        orderNames.removeAll(returnNames);
+        readNames.addAll(orderNames);
+      }
+    if (readNames.isEmpty())
+      return -1;
+
+    final Set<String> scope = new HashSet<>();
+    for (int start = 0; start < returnIndex; start++) {
+      if (start > 0 && scope.containsAll(readNames) && isSemiJoinChain(clausesInOrder, start, returnIndex, readNames))
+        return start;
+      if (!applyClauseToScope(clausesInOrder.get(start), scope))
+        return -1;
+    }
+    return -1;
+  }
+
+  /** Adds the names {@code expression} reads to {@code target}, or answers false when they can't all be told. */
+  private static boolean addReadNames(final Expression expression, final Set<String> target) {
+    if (expression == null)
+      return false;
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
+    if (!referenced.isComplete())
+      return false;
+    target.addAll(referenced.getNames());
+    return true;
+  }
+
+  /** Applies what a MATCH, WITH or UNWIND leaves bound to {@code scope}, or answers false for any other clause. */
+  private static boolean applyClauseToScope(final ClauseEntry entry, final Set<String> scope) {
+    switch (entry.getType()) {
+    case MATCH:
+      collectPatternVariables((MatchClause) entry.getTypedClause(), scope);
+      return true;
+    case WITH:
+      applyProjectionToScope(((WithClause) entry.getTypedClause()).getItems(), scope);
+      return true;
+    case UNWIND:
+      scope.add(((UnwindClause) entry.getTypedClause()).getVariable());
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  /** Whether the clauses {@code [from, to)} can run as a {@link SemiJoinStep} chain for rows bound to {@code readNames}. */
+  private static boolean isSemiJoinChain(final List<ClauseEntry> clausesInOrder, final int from, final int to,
+      final Set<String> readNames) {
+    boolean matches = false;
+    for (int i = from; i < to; i++) {
+      final ClauseEntry entry = clausesInOrder.get(i);
+      switch (entry.getType()) {
+      case MATCH:
+        matches = true;
+        break;
+      case WITH:
+        final WithClause with = entry.getTypedClause();
+        if (with.isLetBinding() || with.isDistinct() || with.hasAggregations() || with.getOrderByClause() != null
+            || with.getSkip() != null || with.getLimit() != null || !forwardsUnchanged(with, readNames))
+          return false;
+        break;
+      default:
+        return false;
+      }
+    }
+    return matches;
+  }
+
+  /** Whether {@code with} passes every one of {@code names} on as it is, and binds none of them to anything else. */
+  private static boolean forwardsUnchanged(final WithClause with, final Set<String> names) {
+    boolean star = false;
+    final Set<String> forwarded = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : with.getItems()) {
+      if (item.isStar()) {
+        star = true;
+        continue;
+      }
+      final String name = item.getOutputName();
+      if (!names.contains(name))
+        continue;
+      if (!(item.getExpression() instanceof VariableExpression variable) || !name.equals(variable.getVariableName()))
+        return false;
+      forwarded.add(name);
+    }
+    return star || forwarded.containsAll(names);
   }
 
   /**
