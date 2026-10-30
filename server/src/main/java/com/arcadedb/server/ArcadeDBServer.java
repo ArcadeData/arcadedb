@@ -1605,11 +1605,19 @@ public class ArcadeDBServer {
    * acknowledged, and be destroyed by the swap. Called by the restore right after {@link #reserveDatabaseNameForRestore}, and
    * NOT under {@link #getDatabasesLock()}: the wait lasts as long as the slowest commit in flight, and every open on this
    * server contends on that monitor.
+   * <p>
+   * Under HA the commits made on OTHER nodes are not commits of this database: a replica runs phase 1 of its own and ships the
+   * entry, which the leader may have accepted before the claim and not applied yet. The HA plugin holds the database for the
+   * restore from here (issue #10974), refusing those entries from now on and waiting for the ones already accepted, until
+   * {@link #releaseDatabaseNameReservedForRestore} ends the hold.
    */
   public void awaitCommitsInFlightOn(final String databaseName) {
     final ServerDatabase target = databases.get(databaseName);
     if (target != null && target.isOpen() && target.getEmbedded() instanceof LocalDatabase local)
       local.awaitCommitsInFlight();
+    final HAServerPlugin ha = haServer;
+    if (ha != null)
+      ha.holdReplicatedWritesForRestore(databaseName);
   }
 
   /**
@@ -1627,6 +1635,10 @@ public class ArcadeDBServer {
       if (registered != null && registered.getEmbedded() instanceof LocalDatabase local)
         local.acceptWrites(RESTORE_WRITE_REFUSAL);
     }
+    // The hold awaitCommitsInFlightOn took on the writes other nodes replicate through this one (issue #10974)
+    final HAServerPlugin ha = haServer;
+    if (ha != null)
+      ha.releaseReplicatedWritesForRestore(databaseName);
   }
 
   /**

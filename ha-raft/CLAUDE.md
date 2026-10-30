@@ -60,7 +60,7 @@ The shutdown trigger has a counterintuitive consequence when reproducing durabil
 
 Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : localPeerId`, or the leader directly). They are not factored into a shared helper, so a fix applied to one silently leaves the others wrong and the cluster API response internally inconsistent.
 
-**Any change to what "replica" means must be applied to all three.** This has already caused one incomplete fix that review caught, twice: the second time (#7040) `/api/v1/cluster` learned to tell a declared peer from a member of the live Raft configuration while these three still iterated the static `raftGroup.getPeers()`. Since then the membership itself comes from one place - `ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers()`, read through `RaftHAServer.configuredPeers()` - and `GetClusterHandler` reads the same reconciliation. Grep `RaftHAServer.java` for `raftGroup.getPeers()` before claiming such a fix is complete: the only legitimate direct readers left are the ones that want the *declared* list on purpose (`getConfiguredServers()`, `getDeclaredPeers()`, the presence matrix, the membership reconciliation itself).
+**Any change to what "replica" means must be applied to all three.** This has already caused one incomplete fix that review caught, twice: the second time (#7040) `/api/v1/cluster` learned to tell a declared peer from a member of the live Raft configuration while these three still iterated the static `raftGroup.getPeers()`. Since then the membership itself comes from one place - `ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers()`, read through `RaftHAServer.configuredPeers()` - and `GetClusterHandler` reads the same reconciliation. Grep `RaftHAServer.java` for `raftGroup.getPeers()` before claiming such a fix is complete: the only legitimate direct readers left are the ones that want the *declared* list on purpose (`getConfiguredServers()`, `getDeclaredPeers()`, the membership reconciliation itself).
 
 **Addresses follow the same rule as membership (#10861).** A peer that joined at runtime (the Kubernetes auto-join,
 `addPeer`) is in the live configuration only, so every path that turns a peer into an ADDRESS for a client or an
@@ -68,10 +68,14 @@ operator must see it: `peerRaftAddress()` asks the live configuration first and 
 the configuration dropped still resolves, the step-down and handoff paths rely on it), `routingTableFor` resolves each
 reader from the `RaftPeer` it iterates, and the reporting / fan-out loops (`getPeerHttpEndpoints`,
 `unambiguousPeerAddress`, `getClusterPeers`, the logout revocation, `VERIFY DATABASE`) iterate `knownPeers()`, the server
-list reconciled with the live configuration. Before that the Bolt `ROUTE` table silently dropped every joined pod and
+list reconciled with the live configuration. The presence matrix of `GET /api/v1/cluster?presence=true` iterates the same
+reconciliation through the `ClusterMembership` sample its response's `peers` array is built from (#10933), so a joined pod is
+a row of the matrix or listed `unreachable`, never absent from both. Before that the Bolt `ROUTE` table silently dropped every joined pod and
 `/api/v1/cluster` reported it without an `httpAddress`, although the leader replicated to it and had learnt its address.
 
 `getDeclaredPeers()` is the newest of those (#7136): `RaftClusterStatusExporter` reconciles the declared list against the committed membership itself, to decide which declared peers are still *pending a join* rather than *removed*. It reads the committed side through `getCommittedPeersOrNull()`, not `getLivePeers()` - the latter substitutes the declared list when the division is unreadable, and folding that fallback into the "have I ever seen this peer committed" record would mark every declared peer as once-committed and silence the convergence note for good. A caller that must not mistake the declared list for a committed membership reads `getCommittedPeersOrNull()` and treats `null` as "no information this tick".
+
+**A precondition of a membership change reads the committed configuration too, whatever class it lives in (#10937).** `RaftHAServer.addPeer` runs its duplicate-address refusal (#7515) and its reachability probe (#7514) against `RaftClusterManager.readCommittedConfiguration`, the bounded read the compare-and-set is built from, not `getLivePeers()`: in the window where the division is unreadable the declared list makes a declared peer that is not a member read as one, and both checks skip it.
 
 ## A peer's HTTP address is LEARNT, and the capability round is what writes it
 

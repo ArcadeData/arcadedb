@@ -677,13 +677,17 @@ function renderPresenceMatrix(data) {
   var nodes = presence.nodes || [];
   var dbs = presence.databases || [];
   var unreachable = presence.unreachable || [];
+  // Declared nodes the live configuration does not hold (issue #10933): what they lack is not a replication gap
+  var notInConfiguration = presence.notInConfiguration || [];
 
   var html = '<div class="table-responsive"><table class="table table-sm table-bordered" style="font-size:0.8rem;">';
   html += '<thead><tr><th>Database</th>';
   for (var n = 0; n < nodes.length; n++) {
     var isUnreachable = unreachable.indexOf(nodes[n]) >= 0;
+    var isNotMember = notInConfiguration.indexOf(nodes[n]) >= 0;
     html += '<th title="' + escapeHtml(nodes[n]) + '">' + escapeHtml(nodes[n])
-      + (isUnreachable ? ' <span class="badge bg-secondary">unreachable</span>' : '') + '</th>';
+      + (isUnreachable ? ' <span class="badge bg-secondary">unreachable</span>' : '')
+      + (isNotMember ? ' <span class="badge bg-warning text-dark">not in configuration</span>' : '') + '</th>';
   }
   html += '</tr></thead><tbody>';
 

@@ -471,7 +471,15 @@ public class RaftTransactionBroker {
    * Replicates an install-database entry so replicas create or snapshot-sync the database.
    */
   public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {
-    final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(dbName, forceSnapshot);
+    replicateInstallDatabase(dbName, forceSnapshot, -1L);
+  }
+
+  /**
+   * As {@link #replicateInstallDatabase(String, boolean)}, fenced to the term of the restore hold (issue #10974) when
+   * {@code restoreFenceTerm} is not negative, see {@link RaftLogEntryCodec#encodeInstallDatabaseEntry(String, boolean, long)}.
+   */
+  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long restoreFenceTerm) {
+    final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(dbName, forceSnapshot, restoreFenceTerm);
     groupCommitter.submitAndWait(entry.toByteArray());
   }
 
@@ -483,7 +491,15 @@ public class RaftTransactionBroker {
    * knows whether waiting for the local apply is required (issue #7641, review of PR #7649).
    */
   public long replicateDropDatabase(final String dbName) {
-    final ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(dbName);
+    return replicateDropDatabase(dbName, -1L);
+  }
+
+  /**
+   * As {@link #replicateDropDatabase(String)}, fenced to the term of the restore hold (issue #10974) when {@code restoreFenceTerm}
+   * is not negative, see {@link RaftLogEntryCodec#encodeDropDatabaseEntry(String, long)}.
+   */
+  public long replicateDropDatabase(final String dbName, final long restoreFenceTerm) {
+    final ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(dbName, restoreFenceTerm);
     return groupCommitter.submitAndWait(entry.toByteArray());
   }
 

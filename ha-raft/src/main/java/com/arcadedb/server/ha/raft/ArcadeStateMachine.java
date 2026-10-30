@@ -599,6 +599,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final ConcurrentHashMap<String, Integer> databasesExclusiveOnLeader = new ConcurrentHashMap<>();
 
   /**
+   * The databases a restore on this server holds from its claim to its release (issue #10974): transaction entries of other
+   * nodes for them are refused exactly as during a {@link #beginLeaderExclusive leader-exclusive} operation. Owned by the
+   * {@link RaftHAServer}, which hands the same set to every state machine it creates ({@link #shareRestoreHolds}), so a hold
+   * taken before an in-place Ratis restart still stands after it; a machine outside a Raft server keeps its own.
+   */
+  private volatile Set<String> databasesHeldForRestore = ConcurrentHashMap.newKeySet();
+
+  /**
    * Per database, the Raft log index of the last schema-changing entry this node applied (issue #8686). The leader holds a
    * transaction entry up against it: one whose originator says it was prepared at an older index was built against a
    * schema the cluster has moved past, and is refused. Deliberately an index of the LOG and not the schema's own version
@@ -1479,6 +1487,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
     }
 
+    // The drop and the install of a restore are fenced to the leadership that held the database for it (issue #10974): a restore
+    // whose leader lost the leadership would otherwise reach the next leader through the Ratis client's resend, and replace the
+    // database under the writes that leader accepted. Decoded only for these two types, which carry nothing but a name and a flag
+    if (localClientId != null && content != null && !content.isEmpty()) {
+      final RaftLogEntryType type = RaftLogEntryType.fromId(content.byteAt(0));
+      if (type == RaftLogEntryType.DROP_DATABASE_ENTRY || type == RaftLogEntryType.INSTALL_DATABASE_ENTRY) {
+        final NeedRetryException refusal;
+        try {
+          final RaftLogEntryCodec.DecodedEntry fenced = RaftLogEntryCodec.decode(content);
+          refusal = staleRestoreRefusal(fenced.databaseName(), fenced.restoreFenceTerm(), isLocalOrigin);
+        } catch (final RuntimeException e) {
+          return context.build().setException(e);
+        }
+        if (refusal != null) {
+          LogManager.instance().log(this, Level.WARNING, "%s", refusal.getMessage());
+          return context.build().setException(refusal);
+        }
+      }
+    }
+
     // A transaction entry is validated here against the page versions the log has assigned so far (issue #6965):
     // one validated on its originating node against a version the log has already moved past is refused before Ratis
     // touches it, through the context's exception. That reply is exactly the retryable
@@ -1513,7 +1541,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // claims the same next version as the DDL's embedded WAL and the followers would splice the two; the write lock that
     // excludes the leader's own writers says nothing about a replica's. Only entries of other nodes: the leader's own
     // writers are already excluded by that lock. The check is repeated after the reservation below.
-    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+    // A restore holding the database (issue #10974) refuses them for the same reason, see holdForRestore.
+    if (!isLocalOrigin && refusesEntriesOfOtherNodes(databaseName)) {
       HALog.log(this, HALog.DETAILED, "Refusing a transaction of another node on database '%s': the leader is running an exclusive operation on it",
           databaseName);
       return context.build().setException(exclusiveOperationRefusal(databaseName));
@@ -1569,7 +1598,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // registers and reserve just after. Registration happens BEFORE the operation waits for the reservations in flight
     // (beginLeaderExclusive), so an entry either sees the registration here and backs out, or its reservation is one the
     // operation waits for. Neither order lets it slip in unseen.
-    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+    if (!isLocalOrigin && refusesEntriesOfOtherNodes(databaseName)) {
       pageVersions.release(databaseName, pages, decoded.walData());
       return context.build().setException(exclusiveOperationRefusal(databaseName));
     }
@@ -1626,6 +1655,32 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return new NeedRetryException("Refused a schema change on database '" + databaseName + "' allocated in Raft term "
           + sessionTerm + " while this leader is in term " + term + ": entries committed by the leaders in between can "
           + "already use the file ids it allocated. Please retry");
+    return null;
+  }
+
+  /**
+   * Why the leader must not append a drop or an install of {@code databaseName} fenced to {@code restoreFenceTerm}, or {@code null}
+   * when it may (issue #10974). A restore fences them to the term in which its leader held the database: from another node the
+   * entry is the resend of a leader that lost the leadership during the restore, and in another term this leader was elected again
+   * after an interim leader accepted writes; either way the swap it completes would destroy them. An entry without the fence (a
+   * drop or an install no restore made, or one written by a build without the section) is not refused here.
+   * <p>
+   * The term is read here, before Ratis appends: if this node is deposed in between, Ratis itself refuses the append, because a
+   * leader only appends in its own term. Refused through the context, so the entry reaches no node.
+   */
+  // @VisibleForTesting
+  NeedRetryException staleRestoreRefusal(final String databaseName, final long restoreFenceTerm, final boolean isLocalOrigin) {
+    if (restoreFenceTerm < 0)
+      return null;
+    if (!isLocalOrigin)
+      return new NeedRetryException("Refused the drop or install of database '" + databaseName + "' of a restore run by another "
+          + "node: a restore replaces a database from the leader, so this is the resend of a node that lost the leadership while "
+          + "restoring it, and the writes accepted since would be destroyed. Please retry the restore on the leader");
+    final long term = currentRaftTerm();
+    if (term != restoreFenceTerm)
+      return new NeedRetryException("Refused the drop or install of database '" + databaseName + "' of a restore that held it in "
+          + "Raft term " + restoreFenceTerm + " while this leader is in term " + term + ": the leaders in between may have accepted "
+          + "writes the restore would destroy. Please retry the restore");
     return null;
   }
 
@@ -1724,8 +1779,54 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
-    return new NeedRetryException("Database '" + databaseName + "' is running a schema change, or being dropped or "
-        + "reinstalled, on the leader, so the leader cannot accept a transaction on it right now. Please retry");
+    return new NeedRetryException("Database '" + databaseName + "' is running a schema change, or being dropped, "
+        + "reinstalled or restored, on the leader, so the leader cannot accept a transaction on it right now. Please retry");
+  }
+
+  /**
+   * Whether a transaction entry of another node for {@code databaseName} must be refused because this leader runs an operation
+   * on it that such an entry must not interleave with: a {@link #beginLeaderExclusive leader-exclusive} one, or a restore
+   * holding it ({@link #holdForRestore}). Two lock-free map lookups.
+   */
+  private boolean refusesEntriesOfOtherNodes(final String databaseName) {
+    return databaseName != null && (databasesExclusiveOnLeader.containsKey(databaseName) || databasesHeldForRestore.contains(
+        databaseName));
+  }
+
+  /**
+   * Holds {@code databaseName} for a restore that has just claimed it (issue #10974), until {@link #releaseRestoreHold}: from
+   * here on, transaction entries of other nodes for it are refused with a retryable error, and the call returns once the entries
+   * this leader had already accepted for it - their page versions reserved, not applied yet - are applied. Without the wait such
+   * an entry, accepted before the claim, would be appended and acknowledged to its client during the download, and destroyed
+   * by the swap and the snapshot the restore then forces onto every node.
+   * <p>
+   * The same order as {@link #beginLeaderExclusive}, the registration before the wait, and the same bound. Not counted like
+   * that registration: a restore claims a database once (the backup coordinator refuses a second restore of it), and a hold
+   * taken again by the same restore must still end with one release.
+   *
+   * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up; the hold stands either way
+   */
+  boolean holdForRestore(final String databaseName, final long drainTimeoutMs) {
+    databasesHeldForRestore.add(databaseName);
+    return awaitReservationsApplied(databaseName, drainTimeoutMs);
+  }
+
+  /** Ends the hold {@link #holdForRestore} took; a database not held is left alone. */
+  void releaseRestoreHold(final String databaseName) {
+    databasesHeldForRestore.remove(databaseName);
+  }
+
+  /** Whether a restore holds {@code databaseName}, see {@link #holdForRestore}. */
+  boolean isHeldForRestore(final String databaseName) {
+    return databasesHeldForRestore.contains(databaseName);
+  }
+
+  /**
+   * Makes this machine read and write {@code holds} as its restore holds, see {@link #databasesHeldForRestore}. Called by the
+   * {@link RaftHAServer} before the machine is handed to Ratis.
+   */
+  void shareRestoreHolds(final Set<String> holds) {
+    this.databasesHeldForRestore = holds;
   }
 
   /**
@@ -1755,6 +1856,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   boolean beginLeaderExclusive(final String databaseName, final long drainTimeoutMs) {
     databasesExclusiveOnLeader.merge(databaseName, 1, Integer::sum);
+    return awaitReservationsApplied(databaseName, drainTimeoutMs);
+  }
+
+  /**
+   * Waits, at most {@code drainTimeoutMs}, for the page versions the log has reserved on {@code databaseName} to be applied
+   * here. Never throws; an interruption ends the wait and re-sets the interrupt flag.
+   *
+   * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up
+   */
+  private boolean awaitReservationsApplied(final String databaseName, final long drainTimeoutMs) {
     final long deadline = System.currentTimeMillis() + drainTimeoutMs;
     long pauseMs = 2L;
     int live;
@@ -3563,7 +3674,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // reservation that stayed unconfirmed past its grace - must not enter the log now. Refused like the expired
     // reservation below, at the cost of one Ratis pending-write permit, for a window only a stalled request opens.
     if (trx.getStateMachineContext() instanceof AppendedEntry appended && !appended.originatedLocally()
-        && databasesExclusiveOnLeader.containsKey(appended.decoded().databaseName())) {
+        && refusesEntriesOfOtherNodes(appended.decoded().databaseName())) {
       pageVersions.release(appended.decoded().databaseName(), appended.pages(), appended.decoded().walData());
       // Logged because each of these costs a Ratis pending-write permit (see startTransaction): a leak, if this window
       // turns out to be wider than assumed, must be diagnosable.

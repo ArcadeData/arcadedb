@@ -4948,7 +4948,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
-      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
+      // The install a restore forces is fenced to the leadership that held the database for it (issue #10974)
+      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot,
+          raft.restoreFenceTerm(getName()));
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -5003,7 +5005,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final LocalDropVerbs localDropVerbs = raft.getLocalDropVerbs();
       final LocalDropVerbs.Registration registration = localDropVerbs.register(getName());
       try {
-        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
+        // The drop of a target a restore replaces is fenced to the leadership that held it for the restore (issue #10974)
+        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName(),
+            raft.restoreFenceTerm(getName()));
         raft.waitForAppliedIndex(getName(), committedLogIndex, true);
       } finally {
         localDropVerbs.release(getName(), registration);
