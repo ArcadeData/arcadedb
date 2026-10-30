@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -118,6 +119,33 @@ class Issue10917VectorCoordinateTypeTest extends TestHelper {
       final Result r = rs.next();
       assertThat(r.<Number>getProperty("n").doubleValue()).isEqualTo(5.0);
       assertThat(r.<Number>getProperty("d").doubleValue()).isEqualTo(5.0);
+    }
+  }
+
+  @ParameterizedTest
+  @CsvSource(delimiter = '|', value = {
+      "vector.magnitude($v)|5.0",
+      "vector.l2Distance($v, $w)|5.0",
+      "vector.l1Norm($v)|7.0",
+      "vector.dotProduct($v, $v)|25.0",
+      "vector.distance.euclidean($v, $w)|5.0",
+      "vector.distance.manhattan($v, $w)|7.0",
+      "vector.dimension.count($v)|2",
+      "sql.vector.magnitude($v)|5.0" })
+  void everyVectorFunctionReadsAByteArrayAsPlainCoordinates(final String call, final double expected) {
+    try (final ResultSet rs = database.query("opencypher", "RETURN " + call + " AS r",
+        Map.of("v", new byte[] { 3, 4 }, "w", new byte[] { 0, 0 }))) {
+      assertThat(rs.next().<Number>getProperty("r").doubleValue()).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void aQuantizedByteArrayIsStillDequantizedByDequantizeInt8() {
+    try (final ResultSet rs = database.query("opencypher", "RETURN vector.dequantizeInt8($q, -1.0, 1.0) AS r",
+        Map.of("q", new byte[] { 127, -128 }))) {
+      final float[] r = rs.next().getProperty("r");
+      assertThat(r).hasSize(2);
+      assertThat(r[0]).isCloseTo(1.0f, Offset.offset(0.01f));
     }
   }
 
