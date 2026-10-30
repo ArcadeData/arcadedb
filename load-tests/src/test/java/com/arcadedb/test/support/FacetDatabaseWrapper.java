@@ -189,6 +189,11 @@ public class FacetDatabaseWrapper implements AutoCloseable {
     db.close();
   }
 
+  /** @return the facet queries this client ran again after a {@link NeedRetryException}, over its whole life */
+  public long queryRetries() {
+    return queryRetryCount;
+  }
+
   /** @return {@code host:port} of this node, for messages */
   public String describe() {
     return server.host() + ":" + server.httpPort();
