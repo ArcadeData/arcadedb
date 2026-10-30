@@ -123,6 +123,9 @@ class Issue11011AlgoWorkingMemoryAutoBudgetTest extends TestHelper {
     assertThat(AbstractAlgoProcedure.pageCacheToReclaim(700 * mb, 1000 * mb, 500 * mb, 0)).isEqualTo(400 * mb);
     // A later reservation of the same call only takes what the earlier ones did not
     assertThat(AbstractAlgoProcedure.pageCacheToReclaim(800 * mb, 1000 * mb, 500 * mb, 400 * mb)).isEqualTo(200 * mb);
+    // A cache that grew by 100 MB since the sizing gives its growth back first: 140 MB on 200 MB free needs a net reduction
+    // of 80 MB, so 180 MB are evicted, not 80 MB that would leave the cache larger than it was counted
+    assertThat(AbstractAlgoProcedure.pageCacheToReclaim(140 * mb, 200 * mb, 100 * mb, -100 * mb)).isEqualTo(180 * mb);
     // An unknown heap reading reclaims nothing: the budget stayed at its floor
     assertThat(AbstractAlgoProcedure.pageCacheToReclaim(800 * mb, -1, Long.MAX_VALUE, 0)).isZero();
   }

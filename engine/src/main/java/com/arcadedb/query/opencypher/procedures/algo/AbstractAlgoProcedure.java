@@ -486,7 +486,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * them, they are strongly referenced.
      */
     private void reclaimPageCacheFor(final long total) {
-      final long needed = pageCacheToReclaim(total, freeHeap, withoutReclaim, cacheGivenBack());
+      // Signed: a cache that grew since the sizing must first give back its growth, so the request includes it
+      final long needed = pageCacheToReclaim(total, freeHeap, withoutReclaim, cacheNetReduction());
       if (needed > 0) {
         // In steps of a quarter of the cache at least: a walk that grows as it goes must not sort the cache once per item
         final long freed = PageManager.INSTANCE.reclaimReadCacheRAM(Math.max(needed, pageCache / 4));
@@ -502,7 +503,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * what its eviction gave it.
      */
     private long cacheGivenBack() {
-      return Math.max(0L, pageCache - PageManager.INSTANCE.getReadCacheRAM());
+      return Math.max(0L, cacheNetReduction());
+    }
+
+    /** The page cache's size when the budget was sized minus its size now: negative when it grew meanwhile. */
+    private long cacheNetReduction() {
+      return pageCache - PageManager.INSTANCE.getReadCacheRAM();
     }
 
     /**
@@ -763,7 +769,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * How many bytes of page cache an automatic budget must give up before a working set of {@code total} bytes is allocated:
    * the budget lets a call take half of the free heap plus the cache, so past {@code withoutReclaim} the call holds pages
    * the collector cannot take, and the cache must shrink until twice the working set fits the free heap and what it gave up.
-   * {@code alreadyReclaimed} is what earlier reservations of the call took back.
+   * {@code alreadyReclaimed} is how much smaller the cache is than when the budget was sized, negative when it grew: the
+   * growth is given back too before it counts.
    *
    * @return the bytes still to reclaim, 0 when none
    */
