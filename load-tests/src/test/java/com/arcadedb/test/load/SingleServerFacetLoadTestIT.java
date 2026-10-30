@@ -148,7 +148,9 @@ class SingleServerFacetLoadTestIT extends FacetLoadTestTemplate {
       assertThat(merged.failed).as("facet queries failed while the writers ran").isZero();
       assertThat(total(QUERY_ERRORS)).isZero();
       assertThat(total(WRITE_ERRORS)).isZero();
-      assertThat(total(META_INCONSISTENT)).isZero();
+      // ruling B-M1: inexact answers without lag are logged per sample and counted in the baseline (metaInconsistent), not a failure
+      if (total(META_INCONSISTENT) > 0)
+        logger.warn("{} facet samples were inexact without lag (each logged above)", (long) total(META_INCONSISTENT));
       // precondition of the two checks below: the columnar series are bound, and every series of the database is bound with them
       assertThat(baseline.getLong("segments", 0L)).as("columnar segments on disk, so the columnar series are exported").isGreaterThan(0L);
       assertThat(baseline.getLong("fallbackScans", -1L)).as("fallback scans during the measured run (after " + setupFallbackScans

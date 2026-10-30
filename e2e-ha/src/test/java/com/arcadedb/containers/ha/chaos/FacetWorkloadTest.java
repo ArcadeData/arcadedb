@@ -45,6 +45,8 @@ import static org.awaitility.Awaitility.await;
 class FacetWorkloadTest {
   private static final String NON_EXACT = "{\"result\":[],\"facets\":{\"meta\":{\"exact\":false,\"patched\":3,\"lagMs\":5}}}";
   private static final String EXACT     = "{\"result\":[],\"facets\":{\"meta\":{\"exact\":true,\"patched\":0,\"lagMs\":0}}}";
+  /** Inexact, yet no lag reported: the metadata contradicts itself. */
+  private static final String NO_LAG    = "{\"result\":[],\"facets\":{\"meta\":{\"exact\":false,\"patched\":3,\"lagMs\":0}}}";
 
   private final AtomicInteger           status   = new AtomicInteger(200);
   private final AtomicReference<String> answer   = new AtomicReference<>(NON_EXACT);
@@ -186,7 +188,26 @@ class FacetWorkloadTest {
       await().atMost(Duration.ofSeconds(30)).until(() -> workload.stats().queries() >= 3);
       assertThat(workload.stats().nonExact()).isGreaterThan(0L);
       assertThat(workload.stats().queryFailures()).isZero();
+      // an inexact answer that reports its lag is consistent
+      assertThat(workload.stats().metaInconsistent()).isZero();
       assertThat(workload.acked()).isEqualTo(workload.stats().writesOk());
+    }
+  }
+
+  /** The forced-inexact run (patch budget 0) must see, under faults, an inexact answer that reports no lag. */
+  @Test
+  void inexactAnswersWithoutLagAreCountedAsMetaInconsistent() {
+    answer.set(NO_LAG);
+    try (final FacetWorkload workload = workload(2)) {
+      workload.start();
+      await().atMost(Duration.ofSeconds(30)).until(() -> workload.stats().queries() >= 3);
+      workload.close();
+      final FacetWorkload.Stats stats = workload.stats();
+      assertThat(stats.metaInconsistent()).isEqualTo(stats.queries());
+      assertThat(stats.nonExact()).isEqualTo(stats.queries());
+      assertThat(stats.queryFailures()).isZero();
+      assertThat(stats.warnings()).singleElement().asString().startsWith("FACET_META workload")
+          .contains(stats.queries() + " samples");
     }
   }
 
@@ -215,6 +236,7 @@ class FacetWorkloadTest {
       assertThat(stats.queryFailures()).isEqualTo(stats.queries());
       assertThat(stats.queryServerErrors()).isZero();
       assertThat(stats.nonExact()).isZero();
+      assertThat(stats.warnings()).singleElement().asString().startsWith("FACET_QUERY_FAILURES " + stats.queryFailures());
     }
   }
 
@@ -234,13 +256,24 @@ class FacetWorkloadTest {
   }
 
   @Test
+  void statsWarnOnlyOnFailuresAndInconsistentMetadata() {
+    assertThat(new FacetWorkload.Stats(10, 3, 5, 2, 0, 4, 0).warnings()).as("faults explain 5xx and failed writes").isEmpty();
+    assertThat(new FacetWorkload.Stats(10, 0, 5, 0, 1, 0, 0).warnings()).containsExactly(
+        "FACET_QUERY_FAILURES 1 facet queries answered with neither a 5xx nor a parsable result (first cause in the log)");
+    assertThat(new FacetWorkload.Stats(10, 0, 5, 0, 0, 2, 2).warnings()).containsExactly(
+        "FACET_META workload 2 samples inexact without lag (first sample in the log)");
+    assertThat(new FacetWorkload.Stats(10, 0, 5, 0, 1, 2, 2).warnings()).hasSize(2);
+  }
+
+  @Test
   void statsAreReportedAsJson() {
-    final JSONObject json = new FacetWorkload.Stats(1, 2, 3, 4, 5, 6).toJSON();
+    final JSONObject json = new FacetWorkload.Stats(1, 2, 3, 4, 5, 6, 7).toJSON();
     assertThat(json.getLong("writesOk")).isEqualTo(1L);
     assertThat(json.getLong("writesFailed")).isEqualTo(2L);
     assertThat(json.getLong("queries")).isEqualTo(3L);
     assertThat(json.getLong("queryServerErrors")).isEqualTo(4L);
     assertThat(json.getLong("queryFailures")).isEqualTo(5L);
     assertThat(json.getLong("nonExact")).isEqualTo(6L);
+    assertThat(json.getLong("metaInconsistent")).isEqualTo(7L);
   }
 }

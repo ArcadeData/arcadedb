@@ -8,7 +8,7 @@
 
 **Tech Stack:** Java 21, JUnit 5, AssertJ, Testcontainers + Toxiproxy, Awaitility, Micrometer (client side) and the server's `/prometheus` endpoint (server side), `com.arcadedb.serializer.json.JSONObject`/`JSONArray`, `RemoteDatabase`/`RemoteGrpcDatabase` (plan 4 adds `ResultSet.getFacets()`).
 
-**Spec:** `docs/superpowers/specs/2026-10-18-columnar-faceting-design.md` (sections 6.5, 6.6, 7.3, 7.8, 8.3, 9, 10). **Roadmap and cross-plan contract:** `docs/superpowers/plans/2026-10-19-columnar-faceting-0-roadmap.md`. Assumes plans 3 and 4 are merged: `CREATE INDEX ... COLUMNAR`, `SELECT ... FACETS ...`, HTTP `facets.meta = {exact, patched, lagMs}`, `FacetResult.source()` in `index|scan|unavailable`, metrics under `arcadedb.columnar.*`. Plans 3-5 are delivered in this branch (plan 5 adds GROUP BY acceleration, ON by default, which Task 2's truth queries must avoid). The only engine change of this plan is Task 0 (lag floor in `FacetExecutor`); everything else lives in `load-tests` and `e2e-ha`.
+**Spec:** `docs/superpowers/specs/2026-10-18-columnar-faceting-design.md` (sections 6.5, 6.6, 7.3, 7.8, 8.3, 9, 10). **Roadmap and cross-plan contract:** `docs/superpowers/plans/2026-10-19-columnar-faceting-0-roadmap.md`. Assumes plans 3 and 4 are merged: `CREATE INDEX ... COLUMNAR`, `SELECT ... FACETS ...`, HTTP `facets.meta = {exact, patched, lagMs}`, `FacetResult.source()` in `index|scan|unavailable`, metrics under `arcadedb.columnar.*`. Plans 3-5 are delivered in this branch (plan 5 adds GROUP BY acceleration, ON by default, which Task 2's truth queries must avoid). Task 0 (lag floor in `FacetExecutor`) was the only planned engine change; the reviews added three more: Task 8 (`SnapshotInstaller.acquireNewDatabase` marks a new replica's snapshot for a `snapshot_install` rebuild), Task 12 (`FacetPatcher.recordAt` maps a broken chunk chain to a retryable `ConcurrentModificationException`, see #10941) and the final fix batch (merge starvation in `MergePolicy`/`ColumnarIndexManager`, the first failed page read logged at FINE, inline publish of an added column on an empty bucket, fallback scans tagged with their reason). Everything else lives in `load-tests` and `e2e-ha`. The outcome, open follow-ups and the baseline numbers are in the roadmap's "Plan 6 outcome".
 
 ## Global Constraints
 
@@ -98,7 +98,7 @@ Count-map key format (both sides, so maps compare with `equals`): terms bucket `
 ## Cross-plan contract this plan relies on (recorded in the roadmap; names as plans 3 and 4 define them)
 
 1. **Plan 3 adds a counter `arcadedb.columnar.rebuilds`** (plan 3 Task 18), tags `database`, `type`, `reason` in `create | snapshot_install | missing | corrupt | unclean_no_wal | unclean_pages | schema | check_fix` (`corrupt` = a projection file failed its CRC or format check, distinct from `missing`; `unclean_pages`: after an unclean open, more than 1024 pages and a quarter of a bucket changed since its segments), counted when a bucket projection's rebuild starts, never for a `create` on an empty bucket. After an unclean open (SIGKILL) a projection is unusable until its page check ends, so facets read `scan` for a while: expected, not a rebuild. Series exist from the first 5 s refresh of `ColumnarMetrics`; an absent series reads 0. A restart assertion without a label filter therefore also catches a `corrupt` rebuild, which is intended. Normal open plus recovery (manifest load, persisted dirty set, WAL-replay marks, spec 6.5) never increments it. None of the listed plan-3 metrics (`apply.lag.ms`, `apply.pages`, ...) can tell "recovered" from "rebuilt" after a process restart, because counters restart with the process. Optional, logged only: `arcadedb.columnar.recovery.pages` (pages re-read at open).
-2. **Plans 3 and 4 register their meters on `Metrics.globalRegistry`** with a `database` tag, so the `PrometheusMetricsPlugin` endpoint `GET /prometheus` exposes them. Names used here and their owners: plan 3 Task 18 counter `arcadedb.columnar.rebuilds` (`arcadedb_columnar_rebuilds_total`), gauges `arcadedb.columnar.segments` (`arcadedb_columnar_segments`) and `arcadedb.columnar.apply.lag.ms` (`arcadedb_columnar_apply_lag_ms`); plan 4 Task 13 function counters `arcadedb.columnar.query.budget.waits`, `.query.patch.overflows`, `.query.fallback.scans`, `.query.patched` (`arcadedb_columnar_query_budget_waits_total`, `arcadedb_columnar_query_patch_overflows_total`, `arcadedb_columnar_query_fallback_scans_total`, `arcadedb_columnar_query_patched_total`).
+2. **Plans 3 and 4 register their meters on `Metrics.globalRegistry`** with a `database` tag, so the `PrometheusMetricsPlugin` endpoint `GET /prometheus` exposes them. Names used here and their owners: plan 3 Task 18 counter `arcadedb.columnar.rebuilds` (`arcadedb_columnar_rebuilds_total`), gauges `arcadedb.columnar.segments` (`arcadedb_columnar_segments`) and `arcadedb.columnar.apply.lag.ms` (`arcadedb_columnar_apply_lag_ms`); plan 4 Task 13 function counters `arcadedb.columnar.query.budget.waits`, `.query.patch.overflows`, `.query.fallback.scans`, `.query.patched` (`arcadedb_columnar_query_budget_waits_total`, `arcadedb_columnar_query_patch_overflows_total`, `arcadedb_columnar_query_fallback_scans_total`, `arcadedb_columnar_query_patched_total`). Since the plan 6 final fix batch the fallback-scan counter is one series per `reason` tag; a scrape without a label filter sums them.
 3. **Plan 4 response shape is pinned**: `FacetResults.toJSON()` is exactly the HTTP `facets` object; terms facets always carry `missing` and `otherCount` (0 allowed); range buckets carry `key`; a facet with `source: "unavailable"` carries no buckets. `FacetResult.source()` is per facet.
 4. **Plan 3: the projection directory is excluded from Raft snapshots** (node-local, spec 6.6), so a snapshot install always leads to a `snapshot_install` rebuild.
 5. **Fixtures**: the roadmap's "Shared test fixtures" gives plan 6 its own `AssetGenerator` in the `load-tests` test-jar, which `e2e-ha` already depends on (`e2e-ha/pom.xml`), so one copy serves both. Plan 3's `FacetOracle` / `ColumnarTestData` (engine test-jar) are not used: the container tests compare against `GROUP BY` through `FacetSchema.expectedCounts` over HTTP.
@@ -142,8 +142,8 @@ Open items of plans 3-5 that land in this plan, each with its owner (preflight s
 
 Decision: `lagMs = Math.max(lagMs, Math.max(1L, now - snapshots[i].oldestPendingEpochStartMs()))`. Controller ruling on the preflight open question: the uncovered-position safety net (`planPatches` refusing a bucket whose snapshot reports no pending epoch) does NOT set a lag: `lagMs` keeps the spec 8.3 meaning (age of the oldest undrained epoch, 0 when none). FACET_META therefore classifies `exact=false` with `lagMs=0` as a LIVENESS warning (logged with the sample), not SAFETY; SAFETY stays with FACET_DIVERGENCE/FACET_DRIFT (wrong counts).
 
-- [ ] **Step 1: Write the failing test** `@Test void inexactAnswerAlwaysReportsLag()`: suspend apply, commit, query in the same millisecond (spin on `currentTimeMillis`), force a refusal with a tiny `queryMemoryBudget`; assert `exact()` false and `lagMs() >= 1`.
-- [ ] **Step 2: Run it to verify it fails**: `./mvnw -o -pl engine -am test -Dtest='FacetPatchingTest,FacetExecutor*Test' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: `inexactAnswerAlwaysReportsLag` FAIL (`lagMs` 0).
+- [ ] **Step 1: Write the failing test** (as implemented, controller ruling: deterministic, no spin on `currentTimeMillis`): extract the lag computation into `static long lagOf(long nowMs, long oldestPendingEpochStartMs)` and test it directly, `lagOfAPendingEpochIsAtLeastOneMillisecond` (`lagOf(1_000, 1_000) == 1`, `lagOf(1_001, 1_000) == 1`, `lagOf(1_250, 1_000) == 250`); the integration side is `overBudgetIsInexactAndFlagged` (apply suspended, `patchBudget` 5 and `patchBudgetRatio` 0, so the answer is inexact and must carry `lagMs >= 1`). A first probabilistic version (`inexactAnswerAlwaysReportsLag`, 100 rounds, ~11 s) was replaced and later removed.
+- [ ] **Step 2: Run it to verify it fails**: `./mvnw -o -pl engine -am test -Dtest='FacetPatchingTest,FacetExecutor*Test' -Dsurefire.failIfNoSpecifiedTests=false`. Expected: `lagOfAPendingEpochIsAtLeastOneMillisecond` FAIL (`lagMs` 0) against a stub without the floor.
 - [ ] **Step 3: Implement the floor.**
 - [ ] **Step 4: Run the command of Step 2.** Expected: all PASS.
 - [ ] **Step 5: Stop: changes ready for review** - `FacetExecutor.java`, `FacetPatchingTest.java`.
@@ -708,7 +708,7 @@ Expected: PASS, then each whole class.
 - Create: `load-tests/src/test/java/com/arcadedb/test/load/SingleServerFacetLoadTestIT.java` (shape of `SingleServerTimeSeriesLoadTestIT.java:37-114`)
 
 **Interfaces:**
-- Consumes: Task 3; `ContainersTestTemplate.createArcadeContainer(name, network)` (`:554`), `startContainers`, `sumCounter` (`:800`).
+- Consumes: Task 3; `ContainersTestTemplate.createArcadeContainer(name, network)` (`:554`), `startContainers`; the client meters through a cumulative registry, not `sumCounter` (see Step 1).
 - Produces: `void singleServerFacetLoadTest(DatabaseWrapper.Protocol protocol)`.
 
 Decisions: `@ParameterizedTest(name = "Facet load test with {0}") @EnumSource(DatabaseWrapper.Protocol.class)`; `WRITERS = 4`, `OPS_PER_WRITER = 20_000`, `QUERY_THREADS = 2`; writers are `FacetDatabaseWrapper(server, protocol, t)` running `runMixedOps`, started only after `awaitSchema` returned on the server; query threads loop `queryFacets(random CHECKED_FILTER)` until the writers' executor terminates; progress logged every 5 s (`groupBy("")` total and the last sample's `lagMs`/`patched`), as the TS test logs point counts.
@@ -720,12 +720,14 @@ admin.assertFacetsMatchGroupBy(120);
 final FacetSnapshot settled = admin.awaitSettledFacets("", 120);
 assertThat(settled.exact()).isTrue();
 assertThat(settled.lagMs()).isZero();
-assertThat(sumCounter("arcadedb.test.facets.query.error")).isZero();
-assertThat(sumCounter("arcadedb.test.facets.write.error")).isZero();
-assertThat(sumCounter("arcadedb.test.facets.meta.inconsistent")).isZero();
-assertThat(admin.scrapeMetric("arcadedb_columnar_query_fallback_scans_total")).isZero();   // projection present the whole run
+assertThat(total("arcadedb.test.facets.query.error")).isZero();
+assertThat(total("arcadedb.test.facets.write.error")).isZero();
+assertThat(total("arcadedb.test.facets.meta.inconsistent")).isZero();
+assertThat(fallbackScansAfterSetup).isZero();   // projection present the whole run: the change since the setup
 assertThat(admin.scrapeMetric("arcadedb_columnar_rebuilds_total")).as("indexes created on an empty type never rebuild").isZero();
+assertNoCorruptedReads(baseline);
 ```
+As implemented (rulings of the Task 11 and 12 reviews): the client meters are read from a cumulative `SimpleMeterRegistry` added for the run (`total(...)`), not `sumCounter`, which reads a 10 s step registry and misses most of a run (#10945); the fallback-scan counter is read right after `awaitSchema` and the assertion is on its change over the run, since an added column on an open projection was published by an async create rebuild during the setup (F2; published inline since the final fix batch); setup query errors (followers polled before the database exists) are excluded; any "Possible corrupted record" or "Skipping corrupted property" line in the container logs fails the run (#10701); a duplicate key on a retried INSERT counts as acked (its first attempt committed).
 Logged, not asserted: every meter in `Metrics.globalRegistry` (query latency p50/p95/p99, `lagMs` and `patched` percentiles), throughput `(acked ops) / elapsed seconds` and queries per second, and the server-side `arcadedb_columnar_query_budget_waits_total`, `_query_patch_overflows_total`, `_query_patched_total`, `_query_fallback_scans_total`, `_overlay_rows`, `_apply_lag_ms`, `_segments`; and written as one JSON object (`com.arcadedb.serializer.json.JSONObject`: throughput, query p50/p95/p99, lag and patched percentiles, budget waits, patch overflows, fallback scans, overlay rows, apply lag, nonexact count) to `load-tests/target/facet-load/SingleServerFacetLoadTestIT-<protocol>.json`, with one summary log line. These files are the plan 6 baseline of the roadmap Tuning phase (#10662).
 
 - [ ] **Step 2: Run it**
@@ -758,10 +760,11 @@ for (final FacetDatabaseWrapper r : List.of(r0, r1, r2)) {
   assertThat(r.scrapeMetric("arcadedb_columnar_query_fallback_scans_total")).as(r.describe()).isZero();
   assertThat(r.scrapeMetric("arcadedb_columnar_rebuilds_total", "reason", "snapshot_install")).as(r.describe()).isZero();
 }
-assertThat(sumCounter("arcadedb.test.facets.query.error")).isZero();
-assertThat(sumCounter("arcadedb.test.facets.meta.inconsistent")).isZero();
-assertThat(sumCounter("arcadedb.test.facets.write.error")).isZero();
+assertThat(total("arcadedb.test.facets.query.error") - setupQueryErrors).isZero();
+assertThat(total("arcadedb.test.facets.meta.inconsistent")).isZero();
+assertThat(total("arcadedb.test.facets.write.error")).isZero();
 ```
+As implemented: the same cumulative registry, setup-error exclusion, fallback change since the setup and corrupted-record check as Task 11; per node also `rebuilds_total == 0` of any reason (no restart, the type is empty at creation). A follower's facet query can meet a chain a replicated apply is still writing; since Task 12 that read fails with a retryable `ConcurrentModificationException` (#10941), which the wrapper retries and counts.
 Logged and written: same as Task 11, per node (`load-tests/target/facet-load/ThreeNodesFacetLoadTestIT-<protocol>.json`, one object per node). Also logged per node at the end: the WAL file count and total size (`docker exec ... ls -l /home/arcadedb/databases/<db>/*.wal`), next to those numbers (plan 5 main-merge review: one DB-wide `queuedColumnarMarks` counter may delay WAL drops under sustained load). `snapshot_install == 0` per node holds: 45000 writes stay below the default 100000 snapshot threshold.
 
 - [ ] **Step 2: Run it**

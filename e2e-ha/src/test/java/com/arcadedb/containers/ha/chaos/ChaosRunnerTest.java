@@ -436,7 +436,8 @@ class ChaosRunnerTest {
   }
 
   private static FacetCheck facetCheck(final FakeFacetReader reader) {
-    return new FacetCheck(reader, 3, Duration.ofSeconds(1), Duration.ofMillis(1));
+    // every case using it passes or fails on sight: a generous deadline keeps a unit-lane JVM stall from turning it into a stall
+    return new FacetCheck(reader, 3, Duration.ofSeconds(60), Duration.ofMillis(1));
   }
 
   @Test

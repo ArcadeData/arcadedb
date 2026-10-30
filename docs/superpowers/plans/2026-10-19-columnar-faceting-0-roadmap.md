@@ -331,6 +331,12 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
   - gRPC `GrpcFacetResult`: `after` (9), `min` (10), `max` (11), `has_after` (12), `sum` (13) and `avg` (14) as typed `GrpcValue`s decoded as the row decoder decodes them (`after` unset with `has_after` true means no value follows); `extensions_json` (8) now carries only `count` (STATS) and `value`/`exact` (DISTINCT); `GrpcFacetBucket.attributes_json` carries `parent`/`depth`/`orphan`.
   - `facet.searchValues(type, property, prefix, limit)`: ordinary result rows `{value, count}` plus `exact: false` on the rows of an inexact batch (absent when exact).
 - **User docs owed for HIERARCHY/DISTINCT/STATS/AFTER** (plan 5 Task 14, carried from plans 4 and 5): a facet alias spelled `unwind` or `timeout` needs back-ticks; FACETS inside a REPEATABLE_READ transaction count the latest committed data plus patching, not the transaction's snapshot; GROUP BY acceleration applies only to a GROUP BY without WHERE and declines inside a REPEATABLE_READ transaction; without ORDER BY the order of the groups may differ from the non-accelerated plan; `facet.searchValues` suggests only values of the applied dictionaries of indexed buckets (a value held only by an unindexed type, or only by the caller's uncommitted writes, is not suggested) and marks the rows of an inexact batch `exact: false`; clients echo `after` exactly as received (a reformatted date string can lose its sub-seconds). Read events (final fix round 2, N2/N3): a type with READ triggers or listeners (or a database with a read listener of its own) is never answered from the projection: its facets are counted by the fallback scan, so `arcadedb.columnar.maxFallbackScans` (default 2 per database) caps the concurrent FACETS queries on it (beyond it: `unavailable / fallback scans capped`); the read events fire for that scan as well as for the rows (twice per matched record with a WHERE); a database-level read listener also turns off the full-text match source of FACETS; GROUP BY acceleration runs the normal plan on such a type.
+- **Python client (#10666), plan 6**: nothing new on the wire. The client must retry a FACETS query (and an accelerated GROUP BY) that fails with HTTP 503 / `NeedRetryException`, as the Java HTTP client does: on a replica the query can meet a record chain a replicated apply is still writing (#10941) and is answered with a retryable `ConcurrentModificationException`.
+- **User docs owed from plan 6**:
+  - A FACETS query or an accelerated GROUP BY on a replica can fail with a retryable `ConcurrentModificationException` (HTTP 503) when it reads a record a replicated apply is still writing. The message carries the CHECK DATABASE FIX hint, since the engine cannot tell this race from a real broken chunk chain. An atomic single-request command is retried automatically; an explicit client-managed transaction gets the exception at once. Retries are bounded, so a chain that stays broken surfaces.
+  - After an unclean restart, facets read `scan` until the unclean-open page check ends.
+  - A new replica, or a node that installs a snapshot, rebuilds its projection in the background (`snapshot_install` rebuild); facets read `scan` or `unavailable` meanwhile.
+  - The fallback-scan meter `arcadedb_columnar_query_fallback_scans_total` carries a `reason` tag (expression, no_projection, no_index, not_published, encoding_changed, segment_without_column, read_events, own_writes), and each scanned facet and bucket is logged once at FINE with its reason.
 
 ## Plan 5 additions
 
@@ -338,3 +344,38 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 - gRPC `GrpcFacetResult` gains typed `after` (9), `min` (10), `max` (11) and `has_after` (12); a server no longer puts after/min/max in `extensions_json`. The Python client (#10666) must read these fields (plan 5 Task 9).
 - gRPC `GrpcFacetResult` gains typed `sum` (13) and `avg` (14); a server no longer puts sum/avg in `extensions_json`, a client still reads them there from an older server. HTTP STATS `sum`/`avg` go through the row encoder (a non-finite one by name) and get their own `@props` entries (`sum:<id>`, `avg:<id>`); `FacetResult.withStats` keeps every other member (plan 5 Task 14).
 - STATS of a property stored as -0.0 reads 0.0 (the projection normalizes it); documented, accepted (plan 5 Task 9).
+
+## Plan 6 outcome (2026-10-29)
+
+Plan 6 proved, in HA and under load, that facets equal `GROUP BY` on every node once the cluster converges: `HaChaosIT` with a facet workload and a `FacetCheck` at every checkpoint, one facet method in each of `LeaderFailoverIT`, `RollingRestartIT`, `NetworkPartitionRecoveryIT`, `SplitBrainIT` and `PacketLossIT`, and the `SingleServerFacetLoadTestIT` / `ThreeNodesFacetLoadTestIT` load tests (their JSON baselines land in `load-tests/target/facet-load/`, uploaded by `load-tests.yml`).
+
+Engine changes made during plan 6 (beyond Task 0):
+- `FacetExecutor.lagOf`: an inexact answer with a pending epoch reports `lagMs >= 1` (Task 0); an inexact answer with no pending epoch keeps `lagMs = 0` (spec 8.3), which the harness reports as a `FACET_META` warning, never a violation.
+- `SnapshotInstaller.acquireNewDatabase` marks the acquired snapshot for a `snapshot_install` rebuild, as `install` does (Task 8); a marker that cannot be written discards the acquisition with a SEVERE line (final fix batch).
+- `FacetPatcher.recordAt` maps a `BrokenChunkChainException` to a retryable `ConcurrentModificationException` that keeps the CHECK DATABASE FIX hint (Task 12). **Revisit when #10941 lands**: once a replica read can no longer mix chunks of two commits, a broken chain is a corruption again and the mapping should go.
+- Final fix batch: merge starvation fixed (`MergePolicy` applies the segment-count bound first when over `mergeMaxSegments`, and a maintenance pass flushes only when a flush is due; it explains the one node per run that ended with ~2106 segments against ~80 elsewhere; confirm with the flush/merge counters in the next three-node run); `ColumnarApplier` logs the first failed read of a page at FINE (WARNING from the next visit on); an added column on an empty bucket is published inline; fallback scans are counted and logged per reason.
+
+Open follow-ups:
+- O1: divergence with a rebuild concurrent with writes, for EXTERNAL bodies under HA (`FacetAsset` has no EXTERNAL body, so plan 6 covers inline records only).
+- O6: external-bucket pages are not covered by the unclean-open page check.
+- O17: no HA coverage of HIERARCHY, DISTINCT and STATS facets (spec 10 does not require it).
+- The `FacetPatcher.recordAt` mapping above, to revisit with #10941.
+- Coverage limit: no plan 6 HA test observes a `scan` or `unavailable` phase. `LeaderFailoverIT`'s new replica records the source sequence `[index, index, index]`, since its rebuild ends inside the first open, so "rebuilds in the background, answers correct meanwhile" is proven by the engine tests only. A larger ingest there (for example 50k) would make the rebuild outlast the first answers.
+- Harness: `FacetDatabaseWrapper` counts a duplicate key on the first attempt of an INSERT as a failure, although an HTTP client-internal retry (uncounted) can cause it; the first failure of each operation is logged at WARN.
+
+Related issues (filed during plan 6):
+- #10941 replicated apply does not advance `PageManager.publicationSequence` (the root cause of the retryable 503 above).
+- #10942 gRPC auto-commit commands are not retried on transient conflicts; #10943 gRPC logs every failed command at SEVERE twice.
+- #10944 a scan fails with "Multi-page record was deleted during read" instead of skipping the record.
+- #10945 `ContainersTestTemplate.sumCounter` reads a 10 s step registry (the facet load ITs use a cumulative registry instead).
+- #10946 `load-tests.yml` did not upload the result files (fixed in this branch for `target/facet-load/`).
+- #10955 an UPDATE of a record with an undecodable property silently drops that property.
+- #10969 `/prometheus` intermittently fails with `DuplicateLabelsException` for ha-raft meters.
+- #10970 `ThreeNodesTimeSeriesLoadTestIT` flaky (pre-existing, unrelated to facets).
+- #10899 Java HTTP client `NumberFormatException` on a FLOAT +/-Infinity with type hints (closed).
+- #10903 flaky `Issue8859SaveElementStepIndexDdlTest` (O18).
+
+Baseline for tuning #10662 (container runs on a developer host, logged, not asserted):
+- Single server, 4 writers x 20000 mixed ops, 2 query threads: 1.0-1.9k ops/s, query p95 69-102 ms, `lagMs` p95 ~500-660, `patched` p95 ~6.6k-8k, 0 budget waits, 0 patch overflows, 0 fallback scans, 0 rebuilds, 0 inexact answers.
+- Three nodes, 3 writers x 15000 ops through node 0, one query thread per node: 72-125 ops/s (writes forwarded to the leader), query p50 9-13 ms and p95 32-45 ms per node, `lagMs` p95 332-464, `patched` p50 202-434, apply-lag max ~500 ms, overlay max 13-28 rows, 0 inexact answers.
+- WAL (O15): at the end of each three-node leg the leader held one WAL file of 28-62 MB and the followers none: no sign of delayed WAL drops at this load.

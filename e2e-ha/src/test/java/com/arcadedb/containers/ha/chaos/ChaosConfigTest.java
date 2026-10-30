@@ -19,6 +19,7 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import com.arcadedb.test.support.ContainersTestTemplate;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -137,6 +138,10 @@ class ChaosConfigTest {
     final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.seed", "42", "chaos.faults", "kill:3,pause"));
     assertThat(config.replayCommand())
         .contains("-Dit.test=HaChaosIT")
+        .contains(" -am ")
+        .contains("-Dfailsafe.failIfNoSpecifiedTests=false")
+        .contains("-Dsurefire.failIfNoSpecifiedTests=false")
+        .contains("-Darcadedb.test.image=" + ContainersTestTemplate.IMAGE)
         .contains("-Dfailsafe.excludedGroups=")
         .contains("-Dchaos.seed=42")
         .contains("-Dchaos.faults=kill:3,pause:1")

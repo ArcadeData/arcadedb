@@ -214,7 +214,7 @@ class SplitBrainIT extends ContainersTestTemplate {
         logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
 
       logger.info("Ingested {} assets", f[0].ingest(2_000));
-      logger.info("Mixed ops before the split: {}", f[0].runMixedOps(500));
+      logger.info("Mixed ops before the split: {}", FacetDatabaseWrapper.assertWrote(f[0].runMixedOps(500), "writer before the split", true));
       FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 120);
 
       final int leaderIdx = findLeaderIndex(servers);
@@ -245,11 +245,16 @@ class SplitBrainIT extends ContainersTestTemplate {
       int samples = 0;
       int duringWrites = 0;
       int nonExact = 0;
+      int metaInconsistent = 0;
       long maxLagMs = 0L;
       while (writer.isAlive()) {
         final FacetSnapshot s = f[followerIdx].queryFacets("");
-        assertThat(s.metaConsistent()).as("sample %d on the majority follower: exact=%s lagMs=%d patched=%d sources=%s", samples,
-            s.exact(), s.lagMs(), s.patched(), s.sources()).isTrue();
+        // ruling B-M1: an inexact answer that reports no lag is logged and counted, not a failure (as the chaos FACET_META warning)
+        if (!s.metaConsistent()) {
+          metaInconsistent++;
+          logger.warn("Sample {} on the majority follower: inexact without lag: exact={} lagMs={} patched={} sources={}", samples,
+              s.exact(), s.lagMs(), s.patched(), s.sources());
+        }
         samples++;
         if (writer.isAlive())
           duringWrites++;
@@ -258,14 +263,15 @@ class SplitBrainIT extends ContainersTestTemplate {
         maxLagMs = Math.max(maxLagMs, s.lagMs());
         Thread.sleep(QUERY_SPACING_MILLIS);
       }
-      logger.info("Majority follower: {} samples, {} while the writer ran, {} not exact, max lagMs {}", samples, duringWrites, nonExact,
-          maxLagMs);
+      logger.info("Majority follower: {} samples, {} while the writer ran, {} not exact, {} inexact without lag, max lagMs {}", samples,
+          duringWrites, nonExact, metaInconsistent, maxLagMs);
       assertThat(duringWrites).as("facet queries ran while the majority writer was writing").isPositive();
 
       writer.join(TimeUnit.MINUTES.toMillis(5));
       assertThat(writer.isAlive()).as("the majority writer ended").isFalse();
-      assertThat(writerOutcome.get()).as("the majority writer threw nothing").isInstanceOf(FacetDatabaseWrapper.OpCounts.class);
-      logger.info("Mixed ops through the new leader during the split: {}", writerOutcome.get());
+      // through the majority's new leader: the minority is not on the write path
+      logger.info("Mixed ops through the new leader during the split: {}",
+          FacetDatabaseWrapper.assertWrote(writerOutcome.get(), "majority writer", true));
 
       // After a Docker network partition, gRPC channels between peers are stuck in exponential backoff: restart the isolated node
       logger.info("Healing the split: reconnecting and restarting the old leader node {}", leaderIdx);

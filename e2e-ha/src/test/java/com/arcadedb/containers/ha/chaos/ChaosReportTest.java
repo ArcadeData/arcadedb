@@ -93,7 +93,7 @@ class ChaosReportTest {
     try (final ChaosReport report = new ChaosReport(dir, config)) {
       report.summary(new ChaosResult(ResultKind.PASS, "Completed 1 steps", 1, List.of()), new Ledger(1), 0);
       assertThat(new JSONObject(Files.readString(dir.resolve("summary.json"))).has("facets")).isFalse();
-      report.facetStats(new FacetWorkload.Stats(10, 1, 4, 0, 2, 3).toJSON());
+      report.facetStats(new FacetWorkload.Stats(10, 1, 4, 0, 2, 3, 0).toJSON());
       report.summary(new ChaosResult(ResultKind.PASS, "Completed 1 steps", 1, List.of()), new Ledger(1), 0);
     }
     final JSONObject summary = new JSONObject(Files.readString(dir.resolve("summary.json")));

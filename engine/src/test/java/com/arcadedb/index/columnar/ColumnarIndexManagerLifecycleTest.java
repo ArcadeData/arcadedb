@@ -560,6 +560,23 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
     for (final ColumnarManifest.SegmentEntry segment : projection.manifest().segments())
       live += segment.rows() - segment.deadRows();
     assertThat(live).as("every record once, no superseded row").isEqualTo(3L * passes);
+
+    // no opposite starvation (final review fix 1, m4): once the load stops, the dead-ratio rule drops the dead rows the count merges
+    // left, until no segment is at the ratio
+    final float deadRatio = database.getConfiguration().getValueAsFloat(GlobalConfiguration.COLUMNAR_MERGE_DEAD_RATIO);
+    for (int pass = 0; pass < 2 * maxSegments && atTheDeadRatio(projection, deadRatio) > 0; pass++)
+      manager().maintainForTesting(bucketId);
+    assertThat(atTheDeadRatio(projection, deadRatio)).as("segments at the dead ratio after the idle passes").isZero();
+    assertThat(projection.manifest().segments().size()).isLessThanOrEqualTo(maxSegments);
+  }
+
+  /** The segments of the projection whose dead rows reach the ratio, which the merge policy rewrites alone. */
+  private static int atTheDeadRatio(final ColumnarProjection projection, final float deadRatio) {
+    int count = 0;
+    for (final ColumnarManifest.SegmentEntry segment : projection.manifest().segments())
+      if (segment.deadRows() > 0 && (float) segment.deadRows() / segment.rows() >= deadRatio)
+        count++;
+    return count;
   }
 
   @Test

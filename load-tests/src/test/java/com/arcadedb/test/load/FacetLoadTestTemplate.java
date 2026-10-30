@@ -164,7 +164,11 @@ abstract class FacetLoadTestTemplate extends ContainersTestTemplate {
       Metrics.removeRegistry(cumulative);
   }
 
-  /** Logs the marker counts and dumps every container log: before the teardown removes the containers, they are the only record. */
+  /**
+   * Logs the marker counts and dumps every container log: before the teardown removes the containers, they are the only record. The
+   * apply pass logs the first failed read of a page at FINE (a commit is likely still publishing it), so "Unreadable record" counts
+   * only the pages that failed again on a later visit (WARNING), not every transient miss.
+   */
   protected void logAndDumpContainerLogs(final String label) {
     logger.info("Container log markers: {}", countInContainerLogs("Unreadable record", CORRUPTED_READS[0], CORRUPTED_READS[1], "SEVER"));
     dumpContainerLogs(label);

@@ -19,6 +19,8 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import com.arcadedb.test.support.ContainersTestTemplate;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -136,8 +138,14 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
     return joiner.toString();
   }
 
+  /**
+   * @return the command that replays this run: {@code -am} so the harness compiles against the working tree rather than a stale
+   * load-tests test-jar in {@code ~/.m2}, a surefire filter so the upstream unit suites do not run, and the image the run tested
+   */
   public String replayCommand() {
-    return "./mvnw verify -Pintegration -pl e2e-ha -Dit.test=HaChaosIT -Dfailsafe.excludedGroups="
+    return "./mvnw verify -Pintegration -pl e2e-ha -am -Dit.test=HaChaosIT -Dfailsafe.failIfNoSpecifiedTests=false"
+        + " -Dtest='com/arcadedb/containers/ha/chaos/ChaosConfigTest' -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false"
+        + " -Dfailsafe.excludedGroups= -Darcadedb.test.image=" + ContainersTestTemplate.IMAGE
         + " -Dchaos.seed=" + seed
         + " -Dchaos.nodes=" + nodes
         + " -Dchaos.duration=" + duration

@@ -96,6 +96,28 @@ class ColumnarInlineCreateTest extends TestHelper {
   }
 
   @Test
+  void anUnusableProjectionKeepsTheBackgroundRebuild() throws InterruptedException {
+    // final review fix 1, m2: a projection waiting for a failed rebuild's retry is not published inline, so the retry runs and counts
+    createAssetWithBrand();
+    final ColumnarProjection projection = projection();
+    projection.markUnusableWithoutRequest(ColumnarProjection.CORRUPT);
+
+    // no rebuild may start meanwhile: the queued one waits for a permit
+    final int held = ColumnarRebuilder.REBUILD_SEMAPHORE.drainPermits();
+    try {
+      database.command("sql", "CREATE INDEX ON Asset (fileSize) COLUMNAR");
+      assertThat(projection.isPublishedWith(fileSizeIndexFileId())).as("not published on the DDL's thread").isFalse();
+      assertThat(ColumnarRebuilder.isQueuedOrRunning(projection)).isTrue();
+    } finally {
+      ColumnarRebuilder.REBUILD_SEMAPHORE.release(held);
+      ColumnarRebuilder.drainWaiting();
+    }
+    for (int i = 0; i < 10_000 && !projection.isPublishedWith(fileSizeIndexFileId()); i++)
+      Thread.sleep(1);
+    assertThat(projection.isPublishedWith(fileSizeIndexFileId())).as("published by the background rebuild").isTrue();
+  }
+
+  @Test
   void aNonEmptyBucketKeepsTheBackgroundCreate() throws InterruptedException {
     createAssetWithBrand();
     database.transaction(() -> database.newDocument("Asset").set("brand", "acme").set("fileSize", 7L).save());

@@ -141,6 +141,7 @@ class HaChaosIT extends ContainersTestTemplate {
         final FacetWorkload.Stats stats = facets.stats();
         logger.info("CHAOS facets: {}", stats);
         report.facetStats(stats.toJSON());
+        report.facetWarnings(stats.warnings());
         report.summary(result, ledger, checker.lateCommits());
       }
 
