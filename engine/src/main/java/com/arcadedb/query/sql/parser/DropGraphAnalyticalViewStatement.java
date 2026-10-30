@@ -69,12 +69,8 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
     if (view != null) {
       view.drop();
     } else {
-      // No in-memory view, remove directly from schema extensions
-      allGavs.remove(viewName);
-      if (allGavs.isEmpty())
-        database.getSchema().setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, null);
-      else
-        database.getSchema().setExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY, allGavs);
+      // No in-memory view (its build failed, say): remove the definition, and the failure recorded for it, from the schema
+      GraphAnalyticalViewPersistence.remove(database, viewName);
 
       // Unregister any orphaned traversal provider with this name
       for (final GraphTraversalProvider provider : GraphTraversalProviderRegistry.getProviders(database))

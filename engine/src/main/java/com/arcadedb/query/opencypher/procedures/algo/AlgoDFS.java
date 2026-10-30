@@ -243,7 +243,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
   private Stream<Result> walkRecords(final Database db, final Vertex start, final String[] relTypes, final Vertex.DIRECTION dir,
       final int maxDepth, final CommandContext context) {
     final MemoryBudget memory = newMemoryBudget(db);
-    final long capacity = memory.capacityFor(OLTP_VERTEX_BYTES);
+    long capacity = memory.capacityFor(OLTP_VERTEX_BYTES);
     final CommandContext edgeContext = incomingSideContext(db, context);
 
     final Set<RID> visited = new HashSet<>();
@@ -316,7 +316,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
             continue;
           }
           if (loaded >= capacity)
-            memory.reserve(saturatingProduct(loaded + 1, OLTP_VERTEX_BYTES), "the visited vertices",
+            capacity = memory.extendCapacity(loaded + 1, OLTP_VERTEX_BYTES, "the visited vertices",
                 "at least " + (loaded + 1) + " nodes");
           loaded++;
           if (top == stack.length) {

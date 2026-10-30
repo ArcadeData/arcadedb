@@ -1,0 +1,132 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher.procedures.algo;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.utility.HeapUsage;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+/**
+ * Issue #11011: the default working-memory budget of an algorithm call was a fixed eighth of the maximum heap, so on a
+ * 2 GB heap {@code algo.wcc()} was refused an adjacency of 280 MB that the heap had room for. Left at its default (0) the
+ * budget is what the heap can give the call: half of the heap free after the last collection plus the page cache, which
+ * the call takes back before it allocates, and never less than the fixed budget it replaces. A configured value is still
+ * a fixed budget.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue11011AlgoWorkingMemoryAutoBudgetTest extends TestHelper {
+
+  @AfterEach
+  void restoreDefault() {
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+        GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getDefValue());
+  }
+
+  @Test
+  void theDefaultIsSizedFromTheHeap() {
+    assertThat(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getDefValue()).isEqualTo(0L);
+  }
+
+  @Test
+  void theDefaultAdmitsAWorkingSetPastTheFixedBudgetWhenTheHeapHasRoom() {
+    final long floor = AbstractAlgoProcedure.fixedBudgetFloor();
+    // The reading the budget sizes itself from
+    final long free = HeapUsage.conservativeAvailableHeapBytes();
+    assumeTrue(free > 4 * floor, "the test JVM's heap has less room than the reservation needs");
+
+    // Reserving allocates nothing: the budget only decides
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database);
+    budget.reserve(floor + 1024 * 1024, "the adjacency list", "test");
+  }
+
+  @Test
+  void theDefaultStillRefusesWhatTheHeapCannotHold() {
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database);
+    assertThatThrownBy(() -> budget.reserve(HeapUsage.maxHeapBytes() * 2, "the adjacency list", "test"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the adjacency list would need")
+        .hasMessageContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+  }
+
+  @Test
+  void aConfiguredValueIsAFixedBudget() {
+    final long floor = AbstractAlgoProcedure.fixedBudgetFloor();
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, floor);
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database);
+    budget.reserve(floor, "the adjacency list", "test");
+    assertThatThrownBy(() -> budget.reserve(1, "the degree buffer", "test"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("more than the " + floor + " bytes allowed.");
+  }
+
+  @Test
+  void aWalkExtendsItsCapacityWithoutReservingUntilTheLimit() {
+    final long budgetBytes = 1000L;
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, budgetBytes);
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database);
+    assertThat(budget.capacityFor(10)).isEqualTo(100);
+    // Extending reserves nothing: the walk reserves what it holds at the end, and the whole budget is still there for it
+    assertThat(budget.extendCapacity(100, 10, "the visited vertices", "test")).isGreaterThanOrEqualTo(100);
+    budget.reserve(budgetBytes, "the visited vertices", "test");
+    assertThatThrownBy(() -> budget.extendCapacity(1, 10, "the visited vertices", "at least 1 nodes"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the visited vertices would need 10 bytes (at least 1 nodes)");
+  }
+
+  @Test
+  void theOldGenerationPoolsAreTheOnesReadAtTheirCurrentOccupancy() {
+    assertThat(HeapUsage.isOldGenerationPool("G1 Old Gen")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("PS Old Gen")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("Tenured Gen")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("ZGC Old Generation")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("G1 Eden Space")).isFalse();
+    assertThat(HeapUsage.isOldGenerationPool("ZGC Young Generation")).isFalse();
+    assertThat(HeapUsage.isOldGenerationPool("ZHeap")).isFalse();
+    assertThat(HeapUsage.isOldGenerationPool(null)).isFalse();
+  }
+
+  @Test
+  void theFloorIsAnEighthOfTheHeapAndNeverBelow64MB() {
+    assertThat(AbstractAlgoProcedure.fixedBudgetFloor()).isEqualTo(
+        Math.max(64L * 1024 * 1024, HeapUsage.maxHeapBytes() / 8));
+  }
+
+  @Test
+  void aWorkingSetPastTheFreeHeapTakesItsShareBackFromThePageCache() {
+    final long mb = 1024 * 1024;
+    // Fits without the cache: nothing to give up
+    assertThat(AbstractAlgoProcedure.pageCacheToReclaim(300 * mb, 1000 * mb, 500 * mb, 0)).isZero();
+    // 700 MB on 1000 MB free: twice the working set is 1400 MB, so 400 MB of cache goes first
+    assertThat(AbstractAlgoProcedure.pageCacheToReclaim(700 * mb, 1000 * mb, 500 * mb, 0)).isEqualTo(400 * mb);
+    // A later reservation of the same call only takes what the earlier ones did not
+    assertThat(AbstractAlgoProcedure.pageCacheToReclaim(800 * mb, 1000 * mb, 500 * mb, 400 * mb)).isEqualTo(200 * mb);
+    // A cache that grew by 100 MB since the sizing gives its growth back first: 140 MB on 200 MB free needs a net reduction
+    // of 80 MB, so 180 MB are evicted, not 80 MB that would leave the cache larger than it was counted
+    assertThat(AbstractAlgoProcedure.pageCacheToReclaim(140 * mb, 200 * mb, 100 * mb, -100 * mb)).isEqualTo(180 * mb);
+    // An unknown heap reading reclaims nothing: the budget stayed at its floor
+    assertThat(AbstractAlgoProcedure.pageCacheToReclaim(800 * mb, -1, Long.MAX_VALUE, 0)).isZero();
+  }
+}
