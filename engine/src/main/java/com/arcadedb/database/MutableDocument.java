@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalProperty;
@@ -59,6 +60,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   // #8610: built by modify() from content reloaded because a concurrent commit changed it after this transaction read it.
   // Deliberately not reset by a save: an edge-list-only save leaves the read just as stale for a later property write
   private   boolean             basedOnStaleRead;
+  // #10955: set when the properties were loaded from stored content that did not fully decode, so the map lacks what could not be
+  // read. Saving such a record would rewrite it without that data: the update is refused instead. Null when nothing was lost
+  private   String              undecodableContent;
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
@@ -151,6 +155,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
+    // AN EXPLICIT OVERWRITE OF THE WHOLE CONTENT: WHAT COULD NOT BE READ IS REPLACED ON PURPOSE
+    this.undecodableContent = null;
     for (final Map.Entry<String, Object> entry : map.entrySet())
       putFromMap(entry.getKey(), entry.getValue());
 
@@ -629,6 +635,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public void reload() {
     dirty = false;
     map = null;
+    undecodableContent = null;
     buffer = null;
     super.reload();
   }
@@ -645,6 +652,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    */
   void restoreContent(final Binary snapshot, final boolean dirtyBefore, final boolean assignedBefore) {
     map = null;
+    undecodableContent = null;
     buffer = snapshot;
     parseRecordPrefix(snapshot);
     dirty = dirtyBefore;
@@ -667,9 +675,26 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       content.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, content,
-          new EmbeddedModifierObject(this), rid);
+      // THE FLAG IS KEPT AS IS WHEN THE MAP IS ALREADY LOADED (SEE THE CHECK ABOVE): IT DESCRIBES THE CONTENT THE MAP CAME FROM
+      final String[] damage = new String[1];
+      this.map = this.database.getSerializer().deserializePropertiesReportingDamage(this.database, content,
+          new EmbeddedModifierObject(this), rid, damage);
+      this.undecodableContent = damage[0];
     }
+  }
+
+  /**
+   * Refuses to write back a record whose stored content did not fully decode (issue #10955): the properties that could not be
+   * read are missing from this instance, so saving it would erase them for good, turning a read-time corruption that may be
+   * recoverable from the stored bytes into silent data loss.
+   *
+   * @throws SerializationException naming the record and the property that cannot be decoded
+   */
+  void checkContentIsComplete() {
+    final String damage = undecodableContent;
+    if (damage != null)
+      throw new SerializationException("Cannot save the record: " + damage
+          + ": saving would erase what could not be read. Restore the record from its source or overwrite its whole content");
   }
 
   protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {

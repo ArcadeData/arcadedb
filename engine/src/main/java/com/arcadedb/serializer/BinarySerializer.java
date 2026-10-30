@@ -382,7 +382,17 @@ public class BinarySerializer {
    */
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
-    return deserializeProperties(database, buffer, embeddedModifier, rid, false, fieldNames);
+    return deserializeProperties(database, buffer, embeddedModifier, rid, false, null, fieldNames);
+  }
+
+  /**
+   * The lenient form of {@link #deserializeProperties}, telling the caller whether it lost anything (issue #10955): the first
+   * part of the content that did not decode is described in {@code damage[0]}, which stays null when the whole record decoded.
+   * A caller that writes the record back must not do so from a map that lacks what could not be read.
+   */
+  public Map<String, Object> deserializePropertiesReportingDamage(final Database database, final Binary buffer,
+      final EmbeddedModifier embeddedModifier, final RID rid, final String[] damage) {
+    return deserializeProperties(database, buffer, embeddedModifier, rid, false, damage);
   }
 
   /**
@@ -394,11 +404,12 @@ public class BinarySerializer {
    * @throws SerializationException on the first part of the content that does not decode
    */
   public Map<String, Object> deserializePropertiesStrict(final Database database, final Binary buffer, final RID rid) {
-    return deserializeProperties(database, buffer, null, rid, true);
+    return deserializeProperties(database, buffer, null, rid, true, null);
   }
 
   private Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
-      final EmbeddedModifier embeddedModifier, final RID rid, final boolean strict, final String... fieldNames) {
+      final EmbeddedModifier embeddedModifier, final RID rid, final boolean strict, final String[] damage,
+      final String... fieldNames) {
     final Map<String, Object> values = new LinkedHashMap<>();
     try {
       final int initialPosition = buffer.position();
@@ -473,6 +484,8 @@ public class BinarySerializer {
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
                 + e.getMessage(), e);
+          if (damage != null && damage[0] == null)
+            damage[0] = "property '" + propertyName + "' of record " + rid + " cannot be decoded: " + e.getMessage();
           LogManager.instance().log(this, Level.WARNING,
               "Skipping corrupted property '%s' in record %s: %s", propertyName, rid, e.getMessage());
         }
@@ -490,6 +503,8 @@ public class BinarySerializer {
         throw e instanceof SerializationException serializationException ?
             serializationException :
             new SerializationException("Record " + rid + " cannot be decoded: " + e.getMessage(), e);
+      if (damage != null && damage[0] == null)
+        damage[0] = "record " + rid + " cannot be decoded: " + e.getMessage();
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s, returning %d properties read so far", e, rid,
           values.size());
     }
