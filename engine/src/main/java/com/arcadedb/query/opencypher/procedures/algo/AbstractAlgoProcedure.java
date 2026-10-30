@@ -453,9 +453,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private       boolean sizedFromHeap;
     private       long    freeHeap       = -1L;
     private       long    pageCache;
-    // What the call can take without giving up any page of the cache, and what it already took back from it
+    // What the call can take without giving up any page of the cache
     private       long    withoutReclaim = Long.MAX_VALUE;
-    private       long    reclaimed;
 
     private MemoryBudget(final long limit, final boolean auto) {
       this.limit = limit;
@@ -487,15 +486,23 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * them, they are strongly referenced.
      */
     private void reclaimPageCacheFor(final long total) {
-      final long needed = pageCacheToReclaim(total, freeHeap, withoutReclaim, reclaimed);
+      final long needed = pageCacheToReclaim(total, freeHeap, withoutReclaim, cacheGivenBack());
       if (needed > 0) {
         // In steps of a quarter of the cache at least: a walk that grows as it goes must not sort the cache once per item
         final long freed = PageManager.INSTANCE.reclaimReadCacheRAM(Math.max(needed, pageCache / 4));
-        reclaimed += freed;
         // Pages queries may be using leave the cache: traceable when a latency blip follows
         LogManager.instance().log(this, Level.FINE, "%s(): gave up %d bytes of page cache for a working set of %d bytes", getName(),
             freed, total);
       }
+    }
+
+    /**
+     * How much smaller the page cache is now than when the budget was sized: the heap the cache has really given back. Not the
+     * sum of what was evicted: a walk that reads records caches pages again, and every one it caches takes back from the call
+     * what its eviction gave it.
+     */
+    private long cacheGivenBack() {
+      return Math.max(0L, pageCache - PageManager.INSTANCE.getReadCacheRAM());
     }
 
     /**
@@ -541,7 +548,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             + " bytes (" + detail + ")"
             + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
             + ", more than the " + allocatableLimit() + " bytes the heap can give it: " + freeHeap
-            + " bytes were free after the last collection and the page cache gave back " + reclaimed + " of the " + pageCache
+            + " bytes were free after the last collection and the page cache gave back " + cacheGivenBack() + " of the " + pageCache
             + " bytes it held. Set " + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
     }
 
@@ -601,7 +608,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private long allocatableLimit() {
       if (!sizedFromHeap || freeHeap < 0)
         return limit;
-      return Math.min(limit, Math.max(withoutReclaim, saturatingSum(freeHeap, reclaimed) / 2));
+      return Math.min(limit, Math.max(withoutReclaim, saturatingSum(freeHeap, cacheGivenBack()) / 2));
     }
 
     /**
