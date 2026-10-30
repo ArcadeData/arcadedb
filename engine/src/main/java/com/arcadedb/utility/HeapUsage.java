@@ -22,6 +22,7 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
+import java.util.Locale;
 
 /**
  * Readings of the JVM heap for a caller about to size a large allocation by what the heap can still give it.
@@ -79,8 +80,62 @@ public final class HeapUsage {
    * {@code -1} when the live occupancy is unknown or the heap is unbounded.
    */
   public static long availableHeapBytes() {
+    return availableFrom(liveHeapBytes());
+  }
+
+  /**
+   * {@link #liveHeapBytes()} that never reports less than is live, for a caller that admits work by the reading and has no
+   * other way to tell how recent it is. The post-collection figure of an old-generation pool is refreshed only by a cycle
+   * that collects that generation - a young collection of G1 promotes into it without touching it - so what was promoted
+   * since is missing from it. Such a pool counts its current occupancy when that is larger: everything promoted, with the
+   * garbage it holds until its next cycle, which errs toward less headroom, never more. A pool of a collector with a single
+   * generation, or a young one, keeps its post-collection figure.
+   *
+   * @return the bytes held, or {@code -1} when no pool reports a collection usage
+   */
+  public static long conservativeLiveHeapBytes() {
+    long live = -1L;
+    for (final MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+      if (pool == null || pool.getType() != MemoryType.HEAP)
+        continue;
+      final MemoryUsage collectionUsage;
+      final MemoryUsage usage;
+      try {
+        collectionUsage = pool.getCollectionUsage();
+        usage = pool.getUsage();
+      } catch (final RuntimeException e) {
+        continue;
+      }
+      if (collectionUsage == null)
+        continue;
+      long used = Math.max(0L, collectionUsage.getUsed());
+      if (usage != null && isOldGenerationPool(pool.getName()))
+        used = Math.max(used, usage.getUsed());
+      if (live < 0)
+        live = 0L;
+      live += used;
+    }
+    return live;
+  }
+
+  /** {@link #availableHeapBytes()} from {@link #conservativeLiveHeapBytes()}: never more headroom than there is. */
+  public static long conservativeAvailableHeapBytes() {
+    return availableFrom(conservativeLiveHeapBytes());
+  }
+
+  /**
+   * Whether a heap pool is the old generation of a generational collector (G1 Old Gen, PS Old Gen, Tenured Gen, ZGC Old
+   * Generation), whose post-collection figure only that generation's own cycles refresh.
+   */
+  public static boolean isOldGenerationPool(final String poolName) {
+    if (poolName == null)
+      return false;
+    final String name = poolName.toLowerCase(Locale.ROOT);
+    return name.contains("old") || name.contains("tenured");
+  }
+
+  private static long availableFrom(final long live) {
     final long max = maxHeapBytes();
-    final long live = liveHeapBytes();
     if (live < 0 || max == Long.MAX_VALUE)
       return -1L;
     return Math.max(0L, max - live);

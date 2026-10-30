@@ -484,6 +484,8 @@ class GraphAnalyticalViewCSRPersistence {
 
   private static ColumnStore readColumnStore(final BoundedInput in) throws IOException {
     final int nodeCount = in.readInt();
+    if (nodeCount < 0)
+      throw new EOFException("negative node count " + nodeCount + " in the persisted CSR");
     final int columnCount = in.readLength(Integer.BYTES);
     final ColumnStore store = new ColumnStore(nodeCount);
     for (int c = 0; c < columnCount; c++)
@@ -495,6 +497,9 @@ class GraphAnalyticalViewCSRPersistence {
     final String name = readString(in);
     final Column.Type type = Column.Type.values()[in.readUnsignedByte()];
     final long[] nullBitset = readLongArray(in);
+    // The column is sized by the node count before the checksum is known: its null bitset, bounded by the file, must cover it
+    if (nullBitset.length < ((nodeCount + 63L) >>> 6))
+      throw new EOFException("node count " + nodeCount + " exceeds the null bitset of column '" + name + "' in the persisted CSR");
     int[] intData = null;
     long[] longData = null;
     double[] doubleData = null;
@@ -739,6 +744,8 @@ class GraphAnalyticalViewCSRPersistence {
       // An encrypted frame is its plain frame plus the cipher's own overhead, never twice its size
       if (length == 0 || length > 2 * FRAME_SIZE)
         throw new EOFException("invalid frame length " + length + " in the persisted CSR");
+      // Without encryption the frame buffer is read into again: safe, since a frame is read only once the previous one is
+      // consumed (position == limit), and nothing keeps a reference to its bytes
       final byte[] stored = encryption == null && frame.length >= length ? frame : new byte[length];
       in.readFully(stored, 0, length);
       crc.update(stored, 0, length);

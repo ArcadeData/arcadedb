@@ -217,9 +217,14 @@ class Issue11011GavBuildHeapTest {
     command.add(mode);
     command.add(databasePath.toString());
     command.add(Integer.toString(edges));
-    final Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-    final String console = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    assertThat(process.waitFor(5, TimeUnit.MINUTES)).as(console).isTrue();
+    // The console goes to a file, so the wait below is what bounds the step: reading a pipe would block until the child exits
+    final Path consoleFile = Path.of(databasePath + ".console");
+    final Process process = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(consoleFile.toFile()).start();
+    final boolean exited = process.waitFor(5, TimeUnit.MINUTES);
+    if (!exited)
+      process.destroyForcibly().waitFor(30, TimeUnit.SECONDS);
+    final String console = Files.exists(consoleFile) ? Files.readString(consoleFile, StandardCharsets.UTF_8) : "";
+    assertThat(exited).as("step '%s' did not end within 5 minutes:%n%s", mode, console).isTrue();
     // The console comes after what the step reported, so a failure shows both
     final String output = (Files.exists(results) ? Files.readString(results) : "") + console;
     return new ChildResult(process.exitValue(), output);

@@ -62,6 +62,10 @@ class Issue11011GavBuildFailureReportedTest extends TestHelper {
       }
 
       assertThat(view.awaitReady(10, TimeUnit.SECONDS)).isFalse();
+      // The worker logs after it publishes the status: the line is waited for, bounded, before the logger goes back
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (!captured.severe().contains(VIEW) && System.nanoTime() < deadline)
+        Thread.onSpinWait();
     } finally {
       LogManager.instance().setLogger(previousLogger);
     }

@@ -39,6 +39,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -57,6 +58,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * Abstract base class for algorithm procedures.
@@ -468,7 +470,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      */
     private void sizeFromHeap() {
       sizedFromHeap = true;
-      freeHeap = HeapUsage.availableHeapBytes();
+      // The reading that never under-reports what is live: a young collection does not refresh the old generation's
+      // post-collection figure, and a stale one would credit the call with heap that is not free
+      freeHeap = HeapUsage.conservativeAvailableHeapBytes();
       if (freeHeap < 0)
         return;
       pageCache = PageManager.INSTANCE.getReadCacheRAM();
@@ -483,8 +487,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      */
     private void reclaimPageCacheFor(final long total) {
       final long needed = pageCacheToReclaim(total, freeHeap, withoutReclaim, reclaimed);
-      if (needed > 0)
-        reclaimed += PageManager.INSTANCE.reclaimReadCacheRAM(needed);
+      if (needed > 0) {
+        // In steps of a quarter of the cache at least: a walk that grows as it goes must not sort the cache once per item
+        final long freed = PageManager.INSTANCE.reclaimReadCacheRAM(Math.max(needed, pageCache / 4));
+        reclaimed += freed;
+        // Pages queries may be using leave the cache: traceable when a latency blip follows
+        LogManager.instance().log(this, Level.FINE, "%s(): gave up %d bytes of page cache for a working set of %d bytes", getName(),
+            freed, total);
+      }
     }
 
     /**
@@ -514,7 +524,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           reclaimPageCacheFor(total);
         return;
       }
-      throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
+      throw refusal(estimatedBytes, component, detail);
+    }
+
+    private IllegalArgumentException refusal(final long estimatedBytes, final String component, final String detail) {
+      return new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
           + " bytes (" + detail + ")"
           + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
           + ", more than the " + limit + " bytes allowed"
@@ -542,7 +556,34 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return Long.MAX_VALUE;
       if (auto && !sizedFromHeap)
         sizeFromHeap();
-      return (limit - reserved) / bytesPerItem;
+      // Only what is free now: past the free heap, what the page cache already gave back. A walk that reaches the capacity asks
+      // for more with extendCapacity(), which takes the cache back first, so nothing is allocated against cached pages
+      return Math.max(0L, (allocatableLimit() - reserved) / bytesPerItem);
+    }
+
+    /**
+     * For a walk that sizes its own working set by {@link #capacityFor}: it has reached {@code items} items of
+     * {@code bytesPerItem}, the capacity it was given. Refuses the call when they do not fit the budget, with the message
+     * {@link #reserve} gives, and otherwise takes back from the page cache what they need and answers the new capacity, at
+     * least {@code items}. Nothing is reserved: the walk reserves what it holds once it knows.
+     */
+    public long extendCapacity(final long items, final long bytesPerItem, final String component, final String detail) {
+      if (limit < 0 || bytesPerItem <= 0)
+        return Long.MAX_VALUE;
+      final long estimate = saturatingProduct(items, bytesPerItem);
+      final long total = saturatingSum(reserved, estimate);
+      if (total > limit)
+        throw refusal(estimate, component, detail);
+      if (sizedFromHeap)
+        reclaimPageCacheFor(total);
+      return Math.max(items, capacityFor(bytesPerItem));
+    }
+
+    /** The ceiling a working set can grow to without holding a page the cache has not given back yet. */
+    private long allocatableLimit() {
+      if (!sizedFromHeap || freeHeap < 0)
+        return limit;
+      return Math.min(limit, Math.max(withoutReclaim, saturatingSum(freeHeap, reclaimed) / 2));
     }
 
     /**
@@ -808,12 +849,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * @param memory     the call's budget
    */
   protected List<Vertex> loadVertices(final Database db, final String[] nodeLabels, final MemoryBudget memory) {
-    final long maxVertices = memory.capacityFor(OLTP_VERTEX_BYTES);
+    long maxVertices = memory.capacityFor(OLTP_VERTEX_BYTES);
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
     while (iter.hasNext()) {
       if (vertices.size() >= maxVertices)
-        memory.reserve(saturatingProduct(vertices.size() + 1L, OLTP_VERTEX_BYTES), "the loaded graph",
+        maxVertices = memory.extendCapacity(vertices.size() + 1L, OLTP_VERTEX_BYTES, "the loaded graph",
             "at least " + (vertices.size() + 1) + " nodes");
       vertices.add(iter.next());
     }

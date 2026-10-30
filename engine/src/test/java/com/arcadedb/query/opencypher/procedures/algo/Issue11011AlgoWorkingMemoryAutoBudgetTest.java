@@ -82,6 +82,32 @@ class Issue11011AlgoWorkingMemoryAutoBudgetTest extends TestHelper {
   }
 
   @Test
+  void aWalkExtendsItsCapacityWithoutReservingUntilTheLimit() {
+    final long budgetBytes = 1000L;
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, budgetBytes);
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database);
+    assertThat(budget.capacityFor(10)).isEqualTo(100);
+    // Extending reserves nothing: the walk reserves what it holds at the end, and the whole budget is still there for it
+    assertThat(budget.extendCapacity(100, 10, "the visited vertices", "test")).isGreaterThanOrEqualTo(100);
+    budget.reserve(budgetBytes, "the visited vertices", "test");
+    assertThatThrownBy(() -> budget.extendCapacity(1, 10, "the visited vertices", "at least 1 nodes"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("the visited vertices would need 10 bytes (at least 1 nodes)");
+  }
+
+  @Test
+  void theOldGenerationPoolsAreTheOnesReadAtTheirCurrentOccupancy() {
+    assertThat(HeapUsage.isOldGenerationPool("G1 Old Gen")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("PS Old Gen")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("Tenured Gen")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("ZGC Old Generation")).isTrue();
+    assertThat(HeapUsage.isOldGenerationPool("G1 Eden Space")).isFalse();
+    assertThat(HeapUsage.isOldGenerationPool("ZGC Young Generation")).isFalse();
+    assertThat(HeapUsage.isOldGenerationPool("ZHeap")).isFalse();
+    assertThat(HeapUsage.isOldGenerationPool(null)).isFalse();
+  }
+
+  @Test
   void theFloorIsAnEighthOfTheHeapAndNeverBelow64MB() {
     assertThat(AbstractAlgoProcedure.fixedBudgetFloor()).isEqualTo(
         Math.max(64L * 1024 * 1024, HeapUsage.maxHeapBytes() / 8));

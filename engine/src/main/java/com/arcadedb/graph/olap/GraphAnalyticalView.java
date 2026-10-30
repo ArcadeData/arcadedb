@@ -660,6 +660,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
           if (snapshot == null)
             unregisterChangeListeners();
+          // The caller hears the exception, the server log hears which view failed, as for a build in the background
+          logBuildFailure("Build", e);
         } else if (readyLatch != latch && !shutDown)
           // Not once shut down: a build dispatched on the view since then is not the one this call was superseded by
           newer = readyLatch;
@@ -979,8 +981,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         this.status = Status.FAILED;
         unregisterChangeListeners();
         GraphTraversalProviderRegistry.unregister(database, this);
-        if (name != null)
+        if (name != null) {
           GraphAnalyticalViewRegistry.unregister(database, name);
+          GraphAnalyticalViewRegistry.recordFailure(database, name, e);
+        }
       }
       this.notifyAll();
       buildQueued.set(false);
@@ -1201,7 +1205,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * An {@link OutOfMemoryError} says what to change, since the stack trace of an allocation says nothing useful.
    */
   private void logBuildFailure(final String what, final Throwable e) {
-    if (isBenignShutdownError(e))
+    // Quiet only when the view or the database is really going away: a transaction failure of a live build is a failure
+    if (isBenignShutdownError(e) && (shutDown || !database.isOpen()))
       LogManager.instance().log(this, Level.FINE, "%s of GraphAnalyticalView '%s' aborted because the database is closing", what,
           name);
     else if (e instanceof OutOfMemoryError)
