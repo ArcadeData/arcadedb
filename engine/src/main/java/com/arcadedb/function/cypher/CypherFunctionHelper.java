@@ -45,6 +45,7 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.time.Period;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
@@ -824,6 +825,16 @@ public final class CypherFunctionHelper {
    */
   public static Map<String, Object> getStatementTime(final CommandContext context) {
     return statementClock(context).values();
+  }
+
+  /**
+   * The statement clock's instant seen from {@code zone}: what a temporal constructor given only a timezone
+   * ({@code datetime('Europe/Rome')}, {@code date('UTC')}, ...) answers, so it agrees with its no-argument form and
+   * with itself on every row of the statement. Reading {@code now(zone)} per call made it advance from one row to
+   * the next (issue #11009).
+   */
+  public static ZonedDateTime getStatementTime(final CommandContext context, final ZoneId zone) {
+    return ((CypherDateTime) getStatementTime(context).get("datetime")).getValue().withZoneSameInstant(zone);
   }
 
   /**

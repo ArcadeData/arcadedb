@@ -75,10 +75,13 @@ import java.util.logging.Level;
 public final class CypherFunctionRegistry {
   private static final String APOC_PREFIX = "apoc.";
   private static final Map<String, StatelessFunction> FUNCTIONS = new ConcurrentHashMap<>();
+  // What the registry held once the built-ins were registered, to tell a built-in from a function registered over it
+  private static final Map<String, StatelessFunction> BUILT_INS;
 
   // Static initialization block to register built-in functions
   static {
     registerBuiltInFunctions();
+    BUILT_INS = Map.copyOf(FUNCTIONS);
   }
 
   private CypherFunctionRegistry() {
@@ -146,6 +149,19 @@ public final class CypherFunctionRegistry {
    */
   public static boolean hasFunction(final String name) {
     return FUNCTIONS.containsKey(normalizeApocName(name));
+  }
+
+  /**
+   * Whether the function answering for {@code name} is the one ArcadeDB registered at startup, or no function is
+   * registered under it at all. False once {@link #register} or {@link #registerOrReplace} bound an implementation of
+   * its own to the name, which a caller reasoning about a built-in's behavior must not take for the built-in.
+   *
+   * @param name the function name (case-insensitive, the "apoc." prefix is stripped)
+   */
+  public static boolean isBuiltInOrUnregistered(final String name) {
+    final String normalized = normalizeApocName(name);
+    final StatelessFunction current = FUNCTIONS.get(normalized);
+    return current == null || current == BUILT_INS.get(normalized);
   }
 
   /**

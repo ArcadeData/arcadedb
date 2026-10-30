@@ -68,7 +68,7 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
         return CypherLocalTime.parse(str);
       } catch (final Exception e) {
         try {
-          return new CypherLocalTime(LocalTime.now(ZoneId.of(str)));
+          return new CypherLocalTime(CypherFunctionHelper.getStatementTime(context, ZoneId.of(str)).toLocalTime());
         } catch (final Exception e2) {
           // Neither a valid local time nor a valid timezone: determined entirely by the supplied string, so it
           // is a client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5910.
