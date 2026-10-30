@@ -294,7 +294,10 @@ public final class FacetPatcher {
    *                                         while a replicated apply is still writing it (#10941), and the engine cannot tell that from
    *                                         a corruption, so the statement fails with a retryable error and the next attempt reads the
    *                                         chain whole. A chain that stays broken surfaces once the client's bounded retries are spent,
-   *                                         with the original diagnosis and its CHECK DATABASE FIX hint in the message
+   *                                         with the original diagnosis and its CHECK DATABASE FIX hint in the message. Only an atomic
+   *                                         single-request command is retried automatically: inside an explicit transaction the client
+   *                                         manages (an HTTP session, a {@code RemoteDatabase} transaction) the exception reaches the
+   *                                         client at once, which retries or gives up itself
    */
   public static Document recordAt(final DatabaseInternal db, final RID rid) {
     // the empty slots of pending pages are not in the patch set (MatchSet keeps the occupied ones), so an absent record is a delete

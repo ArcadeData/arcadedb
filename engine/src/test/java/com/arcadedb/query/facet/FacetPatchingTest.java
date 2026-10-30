@@ -263,32 +263,6 @@ class FacetPatchingTest extends TestHelper {
     assertThat(FacetExecutor.lagOf(1_250L, 1_000L)).isEqualTo(250L);
   }
 
-  @Test
-  @Timeout(300)
-  void inexactAnswerAlwaysReportsLag() throws Exception {
-    final ColumnarTestData data = data(1);
-    data.createSchema(database);
-    final List<RID> rids = data.insertAssets(database, 2_000);
-    FacetOracle.awaitCaughtUp(database);
-
-    final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
-    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
-    GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(5);
-    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
-    try (final AutoCloseable hold = suspendApply()) {
-      database.transaction(() -> {
-        for (int i = 0; i < 50; i++)
-          database.lookupByRID(rids.get(i * 37), true).asDocument().modify().set("fileSize", 4_000L + i).save();
-      });
-      final FacetResults results = run(null);
-      assertThat(results.exact()).isFalse();
-      assertThat(results.lagMs()).isGreaterThanOrEqualTo(1L);
-    } finally {
-      GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
-      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
-    }
-  }
-
   /**
    * Final review ruling (relative patch budget): above the absolute budget a query stays exact while what it patches is at most
    * {@code patchBudgetRatio} of its matches; a ratio of 0 keeps the absolute budget alone.

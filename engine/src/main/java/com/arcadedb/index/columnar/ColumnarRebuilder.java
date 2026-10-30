@@ -284,6 +284,53 @@ final class ColumnarRebuilder {
     return decided;
   }
 
+  /**
+   * The {@code create} of an EMPTY bucket's projection on the calling thread: the same scan and publish as the background create
+   * ({@link #rebuild}), uncounted like it, so a column added to an open projection is published before the DDL returns (final review A,
+   * answer 2b). Takes the maintenance slot once and never waits for it: the caller holds the registry lock or runs on the shared apply
+   * pool. Counted as a running maintenance job of the manager, so a close waits for it.
+   *
+   * @return true when every column is published; false when the caller schedules the background {@code create}: the slot is busy, the
+   * bucket holds records, the publish failed or stopped, or nothing can be written
+   */
+  static boolean createInlineIfEmpty(final ColumnarIndexManager manager, final ColumnarProjection projection) {
+    if (manager.isReadOnly() || manager.isClosing() || !projection.canWrite() || !projection.tryBeginMaintenance())
+      return false;
+    final boolean[] published = new boolean[1];
+    try {
+      manager.runRebuildBody(projection, () -> {
+        if (!projection.hasUnpublishedColumn()) {
+          published[0] = true;
+          return;
+        }
+        final ColumnDefinition[] decided = projection.columns();
+        published[0] = ColumnarApplier.inDatabaseContext(manager.getDatabase(), () -> {
+          if (!manager.isBucketEmpty(projection.bucketId()))
+            return false;
+          try {
+            return new Run(manager, projection, CREATE, decided).execute();
+          } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+          }
+        });
+        if (published[0])
+          manager.rebuildPublished(projection);
+      });
+    } catch (final ColumnarTestHooks.SimulatedCrash e) {
+      throw e;
+    } catch (final ColumnarFlusher.PublishingStoppedException e) {
+      return false;
+    } catch (final RuntimeException e) {
+      // the background create retries it, with its own failure handling
+      LogManager.instance().log(ColumnarRebuilder.class, Level.WARNING,
+          "Inline create of the columnar projection of bucket '%s' failed: retried in the background", e, projection.bucketName());
+      return false;
+    } finally {
+      projection.endMaintenance();
+    }
+    return published[0];
+  }
+
   /** One scan and publish; used once. */
   private static final class Run implements LocalBucket.CommittedSlotVisitor {
     private final ColumnarIndexManager         manager;

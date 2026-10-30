@@ -21,9 +21,11 @@ package com.arcadedb.index.columnar;
 import java.util.List;
 
 /**
- * Chooses the segments of one projection that the next merge rewrites ({@link ColumnarFlusher#merge}). A segment with too many dead
- * rows is rewritten alone, which drops them; otherwise a projection holding too many segments merges its cheapest adjacent run, so
- * the segment count stays bounded while the bytes rewritten per merge stay small.
+ * Chooses the segments of one projection that the next merge rewrites ({@link ColumnarFlusher#merge}). A projection holding too many
+ * segments merges its cheapest adjacent run first, so the segment count stays bounded while the bytes rewritten per merge stay small;
+ * otherwise a segment with too many dead rows is rewritten alone, which drops them. The count goes first because a rewrite alone keeps
+ * the count: under sustained updates and deletes every flushed segment soon reaches the dead ratio, and a dead-first order then never
+ * reached the count rule while each pass flushed one more segment (final review A-I1). A merge drops the dead rows of its run anyway.
  */
 final class MergePolicy {
   private static final long[] NOTHING = new long[0];
@@ -36,19 +38,23 @@ final class MergePolicy {
    * @param deadRatio   the dead fraction (dead rows / rows) at which a segment is rewritten alone, {@code arcadedb.columnar.mergeDeadRatio}
    * @param maxSegments the segment count above which a run is merged, {@code arcadedb.columnar.mergeMaxSegments}
    *
-   * @return the ids of the segments to merge, in manifest order: the first segment with at least one dead row and
-   * {@code deadRows / rows >= deadRatio}; else, with more than {@code maxSegments} segments, the adjacent run of
-   * {@code maxSegments / 2 + 1} segments (at least 2) with the fewest rows, the oldest run on a tie; else empty
+   * @return the ids of the segments to merge, in manifest order: with more than {@code maxSegments} segments, the adjacent run of
+   * {@code maxSegments / 2 + 1} segments (at least 2) with the fewest rows, the oldest run on a tie; else the first segment with at
+   * least one dead row and {@code deadRows / rows >= deadRatio}; else empty
    */
   static long[] select(final List<ColumnarManifest.SegmentEntry> segments, final float deadRatio, final int maxSegments) {
+    final int count = segments.size();
+    if (count > maxSegments)
+      return cheapestRun(segments, count, maxSegments);
+
     for (final ColumnarManifest.SegmentEntry segment : segments)
       // in float, as the ratio is configured: 30 dead of 100 rows reaches 0.3f
       if (segment.deadRows() > 0 && (float) segment.deadRows() / segment.rows() >= deadRatio)
         return new long[] { segment.segmentId() };
+    return NOTHING;
+  }
 
-    final int count = segments.size();
-    if (count <= maxSegments)
-      return NOTHING;
+  private static long[] cheapestRun(final List<ColumnarManifest.SegmentEntry> segments, final int count, final int maxSegments) {
     final int run = Math.min(count, Math.max(2, maxSegments / 2 + 1));
     long sum = 0;
     for (int i = 0; i < run; i++)

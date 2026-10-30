@@ -29,7 +29,9 @@ import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
 import com.arcadedb.index.columnar.ColumnarSegmentView;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
+import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.PositionBitmap;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
@@ -45,6 +47,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.LongPredicate;
+import java.util.logging.Level;
 
 /**
  * Computes the facets of a query over its {@link MatchSet} from the columnar projection (spec 7). The snapshot of every bucket of the
@@ -63,7 +66,9 @@ import java.util.function.LongPredicate;
  * {@link FacetFallbackScanner}, by collectors of their own (one per declaring type of the column, one for raw values) merged with the
  * others by value. The answer stays exact and the facet's source is {@code scan}. A query that scans takes one permit of
  * {@link ColumnarIndexManager#fallbackScans()} without waiting; refused, every facet that needed a scan is {@code unavailable} with the
- * reason {@code fallback scans capped}, and the others are counted as usual.
+ * reason {@code fallback scans capped}, and the others are counted as usual. Granted, the query counts once in
+ * {@code query.fallback.scans} under the reason of its first scanned facet and bucket ({@link ColumnarStats#FALLBACK_SCAN_REASONS}),
+ * and each scanned facet and bucket is logged at FINE with its reason.
  * <p>
  * Patching (spec 7.3, D10, D11): the matches a snapshot cannot answer for, and those the caller's open transaction wrote, are read
  * from their records by {@link FacetPatcher}, once per record for every facet (a match no facet counts from the projection is not read).
@@ -85,6 +90,13 @@ public final class FacetExecutor {
   /** The {@code source} of a facet a bucket of which was read from its records. */
   static final String SCAN                  = "scan";
   static final String FALLBACK_SCANS_CAPPED = "fallback scans capped";
+
+  /** By facet and bucket: the projection answers the facet in the bucket; any other value is {@link #scanReason}. */
+  private static final byte     ANSWERS      = 0;
+  /** The FINE log text of each {@link ColumnarStats#FALLBACK_SCAN_REASONS} reason, by reason index. */
+  private static final String[] REASON_TEXTS = { "expression facet", "no projection", "no COLUMNAR index",
+      "column not published (create or schema window)", "column encoding changed", "segment without the column", "read events",
+      "own writes over patch budget" };
 
   private FacetExecutor() {
   }
@@ -143,30 +155,29 @@ public final class FacetExecutor {
       for (int i = 0; i < bucketIds.length; i++)
         readEvents[i] = FacetFallbackScanner.firesReadEvents(db, db.getSchema().getTypeByBucketId(bucketIds[i]));
 
-      // by facet, the buckets the projection answers; by bucket, whether it answers any facet (only those are patched)
-      final boolean[][] answers = new boolean[facets.size()][bucketIds.length];
+      // by facet, the buckets the projection answers (ANSWERS) and why the others are read from their records; by bucket, whether it
+      // answers any facet (only those are patched)
+      final byte[][] reasons = new byte[facets.size()][bucketIds.length];
       final boolean[] answered = new boolean[bucketIds.length];
-      for (int f = 0; f < answers.length; f++)
+      for (int f = 0; f < reasons.length; f++)
         for (int i = 0; i < bucketIds.length; i++) {
-          answers[f][i] = !readEvents[i] && projectionAnswers(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
-          answered[i] |= answers[f][i];
+          reasons[f][i] = readEvents[i] ? scanReason(ColumnarStats.FALLBACK_READ_EVENTS) :
+              projectionReason(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
+          answered[i] |= reasons[f][i] == ANSWERS;
         }
 
       final PositionBitmap[] patches = new PositionBitmap[bucketIds.length];
       final boolean[] ownScanned = new boolean[bucketIds.length];
-      final boolean exact = planPatches(db, manager, matches, bucketIds, snapshots, answers, answered, patches, ownScanned, patchCharges);
+      final boolean exact = planPatches(db, manager, matches, bucketIds, snapshots, reasons, answered, patches, ownScanned, patchCharges);
 
-      // by facet, the buckets read from their records (null: none)
-      final boolean[][] scans = new boolean[facets.size()][];
-      for (int f = 0; f < scans.length; f++)
-        for (int i = 0; i < bucketIds.length; i++)
-          if (ownScanned[i] || !answers[f][i]) {
-            if (scans[f] == null)
-              scans[f] = new boolean[bucketIds.length];
-            scans[f][i] = true;
-          }
+      // a bucket the caller's transaction wrote over the patch budget is read from its records for every facet
+      for (int i = 0; i < bucketIds.length; i++)
+        if (ownScanned[i])
+          for (final byte[] facetReasons : reasons)
+            if (facetReasons[i] == ANSWERS)
+              facetReasons[i] = scanReason(ColumnarStats.FALLBACK_OWN_WRITES);
 
-      final long patched = count(db, manager, matches, facets, ctx, target, bucketIds, snapshots, patches, scans, results, stats);
+      final long patched = count(db, manager, matches, facets, ctx, target, bucketIds, snapshots, patches, reasons, results, stats);
       if (patched > 0)
         manager.getStats().queryPatched(patched);
       final FacetResults facetResults = new FacetResults(exact, patched, lagMs, results);
@@ -183,6 +194,11 @@ public final class FacetExecutor {
     }
   }
 
+  /** Age of a pending epoch, in ms: at least 1, an epoch that is pending is never 0 ms old in meaning, even read in its own millisecond (spec 8.3). */
+  static long lagOf(final long nowMs, final long oldestPendingEpochStartMs) {
+    return Math.max(1L, nowMs - oldestPendingEpochStartMs);
+  }
+
   /**
    * Fills the patch set of each bucket the projection answers a facet in (D11, plus the records the caller's open transaction wrote),
    * restricted to the matches a facet the projection answers there counts (final review A-M1). The sizes are counted first, allocating
@@ -192,30 +208,25 @@ public final class FacetExecutor {
    * each patch set is charged to the memory budget before it is made (with the bitmap of the transaction's writes it holds); a refused
    * charge drops every patch set the same way, except that it is no patch overflow.
    *
-   * @param answers  by facet and bucket, whether the projection answers the facet in the bucket
+   * @param reasons  by facet and bucket, {@link #ANSWERS} when the projection answers the facet in the bucket
    * @param answered by bucket, whether the projection answers any facet in it; a bucket every facet scans needs no patch set
    *
    * @return false when a bucket that needed patching is counted from the projection alone (the answer is not exact)
    */
-  /** Age of a pending epoch, in ms: at least 1, an epoch that is pending is never 0 ms old in meaning, even read in its own millisecond (spec 8.3). */
-  static long lagOf(final long nowMs, final long oldestPendingEpochStartMs) {
-    return Math.max(1L, nowMs - oldestPendingEpochStartMs);
-  }
-
   private static boolean planPatches(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
-      final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[][] answers, final boolean[] answered,
+      final int[] bucketIds, final ColumnarSnapshot[] snapshots, final byte[][] reasons, final boolean[] answered,
       final PositionBitmap[] patches, final boolean[] scanned, final CollectorReservations charges) {
     final PositionBitmap[] own = FacetPatcher.ownWrites(db, matches, bucketIds);
     final long[] sizes = new long[bucketIds.length];
     final LongPredicate[] counted = new LongPredicate[bucketIds.length];
-    final boolean[] answering = new boolean[answers.length];
+    final boolean[] answering = new boolean[reasons.length];
     long total = 0;
     long patchedMatches = 0;
     for (int i = 0; i < bucketIds.length; i++) {
       if (snapshots[i] == null || !answered[i])
         continue;
       for (int f = 0; f < answering.length; f++)
-        answering[f] = answers[f][i];
+        answering[f] = reasons[f][i] == ANSWERS;
       counted[i] = matches.countedBy(bucketIds[i], answering);
       sizes[i] = FacetPatcher.patchSetSize(matches, snapshots[i], bucketIds[i], counted[i], own != null ? own[i] : null);
       total += sizes[i];
@@ -261,24 +272,37 @@ public final class FacetExecutor {
   }
 
   /**
-   * Whether the bucket's snapshot holds the facet's property, encoded as the schema's definition encodes it now
-   * ({@link ColumnDefinition#sameEncoding}), for every match of the
-   * facet it holds live. A column redefined after the snapshot was taken (retyped, or dropped and created again) is not decoded with
+   * {@link #ANSWERS} when the bucket's snapshot holds the facet's property, encoded as the schema's definition encodes it now
+   * ({@link ColumnDefinition#sameEncoding}), for every match of the facet it holds live; else the {@link #scanReason} the bucket is read
+   * from its records for. A column redefined after the snapshot was taken (retyped, or dropped and created again) is not decoded with
    * the new definition: the bucket is read from its records.
    */
-  private static boolean projectionAnswers(final DatabaseInternal db, final MatchSet matches, final int facetIndex, final FacetSpec spec,
+  private static byte projectionReason(final DatabaseInternal db, final MatchSet matches, final int facetIndex, final FacetSpec spec,
       final int bucketId, final ColumnarSnapshot snapshot) {
     final String property = spec.property();
-    if (property == null || snapshot == null)
-      return false;
+    if (property == null)
+      return scanReason(ColumnarStats.FALLBACK_EXPRESSION);
+    // the schema first: a property without a COLUMNAR index scans whatever state the projection is in
     final ColumnDefinition current = FacetFallbackScanner.column(db.getSchema().getTypeByBucketId(bucketId), property);
-    if (current == null || !current.sameEncoding(snapshot.publishedColumn(property)))
-      return false;
+    if (current == null)
+      return scanReason(ColumnarStats.FALLBACK_NO_INDEX);
+    if (snapshot == null)
+      return scanReason(ColumnarStats.FALLBACK_NO_PROJECTION);
+    final ColumnDefinition published = snapshot.publishedColumn(property);
+    if (published == null)
+      return scanReason(ColumnarStats.FALLBACK_NOT_PUBLISHED);
+    if (!current.sameEncoding(published))
+      return scanReason(ColumnarStats.FALLBACK_ENCODING);
     final MatchSet.FacetMatches facetMatches = matches.facetMatches(facetIndex, bucketId);
     for (final ColumnarSegmentView segment : snapshot.segments())
       if (segment.column(property) == null && facetMatches != null && facetMatches.andCardinality(segment.live()) > 0)
-        return false;
-    return true;
+        return scanReason(ColumnarStats.FALLBACK_SEGMENT_COLUMN);
+    return ANSWERS;
+  }
+
+  /** The by-facet-and-bucket code of a {@link ColumnarStats#FALLBACK_SCAN_REASONS} reason; never {@link #ANSWERS}. */
+  private static byte scanReason(final int fallbackReason) {
+    return (byte) (fallbackReason + 1);
   }
 
   /**
@@ -287,15 +311,17 @@ public final class FacetExecutor {
    * (a bucket with both reads each record once for all of them).
    * <p>
    * The fallback scan permit (D14) is taken here, once the facets are planned and only when a facet that is still available will
-   * scan; it is not waited for, and refused, every facet with a scanned bucket is {@code unavailable / fallback scans capped}.
+   * scan; it is not waited for, and refused, every facet with a scanned bucket is {@code unavailable / fallback scans capped}. Granted,
+   * the query counts once under the reason of its first scanned facet and bucket, and every scanned facet and bucket is logged at FINE.
    *
-   * @param scans by facet, the buckets it is scanned in (null: none)
+   * @param reasons by facet and bucket, {@link #ANSWERS} or why the facet is scanned in the bucket; {@link #plan} sets the reason of a
+   *                bucket it scans for a column found missing or redefined meanwhile
    *
    * @return the records read to patch the projection (not those read for scanned facets)
    */
   private static long count(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
       final List<FacetSpec> facets, final CommandContext ctx, final DocumentType target, final int[] bucketIds,
-      final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches, final boolean[][] scans,
+      final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches, final byte[][] reasons,
       final LinkedHashMap<String, FacetResult> results, final LinkedHashMap<String, FacetExecutionStats> stats) {
     final WorkGuard guard = WorkGuard.forCommandDeadline(ctx);
     final FacetPlan[] plans = new FacetPlan[facets.size()];
@@ -304,14 +330,15 @@ public final class FacetExecutor {
     try {
       boolean wantsScan = false;
       for (int f = 0; f < plans.length; f++) {
-        plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots, scans[f]);
+        plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots,
+            reasons[f]);
         plans[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
       }
       if (wantsScan) {
         scanPermit = manager.fallbackScans().tryAcquire();
         if (scanPermit)
-          manager.getStats().queryFallbackScan();
+          countScans(db, manager, plans, bucketIds, reasons);
         else
           for (final FacetPlan plan : plans)
             plan.capped = plan.scanned;
@@ -374,6 +401,46 @@ public final class FacetExecutor {
           plan.release();
       derived.release(manager);
     }
+  }
+
+  /**
+   * Counts the query in {@code query.fallback.scans} under the reason of its first scanned facet and bucket, and logs every scanned
+   * facet and bucket at FINE with its reason (the text is built only when FINE is on).
+   */
+  private static void countScans(final DatabaseInternal db, final ColumnarIndexManager manager, final FacetPlan[] plans,
+      final int[] bucketIds, final byte[][] reasons) {
+    final boolean fine = LogManager.instance().isLoggable(FacetExecutor.class, Level.FINE);
+    boolean counted = false;
+    for (int f = 0; f < plans.length; f++) {
+      if (!plans[f].scanned || plans[f].unavailable)
+        continue;
+      for (int i = 0; i < bucketIds.length; i++) {
+        if (plans[f].scanSourceOf[i] == null)
+          continue;
+        final int reason = reasons[f][i] - 1;
+        if (!counted) {
+          manager.getStats().queryFallbackScan(reason);
+          counted = true;
+          if (!fine)
+            return;
+        }
+        final DocumentType type = db.getSchema().getTypeByBucketId(bucketIds[i]);
+        LogManager.instance().log(FacetExecutor.class, Level.FINE, "FACETS facet '%s' of bucket '%s' (type '%s') answered by a record scan: %s",
+            plans[f].spec.alias(), db.getSchema().getBucketById(bucketIds[i]).getName(), type != null ? type.getName() : null,
+            reasonText(manager, bucketIds[i], reason));
+      }
+    }
+  }
+
+  /** The FINE text of a reason; the one of a bucket without a usable projection says why, read only here. */
+  private static String reasonText(final ColumnarIndexManager manager, final int bucketId, final int reason) {
+    if (reason != ColumnarStats.FALLBACK_NO_PROJECTION)
+      return REASON_TEXTS[reason];
+    final ColumnarProjection projection = manager.projection(bucketId);
+    if (projection == null)
+      return REASON_TEXTS[reason];
+    final String unusable = projection.unusableReason();
+    return unusable != null ? "projection unusable (" + unusable + ")" : "projection closed";
   }
 
   /**
@@ -501,10 +568,11 @@ public final class FacetExecutor {
    * snapshot publishes the column with another encoding (redefined since {@link #projectionAnswers} looked) is scanned too, so the
    * collector decodes every segment it counts with the definition it was written with.
    *
-   * @param scans by bucket index, the buckets the facet is scanned in; null when none
+   * @param reasons by bucket index, {@link #ANSWERS} or why the facet is scanned in the bucket; a bucket found without a usable column
+   *                here is scanned too, and its reason set
    */
   private static FacetPlan plan(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
-      final int facetIndex, final FacetSpec spec, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[] scans) {
+      final int facetIndex, final FacetSpec spec, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final byte[] reasons) {
     final FacetPlan plan = new FacetPlan(spec, bucketIds.length);
     final String property = spec.property();
     // the buckets of each declaring type, in bucket order; the scanned buckets by column or kind of raw read
@@ -519,14 +587,18 @@ public final class FacetExecutor {
       // an index dropped since projectionAnswers looked: the bucket is scanned as well
       final TypeIndex index = type == null || property == null ? null : type.getPolymorphicColumnarIndex(property);
       ColumnDefinition declared = null;
-      if (index != null && (scans == null || !scans[i])) {
+      if (index != null && reasons[i] == ANSWERS) {
         final String declaring = index.getTypeName();
         declaringTypes.computeIfAbsent(declaring, k -> db.getSchema().getType(declaring));
         declared = declaredColumns.computeIfAbsent(declaring, k -> FacetFallbackScanner.column(declaringTypes.get(declaring), property));
-        if (declared == null || !declared.sameEncoding(snapshots[i].publishedColumn(property)))
+        if (declared != null && !declared.sameEncoding(snapshots[i].publishedColumn(property))) {
           declared = null;
+          reasons[i] = scanReason(ColumnarStats.FALLBACK_ENCODING);
+        }
       }
       if (declared == null) {
+        if (reasons[i] == ANSWERS)
+          reasons[i] = scanReason(ColumnarStats.FALLBACK_NO_INDEX);
         final FacetFallbackScanner.Source source = FacetFallbackScanner.sourceOf(db, type, spec);
         plan.scanSourceOf[i] = source;
         dates |= source.read() == FacetFallbackScanner.Read.EPOCH_MS || source.column() != null && source.column().propertyType()

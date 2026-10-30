@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.block.BlockCorruptionException;
@@ -520,6 +521,74 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
     assertThat(requested).containsExactly(ColumnarProjection.CORRUPT);
     assertThat(projection.isUsable()).isFalse();
     assertThat(projection.unusableReason()).isEqualTo(ColumnarProjection.CORRUPT);
+  }
+
+  @Test
+  void sustainedUpdatesKeepTheSegmentCountBounded() throws InterruptedException {
+    // final review A-I1: every pass flushes one small segment and its updates leave a segment over the dead ratio (2 of 5 rows).
+    // Rewriting that segment alone keeps the count, so the count merge must win over it once the projection holds too many segments
+    final int maxSegments = 4;
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MERGE_MAX_SEGMENTS, maxSegments);
+    // no flush is due by time or size: only the passes below flush
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL, 3_600_000L);
+    createAsset(1);
+    final int bucketId = bucketIds("Asset")[0];
+    final ColumnarProjection projection = manager().projection(bucketId);
+
+    final int passes = 40;
+    final List<RID> previousBatch = new ArrayList<>();
+    int mostSegments = 0;
+    for (int pass = 0; pass < passes; pass++) {
+      final int p = pass;
+      final List<RID> batch = new ArrayList<>();
+      database.transaction(() -> {
+        for (int i = 0; i < 3; i++)
+          batch.add(database.newDocument("Asset").set("brand", "b" + p).save().getIdentity());
+        // 2 of the 5 rows the previous pass flushed (its 3 inserts and 2 updates) are superseded: that segment passes the 0.3 dead ratio
+        for (int i = 0; i < previousBatch.size() - 1; i++)
+          previousBatch.get(i).asDocument(true).modify().set("brand", "updated" + p).save();
+      });
+      previousBatch.clear();
+      previousBatch.addAll(batch);
+      assertThat(manager().awaitCaughtUp(10_000)).isTrue();
+      manager().maintainForTesting(bucketId);
+      mostSegments = Math.max(mostSegments, projection.manifest().segments().size());
+    }
+    // one flush per pass and one merge of maxSegments / 2 + 1 segments when over the bound: never more than one over it
+    assertThat(mostSegments).as("segments after %d passes of sustained updates", passes).isLessThanOrEqualTo(maxSegments + 1);
+    long live = 0;
+    for (final ColumnarManifest.SegmentEntry segment : projection.manifest().segments())
+      live += segment.rows() - segment.deadRows();
+    assertThat(live).as("every record once, no superseded row").isEqualTo(3L * passes);
+  }
+
+  @Test
+  void aMergePassFlushesOnlyWhenAFlushIsDue() throws InterruptedException {
+    // final review A-I1 (b): a pass due only because a merge is wanted merges, and leaves a young overlay for its own flush
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL, 3_600_000L);
+    final ColumnarProjection projection = suspendedProjection();
+    final int bucketId = projection.bucketId();
+    final ColumnarIndexManager manager = manager();
+    stage(projection, 0, 1);
+    manager.maintainForTesting(bucketId);
+    stage(projection, 1, 1);
+    manager.maintainForTesting(bucketId);
+    assertThat(projection.manifest().segments()).hasSize(2);
+
+    // 3 segments over a bound of 1: the merge of 2 leaves 2, so another merge is wanted
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MERGE_MAX_SEGMENTS, 1);
+    stage(projection, 2, 1);
+    manager.maintainForTesting(bucketId);
+    assertThat(projection.manifest().segments()).hasSize(2);
+
+    stage(projection, 3, 1);
+    assertThat(projection.overlay().rows()).isEqualTo(1);
+    manager.scheduleMaintenanceForTesting();
+    for (int i = 0; i < 10_000 && !manager.isMaintenanceIdleForTesting(); i++)
+      Thread.sleep(1);
+    assertThat(manager.isMaintenanceIdleForTesting()).isTrue();
+    assertThat(projection.manifest().segments()).as("merged, with no flush").hasSize(1);
+    assertThat(projection.overlay().rows()).as("the young overlay is not flushed").isEqualTo(1);
   }
 
   @Test

@@ -79,8 +79,12 @@ public final class ColumnarMetrics implements AutoCloseable {
       "apply.records.reread", "apply.unreadable", "rebuild.pages.reused", "flush.duration", "merge.duration", "apply.lag.ms",
       "overlay.rows", "segments", "segments.dead.ratio", "files.open" };
 
-  /** The FACETS and GROUP BY query counters, database-wide: no type, property or reason. */
-  private static final String[] QUERY_KINDS = { "query.patched", "query.budget.waits", "query.patch.overflows", "query.fallback.scans",
+  /**
+   * The FACETS and GROUP BY query counters, database-wide: no type, property or reason. {@code query.fallback.scans} is not one: it is
+   * bound once per reason of {@link ColumnarStats#FALLBACK_SCAN_REASONS}, every series with the same {@code database} and
+   * {@code reason} tags (Prometheus refuses one name with different label sets).
+   */
+  private static final String[] QUERY_KINDS = { "query.patched", "query.budget.waits", "query.patch.overflows",
       "query.filter.fallbacks", "groupby.accelerated", "groupby.fallbacks" };
 
   private static final String[] PROPERTY_KINDS = { "dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
@@ -220,6 +224,8 @@ public final class ColumnarMetrics implements AutoCloseable {
     bind(database, b, "recovery.pages", null, null, null);
     for (final String kind : QUERY_KINDS)
       bind(database, b, kind, null, null, null);
+    for (final String reason : ColumnarStats.FALLBACK_SCAN_REASONS)
+      bind(database, b, "query.fallback.scans", null, null, reason);
   }
 
   private void bind(final String database, final Bound b, final String kind, final String type, final String property,
@@ -258,8 +264,8 @@ public final class ColumnarMetrics implements AutoCloseable {
         counter(b, name, tags, "FACETS queries whose patch set exceeded the patch budget; the answer can still be exact, "
             + "when the caller's own transaction wrote the records and the bucket was scanned instead", ColumnarStats::queryPatchOverflowsCount);
     case "query.fallback.scans" ->
-        counter(b, name, tags, "FACETS queries that scanned records because the projection could not answer a bucket",
-            ColumnarStats::queryFallbackScansCount);
+        counter(b, name, tags, "FACETS queries that scanned records because the projection could not answer a bucket, by the reason of "
+            + "the first bucket scanned", s -> s.queryFallbackScansCount(reason));
     case "query.filter.fallbacks" ->
         counter(b, name, tags, "INDEX facet FILTER evaluators that answered from the rows instead of their RID set",
             ColumnarStats::queryFilterFallbacksCount);
