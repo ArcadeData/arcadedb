@@ -101,8 +101,9 @@ class CypherDistinctSemiJoinTest {
         new TreeSet<>(column(RULE_QUERY + "RETURN h.name AS name", Map.of("port", 161), "name")));
     assertThat(expected).isNotEmpty();
 
+    // The clauses after the rule read the rule and not the host, so their answer is remembered per rule
     final String query = RULE_QUERY + "RETURN DISTINCT h AS host ORDER BY host.name";
-    assertThat(plan(query, Map.of("port", 161))).contains("SEMI JOIN");
+    assertThat(plan(query, Map.of("port", 161))).contains("SEMI JOIN").contains("remembered per r)");
     final List<String> names = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query, Map.of("port", 161))) {
       rs.forEachRemaining(r -> names.add(r.<Vertex>getProperty("host").getString("name")));
@@ -120,6 +121,16 @@ class CypherDistinctSemiJoinTest {
   void optionalMatchKeepsRowsWithoutAMatch() {
     final String query = "MATCH (h:Host) OPTIONAL MATCH (h)-[:HAS]-(p:Port) RETURN DISTINCT h.name AS name ORDER BY name";
     assertThat(plan(query, Map.of())).contains("SEMI JOIN");
+    assertThat(column(query, Map.of(), "name")).hasSize(20);
+  }
+
+  @Test
+  void notRememberedWhenTheClausesCanAnswerDifferentlyForTheSameRule() {
+    final String query = """
+        MATCH (h:Host) OPTIONAL MATCH (h)-[:IN_RULE]-(r:Rule) WITH h, r
+        MATCH (r)-[:FROM]-(s:Source) WHERE rand() < 2
+        RETURN DISTINCT h.name AS name ORDER BY name""";
+    assertThat(plan(query, Map.of())).contains("SEMI JOIN").doesNotContain("remembered");
     assertThat(column(query, Map.of(), "name")).hasSize(20);
   }
 
