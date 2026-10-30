@@ -198,6 +198,27 @@ test("a node added to the graph joins the simulation, and one removed leaves it"
   assert.equal(sandbox.globalPhysics.byId["b"], undefined, "the removed node is gone");
 });
 
+test("an edge added or removed on its own reaches the link force", async () => {
+  const { sandbox } = buildPage([
+    { data: { id: "a", size: 25 } },
+    { data: { id: "b", size: 25 } },
+  ]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  const linkCount = () => sandbox.globalPhysics.sim.force("link").links().length;
+  assert.equal(linkCount(), 0);
+
+  // BOTH ENDS ARE ALREADY ON THE GRAPH: ONLY AN EDGE EVENT TELLS THE SIMULATION
+  sandbox.globalCy.add([{ data: { id: "ab", source: "a", target: "b" } }]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(linkCount(), 1, "the new edge became a spring");
+
+  sandbox.globalCy.getElementById("ab").remove();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(linkCount(), 0, "the removed edge is no longer a spring");
+});
+
 test("a node dropped after a drag stays where it was dropped", () => {
   const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
 

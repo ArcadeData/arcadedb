@@ -360,6 +360,17 @@ function physicsAttach() {
     physicsScheduleSync();
   });
 
+  // AN EDGE ON ITS OWN (BOTH ENDS ALREADY ON THE GRAPH) CHANGES THE SPRINGS TOO
+  cy.on("remove", "edge", function (event) {
+    if (cy !== globalCy) return;
+    physicsScheduleSync();
+  });
+
+  cy.on("add", "edge", function (event) {
+    if (cy !== globalCy) return;
+    physicsScheduleSync();
+  });
+
   cy.on("grab", "node", function (event) {
     if (globalPhysics == null || globalPhysics.cy !== globalCy) return;
     let node = globalPhysics.byId[event.target.id()];
