@@ -171,18 +171,27 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
    * node and bypasses any client-side schema cache) rather than asserting a cached {@code existsType}.
    */
   public void checkSchema() {
-    final long deadline = System.currentTimeMillis() + 30_000;
+    final long deadline = System.currentTimeMillis() + 60_000;
     Exception last = null;
     while (System.currentTimeMillis() < deadline) {
+      // The database itself is replicated to a follower asynchronously, so wait for it to exist on this node before asking
+      // for the type: a query sent first is answered DatabaseNotFound (issue #10970).
+      final RemoteServer node = new RemoteServer(server.host(), server.httpPort(), "root", PASSWORD);
       try {
-        db.query("sql", "SELECT count(*) AS cnt FROM " + TYPE_NAME).next();
-        return;
+        node.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+        if (node.exists(DATABASE)) {
+          db.query("sql", "SELECT count(*) AS cnt FROM " + TYPE_NAME).next();
+          return;
+        }
+        last = new IllegalStateException("database '" + DATABASE + "' does not exist yet on " + server.host());
       } catch (final Exception e) {
         last = e;
-        sleep(1_000);
+      } finally {
+        node.close();
       }
+      sleep(1_000);
     }
-    throw new AssertionError("Time series type '" + TYPE_NAME + "' not available after 30s", last);
+    throw new AssertionError("Time series type '" + TYPE_NAME + "' not available after 60s", last);
   }
 
   /**
@@ -257,7 +266,31 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
     }
   }
 
+  /**
+   * Posts one line protocol batch, retrying while the server answers 503: the server marks a conflict it cannot resolve itself
+   * (a transaction prepared before a schema change, a compaction race) as retryable, and a client that gives up on it loses the
+   * batch (issue #10970).
+   */
   private void postLineProtocol(final String body) {
+    final int maxAttempts = 10;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final int status = postLineProtocolOnce(body);
+        if (status == 204)
+          return;
+        if (status != 503 || attempt == maxAttempts)
+          break;
+        logger.info("Line protocol write answered 503 (attempt {}/{}), retrying", attempt, maxAttempts);
+        sleep(500L * attempt);
+      } catch (final Exception e) {
+        break;
+      }
+    }
+    Metrics.counter("arcadedb.test.ts.inserted.points.error").increment();
+  }
+
+  /** Returns the HTTP status, 204 on success; a non-204 status is logged with the server's answer. */
+  private int postLineProtocolOnce(final String body) throws IOException {
     HttpURLConnection conn = null;
     try {
       final URL url = URI.create(
@@ -281,11 +314,12 @@ public class TimeSeriesDatabaseWrapper implements AutoCloseable {
             err = new String(errorStream.readAllBytes(), StandardCharsets.UTF_8);
           }
         }
-        throw new IOException("Line protocol write failed: HTTP " + status + " " + err);
+        logger.error("Line protocol ingest error: HTTP {} {}", status, err);
       }
-    } catch (final Exception e) {
-      Metrics.counter("arcadedb.test.ts.inserted.points.error").increment();
+      return status;
+    } catch (final IOException e) {
       logger.error("Line protocol ingest error: {}", e.getMessage());
+      throw e;
     } finally {
       if (conn != null)
         conn.disconnect();

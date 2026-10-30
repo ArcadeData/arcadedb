@@ -186,6 +186,14 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public static volatile Consumer<String> TEST_FIX_COMMIT_FAULT = null;
 
+  /**
+   * Test-only fault-injection hook (issue #10970). When non-null, fires in {@link #appendSamples} immediately before each
+   * attempt's commit, inside the same {@code try} that handles a losing {@link ConcurrentModificationException}: throw one from
+   * it to drive the retry loop deterministically, which a standalone database never reaches on its own. Same reset rule as
+   * {@link #TEST_PRE_PHASE4C_HOOK}.
+   */
+  static volatile Runnable TEST_APPEND_COMMIT_FAULT = null;
+
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns) throws IOException {
     this(database, baseName, shardIndex, columns, 0);
@@ -427,6 +435,9 @@ public class TimeSeriesShard implements AutoCloseable {
               readLockHeld = false;
             }
             try {
+              final Runnable commitFault = TEST_APPEND_COMMIT_FAULT;
+              if (commitFault != null)
+                commitFault.run();
               tx.commit();
               committed = true;
               break; // success
@@ -435,8 +446,11 @@ public class TimeSeriesShard implements AutoCloseable {
               // Roll back and retry on the freshly-cleared page. Usually a no-op - commit1stPhase has already
               // rolled this transaction back on every arm and commit() has popped it - and never the caller's.
               tx.rollbackIfMine();
+              // Rethrown as itself, not wrapped in an IOException (issue #10970): the conflict is retryable (a compaction race, or
+              // a Raft refusal of a transaction prepared before a schema change) and the caller, the HTTP layer first, tells a
+              // retryable failure from a fault by its type.
               if (attempt == 1)
-                throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
+                throw e;
               final int attemptNumber = 4 - attempt; // ascending 1..3 for human-readable logging
               LogManager.instance().log(this, Level.FINE,
                   "CME on TimeSeries append for shard %d (attempt %d/3) - retrying after compaction Phase 4c race",
