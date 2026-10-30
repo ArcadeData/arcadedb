@@ -176,6 +176,38 @@ class Issue10914MultiLabelVectorAndFulltextIndexTest extends TestHelper {
     assertThat(database.getSchema().getType("Bar").existsProperty("e")).isFalse();
   }
 
+  /**
+   * The indexes a multi-label statement builds are ordinary per-type indexes, so SQL searches each type through its own
+   * index and a record SQL writes is in the index the logical name resolves to. The logical name itself is a Cypher
+   * concept: SQL names the per-type index.
+   */
+  @Test
+  void fulltextDataIsSearchableFromSqlPerTypeAndSqlWritesAreFoundByTheLogicalName() {
+    command(FULLTEXT_DDL);
+    command("CREATE (:Article {id: 'a1', title: 'graph databases', body: 'fast traversal'})");
+    command("CREATE (:Post {id: 'p1', title: 'cooking', body: 'a graph of recipes'})");
+
+    assertThat(sqlIds("SELECT id FROM Article WHERE SEARCH_INDEX('Article[title,body]', 'graph') = true")).containsExactly("a1");
+    assertThat(sqlIds("SELECT id FROM Post WHERE SEARCH_INDEX('Post[title,body]', 'graph') = true")).containsExactly("p1");
+
+    database.transaction(() -> database.command("sql", "INSERT INTO Post SET id = 'p2', title = 'trip', body = 'a graph of roads'").close());
+    assertThat(fulltextIds("docs", "graph")).containsExactlyInAnyOrder("a1", "p1", "p2");
+    assertThat(sqlIds("SELECT id FROM Post WHERE SEARCH_INDEX('Post[title,body]', 'graph') = true")).containsExactlyInAnyOrder("p1", "p2");
+  }
+
+  @Test
+  void vectorDataIsSearchableFromSqlPerTypeAndSqlWritesAreFoundByTheLogicalName() {
+    command(VECTOR_DDL);
+    command("CREATE (:Article {id: 'a1', e: [1.0, 0.0]})");
+    command("CREATE (:Post {id: 'p1', e: [0.9, 0.1]})");
+
+    assertThat(sqlIds("SELECT id FROM (SELECT expand(vector.neighbors('Article[e]', [1.0, 0.0], 1)))")).containsExactly("a1");
+    assertThat(sqlIds("SELECT id FROM (SELECT expand(vector.neighbors('Post[e]', [1.0, 0.0], 1)))")).containsExactly("p1");
+
+    database.transaction(() -> database.command("sql", "INSERT INTO Post SET id = 'p2', e = [0.0, 1.0]").close());
+    assertThat(nearestIds("emb", 1, "[0.0, 1.0]")).containsExactly("p2");
+  }
+
   @Test
   void ifNotExistsReusesAPerTypeIndexAlreadyThere() {
     command("CREATE FULLTEXT INDEX pre FOR (n:Article) ON EACH [n.title, n.body]");
@@ -220,6 +252,15 @@ class Issue10914MultiLabelVectorAndFulltextIndexTest extends TestHelper {
     final List<String> ids = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher",
         "CALL db.index.fulltext.queryNodes($index, $query) YIELD node RETURN node.id AS id", "index", index, "query", query)) {
+      while (rs.hasNext())
+        ids.add(rs.next().getProperty("id"));
+    }
+    return ids;
+  }
+
+  private List<String> sqlIds(final String sql) {
+    final List<String> ids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
       while (rs.hasNext())
         ids.add(rs.next().getProperty("id"));
     }

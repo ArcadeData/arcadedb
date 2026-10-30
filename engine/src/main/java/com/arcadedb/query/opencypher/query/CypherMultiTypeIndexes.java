@@ -50,6 +50,10 @@ import java.util.logging.Level;
  * enforces. The full-text side merges the per-type answers by score, but BM25 statistics (document frequency, average length)
  * are those of each per-type index, so a score is relative to its own type and not exactly the score one Neo4j index spanning
  * all the labels would give.
+ * <p>
+ * <b>SQL.</b> The per-type indexes are ordinary indexes, so SQL searches each type through its own index name
+ * ({@code SEARCH_INDEX('Post[title,body]', ...)}, {@code vector.neighbors('Post[e]', ...)}) and what SQL writes is in the index
+ * the logical name resolves to. The logical name itself is not known to SQL: a query across the types is one SQL query per type.
  */
 public final class CypherMultiTypeIndexes {
   static final String KEY_PREFIX = "cypher.multiindex.";
