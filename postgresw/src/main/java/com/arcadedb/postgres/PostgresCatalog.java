@@ -3872,8 +3872,9 @@ public class PostgresCatalog {
         return null;
       final boolean pretty = arguments.size() > 1 && PostgresCatalogExpression.truth(arguments.get(1));
       final String query = view.definition().strip();
-      return "CREATE RULE \"" + VIEW_RULE_NAME + "\" AS" + (pretty ? "\n    " : " ") + "ON SELECT TO " + name + " DO INSTEAD  " + query
-          + (query.endsWith(";") ? "" : ";");
+      // the view's name quoted as quote_ident does: PostgreSQL would read a bare Owners as owners
+      return "CREATE RULE \"" + VIEW_RULE_NAME + "\" AS" + (pretty ? "\n    " : " ") + "ON SELECT TO "
+          + PostgresCatalogIndexes.quoteIdentifier(name) + " DO INSTEAD  " + query + (query.endsWith(";") ? "" : ";");
     }
 
     /**

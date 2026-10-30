@@ -142,9 +142,13 @@ class Issue10976RewriteRuleDependTest {
   void pgGetRuledefPrintsTheRule() {
     final int rule = ruleOf("Owners");
     assertThat(column(resolve("select pg_catalog.pg_get_ruledef(" + rule + ") as def from pg_class where relname = 'Person'"),
-        "def")).containsExactly("CREATE RULE \"_RETURN\" AS ON SELECT TO Owners DO INSTEAD  " + VIEW_QUERY + ";");
+        "def")).containsExactly("CREATE RULE \"_RETURN\" AS ON SELECT TO \"Owners\" DO INSTEAD  " + VIEW_QUERY + ";");
     assertThat(column(resolve("select pg_catalog.pg_get_ruledef(" + rule + ", true) as def from pg_class where relname = 'Person'"),
-        "def")).containsExactly("CREATE RULE \"_RETURN\" AS\n    ON SELECT TO Owners DO INSTEAD  " + VIEW_QUERY + ";");
+        "def")).containsExactly("CREATE RULE \"_RETURN\" AS\n    ON SELECT TO \"Owners\" DO INSTEAD  " + VIEW_QUERY + ";");
+    // a lower-case name needs no quotes, as quote_ident prints it
+    database.command("sql", "CREATE MATERIALIZED VIEW owners2 AS SELECT name FROM Person");
+    assertThat(column(resolve("select pg_catalog.pg_get_ruledef(" + ruleOf("owners2") + ") as def from pg_class where relname = 'Person'"),
+        "def")).containsExactly("CREATE RULE \"_RETURN\" AS ON SELECT TO owners2 DO INSTEAD  SELECT name FROM Person;");
     // an OID that names no rule: a table's own OID
     assertThat(column(resolve("select pg_catalog.pg_get_ruledef(oid) as def from pg_class where relname = 'Person'"), "def"))
         .containsExactly((Object) null);

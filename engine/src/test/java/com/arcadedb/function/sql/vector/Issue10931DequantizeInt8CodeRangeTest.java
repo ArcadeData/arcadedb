@@ -65,6 +65,15 @@ class Issue10931DequantizeInt8CodeRangeTest extends TestHelper {
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
     assertThatThrownBy(() -> dequantize.execute(null, null, null, new Object[] { List.of(new BigDecimal("0.5")), 0.0, 1.0 },
         context)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
+    // A FRACTION A DOUBLE CANNOT HOLD, AND NaN OR AN INFINITY, WHICH A CAST WOULD TURN INTO 0
+    assertThatThrownBy(() -> dequantize.execute(null, null, null,
+        new Object[] { List.of(new BigDecimal("1.00000000000000000001")), 0.0, 1.0 }, context))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
+    assertThatThrownBy(() -> dequantize.execute(null, null, null, new Object[] { List.of(Double.NaN), 0.0, 1.0 }, context))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
+    assertThatThrownBy(() -> dequantize.execute(null, null, null,
+        new Object[] { new Object[] { Float.POSITIVE_INFINITY }, 0.0, 1.0 }, context))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("integers");
     assertThatThrownBy(() -> dequantize.execute(null, null, null, new Object[] { List.of("x"), 0.0, 1.0 }, context))
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("must be numbers");
   }
