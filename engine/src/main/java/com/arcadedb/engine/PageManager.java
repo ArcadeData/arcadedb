@@ -2175,6 +2175,9 @@ public class PageManager extends LockContext {
    * View) would otherwise fill the cache with pages nobody reads again and push out the ones queries use. Pages the cache held
    * before, and pages another reader touches, are left to the cache's own policy. A scan opened inside another on the same
    * thread joins it.
+   * <p>
+   * The scan belongs to the calling thread: pages read by other threads, a scan fanned out to workers included, are not its
+   * own and stay in the cache. It must be closed on the thread that opened it.
    */
   public BulkScan beginBulkScan() {
     final BulkScan current = BULK_SCAN.get();
@@ -2216,6 +2219,10 @@ public class PageManager extends LockContext {
     }
   }
 
+  /**
+   * Walks the whole read cache once, so its cost is the cache's size, which a scan rare enough to be worth one (a view build)
+   * affords: keeping the scan's own list of the pages it loaded instead would hold an entry per page read, the graph's size.
+   */
   private void releaseBulkScanPages(final BulkScan scan) {
     final ConcurrentMap<PageId, CachedPage> cache = readCache;
     if (cache == null)
@@ -2669,6 +2676,28 @@ public class PageManager extends LockContext {
     evictOldestPages(ramToFree, totalRAM);
   }
 
+  /** A cached page with the eviction keys it had when an eviction run read them. */
+  private record EvictionCandidate(CachedPage page, boolean bulkScan, long lastAccessed, long size) {
+  }
+
+  private static final Comparator<EvictionCandidate> EVICTION_ORDER = (o1, o2) -> {
+    // PAGES ONLY A BULK SCAN READ GO FIRST (ISSUE #11011)
+    final int bulkScan = Boolean.compare(o2.bulkScan(), o1.bulkScan());
+    if (bulkScan != 0)
+      return bulkScan;
+
+    final int lastAccessed = Long.compare(o1.lastAccessed(), o2.lastAccessed());
+    if (lastAccessed != 0)
+      return lastAccessed;
+
+    // SAME TIMESTAMP, CHECK THE PAGE SIZE: LARGER PAGE SHOULD BE REMOVED FIRST THAN OTHERS
+    final int pageSize = -Long.compare(o1.size(), o2.size());
+    if (pageSize != 0)
+      return pageSize;
+
+    return o1.page().getPageId().compareTo(o2.page().getPageId());
+  };
+
   private synchronized void evictOldestPages(final long ramToFree, final long totalRAM) {
     evictionRuns.incrementAndGet();
 
@@ -2678,29 +2707,18 @@ public class PageManager extends LockContext {
               null, ramToFree, totalRAM, maxRAM, Thread.currentThread().threadId());
 
     // GET THE <DISPOSE_PAGES_PER_CYCLE> OLDEST PAGES
-    // ORDER PAGES BY BULK SCAN FIRST (ISSUE #11011: NO OTHER READER WANTED THEM), THEN LAST ACCESS + SIZE
-    final TreeSet<CachedPage> pagesOrderedByAge = new TreeSet<>((o1, o2) -> {
-      final int bulkScan = Boolean.compare(o2.getLoadedByBulkScan() != null, o1.getLoadedByBulkScan() != null);
-      if (bulkScan != 0)
-        return bulkScan;
-
-      final int lastAccessed = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
-      if (lastAccessed != 0)
-        return lastAccessed;
-
-      // SAME TIMESTAMP, CHECK THE PAGE SIZE: LARGER PAGE SHOULD BE REMOVED FIRST THAN OTHERS
-      final int pageSize = -Long.compare(o1.getPhysicalSize(), o2.getPhysicalSize());
-      if (pageSize != 0)
-        return pageSize;
-
-      return o1.getPageId().compareTo(o2.getPageId());
-    });
-
-    pagesOrderedByAge.addAll(readCache.values());
+    // ORDER PAGES BY BULK SCAN FIRST (ISSUE #11011: NO OTHER READER WANTED THEM), THEN LAST ACCESS + SIZE. THE KEYS ARE READ ONCE
+    // PER PAGE BEFORE THE SORT: READERS MOVE THEM CONCURRENTLY, AND A KEY THAT CHANGES WHILE THE SORT COMPARES IT WOULD BREAK THE
+    // ORDER'S CONTRACT
+    final List<EvictionCandidate> candidates = new ArrayList<>(readCache.size());
+    for (final CachedPage page : readCache.values())
+      candidates.add(new EvictionCandidate(page, page.getLoadedByBulkScan() != null, page.getLastAccessed(), page.getPhysicalSize()));
+    candidates.sort(EVICTION_ORDER);
 
     // REMOVE OLDEST PAGES FROM RAM
     long freedRAM = 0;
-    for (final CachedPage page : pagesOrderedByAge) {
+    for (final EvictionCandidate candidate : candidates) {
+      final CachedPage page = candidate.page();
       final CachedPage removedPage = readCache.remove(page.getPageId());
       if (removedPage != null) {
         // Account the entry ACTUALLY removed, not the TreeSet snapshot: the version-monotonic put can swap
