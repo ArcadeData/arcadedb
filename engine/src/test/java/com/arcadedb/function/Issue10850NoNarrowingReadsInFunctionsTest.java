@@ -65,7 +65,6 @@ class Issue10850NoNarrowingReadsInFunctionsTest {
       "function/sql/SQLFunctionAbstract.java", 1, //
       "function/sql/vector/SQLFunctionVectorAbstract.java", 1, //
       "function/sql/FunctionOptions.java", 1, //
-      "function/text/AbstractTextFunction.java", 1,
       // narrow a COMPUTED result back to the Integer type of the input (pow(int), sqrt(int)), not an argument
       "function/sql/math/SQLFunctionPow.java", 1, //
       "function/sql/math/SQLFunctionSquareRoot.java", 1,
