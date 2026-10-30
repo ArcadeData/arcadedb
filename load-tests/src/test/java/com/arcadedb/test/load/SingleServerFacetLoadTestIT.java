@@ -30,6 +30,7 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
+import org.testcontainers.containers.GenericContainer;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -77,6 +78,11 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
   private static final String FALLBACK_SCANS    = "arcadedb_columnar_query_fallback_scans_total";
   private static final String OVERLAY_ROWS      = "arcadedb_columnar_overlay_rows";
   private static final String APPLY_LAG         = "arcadedb_columnar_apply_lag_ms";
+  /** What the serializer logs when a record's bytes do not decode: never expected, whatever read path met it (#10701). */
+  private static final String[] CORRUPTED_READS = { "Possible corrupted record", "Skipping corrupted property" };
+  private static final int      FIRST_LINES     = 5;
+  /** Longer than the 5 s refresh of the server's columnar metrics. */
+  private static final int      STABLE_SCRAPE_SECONDS = 6;
 
   /** A growable array of primitive samples, confined to one thread until it is merged after the join. */
   private static final class Samples {
@@ -114,6 +120,7 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
     final Samples lagMs         = new Samples();
     final Samples patched       = new Samples();
     long nonExact;
+    long notFromIndex;
     long failed;
   }
 
@@ -138,7 +145,7 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
     } finally {
       Metrics.removeRegistry(cumulative);
       // before the teardown removes the container: the logs are the only record of what the server saw
-      logger.info("Container log markers: {}", countInContainerLogs("Unreadable record", "Possible corrupted record", "SEVER"));
+      logger.info("Container log markers: {}", countInContainerLogs("Unreadable record", CORRUPTED_READS[0], CORRUPTED_READS[1], "SEVER"));
       dumpContainerLogs("singleServerFacetLoad-" + protocol.name());
     }
   }
@@ -148,6 +155,10 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
     admin.createDatabase();
     admin.createSchema();
     final long schemaMillis = admin.awaitSchema(60);
+    // the setup poll may scan, by design and exactly: each new column is published by an async create rebuild one bucket at a time, so
+    // the bound below applies to the change over the measured run, from a count read once it is stable past the metrics refresh
+    final long setupFallbackScans = stableScrape(admin, FALLBACK_SCANS, 60);
+    logger.info("Fallback scans during the setup: {}", setupFallbackScans);
     logger.info("Facet load test on protocol {}: the projection served the facets from the index after {} ms", protocol, schemaMillis);
     logger.info("Running {} writers x {} mixed ops and {} query threads", WRITERS, OPS_PER_WRITER, QUERY_THREADS);
 
@@ -206,6 +217,7 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
       merged.lagMs.addAll(stats.lagMs);
       merged.patched.addAll(stats.patched);
       merged.nonExact += stats.nonExact;
+      merged.notFromIndex += stats.notFromIndex;
       merged.failed += stats.failed;
     }
     final long queryCount = merged.latencyMicros.size;
@@ -231,11 +243,12 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
       Metrics.globalRegistry.getMeters().forEach(meter -> logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure()));
 
       final double segments = admin.scrapeMetric(SEGMENTS);
-      final long fallbackScans = (long) admin.scrapeMetric(FALLBACK_SCANS);
+      final long fallbackScans = (long) admin.scrapeMetric(FALLBACK_SCANS) - setupFallbackScans;
       final String rebuilds = admin.rebuildsByReason();
       // overlay rows and apply lag after the settle are about 0 by construction: "max" (sampled every 5 s) is the informative one
       baseline.put("budgetWaits", (long) admin.scrapeMetric(BUDGET_WAITS)).put("patchOverflows", (long) admin.scrapeMetric(PATCH_OVERFLOWS))
           .put("patchedTotal", (long) admin.scrapeMetric(PATCHED_TOTAL)).put("fallbackScans", fallbackScans)
+          .put("fallbackScansSetup", setupFallbackScans)
           .put("segments", (long) segments).put("rebuilds", rebuilds);
       baseline.getJSONObject("overlayRows").put("final", (long) admin.scrapeMetric(OVERLAY_ROWS));
       baseline.getJSONObject("applyLagMs").put("final", (long) admin.scrapeMetric(APPLY_LAG));
@@ -248,8 +261,10 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
       assertThat(total(META_INCONSISTENT)).isZero();
       // precondition of the two checks below: the columnar series are bound, and every series of the database is bound with them
       assertThat(segments).as("columnar segments on disk, so the columnar series are exported").isGreaterThan(0.0);
-      assertThat(fallbackScans).as("projection present the whole run").isZero();
+      assertThat(fallbackScans).as("fallback scans during the measured run (after " + setupFallbackScans + " during the setup): "
+          + "projection present the whole run").isZero();
       assertThat(admin.scrapeMetric(REBUILDS)).as("indexes created on an empty type never rebuild: " + rebuilds).isZero();
+      assertNoCorruptedReads(baseline);
       passed = true;
     } finally {
       baseline.put("passed", passed);
@@ -258,6 +273,31 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
       Files.writeString(file, baseline.toString(2));
       logger.info("Facet load summary {}: {} (written to {})", protocol, baseline, file.toAbsolutePath());
     }
+  }
+
+  /**
+   * Fails when a container log holds a corrupted-record line. The facet answers can still equal {@code GROUP BY} then (a patch path that
+   * drops one record goes unseen once the answer settles), so the log is the only witness. Counted per container, with the first lines.
+   */
+  private void assertNoCorruptedReads(final JSONObject baseline) {
+    final StringBuilder found = new StringBuilder();
+    long total = 0L;
+    for (final GenericContainer<?> container : containers) {
+      long count = 0L;
+      final List<String> first = new ArrayList<>();
+      for (final String line : container.getLogs().split("\n"))
+        for (final String marker : CORRUPTED_READS)
+          if (line.contains(marker)) {
+            if (count++ < FIRST_LINES)
+              first.add(line);
+            break;
+          }
+      total += count;
+      if (count > 0)
+        found.append(container.getContainerName()).append(": ").append(count).append(" line(s), first ").append(first).append("; ");
+    }
+    baseline.put("corruptedReads", total);
+    assertThat(total).as("corrupted-record lines in the container logs: " + found).isZero();
   }
 
   /** Queries a random checked filter until the writers end; a failed query is counted (and asserted by the caller), not fatal. */
@@ -269,6 +309,7 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
       while (!writers.isTerminated()) {
         final String where = FacetSchema.CHECKED_FILTERS.get(random.nextInt(FacetSchema.CHECKED_FILTERS.size()));
         final long start = System.nanoTime();
+        final long startMillis = System.currentTimeMillis();
         try {
           final FacetSnapshot sample = reader.queryFacets(where);
           stats.latencyMicros.add((System.nanoTime() - start) / 1_000L);
@@ -276,6 +317,12 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
           stats.patched.add(sample.patched());
           if (!sample.exact())
             stats.nonExact++;
+          if (!sample.sources().values().stream().allMatch("index"::equals)) {
+            // the response names one source per facet (no per-bucket detail): enough to time the sample against the server log
+            stats.notFromIndex++;
+            logger.warn("Facet sample not served from the index at {}: where='{}' sources by facet {} lagMs={} exact={} patched={}",
+                Instant.ofEpochMilli(startMillis), where, sample.sources(), sample.lagMs(), sample.exact(), sample.patched());
+          }
           lastSample.set(sample);
         } catch (final RuntimeException e) {
           stats.failed++;
@@ -295,6 +342,7 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
         .put("queryThreads", QUERY_THREADS).put("elapsedSeconds", round(elapsedSeconds)).put("ackedOps", acked).put("failedOps", failed)
         .put("throughputOpsPerSec", round(acked / elapsedSeconds)).put("queries", queryCount).put("failedQueries", queries.failed)
         .put("queriesPerSec", round(queryCount / elapsedSeconds)).put("nonExact", queries.nonExact)
+        .put("samplesNotFromIndex", queries.notFromIndex)
         .put("queryLatencyMs", percentiles(queries.latencyMicros, 1_000.0)).put("lagMs", percentiles(queries.lagMs, 1.0))
         .put("patched", percentiles(queries.patched, 1.0)).put("writeMeanMs", writeMeans())
         .put("queryRetries", (long) total(QUERY_RETRIES));
@@ -318,6 +366,27 @@ class SingleServerFacetLoadTestIT extends ContainersTestTemplate {
   /** @return the count of the client counter {@code name} over the whole run */
   private double total(final String name) {
     return cumulative.find(name).counters().stream().mapToDouble(Counter::count).sum();
+  }
+
+  /**
+   * @return the value of the counter {@code name} once it reads the same across more than one refresh of the server's columnar metrics
+   * (every 5 s), so a count still being published is not taken as the baseline
+   */
+  private static long stableScrape(final FacetDatabaseWrapper admin, final String name, final int timeoutSeconds)
+      throws InterruptedException {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+    long last = (long) admin.scrapeMetric(name);
+    long stableSince = System.nanoTime();
+    while (System.nanoTime() < deadline) {
+      Thread.sleep(1_000L);
+      final long current = (long) admin.scrapeMetric(name);
+      if (current != last) {
+        last = current;
+        stableSince = System.nanoTime();
+      } else if (System.nanoTime() - stableSince > TimeUnit.SECONDS.toNanos(STABLE_SCRAPE_SECONDS))
+        return current;
+    }
+    throw new AssertionError(name + " did not settle within " + timeoutSeconds + "s, last " + last);
   }
 
   private static double round(final double value) {
