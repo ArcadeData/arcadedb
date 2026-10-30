@@ -18,18 +18,21 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.graph.EdgeLinkedList;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.*;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -164,7 +167,19 @@ public class CSRBuilder {
    * @return the result containing per-edge-type CSRs, node ID mapping, and per-bucket column stores
    */
   public CSRResult build(final String[] vertexTypes, final String[] edgeTypes) {
-    return buildClean(vertexTypes, edgeTypes, System.currentTimeMillis());
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_BUILD_RELEASES_PAGES))
+      return buildClean(vertexTypes, edgeTypes, System.currentTimeMillis());
+
+    // The pages read for the view leave the cache with the build: the view answers what they hold (issue #11011)
+    final PageManager.BulkScan scan = PageManager.INSTANCE.beginBulkScan();
+    try {
+      return buildClean(vertexTypes, edgeTypes, System.currentTimeMillis());
+    } finally {
+      scan.close();
+      if (scan.getReleasedPages() > 0)
+        LogManager.instance().log(this, Level.FINE, "CSR build released %d pages (%s) it loaded into the page cache",
+            scan.getReleasedPages(), FileUtils.getSizeAsString(scan.getReleasedBytes()));
+    }
   }
 
   /**
@@ -232,15 +247,19 @@ public class CSRBuilder {
         ? detectEdgePropertyTypesFromSchema(edgeTypes) : null;
     final boolean inlineEdgeProps = edgePropTypes != null && !edgePropTypes.isEmpty();
 
-    // --- Phase B: Single scan — degrees + edge pairs + inline edge property extraction ---
+    // --- Phase B: Single scan: out-degrees + targets in visit order + inline edge property extraction ---
     // When edge properties are configured, edge documents are loaded during this scan
     // (when pages are warm from the linked list traversal) and property values are stored
     // in insertion-order growing arrays. This avoids a separate 34M lookupByRID pass later.
-    final Map<String, int[]> outDegrees = new HashMap<>();
-    final Map<String, int[]> inDegrees = new HashMap<>();
-    final Map<String, IntPairList> edgePairs = new HashMap<>();
-    // Per edge type, per property: growing arrays in insertion order. Remapped to CSR order in Phase C.
-    final Map<String, Map<String, GrowingPropertyArray>> insertionOrderEdgeProps = inlineEdgeProps ? new HashMap<>() : null;
+    // A vertex's out-edges are read in one go, so each edge type keeps only its targets, in the order the vertices are
+    // visited: the source of a target is the vertex whose turn it was, which the visit order and the out-degrees say
+    // (issue #11011). A (source, target) pair list in doubling arrays held three times the forward slice at its peak.
+    final String[] edgeTypeNames = scannedEdgeTypes.toArray(new String[0]);
+    final int[] bucketToEdgeTypeIdx = bucketToEdgeTypeIndex(bucketToEdgeType, edgeTypeNames);
+    final TypeScan[] typeScans = new TypeScan[edgeTypeNames.length];
+    int[] visitOrder = new int[nodeCount];
+    long[] visitedNodes = new long[(nodeCount + 63) >>> 6];
+    int visitedCount = 0;
     int propertySampleCount = 0;
     boolean newTypesInLastSample = false;
 
@@ -255,6 +274,11 @@ public class CSRBuilder {
       final int globalId = mapping.getGlobalId(rid);
       if (globalId < 0)
         continue;
+      // Each vertex is visited once: its targets are one run in the visit order, which is what places them in the CSR
+      if ((visitedNodes[globalId >>> 6] & (1L << globalId)) != 0)
+        continue;
+      visitedNodes[globalId >>> 6] |= 1L << globalId;
+      visitOrder[visitedCount++] = globalId;
 
       if (observer != null) {
         scannedEdges.clear();
@@ -295,34 +319,31 @@ public class CSRBuilder {
         final Iterator<Pair<RID, RID>> entries = outList.entryIterator();
         while (entries.hasNext()) {
           final Pair<RID, RID> entry = entries.next();
-          final String edgeTypeName = bucketToEdgeType.get(entry.getFirst().getBucketId());
-          if (edgeTypeName == null) {
+          final int edgeBucketId = entry.getFirst().getBucketId();
+          final int edgeTypeIdx = edgeBucketId >= 0 && edgeBucketId < bucketToEdgeTypeIdx.length ? bucketToEdgeTypeIdx[edgeBucketId] : -1;
+          if (edgeTypeIdx < 0) {
             // AN EDGE OF A TYPE THE VIEW DOES NOT MATERIALIZE, LIGHTWEIGHT ONES INCLUDED: NO RECORD COUNT CAN SAY THAT
             uncoveredEdgesSeen = true;
-            uncoveredEdgeBuckets.add(entry.getFirst().getBucketId());
+            uncoveredEdgeBuckets.add(edgeBucketId);
             continue;
           }
           final int targetGlobalId = mapping.getGlobalId(entry.getSecond());
           if (targetGlobalId < 0)
             continue;
 
-          outDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[globalId]++;
-          inDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[targetGlobalId]++;
-          edgePairs.computeIfAbsent(edgeTypeName, k -> new IntPairList()).add(globalId, targetGlobalId);
+          TypeScan typeScan = typeScans[edgeTypeIdx];
+          if (typeScan == null)
+            typeScans[edgeTypeIdx] = typeScan = new TypeScan(nodeCount, inlineEdgeProps ? edgePropTypes : null);
+          typeScan.outDegrees[globalId]++;
+          typeScan.targets.add(targetGlobalId);
           if (observer != null) {
             scannedEdges.add(entry.getFirst());
             scannedTargets.add(entry.getSecond());
           }
 
           // Extract edge properties inline — page is warm from linked list traversal
-          if (insertionOrderEdgeProps != null) {
-            final Map<String, GrowingPropertyArray> propArrays = insertionOrderEdgeProps.computeIfAbsent(
-                edgeTypeName, k -> {
-                  final Map<String, GrowingPropertyArray> m = new HashMap<>();
-                  for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
-                    m.put(pt.getKey(), new GrowingPropertyArray(pt.getValue()));
-                  return m;
-                });
+          if (typeScan.edgeProperties != null) {
+            final Map<String, GrowingPropertyArray> propArrays = typeScan.edgeProperties;
             final RID edgeRid = entry.getFirst();
             if (edgeRid.getPosition() >= 0) {
               try {
@@ -357,146 +378,54 @@ public class CSRBuilder {
           excluded from the columnar store. Use withPropertySampleSize() to increase the sample size or define properties in the schema.""",
           propertySampleSize, nodeCount);
 
-    // --- Phase C: Build CSR arrays + remap edge properties to forward CSR order ---
-    // Always uses plain Arrays.sort (no satellite arrays). Edge properties extracted in Phase B
-    // are remapped from insertion order to sorted forward CSR order via binary search.
+    // --- Phase C: Build the forward slices + remap edge properties to forward CSR order ---
+    // Each forward slice is filled straight from the targets the scan collected, releasing them block by block, and
+    // sorted in place; the backward slice is its transpose, which comes out sorted. Edge properties extracted in Phase B
+    // ride the sort as each edge's insertion position, so a value reaches its slot without a search. The heap held at
+    // any point is the slices built so far plus one forward slice, never the edges three times over (issue #11011).
     final Map<String, CSRAdjacencyIndex> csrPerType = new HashMap<>();
-    final Map<String, ColumnStore> edgeColumnStores = insertionOrderEdgeProps != null ? new HashMap<>() : null;
-    final Map<String, int[]> bwdToFwdMap = insertionOrderEdgeProps != null ? new HashMap<>() : null;
+    final Map<String, ColumnStore> edgeColumnStores = inlineEdgeProps ? new HashMap<>() : null;
+    final Map<String, int[]> bwdToFwdMap = inlineEdgeProps ? new HashMap<>() : null;
     int totalAllEdges = 0;
+    boolean anyEdges = false;
+    for (final TypeScan typeScan : typeScans)
+      anyEdges |= typeScan != null;
+    // The reordering below rebuilds every slice, and maps backward to forward positions there
+    final boolean reorder = nodeCount > 1 && anyEdges;
 
-    for (final Map.Entry<String, int[]> entry : outDegrees.entrySet()) {
-      final String edgeTypeName = entry.getKey();
-      final int[] outDeg = entry.getValue();
-      final int[] inDeg = inDegrees.getOrDefault(edgeTypeName, new int[nodeCount]);
-      final IntPairList pairs = edgePairs.get(edgeTypeName);
-      final int edgeCount = pairs != null ? pairs.size() : 0;
+    for (int t = 0; t < typeScans.length; t++) {
+      final TypeScan typeScan = typeScans[t];
+      if (typeScan == null)
+        continue;
+      typeScans[t] = null;
+      final String edgeTypeName = edgeTypeNames[t];
+      final int edgeCount = typeScan.targets.size();
 
-      // Prefix sums
       final int[] fwdOffsets = new int[nodeCount + 1];
-      final int[] bwdOffsets = new int[nodeCount + 1];
-      for (int i = 0; i < nodeCount; i++) {
-        fwdOffsets[i + 1] = fwdOffsets[i] + outDeg[i];
-        bwdOffsets[i + 1] = bwdOffsets[i] + inDeg[i];
+      for (int i = 0; i < nodeCount; i++)
+        fwdOffsets[i + 1] = fwdOffsets[i] + typeScan.outDegrees[i];
+      typeScan.outDegrees = null;
+
+      final int[] insertionPositions = typeScan.edgeProperties != null ? new int[edgeCount] : null;
+      final int[] fwdNeighbors = typeScan.targets.drainInto(visitOrder, visitedCount, fwdOffsets, insertionPositions);
+      sortSlices(fwdOffsets, fwdNeighbors, nodeCount, insertionPositions);
+
+      int[] bwdToFwd = null;
+      if (insertionPositions != null) {
+        edgeColumnStores.put(edgeTypeName, edgePropertiesInForwardOrder(typeScan.edgeProperties, edgePropTypes, insertionPositions));
+        if (!reorder)
+          bwdToFwdMap.put(edgeTypeName, bwdToFwd = new int[edgeCount]);
       }
-
-      final int[] fwdNeighbors = new int[edgeCount];
-      final int[] bwdNeighbors = new int[edgeCount];
-      final int[] outCursors = new int[nodeCount];
-      final int[] inCursors = new int[nodeCount];
-
-      // Fill from collected edge pairs
-      if (pairs != null) {
-        final int[] sources = pairs.sources();
-        final int[] targets = pairs.targets();
-        for (int i = 0; i < edgeCount; i++) {
-          final int src = sources[i];
-          final int tgt = targets[i];
-          fwdNeighbors[fwdOffsets[src] + outCursors[src]++] = tgt;
-          bwdNeighbors[bwdOffsets[tgt] + inCursors[tgt]++] = src;
-        }
-      }
-
-      // Sort neighbor lists — always plain Arrays.sort, no satellite arrays
-      for (int i = 0; i < nodeCount; i++) {
-        final int fs = fwdOffsets[i], fe = fwdOffsets[i + 1];
-        if (fe - fs > 1)
-          Arrays.sort(fwdNeighbors, fs, fe);
-        final int bs = bwdOffsets[i], be = bwdOffsets[i + 1];
-        if (be - bs > 1)
-          Arrays.sort(bwdNeighbors, bs, be);
-      }
-
-      // Remap edge properties from insertion order to forward CSR order via binary search
-      if (insertionOrderEdgeProps != null && insertionOrderEdgeProps.containsKey(edgeTypeName) && edgeCount > 0) {
-        final Map<String, GrowingPropertyArray> tempProps = insertionOrderEdgeProps.get(edgeTypeName);
-        final int[] sources = pairs.sources();
-        final int[] targets = pairs.targets();
-
-        // Detect parallel edges for position matching
-        boolean hasParallelEdges = false;
-        for (int u = 0; u < nodeCount && !hasParallelEdges; u++)
-          for (int f = fwdOffsets[u] + 1; f < fwdOffsets[u + 1]; f++)
-            if (fwdNeighbors[f] == fwdNeighbors[f - 1]) {
-              hasParallelEdges = true;
-              break;
-            }
-        final boolean[] matched = hasParallelEdges ? new boolean[edgeCount] : null;
-
-        // Create final forward-aligned ColumnStore and remap each insertion-order entry
-        final ColumnStore finalStore = new ColumnStore(edgeCount);
-        for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
-          finalStore.createColumn(pt.getKey(), pt.getValue());
-
-        for (int i = 0; i < edgeCount; i++) {
-          int fwdPos = Arrays.binarySearch(fwdNeighbors, fwdOffsets[sources[i]], fwdOffsets[sources[i] + 1], targets[i]);
-          if (fwdPos < 0)
-            continue;
-          if (matched != null) {
-            while (fwdPos > fwdOffsets[sources[i]] && fwdNeighbors[fwdPos - 1] == targets[i])
-              fwdPos--;
-            while (matched[fwdPos])
-              fwdPos++;
-            matched[fwdPos] = true;
-          }
-          // Copy each property value from insertion-order position i to forward CSR position fwdPos
-          for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet()) {
-            final GrowingPropertyArray srcArr = tempProps.get(pt.getKey());
-            if (srcArr == null || srcArr.isNull(i))
-              continue;
-            final Column dstCol = finalStore.getColumn(pt.getKey());
-            if (dstCol == null)
-              continue;
-            switch (pt.getValue()) {
-            case INT:
-              dstCol.setInt(fwdPos, srcArr.getInt(i));
-              break;
-            case LONG:
-              dstCol.setLong(fwdPos, srcArr.getLong(i));
-              break;
-            case DOUBLE:
-              dstCol.setDouble(fwdPos, srcArr.getDouble(i));
-              break;
-            case STRING:
-              dstCol.setString(fwdPos, srcArr.getString(i));
-              break;
-            }
-          }
-        }
-        edgeColumnStores.put(edgeTypeName, finalStore);
-
-        // Build bwdToFwd via binary search on the sorted CSR
-        final int[] bwdToFwd = new int[edgeCount];
-        for (int u = 0; u < nodeCount; u++) {
-          int b = bwdOffsets[u];
-          final int bEnd = bwdOffsets[u + 1];
-          while (b < bEnd) {
-            final int src = bwdNeighbors[b];
-            int count = 1;
-            while (b + count < bEnd && bwdNeighbors[b + count] == src)
-              count++;
-            int fPos = Arrays.binarySearch(fwdNeighbors, fwdOffsets[src], fwdOffsets[src + 1], u);
-            if (fPos >= 0) {
-              while (fPos > fwdOffsets[src] && fwdNeighbors[fPos - 1] == u)
-                fPos--;
-              for (int k = 0; k < count; k++)
-                bwdToFwd[b + k] = fPos + k;
-            }
-            b += count;
-          }
-        }
-        bwdToFwdMap.put(edgeTypeName, bwdToFwd);
-      }
-
-      csrPerType.put(edgeTypeName, new CSRAdjacencyIndex(fwdOffsets, fwdNeighbors, bwdOffsets, bwdNeighbors,
-          nodeCount, edgeCount));
+      csrPerType.put(edgeTypeName, transpose(fwdOffsets, fwdNeighbors, nodeCount, edgeCount, bwdToFwd));
       totalAllEdges += edgeCount;
     }
+    visitOrder = null;
+    visitedNodes = null;
 
     // --- Phase D: BFS vertex reordering for cache locality ---
     // Renumber dense IDs using BFS from the highest-degree node so that graph-nearby
     // nodes get nearby IDs. This improves cache locality for ALL subsequent algorithms.
-    if (nodeCount > 1 && !csrPerType.isEmpty()) {
+    if (reorder) {
       final int[] oldToNew = computeBfsOrdering(nodeCount, csrPerType);
 
       // Build inverse mapping
@@ -505,77 +434,8 @@ public class CSRBuilder {
         newToOld[oldToNew[i]] = i;
 
       // Reorder each CSR and remap edge properties + bwdToFwd
-      for (final Map.Entry<String, CSRAdjacencyIndex> csrEntry : new HashMap<>(csrPerType).entrySet()) {
-        final String edgeTypeName = csrEntry.getKey();
-        final boolean hasEdgePropsForType = edgeColumnStores != null && edgeColumnStores.containsKey(edgeTypeName);
-        final ReorderedCSR reordered = reorderCSR(csrEntry.getValue(), oldToNew, newToOld, nodeCount, hasEdgePropsForType);
-        csrPerType.put(edgeTypeName, reordered.csr);
-
-        // Remap edge property ColumnStore if present using satellite array
-        if (hasEdgePropsForType && reordered.oldPosAtNewPos != null) {
-          final ColumnStore oldStore = edgeColumnStores.get(edgeTypeName);
-          final int edgeCount = reordered.csr.getEdgeCount();
-          final ColumnStore newStore = new ColumnStore(edgeCount);
-          for (final String colName : oldStore.getPropertyNames()) {
-            final Column oldCol = oldStore.getColumn(colName);
-            newStore.createColumn(colName, oldCol.getType());
-            final Column newCol = newStore.getColumn(colName);
-            // oldPosAtNewPos[newPos] = oldPos: copy old value at oldPos to newPos
-            for (int newPos = 0; newPos < edgeCount; newPos++) {
-              final int oldPos = reordered.oldPosAtNewPos[newPos];
-              switch (oldCol.getType()) {
-              case INT:
-                if (!oldCol.isNull(oldPos))
-                  newCol.setInt(newPos, oldCol.getInt(oldPos));
-                break;
-              case LONG:
-                if (!oldCol.isNull(oldPos))
-                  newCol.setLong(newPos, oldCol.getLong(oldPos));
-                break;
-              case DOUBLE:
-                if (!oldCol.isNull(oldPos))
-                  newCol.setDouble(newPos, oldCol.getDouble(oldPos));
-                break;
-              case STRING:
-                if (!oldCol.isNull(oldPos))
-                  newCol.setString(newPos, oldCol.getString(oldPos));
-                break;
-              }
-            }
-          }
-          edgeColumnStores.put(edgeTypeName, newStore);
-        }
-
-        // Rebuild bwdToFwd mapping for reordered CSR
-        if (bwdToFwdMap != null && bwdToFwdMap.containsKey(edgeTypeName)) {
-          final CSRAdjacencyIndex newCSR = reordered.csr;
-          final int[] newFwdOffsets = newCSR.getForwardOffsets();
-          final int[] newFwdNeighbors = newCSR.getForwardNeighbors();
-          final int[] newBwdOffsets = newCSR.getBackwardOffsets();
-          final int[] newBwdNeighbors = newCSR.getBackwardNeighbors();
-          final int edgeCount = newCSR.getEdgeCount();
-          final int[] newBwdToFwd = new int[edgeCount];
-          for (int u = 0; u < nodeCount; u++) {
-            int b = newBwdOffsets[u];
-            final int bEnd = newBwdOffsets[u + 1];
-            while (b < bEnd) {
-              final int src = newBwdNeighbors[b];
-              int count = 1;
-              while (b + count < bEnd && newBwdNeighbors[b + count] == src)
-                count++;
-              int fPos = Arrays.binarySearch(newFwdNeighbors, newFwdOffsets[src], newFwdOffsets[src + 1], u);
-              if (fPos >= 0) {
-                while (fPos > newFwdOffsets[src] && newFwdNeighbors[fPos - 1] == u)
-                  fPos--;
-                for (int k = 0; k < count; k++)
-                  newBwdToFwd[b + k] = fPos + k;
-              }
-              b += count;
-            }
-          }
-          bwdToFwdMap.put(edgeTypeName, newBwdToFwd);
-        }
-      }
+      for (final String edgeTypeName : new ArrayList<>(csrPerType.keySet()))
+        reorderSlice(csrPerType, edgeTypeName, oldToNew, newToOld, edgeColumnStores, bwdToFwdMap);
 
       // Apply permutation to NodeIdMapping (transparent to all lookups)
       mapping.applyReordering(oldToNew);
@@ -854,6 +714,55 @@ public class CSRBuilder {
   }
 
   /**
+   * Maps every edge bucket id the view materializes to the index of its type in {@code edgeTypeNames}, -1 for any other
+   * bucket: the scan resolves the type of each edge it reads with one array read instead of a boxed map lookup.
+   */
+  private static int[] bucketToEdgeTypeIndex(final Map<Integer, String> bucketToEdgeType, final String[] edgeTypeNames) {
+    int maxBucketId = -1;
+    for (final int bucketId : bucketToEdgeType.keySet())
+      maxBucketId = Math.max(maxBucketId, bucketId);
+    final int[] result = new int[maxBucketId + 1];
+    Arrays.fill(result, -1);
+    final Map<String, Integer> typeIndex = new HashMap<>();
+    for (int i = 0; i < edgeTypeNames.length; i++)
+      typeIndex.put(edgeTypeNames[i], i);
+    for (final Map.Entry<Integer, String> entry : bucketToEdgeType.entrySet())
+      result[entry.getKey()] = typeIndex.get(entry.getValue());
+    return result;
+  }
+
+  /**
+   * Sorts every slice of {@code neighbors} ascending, a slice already in order costing one pass. With {@code satellite},
+   * its entries are permuted with the neighbours, a tie keeping the order it had: the satellite carries each edge's
+   * position, which is how its properties follow it. Allocation-free past one scratch buffer as long as the longest slice
+   * sorted with a satellite.
+   */
+  static void sortSlices(final int[] offsets, final int[] neighbors, final int nodeCount, final int[] satellite) {
+    long[] scratch = null;
+    for (int u = 0; u < nodeCount; u++) {
+      final int from = offsets[u];
+      final int to = offsets[u + 1];
+      if (to - from < 2 || isSorted(neighbors, from, to))
+        continue;
+      if (satellite == null) {
+        Arrays.sort(neighbors, from, to);
+        continue;
+      }
+      if (scratch == null || scratch.length < to - from)
+        scratch = new long[Math.max(to - from, scratch == null ? 64 : scratch.length * 2)];
+      // A neighbour id and a position are both non-negative ints: the pair sorts as one long, the position breaking ties
+      final int length = to - from;
+      for (int i = 0; i < length; i++)
+        scratch[i] = ((long) neighbors[from + i] << 32) | satellite[from + i];
+      Arrays.sort(scratch, 0, length);
+      for (int i = 0; i < length; i++) {
+        neighbors[from + i] = (int) (scratch[i] >>> 32);
+        satellite[from + i] = (int) scratch[i];
+      }
+    }
+  }
+
+  /**
    * Sorts keys[from..to) while applying the same permutation to satellite[from..to).
    * Zero GC pressure: encodes key|index into a primitive long[], sorts, then unpacks.
    */
@@ -876,6 +785,76 @@ public class CSRBuilder {
     System.arraycopy(tmpSat, 0, satellite, from, len);
   }
 
+  private static boolean isSorted(final int[] values, final int from, final int to) {
+    for (int i = from + 1; i < to; i++)
+      if (values[i] < values[i - 1])
+        return false;
+    return true;
+  }
+
+  /**
+   * The CSR of a forward slice with its backward slice derived from it: node {@code v}'s incoming neighbours are the
+   * nodes whose forward slice holds {@code v}, met in ascending order, so every backward slice comes out sorted with no
+   * sort, parallel edges as consecutive entries. With {@code bwdToFwd}, each backward position is mapped to the forward
+   * position of the same edge, which is how a backward read finds that edge's properties.
+   */
+  static CSRAdjacencyIndex transpose(final int[] fwdOffsets, final int[] fwdNeighbors, final int nodeCount, final int edgeCount,
+      final int[] bwdToFwd) {
+    final int[] bwdOffsets = new int[nodeCount + 1];
+    for (int j = 0; j < edgeCount; j++)
+      bwdOffsets[fwdNeighbors[j] + 1]++;
+    for (int v = 0; v < nodeCount; v++)
+      bwdOffsets[v + 1] += bwdOffsets[v];
+
+    final int[] cursors = Arrays.copyOf(bwdOffsets, nodeCount);
+    final int[] bwdNeighbors = new int[edgeCount];
+    for (int u = 0; u < nodeCount; u++)
+      for (int j = fwdOffsets[u], end = fwdOffsets[u + 1]; j < end; j++) {
+        final int b = cursors[fwdNeighbors[j]]++;
+        bwdNeighbors[b] = u;
+        if (bwdToFwd != null)
+          bwdToFwd[b] = j;
+      }
+    return new CSRAdjacencyIndex(fwdOffsets, fwdNeighbors, bwdOffsets, bwdNeighbors, nodeCount, edgeCount);
+  }
+
+  /**
+   * Copies the edge properties collected in scan order into a store in forward CSR order: {@code insertionPositions[pos]}
+   * is the scan position of the edge at forward position {@code pos}.
+   */
+  private static ColumnStore edgePropertiesInForwardOrder(final Map<String, GrowingPropertyArray> collected,
+      final Map<String, Column.Type> edgePropTypes, final int[] insertionPositions) {
+    final int edgeCount = insertionPositions.length;
+    final ColumnStore store = new ColumnStore(edgeCount);
+    for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet()) {
+      store.createColumn(pt.getKey(), pt.getValue());
+      final GrowingPropertyArray source = collected.get(pt.getKey());
+      final Column column = store.getColumn(pt.getKey());
+      if (source == null || column == null)
+        continue;
+      for (int pos = 0; pos < edgeCount; pos++) {
+        final int i = insertionPositions[pos];
+        if (source.isNull(i))
+          continue;
+        switch (pt.getValue()) {
+        case INT:
+          column.setInt(pos, source.getInt(i));
+          break;
+        case LONG:
+          column.setLong(pos, source.getLong(i));
+          break;
+        case DOUBLE:
+          column.setDouble(pos, source.getDouble(i));
+          break;
+        case STRING:
+          column.setString(pos, source.getString(i));
+          break;
+        }
+      }
+    }
+    return store;
+  }
+
   /**
    * Computes a Reverse Cuthill-McKee (RCM) vertex renumbering for optimal cache locality.
    * <p>
@@ -896,9 +875,13 @@ public class CSRBuilder {
     if (nodeCount == 0)
       return new int[0];
 
+    // The slices as an array, in the map's order: the walks below visit them once per node they reach, and an iterator of the
+    // map per node was the largest allocation of the ordering (issue #11011)
+    final CSRAdjacencyIndex[] slices = csrPerType.values().toArray(new CSRAdjacencyIndex[0]);
+
     // Pre-compute combined degree for all edge types (used for root selection + degree-sorted BFS)
     final int[] degree = new int[nodeCount];
-    for (final CSRAdjacencyIndex csr : csrPerType.values()) {
+    for (final CSRAdjacencyIndex csr : slices) {
       final int[] fwdOffsets = csr.getForwardOffsets();
       final int[] bwdOffsets = csr.getBackwardOffsets();
       for (int u = 0; u < nodeCount; u++)
@@ -918,7 +901,7 @@ public class CSRBuilder {
     }
     // Two BFS passes to find pseudo-peripheral node
     for (int pass = 0; pass < 2; pass++)
-      start = bfsFarthest(start, nodeCount, degree, csrPerType);
+      start = bfsFarthest(start, nodeCount, slices);
 
     // --- Step 2: BFS from peripheral root with degree-sorted neighbor visitation ---
     final int[] bfsOrder = new int[nodeCount];
@@ -939,7 +922,7 @@ public class CSRBuilder {
 
       // Collect all unvisited neighbors across all edge types
       int nbCount = 0;
-      for (final CSRAdjacencyIndex csr : csrPerType.values()) {
+      for (final CSRAdjacencyIndex csr : slices) {
         final int[] fwdOffsets = csr.getForwardOffsets();
         final int[] fwdNeighbors = csr.getForwardNeighbors();
         for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
@@ -994,8 +977,7 @@ public class CSRBuilder {
    * BFS from {@code start}, returns the farthest node reached (last node in last BFS level).
    * Used to find pseudo-peripheral nodes for RCM root selection.
    */
-  private static int bfsFarthest(final int start, final int nodeCount, final int[] degree,
-      final Map<String, CSRAdjacencyIndex> csrPerType) {
+  private static int bfsFarthest(final int start, final int nodeCount, final CSRAdjacencyIndex[] slices) {
     final boolean[] visited = new boolean[nodeCount];
     final int[] queue = new int[nodeCount];
     int head = 0, tail = 0;
@@ -1005,7 +987,7 @@ public class CSRBuilder {
     while (head < tail) {
       farthest = queue[head];
       final int u = queue[head++];
-      for (final CSRAdjacencyIndex csr : csrPerType.values()) {
+      for (final CSRAdjacencyIndex csr : slices) {
         final int[] fwdOffsets = csr.getForwardOffsets();
         final int[] fwdNeighbors = csr.getForwardNeighbors();
         for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
@@ -1042,26 +1024,79 @@ public class CSRBuilder {
   }
 
   /**
-   * Rebuilds a CSR adjacency index with remapped node IDs.
-   * Creates new offsets based on the reordered node IDs, copies and translates
-   * neighbor references, and re-sorts neighbor lists. Uses a satellite array to
-   * track old edge positions through the sort (for edge property remapping).
+   * Replaces the slice of {@code edgeTypeName} in {@code csrPerType} with the same edges under the renumbering
+   * {@code oldToNew}, remapping its edge property columns and mapping its backward positions to forward ones.
+   * <p>
+   * The backward slice is dropped first and rebuilt as the transpose of the new forward one, and the old forward slice
+   * is released as soon as it is copied: the slice is held twice, never three or four times, while it is renumbered
+   * (issue #11011).
    *
-   * @param oldCSR       the original CSR
-   * @param oldToNew     oldId → newId permutation
-   * @param newToOld     newId → oldId permutation
-   * @param nodeCount    total number of nodes
-   * @param hasEdgeProps whether edge properties exist and need position tracking
-   *
-   * @return the reordered CSR with remapped IDs and a mapping from old to new edge positions
+   * @param oldToNew oldId → newId permutation
+   * @param newToOld newId → oldId permutation
    */
-  static ReorderedCSR reorderCSR(final CSRAdjacencyIndex oldCSR, final int[] oldToNew,
-      final int[] newToOld, final int nodeCount, final boolean hasEdgeProps) {
+  static void reorderSlice(final Map<String, CSRAdjacencyIndex> csrPerType, final String edgeTypeName, final int[] oldToNew,
+      final int[] newToOld, final Map<String, ColumnStore> edgeColumnStores, final Map<String, int[]> bwdToFwdMap) {
+    final ColumnStore oldColumns = edgeColumnStores != null ? edgeColumnStores.get(edgeTypeName) : null;
+    // Taken out of the map and read in a call of its own, so nothing references the old slice once it is copied
+    final int[][] renumbered = renumberForward(csrPerType.remove(edgeTypeName), oldToNew, newToOld, oldColumns != null);
+    final int[] newFwdOffsets = renumbered[0];
+    final int[] newFwdNeighbors = renumbered[1];
+    // Satellite array: tracks which old edge position each new position came from, to remap the edge properties
+    int[] oldPosAtNewPos = renumbered[2];
+    renumbered[2] = null;
+    final int nodeCount = newFwdOffsets.length - 1;
+    final int edgeCount = newFwdNeighbors.length;
+    // Re-sort neighbor lists after ID translation, carrying satellite data along
+    sortSlices(newFwdOffsets, newFwdNeighbors, nodeCount, oldPosAtNewPos);
+
+    // Remap edge property ColumnStore if present using satellite array
+    if (oldPosAtNewPos != null) {
+      final ColumnStore newStore = new ColumnStore(edgeCount);
+      for (final String colName : oldColumns.getPropertyNames()) {
+        final Column oldCol = oldColumns.getColumn(colName);
+        newStore.createColumn(colName, oldCol.getType());
+        final Column newCol = newStore.getColumn(colName);
+        // oldPosAtNewPos[newPos] = oldPos: copy old value at oldPos to newPos
+        for (int newPos = 0; newPos < edgeCount; newPos++) {
+          final int oldPos = oldPosAtNewPos[newPos];
+          if (oldCol.isNull(oldPos))
+            continue;
+          switch (oldCol.getType()) {
+          case INT:
+            newCol.setInt(newPos, oldCol.getInt(oldPos));
+            break;
+          case LONG:
+            newCol.setLong(newPos, oldCol.getLong(oldPos));
+            break;
+          case DOUBLE:
+            newCol.setDouble(newPos, oldCol.getDouble(oldPos));
+            break;
+          case STRING:
+            newCol.setString(newPos, oldCol.getString(oldPos));
+            break;
+          }
+        }
+      }
+      edgeColumnStores.put(edgeTypeName, newStore);
+      oldPosAtNewPos = null;
+    }
+
+    final int[] bwdToFwd = oldColumns != null ? new int[edgeCount] : null;
+    csrPerType.put(edgeTypeName, transpose(newFwdOffsets, newFwdNeighbors, nodeCount, edgeCount, bwdToFwd));
+    if (bwdToFwd != null)
+      bwdToFwdMap.put(edgeTypeName, bwdToFwd);
+  }
+
+  /**
+   * The forward slice of {@code oldCSR} under the renumbering: its offsets, its neighbours (translated, slices not sorted
+   * yet) and, with {@code trackOldPositions}, the old position of the edge at each new position.
+   */
+  private static int[][] renumberForward(final CSRAdjacencyIndex oldCSR, final int[] oldToNew, final int[] newToOld,
+      final boolean trackOldPositions) {
+    final int nodeCount = oldCSR.getNodeCount();
     final int edgeCount = oldCSR.getEdgeCount();
     final int[] oldFwdOffsets = oldCSR.getForwardOffsets();
     final int[] oldFwdNeighbors = oldCSR.getForwardNeighbors();
-    final int[] oldBwdOffsets = oldCSR.getBackwardOffsets();
-    final int[] oldBwdNeighbors = oldCSR.getBackwardNeighbors();
 
     // Build new forward CSR: iterate in new ID order, copy old edges with translated IDs
     final int[] newFwdOffsets = new int[nodeCount + 1];
@@ -1071,9 +1106,7 @@ public class CSRBuilder {
     }
 
     final int[] newFwdNeighbors = new int[edgeCount];
-    // Satellite array: tracks which old edge position each new position came from.
-    // Used to remap edge properties after the sort changes positions.
-    final int[] oldPosAtNewPos = hasEdgeProps && edgeCount > 0 ? new int[edgeCount] : null;
+    final int[] oldPosAtNewPos = trackOldPositions && edgeCount > 0 ? new int[edgeCount] : null;
     for (int newId = 0; newId < nodeCount; newId++) {
       final int oldId = newToOld[newId];
       final int oldStart = oldFwdOffsets[oldId];
@@ -1085,53 +1118,8 @@ public class CSRBuilder {
         if (oldPosAtNewPos != null)
           oldPosAtNewPos[newPos] = j;
       }
-      // Re-sort neighbor list after ID translation, carrying satellite data along
-      final int newEnd = newFwdOffsets[newId + 1];
-      if (newEnd - newStart > 1) {
-        if (oldPosAtNewPos != null)
-          parallelSort(newFwdNeighbors, oldPosAtNewPos, newStart, newEnd);
-        else
-          Arrays.sort(newFwdNeighbors, newStart, newEnd);
-      }
     }
-
-    // Build new backward CSR the same way
-    final int[] newBwdOffsets = new int[nodeCount + 1];
-    for (int newId = 0; newId < nodeCount; newId++) {
-      final int oldId = newToOld[newId];
-      newBwdOffsets[newId + 1] = newBwdOffsets[newId] + (oldBwdOffsets[oldId + 1] - oldBwdOffsets[oldId]);
-    }
-
-    final int[] newBwdNeighbors = new int[edgeCount];
-    for (int newId = 0; newId < nodeCount; newId++) {
-      final int oldId = newToOld[newId];
-      final int oldStart = oldBwdOffsets[oldId];
-      final int oldEnd = oldBwdOffsets[oldId + 1];
-      final int newStart = newBwdOffsets[newId];
-      for (int j = oldStart; j < oldEnd; j++)
-        newBwdNeighbors[newStart + (j - oldStart)] = oldToNew[oldBwdNeighbors[j]];
-      final int newEnd = newBwdOffsets[newId + 1];
-      if (newEnd - newStart > 1)
-        Arrays.sort(newBwdNeighbors, newStart, newEnd);
-    }
-
-    return new ReorderedCSR(
-        new CSRAdjacencyIndex(newFwdOffsets, newFwdNeighbors, newBwdOffsets, newBwdNeighbors, nodeCount, edgeCount),
-        oldPosAtNewPos);
-  }
-
-  /**
-   * Result of CSR reordering: the new CSR plus the satellite array mapping
-   * new forward edge positions back to old forward edge positions (for edge property remapping).
-   */
-  static final class ReorderedCSR {
-    final CSRAdjacencyIndex csr;
-    final int[]             oldPosAtNewPos; // newFwdPos → oldFwdPos
-
-    ReorderedCSR(final CSRAdjacencyIndex csr, final int[] oldPosAtNewPos) {
-      this.csr = csr;
-      this.oldPosAtNewPos = oldPosAtNewPos;
-    }
+    return new int[][] { newFwdOffsets, newFwdNeighbors, oldPosAtNewPos };
   }
 
   static long packRid(final RID rid) {
@@ -1157,56 +1145,100 @@ public class CSRBuilder {
   }
 
   /**
-   * Compact int-pair list for collecting (source, target) edge pairs without boxing.
-   * Optionally stores edge RIDs (packed as long) when edge properties are requested.
+   * What the scan collects for one edge type: the out-degree of every node and the targets in the order the scan met
+   * them, with the edge properties in that same order when the view materializes them.
    */
-  static final class IntPairList {
-    private int[]  src;
-    private int[]  tgt;
-    private long[] edgeRids; // only allocated when edge properties are requested
-    private int    count;
+  static final class TypeScan {
+    int[]                                    outDegrees;
+    final IntChunks                          targets = new IntChunks();
+    final Map<String, GrowingPropertyArray> edgeProperties;
 
-    IntPairList() {
-      src = new int[256];
-      tgt = new int[256];
+    TypeScan(final int nodeCount, final Map<String, Column.Type> edgePropTypes) {
+      this.outDegrees = new int[nodeCount];
+      if (edgePropTypes != null) {
+        edgeProperties = new HashMap<>();
+        for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet())
+          edgeProperties.put(pt.getKey(), new GrowingPropertyArray(pt.getValue()));
+      } else
+        edgeProperties = null;
+    }
+  }
+
+  /**
+   * An append-only list of ints held in blocks, so it grows without ever copying what it holds: a doubling array holds
+   * its contents twice while it grows and up to twice its size once grown, which for the targets of tens of millions of
+   * edges is the difference between fitting a heap and not (issue #11011). The first blocks are small, so an edge type
+   * with a handful of edges costs a handful of ints; past {@link #MAX_BLOCK} every block is that size.
+   */
+  static final class IntChunks {
+    static final int MAX_BLOCK = 1 << 16;
+
+    private int[][] blocks = new int[8][];
+    private int     blockCount;
+    private int[]   current;
+    private int     fill;
+    private int     size;
+
+    void add(final int value) {
+      if (current == null || fill == current.length)
+        nextBlock();
+      current[fill++] = value;
+      ++size;
     }
 
-    IntPairList(final boolean trackEdgeRids) {
-      this();
-      if (trackEdgeRids)
-        edgeRids = new long[256];
+    int size() {
+      return size;
     }
 
-    void add(final int source, final int target) {
-      if (count == src.length) {
-        final int newLen = src.length * 2;
-        src = Arrays.copyOf(src, newLen);
-        tgt = Arrays.copyOf(tgt, newLen);
+    private void nextBlock() {
+      final int length = current == null ? 64 : Math.min(MAX_BLOCK, current.length << 1);
+      if (blockCount == blocks.length)
+        blocks = Arrays.copyOf(blocks, blockCount << 1);
+      blocks[blockCount++] = current = new int[length];
+      fill = 0;
+    }
+
+    /**
+     * Moves the values into one array laid out as a CSR slice array: the scan met the nodes in {@code visitOrder}, each
+     * contributing {@code offsets[u + 1] - offsets[u]} consecutive values, which go to {@code offsets[u]} onwards. Each
+     * block is released once copied, so the values are held about once, not twice, while they move. With
+     * {@code insertionPositions}, the position each value had in the list is written at the position it takes.
+     * The list is empty afterward.
+     */
+    int[] drainInto(final int[] visitOrder, final int visitedCount, final int[] offsets, final int[] insertionPositions) {
+      final int[] result = new int[size];
+      int block = 0;
+      int position = 0;
+      int consumed = 0;
+      for (int k = 0; k < visitedCount; k++) {
+        final int node = visitOrder[k];
+        int destination = offsets[node];
+        int remaining = offsets[node + 1] - destination;
+        if (insertionPositions != null)
+          for (int r = 0; r < remaining; r++)
+            insertionPositions[destination + r] = consumed + r;
+        consumed += remaining;
+        while (remaining > 0) {
+          final int[] source = blocks[block];
+          final int filled = block == blockCount - 1 ? fill : source.length;
+          final int count = Math.min(filled - position, remaining);
+          System.arraycopy(source, position, result, destination, count);
+          position += count;
+          destination += count;
+          remaining -= count;
+          if (position == filled) {
+            blocks[block++] = null;
+            position = 0;
+          }
+        }
       }
-      src[count] = source;
-      tgt[count] = target;
-      count++;
+      blocks = new int[8][];
+      blockCount = 0;
+      current = null;
+      fill = 0;
+      size = 0;
+      return result;
     }
-
-    void add(final int source, final int target, final long edgeRid) {
-      if (count == src.length) {
-        final int newLen = src.length * 2;
-        src = Arrays.copyOf(src, newLen);
-        tgt = Arrays.copyOf(tgt, newLen);
-        if (edgeRids != null)
-          edgeRids = Arrays.copyOf(edgeRids, newLen);
-      }
-      src[count] = source;
-      tgt[count] = target;
-      if (edgeRids != null)
-        edgeRids[count] = edgeRid;
-      count++;
-    }
-
-    int size() { return count; }
-    int[] sources() { return src; }
-    int[] targets() { return tgt; }
-    long[] edgeRids() { return edgeRids; }
   }
 
   /**

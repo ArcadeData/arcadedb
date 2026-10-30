@@ -43,6 +43,9 @@ public class CachedPage {
   // CachedPage(page, false) constructor, which shares the MutablePage's Binary instead of copying it, is used only by the
   // synchronous flush, after which that page is never modified. A new writer of either breaks the shared view.
   private volatile ImmutablePage sharedView;
+  // The bulk scan that loaded this page into the cache, until any other reader touches it (issue #11011). A plain field: a
+  // stale read only delays a promotion or lets the eviction take the page a little earlier, both harmless
+  private          PageManager.BulkScan loadedByBulkScan;
 
   public CachedPage(final MutablePage page, final boolean copyBuffer) {
     this.pageId = page.pageId;
@@ -130,6 +133,15 @@ public class CachedPage {
 
   public long getLastAccessed() {
     return lastAccessed;
+  }
+
+  /** The bulk scan that loaded this page and is its only reader so far, or null. */
+  PageManager.BulkScan getLoadedByBulkScan() {
+    return loadedByBulkScan;
+  }
+
+  void setLoadedByBulkScan(final PageManager.BulkScan scan) {
+    this.loadedByBulkScan = scan;
   }
 
   public void updateLastAccesses() {

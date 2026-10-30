@@ -362,8 +362,12 @@ public class GraphImporter implements AutoCloseable {
     for (final GraphAnalyticalView gav : GraphAnalyticalViewRegistry.getAll(database).values()) {
       if (gav.getStatus() != GraphAnalyticalView.Status.READY) {
         LogManager.instance().log(GraphImporter.class, Level.INFO, "Waiting for GraphAnalyticalView '%s' to finish building...", gav.getName());
-        gav.awaitReady(10, TimeUnit.MINUTES);
-        LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+        if (gav.awaitReady(10, TimeUnit.MINUTES))
+          LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+        else
+          // FAILED with its cause, or still building past the wait (issue #11011)
+          LogManager.instance().log(GraphImporter.class, Level.WARNING, "GraphAnalyticalView '%s' is not ready: %s%s", gav.getName(),
+              gav.getStatus(), gav.getBuildError() != null ? " (" + GraphAnalyticalView.describeBuildError(gav.getBuildError()) + ")" : "");
       }
     }
   }

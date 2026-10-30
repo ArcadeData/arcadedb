@@ -46,6 +46,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
 
 import java.lang.ref.SoftReference;
@@ -184,8 +185,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
   }
 
+  /**
+   * The state of a view. {@code FAILED} is a view whose build or restore threw and that has no snapshot to serve:
+   * {@link #getBuildError()} says why (issue #11011). A view that fails to REBUILD keeps the snapshot it had and reads
+   * {@code STALE}, with the same error.
+   */
   public enum Status {
-    NOT_BUILT, BUILDING, READY, STALE
+    NOT_BUILT, BUILDING, READY, STALE, FAILED
   }
 
   /**
@@ -650,7 +656,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         closeBuildWatch(watch);
         if (myGeneration == generation) {
           this.buildError = e;
-          this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+          this.status = snapshot != null ? Status.STALE : Status.FAILED;
           // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
           if (snapshot == null)
             unregisterChangeListeners();
@@ -739,7 +745,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (opened != null)
       closeBuildWatch(opened);
     buildError = e;
-    status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+    status = snapshot != null ? Status.STALE : Status.FAILED;
     if (snapshot == null)
       unregisterChangeListeners();
     latch.countDown();
@@ -924,7 +930,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             if (database.isTransactionActive())
               database.rollback();
           }
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
+          // An Error too, OutOfMemoryError first: a build that dies of one without this would leave the view BUILDING for
+          // good, its latch counted down and nothing on the way, so a waiter could not tell it from a slow one (issue #11011)
           synchronized (GraphAnalyticalView.this) {
             closeBuildWatch(watch);
             if (myGeneration == generation) {
@@ -932,21 +940,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               if (snapshot != null) {
                 this.status = Status.STALE;
               } else {
-                this.status = Status.NOT_BUILT;
+                this.status = Status.FAILED;
                 unregisterChangeListeners();
                 // Unregister failed GAV so the name can be reused for a fresh build
                 GraphTraversalProviderRegistry.unregister(database, this);
-                if (name != null)
+                if (name != null) {
                   GraphAnalyticalViewRegistry.unregister(database, name);
+                  // What the schema:graphAnalyticalViews row reports until the view is built again or dropped
+                  GraphAnalyticalViewRegistry.recordFailure(database, name, e);
+                }
               }
             }
             GraphAnalyticalView.this.notifyAll();
           }
-          if (isBenignShutdownError(e))
-            LogManager.instance().log(this, Level.FINE,
-                "Async build of GraphAnalyticalView '%s' aborted because the database is closing", name);
-          else
-            LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
+          logBuildFailure("Async build", e);
         } finally {
           // #4956: this virtual thread dies right after the task, but its DatabaseContext entry (pinning Binary
           // temp buffers) would otherwise linger until the next periodic sweep. Remove it before the latch is
@@ -969,7 +976,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         this.status = Status.STALE;
       else {
         // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
-        this.status = Status.NOT_BUILT;
+        this.status = Status.FAILED;
         unregisterChangeListeners();
         GraphTraversalProviderRegistry.unregister(database, this);
         if (name != null)
@@ -1187,6 +1194,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       current = current.getCause();
     }
     return false;
+  }
+
+  /**
+   * Logs a build or restore that failed in the background, at SEVERE with the view's name unless the database was closing.
+   * An {@link OutOfMemoryError} says what to change, since the stack trace of an allocation says nothing useful.
+   */
+  private void logBuildFailure(final String what, final Throwable e) {
+    if (isBenignShutdownError(e))
+      LogManager.instance().log(this, Level.FINE, "%s of GraphAnalyticalView '%s' aborted because the database is closing", what,
+          name);
+    else if (e instanceof OutOfMemoryError)
+      LogManager.instance().log(this, Level.SEVERE,
+          "%s of GraphAnalyticalView '%s' failed: it ran out of heap (max heap %s, page cache %s). The view is %s. Raise the heap "
+              + "(-Xmx) or lower %s, then rebuild it with REBUILD GRAPH ANALYTICAL VIEW", what, name,
+          FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
+          FileUtils.getSizeAsString(database.getConfiguration().getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024),
+          status, GlobalConfiguration.MAX_PAGE_RAM.getKey());
+    else
+      LogManager.instance().log(this, Level.SEVERE, "%s of GraphAnalyticalView '%s' failed", e, what, name);
   }
 
   // --- GraphTraversalProvider SPI ---
@@ -3348,6 +3374,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return buildError;
   }
 
+  /**
+   * The text a status row shows for a build error: its class and message, since the message of an
+   * {@link OutOfMemoryError} ("Java heap space") does not say what it is on its own.
+   */
+  public static String describeBuildError(final Throwable error) {
+    if (error == null)
+      return null;
+    final String message = error.getMessage();
+    return message != null ? error.getClass().getSimpleName() + ": " + message : error.getClass().getSimpleName();
+  }
+
   public long getBuildTimestamp() {
     final Snapshot snap = this.snapshot;
     return snap != null ? snap.buildTimestamp : 0;
@@ -3918,6 +3955,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       stats.put("nodeCount", 0);
       stats.put("edgeCount", 0);
       stats.put("memoryUsageBytes", 0L);
+      // A view that never built says why, which is all it has to say (issue #11011)
+      final Throwable err = buildError;
+      if (err != null)
+        stats.put("buildError", describeBuildError(err));
       return stats;
     }
 
@@ -3996,7 +4037,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     stats.put("compactionThreshold", compactionThreshold);
     final Throwable err = buildError;
     if (err != null)
-      stats.put("buildError", err.getMessage());
+      stats.put("buildError", describeBuildError(err));
 
     final ContractionHierarchy[] hierarchies = contractionHierarchies;
     if (hierarchies.length > 0) {
@@ -4254,24 +4295,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             buildAsync();
             awaitDeferredDiskRestoreSettled();
           }
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
           // tryRestoreFromPersistedCsr() only catches around its own load() call, so anything else
-          // unexpected (e.g. the database closing mid-check) would otherwise leave status stuck at
+          // unexpected (e.g. the database closing mid-check, or the heap running out) would otherwise leave status stuck at
           // BUILDING forever - awaitDeferredDiskRestoreSettled()'s loop would then busy-spin on every
           // future checkBuilt() call (its latch is already counted down, so await() returns instantly,
           // and status never leaves BUILDING to end the loop). Mirrors buildAsync()'s own catch exactly.
           synchronized (this) {
             if (myGeneration == generation) {
               buildError = e;
-              status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+              status = snapshot != null ? Status.STALE : Status.FAILED;
             }
             notifyAll();
           }
-          if (isBenignShutdownError(e))
-            LogManager.instance().log(this, Level.FINE,
-                "Deferred restore of GraphAnalyticalView '%s' aborted because the database is closing", name);
-          else
-            LogManager.instance().log(this, Level.WARNING, "Failed to resolve deferred restore for GraphAnalyticalView '%s'", e, name);
+          logBuildFailure("Deferred restore", e);
         } finally {
           deferredRestoreInFlight = false;
           latch.countDown();
@@ -4286,7 +4323,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // than for every other one in this class.
       deferredRestoreInFlight = false;
       buildError = e;
-      status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      status = snapshot != null ? Status.STALE : Status.FAILED;
       notifyAll();
       latch.countDown();
       taskCompleted();
@@ -4989,7 +5026,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               if (database.isTransactionActive())
                 database.rollback();
             }
-          } catch (final Exception e) {
+          } catch (final Exception | Error e) {
+            // An Error too: the deltas would otherwise keep buffering for a swap that never comes (issue #11011). The view
+            // keeps serving its snapshot and overlay, which hold every delta merged so far
             synchronized (GraphAnalyticalView.this) {
               pendingDeltas = null;
             }
@@ -5482,8 +5521,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         awaitDeferredDiskRestoreSettled();
       snap = this.snapshot;
     }
-    if (snap == null)
+    if (snap == null) {
+      final Throwable failure = buildError;
+      if (failure != null)
+        // A FAILED view says why, rather than that nobody built it (issue #11011)
+        throw new IllegalStateException(
+            "GraphAnalyticalView '" + name + "' failed to build (" + describeBuildError(failure) + "). Rebuild it", failure);
       throw new IllegalStateException("GraphAnalyticalView has not been built yet. Call build() first.");
+    }
     return snap;
   }
 

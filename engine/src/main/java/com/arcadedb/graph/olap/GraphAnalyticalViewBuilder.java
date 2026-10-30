@@ -188,8 +188,11 @@ public class GraphAnalyticalViewBuilder {
     final GraphAnalyticalView view = createView();
     try {
       view.build();
-    } catch (final Exception e) {
+    } catch (final Exception | Error e) {
       view.shutdown();
+      // The definition stays: the schema row reports the view FAILED, and why, until it is rebuilt or dropped (issue #11011)
+      if (name != null)
+        GraphAnalyticalViewRegistry.recordFailure(database, name, e);
       throw e;
     }
     return view;

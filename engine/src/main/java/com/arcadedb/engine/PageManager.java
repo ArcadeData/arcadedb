@@ -214,6 +214,8 @@ public class PageManager extends LockContext {
    * allocates nothing after the first one; {@link PageShadow#store} copies out of it, so it can be recycled at once.
    */
   private static final ThreadLocal<byte[]> PRE_IMAGE_BUFFER = ThreadLocal.withInitial(() -> new byte[0]);
+  // The bulk scan open on the thread (issue #11011), see beginBulkScan()
+  private static final ThreadLocal<BulkScan> BULK_SCAN = new ThreadLocal<>();
 
   /**
    * Hard wall-clock budget for EVERYTHING the t0 barrier does with the JVM-wide page-manager lock held (#6125): the
@@ -2165,6 +2167,68 @@ public class PageManager extends LockContext {
       totalSnapshotWindowsFailed.incrementAndGet();
   }
 
+  /**
+   * Opens a bulk scan on the calling thread, to be closed in a {@code finally} or try-with-resources (issue #11011). The pages
+   * the thread reads from disk while it is open are put in the read cache as usual, so the scan itself gets every hit it
+   * would, but they belong to the scan: they are the first ones evicted, and the ones no other reader used meanwhile leave the
+   * cache when the scan closes. A scan that reads a whole graph to build a structure answering for it (a Graph Analytical
+   * View) would otherwise fill the cache with pages nobody reads again and push out the ones queries use. Pages the cache held
+   * before, and pages another reader touches, are left to the cache's own policy. A scan opened inside another on the same
+   * thread joins it.
+   */
+  public BulkScan beginBulkScan() {
+    final BulkScan current = BULK_SCAN.get();
+    if (current != null) {
+      ++current.depth;
+      return current;
+    }
+    final BulkScan scan = new BulkScan(this);
+    BULK_SCAN.set(scan);
+    return scan;
+  }
+
+  /** The scope opened by {@link #beginBulkScan()}. */
+  public static final class BulkScan implements AutoCloseable {
+    private final PageManager manager;
+    private       int         depth = 1;
+    private       long        releasedPages;
+    private       long        releasedBytes;
+
+    private BulkScan(final PageManager manager) {
+      this.manager = manager;
+    }
+
+    /** Pages, and their bytes, this scan loaded that left the cache when it closed. */
+    public long getReleasedPages() {
+      return releasedPages;
+    }
+
+    public long getReleasedBytes() {
+      return releasedBytes;
+    }
+
+    @Override
+    public void close() {
+      if (--depth > 0)
+        return;
+      BULK_SCAN.remove();
+      manager.releaseBulkScanPages(this);
+    }
+  }
+
+  private void releaseBulkScanPages(final BulkScan scan) {
+    final ConcurrentMap<PageId, CachedPage> cache = readCache;
+    if (cache == null)
+      return;
+    for (final CachedPage page : cache.values())
+      // Conditional on the instance: a newer version a commit put in its place is not the scan's
+      if (page.getLoadedByBulkScan() == scan && cache.remove(page.getPageId(), page)) {
+        totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
+        ++scan.releasedPages;
+        scan.releasedBytes += page.getPhysicalSize();
+      }
+  }
+
   public void removePageFromCache(final PageId pageId) {
     final CachedPage page = readCache.remove(pageId);
     if (page != null)
@@ -2531,6 +2595,9 @@ public class PageManager extends LockContext {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
         final CachedPage finalPage = page;
         concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+        // A page read for a bulk scan is its until another reader wants it (issue #11011)
+        if (cache)
+          page.setLoadedByBulkScan(BULK_SCAN.get());
       }
 
       page.loadMetadata();
@@ -2611,8 +2678,12 @@ public class PageManager extends LockContext {
               null, ramToFree, totalRAM, maxRAM, Thread.currentThread().threadId());
 
     // GET THE <DISPOSE_PAGES_PER_CYCLE> OLDEST PAGES
-    // ORDER PAGES BY LAST ACCESS + SIZE
+    // ORDER PAGES BY BULK SCAN FIRST (ISSUE #11011: NO OTHER READER WANTED THEM), THEN LAST ACCESS + SIZE
     final TreeSet<CachedPage> pagesOrderedByAge = new TreeSet<>((o1, o2) -> {
+      final int bulkScan = Boolean.compare(o2.getLoadedByBulkScan() != null, o1.getLoadedByBulkScan() != null);
+      if (bulkScan != 0)
+        return bulkScan;
+
       final int lastAccessed = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
       if (lastAccessed != 0)
         return lastAccessed;
@@ -2730,6 +2801,10 @@ public class PageManager extends LockContext {
     } else {
       cacheHits.increment();
       page.updateLastAccesses();
+      // Another reader wants a page a bulk scan loaded: from now on it is an ordinary page, kept by the cache's own policy
+      final BulkScan loadedBy = page.getLoadedByBulkScan();
+      if (loadedBy != null && loadedBy != BULK_SCAN.get())
+        page.setLoadedByBulkScan(null);
     }
 
     if (page == null)
