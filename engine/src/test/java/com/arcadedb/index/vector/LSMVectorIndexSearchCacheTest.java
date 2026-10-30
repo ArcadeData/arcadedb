@@ -155,7 +155,7 @@ class LSMVectorIndexSearchCacheTest {
         // Back to automatic sizing: the cache appears and answers subsequent queries
         GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(0);
         index.findNeighborsFromVector(vectors[0], K, EF_SEARCH);
-        final VectorCache cache = index.getSearchVectorCache();
+        final FlatVectorCache cache = index.getSearchVectorCache();
         assertThat(cache).isNotNull();
         assertThat(cache.size()).isPositive();
 

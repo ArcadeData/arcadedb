@@ -199,10 +199,10 @@ class Issue6503VectorRebuildResidentGraphReleaseTest {
     }
   }
 
-  private static VectorCache searchVectorCacheField(final LSMVectorIndex index) throws Exception {
+  private static FlatVectorCache searchVectorCacheField(final LSMVectorIndex index) throws Exception {
     final Field field = LSMVectorIndex.class.getDeclaredField("searchVectorCache");
     field.setAccessible(true);
-    return (VectorCache) field.get(index);
+    return (FlatVectorCache) field.get(index);
   }
 
   private static void populate(final Database db) {
