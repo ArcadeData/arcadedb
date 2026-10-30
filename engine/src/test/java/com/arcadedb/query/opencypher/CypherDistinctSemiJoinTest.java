@@ -125,6 +125,30 @@ class CypherDistinctSemiJoinTest {
   }
 
   @Test
+  void keepsRowsPastBatchesWithoutAMatch() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Bulk");
+      final MutableVertex group = database.newVertex("Rule").set("direction", "BULK").save();
+      for (int i = 0; i < 1_000; i++) {
+        final MutableVertex bulk = database.newVertex("Bulk").set("i", i).save();
+        bulk.newEdge("IN_RULE", group);
+        if (i >= 950)
+          bulk.newEdge("HAS", database.newVertex("Port").set("public", true).save());
+      }
+    });
+
+    final String perRow = "MATCH (b:Bulk) WITH b MATCH (b)-[:HAS]-(p:Port) RETURN DISTINCT b.i AS i";
+    assertThat(plan(perRow, Map.of())).contains("SEMI JOIN");
+    assertThat(column(perRow, Map.of(), "i")).hasSize(50);
+
+    final String remembered = """
+        MATCH (b:Bulk) OPTIONAL MATCH (b)-[:IN_RULE]-(r:Rule) WITH b, r
+        MATCH (r)-[:IN_RULE]-(o:Bulk)-[:HAS]-(p:Port) RETURN DISTINCT b.i AS i""";
+    assertThat(plan(remembered, Map.of())).contains("remembered per r)");
+    assertThat(column(remembered, Map.of(), "i")).hasSize(1_000);
+  }
+
+  @Test
   void notRememberedWhenTheClausesCanAnswerDifferentlyForTheSameRule() {
     final String query = """
         MATCH (h:Host) OPTIONAL MATCH (h)-[:IN_RULE]-(r:Rule) WITH h, r

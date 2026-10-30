@@ -54,6 +54,7 @@ public class SemiJoinStep extends AbstractExecutionStep {
   private final ChainInputStep        chainInput;
   private final AbstractExecutionStep chainEnd;
   private final List<String>          memoKey;
+  private       boolean               closed = false;
 
   /**
    * @param chainInput the step the chain's first clause reads from, fed one input row at a time
@@ -122,6 +123,16 @@ public class SemiJoinStep extends AbstractExecutionStep {
         prevResults.close();
       }
     };
+  }
+
+  // The chain is not reachable through prev, so its steps are closed here; closing chainEnd stops at chainInput
+  @Override
+  public void close() {
+    if (!closed) {
+      closed = true;
+      chainEnd.close();
+    }
+    super.close();
   }
 
   private boolean chainMatches(final Result row) {
