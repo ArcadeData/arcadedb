@@ -142,13 +142,26 @@ public final class PeerCapabilities {
   public static final String FIXED_WIDTH_FLOAT_ARRAYS = "fixed-width-float-arrays";
 
   /**
+   * This node reads the {@code restore-fence-term} extension section of a {@code DROP_DATABASE_ENTRY} and an
+   * {@code INSTALL_DATABASE_ENTRY} (issue #10974): the Raft term in which the leader running a restore held the database for it.
+   * As the leader it refuses such an entry from another node, or in another term, so a restore whose leader lost the leadership
+   * cannot drop or install the database over the writes the next leader accepted (the Ratis client resends an entry to whichever
+   * node leads now).
+   * <p>
+   * The section is framed, so a build with the extension framing (issue #7138) skips it; a build older than that halts on any
+   * trailing bytes, which is why the leader writes it only when every peer advertises this token. Withholding it leaves the restore
+   * fenced by the leadership check made before the swap only.
+   */
+  public static final String RESTORE_FENCE = "restore-fence";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
       SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX, SCHEMA_FILE_RENAMES, DATABASE_CONFIGURATION_ENTRY,
-      TX_FULLTEXT_CORPUS_DELTAS, FIXED_WIDTH_FLOAT_ARRAYS);
+      TX_FULLTEXT_CORPUS_DELTAS, FIXED_WIDTH_FLOAT_ARRAYS, RESTORE_FENCE);
 
   private PeerCapabilities() {
     // utility class

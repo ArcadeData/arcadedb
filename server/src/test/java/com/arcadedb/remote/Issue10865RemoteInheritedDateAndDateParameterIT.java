@@ -127,6 +127,37 @@ class Issue10865RemoteInheritedDateAndDateParameterIT extends BaseGraphServerTes
     }
   }
 
+  /**
+   * Issue #10908: a comparison reads a number as epoch days, so the epoch milliseconds the client used to send for a LocalDate never
+   * matched. The date goes as a typed marker now.
+   */
+  @Test
+  void localDateInAComparison() {
+    final RemoteDatabase db = schema();
+    db.command("sql", "INSERT INTO Evento SET fecha = ?", DAY);
+    db.command("sql", "INSERT INTO Evento SET fecha = ?", DAY.plusDays(1));
+    try (final ResultSet rs = db.query("sql", "SELECT FROM Evento WHERE fecha = ?", DAY)) {
+      assertThat(rs.next().<LocalDate>getProperty("fecha")).isEqualTo(DAY);
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = db.query("sql", "SELECT FROM Evento WHERE fecha = :d", Map.of("d", DAY))) {
+      assertThat(rs.next().<LocalDate>getProperty("fecha")).isEqualTo(DAY);
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = db.query("sql", "SELECT FROM Evento WHERE fecha IN ?", List.of(DAY, DAY.plusDays(1)))) {
+      int count = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    }
+    try (final ResultSet rs = db.query("sql", "SELECT FROM Evento WHERE fecha > ?", DAY)) {
+      assertThat(rs.next().<LocalDate>getProperty("fecha")).isEqualTo(DAY.plusDays(1));
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   @Test
   void midnightMillisInARecordContent() {
     final RemoteDatabase db = schema();

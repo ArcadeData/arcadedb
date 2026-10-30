@@ -50,9 +50,19 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       "maxConnections", "beamWidth", "efSearch", "neighborOverflowFactor", "alphaDiversityRelaxation", "idPropertyName",
       "locationCacheSize", "graphBuildCacheSize", "mutationsBeforeRebuild", "inactivityRebuildTimeoutMs",
       "storeVectorsInGraph", "addHierarchy", "pqSubspaces", "pqClusters", "pqCenterGlobally", "pqTrainingLimit", "fusedPQ",
-      "rerankOversample");
+      "rerankOversample", "sizeOnFirstVector");
 
-  public int                      dimensions;
+  /**
+   * Number of components of the indexed vectors; 0 while {@link #sizeOnFirstVector} is waiting for the first vector. Volatile:
+   * a put that fixes it publishes it to the writers, searches and builds running on other threads.
+   */
+  public volatile int             dimensions;
+  /**
+   * Whether the index was created without {@code dimensions} and takes them from the first vector it receives (issue #10915),
+   * which is what a script that creates the index before it writes any data needs. True only until that vector arrives: the
+   * index then clears it and persists {@link #dimensions}, so the definition of a sized index never carries it.
+   */
+  public volatile boolean         sizeOnFirstVector        = false;
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
   public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
   /**
@@ -104,8 +114,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public boolean                  pqCenterGlobally         = true;  // Whether to globally center vectors before PQ encoding
   // Whether the graph file stores the PQ codes of the neighbours inline in every node (jvector FusedPQ); PRODUCT only
   public boolean                  fusedPQ                  = false;
-  // PRODUCT only: candidates per requested neighbour that a search walking on the PQ codes scores again on the stored vectors
-  // (0 = the PQ scores alone, no stored vector read); the default of every search that does not say otherwise (issue #10514)
+  // PRODUCT and BINARY: candidates per requested neighbour that a search walking on the PQ (or one-bit) codes scores again on
+  // the stored vectors (0 = the PQ scores alone, no stored vector read; BINARY reranks at least one per neighbour); the
+  // default of every search that does not say otherwise (issues #10514, #10968)
   public int                      rerankOversample         = LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE;
   public int                      pqTrainingLimit          = 128000; // Max vectors the PQ codebook is trained on, a sample (JVector caps it at 128K)
 
@@ -128,6 +139,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public LSMVectorIndexMetadata copy(final String typeName, final String[] propertyNames, final int bucketId) {
     final LSMVectorIndexMetadata copy = copyCommonTo(new LSMVectorIndexMetadata(typeName, propertyNames, bucketId));
     copy.dimensions = dimensions;
+    copy.sizeOnFirstVector = sizeOnFirstVector;
     copy.similarityFunction = similarityFunction;
     copy.quantizationType = quantizationType;
     copy.encoding = encoding;
@@ -167,6 +179,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   protected void applyUserMetadata(final JSONObject json) {
     if (json.has("dimensions"))
       this.dimensions = metadataInt(json, "dimensions");
+
+    if (json.has("sizeOnFirstVector"))
+      this.sizeOnFirstVector = metadataBoolean(json, "sizeOnFirstVector");
 
     if (json.has("similarity"))
       setSimilarity(json.getString("similarity"));
@@ -232,10 +247,22 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       setRerankOversample(metadataInt(json, "rerankOversample"));
   }
 
+  /**
+   * {@code sizeOnFirstVector} is a request to size the index on its first vector: an index that already is sized satisfies it,
+   * so an {@code IF NOT EXISTS} statement written for the schema-before-data order stays a no-op once the data is in.
+   */
+  @Override
+  protected boolean isSameUserSetting(final String key, final Object current, final Object wanted) {
+    if ("sizeOnFirstVector".equals(key) && dimensions > 0)
+      return true;
+    return super.isSameUserSetting(key, current, wanted);
+  }
+
   @Override
   protected Object getUserMetadataValue(final String key) {
     return switch (key) {
       case "dimensions" -> dimensions;
+      case "sizeOnFirstVector" -> sizeOnFirstVector;
       case "similarity" -> similarityFunction;
       case "quantization" -> quantizationType;
       case "encoding" -> encoding;
@@ -403,6 +430,8 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("dimensions"))
       this.dimensions = metadata.getInt("dimensions");
+
+    this.sizeOnFirstVector = metadata.getBoolean("sizeOnFirstVector", false);
 
     // "similarity" is the name of the METADATA key; "similarityFunction" is the name LSMVectorIndex.toJSON() has always
     // written into the persisted definition. Accept both, or a reopened EUCLIDEAN index comes back up as COSINE and

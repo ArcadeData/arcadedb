@@ -307,7 +307,8 @@ class RaftClusterManager {
   }
 
   /**
-   * The committed Raft configuration, the one source a membership change is built from (issue #10769).
+   * The committed Raft configuration, the one source a membership change is built from (issue #10769), and the one the
+   * preconditions {@link RaftHAServer#addPeer(RaftPeer, String, String)} checks before the change are read from (issue #10937).
    * <p>
    * Unreadable for the moment an in-place restart re-initializes the division (issue #5271): waited out briefly, inside
    * the retry budget's spirit, rather than handed back to the operator for a window that lasts a second or two. Still
@@ -317,7 +318,7 @@ class RaftClusterManager {
    *
    * @throws ConfigurationException when the configuration cannot be read
    */
-  private CommittedConfiguration readCommittedConfiguration(final String operationDesc) {
+  CommittedConfiguration readCommittedConfiguration(final String operationDesc) {
     Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
     for (int wait = 0; committed == null && wait < COMMITTED_PEERS_WAIT_ATTEMPTS; wait++) {
       try {

@@ -210,13 +210,13 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
     } else if (quantized instanceof Object[] objArray) {
       final byte[] result = new byte[objArray.length];
       for (int i = 0; i < objArray.length; i++)
-        result[i] = toCode(objArray[i]);
+        result[i] = toInt8Code(objArray[i]);
       return result;
     } else if (quantized instanceof List<?> list) {
       // An SQL array literal or a stored list arrives as a List
       final byte[] result = new byte[list.size()];
       for (int i = 0; i < result.length; i++)
-        result[i] = toCode(list.get(i));
+        result[i] = toInt8Code(list.get(i));
       return result;
     } else {
       // Also reached when a BinaryQuantizationResult is passed to the INT8 path (mixed types in the
@@ -224,19 +224,6 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException(
           "INT8 distance expects a vector.quantizeInt8() result or a byte array, found: " + quantized.getClass().getSimpleName());
     }
-  }
-
-  /**
-   * One int8 code from a boxed element. A value that is not an integer in [-128, 127] is refused rather than wrapped or
-   * truncated by {@code byteValue()}: 200 would otherwise silently become -56 and land on the opposite end of the scale.
-   */
-  private static byte toCode(final Object element) {
-    if (!(element instanceof Number num))
-      throw new CommandSQLParsingException("Quantized elements must be numbers, found: " + element);
-    final double value = num.doubleValue();
-    if (value != Math.rint(value) || value < Byte.MIN_VALUE || value > Byte.MAX_VALUE)
-      throw new CommandSQLParsingException("Quantized elements must be integers in [-128, 127], found: " + element);
-    return (byte) value;
   }
 
   public String getSyntax() {

@@ -58,12 +58,16 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -577,7 +581,7 @@ public class RemoteHttpComponent extends RWLockContext {
             jsonRequest.put("limit", maxResultRows);
 
           if (params != null)
-            jsonRequest.put("params", new JSONObject(params));
+            jsonRequest.put("params", new JSONObject(encodeParameters(params)));
 
           String payload = getRequestPayload(jsonRequest);
           request = requestBuilder
@@ -787,6 +791,58 @@ public class RemoteHttpComponent extends RWLockContext {
         requestBuilder = requestBuilder.header("X-ArcadeDB-Read-After", String.valueOf(last));
     }
     return requestBuilder;
+  }
+
+  /**
+   * Query parameters as they go on the wire. A {@link LocalDate} is sent as the typed marker {@code {"$date": "2024-01-15"}} rather
+   * than as a number: the server reads a number in a comparison as epoch days, so {@code WHERE fecha = ?} never matched the epoch
+   * milliseconds the plain JSON form carries (issue #10908). A server older than the marker sees a map for such a parameter.
+   * Returns the same map when no parameter holds a date.
+   */
+  static Map<String, Object> encodeParameters(final Map<String, Object> params) {
+    Map<String, Object> result = null;
+    for (final Map.Entry<String, Object> entry : params.entrySet()) {
+      final Object encoded = encodeParameter(entry.getValue());
+      if (encoded != entry.getValue() && result == null)
+        result = new LinkedHashMap<>(params);
+      if (result != null)
+        result.put(entry.getKey(), encoded);
+    }
+    return result != null ? result : params;
+  }
+
+  private static Object encodeParameter(final Object value) {
+    if (value instanceof LocalDate date)
+      return Map.of("$date", date.toString());
+    if (value instanceof Collection<?> collection) {
+      List<Object> rewritten = null;
+      int i = 0;
+      for (final Object item : collection) {
+        final Object encoded = encodeParameter(item);
+        if (encoded != item && rewritten == null) {
+          rewritten = new ArrayList<>(collection.size());
+          final Iterator<?> prior = collection.iterator();
+          for (int j = 0; j < i; j++)
+            rewritten.add(prior.next());
+        }
+        if (rewritten != null)
+          rewritten.add(encoded);
+        i++;
+      }
+      return rewritten != null ? rewritten : value;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> rewritten = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object encoded = encodeParameter(entry.getValue());
+        if (encoded != entry.getValue() && rewritten == null)
+          rewritten = new LinkedHashMap<>(map);
+        if (rewritten != null)
+          rewritten.put(entry.getKey(), encoded);
+      }
+      return rewritten != null ? rewritten : value;
+    }
+    return value;
   }
 
   public int getApiVersion() {

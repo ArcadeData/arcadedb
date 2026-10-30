@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
@@ -882,6 +883,37 @@ public interface HAServerPlugin extends ServerPlugin {
    * has one more chance to lose. Default is a no-op for non-HA setups.
    */
   default void awaitLocalApply() {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Holds {@code databaseName} for a restore that has claimed it on this server (issue #10974): from now until
+   * {@link #releaseReplicatedWritesForRestore}, writes other nodes replicate to it through this one are refused with a
+   * retryable error, and the call returns once the ones already accepted - which no local commit wait sees - are applied here,
+   * so none of them is acknowledged during the download and destroyed by the swap. Called by
+   * {@link ArcadeDBServer#awaitCommitsInFlightOn}. Default is a no-op for non-HA setups.
+   *
+   * @throws NeedRetryException when writes accepted before the hold are still in flight once the bounded wait gives up; the
+   *                            hold stands until the release
+   */
+  default void holdReplicatedWritesForRestore(final String databaseName) {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Refuses a restore that replaces a database cluster-wide when the hold {@link #holdReplicatedWritesForRestore} took does not
+   * stand (issue #10974): this node was not the leader when it took it, or the leadership has moved since, so another leader may
+   * have accepted writes the swap would destroy. Asked right after the claim and again right before the swap. Default is a no-op
+   * for non-HA setups.
+   *
+   * @throws NeedRetryException when the hold no longer stands
+   */
+  default void ensureReplicatedWritesHeldForRestore(final String databaseName) {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /** Ends the hold {@link #holdReplicatedWritesForRestore} took, if any. Default is a no-op for non-HA setups. */
+  default void releaseReplicatedWritesForRestore(final String databaseName) {
     // No-op by default; Raft implementation overrides.
   }
 

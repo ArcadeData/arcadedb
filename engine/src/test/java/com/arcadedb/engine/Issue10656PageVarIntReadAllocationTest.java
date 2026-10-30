@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 /**
  * Issue #10656: reading a variable-length number off a page used to allocate a {@code long[2]} (value and bytes read)
  * every time, once per record header of every scan and lookup. {@link BasePage#readNumber(int)} returns the value and
- * leaves the byte count in {@link BasePage#getLastReadNumberSize()}, so the hot read paths allocate nothing.
+ * {@link BasePage#readNumberSize(int)} the byte count, so the hot read paths allocate nothing.
  */
 class Issue10656PageVarIntReadAllocationTest extends TestHelper {
 
@@ -60,7 +60,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
 
     for (int i = 0; i < VALUES.length; i++) {
       final long value = page.readNumber(positions[i]);
-      final int size = page.getLastReadNumberSize();
+      final int size = page.readNumberSize(positions[i]);
       assertThat(value).as("value at #%d", i).isEqualTo(VALUES[i]);
       assertThat(size).as("bytes read at #%d", i).isEqualTo(written[i]).isEqualTo(Binary.getNumberSpace(VALUES[i]));
 
@@ -70,11 +70,10 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
       assertThat(pair[1]).isEqualTo(size);
     }
 
-    // OUT OF ORDER: THE SIZE IS THE ONE OF THE LAST READ, NOT OF A RUNNING POSITION
+    // OUT OF ORDER: THE SIZE IS THE ONE OF THE NUMBER ASKED FOR, NOT OF THE LAST READ NOR OF A RUNNING POSITION (#10930)
     final int last = VALUES.length - 1;
     page.readNumber(positions[last]);
-    page.readNumber(positions[0]);
-    assertThat(page.getLastReadNumberSize()).isEqualTo(written[0]);
+    assertThat(page.readNumberSize(positions[0])).isEqualTo(written[0]);
   }
 
   @Test
@@ -84,7 +83,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
     final ImmutablePage immutable = new ImmutablePage(page.getPageId(), 1024, page.getContent().array(), 0, 1024);
 
     assertThat(immutable.readNumber(10)).isEqualTo(300_000L);
-    assertThat(immutable.getLastReadNumberSize()).isEqualTo(size);
+    assertThat(immutable.readNumberSize(10)).isEqualTo(size);
   }
 
   @Test
@@ -92,6 +91,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
     final MutablePage page = new MutablePage(new PageId(database, 1, 0), 1024);
     assertThatThrownBy(() -> page.readNumberAndSize(1_000_000)).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> page.readNumber(1_000_000)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> page.readNumberSize(1_000_000)).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -267,7 +267,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
       int position = 0;
       while (position < end) {
         checksum += page.readNumber(position);
-        position += page.getLastReadNumberSize();
+        position += page.readNumberSize(position);
       }
     }
     return checksum;

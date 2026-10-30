@@ -140,6 +140,27 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
+   * One int8 code from a boxed element of a quantized vector. A value that is not an integer in [-128, 127] is refused rather
+   * than wrapped or truncated by {@code byteValue()}: 200 would otherwise silently become -56 and land on the opposite end of
+   * the scale (#10931). The value is checked as it is, not through {@code doubleValue()}: a decimal whose fraction a double
+   * cannot hold ({@code 1.00000000000000000001}) is refused as fractional, and NaN or an infinity is refused rather than
+   * cast to 0.
+   */
+  protected static byte toInt8Code(final Object element) {
+    if (!(element instanceof Number num))
+      throw new CommandSQLParsingException("Quantized elements must be numbers, found: " + element);
+    final long value;
+    try {
+      value = NumberUtils.toLongWhole(num);
+    } catch (final ArithmeticException e) {
+      throw new CommandSQLParsingException("Quantized elements must be integers in [-128, 127], found: " + element);
+    }
+    if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE)
+      throw new CommandSQLParsingException("Quantized elements must be integers in [-128, 127], found: " + element);
+    return (byte) value;
+  }
+
+  /**
    * Reads a positional argument that has to be an integer (a count, a beam width). {@code intValue()} would read
    * {@code 2.5} as 2 and {@code 3000000000} as a negative int, so a number that is not an int is refused, as is a text
    * that does not parse as one (issue #10611).

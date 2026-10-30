@@ -289,6 +289,40 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * As {@link #requireWholeNumberArgument}, for the functions that also accept the number as text ({@code '5'}): a text is
+   * parsed as a long, and one that is not a whole number ({@code '1.5'}, {@code 'abc'}) is the same client error as a
+   * fractional number instead of a raw {@code NumberFormatException} (issue #10954).
+   *
+   * @throws CommandSemanticException when the argument is neither a whole number nor a text holding one
+   */
+  public static long requireWholeNumberOrTextArgument(final Object value, final String functionName, final String argumentName) {
+    if (value instanceof Number)
+      return requireWholeNumberArgument(value, functionName, argumentName);
+    try {
+      return Long.parseLong(value.toString());
+    } catch (final NumberFormatException e) {
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(value));
+    }
+  }
+
+  /**
+   * As {@link #requireWholeIntArgument}, for the functions that also accept the number as text (issue #10954).
+   *
+   * @throws CommandSemanticException when the argument is neither a whole number in the int range nor a text holding one
+   */
+  public static int requireWholeIntOrTextArgument(final Object value, final String functionName, final String argumentName) {
+    if (value instanceof Number)
+      return requireWholeIntArgument(value, functionName, argumentName);
+    final long whole = requireWholeNumberOrTextArgument(value, functionName, argumentName);
+    if (whole != (int) whole)
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + "> in the int range, but received "
+              + NumberUtils.describeRejectedNumber(value));
+    return (int) whole;
+  }
+
+  /**
    * As {@link #requireWholeNumberArgument}, for an argument that has to fit an int because what it drives cannot be
    * larger (a scale, a padding length, a character index): a value past the int range is refused rather than wrapped.
    *

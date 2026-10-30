@@ -2414,6 +2414,11 @@ public class ServerControlPlane {
     // released here, since the caller's finally that releases it is entered only after this method returns
     try {
       server.awaitCommitsInFlightOn(databaseName);
+      // Under HA the hold just taken on the writes of the other nodes has to be the leader's (issue #10974): refused now, before the
+      // download, rather than after it, before the swap
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null)
+        ha.ensureReplicatedWritesHeldForRestore(databaseName);
     } catch (final RuntimeException | Error e) {
       server.releaseDatabaseNameReservedForRestore(databaseName);
       throw e;
@@ -2672,6 +2677,18 @@ public class ServerControlPlane {
       }
 
       progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, RESTORE_STEPS, 0, -1);
+      // The hold the claim took on the writes of the other nodes is this node's (issue #10974): a leadership that moved during the
+      // download let the new leader accept writes the swap and the forced snapshot would destroy. Refused, retryable, before
+      // anything is replaced
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null) {
+        try {
+          ha.ensureReplicatedWritesHeldForRestore(databaseName);
+        } catch (final RuntimeException e) {
+          FileUtils.deleteRecursively(tempDir);
+          throw e;
+        }
+      }
       swapRestoredDatabase(databaseName, finalDir, tempDir, replaceExisting);
 
       // A no-op outside HA, and minutes inside it: forceSnapshot makes every replica pull the restored files.

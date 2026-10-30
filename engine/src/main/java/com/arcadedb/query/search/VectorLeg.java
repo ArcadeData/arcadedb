@@ -138,7 +138,8 @@ public final class VectorLeg {
       parameters.put("queryVector", sparseQuery.values());
       functionCall = "`vector.sparseNeighbors`(:indexName, :queryIndices, :queryVector, :candidateLimit, :options)";
     } else {
-      if (queryVector.length != resolved.dimensions())
+      // an index created to take its dimensions from its first vector lists none until it has one (issue #10915)
+      if (resolved.dimensions() > 0 && queryVector.length != resolved.dimensions())
         throw new IllegalArgumentException(
             "'queryVector' has " + queryVector.length + " dimensions, but index '" + indexName + "' requires "
                 + resolved.dimensions());

@@ -271,7 +271,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
         // ALLOCATION-FREE: ONE long[2] PER SCANNED SLOT WAS 7.7% OF A FILTERED SCAN'S BYTES (#10656)
         recordSize = currentPage.readNumber(recordPositionInPage);
-        recordHeaderSize = currentPage.getLastReadNumberSize();
+        recordHeaderSize = currentPage.readNumberSize(recordPositionInPage);
       } catch (final RuntimeException e) {
         // CORRUPTED SLOT-TABLE ENTRY OR RECORD HEADER: these two calls only ever touch raw page bytes (no
         // application/listener code runs here), so an out-of-bounds read (IndexOutOfBoundsException /

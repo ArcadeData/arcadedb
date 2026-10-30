@@ -260,13 +260,21 @@ public class IndexMetadata {
     for (final String key : requested.keySet()) {
       final Object current = getUserMetadataValue(key);
       final Object wanted = asRequested.getUserMetadataValue(key);
-      if (!Objects.equals(current, wanted))
+      if (!isSameUserSetting(key, current, wanted))
         mismatches.add(key + "=" + current + " (requested " + wanted + ")");
     }
     // Stable order: a JSONObject key set is unordered, and an error message that reshuffles between two identical
     // statements is one nobody can match on.
     Collections.sort(mismatches);
     return mismatches;
+  }
+
+  /**
+   * Whether the value this definition holds for {@code key} satisfies the {@code wanted} one of a request. Equality, unless
+   * the index type has a setting that stops being meaningful once it has taken effect.
+   */
+  protected boolean isSameUserSetting(final String key, final Object current, final Object wanted) {
+    return Objects.equals(current, wanted);
   }
 
   /**

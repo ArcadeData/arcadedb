@@ -18,8 +18,10 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,6 +32,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Unit tests for the {@code $bytes} / {@code $int8} typed-JSON-marker decoder (#4135). */
 class AbstractQueryHandlerTypedJsonMarkersTest {
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void dateMarkerDecodesIntoLocalDate() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("d", Map.of("$date", "2024-01-15"));
+    in.put("l", List.of(Map.of("$date", "2024-01-16")));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("d")).isEqualTo(LocalDate.of(2024, 1, 15));
+    assertThat((List<Object>) out.get("l")).containsExactly(LocalDate.of(2024, 1, 16));
+  }
+
+  @Test
+  void dateMarkerThatIsNotADateIsRefused() {
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(new LinkedHashMap<>(Map.of("d", Map.of("$date", "nope")))))
+        .isInstanceOf(RequestRefusedBeforeExecutionException.class);
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(new LinkedHashMap<>(Map.of("d", Map.of("$date", 19737)))))
+        .isInstanceOf(RequestRefusedBeforeExecutionException.class);
+  }
 
   @Test
   void bytesMarkerDecodesBase64IntoByteArray() {
