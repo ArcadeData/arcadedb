@@ -100,6 +100,7 @@ public abstract class ContainersTestTemplate {
   public static final String                    PASSWORD   = "playwithdata";
   public static final String                    DATABASE   = "playwithpictures";
   protected           LoggingMeterRegistry      loggingMeterRegistry;
+  protected           SimpleMeterRegistry       cumulativeMeterRegistry;
   protected           Logger                    logger     = LoggerFactory.getLogger(getClass());
   protected           Network                   network;
   protected           ToxiproxyContainer        toxiproxy;
@@ -146,22 +147,7 @@ public abstract class ContainersTestTemplate {
   void setUp() throws IOException, InterruptedException {
     deleteContainersDirectories();
 
-    // METRICS
-    LoggingRegistryConfig config = new LoggingRegistryConfig() {
-      @Override
-      public String get(String key) {
-        return null;
-      }
-
-      @Override
-      public Duration step() {
-        return Duration.ofSeconds(10);
-      }
-    };
-
-    Metrics.addRegistry(new SimpleMeterRegistry());
-    loggingMeterRegistry = LoggingMeterRegistry.builder(config).build();
-    Metrics.addRegistry(loggingMeterRegistry);
+    initMetrics();
 
     // NETWORK
     network = Network.newNetwork();
@@ -176,6 +162,29 @@ public abstract class ContainersTestTemplate {
       toxiproxyClient = new ToxiproxyClient(toxiproxy.getHost(), toxiproxy.getControlPort());
     }
 
+  }
+
+  /**
+   * Registers the per-test registries: a cumulative one that {@link #sumCounter(String)} reads, and a logging one that
+   * only reports progress every step.
+   */
+  void initMetrics() {
+    LoggingRegistryConfig config = new LoggingRegistryConfig() {
+      @Override
+      public String get(String key) {
+        return null;
+      }
+
+      @Override
+      public Duration step() {
+        return Duration.ofSeconds(10);
+      }
+    };
+
+    cumulativeMeterRegistry = new SimpleMeterRegistry();
+    Metrics.addRegistry(cumulativeMeterRegistry);
+    loggingMeterRegistry = LoggingMeterRegistry.builder(config).build();
+    Metrics.addRegistry(loggingMeterRegistry);
   }
 
   /**
@@ -210,6 +219,7 @@ public abstract class ContainersTestTemplate {
     deleteContainersDirectories();
 
     Metrics.removeRegistry(loggingMeterRegistry);
+    Metrics.removeRegistry(cumulativeMeterRegistry);
   }
 
   /**
@@ -787,18 +797,19 @@ public abstract class ContainersTestTemplate {
   }
 
   /**
-   * Sums a counter over the per-test {@link #loggingMeterRegistry} rather than {@link Metrics#globalRegistry}.
+   * Sums a counter over the per-test {@link #cumulativeMeterRegistry} rather than {@link Metrics#globalRegistry}.
    * A meter on the global composite reports the value of one arbitrarily chosen child registry, not the sum, and this
    * class adds and removes a backing registry around every test - so reading a counter off the composite can return
    * another test method's value or zero. The per-test registry is created fresh in setup, which makes the value both
-   * unambiguous and scoped to the run being measured.
+   * unambiguous and scoped to the run being measured. The registry is cumulative on purpose: the logging registry is a
+   * step registry and reports only the last completed step, which would hide most of a long run.
    *
    * @param name counter name, matched exactly
    *
    * @return summed count across every counter registered under that name
    */
   protected double sumCounter(final String name) {
-    return loggingMeterRegistry.find(name).counters().stream().mapToDouble(Counter::count).sum();
+    return cumulativeMeterRegistry.find(name).counters().stream().mapToDouble(Counter::count).sum();
   }
 
   /**
