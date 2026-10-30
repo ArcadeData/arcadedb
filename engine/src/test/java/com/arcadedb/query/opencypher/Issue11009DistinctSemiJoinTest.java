@@ -22,6 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.query.opencypher.executor.DistinctSemiJoin;
+import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,7 +33,9 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -252,6 +257,77 @@ class Issue11009DistinctSemiJoinTest {
     assertThat(column(query, Map.of(), "v")).isEqualTo(
         new ArrayList<>(new LinkedHashSet<>(column(BASE.replace("DISTINCT ", ""), Map.of(), "v"))));
   }
+
+  /**
+   * A RETURN item calling a function that answers differently on every call keeps a row per combination, whichever
+   * engine the function comes from: a Cypher built-in, an APOC-style registered function, or a bare SQL fallback.
+   */
+  @Test
+  void aVaryingFunctionInTheReturnKeepsEveryRow() {
+    final int pairs = column(BASE.replace("DISTINCT ", ""), Map.of(), "v").size();
+    for (final String call : List.of("randomUUID()", "apoc.create.uuid()", "create.uuidBase64()",
+        "text.random(8)", "sql.uuid()", "date.currentTimestamp()")) {
+      final String query = BASE.replace("AS v", "AS v, " + call + " AS x");
+      assertThat(explain(query, Map.of())).as(call).doesNotContain("SEMI JOIN");
+      // A clock read in milliseconds can repeat across rows, a random value cannot
+      if (!call.startsWith("date."))
+        assertThat(column(query, Map.of(), "v")).as(call).hasSize(pairs);
+    }
+  }
+
+  /**
+   * Every registered Cypher function is classified: varying ({@code DistinctSemiJoin#isVaryingFunction}) or reviewed
+   * here as a function of its arguments within one statement. A function registered later fails this test until
+   * someone decides which side it belongs on, because a varying one read as pure would make the semi-join drop rows.
+   * The bare names that fall through to SQL are classified by the SQL engine's own list and its test.
+   */
+  @Test
+  void everyRegisteredFunctionIsClassified() {
+    final Set<String> names = new TreeSet<>();
+    for (final String name : FunctionValidator.getKnownFunctionNames())
+      names.add(name.toLowerCase(Locale.ROOT));
+    for (final String name : CypherFunctionRegistry.getFunctionNames())
+      names.add(name.toLowerCase(Locale.ROOT));
+    names.removeIf(DistinctSemiJoin::isVaryingFunction);
+    names.removeAll(REVIEWED_DETERMINISTIC_FUNCTIONS);
+    assertThat(names).as("classify in DistinctSemiJoin.VARYING_FUNCTIONS or in REVIEWED_DETERMINISTIC_FUNCTIONS").isEmpty();
+  }
+
+  // The no-argument temporal constructors (date, datetime, time, ...) answer from one clock per statement
+  private static final Set<String> REVIEWED_DETERMINISTIC_FUNCTIONS = Set.of(
+      "abs", "acos", "agg.first", "agg.last", "agg.maxitems", "agg.median", "agg.minitems", "agg.nth",
+      "agg.percentiles", "agg.product", "agg.slice", "agg.statistics", "asin", "atan", "atan2", "avg", "btrim",
+      "ceil", "ceiling", "char_length", "char.length", "character_length", "character.length", "charlength",
+      "coalesce", "coll.avg", "coll.distinct", "coll.flatten", "coll.indexof", "coll.insert", "coll.max", "coll.min",
+      "coll.pairsmin", "coll.remove", "coll.sort", "coll.sum", "coll.toset", "coll.union", "coll.unionall", "collect",
+      "collect_list", "convert.fromjsonlist", "convert.fromjsonmap", "convert.toboolean", "convert.tofloat",
+      "convert.tointeger", "convert.tojson", "convert.tolist", "convert.tomap", "convert.toset", "convert.tostring",
+      "cos", "cosh", "cot", "coth", "count", "date", "date.add", "date.convert", "date.field", "date.fields",
+      "date.format", "date.fromiso8601", "date.parse", "date.systemtimezone", "date.toiso8601", "datetime", "degrees",
+      "distance", "duration", "duration_between", "e", "elementid", "endnode", "exists", "exp", "floor", "format",
+      "haversin", "head", "id", "isempty", "isnan", "isnormalized", "keys", "labels", "last", "left", "length", "ln",
+      "local_datetime", "local_time", "localdatetime", "localtime", "log", "log10", "lower", "ltrim", "map.clean",
+      "map.flatten", "map.fromlists", "map.frompairs", "map.groupby", "map.merge", "map.mergelist", "map.removekey",
+      "map.removekeys", "map.setkey", "map.sortedproperties", "map.submap", "map.unflatten", "map.values",
+      "math.cosh", "math.maxdouble", "math.maxlong", "math.minlong", "math.round", "math.sigmoid",
+      "math.sigmoidprime", "math.sinh", "math.tanh", "max", "min", "node.degree", "node.degree.in", "node.degree.out",
+      "node.id", "node.labels", "node.relationship.exists", "node.relationship.types", "nodes", "normalize", "nullif",
+      "number.format", "path_length", "path.combine", "path.create", "path.elements", "path.slice", "percentile_cont",
+      "percentile_disc", "percentilecont", "percentiledisc", "pi", "point", "point.distance", "point.withinbbox",
+      "properties", "radians", "range", "rel.endnode", "rel.id", "rel.startnode", "rel.type", "relationships",
+      "replace", "reverse", "right", "round", "rtrim", "sign", "sin", "sinh", "size", "split", "sqrt", "startnode",
+      "stdev", "stdev_pop", "stdev_samp", "stdevp", "substring", "sum", "tail", "tan", "tanh", "text.bytecount",
+      "text.camelcase", "text.capitalize", "text.capitalizeall", "text.charat", "text.code", "text.decapitalize",
+      "text.decapitalizeall", "text.format", "text.hammingdistance", "text.hexvalue", "text.indexof",
+      "text.jarowinklerdistance", "text.join", "text.levenshteindistance", "text.levenshteinsimilarity", "text.lpad",
+      "text.regexreplace", "text.replace", "text.rpad", "text.slug", "text.snakecase", "text.sorensendicesimilarity",
+      "text.split", "text.uppercamelcase", "time", "toboolean", "tobooleanlist", "tobooleanornull", "tofloat",
+      "tofloatlist", "tofloatornull", "tointeger", "tointegerlist", "tointegerornull", "tolower", "tostring",
+      "tostringlist", "tostringornull", "toupper", "trim", "type", "upper", "util.compress", "util.decompress",
+      "util.md5", "util.sha1", "util.sha256", "util.sha512", "util.sleep", "util.validate", "valuetype", "vector",
+      "vector_dimension_count", "vector.create", "vector.dimension.count", "vector.distance",
+      "vector.distance.cosine", "vector.distance.euclidean", "vector.distance.manhattan", "vector.norm",
+      "vector.similarity.cosine", "vector.similarity.euclidean", "zoned_datetime", "zoned_time");
 
   @Test
   void aTwoClauseQueryHasNoChainToRun() {

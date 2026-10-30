@@ -39,6 +39,7 @@ import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
+import com.arcadedb.query.sql.executor.CorrelatedSubQueryCache;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -80,11 +81,18 @@ import java.util.Set;
  */
 public final class DistinctSemiJoin {
   /**
-   * Functions that can answer differently for the same arguments within one statement. Every other bare name is a
-   * built-in function of its arguments; a dotted name has to be confirmed by
-   * {@link SimpleCypherStatement#isConfirmedPureFunctionName}, since it may be a user function.
+   * The Cypher functions that can answer differently for the same arguments within one statement, or that read the
+   * row's hidden context rather than a named variable ({@code file()}, {@code linenumber()}), under the name they are
+   * registered by ({@code apoc.} and {@code sql.} are stripped first). A bare name resolving to a built-in SQL function is
+   * classified by {@link CorrelatedSubQueryCache#NON_REPEATABLE_FUNCTIONS}. The no-argument temporal constructors are
+   * not here: they answer from one clock per statement.
+   * <p>
+   * {@code Issue11009DistinctSemiJoinTest} lists every other registered Cypher function as reviewed, and fails on a
+   * newly registered name until it is classified on one side or the other: a varying function wrongly read as pure
+   * would make the semi-join drop rows.
    */
-  private static final Set<String> VARYING_FUNCTIONS = Set.of("rand", "randomuuid", "timestamp");
+  private static final Set<String> VARYING_FUNCTIONS = Set.of("rand", "randomuuid", "timestamp", "file", "linenumber",
+      "text.random", "create.uuid", "create.uuidbase64", "date.currenttimestamp", "create.vnode", "create.vrelationship");
 
   /**
    * Where the semi-join starts and what it keys on.
@@ -98,6 +106,21 @@ public final class DistinctSemiJoin {
   }
 
   private DistinctSemiJoin() {
+  }
+
+  /**
+   * Whether a call of {@code rawName} can answer differently for the same arguments within one statement, or is not
+   * known to be a function of its arguments at all (a user function).
+   */
+  public static boolean isVaryingFunction(final String rawName) {
+    String name = rawName.toLowerCase(Locale.ROOT);
+    if (name.startsWith("apoc."))
+      name = name.substring("apoc.".length());
+    else if (name.startsWith("sql."))
+      name = name.substring("sql.".length());
+    return VARYING_FUNCTIONS.contains(name) || name.endsWith(".realtime")
+        || CorrelatedSubQueryCache.NON_REPEATABLE_FUNCTIONS.contains(name)
+        || !SimpleCypherStatement.isConfirmedPureFunctionName(rawName);
   }
 
   /**
@@ -346,9 +369,7 @@ public final class DistinctSemiJoin {
     @Override
     public void visit(final Expression expression) {
       if (expression instanceof FunctionCallExpression call) {
-        final String name = call.getFunctionName().toLowerCase(Locale.ROOT);
-        if (VARYING_FUNCTIONS.contains(name) || name.endsWith(".realtime")
-            || !SimpleCypherStatement.isConfirmedPureFunctionName(name))
+        if (isVaryingFunction(call.getFunctionName()))
           ok = false;
       } else if (strict && (expression instanceof ExistsExpression || expression instanceof CountExpression
           || expression instanceof CollectExpression || expression instanceof PatternComprehensionExpression))
