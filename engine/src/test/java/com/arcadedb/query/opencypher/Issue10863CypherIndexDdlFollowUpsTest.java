@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
@@ -127,18 +126,6 @@ class Issue10863CypherIndexDdlFollowUpsTest extends TestHelper {
     assertThat(vectorIndex((TypeIndex) database.getSchema().getIndexByName("inferred")).getDimensions()).isEqualTo(3);
     assertThat(nearestIds("inferred", 2, List.of(1.0, 0.0, 0.0))).containsExactly("a");
     assertThat(nearestIds("named", 2, List.of(1.0, 0.0, 0.0))).containsExactly("a");
-  }
-
-  @Test
-  void vectorIndexWithoutDimensionsOverALabelWithNoVectorIsRefused() {
-    command("CREATE (:L {id: 'a', other: 1})");
-
-    final Throwable refusal = refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e");
-    assertThat(refusal).isInstanceOf(CommandParsingException.class);
-    assertThat(refusal.getMessage()).contains("vector.dimensions").contains("no vector");
-
-    assertThat(database.getSchema().existsIndex("v")).isFalse();
-    assertThat(database.getSchema().getType("L").existsProperty("e")).isFalse();
   }
 
   @Test

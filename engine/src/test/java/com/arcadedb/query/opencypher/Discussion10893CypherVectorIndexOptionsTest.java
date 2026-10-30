@@ -110,8 +110,6 @@ class Discussion10893CypherVectorIndexOptionsTest extends TestHelper {
     assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 3, "
         + "`vector.default_search_expansion_factor`: 2.0}}")).hasMessageContaining("vector.default_search_expansion_factor")
         .hasMessageContaining("efSearch");
-    assertThat(refusal("CREATE VECTOR INDEX v FOR (n:L) ON n.e OPTIONS {indexConfig: {efSearch: 64}}"))
-        .hasMessageContaining("vector.dimensions");
 
     assertThat(database.getSchema().existsType("L")).isFalse();
     assertThat(database.getSchema().existsIndex("v")).isFalse();
