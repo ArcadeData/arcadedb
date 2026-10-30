@@ -53,6 +53,7 @@ import java.util.concurrent.TimeUnit;
 
 import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Client of one node for the facet tests: schema, mixed writes on the keys this wrapper owns, facet queries with client metrics, stable
@@ -79,6 +80,8 @@ public class FacetDatabaseWrapper implements AutoCloseable {
    * applied: gRPC {@code ABORTED} also carries a failed rollback or a replication refusal, after which the write may have committed. A
    * retry is still safe because every operation is idempotent by key: the updates and the delete match the same {@code aid} again, and an
    * INSERT whose first attempt did commit fails its retry with a duplicate key, which {@link #duplicateMeansAcked} counts as acked.
+   * Over HTTP, {@code RemoteHttpComponent} also retries a {@link NeedRetryException} on the same server before this wrapper sees
+   * it: those client-internal retries are counted nowhere (they show only as the client's "Server asked to retry" lines).
    */
   public static final int  RETRIES     = 3;
 
@@ -92,6 +95,23 @@ public class FacetDatabaseWrapper implements AutoCloseable {
    * @param retries attempts run again after a {@link NeedRetryException}, by the operations of this count
    */
   public record OpCounts(long acked, long failed, long retries) {
+  }
+
+  /**
+   * Asserts the premise of a facets-under-writes test: the writer thread ended with its {@link OpCounts} (neither a throwable nor
+   * nothing), acknowledged at least one write and, when {@code failureFree} (no fault touches its write path), failed none. Without
+   * it a writer whose every write fails leaves nodes that agree trivially.
+   *
+   * @param outcome what the writer thread stored: its {@link OpCounts}, or the {@link Throwable} it ended with
+   * @return the counts, for the log
+   */
+  public static OpCounts assertWrote(final Object outcome, final String writer, final boolean failureFree) {
+    if (!(outcome instanceof OpCounts counts))
+      throw new AssertionError("The " + writer + " ended without its write counts: " + outcome, outcome instanceof Throwable t ? t : null);
+    assertThat(counts.acked()).as("the %s acked writes (%s)", writer, counts).isPositive();
+    if (failureFree)
+      assertThat(counts.failed()).as("the %s failed writes, with no fault on its write path (%s)", writer, counts).isZero();
+    return counts;
   }
 
   private record Stable(FacetSnapshot facets, SortedMap<String, Long> groupBy) {
@@ -126,6 +146,8 @@ public class FacetDatabaseWrapper implements AutoCloseable {
   private final Random         opRandom;
   private final KeyList        live  = new KeyList();
   private final KeyList        grown = new KeyList();
+  // the first failure of each operation is logged at WARN, so a systematic cause shows; later ones at DEBUG
+  private final boolean[]      failureWarned = new boolean[Op.values().length];
   private       long           nextSeq;
   private       long           writeRetryCount;
   private       long           queryRetryCount;
@@ -310,7 +332,7 @@ public class FacetDatabaseWrapper implements AutoCloseable {
           continue;
         }
         writeErrors.increment();
-        logger.debug("{} on {} failed after {} retries: {}", op, describe(), RETRIES, e.getMessage());
+        logWriteFailure(op, "failed after " + RETRIES + " retries: " + e.getMessage());
         return false;
       } catch (final RuntimeException e) {
         if (duplicateMeansAcked(op == Op.INSERT || op == Op.INSERT_NO_BRAND, attempt, e)) {
@@ -319,7 +341,7 @@ public class FacetDatabaseWrapper implements AutoCloseable {
           break;
         }
         writeErrors.increment();
-        logger.debug("{} on {} failed: {}", op, describe(), e.getMessage());
+        logWriteFailure(op, "failed on attempt " + (attempt + 1) + ": " + e);
         return false;
       }
     }
@@ -327,11 +349,22 @@ public class FacetDatabaseWrapper implements AutoCloseable {
     return true;
   }
 
+  private void logWriteFailure(final Op op, final String cause) {
+    if (failureWarned[op.ordinal()])
+      logger.debug("{} on {} {}", op, describe(), cause);
+    else {
+      failureWarned[op.ordinal()] = true;
+      logger.warn("{} on {} {} (first {} failure of this client, further ones at DEBUG)", op, describe(), cause, op);
+    }
+  }
+
   /**
    * @return true when a write that failed with {@code e} on attempt {@code attempt} (0 = the first) did commit: an INSERT retried after a
-   * retryable error that finds its own key already there. Its first attempt committed although it answered with the error
+   * retryable error that finds its own key already there. Its first attempt committed although it answered with the error. A duplicate
+   * on attempt 0 stays a failure, although the HTTP client's own retry (see {@link #RETRIES}) can cause it: the first failure of each
+   * operation is logged at WARN, so such a case is visible
    */
-  static boolean duplicateMeansAcked(final boolean insert, final int attempt, final RuntimeException e) {
+  public static boolean duplicateMeansAcked(final boolean insert, final int attempt, final RuntimeException e) {
     return insert && attempt > 0 && e instanceof DuplicatedKeyException;
   }
 

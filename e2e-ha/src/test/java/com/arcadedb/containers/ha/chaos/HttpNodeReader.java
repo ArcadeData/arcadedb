@@ -48,8 +48,15 @@ public final class HttpNodeReader implements NodeReader {
 
   /** The node rejected the request with a 4xx: the harness sent something the server does not accept. */
   public static final class ClientErrorException extends IOException {
+    private final int status;
+
     public ClientErrorException(final int node, final int status, final String body) {
       super("node " + node + " query failed with HTTP " + status + ": " + body);
+      this.status = status;
+    }
+
+    public int status() {
+      return status;
     }
   }
 

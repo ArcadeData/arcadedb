@@ -62,13 +62,27 @@ public final class FacetWorkload implements LoadGenerator {
   /**
    * Counters of the whole workload. A 5xx on a query or an unreachable node is expected while faults are in progress and
    * never a violation; {@code queryFailures} counts the answers that no fault explains (a non-200, non-5xx status or a body
-   * that does not parse), so a broken facet statement shows in the run summary instead of vanishing.
+   * that does not parse), so a broken facet statement shows in the run summary instead of vanishing. {@code metaInconsistent}
+   * counts the answers that are inexact yet report no lag, sampled under faults (the checkpoint only samples a quiesced
+   * cluster); like the checkpoint's {@code FACET_META}, they are a warning, never a violation.
    */
   public record Stats(long writesOk, long writesFailed, long queries, long queryServerErrors, long queryFailures,
-                      long nonExact) {
+                      long nonExact, long metaInconsistent) {
     public JSONObject toJSON() {
       return new JSONObject().put("writesOk", writesOk).put("writesFailed", writesFailed).put("queries", queries)
-          .put("queryServerErrors", queryServerErrors).put("queryFailures", queryFailures).put("nonExact", nonExact);
+          .put("queryServerErrors", queryServerErrors).put("queryFailures", queryFailures).put("nonExact", nonExact)
+          .put("metaInconsistent", metaInconsistent);
+    }
+
+    /** @return the run-report warnings these counters raise, empty when nothing needs a look */
+    public List<String> warnings() {
+      final List<String> warnings = new ArrayList<>(2);
+      if (queryFailures > 0)
+        warnings.add("FACET_QUERY_FAILURES " + queryFailures
+            + " facet queries answered with neither a 5xx nor a parsable result (first cause in the log)");
+      if (metaInconsistent > 0)
+        warnings.add("FACET_META workload " + metaInconsistent + " samples inexact without lag (first sample in the log)");
+      return warnings;
     }
   }
 
@@ -89,7 +103,9 @@ public final class FacetWorkload implements LoadGenerator {
   private final AtomicLong             queryServerErrors = new AtomicLong();
   private final AtomicLong             queryFailures     = new AtomicLong();
   private final AtomicLong             nonExact          = new AtomicLong();
+  private final AtomicLong             metaInconsistent  = new AtomicLong();
   private final AtomicBoolean          failureLogged     = new AtomicBoolean();
+  private final AtomicBoolean          metaLogged        = new AtomicBoolean();
 
   public FacetWorkload(final long seed, final int writers, final Endpoints endpoints, final String database) {
     this(seed, writers, endpoints, database, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS, DEFAULT_THINK_MS);
@@ -109,7 +125,7 @@ public final class FacetWorkload implements LoadGenerator {
 
   public Stats stats() {
     return new Stats(writesOk.get(), writesFailed.get(), queries.get(), queryServerErrors.get(), queryFailures.get(),
-        nonExact.get());
+        nonExact.get(), metaInconsistent.get());
   }
 
   @Override
@@ -206,12 +222,23 @@ public final class FacetWorkload implements LoadGenerator {
         queryServerErrors.incrementAndGet();
       else if (response.status() != 200)
         queryFailed(node, "HTTP " + response.status() + ": " + response.body());
-      else if (!FacetSnapshot.parse(new JSONObject(response.body())).exact())
-        nonExact.incrementAndGet();
+      else
+        sampled(node, where, FacetSnapshot.parse(new JSONObject(response.body())));
     } catch (final IOException e) {
       // faults are in progress: an unreachable node is not a finding of the workload
     } catch (final RuntimeException e) {
       queryFailed(node, e.getClass().getSimpleName() + ": " + e.getMessage());
+    }
+  }
+
+  private void sampled(final int node, final String where, final FacetSnapshot sample) {
+    if (!sample.exact())
+      nonExact.incrementAndGet();
+    if (!sample.metaConsistent()) {
+      metaInconsistent.incrementAndGet();
+      if (metaLogged.compareAndSet(false, true))
+        LOGGER.warn("FACET_META node {} answered an inexact result with no lag where='{}' (first of the run, further ones are only "
+            + "counted): patched={} sources={}", node, where, sample.patched(), sample.sources());
     }
   }
 

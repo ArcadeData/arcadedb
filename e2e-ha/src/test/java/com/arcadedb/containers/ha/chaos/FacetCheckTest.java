@@ -31,7 +31,12 @@ import java.util.TreeMap;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class FacetCheckTest {
-  private static final int NODES = 3;
+  private static final int      NODES    = 3;
+  /**
+   * Deadline of the cases expected to pass or to fail on sight: they return at once, so a generous bound costs nothing and keeps a
+   * JVM stall in the unit lane from turning a case that needs two polls into a FACET_STALL.
+   */
+  private static final Duration GENEROUS = Duration.ofSeconds(60);
 
   private static SortedMap<String, Long> counts(final long nike) {
     final SortedMap<String, Long> counts = new TreeMap<>();
@@ -61,14 +66,14 @@ class FacetCheckTest {
 
   @Test
   void identicalNodesWithExactFacetsPass() throws Exception {
-    assertThat(check(reader(), Duration.ofSeconds(5))).isEmpty();
+    assertThat(check(reader(), GENEROUS)).isEmpty();
   }
 
   @Test
   void facetsThatDisagreeWithGroupByAreFacetDrift() throws Exception {
     final FakeFacetReader reader = reader();
     script(reader, 1, FakeFacetReader.sample(true, 0, "index", counts(4)));
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final List<Violation> v = check(reader, GENEROUS);
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
     assertThat(v.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
     assertThat(v.getFirst().message()).contains("node 1").contains("where=''");
@@ -79,7 +84,7 @@ class FacetCheckTest {
   void driftWhilePatchingIsFacetDrift() throws Exception {
     final FakeFacetReader reader = reader();
     script(reader, 0, FakeFacetReader.sample(true, 7, 40, "index", counts(4)), FakeFacetReader.sample(true, 0, "index", counts(5)));
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final List<Violation> v = check(reader, GENEROUS);
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
     assertThat(v.getFirst().message()).contains("patched=7").contains("lagMs=40");
   }
@@ -88,7 +93,7 @@ class FacetCheckTest {
   void driftOnlyAtLagZeroIsFacetDrift() throws Exception {
     final FakeFacetReader reader = reader();
     script(reader, 2, FakeFacetReader.sample(true, 7, 40, "index", counts(5)), FakeFacetReader.sample(true, 0, "index", counts(4)));
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final List<Violation> v = check(reader, GENEROUS);
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
     assertThat(v.getFirst().message()).contains("at lag 0").contains("node 2");
   }
@@ -98,7 +103,7 @@ class FacetCheckTest {
     final FakeFacetReader reader = reader();
     final FacetSnapshot wrong = FakeFacetReader.sample(false, 50, "index", counts(1));
     script(reader, 1, wrong, wrong, wrong, FakeFacetReader.sample(true, 0, "index", counts(5)));
-    assertThat(check(reader, Duration.ofSeconds(5))).isEmpty();
+    assertThat(check(reader, GENEROUS)).isEmpty();
   }
 
   @Test
@@ -106,14 +111,14 @@ class FacetCheckTest {
     final FakeFacetReader reader = reader();
     script(reader, 1, FakeFacetReader.sample(true, 0, "unavailable", new TreeMap<>()), FakeFacetReader.sample(true, 0, "scan", counts(5)),
         FakeFacetReader.sample(true, 0, "index", counts(5)));
-    assertThat(check(reader, Duration.ofSeconds(5))).isEmpty();
+    assertThat(check(reader, GENEROUS)).isEmpty();
   }
 
   @Test
   void scanSourceWithWrongCountsIsFacetDrift() throws Exception {
     final FakeFacetReader reader = reader();
     script(reader, 1, FakeFacetReader.sample(true, 0, "scan", counts(4)));
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final List<Violation> v = check(reader, GENEROUS);
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
     assertThat(v.getFirst().details()).containsExactly("brand=Nike expected=5 actual=4");
   }
@@ -142,7 +147,7 @@ class FacetCheckTest {
   void exactFalseWithoutLagIsAWarningNotAViolation() throws Exception {
     final FakeFacetReader reader = reader();
     script(reader, 1, FakeFacetReader.sample(false, 0, "index", counts(5)));
-    final FacetCheck check = new FacetCheck(reader, NODES, Duration.ofSeconds(5), Duration.ofMillis(5));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
     assertThat(check.run()).isEmpty();
     assertThat(check.warnings()).hasSize(1);
     assertThat(check.warnings().getFirst()).contains("FACET_META").contains("node 1").contains("exact=false").contains("lagMs=0");
@@ -152,13 +157,13 @@ class FacetCheckTest {
   void exactFalseWithoutLagAndWrongCountsIsStillFacetDrift() throws Exception {
     final FakeFacetReader reader = reader();
     script(reader, 1, FakeFacetReader.sample(false, 0, "index", counts(4)));
-    assertThat(check(reader, Duration.ofSeconds(5))).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
+    assertThat(check(reader, GENEROUS)).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
   }
 
   @Test
   void groupByIsPolledTwiceBeforeItIsTrusted() throws Exception {
     final FakeFacetReader reader = reader();
-    assertThat(check(reader, Duration.ofSeconds(5))).isEmpty();
+    assertThat(check(reader, GENEROUS)).isEmpty();
     assertThat(reader.groupByCallsAtFirstFacetRead).isGreaterThanOrEqualTo(2 * NODES);
   }
 
@@ -179,7 +184,7 @@ class FacetCheckTest {
   void transientGroupByErrorOnTheReReadIsRetried() throws Exception {
     final FakeFacetReader reader = reader();
     reader.afterFirstFacetRead = () -> reader.groupByFailures.put(1, 1);
-    assertThat(check(reader, Duration.ofSeconds(5))).isEmpty();
+    assertThat(check(reader, GENEROUS)).isEmpty();
   }
 
   @Test
@@ -191,9 +196,94 @@ class FacetCheckTest {
   void serverErrorOnTheFacetQueryIsFacetError() throws Exception {
     final FakeFacetReader reader = reader();
     reader.facetsServerError.add(1);
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
+    final List<Violation> v = check.run();
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_ERROR");
     assertThat(v.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
+    // a 500 is not retried: node 0 answered once, node 1 failed on its first read
+    assertThat(reader.facetCalls).isEqualTo(2);
+    assertThat(check.warnings()).isEmpty();
+  }
+
+  /** A replica can read a chunk chain a replicated apply is still writing: the server answers 503 and the read is retried. */
+  @Test
+  void retryable503OnTheFacetQueryIsRetriedAndWarned() throws Exception {
+    final FakeFacetReader reader = reader();
+    FakeFacetReader.failNext(reader.facetsThrows, 1, new HttpNodeReader.ServerErrorException(1, 503, "ConcurrentModificationException"));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
+    assertThat(check.run()).isEmpty();
+    assertThat(check.warnings()).singleElement().asString().contains("FACET_RETRY").contains("node 1").contains("HTTP 503");
+  }
+
+  @Test
+  void retryable503ThatOutlastsTheDeadlineIsFacetError() throws Exception {
+    final FakeFacetReader reader = reader();
+    reader.serverStatus = 503;
+    reader.facetsServerError.add(1);
+    final FacetCheck check = new FacetCheck(reader, NODES, Duration.ofMillis(300), Duration.ofMillis(5));
+    final List<Violation> v = check.run();
+    assertThat(v).extracting(Violation::invariant).containsExactly("FACET_ERROR");
+    assertThat(v.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(v.getFirst().message()).contains("HTTP 503");
+    assertThat(reader.facetCalls).isGreaterThan(2);
+    assertThat(check.warnings()).anySatisfy(w -> assertThat(w).contains("FACET_RETRY"));
+  }
+
+  @Test
+  void retryable503OnGroupByIsRetried() throws Exception {
+    final FakeFacetReader reader = reader();
+    FakeFacetReader.failNext(reader.groupByThrows, 2, new HttpNodeReader.ServerErrorException(2, 503, "retry"),
+        new HttpNodeReader.ServerErrorException(2, 503, "retry"));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
+    assertThat(check.run()).isEmpty();
+    assertThat(check.warnings()).singleElement().asString().contains("FACET_RETRY").contains("node 2");
+  }
+
+  @Test
+  void retryable503OnGroupByUntilTheDeadlineIsFacetError() throws Exception {
+    final FakeFacetReader reader = reader();
+    reader.serverStatus = 503;
+    reader.serverError.add(2);
+    final List<Violation> v = check(reader, Duration.ofMillis(300));
+    assertThat(v).extracting(Violation::invariant).containsExactly("FACET_ERROR");
+    assertThat(v.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
+  }
+
+  @Test
+  void retryable503OnTheReReadIsRetried() throws Exception {
+    final FakeFacetReader reader = reader();
+    reader.afterFirstFacetRead = () -> FakeFacetReader.failNext(reader.groupByThrows, 0,
+        new HttpNodeReader.ServerErrorException(0, 503, "retry"));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
+    assertThat(check.run()).isEmpty();
+    assertThat(check.warnings()).singleElement().asString().contains("FACET_RETRY").contains("node 0");
+  }
+
+  @Test
+  void retryable503OnTheReReadUntilTheDeadlineIsFacetError() throws Exception {
+    final FakeFacetReader reader = reader();
+    reader.afterFirstFacetRead = () -> {
+      reader.serverStatus = 503;
+      reader.serverError.add(0);
+    };
+    assertThat(check(reader, Duration.ofMillis(300))).extracting(Violation::invariant).containsExactly("FACET_ERROR");
+  }
+
+  /** An authentication lockout (a stranger on the port) is transient: retried until the deadline, then a HARNESS result. */
+  @Test
+  void authenticationErrorIsRetriedUntilTheDeadline() throws Exception {
+    final FakeFacetReader reader = reader();
+    FakeFacetReader.failNext(reader.facetsThrows, 1, new HttpNodeReader.ClientErrorException(1, 401, "locked"));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
+    assertThat(check.run()).isEmpty();
+    assertThat(check.warnings()).singleElement().asString().contains("FACET_RETRY").contains("HTTP 401");
+
+    final FakeFacetReader locked = reader();
+    locked.clientStatus = 403;
+    locked.clientError.add(1);
+    final List<Violation> v = check(locked, Duration.ofMillis(300));
+    assertThat(v).extracting(Violation::kind).containsExactly(ResultKind.HARNESS);
+    assertThat(v.getFirst().message()).contains("HTTP 403");
   }
 
   @Test
@@ -217,8 +307,11 @@ class FacetCheckTest {
   void clientErrorIsAHarnessResult() throws Exception {
     final FakeFacetReader reader = reader();
     reader.clientError.add(1);
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final FacetCheck check = new FacetCheck(reader, NODES, GENEROUS, Duration.ofMillis(5));
+    final List<Violation> v = check.run();
     assertThat(v).extracting(Violation::kind).containsExactly(ResultKind.HARNESS);
+    // a 400 is not retried
+    assertThat(check.warnings()).isEmpty();
   }
 
   @Test
@@ -238,14 +331,14 @@ class FacetCheckTest {
       for (int i = 0; i < NODES; i++)
         reader.data.put(i, counts(6));
     };
-    assertThat(check(reader, Duration.ofSeconds(5))).isEmpty();
+    assertThat(check(reader, GENEROUS)).isEmpty();
   }
 
   @Test
   void serverErrorIsFacetError() throws Exception {
     final FakeFacetReader reader = reader();
     reader.serverError.add(1);
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final List<Violation> v = check(reader, GENEROUS);
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_ERROR");
     assertThat(v.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
   }
@@ -263,7 +356,7 @@ class FacetCheckTest {
   void secondFilterIsCheckedToo() throws Exception {
     final FakeFacetReader reader = reader();
     reader.filteredFacets.put(1, counts(4));
-    final List<Violation> v = check(reader, Duration.ofSeconds(5));
+    final List<Violation> v = check(reader, GENEROUS);
     assertThat(v).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
     assertThat(v.getFirst().message()).contains("fileSize >= 1024");
   }

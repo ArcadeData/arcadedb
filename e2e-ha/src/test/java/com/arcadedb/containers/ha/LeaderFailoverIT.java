@@ -191,7 +191,7 @@ class LeaderFailoverIT extends ContainersTestTemplate {
         logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
 
       logger.info("Ingested {} assets", f[0].ingest(2_000));
-      logger.info("Initial mixed ops: {}", f[0].runMixedOps(1_000));
+      logger.info("Initial mixed ops: {}", FacetDatabaseWrapper.assertWrote(f[0].runMixedOps(1_000), "initial writer", true));
       FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f[0], f[1], f[2]), 120);
 
       final int leaderIdx = findLeaderIndex(servers);
@@ -211,7 +211,8 @@ class LeaderFailoverIT extends ContainersTestTemplate {
 
       final FacetDatabaseWrapper survivorWriter = new FacetDatabaseWrapper(servers.get(survivor1), DatabaseWrapper.Protocol.HTTP, 10);
       opened.add(survivorWriter);
-      logger.info("Mixed ops through survivor node {}: {}", survivor1, survivorWriter.runMixedOps(1_000));
+      logger.info("Mixed ops through survivor node {}: {}", survivor1,
+          FacetDatabaseWrapper.assertWrote(survivorWriter.runMixedOps(1_000), "survivor writer", true));
       FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f[survivor1], f[survivor2]), 120);
 
       // a lagging survivor may have installed a snapshot during the ingest (spec 6.6 accepts it): logged, then held fixed
@@ -263,8 +264,9 @@ class LeaderFailoverIT extends ContainersTestTemplate {
 
       writer.join(TimeUnit.MINUTES.toMillis(5));
       assertThat(writer.isAlive()).as("the writer running during the rebuild ended").isFalse();
-      assertThat(writerOutcome.get()).as("writer outcome").isNotInstanceOf(Throwable.class);
-      logger.info("Mixed ops during the rejoin and rebuild: {}", writerOutcome.get());
+      // through a survivor of a quorum that holds: the rejoin does not touch the write path
+      logger.info("Mixed ops during the rejoin and rebuild: {}",
+          FacetDatabaseWrapper.assertWrote(writerOutcome.get(), "writer running during the rebuild", true));
 
       Awaitility.await("a snapshot_install rebuild on the new replica")
           .atMost(60, TimeUnit.SECONDS)

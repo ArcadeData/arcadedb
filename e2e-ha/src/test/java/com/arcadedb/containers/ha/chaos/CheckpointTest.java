@@ -299,7 +299,8 @@ class CheckpointTest {
   }
 
   private static FacetCheck facetCheck(final FakeFacetReader facets) {
-    return new FacetCheck(facets, 3, Duration.ofMillis(300), Duration.ofMillis(5));
+    // every case using it passes or fails on sight: a generous deadline keeps a unit-lane JVM stall from turning it into a stall
+    return new FacetCheck(facets, 3, Duration.ofSeconds(60), Duration.ofMillis(5));
   }
 
   private Checkpoint checkpoint(final NodeReader reader, final FacetCheck facets) {

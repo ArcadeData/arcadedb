@@ -215,6 +215,8 @@ class ThreeNodesFacetLoadTestIT extends FacetLoadTestTemplate {
             + " during the setup): projection present the whole run").isZero();
         assertThat(n.getLong("rebuildsSnapshotInstall", -1L)).as(node + ": 45000 writes stay below the snapshot threshold, so no "
             + "snapshot install; rebuilds " + n.getString("rebuilds", "")).isZero();
+        // no restart and the type is empty when its indexes are created: no create, missing or corrupt rebuild on any node either
+        assertThat(n.getLong("rebuildsTotal", -1L)).as(node + ": rebuilds of any reason " + n.getString("rebuilds", "")).isZero();
       }
 
       // totals of the whole run, which sumCounter (the last 10 s step) is not; the setup and check clients' queries count too
@@ -223,8 +225,10 @@ class ThreeNodesFacetLoadTestIT extends FacetLoadTestTemplate {
         assertThat(perNode[i].failed).as("facet queries failed on node " + i + " while the writers ran").isZero();
       assertThat((long) total(QUERY_ERRORS) - setupQueryErrors).as("facet query errors after the setup (" + setupQueryErrors
           + " during it), every client").isZero();
-      // every client's samples, the query threads' and the setup and check clients': per node in the baseline as metaInconsistent
-      assertThat(total(META_INCONSISTENT)).as("samples neither exact nor carrying their lag").isZero();
+      // every client's samples, the query threads' and the setup and check clients': per node in the baseline as metaInconsistent.
+      // Ruling B-M1: logged and counted, not a failure
+      if (total(META_INCONSISTENT) > 0)
+        logger.warn("{} facet samples were inexact without lag (each logged above)", (long) total(META_INCONSISTENT));
       assertThat(total(WRITE_ERRORS)).isZero();
       assertNoCorruptedReads(baseline);
       passed = true;

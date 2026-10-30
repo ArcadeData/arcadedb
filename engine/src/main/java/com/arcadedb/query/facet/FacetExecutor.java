@@ -440,7 +440,8 @@ public final class FacetExecutor {
     if (projection == null)
       return REASON_TEXTS[reason];
     final String unusable = projection.unusableReason();
-    return unusable != null ? "projection unusable (" + unusable + ")" : "projection closed";
+    // no reason recorded: the projection closed or was dropped after the query looked, or it is usable again since
+    return unusable != null ? "projection unusable (" + unusable + ")" : "projection closed, dropped or replaced while the query read it";
   }
 
   /**
@@ -565,7 +566,7 @@ public final class FacetExecutor {
    * Groups the facet's buckets by declaring type and prepares one collector per group: the buckets the projection answers, then the
    * scanned buckets, by how they are read ({@link FacetFallbackScanner#sourceOf}, decided here once per bucket and handed to the scan):
    * one collector per column, one per kind of raw read. The declaring type's column definition is read once here: a bucket whose
-   * snapshot publishes the column with another encoding (redefined since {@link #projectionAnswers} looked) is scanned too, so the
+   * snapshot publishes the column with another encoding (redefined since {@link #projectionReason} looked) is scanned too, so the
    * collector decodes every segment it counts with the definition it was written with.
    *
    * @param reasons by bucket index, {@link #ANSWERS} or why the facet is scanned in the bucket; a bucket found without a usable column
@@ -584,7 +585,7 @@ public final class FacetExecutor {
     boolean dates = false;
     for (int i = 0; i < bucketIds.length; i++) {
       final DocumentType type = db.getSchema().getTypeByBucketId(bucketIds[i]);
-      // an index dropped since projectionAnswers looked: the bucket is scanned as well
+      // an index dropped since projectionReason looked: the bucket is scanned as well
       final TypeIndex index = type == null || property == null ? null : type.getPolymorphicColumnarIndex(property);
       ColumnDefinition declared = null;
       if (index != null && reasons[i] == ANSWERS) {
@@ -775,7 +776,7 @@ public final class FacetExecutor {
       final FacetCollector collector = collectorOf[i];
       collector.beginBucket(snapshot.bucketId(), snapshot, mapOf[i]);
       for (final ColumnarSegmentView segment : snapshot.segments())
-        // a view without the column holds no match of the facet live, or the bucket would be scanned (projectionAnswers)
+        // a view without the column holds no match of the facet live, or the bucket would be scanned (projectionReason)
         if (segment.column(spec.property()) != null)
           collector.collect(segment, segmentMatches);
       return collector;

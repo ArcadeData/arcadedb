@@ -220,25 +220,31 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
       int duringWrites = 0;
       int nonExact = 0;
+      int metaInconsistent = 0;
       for (int q = 0; q < QUERIES_DURING_PARTITION; q++) {
         final boolean writing = writer.isAlive();
         final FacetSnapshot s = f[otherIdx].queryFacets("");
-        assertThat(s.metaConsistent()).as("query %d on the connected follower: exact=%s lagMs=%d patched=%d sources=%s", q, s.exact(),
-            s.lagMs(), s.patched(), s.sources()).isTrue();
+        // ruling B-M1: an inexact answer that reports no lag is logged and counted, not a failure (as the chaos FACET_META warning)
+        if (!s.metaConsistent()) {
+          metaInconsistent++;
+          logger.warn("Query {} on the connected follower: inexact without lag: exact={} lagMs={} patched={} sources={}", q,
+              s.exact(), s.lagMs(), s.patched(), s.sources());
+        }
         if (writing)
           duringWrites++;
         if (!s.exact())
           nonExact++;
         Thread.sleep(QUERY_SPACING_MILLIS);
       }
-      logger.info("Connected follower: {} queries, {} while the writer ran, {} not exact", QUERIES_DURING_PARTITION, duringWrites,
-          nonExact);
+      logger.info("Connected follower: {} queries, {} while the writer ran, {} not exact, {} inexact without lag", QUERIES_DURING_PARTITION,
+          duringWrites, nonExact, metaInconsistent);
       assertThat(duringWrites).as("facet queries ran while the partition writer was writing").isPositive();
 
       writer.join(TimeUnit.MINUTES.toMillis(5));
       assertThat(writer.isAlive()).as("the writer during the partition ended").isFalse();
-      assertThat(writerOutcome.get()).as("the writer during the partition threw nothing").isInstanceOf(FacetDatabaseWrapper.OpCounts.class);
-      logger.info("Mixed ops through the leader during the partition: {}", writerOutcome.get());
+      // through the majority leader: the isolated follower is not on the write path
+      logger.info("Mixed ops through the leader during the partition: {}",
+          FacetDatabaseWrapper.assertWrote(writerOutcome.get(), "writer during the partition", true));
 
       // After a Docker network partition, gRPC channels between peers are stuck in exponential backoff: restart the isolated node
       logger.info("Healing partition: reconnecting and restarting isolated node {}", isolatedIdx);

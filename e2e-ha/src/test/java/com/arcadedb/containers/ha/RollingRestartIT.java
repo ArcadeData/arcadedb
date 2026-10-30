@@ -316,7 +316,7 @@ class RollingRestartIT extends ContainersTestTemplate {
         logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
 
       logger.info("Ingested {} assets", f[0].ingest(3_000));
-      logger.info("Initial mixed ops: {}", f[0].runMixedOps(1_000));
+      logger.info("Initial mixed ops: {}", FacetDatabaseWrapper.assertWrote(f[0].runMixedOps(1_000), "initial writer", true));
       FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 120);
 
       for (int i = 0; i < 3; i++) {
@@ -334,8 +334,9 @@ class RollingRestartIT extends ContainersTestTemplate {
 
         final List<ServerWrapper> liveServers = List.of(servers[(i + 1) % 3], servers[(i + 2) % 3]);
         Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> hasLeader(liveServers));
-        // writes continue while the node is down
-        logger.info("Mixed ops while arcadedb-{} is down: {}", i, f[(i + 1) % 3].runMixedOps(500));
+        // writes continue while the node is down: the two live nodes hold the quorum and a leader
+        logger.info("Mixed ops while arcadedb-{} is down: {}", i,
+            FacetDatabaseWrapper.assertWrote(f[(i + 1) % 3].runMixedOps(500), "writer while arcadedb-" + i + " is down", true));
 
         nodes[i].start();
         assertThat(waitForContainerHealthy(nodes[i], 90)).as("arcadedb-%d restarted", i).isTrue();

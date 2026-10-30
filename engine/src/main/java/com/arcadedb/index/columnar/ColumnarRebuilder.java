@@ -287,14 +287,16 @@ final class ColumnarRebuilder {
   /**
    * The {@code create} of an EMPTY bucket's projection on the calling thread: the same scan and publish as the background create
    * ({@link #rebuild}), uncounted like it, so a column added to an open projection is published before the DDL returns (final review A,
-   * answer 2b). Takes the maintenance slot once and never waits for it: the caller holds the registry lock or runs on the shared apply
-   * pool. Counted as a running maintenance job of the manager, so a close waits for it.
+   * answer 2b). An empty bucket holds no record, but one emptied by deletes still has pages: the emptiness check and the scan each walk
+   * them, on the caller's thread. Takes the maintenance slot once and never waits for it: the caller holds the registry lock or runs on
+   * the shared apply pool. Counted as a running maintenance job of the manager, so a close waits for it. An unusable projection (one
+   * waiting for a failed rebuild's retry, say) is left to the background rebuild, which counts its reason.
    *
-   * @return true when every column is published; false when the caller schedules the background {@code create}: the slot is busy, the
-   * bucket holds records, the publish failed or stopped, or nothing can be written
+   * @return true when every column is published; false when the caller schedules the background {@code create}: the projection is
+   * unusable, the slot is busy, the bucket holds records, the publish failed or stopped, or nothing can be written
    */
   static boolean createInlineIfEmpty(final ColumnarIndexManager manager, final ColumnarProjection projection) {
-    if (manager.isReadOnly() || manager.isClosing() || !projection.canWrite() || !projection.tryBeginMaintenance())
+    if (manager.isReadOnly() || manager.isClosing() || !projection.canWrite() || !projection.isUsable() || !projection.tryBeginMaintenance())
       return false;
     final boolean[] published = new boolean[1];
     try {

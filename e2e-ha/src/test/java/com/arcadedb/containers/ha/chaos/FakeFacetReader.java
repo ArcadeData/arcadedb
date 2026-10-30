@@ -26,6 +26,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
@@ -47,6 +48,14 @@ final class FakeFacetReader implements FacetReader {
   final Set<Integer>                          clientError       = new HashSet<>();
   /** Remaining GROUP BY reads of a node that fail with an IOException. */
   final Map<Integer, Integer>                 groupByFailures   = new HashMap<>();
+  /** Errors thrown by the next facet reads of a node, one per read, before the scripted answers. */
+  final Map<Integer, Deque<IOException>>      facetsThrows      = new HashMap<>();
+  /** Errors thrown by the next GROUP BY reads of a node, one per read. */
+  final Map<Integer, Deque<IOException>>      groupByThrows     = new HashMap<>();
+  int                                         facetCalls;
+  /** HTTP status of the persistent errors of {@link #serverError}, {@link #facetsServerError} and {@link #clientError}. */
+  int                                         serverStatus      = 500;
+  int                                         clientStatus      = 400;
   int                                         groupByCalls;
   int                                         groupByCallsAtFirstFacetRead = -1;
   Runnable                                    afterFirstFacetRead;
@@ -68,6 +77,7 @@ final class FakeFacetReader implements FacetReader {
   public synchronized SortedMap<String, Long> groupBy(final int node, final String where) throws IOException {
     check(node);
     ++groupByCalls;
+    throwNext(groupByThrows, node);
     final int failures = groupByFailures.getOrDefault(node, 0);
     if (failures > 0) {
       groupByFailures.put(node, failures - 1);
@@ -79,10 +89,12 @@ final class FakeFacetReader implements FacetReader {
   @Override
   public synchronized FacetSnapshot facets(final int node, final String where) throws IOException {
     check(node);
+    ++facetCalls;
+    throwNext(facetsThrows, node);
     if (facetsUnreadable.contains(node))
       throw new IOException("node " + node + " facets failed");
     if (facetsServerError.contains(node))
-      throw new HttpNodeReader.ServerErrorException(node, 500, "boom");
+      throw new HttpNodeReader.ServerErrorException(node, serverStatus, "boom");
     if (groupByCallsAtFirstFacetRead < 0)
       groupByCallsAtFirstFacetRead = groupByCalls;
     final Deque<FacetSnapshot> scripted = script.get(node);
@@ -101,6 +113,17 @@ final class FakeFacetReader implements FacetReader {
     return snapshot;
   }
 
+  /** Queues {@code errors} for the next reads of {@code node}, one per read. */
+  static void failNext(final Map<Integer, Deque<IOException>> queue, final int node, final IOException... errors) {
+    queue.computeIfAbsent(node, n -> new ArrayDeque<>()).addAll(List.of(errors));
+  }
+
+  private static void throwNext(final Map<Integer, Deque<IOException>> queue, final int node) throws IOException {
+    final Deque<IOException> errors = queue.get(node);
+    if (errors != null && !errors.isEmpty())
+      throw errors.poll();
+  }
+
   private SortedMap<String, Long> truth(final int node, final String where) {
     return data.get(node);
   }
@@ -109,8 +132,8 @@ final class FakeFacetReader implements FacetReader {
     if (unreadable.contains(node))
       throw new IOException("node " + node + " down");
     if (clientError.contains(node))
-      throw new HttpNodeReader.ClientErrorException(node, 400, "bad query");
+      throw new HttpNodeReader.ClientErrorException(node, clientStatus, "bad query");
     if (serverError.contains(node))
-      throw new HttpNodeReader.ServerErrorException(node, 500, "boom");
+      throw new HttpNodeReader.ServerErrorException(node, serverStatus, "boom");
   }
 }

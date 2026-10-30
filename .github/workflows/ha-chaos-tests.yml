@@ -25,6 +25,14 @@ on:
         description: "Concurrent writer threads"
         required: false
         default: "4"
+      facet_writers:
+        description: "Facet workload threads; 0 turns facets off (to bisect a ledger failure)"
+        required: false
+        default: "2"
+      server_opts:
+        description: "Extra server -D settings, space separated (e.g. -Darcadedb.columnar.patchBudget=0 -Darcadedb.columnar.patchBudgetRatio=0)"
+        required: false
+        default: ""
       timeout_minutes:
         description: "Job timeout in minutes (hang detector), including the ~15 minute image build; keep it at duration + 45"
         required: false
@@ -72,10 +80,14 @@ jobs:
           SEED: ${{ inputs.seed }}
           FAULTS: ${{ inputs.faults }}
           WRITERS: ${{ inputs.writers || '4' }}
+          FACET_WRITERS: ${{ inputs.facet_writers || '2' }}
+          SERVER_OPTS: ${{ inputs.server_opts }}
         run: |
-          args=(-Dchaos.nodes="${NODES}" -Dchaos.duration="${DURATION}" -Dchaos.writers="${WRITERS}")
+          args=(-Dchaos.nodes="${NODES}" -Dchaos.duration="${DURATION}" -Dchaos.writers="${WRITERS}" -Dchaos.facetWriters="${FACET_WRITERS}")
           if [ -n "${SEED}" ]; then args+=(-Dchaos.seed="${SEED}"); fi
           if [ -n "${FAULTS}" ]; then args+=(-Dchaos.faults="${FAULTS}"); fi
+          # ChaosConfig validates the pattern of chaos.serverOpts and refuses anything else
+          if [ -n "${SERVER_OPTS}" ]; then args+=(-Dchaos.serverOpts="${SERVER_OPTS}"); fi
           ./mvnw verify -Pintegration --batch-mode --errors --show-version -pl e2e-ha \
             -Dit.test=HaChaosIT -Dfailsafe.excludedGroups= "${args[@]}"
 
