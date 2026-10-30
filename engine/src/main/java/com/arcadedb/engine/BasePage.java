@@ -40,9 +40,6 @@ public abstract class BasePage {
   protected       Binary content;
   protected final int    size;
   protected       int    version;
-  // BYTES TAKEN BY THE NUMBER THE LAST readNumber() DECODED: THE SIZE HALF OF THE PAIR, KEPT HERE SO THAT A RECORD HEADER
-  // READ DOES NOT ALLOCATE A long[2] FOR IT (#10656). A PAGE IS USED BY ONE THREAD AT A TIME (SEE THE CLASS JAVADOC)
-  private         int    lastReadNumberSize;
 
   protected BasePage(final PageId pageId, final int size, final byte[] buffer, final int version,
       final int contentSize) {
@@ -86,32 +83,28 @@ public abstract class BasePage {
 
   /**
    * Reads a signed variable-length number without allocating (#10656). The number of bytes it occupies on the page is
-   * {@link #getLastReadNumberSize()}, which stays valid until the next call to this method on the same page.
+   * {@link #readNumberSize(int)}. Neither moves the buffer position nor keeps any state on the page, so the pair is safe on
+   * a view shared by many threads ({@link SharedImmutablePage}, #10930).
    */
   public long readNumber(final int index) {
-    final int start = PAGE_HEADER_SIZE + index;
-    final long value = this.content.getNumber(start);
-    lastReadNumberSize = this.content.position() - start;
-    return value;
+    return this.content.getNumberAt(PAGE_HEADER_SIZE + index);
   }
 
   /**
-   * The number of bytes the number decoded by the last {@link #readNumber(int)} (or {@link #readNumberAndSize(int)})
-   * call on this page occupies.
+   * The number of bytes the variable-length number at {@code index} occupies on the page, without decoding it.
    */
-  public int getLastReadNumberSize() {
-    return lastReadNumberSize;
+  public int readNumberSize(final int index) {
+    return this.content.getNumberSizeAt(PAGE_HEADER_SIZE + index);
   }
 
   /**
    * Reads a signed variable-length number. Allocates the returned pair on every call: a hot path uses
-   * {@link #readNumber(int)} and {@link #getLastReadNumberSize()} instead.
+   * {@link #readNumber(int)} and {@link #readNumberSize(int)} instead.
    *
    * @return An array of longs with the number in the 1st position and the occupied bytes on the 2nd position.
    */
   public long[] readNumberAndSize(final int index) {
-    final long value = readNumber(index);
-    return new long[] { value, lastReadNumberSize };
+    return new long[] { readNumber(index), readNumberSize(index) };
   }
 
   public long readLong(final int index) {
@@ -177,7 +170,8 @@ public abstract class BasePage {
   }
 
   public String readString(final int index) {
-    return new String(readBytes(PAGE_HEADER_SIZE + index), DatabaseFactory.getDefaultCharset());
+    // readBytes(int) ALREADY SKIPS THE PAGE HEADER
+    return new String(readBytes(index), DatabaseFactory.getDefaultCharset());
   }
 
   public PageId getPageId() {

@@ -333,6 +333,7 @@ These dependencies are used only for testing and are not included in production 
 | com.jayway.jsonpath | json-path | 2.10.0 | Apache 2.0 | https://github.com/json-path/JsonPath |
 | com.github.docker-java | docker-java-api | 3.7.0 | Apache 2.0 | https://github.com/docker-java/docker-java |
 | net.bytebuddy | byte-buddy | 1.18.3 | Apache 2.0 | https://bytebuddy.net/ |
+| org.ow2.asm | asm (engine, reads the compiled SQL functions in a narrowing-read scan) | 9.7.1 | BSD 3-Clause | https://asm.ow2.io/ |
 | org.openjdk.jmh | jmh-core | 1.37 | GPL-2.0 WITH Classpath-exception-2.0 | https://openjdk.java.net/projects/code-tools/jmh/ |
 | org.openjdk.jmh | jmh-generator-annprocess | 1.37 | GPL-2.0 WITH Classpath-exception-2.0 | https://openjdk.java.net/projects/code-tools/jmh/ |
 | com.fasterxml.jackson.core | jackson-databind (engine, JSON library Cucumber 8 needs for the openCypher TCK reports) | 2.22.x | Apache 2.0 | https://github.com/FasterXML/jackson |

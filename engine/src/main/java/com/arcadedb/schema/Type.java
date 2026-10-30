@@ -744,18 +744,27 @@ public enum Type {
         // the singleton-List case below and get wrapped as a single element instead of having its items copied.
         // Normalize it to a real List and re-enter the conversion so the collection/array branches handle it (issue #5091).
         return convert(database, jsonArray.toList(), targetClass, property);
+      } else if ((value instanceof int[] || value instanceof short[]) && isArrayOfNumbers(targetClass)) {
+        // Widened to long[], which is lossless, and converted by the long[] branches below, which narrow to every
+        // ARRAY_OF_* target with the range checks (issue #10938: an int[] for an ARRAY_OF_FLOATS had no branch)
+        return convert(database, toLongArray(value), targetClass, property);
+      } else if (value instanceof Object[] items && isArrayOfNumbers(targetClass)) {
+        // A boxed array (Float[], Double[], Number[], Object[]) is converted item by item by the collection branches below,
+        // which refuse a null or non-numeric item (issue #10938)
+        return convert(database, Arrays.asList(items), targetClass, property);
       } else if (targetClass.equals(float[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to float[]
         final float[] array = new float[collection.size()];
         int i = 0;
+        // a finite item that overflows to an infinity is refused, as for a FLOAT property (issue #10938)
         for (final Object item : collection)
-          array[i++] = requireNonNullNumber(item, "FLOAT", property).floatValue();
+          array[i++] = narrowToFloat(requireNonNullNumber(item, "FLOAT", property), property);
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof double[] src) {
-        // Fast path: primitive narrowing copy
+        // Fast path: primitive narrowing copy, refusing a finite item that overflows to an infinity (issue #10938)
         final float[] array = new float[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (float) src[i];
+          array[i] = narrowToFloat(src[i], property);
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof long[] src) {
         final float[] array = new float[src.length];
@@ -767,7 +776,7 @@ public enum Type {
         final double[] array = new double[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = requireNonNullNumber(item, "DOUBLE", property).doubleValue();
+          array[i++] = narrowToDouble(requireNonNullNumber(item, "DOUBLE", property), property);
         return array;
       } else if (targetClass.equals(double[].class) && value instanceof float[] src) {
         // Issue #3864 follow-up: HTTP vector params arrive as float[] from JSON parsing.
@@ -1308,9 +1317,34 @@ public enum Type {
     throw inconvertible(value, targetType, property);
   }
 
+  /**
+   * An ARRAY_OF_* property is one of these too (issue #10938): a scalar, a string or a map kept as it came was stored, then
+   * refused by a vector index that existed when it was written, and skipped by one built over it later.
+   */
   private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
     return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
-        || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
+        || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class)
+        || isArrayOfNumbers(targetClass);
+  }
+
+  /** The class of an ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES value. */
+  private static boolean isArrayOfNumbers(final Class<?> targetClass) {
+    return targetClass == float[].class || targetClass == double[].class || targetClass == int[].class || targetClass == long[].class
+        || targetClass == short[].class;
+  }
+
+  private static long[] toLongArray(final Object value) {
+    if (value instanceof int[] src) {
+      final long[] array = new long[src.length];
+      for (int i = 0; i < src.length; i++)
+        array[i] = src[i];
+      return array;
+    }
+    final short[] src = (short[]) value;
+    final long[] array = new long[src.length];
+    for (int i = 0; i < src.length; i++)
+      array[i] = src[i];
+    return array;
   }
 
   /**
@@ -1334,6 +1368,14 @@ public enum Type {
   private static float narrowToFloat(final Number value, final Property property) {
     final float result = value.floatValue();
     if (property != null && Float.isInfinite(result) && !isInfinite(value))
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
+    return result;
+  }
+
+  /** The primitive form of {@link #narrowToFloat(Number, Property)}, for an ARRAY_OF_FLOATS item: no boxing per item. */
+  private static float narrowToFloat(final double value, final Property property) {
+    final float result = (float) value;
+    if (property != null && Float.isInfinite(result) && !Double.isInfinite(value))
       throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
     return result;
   }

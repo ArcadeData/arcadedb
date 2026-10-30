@@ -29,6 +29,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -539,8 +540,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public Map<String, Long> getStats() {
     checkIsValid();
     final Map<String, Long> stats = new HashMap<>();
-    for (final Index index : indexesOnBuckets)
-      stats.putAll(((IndexInternal) index).getStats());
+    // the records the last vector index build left out are a count over the whole type, as the CREATE / REBUILD INDEX result
+    // reports it, not the value of whichever bucket comes last (issue #10938)
+    long skipped = 0;
+    boolean vector = false;
+    for (final Index index : indexesOnBuckets) {
+      final Map<String, Long> bucketStats = ((IndexInternal) index).getStats();
+      stats.putAll(bucketStats);
+      final Long bucketSkipped = bucketStats.get(LSMVectorIndex.LAST_BUILD_SKIPPED_RECORDS_STAT);
+      if (bucketSkipped != null) {
+        skipped += bucketSkipped;
+        vector = true;
+      }
+    }
+    if (vector)
+      stats.put(LSMVectorIndex.LAST_BUILD_SKIPPED_RECORDS_STAT, skipped);
     return stats;
   }
 

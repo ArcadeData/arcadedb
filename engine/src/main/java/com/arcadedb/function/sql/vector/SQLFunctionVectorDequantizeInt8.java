@@ -179,24 +179,13 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       return byteArray;
     } else if (quantized instanceof Object[] objArray) {
       final byte[] result = new byte[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.byteValue();
-        } else {
-          throw new CommandSQLParsingException("Quantized elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
+      for (int i = 0; i < objArray.length; i++)
+        result[i] = toInt8Code(objArray[i]);
       return result;
     } else if (quantized instanceof List<?> list) {
       final byte[] result = new byte[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.byteValue();
-        } else {
-          throw new CommandSQLParsingException("Quantized elements must be numbers, found: " + elem.getClass().getSimpleName());
-        }
-      }
+      for (int i = 0; i < result.length; i++)
+        result[i] = toInt8Code(list.get(i));
       return result;
     } else {
       throw new CommandSQLParsingException("Quantized vector must be an array or list, found: " + quantized.getClass().getSimpleName());
