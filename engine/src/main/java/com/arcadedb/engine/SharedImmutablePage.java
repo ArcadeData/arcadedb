@@ -37,8 +37,8 @@ import java.nio.ByteBuffer;
  * caller's own. The metadata is the cached page's and is not reloaded under the readers ({@link #loadMetadata()} throws).
  * <p>
  * Every public method of {@link BasePage} and {@link ImmutablePage} is either position-free or overridden here, and
- * {@code SharedImmutablePageCoverageTest} holds that: a new page read that moves the position, or keeps a result on the page
- * for a later call, fails it until this class answers it.
+ * {@code Issue10930SharedPageViewVarIntTest} holds that: a new public page method that is neither overridden here nor listed
+ * there as position-free, or a new field a read could keep a result in for a later call, fails it until this class answers it.
  */
 final class SharedImmutablePage extends ImmutablePage {
   SharedImmutablePage(final PageId pageId, final int size, final byte[] content, final int version, final int contentSize) {
