@@ -527,16 +527,6 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return raw;
   }
 
-  /**
-   * Reads a signed number at {@code index} without allocating: the number of bytes it took is the distance the position
-   * moved, {@code position() - index} right after the call (#10656). Unlike {@link #getNumberAndSize(int)} this does not
-   * box the pair in a {@code long[]}, which on a page read runs once per record header.
-   */
-  public long getNumber(final int index) {
-    position(index);
-    return getNumber();
-  }
-
   @Override
   public long getNumber() {
     final long raw = getUnsignedNumber();
@@ -545,6 +535,62 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     // treating negative results from read unsigned methods as like unsigned values
     // Must re-flip the top bit if the original read value had it set.
     return temp ^ (raw & (1L << 63));
+  }
+
+  /**
+   * Reads a signed number at {@code index} without moving the position: only the bytes of the backing array are read, so
+   * many threads can call it on one instance at once (#10930). The number of bytes it occupies is
+   * {@link #getNumberSizeAt(int)}. Out-of-range bytes throw {@link IllegalArgumentException}, as {@link #position(int)}
+   * does for the relative read.
+   */
+  public long getNumberAt(final int index) {
+    final long raw = getUnsignedNumberAt(index);
+    final long temp = (((raw << 63) >> 63) ^ raw) >> 1;
+    return temp ^ (raw & (1L << 63));
+  }
+
+  /**
+   * Reads an unsigned number at {@code index} without moving the position (see {@link #getNumberAt(int)}).
+   */
+  public long getUnsignedNumberAt(final int index) {
+    try {
+      final long b0 = buffer.get(index);
+      // Fast path: single-byte varint (high bit clear). Dominates in practice.
+      if ((b0 & 0x80L) == 0L)
+        return b0;
+
+      long value = b0 & 0x7FL;
+      int i = 7;
+      int pos = index + 1;
+      long b;
+      while (((b = buffer.get(pos++)) & 0x80L) != 0) {
+        value |= (b & 0x7FL) << i;
+        i += 7;
+        if (i > 63)
+          throw new IllegalArgumentException(
+              "Variable length quantity is too long (must be <= 63) at position " + index + " in buffer of size " + size);
+      }
+      return value | (b << i);
+    } catch (final IndexOutOfBoundsException e) {
+      throw new IllegalArgumentException("Invalid position " + index + " (size=" + buffer.limit() + ")", e);
+    }
+  }
+
+  /**
+   * The number of bytes the variable-length number at {@code index} occupies, without decoding it and without moving the
+   * position (#10930). Bounded like {@link #skipNumber()}: a number longer than 10 bytes cannot be valid.
+   */
+  public int getNumberSizeAt(final int index) {
+    try {
+      int pos = index;
+      while ((buffer.get(pos++) & 0x80) != 0)
+        if (pos - index >= 10)
+          throw new IllegalArgumentException(
+              "Variable length quantity is too long (must be <= 10 bytes) at position " + index + " in buffer of size " + size);
+      return pos - index;
+    } catch (final IndexOutOfBoundsException e) {
+      throw new IllegalArgumentException("Invalid position " + index + " (size=" + buffer.limit() + ")", e);
+    }
   }
 
   /**

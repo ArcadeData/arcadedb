@@ -3181,11 +3181,12 @@ public class PostgresNetworkExecutor extends Thread {
       // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
       // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
       // from here on - bindFrom() copies what PARSE already fixed for the statement (query, sqlStatement,
-      // parameter types, and any response PARSE precomputed for BEGIN/COMMIT/ROLLBACK or a resolved catalog
-      // answer) into a fresh object, so that two portal names bound from the same statement - or the same
-      // portal name re-bound without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching
-      // does for a repeated query - never share mutable execution state (parameterValues, fullResultSet,
-      // resultCursor, suspended...). Without this, a later Bind on one portal name could
+      // parameter types, and any response PARSE precomputed for BEGIN/COMMIT/ROLLBACK or a resolved catalog,
+      // SHOW or system-query answer, whose rows every portal of the statement shares read-only) into a fresh
+      // object, so that two portal names bound from the same statement - or the same portal name re-bound
+      // without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching does for a repeated
+      // query - never share mutable execution state (parameterValues, resultCursor, cursor, suspended...).
+      // Without this, a later Bind on one portal name could
       // silently reset or overwrite another already-bound (possibly suspended) portal from the same statement,
       // since both names used to point at the very same object.
       // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters

@@ -7505,14 +7505,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int pos = contentOffset;
 
         // Read and skip vectorId
-        page.readNumber(pos);
-        pos += page.getLastReadNumberSize();
+        pos += page.readNumberSize(pos);
         // Read and skip bucketId
-        page.readNumber(pos);
-        pos += page.getLastReadNumberSize();
+        pos += page.readNumberSize(pos);
         // Read and skip position
-        page.readNumber(pos);
-        pos += page.getLastReadNumberSize();
+        pos += page.readNumberSize(pos);
         // Skip deleted flag
         pos += 1;
 
@@ -13372,15 +13369,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Read variable-sized vectorId
           final int id = (int) page.readNumber(currentOffset);
-          currentOffset += page.getLastReadNumberSize();
+          currentOffset += page.readNumberSize(currentOffset);
 
           // Read variable-sized bucketId
           final int bucketId = (int) page.readNumber(currentOffset);
-          currentOffset += page.getLastReadNumberSize();
+          currentOffset += page.readNumberSize(currentOffset);
 
           // Read variable-sized position
           final long position = page.readNumber(currentOffset);
-          currentOffset += page.getLastReadNumberSize();
+          currentOffset += page.readNumberSize(currentOffset);
 
           final RID rid = new RID(bucketId, position);
 
