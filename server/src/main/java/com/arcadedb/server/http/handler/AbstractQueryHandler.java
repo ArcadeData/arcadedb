@@ -47,6 +47,8 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
 import java.io.IOException;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.logging.Level;
 
@@ -756,7 +758,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   private static final int MAX_TYPED_MARKER_DEPTH = 32;
 
   /**
-   * Decodes typed JSON markers ({@code $bytes}, {@code $int8}) in {@code paramMap} into
+   * Decodes typed JSON markers ({@code $bytes}, {@code $int8}, {@code $date}) in {@code paramMap} into
    * {@code byte[]} so HTTP/JSON clients can route int8 query vectors through the encoding-aware
    * vector path (#4135). Returns the original map reference when nothing was rewritten.
    * <p>
@@ -793,6 +795,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         return decodeBytesMarker(only.getValue());
       if ("$int8".equals(only.getKey()))
         return decodeInt8Marker(only.getValue());
+      if ("$date".equals(only.getKey()))
+        return decodeDateMarker(only.getValue());
     }
     if (value instanceof Map<?, ?> m) {
       Map<String, Object> rewritten = null;
@@ -836,6 +840,22 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       return rewritten != null ? rewritten : value;
     }
     return value;
+  }
+
+  /**
+   * {@code $date} carries a calendar day as ISO-8601 text ({@code 2024-01-15}) and decodes to a {@link LocalDate}. A date sent as a
+   * bare number is ambiguous (epoch days or epoch milliseconds) and a comparison reads it as days, so a {@code LocalDate} parameter
+   * of the remote client would never match a DATE (issue #10908).
+   */
+  private static LocalDate decodeDateMarker(final Object payload) {
+    if (!(payload instanceof String text))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '$date' value must be an ISO-8601 date string, found " + (payload == null ? "null" : payload.getClass().getSimpleName()));
+    try {
+      return LocalDate.parse(text);
+    } catch (final DateTimeParseException e) {
+      throw new RequestRefusedBeforeExecutionException("Parameter '$date' is not a valid ISO-8601 date: " + e.getMessage(), e);
+    }
   }
 
   private static byte[] decodeBytesMarker(final Object payload) {
