@@ -43,11 +43,28 @@ class MergePolicyTest {
   }
 
   @Test
-  void deadRatioWinsOverTooManySegments() {
+  void tooManySegmentsWinOverDeadRatio() {
+    // final review A-I1: a dead segment rewritten alone keeps the count, so over the bound the count run goes first
     final long[] rows = new long[12];
     final long[] dead = new long[12];
     Arrays.fill(rows, 10);
     dead[7] = 9;
+    assertThat(MergePolicy.select(segments(rows, dead), 0.3f, 10)).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+
+    // the starved shape: thousands of tiny segments and a dead candidate among them
+    final long[] many = new long[2000];
+    final long[] manyDead = new long[2000];
+    Arrays.fill(many, 3);
+    manyDead[1500] = 1;
+    assertThat(MergePolicy.select(segments(many, manyDead), 0.3f, 10)).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+  }
+
+  @Test
+  void deadRatioWinsAtTheSegmentBound() {
+    final long[] rows = new long[10];
+    final long[] dead = new long[10];
+    Arrays.fill(rows, 10);
+    dead[7] = 3;
     assertThat(MergePolicy.select(segments(rows, dead), 0.3f, 10)).containsExactly(7L);
   }
 

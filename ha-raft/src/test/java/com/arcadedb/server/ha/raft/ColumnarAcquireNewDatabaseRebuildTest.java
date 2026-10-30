@@ -28,6 +28,7 @@ import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.index.columnar.LogCapture;
 import com.arcadedb.server.ArcadeDBServer;
 import com.sun.net.httpserver.HttpServer;
 import org.awaitility.Awaitility;
@@ -43,11 +44,13 @@ import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A fresh replica, holding no copy of a database, acquires it from the leader's snapshot through
@@ -133,6 +136,40 @@ class ColumnarAcquireNewDatabaseRebuildTest {
       FacetOracle.assertEquivalent(acquired, ColumnarTestData.TYPE, property, null);
   }
 
+  @Test
+  @Timeout(120)
+  void aMarkerThatCannotBeWrittenDiscardsTheAcquisitionWithASevereLine(@TempDir final Path root) throws Exception {
+    // final review A-M3: a failed snapshot_install marker reads as a failed acquisition, like a failed validation
+    final Path databasesDir = root.resolve("databases");
+    Files.createDirectories(databasesDir);
+    server = startServer(databasesDir, root);
+
+    final Path source = root.resolve("leader-copy").resolve(DB_NAME);
+    try (final Database leaderCopy = new DatabaseFactory(source.toString()).create()) {
+      leaderCopy.command("sql", "CREATE DOCUMENT TYPE Asset");
+    }
+    // a plain FILE where the marker's directory goes: the marker cannot be written
+    final byte[] zip = zipSnapshot(source, "columnar");
+    leader.createContext("/api/v1/ha/snapshot/" + DB_NAME, exchange -> {
+      exchange.sendResponseHeaders(200, zip.length);
+      exchange.getResponseBody().write(zip);
+      exchange.close();
+    });
+    leader.start();
+
+    try (final LogCapture log = new LogCapture()) {
+      assertThatThrownBy(() -> SnapshotInstaller.acquireNewDatabase(DB_NAME, () -> "localhost:" + leaderPort, () -> null, null, server))
+          .isInstanceOf(IOException.class);
+      assertThat(log.messages(Level.SEVERE, "Cannot mark the acquired snapshot for new database '" + DB_NAME + "'")).hasSize(1)
+          .first().asString().contains("discarding it and leaving the database absent");
+    }
+    assertThat(server.existsDatabase(DB_NAME)).isFalse();
+    assertThat(databasesDir.resolve(DB_NAME)).doesNotExist();
+    try (final Stream<Path> entries = Files.list(databasesDir)) {
+      assertThat(entries.map(e -> e.getFileName().toString())).as("no staging directory is left").noneMatch(n -> n.contains(DB_NAME));
+    }
+  }
+
   private ArcadeDBServer startServer(final Path databasesDir, final Path root) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_acquireColumnar");
@@ -149,8 +186,17 @@ class ColumnarAcquireNewDatabaseRebuildTest {
 
   /** Zips the database the way the leader ships a snapshot: without the node-local projection. */
   private static byte[] zipSnapshot(final Path dir) throws IOException {
+    return zipSnapshot(dir, null);
+  }
+
+  /** {@link #zipSnapshot(Path)} plus an empty regular file named {@code extraFile} at the root, when not null. */
+  private static byte[] zipSnapshot(final Path dir, final String extraFile) throws IOException {
     final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     try (final ZipOutputStream zip = new ZipOutputStream(bytes); final Stream<Path> files = Files.walk(dir)) {
+      if (extraFile != null) {
+        zip.putNextEntry(new ZipEntry(extraFile));
+        zip.closeEntry();
+      }
       for (final Path file : files.filter(Files::isRegularFile).toList()) {
         final String name = dir.relativize(file).toString().replace('\\', '/');
         if (ColumnarStore.isProjectionEntry(name))

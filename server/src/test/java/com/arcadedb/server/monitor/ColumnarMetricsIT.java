@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.block.BlockCache;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
+import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -32,6 +33,7 @@ import io.micrometer.core.instrument.FunctionTimer;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -174,6 +176,14 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
       assertThat(meter("arcadedb.columnar.recovery.pages")).isNotNull();
       for (final String name : List.of("groupby.accelerated", "groupby.fallbacks"))
         assertThat(meter("arcadedb.columnar." + name)).as(name).isNotNull();
+      // one series per reason, all with the same tag keys: Prometheus refuses one name with different label sets
+      for (final String reason : ColumnarStats.FALLBACK_SCAN_REASONS) {
+        final Meter scans = meter("arcadedb.columnar.query.fallback.scans", "reason", reason);
+        assertThat(scans).as(reason).isNotNull();
+        assertThat(scans.getId().getTags()).extracting(Tag::getKey).containsExactlyInAnyOrder("database", "reason");
+      }
+      assertThat(Metrics.globalRegistry.find("arcadedb.columnar.query.fallback.scans").tag("database", getDatabaseName()).meters())
+          .hasSize(ColumnarStats.FALLBACK_SCAN_REASONS.length);
       assertThat(meter("arcadedb.columnar.cache.hits", "database", "*")).isNotNull();
       assertThat(meter("arcadedb.columnar.cache.misses", "database", "*")).isNotNull();
 

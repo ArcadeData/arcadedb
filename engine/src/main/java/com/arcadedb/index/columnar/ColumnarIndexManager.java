@@ -507,8 +507,9 @@ public final class ColumnarIndexManager {
   /**
    * The leader's {@link ColumnarIndex#build}: opens the projections of the indexes bound by now and schedules the {@code create}
    * rebuild of the index's projection unless it publishes the column already (an empty bucket is published with its columns at open,
-   * V-B1). Under the registry lock, so a reconcile never sees the projection opened and its rebuild not scheduled yet: its
-   * {@code ADD_COLUMN} then finds the rebuild queued, running or published and counts no second one (V-M14).
+   * V-B1). A column added to the open projection of an empty bucket is published here, on the caller's thread, when its maintenance
+   * slot is free ({@link ColumnarRebuilder#createInlineIfEmpty}). Under the registry lock, so a reconcile never sees the projection
+   * opened and its rebuild not scheduled yet: its {@code ADD_COLUMN} then finds the rebuild queued, running or published and counts no second one (V-M14).
    */
   void buildRegistered(final ColumnarIndex index) {
     registryLock.lock();
@@ -518,7 +519,7 @@ public final class ColumnarIndexManager {
       // a queued rebuild captures this column when it starts; a running one that decided on its columns before this add schedules a
       // create when it leaves the running state (ColumnarRebuilder.Job#finish: this add writes the columns, then reads that state)
       if (projection != null && !projection.isPublishedWith(index.columnDefinition().indexFileId())
-          && !ColumnarRebuilder.isQueuedOrRunning(projection))
+          && !ColumnarRebuilder.isQueuedOrRunning(projection) && !ColumnarRebuilder.createInlineIfEmpty(this, projection))
         ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
     } finally {
       registryLock.unlock();
@@ -847,15 +848,17 @@ public final class ColumnarIndexManager {
 
   /**
    * Under {@link #registryLock}: adds the column of {@code columns} with the index file id to the projection when the registration did
-   * not (its open came first), and schedules a {@code create} rebuild unless the projection publishes it or a rebuild is queued or
-   * running (a running rebuild that decided on its columns before this add schedules a create when it leaves the running state,
+   * not (its open came first), and publishes it inline on an empty bucket with a free maintenance slot
+   * ({@link ColumnarRebuilder#createInlineIfEmpty}), else schedules a {@code create} rebuild unless the projection publishes it or a
+   * rebuild is queued or running (a running rebuild that decided on its columns before this add schedules a create when it leaves the running state,
    * {@code ColumnarRebuilder.Job#finish}).
    */
   private void addAndBuild(final ColumnarProjection projection, final ColumnDefinition[] columns, final int indexFileId) {
     for (final ColumnDefinition column : columns)
       if (column.indexFileId() == indexFileId)
         projection.addColumn(column);
-    if (!projection.isPublishedWith(indexFileId) && !ColumnarRebuilder.isQueuedOrRunning(projection))
+    if (!projection.isPublishedWith(indexFileId) && !ColumnarRebuilder.isQueuedOrRunning(projection)
+        && !ColumnarRebuilder.createInlineIfEmpty(this, projection))
       ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
   }
 
@@ -2261,10 +2264,13 @@ public final class ColumnarIndexManager {
       retryFailedRebuildIfDue(slot, now);
       if (projection.manifest() == null)
         continue;
-      final boolean flushDue = now >= slot.nextAttemptMs && (slot.mergeWanted || ColumnarFlusher.shouldFlush(projection, now, intervalMs,
-          maxRows));
+      final boolean attemptDue = now >= slot.nextAttemptMs;
+      // a pass due for a wanted merge only does not flush (final review A-I1): a flush per merge pass added a segment as fast as the
+      // merge removed one
+      final boolean flushDue = attemptDue && ColumnarFlusher.shouldFlush(projection, now, intervalMs, maxRows);
+      final boolean maintainDue = flushDue || attemptDue && slot.mergeWanted;
       final boolean rankDue = isRankViewRebuildDue(slot, now);
-      if (!flushDue && !rankDue)
+      if (!maintainDue && !rankDue)
         continue;
       if (!slot.maintenanceQueued.compareAndSet(false, true))
         continue;
@@ -2273,8 +2279,8 @@ public final class ColumnarIndexManager {
         ColumnarMaintenancePool.getInstance().getExecutorService().execute(() -> {
           try {
             runMaintenanceBody(slot, () -> {
-              if (flushDue)
-                maintain(slot);
+              if (maintainDue)
+                maintain(slot, flushDue);
               if (rankDue)
                 rebuildRankViews(slot);
             });
@@ -2323,14 +2329,19 @@ public final class ColumnarIndexManager {
     }
   }
 
-  /** Flush, then merge when the merge policy selects segments. Runs on {@link ColumnarMaintenancePool}, or a test thread. */
-  private void maintain(final Slot slot) {
+  /**
+   * Flush when asked, then merge when the merge policy selects segments. Runs on {@link ColumnarMaintenancePool}, or a test thread.
+   *
+   * @param flush whether to flush first: a pass due for a wanted merge only leaves the overlay to the flush schedule
+   */
+  private void maintain(final Slot slot, final boolean flush) {
     final ColumnarProjection projection = slot.projection;
     if (!projection.canWrite() || projection.isClosedOrDropped())
       return;
     boolean merging = false;
     try {
-      ColumnarFlusher.flush(projection, database.getLastTransactionId());
+      if (flush)
+        ColumnarFlusher.flush(projection, database.getLastTransactionId());
       final long[] selected = selectMerge(projection);
       slot.mergeWanted = selected.length > 0;
       if (selected.length > 0) {
@@ -2459,7 +2470,7 @@ public final class ColumnarIndexManager {
 
   /** Runs the flush and merge job of the bucket's projection on the calling thread, whatever its schedule. */
   void maintainForTesting(final int bucketId) {
-    maintain(slot(bucketId));
+    maintain(slot(bucketId), true);
   }
 
   /** Runs the maintenance scheduling of a pass on the calling thread: the jobs it queues run on {@link ColumnarMaintenancePool}. */

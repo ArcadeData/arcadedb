@@ -849,7 +849,15 @@ public final class SnapshotInstaller {
       // does before its reopen, so the first open rebuilds every projection with that reason (plan 3 contract) rather than
       // reading each one as missing. Written after the read-only validation and before the publish, so the marker moves
       // with the atomic rename; a failure discards the staging like a failed download.
-      ColumnarStore.prepareForSnapshotInstall(staging);
+      try {
+        ColumnarStore.prepareForSnapshotInstall(staging);
+      } catch (final IOException markerEx) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Cannot mark the acquired snapshot for new database '%s' for its columnar rebuild; discarding it and leaving the "
+                + "database absent (it will be re-acquired on the next reconcile): %s", null, databaseName, markerEx.getMessage());
+        deleteDirectoryIfExists(staging);
+        throw markerEx;
+      }
 
       // A stale, unregistered databases/<name>/ (e.g. from a pre-upgrade crash) would block the rename. The
       // leader's copy is authoritative for an unseen database, so clear it before publishing.
