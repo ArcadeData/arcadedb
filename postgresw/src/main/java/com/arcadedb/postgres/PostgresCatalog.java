@@ -141,9 +141,15 @@ public class PostgresCatalog {
   /** {@code pg_class.relkind} of a materialized view: the backing type of one, or of a continuous aggregate (issue #10691). */
   private static final String RELKIND_MATERIALIZED_VIEW = "m";
 
-  /** What the catalog says of a type that holds the rows of a materialized view or a continuous aggregate (issue #10691). */
-  private record MaterializedRelation(String definition, boolean populated) {
+  /**
+   * What the catalog says of a type that holds the rows of a materialized view or a continuous aggregate (issue #10691), and the
+   * types its query reads, as the view recorded them when it was created (issue #10976).
+   */
+  private record MaterializedRelation(String definition, boolean populated, List<String> sources) {
   }
+
+  /** The name PostgreSQL gives the one rewrite rule of a view or a materialized view, the rule that IS its query (issue #10976). */
+  private static final String VIEW_RULE_NAME = "_RETURN";
 
   /**
    * A column of a relation: a {@code pg_attribute} row, numbered by its position in the list {@link Context#columnsOf} answers - a
@@ -192,19 +198,21 @@ public class PostgresCatalog {
    */
   private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
       "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum", "pg_proc", "pg_trigger", "pg_auth_members",
-      "pg_rewrite", "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
+      "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table");
 
   /** The OID of {@code pg_class} itself, which {@code pg_depend.classid} names for a dependency of an index (issue #10842). */
   private static final int PG_CLASS_RELATION_OID      = 1259;
   /** The OID of {@code pg_constraint} itself, which {@code pg_depend} names for a dependency of or on a constraint (issue #10842). */
   private static final int PG_CONSTRAINT_RELATION_OID = 2606;
+  /** The OID of {@code pg_rewrite} itself, which {@code pg_depend.classid} names for a dependency of a view's rule (issue #10976). */
+  private static final int PG_REWRITE_RELATION_OID    = 2618;
   /**
    * The system catalogs a {@code regclass} cast names by OID, the ones {@code pg_depend} points into: {@code
    * d.classid = 'pg_catalog.pg_class'::regclass} is how psql and pgjdbc filter it. PostgreSQL searches {@code pg_catalog} first,
    * so the name means the catalog even where a type of the same name exists.
    */
   private static final Map<String, Integer> SYSTEM_CATALOG_OIDS = Map.of("pg_class", PG_CLASS_RELATION_OID, "pg_constraint",
-      PG_CONSTRAINT_RELATION_OID);
+      PG_CONSTRAINT_RELATION_OID, "pg_rewrite", PG_REWRITE_RELATION_OID);
 
   /** The OID and name of the two tablespaces every PostgreSQL has, the only ones this catalog's relations can be in (issue #10591). */
   private static final Object[][] TABLESPACES = { { 1663, "pg_default" }, { 1664, "pg_global" } };
@@ -439,7 +447,7 @@ public class PostgresCatalog {
     // What ArcadeDB has no equivalent of, so these have no rows (issue #10591): a question about them - which functions are defined,
     // whom a role is a member of - has "none" as its honest answer. A user-defined
     // function, a sequence, a role membership, a foreign table and a default privilege do not exist here; pg_class already
-    // answers relhasrules and relhastriggers false for every relation, so pg_rewrite and pg_trigger agree with it. An ArcadeDB
+    // answers relhastriggers false for every relation, so pg_trigger agrees with it. An ArcadeDB
     // schema trigger is not a PostgreSQL trigger: it calls no function of pg_proc and no client can read it as one.
     // The trade-off, accepted on purpose: a real PostgreSQL also has system rows in pg_proc (its built-in functions). Those are
     // PostgreSQL's implementation, not objects of this database: this server has no function with a pg_proc identity (an OID, a
@@ -456,6 +464,8 @@ public class PostgresCatalog {
     // The dependencies of the indexes and of the unique constraints they back, the ones a tool walking from a table to what is built
     // on it reads (issue #10842); see dependRows for what is and is not listed
     relation("pg_depend", null, "classid", "objid", "objsubid", "refclassid", "refobjid", "refobjsubid", "deptype");
+    // The one rule of each materialized view, the rule that is its query, as PostgreSQL keeps it (issue #10976): pg_class answers
+    // relhasrules true for a materialized view and false for a table, which has no rule here, so the two agree
     relation("pg_rewrite", null, "oid", "rulename", "ev_class", "ev_type", "ev_enabled", "is_instead", "ev_qual", "ev_action");
     relation("pg_sequence", null, "seqrelid", "seqtypid", "seqstart", "seqincrement", "seqmax", "seqmin", "seqcache", "seqcycle");
     relation("pg_shdescription", null, "objoid", "classoid", "description");
@@ -507,6 +517,8 @@ public class PostgresCatalog {
     columnTypes("pg_inherits", PostgresType.INTEGER, "inhrelid", "inhparent", "inhseqno");
     columnTypes("pg_inherits", PostgresType.BOOLEAN, "inhdetachpending");
     columnTypes("pg_depend", PostgresType.INTEGER, "classid", "objid", "objsubid", "refclassid", "refobjid", "refobjsubid");
+    columnTypes("pg_rewrite", PostgresType.INTEGER, "oid", "ev_class");
+    columnTypes("pg_rewrite", PostgresType.BOOLEAN, "is_instead");
     columnTypes("pg_tablespace", PostgresType.INTEGER, "oid", "spcowner");
     columnTypes("pg_settings", PostgresType.BOOLEAN, "pending_restart");
 
@@ -1882,9 +1894,11 @@ public class PostgresCatalog {
         final Map<String, MaterializedRelation> relations = new HashMap<>();
         // the backing type of a view and of an aggregate carries the view's own name: both builders create it that way
         for (final MaterializedView view : schema.getMaterializedViews())
-          relations.put(view.getName(), new MaterializedRelation(view.getQuery(), isPopulated(view.getStatus())));
+          relations.put(view.getName(), new MaterializedRelation(view.getQuery(), isPopulated(view.getStatus()),
+              view.getSourceTypeNames()));
         for (final ContinuousAggregate aggregate : schema.getContinuousAggregates())
-          relations.put(aggregate.getName(), new MaterializedRelation(aggregate.getQuery(), isPopulated(aggregate.getStatus())));
+          relations.put(aggregate.getName(), new MaterializedRelation(aggregate.getQuery(), isPopulated(aggregate.getStatus()),
+              List.of(aggregate.getSourceTypeName())));
         materializedRelations = relations;
       }
       return materializedRelations.get(typeName);
@@ -1971,6 +1985,14 @@ public class PostgresCatalog {
 
     String schema() {
       return database.getName();
+    }
+
+    /** The materialized view whose {@code _RETURN} rule has {@code oid} (issue #10976), or null for an OID that names no rule. */
+    String ruleViewNamed(final int oid) {
+      for (final DocumentType type : sortedTypes(this))
+        if (ruleOidOf(type.getName()) == oid && materializedRelation(type.getName()) != null)
+          return type.getName();
+      return null;
     }
 
     /** The relation whose row type has {@code oid} (issue #10873), or null: name order decides a collision, as in {@link #relationNamed}. */
@@ -2303,7 +2325,8 @@ public class PostgresCatalog {
             // inherited properties in, hidden ones out and a name clash merged into one column (issue #10594)
             "relkind", view == null ? RELKIND_TABLE : RELKIND_MATERIALIZED_VIEW, "relpersistence", "p", "relnatts",
             context.columnsOf(type).size(),//
-            "relhasindex", hasIndexes, "relhasrules", Boolean.FALSE,//
+            // a materialized view has its _RETURN rule in pg_rewrite (issue #10976), a table has none
+            "relhasindex", hasIndexes, "relhasrules", view != null,//
             "relhastriggers", Boolean.FALSE, "relhassubclass", !type.getSubTypes().isEmpty(),//
             "relispartition", Boolean.FALSE, "relisshared", Boolean.FALSE, "relispopulated", view == null || view.populated(),//
             "relrowsecurity", Boolean.FALSE, "relforcerowsecurity", Boolean.FALSE, "relchecks", 0,//
@@ -2445,6 +2468,7 @@ public class PostgresCatalog {
       case "information_schema.key_column_usage" -> keyColumnRows(context);
       case "pg_inherits" -> inheritanceRows(context);
       case "pg_depend" -> dependRows(context);
+      case "pg_rewrite" -> rewriteRows(context);
       case "pg_tablespace" -> tablespaceRows();
       case "pg_settings" -> settingRows(context);
       default -> familyRows(relation, context);
@@ -2604,7 +2628,8 @@ public class PostgresCatalog {
    * other index depends on each column of its key ({@code 'a'}), and on the whole table ({@code refobjsubid} 0) when a key is an
    * expression, which reads no column of the table.
    * <p>
-   * The other dependencies a PostgreSQL records are not listed: a table on its schema ({@code 'n'}), a row type on its table
+   * The rule of a materialized view is part of the view and depends on what its query reads ({@link #addRuleDependRows}, issue
+   * #10976). The other dependencies a PostgreSQL records are not listed: a table on its schema ({@code 'n'}), a row type on its table
    * ({@code 'i'}), and PostgreSQL's own system rows. No client this catalog is tested against reads them.
    */
   private static List<Map<String, Object>> dependRows(final Context context) {
@@ -2623,6 +2648,50 @@ public class PostgresCatalog {
           expression = true;
       if (expression)
         rows.add(dependRow(dependentClass, dependent, PG_CLASS_RELATION_OID, index.tableOid(), 0, "a"));
+    }
+    addRuleDependRows(context, rows);
+    return rows;
+  }
+
+  /**
+   * The {@code pg_depend} rows of the rule of each materialized view (issue #10976), as PostgreSQL's {@code InsertRule} records them:
+   * the rule is part of its view ({@code classid pg_rewrite}, {@code refclassid pg_class}, {@code 'i'}), and depends on each
+   * relation its query reads ({@code 'n'}), named by the types the view recorded as its sources. A source that no longer exists has
+   * no relation to depend on and is left out. Only the whole relation is listed ({@code refobjsubid} 0): PostgreSQL also lists one
+   * row per column the query reads, which needs the query's expressions resolved against the source, and no client reads them.
+   */
+  private static void addRuleDependRows(final Context context, final List<Map<String, Object>> rows) {
+    final Schema schema = context.database().getSchema();
+    for (final DocumentType type : sortedTypes(context)) {
+      final String name = type.getName();
+      final MaterializedRelation view = context.materializedRelation(name);
+      if (view == null)
+        continue;
+      final int rule = ruleOidOf(name);
+      rows.add(dependRow(PG_REWRITE_RELATION_OID, rule, PG_CLASS_RELATION_OID, oidOf(name), 0, "i"));
+      final Set<Integer> read = new HashSet<>();
+      for (final String source : view.sources()) {
+        final DocumentType sourceType = source != null && schema.existsType(source) ? schema.getType(source) : null;
+        // a source read twice, or the view's own type, is one dependency or none, as PostgreSQL de-duplicates them
+        if (sourceType != null && !sourceType.getName().equals(name) && read.add(oidOf(sourceType.getName())))
+          rows.add(dependRow(PG_REWRITE_RELATION_OID, rule, PG_CLASS_RELATION_OID, oidOf(sourceType.getName()), 0, "n"));
+      }
+    }
+  }
+
+  /**
+   * {@code pg_rewrite}: the {@code _RETURN} rule of each materialized view and continuous aggregate (issue #10976), an
+   * {@code ON SELECT DO INSTEAD} rule ({@code ev_type '1'}), enabled in origin mode ({@code 'O'}) as every rule is by default, with
+   * no qualification. {@code ev_action} is PostgreSQL's parse tree of the query, which this server does not have: it is NULL, and
+   * the query is what {@code pg_get_ruledef} and {@code pg_get_viewdef} answer.
+   */
+  private static List<Map<String, Object>> rewriteRows(final Context context) {
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (final DocumentType type : sortedTypes(context)) {
+      final String name = type.getName();
+      if (context.materializedRelation(name) != null)
+        rows.add(completeMap("pg_rewrite", "oid", ruleOidOf(name), "rulename", VIEW_RULE_NAME, "ev_class", oidOf(name), "ev_type",
+            "1", "ev_enabled", "O", "is_instead", Boolean.TRUE, "ev_qual", "<>"));
     }
     return rows;
   }
@@ -2838,6 +2907,14 @@ public class PostgresCatalog {
    */
   private static int rowTypeOidOf(final String typeName) {
     return FIRST_USER_OID + Math.floorMod(("pg_type:" + typeName).hashCode(), OID_SPACE);
+  }
+
+  /**
+   * The OID of the {@code _RETURN} rule of a materialized view, its {@code pg_rewrite.oid} (issue #10976): stable for the same reason
+   * {@link #oidOf} is, and drawn apart from the view's own OID and its row type's.
+   */
+  private static int ruleOidOf(final String typeName) {
+    return FIRST_USER_OID + Math.floorMod(("pg_rewrite:" + typeName).hashCode(), OID_SPACE);
   }
 
   /** The {@code pg_type} columns of the row type of a relation (issue #10873), the one answer of every path that reads it. */
@@ -3725,6 +3802,8 @@ public class PostgresCatalog {
         case "obj_description", "col_description", "shobj_description" -> null;
         // The query of a materialized view (issue #10691), which psql's \d+ prints under the view's columns
         case "pg_get_viewdef" -> viewDefinition(arguments);
+        // The _RETURN rule of a materialized view, the one rule pg_rewrite lists (issue #10976)
+        case "pg_get_ruledef" -> ruleDefinition(arguments);
         // The statement that creates an index, and the constraint a unique index is (issue #10473)
         case "pg_get_indexdef" -> indexDefinition(arguments);
         case "pg_get_constraintdef" -> constraintDefinition(arguments);
@@ -3775,6 +3854,26 @@ public class PostgresCatalog {
         return null;
       final MaterializedRelation view = name == null ? null : context.materializedRelation(name);
       return view == null ? null : view.definition();
+    }
+
+    /**
+     * {@code pg_get_ruledef(rule [, pretty])}: the {@code _RETURN} rule of a materialized view, named by its {@code pg_rewrite.oid}
+     * (issue #10976), in the form PostgreSQL prints it: {@code CREATE RULE "_RETURN" AS ON SELECT TO view DO INSTEAD query;}. NULL
+     * for an OID that names no rule, as PostgreSQL answers.
+     */
+    private Object ruleDefinition(final List<Object> arguments) {
+      if (arguments.isEmpty() || arguments.size() > 2 || arguments.contains(PostgresCatalogExpression.UNKNOWN))
+        return PostgresCatalogExpression.UNKNOWN;
+      if (!(arguments.get(0) instanceof Number oid))
+        return null;
+      final String name = context.ruleViewNamed(oid.intValue());
+      final MaterializedRelation view = name == null ? null : context.materializedRelation(name);
+      if (view == null)
+        return null;
+      final boolean pretty = arguments.size() > 1 && PostgresCatalogExpression.truth(arguments.get(1));
+      final String query = view.definition().strip();
+      return "CREATE RULE \"" + VIEW_RULE_NAME + "\" AS" + (pretty ? "\n    " : " ") + "ON SELECT TO " + name + " DO INSTEAD  " + query
+          + (query.endsWith(";") ? "" : ";");
     }
 
     /**
@@ -3898,6 +3997,7 @@ public class PostgresCatalog {
       return switch (oid) {
         case PG_CLASS_RELATION_OID -> "pg_class";
         case PG_CONSTRAINT_RELATION_OID -> "pg_constraint";
+        case PG_REWRITE_RELATION_OID -> "pg_rewrite";
         default -> context.relationNamed(oid);
       };
     }

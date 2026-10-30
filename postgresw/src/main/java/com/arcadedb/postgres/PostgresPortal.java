@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -44,9 +45,8 @@ public class PostgresPortal {
   /**
    * True only when a {@code Describe('S')} for this exact statement text already sent the client a real
    * RowDescription (schema-sampled column OIDs, since no row has run yet) - as opposed to {@link #columns}
-   * being non-null for some other reason (a catalog answer recomputed fresh on every Bind, or a stale value
-   * inherited via {@code bindFrom()} from an already-executed portal picked up by {@code bindCommand()}'s
-   * unknown-source-statement fallback). Statement-level Describe is a per-connection contract a client is
+   * being non-null for some other reason (a catalog, SHOW or system-query answer PARSE precomputed, or one
+   * recomputed fresh on every Bind). Statement-level Describe is a per-connection contract a client is
    * entitled to rely on for every later Bind+Execute of the same statement with different parameters (issue
    * #6725): once set, {@code executeCommand()} must keep serializing under that exact promised shape instead
    * of silently re-deriving and re-announcing a different one from whatever row this particular Execute
@@ -190,22 +190,16 @@ public class PostgresPortal {
    * portal name silently reset or overwrite another already-bound (possibly suspended) portal from the same
    * statement, since both names pointed at the same object.
    * <p>
-   * This copies only what PARSE already fixed for the statement for good (query text/language/parameter
-   * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers,
-   * and - for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
-   * {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
-   * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended}, ...) at
-   * its fresh default, so each returned portal starts its own independent
-   * lifecycle.
+   * This copies only what PARSE already fixed for the statement for good: the query text/language/parameter types, the
+   * parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers, and -
+   * for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
+   * {@code executed}/{@code fullResultSet}/{@code cachedResultSet}/{@code columns}. Every portal bound from the template
+   * therefore starts from the SAME precomputed answer: an Execute only slices it or replaces the field with a list of its
+   * own, and the inherited lists are handed out read-only, so a portal that ever wrote into one in place would fail
+   * instead of changing the answer of every other portal of the statement (issue #10934). The per-Bind state (parameter
+   * formats and values, result formats, {@code resultCursor}, {@code cursor}, {@code suspended}, {@code rowsDescribed},
+   * ...) is left at its fresh default, so each returned portal starts its own independent lifecycle.
    */
-  /**
-   * True when this portal's statement promised, through a {@code Describe('S')} answered with {@code NoData}, that no
-   * result set follows, and no {@code Describe('P')} of the portal itself has announced one since (issue #8379).
-   */
-  public boolean promisedNoData() {
-    return !rowsDescribed && (describedNoData || statement != null && statement.describedNoData);
-  }
-
   public static PostgresPortal bindFrom(final PostgresPortal template) {
     final PostgresPortal portal = new PostgresPortal(template.query, template.language);
     portal.sqlStatement = template.sqlStatement;
@@ -220,9 +214,10 @@ public class PostgresPortal {
     portal.copyStatement = template.copyStatement;
     portal.showName = template.showName;
     portal.executed = template.executed;
-    portal.cachedResultSet = template.cachedResultSet;
-    // The answer PARSE materialized (SHOW, system and catalog queries). Read-only: a slice is copied out of it
-    portal.fullResultSet = template.fullResultSet;
+    // The answer PARSE materialized (SHOW, system and catalog queries), shared by every portal of the statement:
+    // read-only, a slice is copied out of it
+    portal.cachedResultSet = readOnly(template.cachedResultSet);
+    portal.fullResultSet = readOnly(template.fullResultSet);
     portal.columns = template.columns;
     portal.columnsDescribed = template.columnsDescribed;
     portal.statement = template;
@@ -231,6 +226,19 @@ public class PostgresPortal {
     portal.aliasToSourceProperty = template.aliasToSourceProperty;
     portal.aliasToSourcePropertyResolved = template.aliasToSourcePropertyResolved;
     return portal;
+  }
+
+  /**
+   * True when this portal's statement promised, through a {@code Describe('S')} answered with {@code NoData}, that no
+   * result set follows, and no {@code Describe('P')} of the portal itself has announced one since (issue #8379).
+   */
+  public boolean promisedNoData() {
+    return !rowsDescribed && (describedNoData || statement != null && statement.describedNoData);
+  }
+
+  /** A read-only view of a list portals share, without copying it (the JDK hands back a list that already is one as is). */
+  private static List<Result> readOnly(final List<Result> list) {
+    return list != null ? Collections.unmodifiableList(list) : null;
   }
 
   @Override

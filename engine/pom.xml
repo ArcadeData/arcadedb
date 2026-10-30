@@ -269,6 +269,16 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- ASM reads the compiled SQL functions in Issue10699NoNarrowingIntReadsInFunctionsTest: a narrowing to int is one
+             of a closed set of instructions whatever its source spelling (#10931). The same version json-path already
+             brings in through json-smart, declared here so the scan does not depend on another library's internals. -->
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm</artifactId>
+            <version>9.7.1</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Cucumber for OpenCypher TCK -->
         <dependency>
             <groupId>io.cucumber</groupId>

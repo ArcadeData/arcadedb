@@ -155,15 +155,15 @@ class LSMVectorIndexPageParser {
 
           // Read variable-sized vectorId
           final int vectorId = (int) page.readNumber(currentOffset);
-          currentOffset += page.getLastReadNumberSize();
+          currentOffset += page.readNumberSize(currentOffset);
 
           // Read variable-sized bucketId
           final int bucketId = (int) page.readNumber(currentOffset);
-          currentOffset += page.getLastReadNumberSize();
+          currentOffset += page.readNumberSize(currentOffset);
 
           // Read variable-sized position
           final long position = page.readNumber(currentOffset);
-          currentOffset += page.getLastReadNumberSize();
+          currentOffset += page.readNumberSize(currentOffset);
 
           final RID rid = new RID(bucketId, position);
 
