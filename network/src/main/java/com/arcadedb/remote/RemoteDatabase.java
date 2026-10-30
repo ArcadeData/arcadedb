@@ -1068,7 +1068,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (maxRows != null)
       jsonRequest.put("limit", maxRows);
     if (params != null && !params.isEmpty())
-      jsonRequest.put("params", new JSONObject(params));
+      jsonRequest.put("params", new JSONObject(encodeParameters(params)));
 
     InputStream body = null;
     try {
