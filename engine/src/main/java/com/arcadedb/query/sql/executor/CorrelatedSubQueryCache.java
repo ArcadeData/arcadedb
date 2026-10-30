@@ -82,7 +82,7 @@ public final class CorrelatedSubQueryCache {
    * Every registered built-in is classified either here or in LetQueryStepCorrelatedResultCacheTest's reviewed list,
    * which fails on a newly registered name until someone decides which side it belongs on.
    */
-  public static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql");
+  static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql");
   /**
    * Built-in methods not trusted: {@code remove}/{@code removeAll} change a collection (today on a defensive copy, not
    * relied upon here), and {@code transform} resolves the methods it applies from its string arguments at run time,

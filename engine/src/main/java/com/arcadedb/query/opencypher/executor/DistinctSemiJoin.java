@@ -34,12 +34,10 @@ import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
-import com.arcadedb.query.opencypher.ast.SimpleCypherStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
-import com.arcadedb.query.sql.executor.CorrelatedSubQueryCache;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -81,18 +79,53 @@ import java.util.Set;
  */
 public final class DistinctSemiJoin {
   /**
-   * The Cypher functions that can answer differently for the same arguments within one statement, or that read the
-   * row's hidden context rather than a named variable ({@code file()}, {@code linenumber()}), under the name they are
-   * registered by ({@code apoc.} and {@code sql.} are stripped first). A bare name resolving to a built-in SQL function is
-   * classified by {@link CorrelatedSubQueryCache#NON_REPEATABLE_FUNCTIONS}. The no-argument temporal constructors are
-   * not here: they answer from one clock per statement.
+   * The Cypher functions reviewed as answering the same for the same arguments within one statement, under the name they
+   * are registered by ({@code apoc.} is stripped first). It is an allow-list on purpose: a function can be registered
+   * at run time ({@code CypherFunctionRegistry.register}), and one that varies read as pure would make the semi-join
+   * drop rows, while a pure one read as varying only costs the optimization. Not here, because they vary or read the
+   * row's hidden context: {@code rand}, {@code randomUUID}, {@code timestamp}, {@code file}, {@code linenumber},
+   * {@code text.random}, {@code create.uuid}, {@code create.uuidBase64}, {@code create.vNode},
+   * {@code create.vRelationship}, {@code date.currentTimestamp} and every {@code *.realtime}. The no-argument
+   * temporal constructors ({@code date()}, {@code datetime()}, ...) are: they answer from one clock per statement.
+   * A {@code sql.} bridge is never trusted here ({@code sql.date()} reads the clock on every call).
    * <p>
-   * {@code Issue11009DistinctSemiJoinTest} lists every other registered Cypher function as reviewed, and fails on a
-   * newly registered name until it is classified on one side or the other: a varying function wrongly read as pure
-   * would make the semi-join drop rows.
+   * {@code Issue11009DistinctSemiJoinTest} checks that every name listed is a registered function and that none of
+   * the varying ones above is.
    */
-  private static final Set<String> VARYING_FUNCTIONS = Set.of("rand", "randomuuid", "timestamp", "file", "linenumber",
-      "text.random", "create.uuid", "create.uuidbase64", "date.currenttimestamp", "create.vnode", "create.vrelationship");
+  public static final Set<String> DETERMINISTIC_FUNCTIONS = Set.of(
+      "abs", "acos", "agg.first", "agg.last", "agg.maxitems", "agg.median", "agg.minitems", "agg.nth",
+      "agg.percentiles", "agg.product", "agg.slice", "agg.statistics", "asin", "atan", "atan2", "avg", "btrim",
+      "ceil", "ceiling", "char_length", "char.length", "character_length", "character.length", "charlength",
+      "coalesce", "coll.avg", "coll.distinct", "coll.flatten", "coll.indexof", "coll.insert", "coll.max", "coll.min",
+      "coll.pairsmin", "coll.remove", "coll.sort", "coll.sum", "coll.toset", "coll.union", "coll.unionall", "collect",
+      "collect_list", "convert.fromjsonlist", "convert.fromjsonmap", "convert.toboolean", "convert.tofloat",
+      "convert.tointeger", "convert.tojson", "convert.tolist", "convert.tomap", "convert.toset", "convert.tostring",
+      "cos", "cosh", "cot", "coth", "count", "date", "date.add", "date.convert", "date.field", "date.fields",
+      "date.format", "date.fromiso8601", "date.parse", "date.systemtimezone", "date.toiso8601", "datetime", "degrees",
+      "distance", "duration", "duration_between", "e", "elementid", "endnode", "exists", "exp", "floor", "format",
+      "haversin", "head", "id", "isempty", "isnan", "isnormalized", "keys", "labels", "last", "left", "length", "ln",
+      "local_datetime", "local_time", "localdatetime", "localtime", "log", "log10", "lower", "ltrim", "map.clean",
+      "map.flatten", "map.fromlists", "map.frompairs", "map.groupby", "map.merge", "map.mergelist", "map.removekey",
+      "map.removekeys", "map.setkey", "map.sortedproperties", "map.submap", "map.unflatten", "map.values",
+      "math.cosh", "math.maxdouble", "math.maxlong", "math.minlong", "math.round", "math.sigmoid",
+      "math.sigmoidprime", "math.sinh", "math.tanh", "max", "min", "node.degree", "node.degree.in", "node.degree.out",
+      "node.id", "node.labels", "node.relationship.exists", "node.relationship.types", "nodes", "normalize", "nullif",
+      "number.format", "path_length", "path.combine", "path.create", "path.elements", "path.slice", "percentile_cont",
+      "percentile_disc", "percentilecont", "percentiledisc", "pi", "point", "point.distance", "point.withinbbox",
+      "properties", "radians", "range", "rel.endnode", "rel.id", "rel.startnode", "rel.type", "relationships",
+      "replace", "reverse", "right", "round", "rtrim", "sign", "sin", "sinh", "size", "split", "sqrt", "startnode",
+      "stdev", "stdev_pop", "stdev_samp", "stdevp", "substring", "sum", "tail", "tan", "tanh", "text.bytecount",
+      "text.camelcase", "text.capitalize", "text.capitalizeall", "text.charat", "text.code", "text.decapitalize",
+      "text.decapitalizeall", "text.format", "text.hammingdistance", "text.hexvalue", "text.indexof",
+      "text.jarowinklerdistance", "text.join", "text.levenshteindistance", "text.levenshteinsimilarity", "text.lpad",
+      "text.regexreplace", "text.replace", "text.rpad", "text.slug", "text.snakecase", "text.sorensendicesimilarity",
+      "text.split", "text.uppercamelcase", "time", "toboolean", "tobooleanlist", "tobooleanornull", "tofloat",
+      "tofloatlist", "tofloatornull", "tointeger", "tointegerlist", "tointegerornull", "tolower", "tostring",
+      "tostringlist", "tostringornull", "toupper", "trim", "type", "upper", "util.compress", "util.decompress",
+      "util.md5", "util.sha1", "util.sha256", "util.sha512", "util.sleep", "util.validate", "valuetype", "vector",
+      "vector_dimension_count", "vector.create", "vector.dimension.count", "vector.distance",
+      "vector.distance.cosine", "vector.distance.euclidean", "vector.distance.manhattan", "vector.norm",
+      "vector.similarity.cosine", "vector.similarity.euclidean", "zoned_datetime", "zoned_time");
 
   /**
    * Where the semi-join starts and what it keys on.
@@ -113,14 +146,8 @@ public final class DistinctSemiJoin {
    * known to be a function of its arguments at all (a user function).
    */
   public static boolean isVaryingFunction(final String rawName) {
-    String name = rawName.toLowerCase(Locale.ROOT);
-    if (name.startsWith("apoc."))
-      name = name.substring("apoc.".length());
-    else if (name.startsWith("sql."))
-      name = name.substring("sql.".length());
-    return VARYING_FUNCTIONS.contains(name) || name.endsWith(".realtime")
-        || CorrelatedSubQueryCache.NON_REPEATABLE_FUNCTIONS.contains(name)
-        || !SimpleCypherStatement.isConfirmedPureFunctionName(rawName);
+    final String name = rawName.toLowerCase(Locale.ROOT);
+    return !DETERMINISTIC_FUNCTIONS.contains(name.startsWith("apoc.") ? name.substring("apoc.".length()) : name);
   }
 
   /**
