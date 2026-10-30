@@ -25,7 +25,10 @@ import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.lang.reflect.Array;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.RandomAccess;
 
 /**
  * vector_create(values, dimension, coordinateType) - converts a list of numbers into the primitive array of the coordinate type
@@ -86,65 +89,66 @@ public class VectorCreateFunction implements StatelessFunction {
   }
 
   private static byte[] toBytes(final Object values) {
-    final Object[] source = elements(values);
-    final byte[] result = new byte[source.length];
-    for (int i = 0; i < source.length; i++)
-      result[i] = (byte) wholeCoordinate(source[i], "INT8", Byte.MIN_VALUE, Byte.MAX_VALUE);
+    final List<?> source = elements(values);
+    final byte[] result = new byte[source.size()];
+    for (int i = 0; i < result.length; i++)
+      result[i] = (byte) wholeCoordinate(source.get(i), "INT8", Byte.MIN_VALUE, Byte.MAX_VALUE);
     return result;
   }
 
   private static short[] toShorts(final Object values) {
-    final Object[] source = elements(values);
-    final short[] result = new short[source.length];
-    for (int i = 0; i < source.length; i++)
-      result[i] = (short) wholeCoordinate(source[i], "INT16", Short.MIN_VALUE, Short.MAX_VALUE);
+    final List<?> source = elements(values);
+    final short[] result = new short[source.size()];
+    for (int i = 0; i < result.length; i++)
+      result[i] = (short) wholeCoordinate(source.get(i), "INT16", Short.MIN_VALUE, Short.MAX_VALUE);
     return result;
   }
 
   private static int[] toInts(final Object values) {
-    final Object[] source = elements(values);
-    final int[] result = new int[source.length];
-    for (int i = 0; i < source.length; i++)
-      result[i] = (int) wholeCoordinate(source[i], "INT32", Integer.MIN_VALUE, Integer.MAX_VALUE);
+    final List<?> source = elements(values);
+    final int[] result = new int[source.size()];
+    for (int i = 0; i < result.length; i++)
+      result[i] = (int) wholeCoordinate(source.get(i), "INT32", Integer.MIN_VALUE, Integer.MAX_VALUE);
     return result;
   }
 
   private static long[] toLongs(final Object values) {
-    final Object[] source = elements(values);
-    final long[] result = new long[source.length];
-    for (int i = 0; i < source.length; i++)
-      result[i] = wholeCoordinate(source[i], "INTEGER", Long.MIN_VALUE, Long.MAX_VALUE);
+    final List<?> source = elements(values);
+    final long[] result = new long[source.size()];
+    for (int i = 0; i < result.length; i++)
+      result[i] = wholeCoordinate(source.get(i), "INTEGER", Long.MIN_VALUE, Long.MAX_VALUE);
     return result;
   }
 
   private static double[] toDoubles(final Object values) {
-    final Object[] source = elements(values);
-    final double[] result = new double[source.length];
-    for (int i = 0; i < source.length; i++) {
-      if (!(source[i] instanceof Number number))
-        throw new CommandExecutionException("Vector coordinate of type FLOAT must be a number, found: " + source[i]);
+    final List<?> source = elements(values);
+    final double[] result = new double[source.size()];
+    for (int i = 0; i < result.length; i++) {
+      if (!(source.get(i) instanceof Number number))
+        throw new CommandExecutionException("Vector coordinate of type FLOAT must be a number, found: " + source.get(i));
       result[i] = number.doubleValue();
     }
     return result;
   }
 
-  private static Object[] elements(final Object values) {
+  /** The coordinates by index: a list as it is (no copy, no boxing of its own), any other form as a list that reads it. */
+  private static List<?> elements(final Object values) {
     if (values instanceof List<?> list)
-      return list.toArray();
+      return list instanceof RandomAccess ? list : new ArrayList<>(list);
     if (values instanceof Object[] array)
-      return array;
+      return Arrays.asList(array);
     if (values != null && values.getClass().isArray()) {
       final int length = Array.getLength(values);
-      final Object[] result = new Object[length];
+      final List<Object> result = new ArrayList<>(length);
       for (int i = 0; i < length; i++)
-        result[i] = Array.get(values, i);
+        result.add(Array.get(values, i));
       return result;
     }
     // a string or any other form the float conversion reads
     final float[] floats = VectorUtils.toFloatArray(values);
-    final Object[] result = new Object[floats.length];
-    for (int i = 0; i < floats.length; i++)
-      result[i] = floats[i];
+    final List<Object> result = new ArrayList<>(floats.length);
+    for (final float f : floats)
+      result.add(f);
     return result;
   }
 

@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -101,6 +103,21 @@ class Issue10917VectorCoordinateTypeTest extends TestHelper {
       final Result r = rs.next();
       assertThat(r.<Number>getProperty("d").doubleValue()).isEqualTo(5.0);
       assertThat(r.<Number>getProperty("n").doubleValue()).isEqualTo(5.0);
+    }
+  }
+
+  /**
+   * A {@code byte[]} reaching the Cypher vector functions is an INT8 vector of plain coordinates, never a quantized one: it is widened
+   * as it is, not dequantized. Pinned because the SQL vector functions read the same {@code byte[]} as quantized (and refuse it).
+   */
+  @Test
+  void aByteArrayIsReadAsPlainCoordinatesNotDequantized() {
+    try (final ResultSet rs = database.query("opencypher",
+        "RETURN vector_norm($v, EUCLIDEAN) AS n, vector_distance($v, $w, EUCLIDEAN) AS d",
+        Map.of("v", new byte[] { 3, 4 }, "w", new byte[] { 0, 0 }))) {
+      final Result r = rs.next();
+      assertThat(r.<Number>getProperty("n").doubleValue()).isEqualTo(5.0);
+      assertThat(r.<Number>getProperty("d").doubleValue()).isEqualTo(5.0);
     }
   }
 
