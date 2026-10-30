@@ -274,6 +274,18 @@ longer open source from 5.1.0 on (issue #10579).
 
 ECharts also includes code derived from d3 (Copyright 2010-2016 Mike Bostock, BSD 3-Clause).
 
+### Studio (Web UI) Graph Physics
+
+The live force layout of the graph view (node repulsion, link springs, centre gravity) is driven by d3-force, bundled in the
+`arcadedb-studio` jar as `static/dist/js/d3-*.min.js`.
+
+| npm package | Version | License | Homepage |
+|-------------|---------|---------|----------|
+| d3-force | 3.0.0 | ISC | https://github.com/d3/d3-force |
+| d3-dispatch | 3.0.1 | ISC | https://github.com/d3/d3-dispatch |
+| d3-quadtree | 3.0.1 | ISC | https://github.com/d3/d3-quadtree |
+| d3-timer | 3.0.1 | ISC | https://github.com/d3/d3-timer |
+
 ### Studio (Web UI) Icons, Fonts and Export Libraries
 
 Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-list since issue #10626; the

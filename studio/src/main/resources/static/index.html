@@ -66,6 +66,11 @@
     <script src="dist/js/cytoscape-cxtmenu.js"></script>
     <script src="dist/js/cytoscape-graphml.js"></script>
     <script src="dist/js/cytoscape-node-html-label.min.js"></script>
+    <!-- d3-force (ISC) live physics layout; its helpers register on the shared `d3` global, so they load first -->
+    <script src="dist/js/d3-dispatch.min.js"></script>
+    <script src="dist/js/d3-quadtree.min.js"></script>
+    <script src="dist/js/d3-timer.min.js"></script>
+    <script src="dist/js/d3-force.min.js"></script>
     <!-- Charts: Apache ECharts (Apache-2.0), drawn through js/studio-charts.js (issue #10579) -->
     <script src="dist/js/echarts.min.js"></script>
 
@@ -91,6 +96,7 @@
     <script src="js/studio-table.js"></script>
     <script src="js/studio-graph.js"></script>
     <script src="js/studio-graph-widget.js"></script>
+    <script src="js/studio-graph-physics.js"></script>
     <script src="js/studio-graph-functions.js"></script>
     <script src="js/studio-record-editor.js"></script>
     <script src="js/studio-timeseries.js"></script>

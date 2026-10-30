@@ -208,6 +208,23 @@ module.exports = {
           from: 'node_modules/cytoscape-fcose/cytoscape-fcose.js',
           to: 'js/cytoscape-fcose.js',
         },
+        // d3-force live physics and its helpers (must load in order: dispatch, quadtree, timer -> force; each registers on the shared `d3` global)
+        {
+          from: 'node_modules/d3-dispatch/dist/d3-dispatch.min.js',
+          to: 'js/d3-dispatch.min.js',
+        },
+        {
+          from: 'node_modules/d3-quadtree/dist/d3-quadtree.min.js',
+          to: 'js/d3-quadtree.min.js',
+        },
+        {
+          from: 'node_modules/d3-timer/dist/d3-timer.min.js',
+          to: 'js/d3-timer.min.js',
+        },
+        {
+          from: 'node_modules/d3-force/dist/d3-force.min.js',
+          to: 'js/d3-force.min.js',
+        },
         {
           from: 'node_modules/cytoscape-graphml/cytoscape-graphml.js',
           to: 'js/cytoscape-graphml.js',

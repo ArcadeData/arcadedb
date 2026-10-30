@@ -43,8 +43,23 @@ var globalLayout = null;
 var globalCy = null;
 var globalSelected = null;
 var globalEnableElementPanel = true;
+// LIVE PHYSICS: THE DEFAULTS A FRESH GRAPH STARTS WITH, THE RANGE THE SETTINGS PANEL SLIDERS OFFER, AND THE
+// CLASS THAT MARKS A PINNED NODE. THEY LIVE HERE, NEXT TO THE SETTINGS MODEL THEY BELONG TO, SO THE SETTINGS
+// PANEL, THE GRAPH WIDGET AND THE PHYSICS ENGINE ALL READ THE SAME NUMBERS.
+var PHYSICS_DEFAULT_REPULSION = 8;
+var PHYSICS_DEFAULT_GRAVITY = 5;
+var PHYSICS_DEFAULT_EDGE_LENGTH = 10;
+var PHYSICS_DEFAULT_PADDING = 5;
+var PHYSICS_MAX_LEVEL = 20;
+var PHYSICS_PINNED_CLASS = "physics-pinned";
+
 var globalGraphSettings = {
   graphSpacing: 50,
+  physics: true,
+  physicsRepulsion: PHYSICS_DEFAULT_REPULSION,
+  physicsGravity: PHYSICS_DEFAULT_GRAVITY,
+  physicsEdgeLength: PHYSICS_DEFAULT_EDGE_LENGTH,
+  physicsPadding: PHYSICS_DEFAULT_PADDING,
   cumulativeSelection: false,
   nodeSize: 25,
   defaultLabel: "",
