@@ -23,8 +23,10 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.executor.DistinctSemiJoin;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -294,6 +296,55 @@ class Issue11009DistinctSemiJoinTest {
         "apoc.create.uuid", "create.uuidBase64", "create.vNode", "create.vRelationship", "date.currentTimestamp",
         "datetime.realtime", "sql.date", "sql.uuid", "sql.abs", "my.userFunction", "notRegisteredAnywhere"))
       assertThat(DistinctSemiJoin.isVaryingFunction(name)).as(name).isTrue();
+  }
+
+  /**
+   * The allow-list is a review of the built-in: a function registered over an allowed name at run time is not known
+   * to be pure, so the name stops keeping the semi-join until the built-in is back.
+   */
+  @Test
+  void aFunctionRegisteredOverAnAllowedNameIsReadAsVarying() {
+    final StatelessFunction original = CypherFunctionRegistry.get("math.sigmoidPrime");
+    assertThat(original).isNotNull();
+    assertThat(DistinctSemiJoin.isVaryingFunction("math.sigmoidPrime")).isFalse();
+    try {
+      CypherFunctionRegistry.registerOrReplace(new StatelessFunction() {
+        @Override
+        public String getName() {
+          return "math.sigmoidPrime";
+        }
+
+        @Override
+        public Object execute(final Object[] args, final CommandContext context) {
+          return Math.random();
+        }
+      });
+      assertThat(DistinctSemiJoin.isVaryingFunction("math.sigmoidPrime")).isTrue();
+      assertThat(DistinctSemiJoin.isVaryingFunction("apoc.math.sigmoidPrime")).isTrue();
+    } finally {
+      CypherFunctionRegistry.registerOrReplace(original);
+    }
+    assertThat(DistinctSemiJoin.isVaryingFunction("math.sigmoidPrime")).isFalse();
+  }
+
+  /**
+   * A temporal constructor given only a timezone answers from the statement clock, like its no-argument form: the same
+   * instant on every row, so it keeps the semi-join and keeps one row per host.
+   */
+  @Test
+  void aTimezoneTemporalConstructorAnswersTheStatementClock() {
+    for (final String call : List.of("datetime('UTC')", "date('UTC')", "time('UTC')", "localdatetime('UTC')",
+        "localtime('UTC')")) {
+      final String perRow = "UNWIND range(1, 500) AS i RETURN count(DISTINCT toString(" + call + ")) AS n";
+      assertThat(column(perRow, Map.of(), "n")).as(call).containsExactly("1");
+    }
+    assertThat(column("RETURN datetime('UTC').epochMillis = datetime().epochMillis AS t", Map.of(), "t")).containsExactly(
+        "true");
+
+    final String query = BASE.replace("AS v", "AS v, datetime('Europe/Rome') AS t");
+    assertThat(explain(query, Map.of())).contains("SEMI JOIN");
+    assertThat(column(query, Map.of(), "v")).isEqualTo(
+        new ArrayList<>(new LinkedHashSet<>(column(BASE.replace("DISTINCT ", ""), Map.of(), "v"))));
   }
 
   @Test

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CollectExpression;
@@ -147,7 +148,9 @@ public final class DistinctSemiJoin {
    */
   public static boolean isVaryingFunction(final String rawName) {
     final String name = rawName.toLowerCase(Locale.ROOT);
-    return !DETERMINISTIC_FUNCTIONS.contains(name.startsWith("apoc.") ? name.substring("apoc.".length()) : name);
+    // The review is of the built-in: a function registered over an allowed name at run time is not known to be pure
+    return !DETERMINISTIC_FUNCTIONS.contains(name.startsWith("apoc.") ? name.substring("apoc.".length()) : name)
+        || !CypherFunctionRegistry.isBuiltInOrUnregistered(name);
   }
 
   /**
