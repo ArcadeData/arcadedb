@@ -62,9 +62,47 @@ class Issue10761PeerListAddressValidationTest {
 
   @Test
   void theAllowlistAndTheRaftPeerDeriveOneHostFromEveryDocumentedShape() {
-    final List<String> expectedEntries = HOSTS.stream()
-        .flatMap(host -> SHAPES.stream().map(shape -> shape.formatted(host)))
-        .toList();
+    final List<String> expectedEntries = List.of(
+        "arcadedb-0",
+        "arcadedb-0:2434",
+        "arcadedb-0:2434:2480",
+        "arcadedb-0:2434:2480:5",
+        "arcadedb-0:2434:2480:5:2490",
+        "arcadedb-0:{raft:2434}",
+        "arcadedb-0:{raft:2434,http:2480,https:2490,bolt:7687,grpc:50051,priority:10}",
+        "arcadedb-0:{}",
+        "frankfurt@arcadedb-0:2434:2480",
+        "frankfurt@arcadedb-0:{raft:2434,http:2480}",
+        "10.0.0.1",
+        "10.0.0.1:2434",
+        "10.0.0.1:2434:2480",
+        "10.0.0.1:2434:2480:5",
+        "10.0.0.1:2434:2480:5:2490",
+        "10.0.0.1:{raft:2434}",
+        "10.0.0.1:{raft:2434,http:2480,https:2490,bolt:7687,grpc:50051,priority:10}",
+        "10.0.0.1:{}",
+        "frankfurt@10.0.0.1:2434:2480",
+        "frankfurt@10.0.0.1:{raft:2434,http:2480}",
+        "[2001:db8::1]",
+        "[2001:db8::1]:2434",
+        "[2001:db8::1]:2434:2480",
+        "[2001:db8::1]:2434:2480:5",
+        "[2001:db8::1]:2434:2480:5:2490",
+        "[2001:db8::1]:{raft:2434}",
+        "[2001:db8::1]:{raft:2434,http:2480,https:2490,bolt:7687,grpc:50051,priority:10}",
+        "[2001:db8::1]:{}",
+        "frankfurt@[2001:db8::1]:2434:2480",
+        "frankfurt@[2001:db8::1]:{raft:2434,http:2480}",
+        "[::1]",
+        "[::1]:2434",
+        "[::1]:2434:2480",
+        "[::1]:2434:2480:5",
+        "[::1]:2434:2480:5:2490",
+        "[::1]:{raft:2434}",
+        "[::1]:{raft:2434,http:2480,https:2490,bolt:7687,grpc:50051,priority:10}",
+        "[::1]:{}",
+        "frankfurt@[::1]:2434:2480",
+        "frankfurt@[::1]:{raft:2434,http:2480}");
     final List<String> checked = new ArrayList<>();
     for (final String host : HOSTS)
       for (final String shape : SHAPES) {
