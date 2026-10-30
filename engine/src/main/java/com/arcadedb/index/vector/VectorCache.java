@@ -26,8 +26,10 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
  * Fixed-capacity, lock-free cache of vectors keyed by the monotonic vector id assigned by
- * {@link VectorLocationIndex}. Used on the hottest path of the whole vector engine: every distance
- * evaluation of a beam search (and of a graph build) resolves its operand through here.
+ * {@link VectorLocationIndex}. Used on the hottest path of a graph build: every distance evaluation of the build that
+ * the build's own by-ordinal array does not answer resolves its operand through here. A search scores against the
+ * index-scoped {@link FlatVectorCache} instead, which holds no object per vector and scores the vectors where they lie
+ * (issue #11003): jvector's builder asks for the vectors themselves, a search only for their similarity to the query.
  * <p>
  * It is a 2-way set-associative cache backed by a single flat array, which buys three things over the
  * {@code ConcurrentHashMap<Integer, VectorFloat<?>>} it replaces (issue #5412):

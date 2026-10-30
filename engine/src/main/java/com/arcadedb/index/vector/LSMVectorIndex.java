@@ -409,9 +409,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Index-scoped cache of materialized vectors, shared by every search on this index (issue #5412).
   // Beam search resolves one vector per distance evaluation; before this cache lived at index scope, each
   // query built its own 1024-entry map and discarded it on completion, so every query paid a full record
-  // read (or quantized page read) per hop even when repeating the very same query.
-  private volatile VectorCache searchVectorCache;
-  private final    Object      searchVectorCacheLock = new Object();
+  // read (or quantized page read) per hop even when repeating the very same query. Flat storage scored in place
+  // (issue #11003): no object per vector, and a walk asks it for a similarity rather than for a vector.
+  private volatile FlatVectorCache searchVectorCache;
+  private final    Object          searchVectorCacheLock = new Object();
   // The one-bit codes a BINARY index scores its searches on (issue #10968), keyed by vector id like searchVectorCache
   // and cleared, evicted and released wherever that one is. Null for every other quantization.
   private volatile BinaryCodeCache searchBinaryCodes;
@@ -1112,7 +1113,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // different record: a surviving entry would score graph nodes against the vector of whichever record held that
     // id before (issue #8957). Cleared in the same critical section that publishes the new ids. Every publish clears, not only the
     // renumbering one: rebuilds are rare and heavy, and a single rule is easier to keep correct than a per-caller flag.
-    final VectorCache staleCache = searchVectorCache;
+    final FlatVectorCache staleCache = searchVectorCache;
     if (staleCache != null)
       staleCache.clear();
     final BinaryCodeCache staleCodes = searchBinaryCodes;
@@ -7847,12 +7848,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   ScoreFunction.ExactScoreFunction liveOnlyScoreFunction(final VectorFloat<?> queryVector,
       final RandomAccessVectorValues vectors) {
-    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
+    final VectorSimilarityFunction function = metadata.similarityFunction;
+    if (vectors instanceof final ArcadePageVectorValues pageValues)
+      // Scored where the vector lies, without materializing it (issue #11003)
+      return node -> {
+        final float similarity = pageValues.similarity(node, queryVector, function);
+        return Float.isNaN(similarity) ? UNREADABLE_NODE_SCORE : similarity;
+      };
     return node -> {
       final VectorFloat<?> vector = vectors.getVector(node);
-      if (vector == null || (pageValues != null && pageValues.isDeletedSentinel(vector)))
+      if (vector == null)
         return UNREADABLE_NODE_SCORE;
-      return metadata.similarityFunction.compare(queryVector, vector);
+      return function.compare(queryVector, vector);
     };
   }
 
@@ -7878,8 +7885,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // The location says the vector is live, but the read can still fail - a document whose vector property was
         // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
         // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
+        if (pageValues != null)
+          return pageValues.similarity(ordinal, queryVector, metadata.similarityFunction);
         final VectorFloat<?> vector = vectors != null ? vectors.getVector(ordinal) : null;
-        if (vector == null || (pageValues != null && pageValues.isDeletedSentinel(vector)))
+        if (vector == null)
           return Float.NaN;
         return metadata.similarityFunction.compare(queryVector, vector);
       }
@@ -12878,7 +12887,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // counters. A hit ratio well below 1 on a steady workload means the working set does not fit: raise
     // arcadedb.vectorIndex.searchCacheSize. The counters are striped per thread and so are approximate under
     // concurrency - see VectorCache for why they cannot be atomic (issue #5577).
-    final VectorCache searchCache = searchVectorCache;
+    final FlatVectorCache searchCache = searchVectorCache;
     stats.put("searchVectorCacheCapacity", searchCache != null ? (long) searchCache.capacity() : 0L);
     // The one-bit codes a BINARY index scores its searches on (issue #10968): 0 for every other quantization
     final BinaryCodeCache searchCodes = searchBinaryCodes;
@@ -13748,19 +13757,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *
    * @return the shared cache, or {@code null} when caching is disabled by configuration
    */
-  VectorCache getSearchVectorCache() {
-    final int wanted = computeSearchCacheCapacity();
+  FlatVectorCache getSearchVectorCache() {
+    FlatVectorCache cache = searchVectorCache;
+    final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), cache != null ? cache.capacity() : 0);
     if (wanted <= 0)
       return null;
 
-    VectorCache cache = searchVectorCache;
     if (cache != null && cache.capacity() >= wanted)
       return cache;
 
     synchronized (searchVectorCacheLock) {
       cache = searchVectorCache;
       if (cache == null || cache.capacity() < wanted) {
-        cache = new VectorCache(wanted);
+        cache = new FlatVectorCache(metadata.dimensions, wanted);
         searchVectorCache = cache;
       }
       return cache;
@@ -13772,7 +13781,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * wherever a vector stops existing, so neither cache pins it.
    */
   private void evictFromSearchCaches(final int vectorId) {
-    final VectorCache cache = searchVectorCache;
+    final FlatVectorCache cache = searchVectorCache;
     if (cache != null)
       cache.remove(vectorId);
     final BinaryCodeCache codes = searchBinaryCodes;
@@ -13790,11 +13799,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   BinaryCodeCache getSearchBinaryCodes() {
     if (metadata.quantizationType != VectorQuantizationType.BINARY)
       return null;
-    final int wanted = computeBinaryCodeCacheCapacity();
+    BinaryCodeCache codes = searchBinaryCodes;
+    final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions), codes != null ? codes.capacity() : 0);
     if (wanted <= 0)
       return null;
 
-    BinaryCodeCache codes = searchBinaryCodes;
     if (codes != null && codes.capacity() >= wanted)
       return codes;
 
@@ -13809,12 +13818,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * How many codes the BINARY search cache holds: the same {@code arcadedb.vectorIndex.searchCacheSize} and heap share
-   * as the vector cache, counted in codes, which are a thirty-second of the float vectors that cache holds. Sized to the
-   * vector ID range rather than to the live count, because the codes are addressed by id and a deleted id keeps its
-   * place in the range.
+   * How many entries a search cache addressed by vector id holds - the vectors of {@link #getSearchVectorCache} and the
+   * BINARY codes of {@link #getSearchBinaryCodes} - and the only place both are sized.
+   * <p>
+   * An explicit {@code arcadedb.vectorIndex.searchCacheSize} wins. Otherwise the cache is sized to hold the whole corpus -
+   * which is the point: a working set that fits never touches disk again - but capped at the configured share of the heap
+   * actually AVAILABLE (issue #6503, see {@link VectorHeapBudget}) so a corpus larger than RAM degrades to eviction instead of
+   * OOM. The cache only ever grows, so a reading taken while the heap is tight simply declines to grow it further rather than
+   * shrinking what is already there.
+   * <p>
+   * The corpus is the vector ID range rather than the live count: both caches are direct-mapped by id (issues #10968 and
+   * #11003), so a capacity at least the range is what keeps every vector in a slot of its own, and a deleted id keeps its
+   * place in the range. Each cache rounds its capacity up to a power of two, and past the range every slot fills, so a
+   * capacity whose round-up would pass the budget is rounded down instead: the budget is a bound, never doubled.
+   * <p>
+   * This runs on every search, and the heap reading polls every memory pool of the JVM. A cache that already has a slot for
+   * every vector id cannot grow, so it is answered without the reading.
+   *
+   * @param bytesPerEntry   heap one entry costs
+   * @param currentCapacity capacity of the cache the index holds, 0 for none
+   *
+   * @return the number of entries to hold, or 0 when caching is disabled
    */
-  private int computeBinaryCodeCacheCapacity() {
+  private int searchCacheCapacity(final long bytesPerEntry, final int currentCapacity) {
     final int configured = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
     if (configured < 0)
@@ -13827,12 +13853,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (heapPercent <= 0)
       return 0;
 
-    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE,
-        VectorHeapBudget.budgetBytes(heapPercent) / BinaryCodeCache.bytesPerCode(metadata.dimensions));
     final long idRange = Math.max(MIN_SEARCH_CACHE_SIZE, Math.max(nextId.get(), vectorIndex().size()));
+    if (currentCapacity >= idRange)
+      return currentCapacity;
+
+    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE, VectorHeapBudget.budgetBytes(heapPercent) / bytesPerEntry);
     long wanted = Math.min(Math.min(affordable, idRange), Integer.MAX_VALUE / 2);
-    // The cache rounds its capacity up to a power of two and allocates it at once, so a capacity whose round-up would pass
-    // the budget is rounded down instead: the budget is a bound, never doubled
     if (Long.highestOneBit(wanted) != wanted && Long.highestOneBit(wanted) << 1 > affordable)
       wanted = Long.highestOneBit(wanted);
     return (int) wanted;
@@ -13897,39 +13923,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // repeats. Pairing it with the rebuild generation, which only ever increases, makes the epoch strictly monotonic
     // across both kinds of event. The generation occupies the high bits so ordinary mutations still move the low ones.
     return (rebuildSnapshotGeneration << 32) | (mutationsSinceSerialize.get() & 0xFFFFFFFFL);
-  }
-
-  /**
-   * Computes how many vectors the shared search cache should hold.
-   * <p>
-   * An explicit {@code arcadedb.vectorIndex.searchCacheSize} wins. Otherwise the cache is sized to hold the
-   * whole corpus - which is the point: a working set that fits never touches disk again - but capped at the
-   * configured share of the heap actually AVAILABLE (issue #6503, see {@link VectorHeapBudget}) so a corpus
-   * larger than RAM degrades to eviction instead of OOM. The cache only ever grows, so a reading taken while the
-   * heap is tight simply declines to grow it further rather than shrinking what is already there.
-   *
-   * @return the number of vectors to hold, or 0 when caching is disabled
-   */
-  private int computeSearchCacheCapacity() {
-    final int configured = mutable.getDatabase().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
-    if (configured < 0)
-      return 0;
-    if (configured > 0)
-      return configured;
-
-    final int heapPercent = mutable.getDatabase().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT);
-    if (heapPercent <= 0)
-      return 0;
-
-    final long heapBudget = VectorHeapBudget.budgetBytes(heapPercent);
-    final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE,
-        heapBudget / VectorHeapBudget.bytesPerCachedVector(metadata.dimensions));
-
-    final long corpus = Math.max(MIN_SEARCH_CACHE_SIZE, vectorIndex().size());
-
-    return (int) Math.min(Math.min(affordable, corpus), Integer.MAX_VALUE / 2);
   }
 
   /**
