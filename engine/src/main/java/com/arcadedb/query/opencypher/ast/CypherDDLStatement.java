@@ -54,6 +54,7 @@ public class CypherDDLStatement implements CypherStatement {
   private final CypherTypeName typedName;
   private final IndexKind indexKind;
   private final Expression options;
+  private final List<String> labelNames;
 
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
@@ -76,6 +77,19 @@ public class CypherDDLStatement implements CypherStatement {
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
       final boolean forRelationship, final CypherTypeName typedName, final IndexKind indexKind, final Expression options) {
+    this(kind, constraintKind, constraintName, labelName == null ? null : List.of(labelName), propertyNames, ifNotExists, ifExists,
+        forRelationship, typedName, indexKind, options);
+  }
+
+  /**
+   * @param labelNames the labels or relationship types of the pattern: more than one for a vector or full-text index over
+   *                   {@code (n:A|B)} (issue #10914); the first is {@link #getLabelName()}
+   */
+  public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
+      final List<String> labelNames, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
+      final boolean forRelationship, final CypherTypeName typedName, final IndexKind indexKind, final Expression options) {
+    final String labelName = labelNames == null ? null : labelNames.getFirst();
+    this.labelNames = labelNames;
     this.kind = kind;
     this.constraintKind = constraintKind;
     this.constraintName = constraintName;
@@ -103,6 +117,11 @@ public class CypherDDLStatement implements CypherStatement {
 
   public String getLabelName() {
     return labelName;
+  }
+
+  /** Every label or relationship type of the pattern, the first of them {@link #getLabelName()}; null when there is none. */
+  public List<String> getLabelNames() {
+    return labelNames;
   }
 
   public List<String> getPropertyNames() {
