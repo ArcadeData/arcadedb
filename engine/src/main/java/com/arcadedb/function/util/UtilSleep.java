@@ -54,13 +54,8 @@ public class UtilSleep extends AbstractUtilFunction {
     if (args[0] == null)
       return null;
 
-    final long milliseconds;
-    if (args[0] instanceof Number) {
-      // Issue #10850: a whole number - longValue() read 1.9 as 1
-      milliseconds = CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "milliseconds");
-    } else {
-      milliseconds = Long.parseLong(args[0].toString());
-    }
+    // Issue #10850: a whole number - longValue() read 1.9 as 1; issue #10954: a text that is not one is a client error
+    final long milliseconds = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[0], getName(), "milliseconds");
 
     if (milliseconds <= 0)
       return null;

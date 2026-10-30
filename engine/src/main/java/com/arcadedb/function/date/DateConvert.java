@@ -53,9 +53,7 @@ public class DateConvert extends AbstractDateFunction {
       return null;
 
     // Issue #10850: a whole number - longValue() read 1.5 seconds as 1
-    final long value = args[0] instanceof Number ?
-        CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "value") :
-        Long.parseLong(args[0].toString());
+    final long value = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[0], getName(), "value");
     final String fromUnit = args[1] != null ? args[1].toString() : UNIT_MS;
     final String toUnit = args[2] != null ? args[2].toString() : UNIT_MS;
 
