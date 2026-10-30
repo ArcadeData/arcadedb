@@ -145,6 +145,8 @@ final class FlatVectorCache {
       final int slot = vectorId & mask;
       final long stamp = (long) STAMPS.getAcquire(stamps, slot);
       if ((int) stamp == vectorId && (stamp & (1L << 32)) == 0) {
+        // Plain read: the writer that published this stamp took the chunk from the array before its release, and the
+        // acquire above orders this read after that release, so the chunk is visible
         final VectorFloat<?> chunk = chunks.getPlain(slot >>> chunkShift);
         if (chunk != null) {
           final float score = similarity(function, query, chunk, (slot & chunkMask) * dimensions, dimensions);
@@ -186,7 +188,12 @@ final class FlatVectorCache {
     return null;
   }
 
-  /** Caches the components of {@code vector} as those of {@code vectorId}. */
+  /**
+   * Caches the components of {@code vector} as those of {@code vectorId}. An id already resident is left as it is: a vector
+   * id never changes content while it lives. An update tombstones the old id (and evicts it, {@link #remove}) and mints a
+   * new one, an aborted replay evicts the ids it minted, and the only path that hands an id to another vector, a
+   * renumbering compaction, clears the whole cache when it publishes the new ids ({@link #clear}).
+   */
   void put(final int vectorId, final VectorFloat<?> vector) {
     if (vectorId < 0 || vector == null || vector.length() != dimensions)
       return;
@@ -231,6 +238,10 @@ final class FlatVectorCache {
    * Drops every vector. Called under the owner's write lock, when vector ids change meaning. Every slot moves to a version
    * of its own past the one it had, so a reader racing with the clear can never match the stamp it read before it. The
    * chunks stay allocated: the next searches refill them.
+   * <p>
+   * One CAS per slot, so O(capacity): tens of milliseconds for ten million slots. It runs only when a graph rebuild
+   * publishes its location index, next to a rebuild that took orders of magnitude longer, so a global epoch folded into
+   * every stamp, which would make this O(1), is not worth one more comparison on every probe of every search.
    */
   void clear() {
     for (int slot = 0; slot < stamps.length; slot++) {
