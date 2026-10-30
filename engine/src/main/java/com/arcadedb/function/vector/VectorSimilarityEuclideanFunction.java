@@ -48,8 +48,8 @@ public class VectorSimilarityEuclideanFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
-    final float[] v1 = VectorUtils.toFloatArray(args[0]);
-    final float[] v2 = VectorUtils.toFloatArray(args[1]);
+    final float[] v1 = VectorUtils.toFloatArrayOfCoordinates(args[0]);
+    final float[] v2 = VectorUtils.toFloatArrayOfCoordinates(args[1]);
     VectorUtils.validateSameDimension(v1, v2);
     return 1.0 / (1.0 + (double) VectorUtils.l2Distance(v1, v2));
   }

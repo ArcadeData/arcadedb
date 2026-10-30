@@ -58,6 +58,10 @@ public class VectorDimensionCountFunction implements StatelessFunction {
       return (long) ((long[]) args[0]).length;
     if (args[0] instanceof int[])
       return (long) ((int[]) args[0]).length;
+    if (args[0] instanceof short[] shorts)
+      return (long) shorts.length;
+    if (args[0] instanceof byte[] bytes)
+      return (long) bytes.length;
     if (args[0] instanceof List)
       return (long) ((List<?>) args[0]).size();
     throw new CommandExecutionException("vector_dimension_count() requires a vector argument");

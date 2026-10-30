@@ -160,6 +160,20 @@ public final class VectorUtils {
   }
 
   /**
+   * Variant of {@link #toFloatArray(Object)} for a Cypher vector, whose {@code byte[]} is an INT8 vector of plain integer
+   * coordinates (#10917) and not a quantized one: the coordinates are widened as they are, not dequantized.
+   */
+  public static float[] toFloatArrayOfCoordinates(final Object vectorObj) {
+    if (vectorObj instanceof byte[] b) {
+      final float[] result = new float[b.length];
+      for (int i = 0; i < b.length; i++)
+        result[i] = b[i];
+      return result;
+    }
+    return toFloatArray(vectorObj, false);
+  }
+
+  /**
    * Variant of {@link #toFloatArray(Object)} that maps {@code null} collection elements to
    * {@link Float#NaN} instead of throwing. Used by the validity-check functions
    * {@code vector.hasNaN} and {@code vector.hasInf} (issue #3099): an invalid SQL math op such as
@@ -190,6 +204,12 @@ public final class VectorUtils {
       final float[] result = new float[d.length];
       for (int i = 0; i < d.length; i++)
         result[i] = (float) d[i];
+      return result;
+    }
+    if (vectorObj instanceof short[] sh) {
+      final float[] result = new float[sh.length];
+      for (int i = 0; i < sh.length; i++)
+        result[i] = sh[i];
       return result;
     }
     if (vectorObj instanceof long[] l) {
