@@ -243,6 +243,48 @@ test("a node dropped after a drag stays where it was dropped", () => {
   assert.ok(!node.hasClass(constants.PHYSICS_PINNED_CLASS), "the node no longer shows it is pinned");
 });
 
+test("a pinned node stays where it was dropped when a layout moves the graph", () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  const node = sandbox.globalCy.getElementById("a");
+  node.emit("grab");
+  node.position({ x: 300, y: 200 });
+  node.emit("drag");
+  node.emit("free");
+
+  // A LAYOUT OF THE WHOLE GRAPH (A NODE EXPANSION) MOVES EVERY NODE, THE PINNED ONE TOO
+  sandbox.globalCy.emit("layoutstart");
+  node.position({ x: 900, y: 900 });
+  sandbox.globalCy.emit("layoutstop");
+  settle(sandbox, 5);
+  sandbox.physicsTick();
+
+  assert.deepEqual(node.position(), { x: 300, y: 200 }, "the pinned node is back where the user dropped it");
+  assert.ok(node.hasClass(constants.PHYSICS_PINNED_CLASS), "and it is still pinned");
+});
+
+test("a slider moved while a layout runs does not start the simulation over the layout", async () => {
+  const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }, { data: { id: "b", size: 25 } }]);
+
+  sandbox.physicsStart();
+  sandbox.physicsAttach();
+  sandbox.globalCy.emit("layoutstart");
+  const before = positions(sandbox);
+  const cyBefore = JSON.stringify(sandbox.globalCy.nodes().map((n) => n.position()));
+
+  sandbox.globalGraphSettings.physicsRepulsion = 20;
+  sandbox.physicsReheat();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  assert.equal(JSON.stringify(sandbox.globalCy.nodes().map((n) => n.position())), cyBefore, "the layout still owns the nodes");
+  assert.deepEqual(positions(sandbox), before, "the simulation did not move");
+
+  // THE FORCES WERE STILL UPDATED: THEY TAKE EFFECT WHEN THE LAYOUT HANDS THE NODES OVER
+  assert.equal(chargeStrength(sandbox), -20 * 50);
+});
+
 test("a click that does not move the node leaves it floating", () => {
   const { sandbox } = buildPage([{ data: { id: "a", size: 25 } }]);
 

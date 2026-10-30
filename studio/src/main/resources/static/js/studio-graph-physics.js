@@ -124,10 +124,16 @@ function physicsApplyForces() {
   sim.force("y").strength(parameters.gravityStrength);
 }
 
-/** Gives the simulation a nudge: the current settings are applied and the graph starts moving again. */
+/**
+ * Gives the simulation a nudge: the current settings are applied and the graph starts moving again. While a layout
+ * is moving the nodes the forces are updated but the simulation stays stopped: it takes the nodes over when the
+ * layout ends.
+ */
 function physicsReheat() {
   if (globalPhysics == null) return;
   physicsApplyForces();
+  if (globalPhysicsLayoutRunning) return;
+
   globalPhysics.sim.alpha(0.3).restart();
 }
 
@@ -244,6 +250,22 @@ function physicsStop(preserveLayout) {
   }
 }
 
+/**
+ * ONE OBJECT FOR EVERY FRAME: Cytoscape copies the values out of it before the next node is written, so there is no
+ * need to make a new one for every node of every frame (nor a new callback for every frame, see physicsWritePosition).
+ */
+var globalPhysicsPosition = { x: 0, y: 0 };
+
+/** The callback of physicsTick: where the simulation put the node with this index, or null to leave it alone. */
+function physicsWritePosition(ele, i) {
+  if (ele.removed()) return null; // gone from the graph: the rebuild will drop it
+  if (ele.grabbed()) return null; // the user is dragging it: Cytoscape owns that position
+  let n = globalPhysics.nodes[i];
+  globalPhysicsPosition.x = n.x;
+  globalPhysicsPosition.y = n.y;
+  return globalPhysicsPosition;
+}
+
 /** One simulation step: the new node positions are written back to Cytoscape. */
 function physicsTick() {
   if (globalPhysics == null) return;
@@ -254,21 +276,9 @@ function physicsTick() {
     return;
   }
 
-  // ONE OBJECT FOR THE WHOLE FRAME: Cytoscape copies the values out of it before the next node is written, so
-  // there is no need to make a new one for every node of every frame
-  //
   // THE POSITIONS ARE WRITTEN WITH THE EVENTS ON: THE RENDERER NEEDS THE NOTIFICATION TO REDRAW, AND THE HTML
   // LABELS OF THE GRAPH FOLLOW THE 'position' AND 'bounds' EVENTS OF THE NODES
-  let position = { x: 0, y: 0 };
-
-  globalPhysics.eles.positions(function (ele, i) {
-    if (ele.removed()) return null; // gone from the graph: the rebuild will drop it
-    if (ele.grabbed()) return null; // the user is dragging it: Cytoscape owns that position
-    let n = globalPhysics.nodes[i];
-    position.x = n.x;
-    position.y = n.y;
-    return position;
-  });
+  globalPhysics.eles.positions(physicsWritePosition);
 }
 
 /**
@@ -350,23 +360,9 @@ function physicsAttach() {
     physicsSync();
   });
 
-  cy.on("remove", "node", function (event) {
-    if (cy !== globalCy) return;
-    physicsScheduleSync();
-  });
-
-  cy.on("add", "node", function (event) {
-    if (cy !== globalCy) return;
-    physicsScheduleSync();
-  });
-
-  // AN EDGE ON ITS OWN (BOTH ENDS ALREADY ON THE GRAPH) CHANGES THE SPRINGS TOO
-  cy.on("remove", "edge", function (event) {
-    if (cy !== globalCy) return;
-    physicsScheduleSync();
-  });
-
-  cy.on("add", "edge", function (event) {
+  // A NODE OR AN EDGE ADDED OR REMOVED CHANGES THE SPRINGS: AN EDGE ON ITS OWN (BOTH ENDS ALREADY ON THE GRAPH)
+  // DOES TOO
+  cy.on("add remove", "node, edge", function (event) {
     if (cy !== globalCy) return;
     physicsScheduleSync();
   });
