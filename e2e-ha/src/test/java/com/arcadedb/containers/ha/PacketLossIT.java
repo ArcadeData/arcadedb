@@ -20,6 +20,8 @@ package com.arcadedb.containers.ha;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.FacetDatabaseWrapper;
+import com.arcadedb.test.support.FacetSnapshot;
 import com.arcadedb.test.support.ServerWrapper;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.model.ToxicDirection;
@@ -31,6 +33,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,6 +69,9 @@ class PacketLossIT extends ContainersTestTemplate {
   private static final String SERVER_LIST_2 =
       "proxy:" + RAFT_PROXY_PORT_0 + ":" + HTTP_PROXY_PORT_0 + ","
           + "proxy:" + RAFT_PROXY_PORT_1 + ":" + HTTP_PROXY_PORT_1;
+
+  // spaces node 1's facet samples over the write window; not a timing assertion
+  private static final long QUERY_SPACING_MILLIS = 200L;
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
@@ -195,6 +201,105 @@ class PacketLossIT extends ContainersTestTemplate {
 
     db1.close();
     db2.close();
+  }
+
+  /**
+   * As {@link #moderatePacketLoss()} with facet data: under 20% loss on both Raft proxies, every facet answer of node 1 taken while
+   * node 0 runs mixed writes is exact or carries its lag; once the loss is removed both nodes' facets equal their {@code GROUP BY}.
+   */
+  @Test
+  @Timeout(value = 25, unit = TimeUnit.MINUTES) // a hang detector, sized for host stalls
+  @DisplayName("Moderate packet loss (20%): facets stay exact or report their lag, then converge")
+  void moderatePacketLossKeepsFacetsExact() throws Exception {
+    final Proxy raftProxy0 = toxiproxyClient.createProxy("raftProxy0", "0.0.0.0:" + RAFT_PROXY_PORT_0, "arcadedb-0:2434");
+    final Proxy raftProxy1 = toxiproxyClient.createProxy("raftProxy1", "0.0.0.0:" + RAFT_PROXY_PORT_1, "arcadedb-1:2434");
+    toxiproxyClient.createProxy("httpProxy0", "0.0.0.0:" + HTTP_PROXY_PORT_0, "arcadedb-0:2480");
+    toxiproxyClient.createProxy("httpProxy1", "0.0.0.0:" + HTTP_PROXY_PORT_1, "arcadedb-1:2480");
+
+    createArcadeContainer("arcadedb-0", SERVER_LIST_2, "majority", network);
+    createArcadeContainer("arcadedb-1", SERVER_LIST_2, "majority", network);
+    final List<ServerWrapper> servers = startCluster();
+
+    final FacetDatabaseWrapper f0 = new FacetDatabaseWrapper(servers.get(0), DatabaseWrapper.Protocol.HTTP, 0);
+    final FacetDatabaseWrapper f1;
+    try {
+      f1 = new FacetDatabaseWrapper(servers.get(1), DatabaseWrapper.Protocol.HTTP, 1);
+    } catch (final RuntimeException e) {
+      f0.close();
+      throw e;
+    }
+    final AtomicReference<Thread> writerThread = new AtomicReference<>();
+    try {
+      f0.createDatabase();
+      f0.createSchema();
+      for (final FacetDatabaseWrapper node : List.of(f0, f1))
+        logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
+
+      logger.info("Ingested {} assets", f0.ingest(1_000));
+
+      logger.info("Introducing 20% packet loss on both Raft proxies");
+      raftProxy0.toxics().limitData("facet_loss_raft0", ToxicDirection.DOWNSTREAM, 0).setToxicity(0.20f);
+      raftProxy1.toxics().limitData("facet_loss_raft1", ToxicDirection.DOWNSTREAM, 0).setToxicity(0.20f);
+
+      final AtomicReference<Object> writerOutcome = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          writerOutcome.set(f0.runMixedOps(1_000));
+        } catch (final Throwable t) {
+          writerOutcome.set(t);
+        }
+      }, "facet-packet-loss-writer");
+      writerThread.set(writer);
+      writer.start();
+
+      int samples = 0;
+      int duringWrites = 0;
+      int nonExact = 0;
+      int metaInconsistent = 0;
+      long maxLagMs = 0L;
+      while (writer.isAlive()) {
+        final FacetSnapshot s = f1.queryFacets("");
+        // ruling B-M1: an inexact answer that reports no lag is logged and counted, not a failure (as the chaos FACET_META warning)
+        if (!s.metaConsistent()) {
+          metaInconsistent++;
+          logger.warn("Sample {} on node 1 under packet loss: inexact without lag: exact={} lagMs={} patched={} sources={}", samples,
+              s.exact(), s.lagMs(), s.patched(), s.sources());
+        }
+        samples++;
+        if (writer.isAlive())
+          duringWrites++;
+        if (!s.exact())
+          nonExact++;
+        maxLagMs = Math.max(maxLagMs, s.lagMs());
+        Thread.sleep(QUERY_SPACING_MILLIS);
+      }
+      logger.info("Node 1 under packet loss: {} samples, {} while the writer ran, {} not exact, {} inexact without lag, max lagMs {}",
+          samples, duringWrites, nonExact, metaInconsistent, maxLagMs);
+      assertThat(duringWrites).as("facet queries ran while the writer was writing under packet loss").isPositive();
+
+      writer.join(TimeUnit.MINUTES.toMillis(5));
+      assertThat(writer.isAlive()).as("the writer under packet loss ended").isFalse();
+      // packet loss is on the write path: failures are logged, not asserted
+      logger.info("Mixed ops on node 0 under packet loss: {}",
+          FacetDatabaseWrapper.assertWrote(writerOutcome.get(), "writer under packet loss", false));
+
+      logger.info("Removing packet loss");
+      raftProxy0.toxics().get("facet_loss_raft0").remove();
+      raftProxy1.toxics().get("facet_loss_raft1").remove();
+
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f0, f1), 180);
+    } finally {
+      final Thread writer = writerThread.get();
+      if (writer != null)
+        writer.join(TimeUnit.MINUTES.toMillis(5));
+      dumpContainerLogs("packetLossFacets-end");
+      for (final FacetDatabaseWrapper wrapper : List.of(f0, f1))
+        try {
+          wrapper.close();
+        } catch (final RuntimeException e) {
+          logger.warn("Closing {} failed: {}", wrapper.describe(), e.getMessage());
+        }
+    }
   }
 
   @Test

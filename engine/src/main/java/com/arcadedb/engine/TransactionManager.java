@@ -28,6 +28,7 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
@@ -126,7 +127,11 @@ public class TransactionManager {
   private final ArrayDeque<DeferredWALWrite> deferredWALWrites = new ArrayDeque<>();
   // Writes the queued records one batch at a time, so two batches never interleave in the files
   private final ReentrantLock                deferredWALWriteLock = new ReentrantLock();
-  // Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. Per instance, so tests
+  // Commits between their two columnar marks (spec 6.2) whose WAL record is still queued above, so no WAL file counts them in
+  // WALFile.columnarMarksStarted() yet: the record lands in a file only at the next flush pass, which may run, and see its pages
+  // flushed, before the second mark. cleanWALFiles drops no file while one is pending, since the record may be in any of them
+  private final AtomicInteger                queuedColumnarMarks  = new AtomicInteger();
+  // Test hook: runs before each file a group-commit pass or forceWALFiles() flushes, so a test can make the flush fail. Per instance, so tests
   // running concurrently in one JVM do not see each other's
   volatile WALSyncFaultInjector              walSyncFaultInjector;
   private final AtomicLong                   statsGroupCommits   = new AtomicLong();
@@ -687,6 +692,95 @@ public class TransactionManager {
   }
 
   /**
+   * A commit whose WAL record is queued by the group commit ({@link #queueTransactionToWAL}) reached its first columnar mark: no WAL
+   * file holds the record yet, so none is dropped until {@link #queuedColumnarMarksEnded()} (spec 6.2, the queued twin of
+   * {@link WALFile#columnarMarksStarted()}). Called before the pages are published.
+   */
+  public void queuedColumnarMarksStarted() {
+    queuedColumnarMarks.incrementAndGet();
+  }
+
+  /** The second columnar mark of a commit of {@link #queuedColumnarMarksStarted()} ran, or the commit failed: called once, in a finally. */
+  public void queuedColumnarMarksEnded() {
+    queuedColumnarMarks.decrementAndGet();
+  }
+
+  /**
+   * Forces every open WAL file of the pool, active and retired, to the disk: once this returns, every transaction appended before the
+   * call is durable whatever {@code arcadedb.txWalFlush} says. The columnar projections call it before each manifest publish (final
+   * review B-I4), so a published projection is never more durable than the commits it holds. Never called on a database without a
+   * COLUMNAR index. The files are listed under {@link #walMaintenanceLock} and {@link #walSlotLock}, which every move of a file from
+   * a slot to the retired pool holds, so none is missed; they are forced after both are released, without any WAL file monitor (a
+   * commit never waits for it), and only when something was appended since their last force ({@link WALFile#forceIfDirty()}).
+   *
+   * @throws IOException when an open file cannot be forced, now or at an earlier call (the failure sticks to the file)
+   */
+  public void forceWALFiles() throws IOException {
+    // Group commit (#10509) queues a WAL record and writes it to its file only in the next flush pass, after the commit published its
+    // pages: an apply pass may already hold those pages, so the queued records are written and flushed first, or the projection
+    // published next could hold a commit no WAL file has
+    final long pending = getPendingWALSyncTicket();
+    if (pending > 0)
+      awaitWALDurable(pending);
+    final List<WALFile> files = new ArrayList<>();
+    walMaintenanceLock.lock();
+    try {
+      synchronized (walSlotLock) {
+        final WALFile[] active = activeWALFilePool;
+        if (active != null)
+          for (final WALFile file : active)
+            if (file != null)
+              files.add(file);
+        files.addAll(Arrays.asList(inactiveWALFilePool.toArray(new WALFile[0])));
+      }
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+    for (final WALFile file : files)
+      forceWALFile(file);
+  }
+
+  private void forceWALFile(final WALFile file) throws IOException {
+    try {
+      final WALSyncFaultInjector injector = walSyncFaultInjector;
+      if (injector != null)
+        injector.beforeSync(file);
+      file.forceIfDirty();
+    } catch (final IOException | RuntimeException e) {
+      file.markForceFailed();
+      retireFailedWALFile(file);
+      throw e;
+    }
+  }
+
+  /**
+   * A WAL file whose force failed (round 3 Minor 2) leaves its slot at once, as an idle one does ({@link #releaseIdleWALFiles}): no
+   * commit appends to it any more, and the housekeeping drops it after its pages are on disk and the data files synced, which is when
+   * the projection publishes it held back can resume. Nothing when the file left its slot meanwhile.
+   */
+  private void retireFailedWALFile(final WALFile file) {
+    walMaintenanceLock.lock();
+    try {
+      synchronized (walSlotLock) {
+        final WALFile[] pool = activeWALFilePool;
+        if (walPoolRetired || pool == null)
+          return;
+        for (int i = 0; i < pool.length; ++i)
+          if (pool[i] == file) {
+            pool[i] = null;
+            file.setActive(false);
+            inactiveWALFilePool.add(file);
+            LogManager.instance().log(this, Level.SEVERE, "WAL file '%s' of database '%s' failed an fsync: retired, no commit appends to it"
+                + " any more", null, file, database.getName());
+            return;
+          }
+      }
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+  }
+
+  /**
    * The WAL rule of a page write under group commit: returns once the WAL writes up to {@code ticket} are durable, counting
    * the page writes that had to wait for them.
    */
@@ -878,8 +972,9 @@ public class TransactionManager {
    * needed. The recovery also runs under {@link #walMaintenanceLock}, so no pass can observe the pool half replaced.
    * <p>
    * Only a replay that has applied every transaction lets its input go. It drops the files once the replayed pages are
-   * fsynced, and when that fsync fails (#8626) it retires them into the inactive pool instead, where the housekeeping
-   * pass drops them after a later fsync succeeds: by then there is nothing left in them to replay.
+   * fsynced and the columnar recovery set names the pages the replay marked (spec 6.5), and when either fails (#8626) it
+   * retires them into the inactive pool instead, where the housekeeping pass drops them after a later fsync and persist
+   * succeed: by then there is nothing left in them to replay.
    */
   public void checkIntegrity() {
     walMaintenanceLock.lock();
@@ -896,6 +991,8 @@ public class TransactionManager {
     // Set once the input is dropped, moved aside as .corrupt or retired into the inactive pool: no longer this replay's.
     boolean inputReleased = false;
     boolean walKeptForFsync = false;
+    // the replay's pages were synced, but the columnar recovery set naming them could not be written (final review B-C1)
+    boolean walKeptForRecoverySet = false;
     WALFile[] recoveryFiles = null;
 
     try {
@@ -1072,7 +1169,11 @@ public class TransactionManager {
           // #8626: THE REPLAY WROTE ITS PAGES STRAIGHT TO THE FILES, SO THEY ARE IN THE OS PAGE CACHE ONLY: FORCE THEM
           // BEFORE THE WAL THAT IS THEIR ONLY DURABLE COPY GOES AWAY, EXACTLY AS A CLEAN CLOSE AND A WAL ROTATION DO.
           // DROPPING IT FIRST LEFT A WINDOW, UP TO THE NEXT CLEAN CLOSE, WHERE A POWER LOSS LOST THE RECOVERED DATA
-          if (syncReplayedDataFiles()) {
+          // SPEC 6.5 (FINAL REVIEW B-C1): THE COLUMNAR RECOVERY SET IS PERSISTED BEFORE THE REPLAYED WAL GOES, AS BEFORE ANY RUNTIME DROP:
+          // THE PAGES THE REPLAY MARKED ARE OTHERWISE KNOWN TO THE TRACKERS IN MEMORY ONLY, AND A SECOND CRASH BEFORE THEIR FLUSH WOULD
+          // LOAD A STALE PROJECTION AS EXACT. A DATABASE WITH NO COLUMNAR INDEX WRITES NOTHING HERE
+          final boolean dataSynced = syncReplayedDataFiles();
+          if (dataSynced && persistColumnarRecoverySet()) {
             // REMOVE ALL WAL FILES
             for (final WALFile file : recoveryFiles) {
               if (file == null)
@@ -1088,9 +1189,16 @@ public class TransactionManager {
             // #4934: THE FSYNC FAILED, SO THE REPLAYED PAGES MAY NEVER REACH THE DISK. KEEP THE WAL: RETIRED INTO THE
             // INACTIVE POOL, IT IS DROPPED BY THE WAL ROTATION ONLY AFTER A LATER FSYNC SUCCEEDS, AND A CLOSE WHOSE FSYNC
             // FAILS TOO PRESERVES IT WITH THE LOCK FILE SO THE NEXT OPEN REPLAYS IT AGAIN
-            LogManager.instance().log(this, Level.SEVERE,
-                "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
-                null, database);
+            // THE SAME WHEN THE COLUMNAR RECOVERY SET CANNOT BE WRITTEN: THE HOUSEKEEPING PASS PERSISTS IT AGAIN BEFORE ITS DROP
+            walKeptForRecoverySet = dataSynced;
+            if (dataSynced)
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Cannot persist the columnar recovery set of database '%s' after recovery: keeping its WAL files until it is written",
+                  null, database);
+            else
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
+                  null, database);
             // Replayed in full, so from here the files belong to the housekeeping pass, which drops them once an fsync
             // succeeds: they stay open and locked like any other retired WAL file.
             for (final WALFile file : recoveryFiles)
@@ -1160,8 +1268,9 @@ public class TransactionManager {
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
       else if (walKeptForFsync)
         LogManager.instance().log(this, Level.WARNING,
-            "Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds", null,
-            database);
+            walKeptForRecoverySet ?
+                "Recovery of database '%s' completed, its WAL files are kept until the columnar recovery set is written" :
+                "Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds", null, database);
       else
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
@@ -1487,20 +1596,64 @@ public class TransactionManager {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
     final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
+    // Spec 6.2: the pages the apply reached are marked for the columnar projections once it is done, whether it returns or throws
+    // (a version gap, a failed write): by then they are written, synchronously and outside the flush pipeline, so a pass draining
+    // the marks reads them. One volatile read when the database has no COLUMNAR index and no watched file
+    final ColumnarIndexManager columnar = columnarMarkTarget();
+    final ReachedPages reached = columnar != null ? new ReachedPages(tx.pages.length) : null;
     // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
     // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
     final PageManager pageManager = database.getPageManager();
     pageManager.beginPublication();
     try {
-      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
     } finally {
       pageManager.endPublication();
-      FullTextCorpusDeltas.replicatedApplyFinished(applying);
+      try {
+        if (reached != null)
+          reached.mark(columnar);
+      } finally {
+        FullTextCorpusDeltas.replicatedApplyFinished(applying);
+      }
     }
   }
 
+  /** The columnar manager of the database when a mark can reach a projection or a watched file, null otherwise. */
+  private ColumnarIndexManager columnarMarkTarget() {
+    if (!(database instanceof LocalDatabase local))
+      return null;
+    final ColumnarIndexManager columnar = local.getColumnarIndexManager();
+    return columnar != null && columnar.hasMarkTargets() ? columnar : null;
+  }
+
+  /** The pages one {@link #applyChanges} reached, as {@link ColumnarIndexManager#packPage} keys: one array per apply. */
+  private static final class ReachedPages {
+    private final long[] keys;
+    private       int    count;
+
+    private ReachedPages(final int capacity) {
+      keys = new long[capacity];
+    }
+
+    private void add(final int fileId, final int pageNumber) {
+      keys[count++] = ColumnarIndexManager.packPage(fileId, pageNumber);
+    }
+
+    private void mark(final ColumnarIndexManager columnar) {
+      if (count == 0)
+        return;
+      Arrays.sort(keys, 0, count);
+      columnar.markPackedPages(keys, count, new int[count], false);
+    }
+  }
+
+  /**
+   * @param reached receives every page the loop reaches, null when nothing is marked: applied, re-applied at an equal version, and
+   *                skipped as strictly older too (the mark goes before the skip, spec 6.2: a replay of an entry a crash interrupted
+   *                after its pages were written still marks them), as well as a page refused for a version gap
+   */
   private boolean applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
-      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors, final ReachedPages reached) {
     final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
     // Whether at least one page was written at a version STRICTLY GREATER than the one on disk, i.e. this
@@ -1571,6 +1724,8 @@ public class TransactionManager {
         database.getPageManager().materializePendingFlushOfPage(database, pageId);
 
         final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
+        if (reached != null)
+          reached.add(txPage.fileId, txPage.pageNumber);
 
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
@@ -2308,9 +2463,12 @@ public class TransactionManager {
       // cache and without taking any lock this pass holds, so a counter read AFTER the fsync can be zero because
       // of a page the fsync did not cover. A file selected here had zero pending pages before the fsync, so every
       // one of its pages is covered by it; a file that reaches zero later waits for the next pass and its fsync.
+      // A commit between its two columnar marks keeps its file too (spec 6.2): its first mark may have been applied from the
+      // previous page images, so the file stays its only record until the second one ran. Read AFTER the pending pages: the
+      // commit raises its marks counter before publishing the pages that counter covers, which only then can reach the disk
       final List<WALFile> removable = new ArrayList<>(inactiveWALFilePool.size());
       for (final WALFile file : inactiveWALFilePool)
-        if (force || !dropFiles || file.getPendingPagesToFlush() == 0)
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0 && file.getPendingColumnarMarks() == 0 && queuedColumnarMarks.get() == 0)
           removable.add(file);
 
       if (removable.isEmpty())
@@ -2321,6 +2479,12 @@ public class TransactionManager {
       if (dropFiles && syncDataOnDrop && !database.getFileManager().syncFiles())
         // #4934: the fsync failed - the data these WALs protect may never reach the disk. Dropping them now would
         // make it unrecoverable; abort this pass, the rotation retries later.
+        return false;
+
+      // Spec 6.5 (R27): the columnar recovery set is persisted before ANY drop, whatever the caller (the housekeeping and the
+      // close pass no fsync): the pages it names are the dirty and unflushed pages of the projections, which a crash after the
+      // drop could otherwise only learn from the WAL being deleted here. A failure aborts the pass as a failed fsync does
+      if (dropFiles && !persistColumnarRecoverySet())
         return false;
 
       for (final WALFile file : removable) {
@@ -2353,6 +2517,14 @@ public class TransactionManager {
       writePersistedLastTransactionId();
 
     return inactiveWALFilePool.isEmpty();
+  }
+
+  /** The columnar recovery set of the database persisted (or nothing to persist): false when it could not be written. */
+  private boolean persistColumnarRecoverySet() {
+    if (!(database instanceof LocalDatabase local))
+      return true;
+    final ColumnarIndexManager columnar = local.getColumnarIndexManager();
+    return columnar == null || columnar.persistRecoverySet();
   }
 
   /**

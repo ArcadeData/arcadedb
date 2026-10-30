@@ -29,6 +29,7 @@ import com.arcadedb.engine.timeseries.ListedSealedStore;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
+import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.index.vector.LSMVectorIndexGraphSideFiles;
 import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
@@ -384,9 +385,12 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * {@code removeTempSuffix()} runs before the schema switches over. Archived, a restore extracted it into the
    * database directory, where the open-time scan does not register it. Same predicate the HA snapshot ship (#8019)
    * and the checksum endpoints (#7955) use; it tests the extension, so a type named {@code temp_readings} is kept.
+   * <p>
+   * Nor anything under the columnar projection root (plan 3, Task 22): the projection is derived state a restored database
+   * rebuilds at its first open. It is not a registered file today; the guard keeps a later change from archiving it.
    */
   public static boolean isArchivedPageFile(final String fileName) {
-    return !PaginatedComponent.isTemporaryFileName(fileName);
+    return !PaginatedComponent.isTemporaryFileName(fileName) && !ColumnarStore.isProjectionEntry(fileName);
   }
 
   /**

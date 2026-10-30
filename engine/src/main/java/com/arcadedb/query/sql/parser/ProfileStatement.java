@@ -61,15 +61,19 @@ public class ProfileStatement extends Statement {
     if (executionPlan instanceof UpdateExecutionPlan plan)
       plan.executeInternal();
 
-    final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
+    return profile(new LocalResultSet((InternalExecutionPlan) executionPlan));
+  }
+
+  /** Drains the rows, then the facets (a LIMIT stops the rows before every match is collected), and returns the profiled plan. */
+  private ExplainResultSet profile(final LocalResultSet rs) {
     while (rs.hasNext())
       rs.next();
+    rs.getFacets();
 
     final ExplainResultSet result = new ExplainResultSet(
         rs.getExecutionPlan().orElseThrow(() -> new CommandExecutionException("Cannot profile command: " + statement)));
     rs.close();
     return result;
-
   }
 
   @Override
@@ -84,14 +88,7 @@ public class ProfileStatement extends Statement {
 
     final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
 
-    final LocalResultSet rs = new LocalResultSet((InternalExecutionPlan) executionPlan);
-    while (rs.hasNext())
-      rs.next();
-
-    final ExplainResultSet result = new ExplainResultSet(
-        rs.getExecutionPlan().orElseThrow(() -> new CommandExecutionException("Cannot profile command: " + statement)));
-    rs.close();
-    return result;
+    return profile(new LocalResultSet((InternalExecutionPlan) executionPlan));
   }
 
   @Override

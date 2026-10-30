@@ -165,7 +165,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * per-shard fan-out, and issue #4957 for the fix that introduced it.
    * <p>
    * <b>Dictionary column constraint:</b> columns using {@code DICTIONARY} compression
-   * (typically TAG columns) must not exceed {@link com.arcadedb.engine.timeseries.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
+   * (typically TAG columns) must not exceed {@link com.arcadedb.engine.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
    * distinct values per sealed block. This is validated at compaction time; data that violates
    * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */

@@ -29,6 +29,9 @@ import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetResult;
+import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
@@ -511,6 +514,59 @@ public class JsonSerializer {
   public JsonSerializer setIncludeTypeHints(final boolean includeTypeHints) {
     this.includeTypeHints = includeTypeHints;
     return this;
+  }
+
+  /**
+   * The {@code facets} member of a query response: {@link FacetResults#toJSON} with every value of the data (a term, a bound, a
+   * cursor) written exactly as {@link #serializeResult} writes a row's value of the same property (final review C-I8): a date in the
+   * schema's date format, a date-time in its date-time format at the column's precision, a non-finite number by its name (the engine
+   * already gives every value the Java type a row of its property holds); a STATS facet's sum and average likewise, as values of their
+   * own type. With type hints a facet carries the {@code @props} hint a row would, one entry per member whose type JSON does not
+   * round-trip: {@code value:<type id>} for the values of the property, {@code sum:<type id>} and {@code avg:<type id>} for a STATS
+   * facet's, so the client decodes them as it decodes rows.
+   */
+  public JSONObject serializeFacets(final Database database, final FacetResults facets) {
+    // the engine hands the values over as a row of the property holds them: encoded here exactly as such a row's
+    final JSONObject json = facets.toJSON((value, type) -> serializeValue(database, value, type));
+    if (includeTypeHints)
+      for (final String alias : facets.aliases()) {
+        final FacetResult result = facets.get(alias);
+        final StringBuilder hint = new StringBuilder();
+        appendFacetHint(hint, "value", result.valueType());
+        final FacetStats stats = result.stats();
+        if (stats != null && !FacetResult.UNAVAILABLE.equals(result.source())) {
+          // the sum and the average have the type SELECT sum() and avg() give them (a FLOAT's sum is a Float, an INTEGER's may widen)
+          appendFacetHint(hint, "sum", stats.sum() != null ? Type.getTypeByClass(stats.sum().getClass()) : null);
+          appendFacetHint(hint, "avg", stats.avg() != null ? Type.getTypeByClass(stats.avg().getClass()) : null);
+        }
+        if (!hint.isEmpty())
+          json.getJSONObject(alias).put(FacetResult.VALUE_TYPE_HINT, hint.toString());
+      }
+    return json;
+  }
+
+  /** Adds {@code member:<type id>} to a facet's hint, as a row's hint names a column, for a type JSON does not round-trip. */
+  private static void appendFacetHint(final StringBuilder hint, final String member, final Type type) {
+    if (type == null || JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(type))
+      return;
+    if (!hint.isEmpty())
+      hint.append(',');
+    hint.append(member).append(':').append(type.getId());
+  }
+
+  /**
+   * One value as {@link #serializeResult} writes a column of {@code propertyType} (null when unknown): the JSON-ready form, a temporal
+   * already formatted.
+   */
+  private Object serializeValue(final Database database, final Object value, final Type propertyType) {
+    final Object serialized = formatTemporalForPrecision(serializeObject(database, value), propertyType,
+        database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
+    if (!(serialized instanceof Date || serialized instanceof Calendar || serialized instanceof Temporal))
+      return serialized;
+    // left for the date formats of the row's JSONObject: formatted by the same one here
+    final JSONObject row = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
+        .setDateTimeFormat(database.getSchema().getDateTimeFormat()).put("v", serialized);
+    return row.get("v");
   }
 
   private void setMetadata(final Document document, final JSONObject object) {

@@ -19,8 +19,8 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
-import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
+import com.arcadedb.engine.codec.DeltaOfDeltaCodec;
+import com.arcadedb.engine.codec.GorillaXORCodec;
 import com.arcadedb.engine.timeseries.simd.ScalarTimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.SimdTimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;

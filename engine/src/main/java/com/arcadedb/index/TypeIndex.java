@@ -763,7 +763,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   /**
    * The type this index is declared on has been renamed: a derived logic name follows (a manual one is the user's and stays, issue
    * #10751), and so do the sub-indexes on its own buckets. The sub-indexes on the buckets of its sub types name those sub types,
-   * which the rename did not touch (issue #10317).
+   * which the rename did not touch (issue #10317). A derived COLUMNAR name keeps its suffix, so it never takes the name of a key index
+   * on the same properties.
    */
   @Override
   public void updateTypeName(final String newTypeName) {
@@ -774,7 +775,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /** The name this index answers to once its type is named {@code typeName}: unchanged for a manual name, derived otherwise. */
   public String nameUnderType(final String typeName) {
-    return manualName ? logicName : typeName + getPropertyNames().toString().replace(" ", "");
+    return manualName ? logicName : LocalDocumentType.defaultIndexName(typeName, getPropertyNames(), getType());
   }
 
   /**
@@ -926,11 +927,32 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         }
       }
 
-      return polymorphicIndexesOnKeys;
+      // The bucket lists are pruned by property names only, and a COLUMNAR index can sit on the same properties as this one
+      return ofThisFamily(polymorphicIndexesOnKeys);
     }
 
     // SEARCH ON ALL THE UNDERLYING INDEXES
     return indexesOnBuckets;
+  }
+
+  /**
+   * {@code indexes} without the sub-indexes of the other index family on the same properties: a COLUMNAR one for a key index and the
+   * other way round. The same list when there is none, which is the common case.
+   */
+  private List<IndexInternal> ofThisFamily(final List<IndexInternal> indexes) {
+    final IndexInternal first = firstOrNull();
+    if (first == null)
+      return indexes;
+    final boolean columnar = first.getType() == Schema.INDEX_TYPE.COLUMNAR;
+    for (int i = 0; i < indexes.size(); i++)
+      if ((indexes.get(i).getType() == Schema.INDEX_TYPE.COLUMNAR) != columnar) {
+        final List<IndexInternal> filtered = new ArrayList<>(indexes.size() - 1);
+        for (final IndexInternal index : indexes)
+          if ((index.getType() == Schema.INDEX_TYPE.COLUMNAR) == columnar)
+            filtered.add(index);
+        return filtered;
+      }
+    return indexes;
   }
 
   @Override
@@ -947,23 +969,51 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
-   * True when a query can use this index: it was not dropped or rebuilt and its per-bucket sub-indexes exist. DDL runs
-   * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
-   * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
-   * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
-   * <p>
-   * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331). The answer is for the
-   * planners and lookups: writes, uniqueness checks and index maintenance do not consult it.
+   * Whether the index is online for what it is for, the state SHOW INDEXES and the catalogs report. For a plannable index that
+   * is {@link #isReadyForQueries()}; for a COLUMNAR one, which no planner reads, it is valid, not being dropped or populated, and
+   * every sub-index {@link IndexInternal#isUsable() usable}. Never throws.
    */
-  public boolean isReadyForQueries() {
+  public boolean isOnline() {
     if (!valid || dropping)
       return false;
     try {
       final IndexInternal first = firstOrNull();
       if (first == null || first.getType() == null)
         return false;
+      if (first.getType().isPlannable())
+        return isReadyForQueries();
+      if (type instanceof LocalDocumentType local && local.isIndexUnderConstruction(first.getPropertyNames(), first.getType()))
+        return false;
+      for (final IndexInternal sub : getIndexesOnBuckets())
+        if (!sub.isUsable())
+          return false;
+      return true;
+    } catch (final IndexException e) {
+      LogManager.instance().log(this, Level.FINE, "Index '%s' is not online: %s", null, getName(), e.getMessage());
+      return false;
+    }
+  }
+
+  /**
+   * True when a query can use this index: it was not dropped or rebuilt and its per-bucket sub-indexes exist. DDL runs
+   * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
+   * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
+   * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
+   * <p>
+   * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331). The answer is for the
+   * planners and lookups: writes, uniqueness checks and index maintenance do not consult it. Nor is an index of a type that is not
+   * {@link Schema.INDEX_TYPE#isPlannable() plannable}, whatever its state.
+   */
+  public boolean isReadyForQueries() {
+    if (!valid || dropping)
+      return false;
+    try {
+      final IndexInternal first = firstOrNull();
+      // A type no planner or lookup may read (COLUMNAR answers facets only) is never ready for queries
+      if (first == null || first.getType() == null || !first.getType().isPlannable())
+        return false;
       // Complete: while TypeIndexBuilder populates it, the index holds the entries of the buckets built so far only (#9331)
-      return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames());
+      return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames(), first.getType());
     } catch (final IndexException e) {
       LogManager.instance().log(this, Level.FINE, "Index '%s' is not ready for queries: %s", null, getName(), e.getMessage());
       return false;

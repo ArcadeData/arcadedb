@@ -116,9 +116,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   /**
    * The one copy constructor of the whole builder hierarchy: the specialised builders {@link #withType} swaps in -
-   * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder} and
-   * {@link TypeGeoIndexBuilder} - all delegate here, each supplying only the two things that make it different: the
-   * index type it stands for and the {@link IndexMetadata} subclass its own settings live in.
+   * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder},
+   * {@link TypeGeoIndexBuilder} and {@link TypeColumnarIndexBuilder} - all delegate here, each supplying only the two things
+   * that make it different: the index type it stands for and the {@link IndexMetadata} subclass its own settings live in.
    * <p>
    * Each of the four used to copy the common state itself, field by field, so a field added to {@link IndexBuilder} or
    * to this class kept working for {@code LSM_TREE} and {@code HASH} - which never swap builders - and was dropped on
@@ -167,6 +167,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     return this;
   }
 
+  /** The key types set by {@link #withDefaultKeyTypesForUndeclaredProperties}, or null. */
+  Type[] getDefaultKeyTypesForUndeclaredProperties() {
+    return defaultKeyTypesForUndeclaredProperties;
+  }
+
   public TypeIndexBuilder withBuildMode(final IndexBuildMode buildMode) {
     this.buildMode = Objects.requireNonNull(buildMode, "buildMode");
     return this;
@@ -209,8 +214,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   /**
    * Sets the index type, returning the builder subclass that carries the settings of that index type: an
    * LSMVectorIndexBuilder for LSM_VECTOR, a TypeFullTextIndexBuilder for FULL_TEXT, a TypeGeoIndexBuilder for
-   * GEOSPATIAL, and so on. An index type missing from this list ends up with the generic {@link IndexMetadata} and
-   * therefore has nowhere to keep its own settings.
+   * GEOSPATIAL, a TypeColumnarIndexBuilder for COLUMNAR, and so on. An index type missing from this list ends up with the
+   * generic {@link IndexMetadata} and therefore has nowhere to keep its own settings.
    *
    * @param indexType the index type
    *
@@ -234,6 +239,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       return new TypeFullTextIndexBuilder(this);
     if (indexType == Schema.INDEX_TYPE.GEOSPATIAL && !(this instanceof TypeGeoIndexBuilder))
       return new TypeGeoIndexBuilder(this);
+    if (indexType == Schema.INDEX_TYPE.COLUMNAR && !(this instanceof TypeColumnarIndexBuilder))
+      return new TypeColumnarIndexBuilder(this);
     return this;
   }
 
@@ -268,6 +275,21 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * Returns this builder as a TypeColumnarIndexBuilder for COLUMNAR specific configuration.
+   * Only valid after withType(COLUMNAR) has been called.
+   *
+   * @return a TypeColumnarIndexBuilder for columnar configuration
+   * @throws IllegalStateException if withType(COLUMNAR) has not been called
+   */
+  public TypeColumnarIndexBuilder withColumnarType() {
+    if (this instanceof TypeColumnarIndexBuilder)
+      return (TypeColumnarIndexBuilder) this;
+    if (indexType != Schema.INDEX_TYPE.COLUMNAR)
+      throw new IllegalStateException("withColumnarType() can only be called after withType(COLUMNAR)");
+    return new TypeColumnarIndexBuilder(this);
+  }
+
+  /**
    * Whether the last {@link #create()} BUILT the index it returned, as opposed to answering a guarded request
    * ({@link #withIgnoreIfExists}) with the index already on those properties. Told apart here rather than by comparing
    * the returned name with the requested one: concurrent creators of an unnamed index all derive the same name, and every
@@ -294,6 +316,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   @Override
   public TypeIndex create() {
+    // withType(COLUMNAR) records the type on this builder too (a caller may ignore the builder it returns): the COLUMNAR checks of
+    // TypeColumnarIndexBuilder (one index per property per hierarchy, the cardinality limit) must run on that route as well
+    if (indexType == Schema.INDEX_TYPE.COLUMNAR && !(this instanceof TypeColumnarIndexBuilder))
+      return new TypeColumnarIndexBuilder(this).create();
+
     built = false;
     builtInCallerTransaction = false;
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -473,7 +500,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // it: the type then reopens with no index on those properties and has to be given one again. Making it atomic means
     // holding a schema transaction across a full index build, which is the wrong trade for a DDL statement that already
     // rebuilds every entry. Narrowing it further would mean building the new index alongside the old one, which
-    // LocalDocumentType.indexesByProperties cannot represent - one index per property set is the invariant.
+    // LocalDocumentType.indexesByProperties cannot represent - one index per property set and family is the invariant.
     //
     // Only an explicit withReplaceIfIncompatible reaches here, so nothing is exposed to this window without asking.
     // Set once the replaced index has been dropped: the definition to put back if the new index cannot be built.
@@ -505,7 +532,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // transaction makes up its own entries at its commit (issue #10588, LocalSchema#reconcileIndexesRegisteredSince).
     // Registered from here to the end of the build: the index is visible to the planners bucket by bucket while it is
     // populated, and until it is complete it must not answer a query (issue #9331)
-    type.beginIndexConstruction(metadata.propertyNames);
+    type.beginIndexConstruction(metadata.propertyNames, indexType);
     // Whether this build still holds the deferral: set under the write lock below, given back under it once the final pass has run
     final boolean[] deferralHeld = new boolean[1];
     // Whether the clean-up of a failed build already ran inside the schema session, and with what outcome (issue #10506)
@@ -526,7 +553,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         // if it is still the very index the decision above was made over. Concurrent replacers all found that one
         // before the first of them dropped it, and dropping an index twice is a no-op, so dropping it outside the lock
         // let every one of them go on to build its own; the later ones now find the first one's replacement instead.
-        final TypeIndex current = replacing ? type.getIndexByProperties(metadata.propertyNames) : findIndexOnProperties(type);
+        final TypeIndex current = replacing ? type.getIndexByProperties(metadata.propertyNames, indexType) : findIndexOnProperties(type);
         if (current != null) {
           if (current != existingTypeIndex) {
             // Decided here, under the lock, so no other replacer can drop the index while it is decided over. A
@@ -544,6 +571,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           final ReplacedIndexDefinition definition = ReplacedIndexDefinition.of(current);
           current.drop();
           replaced[0] = definition;
+        }
+        try {
+          checkUnderSchemaLock(type);
+        } catch (final RuntimeException refusal) {
+          // a refusal, not a failed build: thrown as it is once the build's try is left, as the one over a concurrent index
+          refusedOverConcurrent[0] = refusal;
+          return null;
         }
 
         if (deferredUniqueCheck) {
@@ -645,7 +679,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       }
 
       if (builtConcurrently[0] == null && refusedOverConcurrent[0] == null) {
-        created = type.getIndexByProperties(metadata.propertyNames);
+        created = type.getIndexByProperties(metadata.propertyNames, indexType);
         built = true;
         // A sorted build writes its pages outside any transaction (see the sortedBuild branch above), so nothing of it
         // is left queued on the caller's even when the caller had pending writes
@@ -674,7 +708,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       // being cleaned up, and giving the check back only costs the commits that reach it meanwhile a lookup
       if (deferralHeld[0])
         type.resumeUniqueCheck(metadata.propertyNames);
-      type.endIndexConstruction(metadata.propertyNames);
+      type.endIndexConstruction(metadata.propertyNames, indexType);
     }
 
     // Thrown outside the build's try, so a refusal reaches the caller exactly as it does when the index was there before
@@ -710,12 +744,21 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
-   * The index already on the requested properties: the type's own first (no hierarchy walk), then an inherited one.
-   * Either way it is used to answer the request, never to make room for it.
+   * A last refusal of the request, asked under the schema write lock right before the build, once any index on the requested
+   * properties was decided over: nothing for a key index; {@link TypeColumnarIndexBuilder} asks again there what it asked before the
+   * lock, so a concurrent creation cannot slip between the two.
+   */
+  protected void checkUnderSchemaLock(final LocalDocumentType type) {
+  }
+
+  /**
+   * The index of the requested family (COLUMNAR, or a key index) already on the requested properties: the type's own first (no
+   * hierarchy walk), then an inherited one. Either way it is used to answer the request, never to make room for it. An index of
+   * the other family on the same properties is not in the way: the two coexist.
    */
   private TypeIndex findIndexOnProperties(final LocalDocumentType type) {
-    final TypeIndex own = type.getIndexByProperties(metadata.propertyNames);
-    return own != null ? own : type.getPolymorphicIndexByProperties(metadata.propertyNames);
+    final TypeIndex own = type.getIndexByProperties(metadata.propertyNames, indexType);
+    return own != null ? own : type.getPolymorphicIndexByProperties(metadata.propertyNames, indexType);
   }
 
   /**

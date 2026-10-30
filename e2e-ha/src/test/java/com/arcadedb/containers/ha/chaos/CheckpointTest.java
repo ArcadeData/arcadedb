@@ -19,16 +19,20 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import com.arcadedb.test.support.FacetSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -278,5 +282,88 @@ class CheckpointTest {
     // node 2 may hold anything: nothing proves the data is identical, so this stays a convergence failure
     assertThat(checkpoint(reader, Duration.ofMillis(300)).run().violations()).extracting(Violation::invariant)
         .containsExactly("CONVERGENCE");
+  }
+
+  private static SortedMap<String, Long> facetCounts(final long nike) {
+    final SortedMap<String, Long> counts = new TreeMap<>();
+    counts.put("brand=Nike", nike);
+    counts.put("size=small", 3L);
+    return counts;
+  }
+
+  private static FakeFacetReader facetReader() {
+    final FakeFacetReader facets = new FakeFacetReader();
+    for (int node = 0; node < 3; node++)
+      facets.data.put(node, facetCounts(5));
+    return facets;
+  }
+
+  private static FacetCheck facetCheck(final FakeFacetReader facets) {
+    // every case using it passes or fails on sight: a generous deadline keeps a unit-lane JVM stall from turning it into a stall
+    return new FacetCheck(facets, 3, Duration.ofSeconds(60), Duration.ofMillis(5));
+  }
+
+  private Checkpoint checkpoint(final NodeReader reader, final FacetCheck facets) {
+    return new Checkpoint(reader, ledger, new InvariantChecker(ledger), 3, Duration.ofMillis(300), Duration.ofMillis(20), facets);
+  }
+
+  private ScriptedNodeReader identicalNodes() {
+    final long a = acked();
+    final ScriptedNodeReader reader = new ScriptedNodeReader();
+    for (int node = 0; node < 3; node++)
+      reader.rows.put(node, List.of(new long[] { a, 0 }));
+    return reader;
+  }
+
+  @Test
+  void facetDriftIsReportedAfterLedgerChecksPass() throws InterruptedException {
+    final FakeFacetReader facets = facetReader();
+    facets.script.put(0, new ArrayDeque<>(List.of(FakeFacetReader.sample(true, 0, "index", facetCounts(4)))));
+    final List<Violation> violations = checkpoint(identicalNodes(), facetCheck(facets)).run().violations();
+    assertThat(violations).extracting(Violation::invariant).containsExactly("FACET_DRIFT");
+    assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
+  }
+
+  @Test
+  void facetCheckIsSkippedWhenTheLedgerAlreadyFailed() throws InterruptedException {
+    final long a = acked();
+    final long b = acked();
+    final ScriptedNodeReader reader = new ScriptedNodeReader();
+    reader.rows.put(0, List.of(new long[] { a, 0 }, new long[] { b, 0 }));
+    reader.rows.put(1, List.of(new long[] { a, 0 }));
+    reader.rows.put(2, List.of(new long[] { a, 0 }, new long[] { b, 0 }));
+    final FakeFacetReader facets = facetReader();
+    facets.script.put(0, new ArrayDeque<>(List.of(FakeFacetReader.sample(true, 0, "index", facetCounts(4)))));
+    final List<Violation> violations = checkpoint(reader, facetCheck(facets)).run().violations();
+    assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
+    assertThat(facets.groupByCalls).isZero();
+  }
+
+  @Test
+  void facetCheckIsSkippedWhenTheLedgerCheckFindsAViolation() throws InterruptedException {
+    final ScriptedNodeReader reader = identicalNodes();
+    acked();
+    final FakeFacetReader facets = facetReader();
+    facets.script.put(0, new ArrayDeque<>(List.of(FakeFacetReader.sample(true, 0, "index", facetCounts(4)))));
+    final List<Violation> violations = checkpoint(reader, facetCheck(facets)).run().violations();
+    assertThat(violations).isNotEmpty().extracting(Violation::invariant).doesNotContain("FACET_DRIFT");
+    assertThat(facets.groupByCalls).isZero();
+  }
+
+  @Test
+  void noFacetCheckKeepsTheOldBehaviour() throws InterruptedException {
+    final Checkpoint.Result result = checkpoint(identicalNodes(), Duration.ofSeconds(5)).run();
+    assertThat(result.violations()).isEmpty();
+    assertThat(result.warnings()).isEmpty();
+  }
+
+  @Test
+  void facetWarningsReachTheResultWithoutFailingIt() throws InterruptedException {
+    final FakeFacetReader facets = facetReader();
+    facets.script.put(1, new ArrayDeque<>(List.of(FakeFacetReader.sample(false, 0, "index", facetCounts(5)))));
+    final Checkpoint.Result result = checkpoint(identicalNodes(), facetCheck(facets)).run();
+    assertThat(result.violations()).isEmpty();
+    assertThat(result.warnings()).hasSize(1);
+    assertThat(result.warnings().getFirst()).contains("FACET_META").contains("node 1");
   }
 }

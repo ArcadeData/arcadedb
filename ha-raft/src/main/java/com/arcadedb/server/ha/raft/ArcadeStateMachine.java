@@ -42,6 +42,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.ContinuousAggregateImpl;
@@ -2783,6 +2784,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // "correct" it by looking up the term at currentIndex - that entry may already be purged.
     final TermIndex applied = getLastAppliedTermIndex();
     final long term = applied != null && applied.getTerm() > 0 ? applied.getTerm() : 0L;
+
+    // The columnar marks of every entry up to the checkpoint go to disk before the marker does (plan 3, Task 22). A follower
+    // writes no local WAL, so the cleanWALFiles hook that persists the recovery set never covers a replicated change, and a
+    // restart replays only what follows the marker: the pages an applied entry marked would otherwise live only in memory.
+    // The apply marks before lastAppliedIndex moves past the entry, and appliedIndex was read above, so every mark of an
+    // entry at or below currentIndex happens-before this persist. A set that cannot be written refuses the checkpoint, as
+    // the WAL hook keeps its WAL file.
+    if (!persistColumnarRecoverySets()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not persist the columnar recovery set of every open database at index %d; not authorising log purge", currentIndex);
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
     if (!registerSnapshotMarker(term, currentIndex)) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not persist snapshot marker at index %d; not authorising log purge", currentIndex);
@@ -2790,6 +2804,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     HALog.log(this, HALog.BASIC, "ArcadeStateMachine: snapshot checkpoint at index %d (term %d)", currentIndex, term);
     return currentIndex;
+  }
+
+  /**
+   * Persists the columnar recovery set of every open database, for {@link #takeSnapshot()}. Iterates the engine's registry of
+   * open instances, never {@code server.getDatabase}: that may take the registry lock the snapshot installer holds across a
+   * whole swap, and may open a database a checkpoint has no reason to open. The registry cannot miss a database registered
+   * from any path (an embedder's {@code registerDatabase}); in a JVM that hosts several servers it also covers the others'
+   * databases, which costs them one extra, harmless persist. A database that is not open has nothing in memory to persist;
+   * one without a COLUMNAR index answers at once.
+   * <p>
+   * Runs on the caller's thread, which for the auto-trigger and the shutdown snapshot is the Ratis StateMachineUpdater: the
+   * apply pauses for one recovery-set write (tmp file, fsync, rename) per database with a projection, in sequence.
+   *
+   * @return false when one of them could not write its set
+   */
+  private boolean persistColumnarRecoverySets() {
+    if (this.server == null)
+      return true;
+    for (final Database open : DatabaseFactory.getActiveDatabaseInstances())
+      if (open instanceof LocalDatabase local && local.isOpen()) {
+        final ColumnarIndexManager columnar = local.getColumnarIndexManager();
+        if (columnar != null && !columnar.persistRecoverySet())
+          return false;
+      }
+    return true;
   }
 
   /**

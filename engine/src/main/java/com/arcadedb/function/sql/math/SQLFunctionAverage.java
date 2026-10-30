@@ -110,6 +110,24 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     return computeAverage(sum.get(), total, decimalInput);
   }
 
+  /**
+   * What {@link #getResult()} returns for a total built from {@code count} values none of which was a {@code BigDecimal}: null
+   * for no value, the {@code double} mean unless the total is a {@code BigDecimal} (a {@code long} sum that overflowed), whose mean
+   * is a {@code double} too. The STATS facet averages its total with it.
+   */
+  public static Object average(final NumericSum sum, final long count) {
+    return average(sum, count, false);
+  }
+
+  /** {@link #average(NumericSum, long)} where {@code decimalInput} says whether a value was a {@code BigDecimal}, as avg() tracks it. */
+  public static Object average(final NumericSum sum, final long count, final boolean decimalInput) {
+    if (count == 0)
+      return null;
+    if (!sum.isDecimal())
+      return sum.doubleValue() / count;
+    return computeAverage(sum.get(), count, decimalInput);
+  }
+
   @Override
   public boolean aggregateResults() {
     return configuredParameters.length == 1;
@@ -138,7 +156,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     return false;
   }
 
-  private Object computeAverage(final Number iSum, final int iTotal, final boolean iDecimalInput) {
+  private static Object computeAverage(final Number iSum, final long iTotal, final boolean iDecimalInput) {
     // EMPTY GROUP: NO VALUES TO AVERAGE (ALSO AVOIDS A DIVISION BY ZERO)
     if (iSum == null || iTotal == 0)
       return null;

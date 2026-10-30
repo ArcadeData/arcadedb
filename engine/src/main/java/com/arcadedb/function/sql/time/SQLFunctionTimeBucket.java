@@ -202,8 +202,11 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     }
   }
 
-  /** A signed duration: {@code '-8h'}, {@code '+30m'}, or a number of milliseconds. */
-  private static long offsetToMs(final Object offset) {
+  /**
+   * A signed duration: {@code '-8h'}, {@code '+30m'}, or a number of milliseconds, not reduced modulo any interval (the OFFSET of a
+   * calendar histogram facet shifts its boundaries by it).
+   */
+  public static long offsetToMs(final Object offset) {
     if (offset instanceof Number number)
       // issue #10850: a whole number of milliseconds - longValue() read 1.9 as 1
       return requireWholeLongArgument(NAME, number, "offset");

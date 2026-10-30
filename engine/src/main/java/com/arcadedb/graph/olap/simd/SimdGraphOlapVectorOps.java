@@ -299,6 +299,25 @@ public final class SimdGraphOlapVectorOps implements GraphOlapVectorOps {
   }
 
   @Override
+  public void bitmaskAndNot(final long[] a, final long[] b, final long[] out, final int length) {
+    final int lanes = LONG_SPECIES.length();
+    int i = 0;
+    for (; i + lanes <= length; i += lanes) {
+      final LongVector va = LongVector.fromArray(LONG_SPECIES, a, i);
+      final LongVector vb = LongVector.fromArray(LONG_SPECIES, b, i);
+      va.and(vb.not()).intoArray(out, i);
+    }
+    for (; i < length; i++)
+      out[i] = a[i] & ~b[i];
+  }
+
+  @Override
+  public int bitmaskAndPopcount(final long[] a, final long[] b, final int length) {
+    // No lane-level popcount in the Vector API: the fused scalar loop (POPCNT) is already optimal.
+    return SCALAR.bitmaskAndPopcount(a, b, length);
+  }
+
+  @Override
   public int bitmaskPopcount(final long[] bitmask, final int length) {
     // Long.bitCount() compiles to POPCNT on x86 — already optimal.
     // SIMD doesn't provide a lane-level popcount, so scalar is best here.

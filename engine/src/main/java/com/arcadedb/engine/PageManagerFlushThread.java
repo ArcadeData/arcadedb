@@ -1747,6 +1747,20 @@ public class PageManagerFlushThread extends Thread {
     return failedFlushPages.size();
   }
 
+  /** The version of the newest copy of the page still waiting to reach its file (queued or failed), -1 when none. Nothing allocated. */
+  long pendingVersionOf(final PageId pageId) {
+    long version = -1;
+    final MutablePage page = pageIndex.get(pageId);
+    if (page != null)
+      version = page.getVersion();
+    if (!failedFlushPages.isEmpty()) {
+      final MutablePage failed = failedFlushPages.get(pageId);
+      if (failed != null)
+        version = Math.max(version, failed.getVersion());
+    }
+    return version;
+  }
+
   public CachedPage getCachedPageFromMutablePageInQueue(final PageId pageId) {
     MutablePage page = pageIndex.get(pageId);
     if (!failedFlushPages.isEmpty()) {

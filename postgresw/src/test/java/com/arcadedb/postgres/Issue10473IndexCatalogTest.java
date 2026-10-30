@@ -434,6 +434,20 @@ class Issue10473IndexCatalogTest {
   }
 
   @Test
+  void aColumnarIndexIsABrinIndexValidWhileItsProjectionIsUsable() {
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.COLUMNAR, false, "Plain", "a");
+
+    final PostgresCatalog.Answer answer = resolve(
+        "select c.relname, am.amname, c.relam from pg_class c join pg_am am on am.oid = c.relam where c.relname = 'Plain[a]_columnar'");
+    assertThat(column(answer, "amname")).containsExactly("brin");
+    assertThat(column(answer, "relam")).containsExactly(3580);
+
+    // online while its projection is usable, although no planner reads it
+    final PostgresCatalog.Answer index = resolve("select i.indisvalid from pg_index i where i.indexrelid = " + oidOf("Plain[a]_columnar"));
+    assertThat(column(index, "indisvalid")).containsExactly(true);
+  }
+
+  @Test
   void theOidsOfAnIndexAreTheSameFromOneStatementToTheNext() {
     final Object first = resolve("select indexrelid from pg_index where indisunique").rows.get(0).get("indexrelid");
     final Object second = resolve("select indexrelid from pg_index where indisunique").rows.get(0).get("indexrelid");

@@ -64,6 +64,11 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
    * @return the RID of the last record that landed on page 0.
    */
   protected RID fillFirstPage(final String typeName) {
+    return fillFirstPage(database, typeName);
+  }
+
+  /** {@link #fillFirstPage(String)} on a given database, for tests that do not extend this class (Tasks 15 and 19 of plan 3). */
+  public static RID fillFirstPage(final Database database, final String typeName) {
     final String filler = "f".repeat(8 * 1024);
     final RID[] result = new RID[1];
     database.transaction(() -> {
@@ -99,10 +104,18 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
    * @return the RID of the record that seals the page, so a caller can free the tail again by deleting it.
    */
   protected RID sealFirstPage(final String typeName) {
-    final RID last = fillFirstPage(typeName);
+    return sealFirstPage(database, typeName);
+  }
+
+  /**
+   * {@link #sealFirstPage(String)} on a given database, so that tests outside this class hierarchy (the columnar applier
+   * ones) build real placeholders the same way.
+   */
+  public static RID sealFirstPage(final Database database, final String typeName) {
+    final RID last = fillFirstPage(database, typeName);
     database.transaction(() -> last.asDocument(true).modify().set("v", "s".repeat(70 * 1024)).save());
 
-    final Map<String, Object> layout = bucketStats(typeName);
+    final Map<String, Object> layout = bucketStats(database, typeName);
     assertThat((Long) layout.get("totalMultiPageRecords"))
         .as("sealing page 0 of " + typeName + " requires the last record to spill into chunks, taking the free tail "
             + "with it - it did not: " + layout)
@@ -112,6 +125,11 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
 
   /** Physical layout of a single-bucket type: how many records are placeholders, chunked, and so on. */
   protected Map<String, Object> bucketStats(final String typeName) {
+    return bucketStats(database, typeName);
+  }
+
+  /** {@link #bucketStats(String)} on a given database. */
+  public static Map<String, Object> bucketStats(final Database database, final String typeName) {
     final LocalBucket bucket = (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
     final Map<String, Object>[] stats = new Map[1];
     database.transaction(() -> stats[0] = bucket.check(0, false));

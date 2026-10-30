@@ -21,20 +21,25 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.MatchSet;
+import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.function.IntPredicate;
 import java.util.logging.Level;
 
 /**
  * Created by luigidellaquila on 06/08/16.
  */
-public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
+public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implements IndexedMatchSource {
   private final BinaryCondition functionCondition;
   private final FromClause      queryTarget;
   /**
@@ -52,6 +57,8 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   //runtime0
   Iterator<Record> fullResult = null;
+  /** The answer {@link #collectAllMatches} searched for, served as the rows too (FACETS only); null otherwise. */
+  private Iterable<Record> collectedAnswer;
 
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget,
       final CommandContext context) {
@@ -117,12 +124,61 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * The function's complete answer by RID, when it is every match (no row limit was handed over) and the function can enumerate it
+   * without loading a record. The search itself is the one the rows are served from: a function caches it for the statement.
+   */
+  @Override
+  public boolean collectAllMatches(final CommandContext context, final MatchSet.Builder builder, final IntPredicate bucketFilter) {
+    if (limit > -1)
+      return false;
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      final RIDFilter ridFilter = ridConditions != null ? RIDFilter.resolve(ridConditions, context) : null;
+      if (ridFilter != null && ridFilter.acceptsNothing())
+        return true;
+      final Iterable<Record> answer = functionCondition.executeIndexedFunction(queryTarget, context,
+          new IndexedFunctionPushdown(-1, ridFilter, order));
+      // the rows are served from the same answer: a search with @rid conditions is not cached by the function
+      collectedAnswer = answer;
+      if (!(answer instanceof IndexedMatchSource.Rids rids))
+        return false;
+      rids.forEachRid(bucketFilter, rid -> builder.add(rid, 0));
+      return true;
+    } finally {
+      if (context.isProfiling())
+        cost += System.nanoTime() - begin;
+    }
+  }
+
+  /**
+   * Whether {@code where} is this step's own function condition and nothing else: the filter the planner chains after the fetch when
+   * the function is evaluated on each row again (for its {@code $score}), which every row of the complete answer passes.
+   */
+  @Override
+  public boolean isOwnCondition(final WhereClause where) {
+    BooleanExpression expression = where.getBaseExpression();
+    while (true) {
+      if (expression instanceof AndBlock and && and.getSubBlocks().size() == 1)
+        expression = and.getSubBlocks().getFirst();
+      else if (expression instanceof OrBlock or && or.getSubBlocks().size() == 1)
+        expression = or.getSubBlocks().getFirst();
+      else
+        break;
+    }
+    return functionCondition.equals(expression);
+  }
+
   private void init(final CommandContext context) {
     if (fullResult == null) {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         final RIDFilter ridFilter = ridConditions != null ? RIDFilter.resolve(ridConditions, context) : null;
-        if (ridFilter != null && ridFilter.acceptsNothing())
+        if (collectedAnswer != null) {
+          // the answer collectAllMatches() searched for, with the same pushdown
+          fullResult = collectedAnswer.iterator();
+          collectedAnswer = null;
+        } else if (ridFilter != null && ridFilter.acceptsNothing())
           // the @rid conditions contradict each other or name no RID: there is nothing to search for
           fullResult = Collections.emptyIterator();
         else
@@ -200,5 +256,6 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
       }
     }
     fullResult = null;
+    collectedAnswer = null;
   }
 }

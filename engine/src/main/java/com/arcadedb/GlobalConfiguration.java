@@ -325,6 +325,20 @@ public enum GlobalConfiguration {
         return Math.max(4L, maxHeap / 512 / 1024 / 1024);
       }),
 
+  BLOCK_CACHE_MAX_BYTES("arcadedb.blockCache.maxBytes", SCOPE.JVM, """
+      Server-wide memory budget, in BYTES, for decoded column blocks read through BlockCache (columnar index \
+      segments). It is one budget for the whole JVM whatever the number of databases, types and buckets. The cache is \
+      split across 16 stripes, so an entry above a sixteenth of this value is never held, only returned to the \
+      caller. 0 disables caching. When left unset it auto-scales with the JVM max heap (heap/32, never below 16MB). \
+      A change applies at the next touch of a stripe (hit or miss). The time-series decoded column cache keeps its own per-shard budget, \
+      arcadedb.timeSeriesDecodedBlockCacheRAM.""",
+      Long.class, 16L * 1024 * 1024, null, value -> {
+        final long floor = 16L * 1024 * 1024;
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        // Heap is unbounded (no -Xmx): keep the floor rather than a budget derived from a number that means "no limit".
+        return maxHeap == Long.MAX_VALUE ? floor : Math.max(floor, maxHeap / 32);
+      }),
+
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
       String.class, "high", Set.of("low", "medium", "high")),
@@ -353,6 +367,83 @@ public enum GlobalConfiguration {
       block on each query's bounded result queue and would starve non-blocking compute work. \
       0 = available cores (min 2); consider capping explicitly on very high core-count machines""",
       Integer.class, 0),
+
+  COLUMNAR_FLUSH_INTERVAL("arcadedb.columnar.flushInterval", SCOPE.DATABASE,
+      "Milliseconds after which the in-memory overlay of a COLUMNAR index is flushed to an immutable segment even if it is below "
+          + "arcadedb.columnar.flushMaxRows. Default is 1000", Long.class, 1000L),
+
+  COLUMNAR_FLUSH_MAX_ROWS("arcadedb.columnar.flushMaxRows", SCOPE.DATABASE,
+      "Rows held by the in-memory overlay of a COLUMNAR index that trigger a flush to an immutable segment. Default is 65536",
+      Integer.class, 65536),
+
+  COLUMNAR_MERGE_DEAD_RATIO("arcadedb.columnar.mergeDeadRatio", SCOPE.DATABASE,
+      "Ratio (0-1) of dead rows in a COLUMNAR segment above which the segment is rewritten by a merge. Default is 0.3",
+      Float.class, 0.3f),
+
+  COLUMNAR_MERGE_MAX_SEGMENTS("arcadedb.columnar.mergeMaxSegments", SCOPE.DATABASE,
+      "Number of segments of one COLUMNAR projection above which the smallest ones are merged. Default is 10", Integer.class, 10),
+
+  COLUMNAR_MAX_CARDINALITY("arcadedb.columnar.maxCardinality", SCOPE.DATABASE,
+      "Distinct values per dictionary-encoded property of a COLUMNAR index above which a warning is raised "
+          + "(arcadedb.columnar.cardinality.exceeded). Default is 1000000", Integer.class, 1_000_000),
+
+  COLUMNAR_SEGMENT_BLOCK_ROWS("arcadedb.columnar.segmentBlockRows", SCOPE.DATABASE,
+      "Rows per column block of a COLUMNAR segment. Default is 16384", Integer.class, 16384),
+
+  COLUMNAR_APPLY_INTERVAL("arcadedb.columnar.applyInterval", SCOPE.DATABASE,
+      "Milliseconds between two checks for committed pages to apply to the COLUMNAR indexes of a database. The JVM-wide ticker "
+          + "wakes up every 10ms and honors this value per database, at every check. Under sustained ingest the interval is stretched "
+          + "up to 5 times, never past the larger of this value and 500ms (500ms at the default), so one pass covers more commits; "
+          + "schema reconciles and file watchers of COLUMNAR indexes ride on the same interval. Default is 100", Long.class, 100L),
+
+  COLUMNAR_APPLY_THREADS("arcadedb.columnar.applyThreads", SCOPE.JVM,
+      "Threads of the JVM-wide pool that applies committed pages to COLUMNAR indexes (at most one pass per database at a time). "
+          + "Read once, at the pool's lazy initialization. Default is 2", Integer.class, 2),
+
+  COLUMNAR_MAINTENANCE_THREADS("arcadedb.columnar.maintenanceThreads", SCOPE.JVM,
+      "Threads of the JVM-wide pool that runs COLUMNAR flush, merge, dictionary compaction and rebuild, so a long merge never "
+          + "delays the apply passes. Read once, at the pool's lazy initialization. Default is 2", Integer.class, 2),
+
+  COLUMNAR_REBUILD_CONCURRENCY("arcadedb.columnar.rebuildConcurrency", SCOPE.JVM,
+      "Number of COLUMNAR projection rebuilds that may run at the same time in the JVM. Default is 1", Integer.class, 1),
+
+  COLUMNAR_DICTIONARY_COMPACT_RATIO("arcadedb.columnar.dictionaryCompactRatio", SCOPE.DATABASE,
+      "Ratio (0-1) of unreferenced ordinals above which a COLUMNAR dictionary is compacted into a new generation. Default is 0.5",
+      Float.class, 0.5f),
+
+  COLUMNAR_PATCH_BUDGET("arcadedb.columnar.patchBudget", SCOPE.SERVER,
+      "Maximum number of record positions, summed over the buckets, that a FACETS query may read from the records to correct the "
+          + "projection for the writes it has not applied yet. Above it the query counts from the projection alone and reports "
+          + "meta.exact=false. Default is 10000", Integer.class, 10000),
+
+  COLUMNAR_PATCH_BUDGET_RATIO("arcadedb.columnar.patchBudgetRatio", SCOPE.SERVER,
+      "Share of the matches of a FACETS query it may read from the records to correct the projection for the writes it has not "
+          + "applied yet, when that is more than arcadedb.columnar.patchBudget: the query stays exact while the positions to read are at "
+          + "most max(patchBudget, patchBudgetRatio x matches), counting the matches of the buckets the projection answers. Reading a "
+          + "share of the matches costs about that share of a scan (patching every match measured at about a third of a GROUP BY), and "
+          + "the memory budget still bounds it. Between 0 and 1: 0 keeps the absolute budget only, 1 patches whatever lags. Default is 1",
+      Double.class, 1.0),
+
+  COLUMNAR_QUERY_MEMORY_BUDGET("arcadedb.columnar.queryMemoryBudget", SCOPE.JVM,
+      "Bytes of counting memory (dense counters, hash counters, match bitmaps) that all concurrent FACETS queries of the JVM may hold "
+          + "together. Default is 268435456 (256MB)", Long.class, 268435456L),
+
+  COLUMNAR_QUERY_BUDGET_WAIT("arcadedb.columnar.queryBudgetWait", SCOPE.SERVER,
+      "Milliseconds a FACETS query waits for counting memory (see arcadedb.columnar.queryMemoryBudget) before the facet is reported "
+          + "as unavailable. The window is per collector: a facet that spans N declaring types has N collectors and can wait up to "
+          + "N windows in all. Default is 5000", Long.class, 5000L),
+
+  COLUMNAR_TOP_MAX("arcadedb.columnar.topMax", SCOPE.SERVER,
+      "Maximum value accepted by the TOP option of a FACETS clause. A larger value is a parse error. Default is 1000",
+      Integer.class, 1000),
+
+  COLUMNAR_MAX_FALLBACK_SCANS("arcadedb.columnar.maxFallbackScans", SCOPE.DATABASE,
+      "Maximum number of FACETS queries of a database that may run a fallback scan of the records at the same time (a facet on a "
+          + "property with no COLUMNAR index, or on a bucket whose projection is unusable). Read when the database is opened. "
+          + "Default is 2", Integer.class, 2),
+
+  COLUMNAR_GROUP_BY_ACCELERATION("arcadedb.columnar.groupByAcceleration", SCOPE.DATABASE,
+      "Answer eligible GROUP BY queries from the COLUMNAR projection", Boolean.class, true),
 
   FLUSH_ALL_PAGES_TIMEOUT("arcadedb.flushAllPagesTimeout", SCOPE.DATABASE,
       """
@@ -4396,6 +4487,9 @@ public enum GlobalConfiguration {
     if (allowed != null && coerced != null && !allowed.contains(coerced.toString().toLowerCase(Locale.ENGLISH)))
       throw new IllegalArgumentException(
           "Global setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
+    // a share: NaN, a negative or a share above 1 would silently mean "absolute budget only" or "patch without bound"
+    if (this == COLUMNAR_PATCH_BUDGET_RATIO && coerced instanceof Double share && !(share >= 0d && share <= 1d))
+      throw new IllegalArgumentException("Global setting '" + key + "=" + coerced + "' is not valid. Allowed values are between 0 and 1");
     // The floor is checked by the same two writers for the same reason (issue #10876): `ALTER DATABASE` stored a bucket page size no
     // bucket could write a record into, and the refusal came at the first insert into a type created afterwards
     if (minimum != null && coerced instanceof Number number && number.longValue() < minimum.getAsInt())
@@ -4639,6 +4733,9 @@ public enum GlobalConfiguration {
       if (type == Float.class)
         return iValue instanceof Number n ? n.floatValue() : Float.parseFloat(iValue.toString().trim());
 
+      if (type == Double.class)
+        return iValue instanceof Number n ? n.doubleValue() : Double.parseDouble(iValue.toString().trim());
+
       if (type == String.class) {
         final String text = iValue.toString();
         // Normalised to the DECLARED spelling when the setting has an allow-list. setValue matches that list
@@ -4722,7 +4819,7 @@ public enum GlobalConfiguration {
     final String message =
         "Value '" + iValue + "' is not valid for setting '" + key + "' of type " + type.getSimpleName();
 
-    final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class ?
+    final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class || type == Double.class ?
         new NumberFormatException(message) :
         new IllegalArgumentException(message);
     failure.initCause(cause);
@@ -4804,6 +4901,11 @@ public enum GlobalConfiguration {
   public float getValueAsFloat() {
     final Object v = value != nullValue && value != null ? value : defValue;
     return v instanceof Number n ? n.floatValue() : Float.parseFloat(v.toString().trim());
+  }
+
+  public double getValueAsDouble() {
+    final Object v = value != nullValue && value != null ? value : defValue;
+    return v instanceof Number n ? n.doubleValue() : Double.parseDouble(v.toString().trim());
   }
 
   public String getKey() {

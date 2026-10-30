@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
@@ -56,6 +57,11 @@ public interface InternalExecutionPlan extends ExecutionPlan {
   }
 
   boolean canBeCached();
+
+  /** The facets of a {@code SELECT ... FACETS} plan (see {@link ResultSet#getFacets()}), null for any other plan. */
+  default FacetResults getFacets() {
+    return null;
+  }
 
   default String getStatement() {
     return null;

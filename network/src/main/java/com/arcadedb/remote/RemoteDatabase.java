@@ -38,6 +38,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -1041,7 +1042,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   RemoteStreamingResultSet newStreamingResultSet(final BufferedReader reader, final boolean warnOnTruncation,
       final String command) {
     return new RemoteStreamingResultSet(reader, this::json2Result, warnOnTruncation,
-        error -> manageStreamedError(error, command));
+        error -> manageStreamedError(error, command), this::json2Facets);
   }
 
   /**
@@ -1721,7 +1722,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject result = resultArray.getJSONObject(i);
       ((InternalResultSet) resultSet).add(json2Result(result));
     }
+    // The facets of a SELECT ... FACETS query, in the one shape every transport shares
+    if (response.has("facets"))
+      ((InternalResultSet) resultSet).setFacets(json2Facets(response.getJSONObject("facets")));
     return resultSet;
+  }
+
+  /**
+   * The facets of a response, their values decoded as {@link #json2Result} decodes a projection row's (final review C-I8): a terms
+   * facet whose {@code @props} hint names a type JSON does not round-trip has its values restored to that type, exactly as a column
+   * with that hint; any other value is kept as the JSON parse gives it, as a row's would be.
+   */
+  FacetResults json2Facets(final JSONObject facets) {
+    return FacetResults.fromJSON(facets, (value, type) -> type != null ? convertWithHint(value, new ColumnTypeHint(type, null)) : value);
   }
 
   protected Result json2Result(final JSONObject result) {

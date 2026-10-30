@@ -20,9 +20,12 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.utility.StringUtils;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.antlr.SQLASTBuilder;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -98,6 +101,13 @@ public class PostCommandHandler extends AbstractQueryHandler {
       return false;
 
     if (StringUtils.containsIgnoreCase(command, " limit ") || StringUtils.containsIgnoreCase(command, "\nlimit ")) {
+      // Both words in the text decide nothing on their own (a property, a literal or a subquery can carry them): only the parsed
+      // statement tells a SELECT with a FACETS clause, the one shape the last-line heuristic below can get wrong.
+      if (StringUtils.containsIgnoreCase(command, " facets ") || StringUtils.containsIgnoreCase(command, "\nfacets ")) {
+        final Boolean facetsQuery = autoLimitOfAFacetsQuery(command, database);
+        if (facetsQuery != null)
+          return facetsQuery;
+      }
       // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
       final String[] lines = LINE_BREAK.split(command);
       final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
@@ -108,6 +118,30 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
 
     return !"sqlScript".equalsIgnoreCase(language) || scriptEndsWithAQuery(command, database);
+  }
+
+  /**
+   * The auto-limit decision for a {@code SELECT ... FACETS} query, read on the parsed statement; null for any other text, which the
+   * caller's heuristic decides as it always did (a text that does not parse falls through too: the engine reports its error).
+   * <ul>
+   * <li>a FACETS clause written after SKIP or LIMIT is left as written, so the caller gets the parser's "FACETS must come before
+   * SKIP and LIMIT" instead of a syntax error about a second, appended LIMIT;</li>
+   * <li>otherwise a LIMIT is appended exactly when the statement has none of its own: FACETS then precedes it, as it must.</li>
+   * </ul>
+   * Called only when the text contains both words, so every other request pays no parse.
+   */
+  private static Boolean autoLimitOfAFacetsQuery(final String command, final Database database) {
+    final Statement statement;
+    try {
+      statement = database instanceof DatabaseInternal internal ?
+          internal.getStatementCache().get(command) :
+          new SQLAntlrParser(database).parse(command);
+    } catch (final CommandSQLParsingException e) {
+      return e.getMessage() != null && e.getMessage().contains(SQLASTBuilder.FACETS_AFTER_LIMIT_MESSAGE) ? Boolean.FALSE : null;
+    }
+    if (statement instanceof SelectStatement select && select.getFacets() != null)
+      return select.getLimit() == null;
+    return null;
   }
 
   /**
@@ -487,6 +521,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
       final Optional<ExecutionPlan> plan = source.getExecutionPlan();
       final Optional<QueryStatistics> stats = source.getStatistics();
+      // Before the source is closed: the facets count the matches the drain above did not reach as well
+      final FacetResults facets = source.getFacets();
       final IteratorResultSet materialized = new IteratorResultSet(rows.iterator()) {
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
@@ -494,6 +530,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
         }
       };
       stats.ifPresent(materialized::setStatistics);
+      materialized.setFacets(facets);
       return materialized;
     } finally {
       source.close();

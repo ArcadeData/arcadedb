@@ -82,7 +82,10 @@ public final class CorrelatedSubQueryCache {
    * Every registered built-in is classified either here or in LetQueryStepCorrelatedResultCacheTest's reviewed list,
    * which fails on a newly registered name until someone decides which side it belongs on.
    */
-  static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql");
+  static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql",
+      // runs a FACETS query of its own over the COLUMNAR projection, which the apply catches up asynchronously: with the database
+      // unchanged, a count it reports inexact ("exact": false) can still differ from one call to the next
+      "facet.searchvalues");
   /**
    * Built-in methods not trusted: {@code remove}/{@code removeAll} change a collection (today on a defensive copy, not
    * relied upon here), and {@code transform} resolves the methods it applies from its string arguments at run time,

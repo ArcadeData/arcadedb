@@ -47,14 +47,15 @@ public class SelectStatement extends Statement {
    */
   private static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
 
-  public FromClause  target;
-  public Projection  projection;
-  public WhereClause whereClause;
-  public GroupBy     groupBy;
-  public OrderBy     orderBy;
-  public Unwind      unwind;
-  public Skip        skip;
-  public LetClause   letClause;
+  public FromClause   target;
+  public Projection   projection;
+  public WhereClause  whereClause;
+  public GroupBy      groupBy;
+  public OrderBy      orderBy;
+  public Unwind       unwind;
+  public Skip         skip;
+  public LetClause    letClause;
+  public FacetsClause facets;
 
   public SelectStatement() {
   }
@@ -95,6 +96,13 @@ public class SelectStatement extends Statement {
     return letClause;
   }
 
+  /**
+   * The FACETS clause, null when the statement has none.
+   */
+  public FacetsClause getFacets() {
+    return facets;
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("SELECT");
     if (projection != null) {
@@ -131,6 +139,11 @@ public class SelectStatement extends Statement {
       unwind.toString(params, builder);
     }
 
+    if (facets != null) {
+      builder.append(" ");
+      facets.toString(params, builder);
+    }
+
     if (skip != null)
       skip.toString(params, builder);
 
@@ -155,6 +168,8 @@ public class SelectStatement extends Statement {
         throw new CommandSQLParsingException("GROUP BY clause requires FROM clause");
       if (orderBy != null)
         throw new CommandSQLParsingException("ORDER BY clause requires FROM clause");
+      if (facets != null)
+        throw new CommandSQLParsingException("FACETS requires a FROM clause");
     }
 
     if (projection != null) {
@@ -303,6 +318,7 @@ public class SelectStatement extends Statement {
     result.limit = limit == null ? null : limit.copy();
     result.letClause = letClause == null ? null : letClause.copy();
     result.timeout = timeout == null ? null : timeout.copy();
+    result.facets = facets == null ? null : facets.copy();
     // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
     result.resultCacheable = resultCacheable;
     return result;
@@ -310,7 +326,7 @@ public class SelectStatement extends Statement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { target, projection, whereClause, groupBy, orderBy, unwind, skip, limit, letClause, timeout };
+    return new Object[] { target, projection, whereClause, groupBy, orderBy, unwind, skip, limit, letClause, timeout, facets };
   }
 
   @Override
@@ -329,6 +345,9 @@ public class SelectStatement extends Statement {
       return true;
 
     if (orderBy != null && orderBy.refersToParent())
+      return true;
+
+    if (facets != null && facets.refersToParent())
       return true;
 
     return letClause != null && letClause.refersToParent();

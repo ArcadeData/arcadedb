@@ -117,6 +117,16 @@ class IndexMetadataUserSettingComparisonTest {
   }
 
   @Test
+  void everyColumnarSettingIsComparable() {
+    final Map<String, Object[]> samples = new LinkedHashMap<>();
+    samples.put("hierarchy", new Object[] { new JSONObject().put("vertexType", "Tag").put("key", "path").put("parentEdge", "ParentOf"),
+        new JSONObject().put("vertexType", "Tag").put("key", "path").put("parentEdge", "ChildOf") });
+    samples.put("maxCardinality", new Object[] { 100, 200 });
+
+    assertEverySettingIsComparable(new ColumnarIndexMetadata("Doc", PROPERTIES, -1), samples, Schema.INDEX_TYPE.COLUMNAR);
+  }
+
+  @Test
   void everyFullTextSettingIsComparable() {
     final Map<String, Object[]> samples = new LinkedHashMap<>();
     samples.put("analyzer", new Object[] { "a.b.C", "a.b.D" });

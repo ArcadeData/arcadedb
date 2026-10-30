@@ -29,6 +29,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
+import com.arcadedb.query.sql.executor.IndexedMatchSource;
 import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -41,6 +42,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.function.IntPredicate;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -157,16 +160,14 @@ final class FullTextFunctionSearch {
     @SuppressWarnings("unchecked")
     final Map<RID, Float> cached = (Map<RID, Float>) context.getCachedValue(cacheKey);
     if (cached != null)
-      return () -> new MatchingRecords(database, cached, ridFilter, -1, null, ridFilter, order, guard);
+      return new AllMatches(database, cached, ridFilter, order, guard);
 
     if (limit < 1 || !returnsOnlyTargetRecords(target, context)) {
-      if (ridFilter == null) {
-        final Map<RID, Float> allResults = completeSearch(context);
-        return () -> new MatchingRecords(database, allResults, null, -1, null, null, order, guard);
-      }
+      if (ridFilter == null)
+        return new AllMatches(database, completeSearch(context), null, order, guard);
       final Map<RID, Float> accepted = FullTextSearch.search(index, query, -1, guard, restrictedFields, ridFilter);
       rememberSubset(context, accepted);
-      return () -> new MatchingRecords(database, accepted, null, -1, null, null, order, guard);
+      return new AllMatches(database, accepted, null, order, guard);
     }
 
     final Map<RID, Float> best = FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter);
@@ -220,6 +221,32 @@ final class FullTextFunctionSearch {
       return false;
     final DocumentType indexType = context.getDatabase().getSchema().getType(index.getTypeName());
     return indexType != null && indexType.isSubTypeOf(targetType.getStringValue());
+  }
+
+  /**
+   * Every match of a search (none dropped by a limit), as records in the plan's order or, for the collect step of a FACETS query, as
+   * RIDs without loading a record.
+   */
+  private record AllMatches(DatabaseInternal database, Map<RID, Float> matches, RIDFilter filter, IndexedFunctionPushdown.Order order,
+                            WorkGuard guard) implements Iterable<Record>, IndexedMatchSource.Rids {
+    @Override
+    public Iterator<Record> iterator() {
+      // a fresh heap on every call: re-iterating re-orders the same matches rather than searching again
+      return new MatchingRecords(database, matches, filter, -1, null, filter, order, guard);
+    }
+
+    @Override
+    public void forEachRid(final IntPredicate bucketFilter, final Predicate<RID> action) {
+      int ticks = 0;
+      for (final RID rid : matches.keySet()) {
+        guard.checkPeriodically(++ticks);
+        // as the rows skip a record gone since the index was updated (a slot-table check, no record read)
+        if (!bucketFilter.test(rid.getBucketId()) || filter != null && !filter.accepts(rid) || !database.existsRecord(rid))
+          continue;
+        if (!action.test(rid))
+          return;
+      }
+    }
   }
 
   /**

@@ -20,6 +20,7 @@
 package com.arcadedb.containers.ha.chaos;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.test.support.FacetSnapshot;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -27,9 +28,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,13 +55,17 @@ class ChaosRunnerTest {
   }
 
   private Harness harness(final ChaosConfig config) throws IOException {
+    return harness(config, null);
+  }
+
+  private Harness harness(final ChaosConfig config, final FacetCheck facets) throws IOException {
     final Ledger ledger = new Ledger(config.writers());
     final FakeNodeControl control = new FakeNodeControl();
     final FakeLoad load = new FakeLoad(ledger);
     final LedgerNodeReader reader = new LedgerNodeReader(ledger);
     final InvariantChecker checker = new InvariantChecker(ledger);
     final Checkpoint checkpoint = new Checkpoint(reader, ledger, checker, config.nodes(), Duration.ofSeconds(1),
-        Duration.ofMillis(1));
+        Duration.ofMillis(1), facets);
     final ChaosReport report = new ChaosReport(dir.resolve(Long.toString(config.seed())), config);
     final ChaosRunner runner = new ChaosRunner(config, new ClusterState(config.nodes()), control,
         new FaultPicker(config.faultWeights(), config.electionTimeout()), load, ledger, checkpoint, checker, report, null,
@@ -409,5 +417,46 @@ class ChaosRunnerTest {
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.HARNESS);
     assertThat(result.message()).contains("in-place restart counts");
+  }
+
+  private static SortedMap<String, Long> facetCounts(final long nike) {
+    final SortedMap<String, Long> counts = new TreeMap<>();
+    counts.put("brand=Nike", nike);
+    counts.put("size=small", 3L);
+    return counts;
+  }
+
+  private static FakeFacetReader facetReader(final FacetSnapshot node1) {
+    final FakeFacetReader reader = new FakeFacetReader();
+    for (int node = 0; node < 3; node++)
+      reader.data.put(node, facetCounts(5));
+    if (node1 != null)
+      reader.script.put(1, new ArrayDeque<>(List.of(node1)));
+    return reader;
+  }
+
+  private static FacetCheck facetCheck(final FakeFacetReader reader) {
+    // every case using it passes or fails on sight: a generous deadline keeps a unit-lane JVM stall from turning it into a stall
+    return new FacetCheck(reader, 3, Duration.ofSeconds(60), Duration.ofMillis(1));
+  }
+
+  @Test
+  void facetDriftEndsTheRunAsSafety() throws IOException {
+    final FakeFacetReader reader = facetReader(FakeFacetReader.sample(true, 0, "index", facetCounts(4)));
+    final ChaosResult result = harness(config(), facetCheck(reader)).runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.steps()).isEqualTo(1);
+    assertThat(Files.readString(dir.resolve("7/ledger-diff.txt"))).contains("== FACET_DRIFT (SAFETY)");
+    assertThat(new JSONObject(Files.readString(dir.resolve("7/summary.json"))).getString("result")).isEqualTo("SAFETY");
+  }
+
+  @Test
+  void facetWarningsAreInTheSummaryAndDoNotFailTheRun() throws IOException {
+    final FakeFacetReader reader = facetReader(FakeFacetReader.sample(false, 0, "index", facetCounts(5)));
+    final ChaosResult result = harness(config(), facetCheck(reader)).runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getJSONArray("facetWarnings").length()).isEqualTo(1);
+    assertThat(summary.getJSONArray("facetWarnings").getString(0)).contains("FACET_META").contains("node 1");
   }
 }

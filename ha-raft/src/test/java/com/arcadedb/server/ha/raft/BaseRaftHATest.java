@@ -493,6 +493,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     long target = leaderAppliedIndex.getAsLong();
     while (target < 0) {
       if (System.currentTimeMillis() >= deadline || !sleepQuietly(100)) {
+        // one last read decides: a host stalled past the deadline may have published meanwhile
+        target = leaderAppliedIndex.getAsLong();
+        if (target >= 0)
+          break;
         logSlowWait(requester, what + " (no leader published an applied index)", System.currentTimeMillis() - startMs,
             false, budgetMs);
         return false;
@@ -503,6 +507,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     long applied = appliedIndex.getAsLong();
     while (applied < target) {
       if (System.currentTimeMillis() >= deadline || !sleepQuietly(100)) {
+        // one last read decides: a host stalled past the deadline may have caught up meanwhile (plan 4 final review)
+        applied = appliedIndex.getAsLong();
+        if (applied >= target)
+          break;
         logSlowWait(requester, what + " to leader index " + target + " (still at index " + applied + ")",
             System.currentTimeMillis() - startMs, false, budgetMs);
         return false;
@@ -1004,15 +1012,16 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
-   * Counts through a freshly resolved database handle. {@code count(id)} rather than {@code count(*)}: the
-   * latter reads a cached per-bucket counter, the wrong tool when the question is whether the pages themselves
-   * arrived. A single attempt - no retry of its own - so a {@link DatabaseIsClosedException} propagates to the
+   * Counts the records of the type through a freshly resolved database handle. {@code count(@rid)}: every record, whatever
+   * properties it has ({@code count(id)} skipped the records without an {@code id}, so a type without that property counted 0),
+   * and not {@code count(*)}, which reads a cached per-bucket counter, the wrong tool when the question is whether the pages
+   * themselves arrived. A single attempt - no retry of its own - so a {@link DatabaseIsClosedException} propagates to the
    * caller, which is what {@link #awaitCountOn} relies on to treat a resync window as "try again shortly"
    * rather than a hard failure.
    */
   protected long countOn(final int serverIndex, final String typeName) {
     final Database db = getServerDatabase(serverIndex, getDatabaseName());
-    return ((Number) db.command("sql", "SELECT count(id) AS cnt FROM " + typeName).next().getProperty("cnt")).longValue();
+    return ((Number) db.command("sql", "SELECT count(@rid) AS cnt FROM " + typeName).next().getProperty("cnt")).longValue();
   }
 
   /**

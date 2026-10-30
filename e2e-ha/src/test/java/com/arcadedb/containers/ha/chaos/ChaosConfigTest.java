@@ -19,6 +19,7 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import com.arcadedb.test.support.ContainersTestTemplate;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -86,6 +87,23 @@ class ChaosConfigTest {
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.hold");
     assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.writers", "0")))
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.writers");
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.facetWriters", "-1")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.facetWriters");
+  }
+
+  @Test
+  void facetWritersDefaultToTwoAndReplay() {
+    final ChaosConfig config = ChaosConfig.fromProperties(props());
+    assertThat(config.facetWriters()).isEqualTo(2);
+    assertThat(config.replayCommand()).contains(" -Dchaos.writers=4 -Dchaos.facetWriters=2");
+    assertThat(ChaosConfig.fromProperties(props("chaos.facetWriters", "5")).replayCommand()).contains(" -Dchaos.facetWriters=5");
+  }
+
+  @Test
+  void facetWritersZeroDisablesFacets() {
+    final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.facetWriters", "0"));
+    assertThat(config.facetWriters()).isZero();
+    assertThat(config.replayCommand()).contains(" -Dchaos.facetWriters=0");
   }
 
   @Test
@@ -120,6 +138,10 @@ class ChaosConfigTest {
     final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.seed", "42", "chaos.faults", "kill:3,pause"));
     assertThat(config.replayCommand())
         .contains("-Dit.test=HaChaosIT")
+        .contains(" -am ")
+        .contains("-Dfailsafe.failIfNoSpecifiedTests=false")
+        .contains("-Dsurefire.failIfNoSpecifiedTests=false")
+        .contains("-Darcadedb.test.image=" + ContainersTestTemplate.IMAGE)
         .contains("-Dfailsafe.excludedGroups=")
         .contains("-Dchaos.seed=42")
         .contains("-Dchaos.faults=kill:3,pause:1")

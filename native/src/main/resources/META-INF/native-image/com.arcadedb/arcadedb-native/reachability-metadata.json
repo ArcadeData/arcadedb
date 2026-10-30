@@ -1012,6 +1012,18 @@
       "allDeclaredFields": true
     },
     {
+      "type": "com.arcadedb.query.sql.parser.FacetItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FacetRangeItem",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "com.arcadedb.query.sql.parser.FacetsClause",
+      "allDeclaredFields": true
+    },
+    {
       "type": "com.arcadedb.query.sql.parser.FieldMatchPathItem",
       "allDeclaredFields": true
     },

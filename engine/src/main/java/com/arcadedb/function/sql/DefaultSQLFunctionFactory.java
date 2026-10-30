@@ -30,6 +30,7 @@ import com.arcadedb.function.sql.coll.SQLFunctionMap;
 import com.arcadedb.function.sql.coll.SQLFunctionSet;
 import com.arcadedb.function.sql.coll.SQLFunctionSymmetricDifference;
 import com.arcadedb.function.sql.coll.SQLFunctionUnionAll;
+import com.arcadedb.function.sql.facet.SQLFunctionFacetSearchValues;
 import com.arcadedb.function.sql.geo.SQLFunctionCircle;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoArea;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoAsGeoJson;
@@ -303,6 +304,8 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionRate.NAME, SQLFunctionRate.class);
     register(SQLFunctionTsPercentile.NAME, SQLFunctionTsPercentile.class);
     register(SQLFunctionPromQL.NAME, new SQLFunctionPromQL());
+    // Facets (facet.* namespace)
+    register(SQLFunctionFacetSearchValues.NAME, new SQLFunctionFacetSearchValues());
     // Window functions
     register(SQLFunctionLag.NAME, SQLFunctionLag.class);
     register(SQLFunctionLead.NAME, SQLFunctionLead.class);

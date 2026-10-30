@@ -18,7 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
-import com.arcadedb.engine.timeseries.codec.Simple8bCodec;
+import com.arcadedb.engine.codec.Simple8bCodec;
 
 import java.io.IOException;
 

@@ -141,6 +141,31 @@ class WaitForReplicationIsCompletedTest {
     assertThat(leaderReads.get()).isEqualTo(4);
   }
 
+  /**
+   * Plan 4 final review (batch 2 r1, M4): a host that stalls past the deadline while the server catches up must not read as a server
+   * that stayed behind. The wait reads the applied index one last time before it gives up.
+   */
+  @Test
+  void aServerThatCaughtUpDuringAStallPastTheDeadlineIsCaughtUp() {
+    final AtomicInteger reads = new AtomicInteger();
+    final LongSupplier applied = () -> {
+      if (reads.incrementAndGet() > 1)
+        return 17;
+      // the first read stalls beyond the whole budget, the server applying meanwhile
+      try {
+        Thread.sleep(SHORT_BUDGET_MS + 200);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return 5;
+    };
+
+    final boolean caughtUp = BaseRaftHATest.awaitAppliedIndex(this, "replication on server 2", () -> 17, applied, SHORT_BUDGET_MS);
+
+    assertThat(caughtUp).isTrue();
+    assertThat(reads.get()).isEqualTo(2);
+  }
+
   @Test
   void aServerThatCatchesUpInsideTheBudgetIsCaughtUp() {
     final AtomicLong applied = new AtomicLong(0);

@@ -27,6 +27,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.index.columnar.ColumnarStore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
@@ -703,6 +704,12 @@ public final class SnapshotInstaller {
         // marker is still on disk at this point - it is cleared only once this open succeeds - and it is what
         // stops every other caller from opening the directory, so this one reopen has to say it owns the marker
         // (issue #7129).
+        // Before it, the columnar projection is marked for a snapshot_install rebuild: a snapshot never carries one, and
+        // the projection of the replaced files must not be served over the new ones. atomicSwap already moved the old
+        // projection into the backup, so what this call adds is the REBUILD marker (the rebuild reason). A failure to write
+        // it still rolls the install back like a snapshot that does not open: a volume that cannot take a small file will
+        // not survive the reopen either, and the backup keeps a copy whose projection matches its files.
+        prepareColumnarProjection(dbPath);
         server.reopenDatabaseUnderSnapshotRecovery(databaseName);
       } catch (final RuntimeException openEx) {
         // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
@@ -836,6 +843,20 @@ public final class SnapshotInstaller {
                 + "absent (it will be re-acquired on the next reconcile): %s", null, databaseName, validationEx.getMessage());
         deleteDirectoryIfExists(staging);
         throw validationEx;
+      }
+
+      // A snapshot never carries the columnar projection: mark the staged copy for a snapshot_install rebuild, as install()
+      // does before its reopen, so the first open rebuilds every projection with that reason (plan 3 contract) rather than
+      // reading each one as missing. Written after the read-only validation and before the publish, so the marker moves
+      // with the atomic rename; a failure discards the staging like a failed download.
+      try {
+        ColumnarStore.prepareForSnapshotInstall(staging);
+      } catch (final IOException markerEx) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Cannot mark the acquired snapshot for new database '%s' for its columnar rebuild; discarding it and leaving the "
+                + "database absent (it will be re-acquired on the next reconcile): %s", null, databaseName, markerEx.getMessage());
+        deleteDirectoryIfExists(staging);
+        throw markerEx;
       }
 
       // A stale, unregistered databases/<name>/ (e.g. from a pre-upgrade crash) would block the rename. The
@@ -1801,9 +1822,15 @@ public final class SnapshotInstaller {
    * and the only copy that opens was deleted. The snapshot is opened once here, without a server; if it does not open
    * and the backup is there, the verdict is the one a failed validating reopen records, and the backup is restored.
    * With no backup there is nothing to fall back to, and the snapshot is kept as before.
+   * <p>
+   * First the columnar projection is marked for a {@code snapshot_install} rebuild (plan 3, Task 22), before anything opens
+   * the rolled-forward files; a restored backup brings its own projection back, the rollback clears the marker with every
+   * other live file. The old projection is already in the backup, so the call adds the marker; a failure to write it
+   * aborts this recovery pass (logged, the pending marker kept), as any other I/O failure of the roll-forward does.
    */
   private static void rollBackUnlessSnapshotOpens(final Path dbDir, final Path snapshotNew, final Path snapshotBackup)
       throws IOException {
+    ColumnarStore.prepareForSnapshotInstall(dbDir);
     if (!Files.isDirectory(snapshotBackup) || snapshotOpens(dbDir))
       return;
 
@@ -2795,6 +2822,15 @@ public final class SnapshotInstaller {
     // recovery cannot lose the originals we just moved back (issue #4830).
     fsyncDirectory(dbDir);
     deleteDirectoryIfExists(backupDir);
+  }
+
+  /** {@link ColumnarStore#prepareForSnapshotInstall} for the live install path, whose failure handling expects an unchecked exception. */
+  private static void prepareColumnarProjection(final Path dbPath) {
+    try {
+      ColumnarStore.prepareForSnapshotInstall(dbPath);
+    } catch (final IOException e) {
+      throw new UncheckedIOException("Cannot drop the columnar projection of " + dbPath + " before the snapshot reopens", e);
+    }
   }
 
   private static void moveBackToLiveDirectory(final Path dbDir, final Path entry) throws IOException {

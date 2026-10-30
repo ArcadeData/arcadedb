@@ -51,6 +51,8 @@ import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.LongHashSet;
 
 import java.io.IOException;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -58,6 +60,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -883,6 +886,249 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // removal. Let it propagate as the retry signal it is; the next attempt either succeeds or comes back as the
     // BrokenChunkChainException the arm above handles.
   }
+
+  /**
+   * Receives the slots of a committed page from {@link #visitCommittedPage}.
+   */
+  public interface CommittedSlotVisitor {
+    /** A free or deleted slot. */
+    int EMPTY    = 0;
+    /** A record of its own: stored in place, behind a placeholder pointer, or as a chunk chain. */
+    int RECORD   = 1;
+    /** Not a record of its own: the content of a placeholder (negated size or chunk head) or a continuation chunk. */
+    int CONTENT  = 2;
+
+    /**
+     * @param position       the RID position of the slot
+     * @param kind           {@link #EMPTY}, {@link #RECORD} or {@link #CONTENT}
+     * @param content        the record bytes for a {@link #RECORD} (a view valid only for the committed image it was read from),
+     *                       fully resolved through a placeholder or a chunk chain; null for the other kinds, and for a RECORD whose
+     *                       bytes cannot be read (a broken pointer or chain, a corrupted slot, a record in motion): the caller
+     *                       keeps what it knew and retries on a later pass
+     * @param offPagePages   the pages holding the placeholder target, or every chunk after the head of a chunk chain; only the
+     *                       first {@code offPageCount} entries are valid, and the array is reused across calls of the same visit
+     * @param offPageCount   number of valid entries in {@code offPagePages}, 0 when the record is stored in place
+     */
+    void onSlot(long position, int kind, Binary content, int[] offPagePages, int offPageCount);
+
+    /**
+     * Called by {@link #visitCommittedPage} once the page is read, before its first slot, with the version of that committed image;
+     * nothing by default.
+     */
+    default void onPageVersion(final int pageNumber, final long version) {
+    }
+  }
+
+  /**
+   * Enumerates the slots of a COMMITTED page without a transaction: the page is read at its newest committed version through
+   * the page manager, nothing is pinned and no transaction state is consulted, so it is safe to call from a background thread
+   * while writers commit. Slots past the page's record count are not reported. Records behind a placeholder pointer or in a
+   * chunk chain are resolved from the committed pages only, validated against one commit ({@link #getRecordFromCommittedPage}).
+   * No permission check and no read event: this is the engine's own projection reader.
+   * <p>
+   * A placeholder owner is re-read when it is resolved, so one deleted or reshaped by a commit between the page read and that
+   * re-read comes back as a RECORD with null content; this is transient, because that commit re-marks the page. A database
+   * written before #6196 can hold a placeholder content head stored as a plain FIRST_CHUNK: it is reported as a RECORD at the
+   * content position, consistent with {@code scan()} and {@code count()} ({@code CHECK DATABASE FIX} repairs it). A slot whose
+   * header cannot be decoded is an unreadable RECORD (null content), never a failure of the page.
+   *
+   * @return the version of the page that was read, or -1 when the page is not committed yet (past the committed page count)
+   */
+  public long visitCommittedPage(final int pageNumber, final CommittedSlotVisitor visitor) {
+    if (pageNumber < 0 || pageNumber >= pageCount.get())
+      return -1L;
+
+    try {
+      final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+      if (page == null)
+        return -1L;
+
+      final long version = page.getVersion();
+      // clamped: a corrupted count must not send the loop past the slot table
+      final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
+      OffPagePages offPages = null;
+      visitor.onPageVersion(pageNumber, version);
+      for (int slot = 0; slot < recordCountInPage; ++slot)
+        offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
+      return version;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * The positions of the slots of a COMMITTED page that hold a record of their own (in place, behind a placeholder pointer, or the head
+   * of a chunk chain), in ascending order: the slots {@link #visitCommittedPage} reports as RECORD, read the same way (newest committed
+   * version through the page manager, no transaction, no permission check) but without resolving any record: only the record count,
+   * the slot table and each slot's size marker are read. A slot whose marker cannot be decoded is reported, so a caller that confirms
+   * each position by reading it never misses one.
+   *
+   * @return the version of the page that was read, or -1 when the page is not committed yet (nothing is reported)
+   */
+  public long forEachCommittedRecordSlot(final int pageNumber, final LongConsumer position) {
+    if (pageNumber < 0 || pageNumber >= pageCount.get())
+      return -1L;
+
+    try {
+      final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
+      if (page == null)
+        return -1L;
+
+      // clamped: a corrupted count must not send the loop past the slot table
+      final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
+      for (int slot = 0; slot < recordCountInPage; ++slot) {
+        boolean record;
+        try {
+          final int recordPositionInPage = getRecordPositionInPage(page, slot);
+          if (recordPositionInPage == 0)
+            continue;
+          final long marker = page.readNumberAndSize(recordPositionInPage)[0];
+          record = marker > 0 || marker == RECORD_PLACEHOLDER_POINTER || marker == FIRST_CHUNK;
+        } catch (final PageCorruptionException | IllegalArgumentException | IndexOutOfBoundsException | BufferUnderflowException e) {
+          record = true;
+        }
+        if (record)
+          position.accept(recordPosition(pageNumber, maxRecordsInPage, slot));
+      }
+      return page.getVersion();
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * The version of a COMMITTED page without loading it, for the columnar projection's page check after an unclean open: the copy the
+   * page manager still has to write to the file when there is one, otherwise the version in the page's header, read from the file
+   * with one positional read of {@code header} (nothing goes through the read cache). A version read from the file can be older than
+   * the committed one only for a page written meanwhile, which re-marks it: the caller may over-mark, never miss.
+   *
+   * @param header a buffer of {@link Binary#INT_SERIALIZED_SIZE} bytes, reused across calls
+   *
+   * @return the version, or -1 when the page is not committed or not in the file yet
+   */
+  public long getPageVersionWithoutLoading(final int pageNumber, final ByteBuffer header) {
+    if (pageNumber < 0 || pageNumber >= pageCount.get())
+      return -1L;
+    final long pending = database.getPageManager().getPendingVersionOfPage(new PageId(database, file.getFileId(), pageNumber));
+    if (pending >= 0)
+      return pending;
+    if (pageNumber >= file.getTotalPages())
+      return -1L;
+    try {
+      file.readPage(pageNumber, header);
+      return header.getInt(BasePage.PAGE_VERSION_OFFSET);
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the header of page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * {@link #visitCommittedPage} for the one slot of the position: the same committed read, the same resolution and the same report,
+   * for a caller that needs one record of a page it does not otherwise read (the columnar apply pass re-reading the owner of a content
+   * page). Nothing is reported when the slot is past the page's record count, or the page is not committed.
+   *
+   * @return the version of the page that was read, or -1 when the page is not committed yet (past the committed page count)
+   */
+  public long visitCommittedRecord(final long position, final CommittedSlotVisitor visitor) {
+    if (position < 0)
+      return -1L;
+    final long pageNumber = position / maxRecordsInPage;
+    if (pageNumber >= pageCount.get())
+      return -1L;
+
+    try {
+      final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), (int) pageNumber), pageSize, false, false);
+      if (page == null)
+        return -1L;
+
+      final long version = page.getVersion();
+      final int slot = (int) (position % maxRecordsInPage);
+      if (slot < Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage))
+        visitCommittedSlot(page, (int) pageNumber, slot, null, visitor);
+      return version;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * Reports one slot of a committed page; returns the collector of off-page pages, allocated on the first slot that needs one and
+   * reused by the next slots.
+   */
+  private OffPagePages visitCommittedSlot(final BasePage page, final int pageNumber, final int slot, OffPagePages offPages,
+          final CommittedSlotVisitor visitor) throws IOException {
+    final long position = recordPosition(pageNumber, maxRecordsInPage, slot);
+    int kind = CommittedSlotVisitor.RECORD;
+    Binary content = null;
+    int offPageCount = 0;
+
+    try {
+      final int recordPositionInPage = getRecordPositionInPage(page, slot);
+      if (recordPositionInPage == 0) {
+        visitor.onSlot(position, CommittedSlotVisitor.EMPTY, null, NO_PAGES, 0);
+        return offPages;
+      }
+
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] == 0)
+        kind = CommittedSlotVisitor.EMPTY;
+      else if (recordSize[0] > 0)
+        content = page.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
+      else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+        if (offPages == null)
+          offPages = new OffPagePages();
+        offPages.clear();
+        content = committedPlaceholderContent(RID.create(database, fileId, position), offPages);
+        offPageCount = offPages.count;
+      } else if (recordSize[0] == FIRST_CHUNK) {
+        if (offPages == null)
+          offPages = new OffPagePages();
+        offPages.clear();
+        content = committedMultiPageRecord(RID.create(database, fileId, position), page.getPageId(), slot, FIRST_CHUNK,
+                offPages);
+        offPageCount = offPages.count;
+      } else
+        // NEXT_CHUNK, FIRST_CHUNK_PLACEHOLDER_CONTENT, a negated size: somebody else's bytes
+        kind = CommittedSlotVisitor.CONTENT;
+    } catch (final PageCorruptionException | ConcurrentModificationException | IllegalArgumentException
+                   | IndexOutOfBoundsException | BufferUnderflowException e) {
+      // A slot that cannot be decoded, or a record in motion: reported as an unreadable RECORD, never as a failure of the page
+      LogManager.instance().log(this, Level.FINE, "Unreadable slot %d of committed page %d of bucket '%s'", e, slot, pageNumber,
+              componentName);
+      content = null;
+      offPageCount = 0;
+    }
+
+    if (content == null)
+      // the resolution may have collected pages before it failed validation
+      offPageCount = 0;
+    visitor.onSlot(position, kind, content, offPages != null ? offPages.pages : NO_PAGES, offPageCount);
+    return offPages;
+  }
+
+  /** Distinct page numbers collected while a committed record is resolved; reused across the slots of one visit. */
+  private static final class OffPagePages {
+    int[] pages = new int[4];
+    int   count;
+
+    void clear() {
+      count = 0;
+    }
+
+    void add(final int page) {
+      for (int i = 0; i < count; ++i)
+        if (pages[i] == page)
+          return;
+      if (count == pages.length)
+        pages = Arrays.copyOf(pages, count * 2);
+      pages[count++] = page;
+    }
+  }
+
+  private static final int[] NO_PAGES = new int[0];
 
   @Override
   public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
@@ -3468,16 +3714,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * optimistically, and again under the publication lock when one overlapped the read.
    */
   private Binary committedPlaceholderContent(final RID rid) throws IOException {
+    return committedPlaceholderContent(rid, null);
+  }
+
+  private Binary committedPlaceholderContent(final RID rid, final OffPagePages offPages) throws IOException {
     final PageManager pageManager = database.getPageManager();
     final long sequence = pageManager.getPublicationSequence();
     if ((sequence & 1) == 0) {
-      final Binary content = readCommittedPlaceholderContent(rid);
+      final Binary content = readCommittedPlaceholderContent(rid, offPages);
       if (pageManager.getPublicationSequence() == sequence)
         return content;
     }
     try {
       // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
-      return (Binary) pageManager.executeInLock(() -> readCommittedPlaceholderContent(rid));
+      return (Binary) pageManager.executeInLock(() -> readCommittedPlaceholderContent(rid, offPages));
     } catch (final RuntimeException e) {
       if (e.getCause() instanceof IOException ioException)
         throw ioException;
@@ -3485,7 +3735,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  private Binary readCommittedPlaceholderContent(final RID rid) throws IOException {
+  private Binary readCommittedPlaceholderContent(final RID rid, final OffPagePages offPages) throws IOException {
+    if (offPages != null)
+      // A RE-READ (a publication overlapped the first one) starts from nothing
+      offPages.clear();
     final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
     final BasePage pointerPage = database.getPageManager()
@@ -3501,7 +3754,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (pointerSize[0] > 0)
         return pointerPage.getImmutableView((int) (pointerPosition + pointerSize[1]), (int) pointerSize[0]);
       if (pointerSize[0] == FIRST_CHUNK)
-        return committedMultiPageRecord(rid, pointerPage.getPageId(), positionInPage, FIRST_CHUNK);
+        return committedMultiPageRecord(rid, pointerPage.getPageId(), positionInPage, FIRST_CHUNK, offPages);
       return null;
     }
 
@@ -3518,6 +3771,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (contentPosition == 0)
       return null;
     final long[] contentSize = contentPage.readNumberAndSize(contentPosition);
+    if (offPages != null)
+      offPages.add(contentPageNumber);
 
     if (contentSize[0] < RECORD_PLACEHOLDER_CONTENT) {
       // A PLACEHOLDER CONTENT RECORD STORES ITS SIZE NEGATED
@@ -3530,7 +3785,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     if (isChunkHead(contentSize[0]))
       // A CONTENT RECORD NO PAGE COULD HOST WHOLE, WRITTEN WITH ITS OWN MARKER (#6196) OR WITH THE LEGACY FIRST_CHUNK
-      return committedMultiPageRecord(contentRID, contentPageId, contentSlot, contentSize[0]);
+      return committedMultiPageRecord(contentRID, contentPageId, contentSlot, contentSize[0], offPages);
 
     // THE POINTER DOES NOT LEAD TO A CONTENT RECORD
     return null;
@@ -3544,8 +3799,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private Binary committedMultiPageRecord(final RID rid, final PageId headPageId, final int headSlot, final long headMarker)
           throws IOException {
+    return committedMultiPageRecord(rid, headPageId, headSlot, headMarker, null);
+  }
+
+  private Binary committedMultiPageRecord(final RID rid, final PageId headPageId, final int headSlot, final long headMarker,
+                                          final OffPagePages offPages) throws IOException {
     final Binary content = assembleFromNewestCommitted(headPageId, headSlot, headMarker,
-            database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+            database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES), offPages);
     if (content != null)
       return content;
 
@@ -6239,6 +6499,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private Binary assembleFromNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker,
                                              final int maxRetries) throws IOException {
+    return assembleFromNewestCommitted(headPageId, headSlot, headMarker, maxRetries, null);
+  }
+
+  /**
+   * @param offPages when not null, receives the pages of every chunk AFTER the head of the chain that was served (nothing
+   *                 is added for a head that collapsed into a plain record, or when null is returned)
+   */
+  private Binary assembleFromNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker,
+                                             final int maxRetries, final OffPagePages offPages) throws IOException {
     for (int retry = 0; retry <= maxRetries; retry++) {
       final BasePage head = database.getPageManager().getImmutablePage(headPageId, pageSize, false, true);
       if (head == null || headSlot >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
@@ -6323,6 +6592,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // A chain that did not walk to its end, or that a commit moved under the walk, is walked again
       if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, NO_NEXT_CHUNK, headMarker) != CHAIN_READ_CHANGED) {
+        if (offPages != null)
+          for (int chunk = 1; chunk < chunks; ++chunk)
+            offPages.add((int) chainTrace[chunk * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER]);
         record.position(0);
         return record;
       }

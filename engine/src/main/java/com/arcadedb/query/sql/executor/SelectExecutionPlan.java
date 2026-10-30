@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.query.facet.FacetResults;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -124,6 +126,15 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     }
     copy.lastStep = copy.steps.isEmpty() ? null : copy.steps.getLast();
     copy.statementAsString = this.statementAsString;
+  }
+
+  /** The facets of the plan's {@link FacetCollectStep}, which drains the matches not read yet; null when it has none. */
+  @Override
+  public FacetResults getFacets() {
+    for (final ExecutionStepInternal step : steps)
+      if (step instanceof FacetCollectStep collect)
+        return collect.facets();
+    return null;
   }
 
   @Override

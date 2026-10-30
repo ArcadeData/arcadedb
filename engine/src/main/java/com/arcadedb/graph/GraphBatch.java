@@ -1629,6 +1629,9 @@ public class GraphBatch implements AutoCloseable {
       final Object[] properties) {
     final RID[] ridArr = { rid };
     for (final Index index : indexes) {
+      // a COLUMNAR index is filled after commit, never by a write (as DocumentIndexer)
+      if (!index.getType().isMaintainedInTransaction())
+        continue;
       final List<String> keyNames = index.getPropertyNames();
       final int keyCount = keyNames.size();
       final Object[] keyValues = new Object[keyCount];

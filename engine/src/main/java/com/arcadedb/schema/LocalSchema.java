@@ -66,6 +66,8 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
+import com.arcadedb.index.columnar.ColumnarIndexFactoryHandler;
 import com.arcadedb.index.hash.HashIndex;
 import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
@@ -565,6 +567,7 @@ public class LocalSchema implements Schema {
     indexFactory.register(INDEX_TYPE.LSM_SPARSE_VECTOR.name(), new LSMSparseVectorIndex.LSMSparseVectorIndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.GEOSPATIAL.name(), new LSMTreeGeoIndex.GeoIndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.HASH.name(), new HashIndex.HashIndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.COLUMNAR.name(), new ColumnarIndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -742,6 +745,14 @@ public class LocalSchema implements Schema {
    */
   private boolean isStagingPublication() {
     return stagingThread.get() == Thread.currentThread();
+  }
+
+  /**
+   * Whether a schema load runs on the calling thread and has not published its components yet: a bucket or type looked up by id meanwhile
+   * is the previous generation's. The columnar index manager defers opening the projections of the indexes such a load registers.
+   */
+  public boolean isLoadingOnCurrentThread() {
+    return isStagingPublication();
   }
 
   /** Whether THIS thread's load stages its file-id registrations (issues #7962, #7963). */
@@ -1114,6 +1125,24 @@ public class LocalSchema implements Schema {
     stagedBucketId2InvolvedTypeMap = null;
     supersededTypes = null;
     stagingThread.set(null);
+
+    // Only now can the columnar projections of the indexes this load registered be opened: they look their bucket and type up, which
+    // answered the previous generation until the publication. Never fails the load: the generation is published already
+    if (database.getEmbedded() instanceof LocalDatabase local && local.getColumnarIndexManager() != null)
+      try {
+        local.getColumnarIndexManager().schemaLoadEnded(committed);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Cannot open the columnar projections of the loaded schema", e);
+      }
+    // a published generation (a follower's schema entry included) may have added, dropped or renamed COLUMNAR columns (V-B5)
+    if (committed)
+      requestColumnarReconcile();
+  }
+
+  /** Spec 6.4: the columnar projections are reconciled with the COLUMNAR indexes of the schema by the next apply pass. */
+  private void requestColumnarReconcile() {
+    if (database.getEmbedded() instanceof LocalDatabase local && local.getColumnarIndexManager() != null)
+      local.getColumnarIndexManager().requestReconcile();
   }
 
   /**
@@ -4213,6 +4242,15 @@ public class LocalSchema implements Schema {
                     sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
                     index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
                     publishIndexDuringLoad(registeredName, index);
+                  } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.COLUMNAR.toString())) {
+                    final ColumnarIndexMetadata columnarMeta = new ColumnarIndexMetadata(typeName, properties, -1);
+                    columnarMeta.fromJSON(indexJSON);
+                    // Same reason as the full-text branch above (issue #5742).
+                    columnarMeta.inheritCommonSettingsFrom(index.getMetadata());
+                    final ColumnarIndex columnarIndex = new ColumnarIndex((LSMTreeIndex) index, columnarMeta);
+                    ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().register(columnarIndex);
+                    index = columnarIndex;
+                    publishIndexDuringLoad(registeredName, index);
                   } else {
                     orphanIndexes.put(indexName, indexJSON);
                     indexJSON.put("type", typeName);
@@ -5084,6 +5122,9 @@ public class LocalSchema implements Schema {
       writeNextGeneration();
 
       savedGeneration = capturedGeneration;
+
+      // every successful DDL persists through here (V-B5)
+      requestColumnarReconcile();
 
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
@@ -6399,6 +6440,7 @@ public class LocalSchema implements Schema {
     published = new SchemaState(published.types(), maps[0], maps[1]);
     bucketTypeMapsStale = false;
     ++bucketTypeMapRebuilds;
+    requestColumnarReconcile();
   }
 
   /** Full rebuilds of the published bucket maps so far: visible to the test of issue #10247, which counts them. */

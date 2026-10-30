@@ -1,0 +1,796 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.columnar;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordFactory;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.serializer.BinarySerializer;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.logging.Level;
+
+/**
+ * Background rebuild of one bucket's projection from the committed pages of the bucket (spec 6.5), on {@link ColumnarMaintenancePool}.
+ * <p>
+ * <b>Scheduling (R17).</b> {@link #schedule} coalesces per projection: a request is dropped while a rebuild of the same projection is
+ * queued; one arriving while it runs makes it run once more afterwards (with the reason of that request). At most
+ * {@link #REBUILD_SEMAPHORE} rebuilds run JVM-wide, a semaphore of its own (spec 5.6), never the one of the vector index rebuilds. No
+ * worker ever waits for a permit: a rebuild without one waits in a queue, started by the rebuild that releases a permit or by the next
+ * apply tick of any database ({@link #drainWaiting()}), so a rebuild never stalls the flushes that share the pool. A rebuild that
+ * actually runs counts {@code rebuilds} once, with its reason; one that finds its projection closed counts nothing, nor does a
+ * {@code create} that finds every column published (it does not run) or its bucket empty (it runs uncounted, see {@link #rebuild}). A
+ * request with another reason coalesced into a pending {@code create} makes that create run and count under that reason. A READ_ONLY
+ * database, a closing manager and a closed projection schedule nothing (R16).
+ * <p>
+ * <b>Run.</b> Counted as a running maintenance job of its manager (a close waits for it, and it aborts at the next page once the close
+ * began) and holding the projection's maintenance slot, so no flush, merge or compaction of the projection runs meanwhile. Apply passes
+ * go on updating the previous state, and every page they complete from now on is recorded ({@link ColumnarProjection#beginRebuildTracking}).
+ * The scan visits pages {@code 0..getCommittedPageCount()} through {@link LocalBucket#visitCommittedPage} with no lock held, extracting
+ * every record into staging dictionaries (new generation files, {@link GlobalDictionary#create}, R10) and {@link SegmentWriter}s, a new
+ * one at the first page boundary after {@code arcadedb.columnar.flushMaxRows} rows, and builds the content owner maps.
+ * For {@code check_fix} and {@code schema} with a
+ * previous valid state (and no external-property bucket, whose pages can change without the primary page's version moving) a page
+ * whose committed version equals the version the previous state's segments recorded for it, and that no overlay row of that state
+ * covers, copies the rows of its records from those segments (spec 6.5 "skip unchanged pages", counted in {@code rebuild.pages.reused});
+ * a record with placeholder or chunk content (its content pages can change on their own) is always extracted.
+ * <p>
+ * <b>Publish</b> (Task 5 order, the {@link ColumnarFlusher} protocol): under the apply lock, with the generation of
+ * {@link ColumnarProjection#nextGeneration()}, owner maps written, dictionaries fsynced, manifest renamed, then
+ * {@link ColumnarProjection#rebuildPublished} swaps the state in and marks dirty again every page applied during the scan. Failures
+ * are handled by phase: before the rename is attempted the written files are deleted; after, they stay held. A schema or
+ * {@code check_fix} rebuild never makes the projection unusable: the previous valid state serves until the rebuilt one publishes.
+ */
+final class ColumnarRebuilder {
+  static final String CREATE           = "create";
+  static final String SNAPSHOT_INSTALL = "snapshot_install";
+  static final String UNCLEAN_NO_WAL   = "unclean_no_wal";
+  /** The unclean-open page check found too many pages changed since the segments to re-apply them (final review B-I6). */
+  static final String UNCLEAN_PAGES    = "unclean_pages";
+  static final String SCHEMA           = "schema";
+  static final String CHECK_FIX        = ColumnarSchemaEvent.CHECK_FIX;
+  /** Reached once the scan wrote every segment, before the publish takes the apply lock. */
+  static final String SCANNED          = "rebuild.scanned";
+  /** Reached by a job after its rebuild body (run, skipped or failed), before it leaves the running state. */
+  static final String FINISHING        = "rebuild.finishing";
+  /** Reached by a job once it left the running state (any create it scheduled is queued by then), before it drains the waiting queue. */
+  static final String FINISHED         = "rebuild.finished";
+
+  /** Rebuilds running JVM-wide; separate from the vector index rebuild permits (spec 5.6). */
+  static final Semaphore REBUILD_SEMAPHORE = new Semaphore(Math.max(1, GlobalConfiguration.COLUMNAR_REBUILD_CONCURRENCY.getValueAsInteger()));
+
+  /** Rebuilds queued for a permit, JVM-wide; at most one per projection (R17). */
+  private static final Queue<Job> WAITING = new ConcurrentLinkedQueue<>();
+
+  /**
+   * The coalescing state of one projection ({@link ColumnarProjection#rebuildRequest}, null when idle): queued with its reason, or
+   * running, with the reason of the request that arrived meanwhile (null for none). {@code absorbed} is the reason of a request
+   * coalesced into a pending {@code create} (the queued one, or the rerun of a running rebuild), null for none: that create then runs
+   * even with every column published, as it stands for the other request too, and counts under the absorbed reason.
+   */
+  record Request(String reason, boolean running, String rerunReason, String absorbed) {
+  }
+
+  private ColumnarRebuilder() {
+  }
+
+  /**
+   * Requests a rebuild of the projection with the reason ({@code create}, {@code snapshot_install}, {@code missing}, {@code corrupt},
+   * {@code unclean_no_wal}, {@code schema}, {@code check_fix}). Coalesced, see the class comment; never blocks.
+   */
+  static void schedule(final ColumnarIndexManager manager, final ColumnarProjection projection, final String reason) {
+    if (manager.isReadOnly() || manager.isClosing() || projection.isClosedOrDropped())
+      return;
+    final AtomicReference<Request> state = projection.rebuildRequest;
+    for (; ; ) {
+      final Request current = state.get();
+      if (current == null) {
+        if (state.compareAndSet(null, new Request(reason, false, null, null))) {
+          WAITING.offer(new Job(manager, projection));
+          drainWaiting();
+          return;
+        }
+      } else if (!current.running()) {
+        if (!absorbs(current.reason(), current.absorbed(), reason)
+            || state.compareAndSet(current, new Request(current.reason(), false, null, reason)))
+          return;
+      } else if (current.rerunReason() == null) {
+        if (state.compareAndSet(current, new Request(current.reason(), true, reason, null)))
+          return;
+      } else if (!absorbs(current.rerunReason(), current.absorbed(), reason)
+          || state.compareAndSet(current, new Request(current.reason(), true, current.rerunReason(), reason)))
+        return;
+    }
+  }
+
+  /** A pending request with {@code pendingReason} newly absorbs one with {@code reason}: a create not absorbing yet meets another reason. */
+  private static boolean absorbs(final String pendingReason, final String absorbed, final String reason) {
+    return absorbed == null && CREATE.equals(pendingReason) && !CREATE.equals(reason);
+  }
+
+  /** A rebuild of the projection is queued (waiting for a permit or a pool thread) or running; lock free. */
+  static boolean isQueuedOrRunning(final ColumnarProjection projection) {
+    return projection.rebuildRequest.get() != null;
+  }
+
+  /** A rebuild waits for a permit; lock free, the apply tick reads it. */
+  static boolean hasWaiting() {
+    return !WAITING.isEmpty();
+  }
+
+  /** Starts waiting rebuilds on {@link ColumnarMaintenancePool} while permits are free; never waits for one. */
+  static void drainWaiting() {
+    while (!WAITING.isEmpty() && REBUILD_SEMAPHORE.tryAcquire()) {
+      final Job job = WAITING.poll();
+      if (job == null) {
+        // another thread took it meanwhile
+        REBUILD_SEMAPHORE.release();
+        return;
+      }
+      try {
+        ColumnarMaintenancePool.getInstance().getExecutorService().execute(job);
+      } catch (final RejectedExecutionException e) {
+        REBUILD_SEMAPHORE.release();
+        job.projection.rebuildRequest.set(null);
+        return;
+      }
+    }
+  }
+
+  /**
+   * One rebuild holding a permit; queues the rerun its projection asked for while it ran, or a {@code create} when a column was added
+   * after the run decided on its columns (see {@link #finish}).
+   */
+  private record Job(ColumnarIndexManager manager, ColumnarProjection projection) implements Runnable {
+    @Override
+    public void run() {
+      final ColumnDefinition[][] decided = new ColumnDefinition[1][];
+      try {
+        // only this job leaves the queued state; everything the rebuild reads is read after this point, so a request coalesced with
+        // the queued state is seen by this run
+        // (a CAS loop: a schedule may mark the queued create absorbed meanwhile, and the state is never null while this job lives)
+        Request queued;
+        do
+          queued = projection.rebuildRequest.get();
+        while (!projection.rebuildRequest.compareAndSet(queued, new Request(queued.reason(), true, null, null)));
+        final String reason = queued.reason();
+        final String absorbed = queued.absorbed();
+        manager.runRebuildBody(projection, () -> decided[0] = rebuild(manager, projection, reason, absorbed));
+        ColumnarTestHooks.reach(FINISHING);
+      } finally {
+        REBUILD_SEMAPHORE.release();
+        finish(decided[0]);
+        ColumnarTestHooks.reach(FINISHED);
+        drainWaiting();
+      }
+    }
+
+    /**
+     * Leaves the running state. A column registered while this job ran, after its last column check (the skip decision, the I3 check of
+     * {@code rebuildPublished}, or the columns the scan captured), relied on this running job and scheduled nothing: once the state is
+     * idle, a {@code create} is scheduled when the columns are no longer the ones the run decided on and one is unpublished. The add
+     * writes the volatile columns and then reads this state; this writes the state and then reads the columns, so one side sees the
+     * other. Keyed on columns whose definitions differ from the decided ones (compared by content: both arrays are copies), not on an
+     * unpublished column alone, so a create or schema rebuild that keeps failing is not retried forever.
+     */
+    private void finish(final ColumnDefinition[] decided) {
+      final AtomicReference<Request> state = projection.rebuildRequest;
+      for (; ; ) {
+        final Request current = state.get();
+        if (current.rerunReason() == null) {
+          if (state.compareAndSet(current, null)) {
+            if (decided != null && projection.isUsable() && projection.hasUnpublishedColumn()
+                && !Arrays.equals(projection.columns(), decided))
+              schedule(manager, projection, CREATE);
+            return;
+          }
+        } else if (state.compareAndSet(current, new Request(current.rerunReason(), false, null, current.absorbed()))) {
+          if (manager.isClosing() || projection.isClosedOrDropped())
+            state.set(null);
+          else
+            WAITING.offer(new Job(manager, projection));
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * The body of a rebuild, counted as running by its manager. Both {@code create} decisions are taken holding the maintenance slot, so
+   * no other publish of the projection runs between them and the scan: a {@code create} finding every column published has nothing to
+   * build and ends without running or counting (unless it absorbed another reason), and one finding the bucket empty runs (its scan
+   * publishes the columns with their dictionaries, rows committed meanwhile included) but is not counted: it is the empty publish of an
+   * open (V-B1) done late, not a rebuild. A create that absorbed another reason counts under that reason.
+   *
+   * @return the columns the run decided on (captured once holding the slot: the ones it found all published, or the ones its scan
+   * builds), null when it did not get that far (the projection closed, or the database is closing)
+   */
+  private static ColumnDefinition[] rebuild(final ColumnarIndexManager manager, final ColumnarProjection projection, final String reason,
+      final String absorbed) {
+    if (!projection.canWrite())
+      return null;
+    // a running flush, merge or compaction of the projection ends soon; the rebuild then holds the slot for its whole run
+    while (!projection.tryBeginMaintenance()) {
+      if (!projection.canWrite() || manager.isClosing())
+        return null;
+      LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+    }
+    // captured once, before the skip decision reads the columns again: a column added in between only causes a reschedule
+    final ColumnDefinition[] decided = projection.columns();
+    try {
+      final boolean create = CREATE.equals(reason) && absorbed == null;
+      if (create && !projection.hasUnpublishedColumn())
+        return decided;
+      final boolean published = ColumnarApplier.inDatabaseContext(manager.getDatabase(), () -> {
+        if (!create || !manager.isBucketEmpty(projection.bucketId()))
+          projection.stats().rebuild(projection.typeName(), absorbed != null ? absorbed : reason);
+        try {
+          return new Run(manager, projection, reason, decided).execute();
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      });
+      if (published)
+        manager.rebuildPublished(projection);
+    } catch (final ColumnarTestHooks.SimulatedCrash | ColumnarFlusher.PublishingStoppedException e) {
+      // a crash test cleans nothing up, as a crash would not; a close stopped the rebuild
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(ColumnarRebuilder.class, Level.SEVERE,
+          "Rebuild (%s) of the columnar projection of bucket '%s' failed: the projection keeps its previous state and the rebuild is "
+              + "retried after a backoff", e, reason, projection.bucketName());
+      manager.rebuildFailed(projection, absorbed != null ? absorbed : reason);
+    } finally {
+      projection.endMaintenance();
+    }
+    return decided;
+  }
+
+  /**
+   * The {@code create} of an EMPTY bucket's projection on the calling thread: the same scan and publish as the background create
+   * ({@link #rebuild}), uncounted like it, so a column added to an open projection is published before the DDL returns (final review A,
+   * answer 2b). An empty bucket holds no record, but one emptied by deletes still has pages: the emptiness check and the scan each walk
+   * them, on the caller's thread. Takes the maintenance slot once and never waits for it: the caller holds the registry lock or runs on
+   * the shared apply pool. Counted as a running maintenance job of the manager, so a close waits for it. An unusable projection (one
+   * waiting for a failed rebuild's retry, say) is left to the background rebuild, which counts its reason.
+   *
+   * @return true when every column is published; false when the caller schedules the background {@code create}: the projection is
+   * unusable, the slot is busy, the bucket holds records, the publish failed or stopped, or nothing can be written
+   */
+  static boolean createInlineIfEmpty(final ColumnarIndexManager manager, final ColumnarProjection projection) {
+    if (manager.isReadOnly() || manager.isClosing() || !projection.canWrite() || !projection.isUsable() || !projection.tryBeginMaintenance())
+      return false;
+    final boolean[] published = new boolean[1];
+    try {
+      manager.runRebuildBody(projection, () -> {
+        if (!projection.hasUnpublishedColumn()) {
+          published[0] = true;
+          return;
+        }
+        final ColumnDefinition[] decided = projection.columns();
+        published[0] = ColumnarApplier.inDatabaseContext(manager.getDatabase(), () -> {
+          if (!manager.isBucketEmpty(projection.bucketId()))
+            return false;
+          try {
+            return new Run(manager, projection, CREATE, decided).execute();
+          } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+          }
+        });
+        if (published[0])
+          manager.rebuildPublished(projection);
+      });
+    } catch (final ColumnarTestHooks.SimulatedCrash e) {
+      throw e;
+    } catch (final ColumnarFlusher.PublishingStoppedException e) {
+      return false;
+    } catch (final RuntimeException e) {
+      // the background create retries it, with its own failure handling
+      LogManager.instance().log(ColumnarRebuilder.class, Level.WARNING,
+          "Inline create of the columnar projection of bucket '%s' failed: retried in the background", e, projection.bucketName());
+      return false;
+    } finally {
+      projection.endMaintenance();
+    }
+    return published[0];
+  }
+
+  /** One scan and publish; used once. */
+  private static final class Run implements LocalBucket.CommittedSlotVisitor {
+    private final ColumnarIndexManager         manager;
+    private final ColumnarProjection           p;
+    private final String                       reason;
+    private final ColumnDefinition[]           columns;
+    private final int                          maxRecordsInPage;
+    private final int                          maxRows;
+    private final ColumnarFlusher.Attempt      attempt          = new ColumnarFlusher.Attempt();
+    private final GlobalDictionary[]           dictionaries;
+    private final int[]                        generations;
+    private final Map<String, GlobalDictionary> dictionaryMap   = new HashMap<>();
+    private final ContentOwnerMap              owners           = new ContentOwnerMap();
+    private final ContentOwnerMap              externalOwners;
+    private final RowValues                    fresh;
+    private final RowValues                    old;
+    private final ColumnarApplier.Sink         sink;
+    private final ColumnarValueExtractor.RecordReader reader;
+    private final int[]                        rowFailures;
+    /** By column: whether the record being extracted holds a value converted from another stored type; then the totals of the run. */
+    private final boolean[]                    rowCoerced;
+    private final long[]                       coerced;
+    private final long[]                       failures;
+
+    // set by execute
+    private LocalBucket                          bucket;
+    private DocumentType                         type;
+    private DatabaseInternal                     database;
+    private RecordFactory                        recordFactory;
+    private BinarySerializer                     serializer;
+    private ColumnarValueExtractor               extractor;
+    private ColumnarApplier.ExternalValuePages   external;
+    /** The previous valid state the unchanged pages are copied from, null when nothing is reused. */
+    private ProjectionState                      previous;
+    private GlobalDictionary[]                   previousDictionaries;
+    private SegmentWriter                        writer;
+    private Path                                 writerFile;
+    private long                                 writerRows;
+    private long                                 unreadable;
+    private long                                 reusedPages;
+    /** Rows copied from the previous state's segments rather than extracted: their conversions were counted by that state. */
+    private long                                 copiedRows;
+    /** By column: whether the current state does not publish it yet, so every one of its values is extracted by this run. */
+    private boolean[]                            firstPublish;
+    // per page
+    private long                                 pageVersion;
+    private boolean                              reusePage;
+    private boolean                              pageExtracted;
+    private int                                  pageCopied;
+
+    private Run(final ColumnarIndexManager manager, final ColumnarProjection p, final String reason, final ColumnDefinition[] columns) {
+      this.manager = manager;
+      this.p = p;
+      this.reason = reason;
+      this.columns = columns;
+      this.maxRecordsInPage = p.maxRecordsInPage();
+      this.maxRows = Math.max(1,
+          manager.getDatabase().getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS));
+      this.dictionaries = new GlobalDictionary[columns.length];
+      this.generations = new int[columns.length];
+      this.externalOwners = p.externalFileId() < 0 ? null : new ContentOwnerMap();
+      this.fresh = new RowValues(columns.length);
+      this.old = new RowValues(columns.length);
+      this.sink = new ColumnarApplier.Sink(fresh);
+      this.reader = new ColumnarValueExtractor.RecordReader(columns);
+      this.rowFailures = new int[columns.length];
+      this.failures = new long[columns.length];
+      this.rowCoerced = new boolean[columns.length];
+      this.coerced = new long[columns.length];
+    }
+
+    /** @return true when the rebuilt state was published */
+    private boolean execute() throws IOException {
+      final LocalDatabase db = manager.getDatabase();
+      bucket = (LocalBucket) db.getSchema().getBucketById(p.bucketId());
+      type = db.getSchema().getTypeByBucketId(p.bucketId());
+      database = db.getWrappedDatabaseInstance();
+      recordFactory = db.getRecordFactory();
+      serializer = db.getSerializer();
+      reader.prepare(db.getSchema().getDictionary());
+      extractor = new ColumnarValueExtractor(type == null ? p.typeName() : type.getName(), columns, (bucketId, property) -> {
+        throw new IllegalStateException("The rebuild passes its dictionaries explicitly");
+      }, p.stats());
+      external = p.externalFileId() < 0 ? null : new ColumnarApplier.ExternalValuePages((LocalBucket) db.getSchema()
+          .getBucketById(p.externalFileId()));
+      // the conversion failures of a column are counted by the rebuild that first publishes it; a column the current state publishes
+      // counted them already (spec 5.3: once per record value)
+      final boolean[] countFailures = new boolean[columns.length];
+      for (int k = 0; k < columns.length; k++)
+        countFailures[k] = !p.isPublishedWith(columns[k].indexFileId());
+      firstPublish = countFailures;
+      previous = retainReusableState();
+
+      p.beginRebuildTracking();
+      boolean published = false;
+      try {
+        // a dropped projection's directory is never created again (final review A-I3)
+        ColumnarFlusher.checkPublishing(p);
+        ColumnarStore.createBucketDir(Path.of(db.getDatabasePath()), p.bucketId());
+        p.deleteOrphansForRebuild();
+        createDictionaries();
+        scan();
+        ColumnarTestHooks.reach(SCANNED);
+        published = publish(db.getLastTransactionId());
+      } catch (final ColumnarTestHooks.SimulatedCrash e) {
+        throw e;
+      } catch (final Throwable e) {
+        abandon();
+        throw e;
+      } finally {
+        p.endRebuildTracking();
+        if (previous != null)
+          previous.release();
+      }
+      if (!published)
+        abandon();
+      else
+        ColumnarFlusher.settle(p, attempt);
+
+      if (published) {
+        final ColumnarStats stats = p.stats();
+        if (reusedPages > 0)
+          stats.rebuildPagesReused(p.typeName(), reusedPages);
+        for (long i = 0; i < unreadable; i++)
+          stats.unreadable(p.typeName());
+        for (int k = 0; k < columns.length; k++)
+          if (countFailures[k] && failures[k] > 0)
+              extractor.countFailures(columns[k], (int) Math.min(failures[k], Integer.MAX_VALUE));
+        for (int k = 0; k < columns.length; k++)
+          if (countFailures[k] && coerced[k] > 0)
+            extractor.countCoerced(columns[k], coerced[k]);
+      }
+      return published;
+    }
+
+    /** The current state when its unchanged pages may be copied (see the class comment), retained; null otherwise. */
+    private ProjectionState retainReusableState() {
+      if (!reason.equals(CHECK_FIX) && !reason.equals(SCHEMA) || p.externalFileId() >= 0 || !p.isUsable())
+        return null;
+      // a column whose definition changed (RETYPE, spec 6.4) holds values of the old type in the segments: none of them is copied
+      final ColumnarManifest published = p.manifest();
+      if (published == null)
+        return null;
+      for (final ColumnDefinition column : columns)
+        for (final ColumnDefinition was : published.columns())
+          if (was.indexFileId() == column.indexFileId() && !ColumnarReconciler.sameData(was, column))
+            return null;
+      final ProjectionState state = p.retainState();
+      final GlobalDictionary[] found = new GlobalDictionary[columns.length];
+      for (int k = 0; k < columns.length; k++) {
+        final ColumnKind kind = columns[k].kind();
+        if (kind != ColumnKind.ORDINAL && kind != ColumnKind.ORDINAL_LIST)
+          continue;
+        found[k] = state.dictionary(columns[k].property());
+        if (found[k] == null) {
+          // a column the state has no dictionary of yet: nothing of it can be copied
+          state.release();
+          return null;
+        }
+      }
+      if (!state.isUsable()) {
+        state.release();
+        return null;
+      }
+      previousDictionaries = found;
+      return state;
+    }
+
+    private void createDictionaries() throws IOException {
+      for (int k = 0; k < columns.length; k++) {
+        final ColumnKind kind = columns[k].kind();
+        if (kind != ColumnKind.ORDINAL && kind != ColumnKind.ORDINAL_LIST)
+          continue;
+        generations[k] = p.reserveDictionaryGeneration(columns[k].indexFileId());
+        final String name = SegmentFormat.dictionaryFileName(columns[k].indexFileId(), generations[k]);
+        attempt.held.add(name);
+        dictionaries[k] = GlobalDictionary.create(p.bucketDir().resolve(name));
+        attempt.created(p.bucketDir().resolve(name));
+        dictionaryMap.put(columns[k].property(), dictionaries[k]);
+      }
+    }
+
+    private void scan() throws IOException {
+      final int pages = bucket.getCommittedPageCount();
+      for (int page = 0; page < pages; page++) {
+        if (manager.isKilled())
+          // a crash simulation: stops like a crash, cleaning nothing up (no I/O after a kill)
+          throw new ColumnarTestHooks.SimulatedCrash();
+        if (p.isClosedOrDropped() || manager.isClosing())
+          throw new ColumnarFlusher.PublishingStoppedException(p.bucketName());
+        pageExtracted = false;
+        pageCopied = 0;
+        bucket.visitCommittedPage(page, this);
+        if (reusePage && !pageExtracted && pageCopied > 0)
+          reusedPages++;
+        if (writer != null && writerRows >= maxRows)
+          finishWriter();
+      }
+      if (writer != null)
+        finishWriter();
+    }
+
+    /**
+     * The previous state's segments recorded the page at this version, each covering it holds every column, and no overlay row of the
+     * state is on it: its live rows in the segments are the page's records.
+     */
+    private boolean unchangedSincePrevious(final int page, final long version) {
+      long known = -1;
+      for (final SegmentReader segment : previous.segments()) {
+        final long recorded = segment.pageVersion(page);
+        if (recorded < 0)
+          continue;
+        for (final ColumnDefinition column : columns)
+          if (ColumnarProjection.columnReader(segment, column) == null)
+            return false;
+        known = Math.max(known, recorded);
+      }
+      if (known != version)
+        return false;
+      for (final ColumnarSegmentView overlay : previous.overlays())
+        if (!overlay.live(page, page + 1).isEmpty())
+          return false;
+      return true;
+    }
+
+    /**
+     * The version of the page about to be visited, from the same committed read as its slots: the rows written for it carry it, and
+     * the reuse decision compares it with the previous state's. A commit landing later re-marks the page, so a copied row older than
+     * a slot read meanwhile is corrected by the re-mark at publish.
+     */
+    @Override
+    public void onPageVersion(final int pageNumber, final long version) {
+      pageVersion = Math.max(version, 0L);
+      reusePage = previous != null && version >= 0 && unchangedSincePrevious(pageNumber, version);
+    }
+
+    @Override
+    public void onSlot(final long position, final int kind, final Binary content, final int[] offPagePages, final int offPageCount) {
+      if (kind != RECORD)
+        return;
+      if (content == null) {
+        // a broken pointer or chain, a record in motion: not projected; a commit that repairs it re-marks the page
+        unreadable++;
+        pageExtracted = true;
+        return;
+      }
+      if (reusePage && offPageCount == 0 && copyFromPrevious(position)) {
+        pageCopied++;
+        copiedRows++;
+        addRow(position);
+        return;
+      }
+      pageExtracted = true;
+
+      final int externalCount;
+      try {
+        final Record record = recordFactory.newImmutableRecord(database, type, new RID(p.bucketId(), position), content, null);
+        if (!(record instanceof Document document))
+          return;
+        reader.begin(document);
+        try {
+          for (int k = 0; k < columns.length; k++) {
+            fresh.present[k] = false;
+            sink.k = k;
+            final Object raw = reader.raw(k);
+            rowCoerced[k] = raw != null && ColumnarValueExtractor.isCoerced(columns[k], raw);
+            rowFailures[k] = extractor.extractValueForApplyUncounted(raw, columns[k], dictionaries[k], sink);
+          }
+        } finally {
+          reader.end();
+        }
+        externalCount = external == null ? 0 : external.collect(serializer, database, document, columns);
+      } catch (final ColumnarTestHooks.SimulatedCrash | UncheckedIOException e) {
+        // a crash test, or a dictionary append that failed: the rebuild fails
+        throw e;
+      } catch (final RuntimeException e) {
+        // bytes that do not deserialize, an external value that cannot be read: not projected, as a broken chain
+        unreadable++;
+        return;
+      }
+      if (offPageCount > 0)
+        owners.setOwnerPages(position, offPagePages, offPageCount);
+      if (externalCount > 0)
+        externalOwners.setOwnerPages(position, external.pages(), externalCount);
+      for (int k = 0; k < columns.length; k++) {
+        failures[k] += rowFailures[k];
+        if (rowCoerced[k])
+          coerced[k]++;
+      }
+      addRow(position);
+    }
+
+    /** Fills {@link #fresh} from the live row of the position in the previous state's segments, re-encoded; false when none holds it. */
+    private boolean copyFromPrevious(final long position) {
+      final SegmentReader[] segments = previous.segments();
+      for (int i = segments.length - 1; i >= 0; i--) {
+        final SegmentReader segment = segments[i];
+        if (segment.row(position) < 0)
+          continue;
+        final PositionBitmap dead = segment.deadSet();
+        if (dead != null && dead.get(position))
+          continue;
+        for (int k = 0; k < columns.length; k++) {
+          ColumnarProjection.readSegmentValue(segment, position, columns[k], k, old);
+          reencode(k);
+        }
+        return true;
+      }
+      return false;
+    }
+
+    /** Copies slot {@code k} of {@link #old} into {@link #fresh}, ordinals translated from the previous dictionary to the staging one. */
+    private void reencode(final int k) {
+      fresh.present[k] = old.present[k];
+      if (!old.present[k])
+        return;
+      switch (columns[k].kind()) {
+      case ORDINAL -> fresh.ordinal[k] = dictionaries[k].getOrAdd(previousDictionaries[k].valueOf(old.ordinal[k]));
+      case LONG -> fresh.longs[k] = old.longs[k];
+      case DOUBLE -> fresh.doubles[k] = old.doubles[k];
+      case ORDINAL_LIST -> {
+        final int count = old.listCount[k];
+        int[] list = fresh.list[k];
+        if (list == null || list.length < count)
+          fresh.list[k] = list = new int[Math.max(count, 8)];
+        for (int i = 0; i < count; i++)
+          list[i] = dictionaries[k].getOrAdd(previousDictionaries[k].valueOf(old.list[k][i]));
+        // the staging dictionary numbers the values in another order: strictly ascending again
+        Arrays.sort(list, 0, count);
+        int unique = 0;
+        for (int i = 0; i < count; i++)
+          if (unique == 0 || list[i] != list[unique - 1])
+            list[unique++] = list[i];
+        fresh.listCount[k] = unique;
+      }
+      }
+    }
+
+    private void addRow(final long position) {
+      try {
+        if (writer == null)
+          openWriter();
+        writer.addRow(position, pageVersion, fresh);
+        writerRows++;
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+
+    private void openWriter() throws IOException {
+      final int segmentId = p.reserveSegmentId();
+      final String name = SegmentFormat.segmentFileName(segmentId);
+      attempt.held.add(name);
+      writerFile = p.bucketDir().resolve(name);
+      writer = new SegmentWriter(writerFile, segmentId, maxRecordsInPage, columns, p.segmentBlockRows());
+      attempt.created(writerFile);
+      writerRows = 0;
+    }
+
+    private void finishWriter() throws IOException {
+      try {
+        writer.finish();
+      } finally {
+        writer.close();
+        writer = null;
+      }
+      attempt.readers.add(SegmentReader.open(writerFile, null));
+    }
+
+    /** Under the apply lock: owner maps, dictionaries, manifest, then the state swap (see the class comment). */
+    private boolean publish(final long lastTransactionId) throws IOException {
+      p.applyLock().lock();
+      try {
+        ColumnarFlusher.checkPublishing(p);
+        final long generation = p.nextGeneration();
+        final String ownerMapFile;
+        final String externalOwnerMapFile;
+        try {
+          ownerMapFile = ColumnarFlusher.writeOwnerMap(p, owners, null, SegmentFormat.ownerMapFileName(generation), attempt);
+          externalOwnerMapFile = externalOwners == null ? null : ColumnarFlusher.writeOwnerMap(p, externalOwners, null,
+              SegmentFormat.externalOwnerMapFileName(generation), attempt);
+        } catch (final FileAlreadyExistsException e) {
+          throw ColumnarFlusher.generationTaken(p, generation, e);
+        }
+        ColumnarTestHooks.reach(ColumnarFlusher.SEGMENTS_SYNCED);
+
+        final List<ColumnarManifest.DictionaryEntry> dictionaryEntries = new ArrayList<>();
+        for (int k = 0; k < columns.length; k++)
+          if (dictionaries[k] != null) {
+            final GlobalDictionary.DurableState durable = dictionaries[k].fsync();
+            dictionaryEntries.add(new ColumnarManifest.DictionaryEntry(columns[k].indexFileId(), generations[k],
+                SegmentFormat.dictionaryFileName(columns[k].indexFileId(), generations[k]), durable.entries(), durable.bytes()));
+          }
+        ColumnarTestHooks.reach(ColumnarFlusher.DICTIONARIES_SYNCED);
+
+        final SegmentReader[] readers = attempt.readers.toArray(new SegmentReader[0]);
+        final List<ColumnarManifest.SegmentEntry> segmentEntries = new ArrayList<>(readers.length);
+        for (final SegmentReader reader : readers)
+          segmentEntries.add(new ColumnarManifest.SegmentEntry(reader.segmentId(), SegmentFormat.segmentFileName(reader.segmentId()),
+              reader.rowCount(), 0, 0, reader.minPage(), reader.maxPage()));
+        final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), maxRecordsInPage, columns,
+            segmentEntries, dictionaryEntries, ownerMapFile, externalOwnerMapFile, lastTransactionId, conversionEntries());
+        final Map<String, GlobalDictionary> published = Map.copyOf(dictionaryMap);
+        // final review B-I3: the scan read committed pages that a no-WAL commit may not have put on disk yet
+        manager.protectRebuildFromNoWalCommits(p);
+        ColumnarFlusher.publishManifest(p, manifest, attempt,
+            () -> {
+              // under the apply lock, no pass counts meanwhile; first, so the state the swap publishes carries them
+              p.restoreConversions(manifest);
+              return p.rebuildPublished(manifest, readers, published, owners, externalOwners);
+            });
+        return attempt.published;
+      } finally {
+        p.applyLock().unlock();
+      }
+    }
+
+    /**
+     * The conversion counts of the rebuilt state: exactly this run's when it copied no row (every value was extracted by it); otherwise
+     * the previous counts plus this run's, which over-counts at worst. A column whose previous counts are unknown stays unknown, and so
+     * does one this run publishes for the first time: its copied rows were extracted by apply passes into segments while the column was
+     * not published, and those passes keep no count for a column without one (review N1).
+     */
+    private List<ColumnarManifest.ConversionEntry> conversionEntries() {
+      final List<ColumnarManifest.ConversionEntry> entries = new ArrayList<>(columns.length);
+      for (int k = 0; k < columns.length; k++) {
+        final int indexFileId = columns[k].indexFileId();
+        if (copiedRows == 0)
+          entries.add(new ColumnarManifest.ConversionEntry(indexFileId, failures[k], coerced[k]));
+        else if (!firstPublish[k]) {
+          final long[] previousCounts = p.conversionCounts(indexFileId);
+          if (previousCounts != null)
+            entries.add(new ColumnarManifest.ConversionEntry(indexFileId, saturatedAdd(previousCounts[0], failures[k]),
+                saturatedAdd(previousCounts[1], coerced[k])));
+        }
+      }
+      return entries;
+    }
+
+    private static long saturatedAdd(final long a, final long b) {
+      final long sum = a + b;
+      return sum < 0 ? Long.MAX_VALUE : sum;
+    }
+
+    /** A run that did not publish: its writer, readers and dictionaries closed, its files deleted unless a rename was attempted. */
+    private void abandon() {
+      if (writer != null)
+        try {
+          writer.close();
+        } catch (final IOException e) {
+          LogManager.instance().log(ColumnarRebuilder.class, Level.WARNING, "Cannot close the rebuild segment '%s'", e, writerFile);
+        } finally {
+          writer = null;
+        }
+      for (final GlobalDictionary dictionary : dictionaries)
+        if (dictionary != null)
+          dictionary.close();
+      ColumnarFlusher.settle(p, attempt);
+    }
+  }
+}

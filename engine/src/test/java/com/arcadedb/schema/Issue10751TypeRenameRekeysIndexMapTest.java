@@ -284,6 +284,11 @@ class Issue10751TypeRenameRekeysIndexMapTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY " + t + ".weights ARRAY_OF_FLOATS");
       database.command("sql", "CREATE INDEX ON " + t + " (tokens, weights) LSM_SPARSE_VECTOR METADATA { dimensions: 16 }");
     }
+    case COLUMNAR -> {
+      // its derived name carries the _columnar suffix, which the rename keeps: R_COLUMNAR[s]_columnar
+      database.command("sql", "CREATE PROPERTY " + t + ".s STRING");
+      database.command("sql", "CREATE INDEX ON " + t + " (s) COLUMNAR");
+    }
     default -> throw new IllegalStateException("index kind " + kind + " registered in the factory and not covered by this census");
     }
   }

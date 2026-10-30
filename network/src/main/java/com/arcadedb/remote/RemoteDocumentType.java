@@ -389,6 +389,18 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
+  public TypeIndex getColumnarIndex(final String property) {
+    // NEVER USES THE INDEX
+    return null;
+  }
+
+  @Override
+  public TypeIndex getPolymorphicColumnarIndex(final String property) {
+    // NEVER USES THE INDEX
+    return null;
+  }
+
+  @Override
   public boolean hasBucket(final String bucketName) {
     return buckets.contains(bucketName);
   }

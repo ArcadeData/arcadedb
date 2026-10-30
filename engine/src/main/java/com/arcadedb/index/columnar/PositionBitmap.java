@@ -1,0 +1,435 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.columnar;
+
+import com.arcadedb.graph.olap.simd.GraphOlapVectorOps;
+import com.arcadedb.graph.olap.simd.GraphOlapVectorOpsProvider;
+
+import java.util.Arrays;
+import java.util.function.LongConsumer;
+
+/**
+ * Sparse bitmap of record positions of one bucket, one fixed-size stripe per page. The page and slot of a position follow
+ * {@code LocalBucket.recordPosition}: {@code page = position / maxRecordsInPage}, {@code slot = position % maxRecordsInPage}.
+ * <p>
+ * Snapshots are copy-on-write: {@link #snapshot()} copies the page index only and shares every stripe; the first write to a
+ * shared stripe, on either side, clones it. A stripe is owned by a bitmap when its generation equals the bitmap's current
+ * generation. Not thread safe: a bitmap must not be written while another thread reads it.
+ * <p>
+ * {@link #snapshot()} MUTATES its receiver (it advances the generation), so call it only on the writer's own instance, never
+ * on an instance already shared with readers; use {@link #copy()} there. Once taken, a snapshot is an independent bitmap that
+ * either side may write, each cloning the stripes it touches.
+ */
+public final class PositionBitmap {
+  private static final int[]    NO_PAGES   = new int[0];
+  private static final long[][] NO_STRIPES = new long[0][];
+  private static final long[]   NO_GENERATIONS = new long[0];
+
+  private final int             maxRecordsInPage;
+  private final int             wordsPerStripe;
+  private int[]                 pageNumbers      = NO_PAGES;
+  private long[][]              stripes          = NO_STRIPES;
+  private long[]                stripeGeneration = NO_GENERATIONS;
+  private int                   size;
+  private long                  generation;
+
+  /**
+   * @param maxRecordsInPage slots per page, a positive multiple of 64
+   */
+  public PositionBitmap(final int maxRecordsInPage) {
+    if (maxRecordsInPage <= 0 || maxRecordsInPage % 64 != 0)
+      throw new IllegalArgumentException("maxRecordsInPage must be a positive multiple of 64, found " + maxRecordsInPage);
+    this.maxRecordsInPage = maxRecordsInPage;
+    this.wordsPerStripe = maxRecordsInPage / 64;
+  }
+
+  public int maxRecordsInPage() {
+    return maxRecordsInPage;
+  }
+
+  public boolean isEmpty() {
+    return size == 0;
+  }
+
+  public void set(final long position) {
+    final int slot = (int) (position % maxRecordsInPage);
+    final int index = indexOrInsert((int) (position / maxRecordsInPage));
+    writableStripe(index)[slot >>> 6] |= 1L << slot;
+  }
+
+  public boolean get(final long position) {
+    final int index = Arrays.binarySearch(pageNumbers, 0, size, (int) (position / maxRecordsInPage));
+    if (index < 0)
+      return false;
+    final int slot = (int) (position % maxRecordsInPage);
+    return (stripes[index][slot >>> 6] & (1L << slot)) != 0;
+  }
+
+  public void clear(final long position) {
+    final int index = Arrays.binarySearch(pageNumbers, 0, size, (int) (position / maxRecordsInPage));
+    if (index < 0)
+      return;
+    final int slot = (int) (position % maxRecordsInPage);
+    if ((stripes[index][slot >>> 6] & (1L << slot)) == 0)
+      return;
+    final long[] stripe = writableStripe(index);
+    stripe[slot >>> 6] &= ~(1L << slot);
+    if (stripe[slot >>> 6] == 0 && isZero(stripe))
+      removeAt(index);
+  }
+
+  /**
+   * Sets every slot of the page.
+   */
+  public void setPage(final int page) {
+    final long[] stripe = writableStripe(indexOrInsert(page));
+    Arrays.fill(stripe, -1L);
+  }
+
+  /**
+   * Clears every slot of the page, dropping its stripe.
+   */
+  public void clearPage(final int page) {
+    final int index = Arrays.binarySearch(pageNumbers, 0, size, page);
+    if (index >= 0)
+      removeAt(index);
+  }
+
+  public void and(final PositionBitmap other) {
+    intersectOrSubtract(other, false);
+  }
+
+  public void andNot(final PositionBitmap other) {
+    intersectOrSubtract(other, true);
+  }
+
+  public void or(final PositionBitmap other) {
+    checkCompatible(other);
+    final GraphOlapVectorOps ops = GraphOlapVectorOpsProvider.getInstance();
+    final int capacity = size + other.size;
+    final int[] mergedPages = new int[capacity];
+    final long[][] mergedStripes = new long[capacity][];
+    final long[] mergedGenerations = new long[capacity];
+    int i = 0;
+    int j = 0;
+    int n = 0;
+    while (i < size || j < other.size) {
+      final int mine = i < size ? pageNumbers[i] : Integer.MAX_VALUE;
+      final int theirs = j < other.size ? other.pageNumbers[j] : Integer.MAX_VALUE;
+      if (i < size && (j >= other.size || mine < theirs)) {
+        mergedPages[n] = mine;
+        mergedStripes[n] = stripes[i];
+        mergedGenerations[n] = stripeGeneration[i];
+        i++;
+      } else if (i < size && mine == theirs) {
+        final long[] stripe = writableStripe(i);
+        ops.bitmaskOr(stripe, other.stripes[j], stripe, wordsPerStripe);
+        mergedPages[n] = mine;
+        mergedStripes[n] = stripe;
+        mergedGenerations[n] = generation;
+        i++;
+        j++;
+      } else {
+        // never share a stripe with the other bitmap: it would write it in place
+        mergedPages[n] = theirs;
+        mergedStripes[n] = other.stripes[j].clone();
+        mergedGenerations[n] = generation;
+        j++;
+      }
+      n++;
+    }
+    pageNumbers = mergedPages;
+    stripes = mergedStripes;
+    stripeGeneration = mergedGenerations;
+    size = n;
+  }
+
+  public long cardinality() {
+    final GraphOlapVectorOps ops = GraphOlapVectorOpsProvider.getInstance();
+    long total = 0;
+    for (int i = 0; i < size; i++)
+      total += ops.bitmaskPopcount(stripes[i], wordsPerStripe);
+    return total;
+  }
+
+  public long andCardinality(final PositionBitmap other) {
+    checkCompatible(other);
+    final GraphOlapVectorOps ops = GraphOlapVectorOpsProvider.getInstance();
+    long total = 0;
+    int j = 0;
+    for (int i = 0; i < size && j < other.size; i++) {
+      final int page = pageNumbers[i];
+      while (j < other.size && other.pageNumbers[j] < page)
+        j++;
+      if (j < other.size && other.pageNumbers[j] == page)
+        total += ops.bitmaskAndPopcount(stripes[i], other.stripes[j], wordsPerStripe);
+    }
+    return total;
+  }
+
+  /**
+   * Visits every set position in ascending order.
+   */
+  public void forEach(final LongConsumer position) {
+    for (int i = 0; i < size; i++) {
+      final long pageBase = (long) pageNumbers[i] * maxRecordsInPage;
+      final long[] stripe = stripes[i];
+      for (int w = 0; w < wordsPerStripe; w++) {
+        long word = stripe[w];
+        final long wordBase = pageBase + ((long) w << 6);
+        while (word != 0) {
+          position.accept(wordBase + Long.numberOfTrailingZeros(word));
+          word &= word - 1;
+        }
+      }
+    }
+  }
+
+  /**
+   * Visits every position set in both bitmaps, in ascending order, word by word on the pages both hold: the visiting sibling of
+   * {@link #andCardinality}, with no bitmap allocated.
+   */
+  public void forEachAnd(final PositionBitmap other, final LongConsumer position) {
+    checkCompatible(other);
+    int j = 0;
+    for (int i = 0; i < size && j < other.size; i++) {
+      final int page = pageNumbers[i];
+      while (j < other.size && other.pageNumbers[j] < page)
+        j++;
+      if (j == other.size || other.pageNumbers[j] != page)
+        continue;
+      final long pageBase = (long) page * maxRecordsInPage;
+      final long[] stripe = stripes[i];
+      final long[] otherStripe = other.stripes[j];
+      for (int w = 0; w < wordsPerStripe; w++) {
+        long word = stripe[w] & otherStripe[w];
+        final long wordBase = pageBase + ((long) w << 6);
+        while (word != 0) {
+          position.accept(wordBase + Long.numberOfTrailingZeros(word));
+          word &= word - 1;
+        }
+      }
+    }
+  }
+
+  /**
+   * Visits every position set in this bitmap and in none of {@code others}, in ascending order, word by word: the visiting sibling of
+   * {@link #andNot} over the union of {@code others}, with no bitmap allocated.
+   */
+  public void forEachAndNotAny(final PositionBitmap[] others, final LongConsumer position) {
+    for (final PositionBitmap other : others)
+      checkCompatible(other);
+    final long[][] otherStripes = new long[others.length][];
+    for (int i = 0; i < size; i++) {
+      final int page = pageNumbers[i];
+      for (int o = 0; o < others.length; o++)
+        otherStripes[o] = others[o].stripe(page);
+      final long pageBase = (long) page * maxRecordsInPage;
+      final long[] stripe = stripes[i];
+      for (int w = 0; w < wordsPerStripe; w++) {
+        long word = stripe[w];
+        for (int o = 0; o < otherStripes.length && word != 0; o++)
+          if (otherStripes[o] != null)
+            word &= ~otherStripes[o][w];
+        final long wordBase = pageBase + ((long) w << 6);
+        while (word != 0) {
+          position.accept(wordBase + Long.numberOfTrailingZeros(word));
+          word &= word - 1;
+        }
+      }
+    }
+  }
+
+  /** The number of page stripes the bitmap holds (the length of {@link #pages()}, without its copy), to size what a copy costs. */
+  public int pageCount() {
+    return size;
+  }
+
+  /**
+   * @return the pages holding at least one bit, ascending
+   */
+  public int[] pages() {
+    return Arrays.copyOf(pageNumbers, size);
+  }
+
+  /**
+   * O(pages) reference copy: stripes are shared, and a later write to either side clones the touched stripe first.
+   */
+  public PositionBitmap snapshot() {
+    // every existing stripe becomes older than the new generation, so it is shared and cloned by its first writer
+    generation++;
+    final PositionBitmap snapshot = new PositionBitmap(maxRecordsInPage);
+    snapshot.pageNumbers = Arrays.copyOf(pageNumbers, size);
+    snapshot.stripes = Arrays.copyOf(stripes, size);
+    snapshot.stripeGeneration = Arrays.copyOf(stripeGeneration, size);
+    snapshot.size = size;
+    snapshot.generation = generation;
+    return snapshot;
+  }
+
+  /**
+   * Deep copy: every stripe is cloned and nothing is shared with this bitmap.
+   */
+  public PositionBitmap copy() {
+    final PositionBitmap copy = new PositionBitmap(maxRecordsInPage);
+    copy.pageNumbers = Arrays.copyOf(pageNumbers, size);
+    copy.stripes = new long[size][];
+    for (int i = 0; i < size; i++)
+      copy.stripes[i] = stripes[i].clone();
+    copy.stripeGeneration = new long[size];
+    copy.size = size;
+    return copy;
+  }
+
+  /**
+   * A bitmap over stripes owned by someone else, kept by reference without copying their words: every stripe starts shared, so the
+   * first write to one clones it and the given stripes are never written. The page and stripe index arrays are copied.
+   *
+   * @param pages   strictly ascending page numbers, the first {@code count} are used
+   * @param stripes the stripe of each page, {@code maxRecordsInPage / 64} words with at least one bit set
+   */
+  static PositionBitmap wrapShared(final int maxRecordsInPage, final int[] pages, final long[][] stripes, final int count) {
+    final PositionBitmap bitmap = new PositionBitmap(maxRecordsInPage);
+    for (int i = 0; i < count; i++)
+      if (stripes[i].length != bitmap.wordsPerStripe)
+        throw new IllegalArgumentException("Stripe of page " + pages[i] + " has " + stripes[i].length + " words, expected " + bitmap.wordsPerStripe);
+    bitmap.pageNumbers = Arrays.copyOf(pages, count);
+    bitmap.stripes = Arrays.copyOf(stripes, count);
+    // generation 0 for every stripe and 1 for the bitmap: no stripe is owned, the first write clones it
+    bitmap.stripeGeneration = new long[count];
+    bitmap.generation = 1;
+    bitmap.size = count;
+    return bitmap;
+  }
+
+  long[] stripeForTesting(final int page) {
+    return stripe(page);
+  }
+
+  /**
+   * The stripe of the page ({@code maxRecordsInPage / 64} words, bit {@code slot & 63} of word {@code slot >>> 6}), null when the page
+   * has no bit. Shared with this bitmap: read-only for the caller, and valid only while no one writes this bitmap.
+   */
+  long[] stripe(final int page) {
+    final int index = Arrays.binarySearch(pageNumbers, 0, size, page);
+    return index < 0 ? null : stripes[index];
+  }
+
+  /**
+   * ORs {@code maxRecordsInPage / 64} words from {@code words[offset]} into the stripe of the page; nothing happens when they are all
+   * zero, so no empty stripe is ever created. Appending pages in ascending order never shifts the page index.
+   */
+  void orStripe(final int page, final long[] words, final int offset) {
+    boolean any = false;
+    for (int w = 0; w < wordsPerStripe && !any; w++)
+      any = words[offset + w] != 0;
+    if (!any)
+      return;
+    final long[] stripe = writableStripe(indexOrInsert(page));
+    for (int w = 0; w < wordsPerStripe; w++)
+      stripe[w] |= words[offset + w];
+  }
+
+  private void checkCompatible(final PositionBitmap other) {
+    if (other.maxRecordsInPage != maxRecordsInPage)
+      throw new IllegalArgumentException(
+          "Cannot combine bitmaps of different page sizes: " + maxRecordsInPage + " and " + other.maxRecordsInPage);
+  }
+
+  private void intersectOrSubtract(final PositionBitmap other, final boolean subtract) {
+    checkCompatible(other);
+    final GraphOlapVectorOps ops = GraphOlapVectorOpsProvider.getInstance();
+    int kept = 0;
+    int j = 0;
+    for (int i = 0; i < size; i++) {
+      final int page = pageNumbers[i];
+      while (j < other.size && other.pageNumbers[j] < page)
+        j++;
+      final boolean present = j < other.size && other.pageNumbers[j] == page;
+      long[] stripe = stripes[i];
+      long stripeGen = stripeGeneration[i];
+      if (present) {
+        stripe = writableStripe(i);
+        stripeGen = generation;
+        if (subtract)
+          ops.bitmaskAndNot(stripe, other.stripes[j], stripe, wordsPerStripe);
+        else
+          ops.bitmaskAnd(stripe, other.stripes[j], stripe, wordsPerStripe);
+        if (isZero(stripe))
+          continue;
+      } else if (!subtract)
+        continue;
+      pageNumbers[kept] = page;
+      stripes[kept] = stripe;
+      stripeGeneration[kept] = stripeGen;
+      kept++;
+    }
+    Arrays.fill(stripes, kept, size, null);
+    size = kept;
+  }
+
+  /**
+   * Returns the stripe at the index, cloning it first when a snapshot still shares it.
+   */
+  private long[] writableStripe(final int index) {
+    if (stripeGeneration[index] != generation) {
+      stripes[index] = stripes[index].clone();
+      stripeGeneration[index] = generation;
+    }
+    return stripes[index];
+  }
+
+  private int indexOrInsert(final int page) {
+    final int found = Arrays.binarySearch(pageNumbers, 0, size, page);
+    if (found >= 0)
+      return found;
+    final int index = -found - 1;
+    if (size == pageNumbers.length) {
+      final int capacity = Math.max(4, size + (size >> 1));
+      pageNumbers = Arrays.copyOf(pageNumbers, capacity);
+      stripes = Arrays.copyOf(stripes, capacity);
+      stripeGeneration = Arrays.copyOf(stripeGeneration, capacity);
+    }
+    final int tail = size - index;
+    System.arraycopy(pageNumbers, index, pageNumbers, index + 1, tail);
+    System.arraycopy(stripes, index, stripes, index + 1, tail);
+    System.arraycopy(stripeGeneration, index, stripeGeneration, index + 1, tail);
+    pageNumbers[index] = page;
+    stripes[index] = new long[wordsPerStripe];
+    stripeGeneration[index] = generation;
+    size++;
+    return index;
+  }
+
+  private void removeAt(final int index) {
+    final int tail = size - index - 1;
+    System.arraycopy(pageNumbers, index + 1, pageNumbers, index, tail);
+    System.arraycopy(stripes, index + 1, stripes, index, tail);
+    System.arraycopy(stripeGeneration, index + 1, stripeGeneration, index, tail);
+    size--;
+    stripes[size] = null;
+  }
+
+  private static boolean isZero(final long[] stripe) {
+    for (final long word : stripe)
+      if (word != 0)
+        return false;
+    return true;
+  }
+}
