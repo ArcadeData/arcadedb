@@ -53,7 +53,8 @@ class Issue11011AlgoWorkingMemoryAutoBudgetTest extends TestHelper {
   @Test
   void theDefaultAdmitsAWorkingSetPastTheFixedBudgetWhenTheHeapHasRoom() {
     final long floor = AbstractAlgoProcedure.fixedBudgetFloor();
-    final long free = HeapUsage.availableHeapBytes();
+    // The reading the budget sizes itself from
+    final long free = HeapUsage.conservativeAvailableHeapBytes();
     assumeTrue(free > 4 * floor, "the test JVM's heap has less room than the reservation needs");
 
     // Reserving allocates nothing: the budget only decides

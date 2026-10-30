@@ -466,7 +466,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * Raises an automatic budget to half of the heap free after the last collection plus the page read cache, which is on
      * the heap and evictable: a call that needs part of it takes it back before it allocates ({@link #reclaimPageCacheFor}).
      * Half, because the call shares the heap with the queries running beside it and with the collector's own headroom. An
-     * unknown reading keeps the floor.
+     * unknown reading keeps the floor. It is an estimate, not a reservation of the heap: calls sized at the same moment each
+     * see the same free heap, and the half is what leaves room for a second one.
      */
     private void sizeFromHeap() {
       sizedFromHeap = true;
