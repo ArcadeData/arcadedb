@@ -174,6 +174,11 @@ class FlatVectorCacheTest {
     assertThat(cache.similarity(63, query, VectorSimilarityFunction.EUCLIDEAN))
         .isCloseTo(VectorSimilarityFunction.EUCLIDEAN.compare(query, vector(-1f, -2f, -3f, -4f, -5f, -6f)), within(1e-6f));
 
+    // At the default chunk size a small index of wide vectors claims one small chunk, not its whole capacity floor
+    final FlatVectorCache small = new FlatVectorCache(1536, 8192);
+    small.put(0, VTS.createFloatVector(1536));
+    assertThat(small.allocatedBytes()).isLessThanOrEqualTo((long) FlatVectorCache.MAX_CHUNK_FLOATS * Float.BYTES);
+
     // A vector wider than a chunk gets a chunk of its own
     final FlatVectorCache wide = new FlatVectorCache(8, 4, 5);
     wide.put(2, vector(1f, 1f, 1f, 1f, 1f, 1f, 1f, 2f));

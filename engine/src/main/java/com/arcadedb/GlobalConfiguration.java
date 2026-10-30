@@ -1396,7 +1396,7 @@ public enum GlobalConfiguration {
       Maximum number of vectors kept in the per-index search cache. The cache is shared by every query on the \
       index and survives across queries, so a working set that fits stays resident instead of being re-read from \
       the documents (or from the quantized index pages) on every beam-search hop. \
-      The vectors are held in flat float storage, allocated in chunks of at most 64 MB as they are loaded, plus one \
+      The vectors are held in flat float storage, allocated in chunks of at most 4 MB as they are loaded, plus one \
       8-byte slot per entry: RAM usage = cacheSize rounded up to a power of two, times 8 bytes, plus \
       (dimensions * 4) bytes per vector cached. A BINARY index caches the one-bit codes its searches are \
       scored on instead: cacheSize rounded up to a power of two, times (ceil(dimensions / 64) * 8 + 8) bytes, the code \

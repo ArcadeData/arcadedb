@@ -68,10 +68,11 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  */
 final class FlatVectorCache {
   /**
-   * Largest chunk of components, in floats (64 MB). Bounds every allocation the cache makes, whatever its capacity, and
-   * keeps the offsets of a chunk inside an int.
+   * Largest chunk of components, in floats (4 MB). Bounds every allocation the cache makes, whatever its capacity, and is
+   * the granularity the heap is claimed in: an index of a few hundred wide vectors costs one chunk, not the slots its
+   * capacity floor provides for (8,192 slots of 1536 dimensions would be 50 MB).
    */
-  static final int MAX_CHUNK_FLOATS = 1 << 24;
+  static final int MAX_CHUNK_FLOATS = 1 << 20;
 
   private static final VarHandle         STAMPS = MethodHandles.arrayElementVarHandle(long[].class);
   /** Version 0, id -1: the stamp of a slot that holds nothing. */
@@ -309,15 +310,22 @@ final class FlatVectorCache {
     };
   }
 
-  /** The chunk that holds {@code slot}'s components, allocated on its first use. */
+  /**
+   * The chunk that holds {@code slot}'s components, allocated on its first use. Allocated under a lock, so the searches that
+   * all miss on a cold chunk at once wait for one allocation instead of each making a chunk that all but one throw away.
+   * Taken once per chunk over the life of the cache.
+   */
   private VectorFloat<?> chunkFor(final int slot) {
     final int index = slot >>> chunkShift;
     VectorFloat<?> chunk = chunks.get(index);
     if (chunk == null) {
-      final VectorFloat<?> allocated = VTS.createFloatVector((chunkMask + 1) * dimensions);
-      chunk = chunks.compareAndExchange(index, null, allocated);
-      if (chunk == null)
-        chunk = allocated;
+      synchronized (chunks) {
+        chunk = chunks.get(index);
+        if (chunk == null) {
+          chunk = VTS.createFloatVector((chunkMask + 1) * dimensions);
+          chunks.set(index, chunk);
+        }
+      }
     }
     return chunk;
   }
