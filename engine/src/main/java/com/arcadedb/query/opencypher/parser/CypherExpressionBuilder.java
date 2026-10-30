@@ -2895,6 +2895,17 @@ class CypherExpressionBuilder {
     final List<Expression> args = new ArrayList<>();
     args.add(parseExpression(ctx.vectorValue));
     args.add(parseExpression(ctx.dimension));
+    // the coordinate type, in its canonical spelling, decides the array the vector is built as (#10917)
+    final StringBuilder spelling = new StringBuilder();
+    for (int i = 0; i < ctx.vectorCoordinateType().getChildCount(); i++) {
+      if (ctx.vectorCoordinateType().getChild(i) instanceof Cypher25Parser.TypeNullabilityContext)
+        continue;
+      if (!spelling.isEmpty())
+        spelling.append(' ');
+      spelling.append(ctx.vectorCoordinateType().getChild(i).getText().toUpperCase(Locale.ROOT));
+    }
+    final String coordinateType = CypherTypeName.canonical(spelling.toString());
+    args.add(new LiteralExpression(coordinateType, coordinateType));
     return new FunctionCallExpression("vector.create", args, false);
   }
 

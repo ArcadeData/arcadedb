@@ -96,9 +96,9 @@ class Issue10862VectorTypeConstraintTest extends TestHelper {
     command("CREATE (:L {e: [1, 2, 3]})");
     assertThat(count("MATCH (n:L) WHERE n.e IS :: VECTOR<INT8>(3) RETURN count(n) AS c")).isEqualTo(1L);
     assertThatThrownBy(() -> command("CREATE (:L {e: [1, 2]})")).isInstanceOf(RuntimeException.class);
-    // vector() builds a float[] whatever coordinate type it is given (#10917), which a BINARY refuses rather than truncates
-    assertThatThrownBy(() -> command("CREATE (:L {e: vector([1, 2, 3], 3, INT8)})")).rootCause()
-        .hasMessageContaining("cannot be converted to type byte[]");
+    // vector() builds the byte[] of its INT8 coordinate type (#10917), which a BINARY takes
+    command("CREATE (:L {e: vector([1, 2, 3], 3, INT8)})");
+    assertThat(count("MATCH (n:L) WHERE n.e IS :: VECTOR<INT8>(3) RETURN count(n) AS c")).isEqualTo(2L);
   }
 
   @Test

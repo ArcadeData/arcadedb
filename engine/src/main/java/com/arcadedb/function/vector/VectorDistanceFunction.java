@@ -57,8 +57,8 @@ public class VectorDistanceFunction implements StatelessFunction {
     if (args[0] == null || args[1] == null || CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
 
-    final float[] a = VectorUtils.toFloatArray(args[0]);
-    final float[] b = VectorUtils.toFloatArray(args[1]);
+    final float[] a = VectorUtils.toFloatArrayOfCoordinates(args[0]);
+    final float[] b = VectorUtils.toFloatArrayOfCoordinates(args[1]);
     VectorUtils.validateSameDimension(a, b);
 
     final String metric = args.length > 2 && args[2] != null ? args[2].toString().toUpperCase(Locale.ROOT) : "EUCLIDEAN";

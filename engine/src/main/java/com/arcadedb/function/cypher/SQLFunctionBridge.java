@@ -22,6 +22,8 @@ import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.function.sql.math.SQLFunctionSum;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorDequantizeInt8;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.SQLFunction;
@@ -40,11 +42,17 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
   private OperationHeapLimit limit;
   // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
   private boolean ownLimit;
+  private static final String DEQUANTIZE_INT8 = SQLFunctionVectorDequantizeInt8.NAME;
+  private final boolean isVectorFunction;
   private long held;
 
   public SQLFunctionBridge(final SQLFunction sqlFunction, final String cypherFunctionName) {
     this.sqlFunction = sqlFunction;
     this.cypherFunctionName = cypherFunctionName;
+    // KEYED ON THE SQL FUNCTION'S OWN NAME, NOT THE CYPHER SPELLING: sql.vector.add() REACHES THE SAME FUNCTION. dequantizeInt8() TAKES
+    // A QUANTIZED byte[] BY DESIGN, SO IT IS THE ONE VECTOR FUNCTION THAT MUST SEE THE BYTES AS THEY ARE
+    final String sqlName = sqlFunction.getName();
+    this.isVectorFunction = sqlName != null && sqlName.startsWith("vector.") && !sqlName.equals(DEQUANTIZE_INT8);
 
     // Configure the function to enable aggregation mode
     // SQL aggregation functions check configuredParameters in aggregateResults()
@@ -99,7 +107,7 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
     checkArity(args);
     // SQL functions expect (self, currentRecord, currentResult, params, context)
     // For now, we pass nulls for self, currentRecord, currentResult
-    final Object result = sqlFunction.execute(null, null, null, args, context);
+    final Object result = sqlFunction.execute(null, null, null, isVectorFunction ? widenInt8Vectors(args) : args, context);
     // CHARGED AFTER THE FUNCTION TOOK THE VALUE: WHAT IT HOLDS NOW IS WHAT IT REPORTS, AND A CAP TRIPPED HERE FAILS THE
     // QUERY WITH ONE VALUE OVER IT, AS FunctionAggregationContext DOES
     if (heldValuesFunction != null) {
@@ -110,6 +118,21 @@ public class SQLFunctionBridge implements StatelessFunction, HeapBufferingFuncti
       held = heldValuesFunction.chargeHeld(limit, held, args.length == 1 ? args[0] : args);
     }
     return result;
+  }
+
+  /**
+   * A Cypher INT8 vector is a {@code byte[]} of plain integer coordinates (#10917), which the SQL vector functions would read as
+   * a quantized one and refuse: it is widened to the {@code float[]} they take.
+   */
+  private static Object[] widenInt8Vectors(final Object[] args) {
+    Object[] widened = args;
+    for (int i = 0; i < args.length; i++)
+      if (args[i] instanceof byte[]) {
+        if (widened == args)
+          widened = args.clone();
+        widened[i] = VectorUtils.toFloatArrayOfCoordinates(args[i]);
+      }
+    return widened;
   }
 
   @Override
