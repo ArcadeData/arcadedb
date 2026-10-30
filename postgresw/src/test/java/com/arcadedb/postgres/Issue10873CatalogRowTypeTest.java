@@ -147,10 +147,18 @@ class Issue10873CatalogRowTypeTest {
     references("pg_default_acl.defaclrole", "pg_roles", NEVER);
     references("pg_default_acl.defaclnamespace", "pg_namespace", ALWAYS);
     references("pg_foreign_table.ftrelid", "pg_class", NEVER);
+    references("pg_event_trigger.evtowner", "pg_roles", NEVER);
+    references("pg_foreign_data_wrapper.fdwowner", "pg_roles", NEVER);
+    references("pg_foreign_server.srvowner", "pg_roles", NEVER);
+    references("pg_subscription.subowner", "pg_roles", NEVER);
+    references("pg_largeobject_metadata.lomowner", "pg_roles", NEVER);
 
     notChecked("pg_proc.prolang", "pg_language is not modelled, and pg_proc has no row");
     notChecked("pg_proc.prosupport", "a regproc, read as a name");
     notChecked("pg_foreign_table.ftserver", "pg_foreign_server is not modelled, and pg_foreign_table has no row");
+    notChecked("pg_event_trigger.evtfoid", "pg_proc has no row, and pg_event_trigger has none either");
+    notChecked("pg_subscription.subrunasowner", "a boolean: whether the subscription applies changes as the table owner, not an OID");
+    notChecked("pg_foreign_server.srvfdw", "pg_foreign_data_wrapper has no row, and pg_foreign_server has none either");
     notChecked("pg_range.rngsubopc", "pg_opclass is not modelled, and pg_range has no row");
     notChecked("pg_range.rngcanonical", "a regproc, read as a name");
     notChecked("pg_range.rngsubdiff", "a regproc, read as a name");
