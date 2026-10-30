@@ -1571,6 +1571,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
     }
 
+    // Not accepted from another node while this leader's copy refuses writes (issue #10965): an 'overwrite' restore puts that
+    // refusal on the leader's target (issue #10689), and a replica commits its phase 1 locally, where nothing knows of it, so
+    // its entry would be acknowledged during the download and destroyed by the swap. The leader's own commits are refused in
+    // the database itself. Lock-free: one volatile read of the refusals. Repeated after the reservation below.
+    // Issue10965ReplicaEntryRefusedDuringRestoreClaimTest counts the databaseFor() lookups of this method (this one is the first,
+    // the validation lookup below the second): adding a lookup before the reservation means updating that test.
+    if (!isLocalOrigin && databaseName != null) {
+      final NeedRetryException writesRefused = writesRefusedOnLeader(databaseForValidation(databaseName));
+      if (writesRefused != null) {
+        HALog.log(this, HALog.DETAILED, "Refusing a transaction of another node on database '%s': %s", databaseName,
+            writesRefused.getMessage());
+        return context.build().setException(writesRefused);
+      }
+    }
+
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
     final PageVersionLedger.Pages pages;
@@ -1603,7 +1618,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(exclusiveOperationRefusal(databaseName));
     }
 
+    // The same second half for the write refusal (issue #10965): the claim may go up between the first check and the reservation
+    if (!isLocalOrigin) {
+      final NeedRetryException writesRefused = writesRefusedOnLeader(db);
+      if (writesRefused != null) {
+        pageVersions.release(databaseName, pages, decoded.walData());
+        return context.build().setException(writesRefused);
+      }
+    }
+
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
+  }
+
+  /**
+   * The retryable refusal for an entry of another node when {@code db}, this leader's copy, refuses writes (a restore is replacing
+   * it, issue #10965), or {@code null} when it accepts them or is not resolved here (the caller refuses that case on its own).
+   */
+  private static NeedRetryException writesRefusedOnLeader(final DatabaseInternal db) {
+    if (db != null && db.getEmbedded() instanceof LocalDatabase local) {
+      final String reason = local.getWriteRefusal();
+      if (reason != null)
+        return new NeedRetryException(
+            "Database '" + local.getName() + "' does not accept writes on the leader right now: " + reason + ". Please retry");
+    }
+    return null;
   }
 
   /**
