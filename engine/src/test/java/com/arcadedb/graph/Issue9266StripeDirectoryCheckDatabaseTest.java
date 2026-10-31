@@ -333,7 +333,8 @@ class Issue9266StripeDirectoryCheckDatabaseTest extends TestHelper {
     database.transaction(() -> {
       final RID dirRID = head(hub);
       final byte[] bytes = transform.apply(bucketOf(dirRID).getRecord(dirRID).copyOfContent().toByteArray());
-      final Binary rewritten = new Binary(bytes, bytes.length);
+      // Resizable: the bucket pads a record cut shorter than a pointer's footprint (#10859)
+      final Binary rewritten = new Binary(bytes, bytes.length).setAutoResizable(true);
       final StripeDirectory copy = new StripeDirectory(database, dirRID, bucketOf(dirRID).getRecord(dirRID).copyOfContent()) {
         @Override
         public Binary getContent() {
