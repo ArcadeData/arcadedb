@@ -236,6 +236,8 @@ class Issue10153AlreadyExistsTest extends TestHelper {
       "query/sql/parser/CreateIndexStatement.java:IllegalArgumentException:Cannot create the index '",
       // a Cypher variable bound twice, or with two types, in one statement: a parse error, not a schema object name
       "query/opencypher/parser/CypherSemanticValidator.java:CommandParsingException:Variable",
+      // SEARCH ... SCORE AS naming a variable an earlier clause bound: a semantic error of the statement, not a schema object name
+      "query/opencypher/procedures/db/VectorSearchClauseProcedure.java:CommandSemanticException:SEARCH: the score variable '",
       // the rename of a TIMESERIES type onto a sealed file left in the database directory: a file no schema object holds (#10796).
       // The component it collides with is a bucket or an index, refused as a taken name
       "schema/LocalTimeSeriesType.java:SchemaException:Cannot rename the TIMESERIES type '\" + oldName + \"' to '\" + newName + \"': the sealed file '",

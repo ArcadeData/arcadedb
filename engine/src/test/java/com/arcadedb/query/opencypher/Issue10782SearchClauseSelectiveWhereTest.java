@@ -119,7 +119,7 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
 
   @Test
   void aProductQuantizedFilteredWalkStopsAtTheDeadline() {
-    createDocs(2_000, 5, ", \"quantization\": \"PRODUCT\", \"pqClusters\": 16");
+    createDocs(6_000, 5, ", \"quantization\": \"PRODUCT\", \"pqClusters\": 16");
     final LSMVectorIndex index = indexOf();
     index.buildVectorGraphNow();
     assertThat(index.isPQSearchAvailable()).as("the PQ path must be the one tested").isTrue();
@@ -139,7 +139,9 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
             Thread.currentThread().interrupt();
           }
         }
-        return "small".equals(((RID) o).asDocument().getString("tenant"));
+        // Admits nothing, so the walk never fills its result queue and keeps going: the guard checks once per 1024 membership
+        // tests, and a walk that met fewer ended before it ever looked at the deadline (hence the larger graph)
+        return false;
       }
 
       @Override

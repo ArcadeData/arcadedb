@@ -1602,7 +1602,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final CypherDDLStatement.IndexKind kind = ddl.getIndexKind();
     final String indexName = ddl.getConstraintName() != null ?
         ddl.getConstraintName() :
-        String.join("_", labels) + "_" + String.join("_", propertyNames) + "_" + kind.name().toLowerCase();
+        String.join("_", labels) + "_" + String.join("_", propertyNames) + "_" + kind.name().toLowerCase(Locale.ROOT);
 
     final boolean taken = schema.existsIndex(indexName) || CypherMultiTypeIndexes.find(schema, indexName) != null;
     if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {

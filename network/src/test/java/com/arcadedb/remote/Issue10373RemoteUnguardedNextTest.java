@@ -78,6 +78,9 @@ class Issue10373RemoteUnguardedNextTest {
 
     AUDITED.put("RemoteSchema.java: return new RemoteBucket(result.next().getProperty(\"bucketName\"));",
         "CREATE BUCKET answers the bucket it created, and no listener can veto a schema statement");
+
+    AUDITED.put("RemoteHttpComponent.java: rewritten.add(prior.next());",
+        "replays the first i items of a collection the enclosing loop has just walked, so the iterator holds at least i");
   }
 
   @Test
