@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The two jobs are now separate: a valid cluster token proves the hop, and identity substitution happens only
  * when a forwarded user travels with it. What must not change is the fail-closed behaviour on either side of
  * that split, which is what these cases pin. The loop the split exists to stop is driven end to end in
- * {@code Issue7516BasicAuthForwardLoopIT}; it needs a cluster, and this does not.
+ * {@code HaForwardedWriteMisaddressedLeaderIT} (ha-raft module); it needs a cluster, and this does not.
  */
 class Issue7516ClusterTokenHopProofTest extends BaseGraphServerTest {
 

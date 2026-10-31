@@ -154,7 +154,7 @@ test("the two capabilities are judged separately", () => {
 
 // Issue #8055: since #7549 EVERY node probes its peers, so a follower's GET /api/v1/cluster carries a
 // 'capabilities' array (or a 'capabilitiesUnknownReason') on every peer row - the payload
-// Issue7549FollowerCapabilityReportingIT pins. The gate used to answer "indeterminable" for any payload whose
+// HaSecurityMutationRoutingTwoNodeIT (#7549) pins. The gate used to answer "indeterminable" for any payload whose
 // isLeader was not true, which switched the banner and the Security page's gate off on the node Studio is most
 // often served from, and the operator met the leader's 409 the gate was written to prevent.
 

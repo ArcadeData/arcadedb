@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code RaftHAPlugin.replicateSecurityUsers/Groups/ApiTokens} is the single chokepoint every security mutation and
  * every seed ends at, so the refusal lives there and is pinned through it, for each document and for both the
  * fingerprinted (user-initiated) and the bare (seed) form. The live-cluster half is
- * {@code Issue9589RemovedNodeRefusesSecurityMutationsIT}.
+ * {@code HaRemovedNodeIT}.
  */
 class Issue9589SecurityEntryRefusedWhileRemovedFromConfigurationTest {
 

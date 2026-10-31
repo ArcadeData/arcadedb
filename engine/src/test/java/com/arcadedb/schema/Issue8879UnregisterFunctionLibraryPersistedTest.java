@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * schema nor ran in a schema recording session, so the library came back on reopen and, under HA, was never removed
  * from the followers. A recording session is observable without a cluster through {@code SCHEMA_AFTER_FILE_CHANGES},
  * which fires once at the end of every outermost session; the cluster-level proof is in
- * {@code Issue8404FunctionDdlReplicationIT}.
+ * {@code HaSchemaDdlReplicationThreeNodeIT}.
  */
 class Issue8879UnregisterFunctionLibraryPersistedTest extends TestHelper {
 

@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * on the wire in clear text while every sibling dial was already encrypted. What is pinned here is the
  * DECISION in isolation; that a decision of {@code https} is then carried by a real TLS socket, against a
  * certificate issued for the name dialled and validated through the configured truststore, is pinned by
- * {@link Issue7563HaTlsPeerDialIT} against a live two-node cluster.
+ * {@link HaTlsPeerDialIT} against a live two-node cluster.
  * <p>
  * The three rows of each table are the three states an operator can be in, and the middle one is the one that
  * must NOT be a refusal: an SSL cluster that never declared the optional 5th field of
