@@ -231,7 +231,8 @@ public final class CypherFunctionRegistry {
    */
   public static void reset() {
     FUNCTIONS.clear();
-    registerBuiltInFunctions();
+    // Re-register the very instances captured at startup, so isBuiltInOrUnregistered() still tells a built-in apart
+    BUILT_INS.values().forEach(CypherFunctionRegistry::register);
   }
 
   /**
