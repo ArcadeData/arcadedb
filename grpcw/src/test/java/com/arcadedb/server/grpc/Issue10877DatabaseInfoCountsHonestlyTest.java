@@ -105,12 +105,12 @@ class Issue10877DatabaseInfoCountsHonestlyTest extends BaseGraphServerTest {
     assertThat(info.getClasses()).as("the type is still a type of the database").isEqualTo(database.getSchema().getTypes().size());
     assertThat(info.getRecords()).as("the types that could be counted").isEqualTo(4L);
 
-    // the census: every type of the schema is either counted or named, none silently left out
+    // Every countable type is represented explicitly; do not derive the expected set from the loop's own iteration count.
     final List<String> counted = new ArrayList<>();
     for (final DocumentType type : database.getSchema().getTypes())
       if (!info.getUncountedTypesList().contains(type.getName()))
         counted.add(type.getName());
-    assertThat(counted.size() + info.getUncountedTypesCount()).isEqualTo(database.getSchema().getTypes().size());
+    assertThat(counted).containsExactlyInAnyOrder("Doc", "Person");
   }
 
   private GetDatabaseInfoResponse databaseInfo() {
