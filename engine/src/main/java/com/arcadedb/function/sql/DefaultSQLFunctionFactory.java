@@ -91,6 +91,7 @@ import com.arcadedb.function.sql.misc.SQLFunctionBoolOr;
 import com.arcadedb.function.sql.misc.SQLFunctionCoalesce;
 import com.arcadedb.function.sql.misc.SQLFunctionDecode;
 import com.arcadedb.function.sql.misc.SQLFunctionEncode;
+import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.function.sql.misc.SQLFunctionIf;
 import com.arcadedb.function.sql.misc.SQLFunctionIfEmpty;
 import com.arcadedb.function.sql.misc.SQLFunctionIfNull;
@@ -277,6 +278,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionIfEmpty.NAME, new SQLFunctionIfEmpty());
     register(SQLFunctionIfNull.NAME, new SQLFunctionIfNull());
     register(SQLFunctionUUID.NAME, SQLFunctionUUID.class);
+    register(SQLFunctionEnsureLabelTypes.NAME, SQLFunctionEnsureLabelTypes.class);
     register(SQLFunctionVersion.NAME, SQLFunctionVersion.class);
 
     // Text
