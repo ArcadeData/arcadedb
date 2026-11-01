@@ -1392,12 +1392,12 @@ public enum GlobalConfiguration {
       index and survives across queries, so a working set that fits stays resident instead of being re-read from \
       the documents (or from the quantized index pages) on every beam-search hop. \
       The vectors are held in flat float storage, allocated in chunks of at most 4 MB as they are loaded, plus one \
-      8-byte slot per entry: RAM usage = cacheSize rounded up to a power of two, times 8 bytes, plus \
+      8-byte slot per entry: RAM usage = cacheSize times 8 bytes, plus \
       (dimensions * 4) bytes per vector cached. A BINARY index caches the one-bit codes its searches are \
-      scored on instead: cacheSize rounded up to a power of two, times (ceil(dimensions / 64) * 8 + 8) bytes, the code \
+      scored on instead: cacheSize times (ceil(dimensions / 64) * 8 + 8) bytes, the code \
       held in whole 64-bit words plus two ints per slot (about 200 MB for 1M slots of 1536 dimensions). \
-      0 (default) sizes it automatically from the range of vector ids, capped by \
-      arcadedb.vectorIndex.searchCacheMaxHeapPercent. -1 disables the cache entirely.""",
+      0 (default) sizes it automatically from the range of vector ids, rounded up to a power of two for growth, \
+      capped by arcadedb.vectorIndex.searchCacheMaxHeapPercent. -1 disables the cache entirely.""",
       Integer.class, 0),
 
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,

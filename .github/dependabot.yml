@@ -93,6 +93,12 @@ updates:
       # Dependabot PR that touches native/pom.xml.
       - dependency-name: "org.apache.groovy:*"
         update-types: ["version-update:semver-major"]
+      # swagger-core 3 moved to Jackson 3 (tools.jackson), and swagger-parser, which the server's OpenAPI tests use to
+      # validate the served spec, has no release built against it yet (2.1.48 still calls the Jackson 2 API of core 2,
+      # e.g. Yaml.mapper(), and fails with NoSuchMethodError). The bump to 3.0.0 (#11085) went in with [skip ci] and
+      # broke OpenApiSpecGenerationIT and OpenApiDocsEndpointIT. Lift this once swagger-parser ships a core 3 build.
+      - dependency-name: "io.swagger.core.v3:*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

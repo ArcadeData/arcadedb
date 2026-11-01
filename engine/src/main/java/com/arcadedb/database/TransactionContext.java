@@ -631,6 +631,8 @@ public class TransactionContext implements Transaction {
    * read-only copy can never masquerade as the current state and silently roll back a concurrent change.
    */
   public Record getWrittenRecord(final RID rid) {
+    if (!hasWrittenRecords())
+      return null;
     Record rec = updatedRecords != null ? updatedRecords.get(rid) : null;
     if (rec != null) {
       if (statement != null)
@@ -641,6 +643,15 @@ public class TransactionContext implements Transaction {
     if (rec != null && statement != null)
       statement.recordObtained(rid, rec, false);
     return rec;
+  }
+
+  /**
+   * Whether this transaction holds a written copy of any record, i.e. whether {@link #getWrittenRecord(RID)} can answer
+   * anything but null. Two size reads: a read-only query asks it once per edge-list walk instead of hashing the segment's RID
+   * into both maps (#11007).
+   */
+  public boolean hasWrittenRecords() {
+    return !modifiedRecordsCache.isEmpty() || (updatedRecords != null && !updatedRecords.isEmpty());
   }
 
   public Record getRecordFromCache(final RID rid) {
@@ -1760,14 +1771,7 @@ public class TransactionContext implements Transaction {
    * pinned by {@code REPEATABLE_READ}), or null when the transaction holds none. Never reaches the page manager.
    */
   public BasePage getPinnedPage(final PageId pageId) {
-    BasePage page = null;
-    if (modifiedPages != null)
-      page = modifiedPages.get(pageId);
-    if (page == null && newPages != null)
-      page = newPages.get(pageId);
-    if (page == null)
-      page = immutablePages.get(pageId);
-    return page;
+    return getPageHeldByTransaction(pageId);
   }
 
   /**
@@ -1861,35 +1865,42 @@ public class TransactionContext implements Transaction {
    * Looks for the page in the TX context first, then delegates to the database.
    */
   public BasePage getPage(final PageId pageId, final int size) throws IOException {
-    BasePage page = getPageHeldByTransaction(pageId);
+    final BasePage page = getPageHeldByTransaction(pageId);
+    return page != null ? page : getPageNotHeld(pageId, size);
+  }
 
-    if (page == null) {
-      // NOT FOUND, DELEGATES TO THE DATABASE
-      page = database.getPageManager().getImmutablePage(pageId, size, false, true);
+  /**
+   * {@link #getPage(PageId, int)} for a caller that has just been told by {@link #getPinnedPage(PageId)} that the transaction
+   * holds no page for {@code pageId}: the page is read as {@code getPage} reads it on that miss, without asking the
+   * transaction's page maps a second time. A record read asks first, once per record (#9070), so it would pay that lookup twice
+   * on every record otherwise (#11007).
+   */
+  public BasePage getPageNotHeld(final PageId pageId, final int size) throws IOException {
+    // NOT FOUND, DELEGATES TO THE DATABASE
+    final BasePage page = database.getPageManager().getImmutablePage(pageId, size, false, true);
 
-      if (page != null) {
-        switch (isolationLevel) {
-        case READ_COMMITTED:
-          break;
-        case REPEATABLE_READ:
-          // #5976: the component's OWN page count (bumped synchronously at commit time, see
-          // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
-          // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
-          // page until the async flush thread actually writes it. Using the physical size here made a just-
-          // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
-          // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
-          // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
-          // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
-          // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
-          // below into a hard failure on this read path instead (code review on #6013). The cast is safe
-          // because PaginatedComponent is the only direct subclass of Component in the codebase.
-          final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-          final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
-          if (!isNewPage)
-            // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
-            immutablePages.put(pageId, (ImmutablePage) page);
-          break;
-        }
+    if (page != null) {
+      switch (isolationLevel) {
+      case READ_COMMITTED:
+        break;
+      case REPEATABLE_READ:
+        // #5976: the component's OWN page count (bumped synchronously at commit time, see
+        // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
+        // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
+        // page until the async flush thread actually writes it. Using the physical size here made a just-
+        // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
+        // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
+        // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
+        // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
+        // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
+        // below into a hard failure on this read path instead (code review on #6013). The cast is safe
+        // because PaginatedComponent is the only direct subclass of Component in the codebase.
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
+        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
+        if (!isNewPage)
+          // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
+          immutablePages.put(pageId, (ImmutablePage) page);
+        break;
       }
     }
 
