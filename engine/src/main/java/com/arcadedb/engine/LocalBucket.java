@@ -58,6 +58,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -2623,8 +2624,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final PageId headPageId = new PageId(database, file.getFileId(), pageId);
       // #9070: BEFORE the read pins it - only a head this very read pinned can be released and re-pinned by a retry of
       // the chain walk, one the transaction already held has been read by others in the image it has
-      final boolean headPrePinned = readTransaction.getPinnedPage(headPageId) != null;
-      final BasePage page = readTransaction.getPage(headPageId, pageSize);
+      final BasePage heldPage = readTransaction.getPinnedPage(headPageId);
+      final boolean headPrePinned = heldPage != null;
+      // ONE LOOKUP OF THE TRANSACTION'S PAGES PER RECORD, NOT TWO: getPage() WOULD ASK THEM AGAIN (#11007)
+      final BasePage page = heldPage != null ? heldPage : readTransaction.getPageNotHeld(headPageId, pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -2672,6 +2675,90 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on lookup of record " + rid, e);
+    }
+  }
+
+  /**
+   * Locates the content of the record at {@code position} for a reader that reads it in place, at absolute positions of its
+   * page, instead of through a {@link Binary} view and a record object per read (issue #11012: a full scan of the edge lists
+   * read every segment that way). The page is the one {@link TransactionContext#getPageForAbsoluteReads} answers, so the read
+   * sees what {@link #getRecord(RID)} would: the transaction's own copy of the page, its pinned image under
+   * {@code REPEATABLE_READ}, the page cache's shared view otherwise. No read event is fired: a caller checks there is no read
+   * listener first, or reads through the database.
+   * <p>
+   * Only a record that lies whole in its own slot is located. A placeholder pointer, a chunk chain, placeholder content, a
+   * deleted slot or a position past the bucket answer {@code null}, and the caller reads the record through the database,
+   * which knows every shape and raises what a missing record raises.
+   *
+   * @param location receives the offset of the content in the page at [0] and its length at [1]: reused by the caller across
+   *                 reads, so the location costs no allocation
+   *
+   * @return the page holding the content, or {@code null} when the slot holds no plain record
+   */
+  public BasePage getPlainRecordForAbsoluteReads(final long position, final int[] location) throws IOException {
+    return getPlainRecordForAbsoluteReads(position, location, null);
+  }
+
+  /**
+   * {@link #getPlainRecordForAbsoluteReads(long, int[])} reusing {@code recentPageId}, the identifier of a page read before,
+   * when the record is on that page: a scan reading records one after the other on the same page builds no identifier per
+   * record (issue #11012).
+   */
+  public BasePage getPlainRecordForAbsoluteReads(final long position, final int[] location, final PageId recentPageId)
+      throws IOException {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
+    final int pageId = (int) (position / maxRecordsInPage);
+    final int positionInPage = (int) (position % maxRecordsInPage);
+    if (position < 0 || pageId >= getTotalPages())
+      return null;
+
+    final PageId id = recentPageId != null && recentPageId.getPageNumber() == pageId && recentPageId.getFileId() == file.getFileId()
+        && recentPageId.getDatabase() == database ? recentPageId : new PageId(database, file.getFileId(), pageId);
+    final BasePage page = database.getTransaction().getPageForAbsoluteReads(id, pageSize);
+    if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return null;
+
+    final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+    if (recordPositionInPage == 0)
+      return null;
+
+    final long recordSize = page.readNumber(recordPositionInPage);
+    // A PLAIN RECORD HAS A POSITIVE SIZE: EVERY OTHER SHAPE (DELETED, PLACEHOLDER POINTER OR CONTENT, CHUNK) IS ZERO OR A MARKER
+    if (recordSize <= 0 || isChunkHead(recordSize) || recordSize == NEXT_CHUNK)
+      return null;
+
+    location[0] = recordPositionInPage + page.readNumberSize(recordPositionInPage);
+    location[1] = (int) recordSize;
+    return page;
+  }
+
+  /**
+   * Calls {@code consumer} with the position of every record of this bucket, the RIDs a scan of it would hand out, in the same
+   * order, without reading any of them (issue #11012: collecting the vertices of a Graph Analytical View materialized each one
+   * only to take its position). Fires no read event: a caller that must honour read listeners scans the records instead.
+   */
+  public void forEachRecordPosition(final LongConsumer consumer) {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
+    final int txPageCount = getTotalPages();
+    try {
+      for (int pageId = 0; pageId < txPageCount; ++pageId) {
+        final BasePage page = database.getTransaction()
+            .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageId), pageSize);
+        final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+        for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
+          final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
+          if (recordPositionInPage == 0)
+            continue;
+          // THE RECORDS scan() HANDS OUT: A PLAIN ONE, A PLACEHOLDER POINTER, THE HEAD OF A CHUNK CHAIN
+          final long recordSize = page.readNumber(recordPositionInPage);
+          if (recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK)
+            consumer.accept(recordPosition(pageId, maxRecordsInPage, recordIdInPage));
+        }
+      }
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot scan bucket '" + componentName + "'", e);
     }
   }
 

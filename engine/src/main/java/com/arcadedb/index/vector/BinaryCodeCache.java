@@ -38,7 +38,7 @@ import java.util.Arrays;
  * <b>Layout.</b> Direct-mapped by vector id over three flat primitive arrays, the codes, the vector id each slot holds
  * and one version per slot, so the cache adds no object per vector for the collector to trace. Vector ids are dense and
  * monotonic, so with a capacity at least the id range every code stays resident; past it, a later id takes the slot of an
- * earlier one. Like {@link VectorCache}, it is a cache and not a store: a miss is answered by the index pages, and the
+ * earlier one. The capacity is any count, not a power of two (issue #11071): an id below it is its own slot. Like {@link VectorCache}, it is a cache and not a store: a miss is answered by the index pages, and the
  * owner clears it whenever vector ids change meaning and evicts the id of a deleted vector.
  * <p>
  * <b>Concurrency.</b> Lock-free, a seqlock per slot. The version is even while the slot is stable and odd while a writer
@@ -56,7 +56,7 @@ final class BinaryCodeCache {
   private static final int       EMPTY    = -1;
 
   private final int    words;
-  private final int    mask;
+  private final int    capacity;
   // Even: the slot is stable. Odd: a writer owns it
   private final int[]  versions;
   // The vector id whose code the slot holds, EMPTY for none
@@ -65,12 +65,12 @@ final class BinaryCodeCache {
 
   /**
    * @param dimensions        the width of the vectors
-   * @param requestedCapacity the vectors to hold, rounded up to a power of two
+   * @param requestedCapacity the vectors to hold, exactly: any count, not only a power of two (issue #11071)
    */
   BinaryCodeCache(final int dimensions, final int requestedCapacity) {
     this.words = wordsFor(dimensions);
-    final int capacity = tableSizeFor(Math.max(1, requestedCapacity), words);
-    this.mask = capacity - 1;
+    // Capped so the code array stays addressable by an int
+    this.capacity = Math.min(Math.max(1, requestedCapacity), (Integer.MAX_VALUE - 8) / words);
     this.versions = new int[capacity];
     this.ids = new int[capacity];
     Arrays.fill(ids, EMPTY);
@@ -88,7 +88,7 @@ final class BinaryCodeCache {
   }
 
   int capacity() {
-    return ids.length;
+    return capacity;
   }
 
   /**
@@ -98,7 +98,7 @@ final class BinaryCodeCache {
   int hammingDistance(final int vectorId, final long[] query) {
     if (vectorId < 0)
       return -1;
-    final int slot = vectorId & mask;
+    final int slot = slotOf(vectorId);
     final int version = (int) VERSIONS.getAcquire(versions, slot);
     if ((version & 1) != 0 || ids[slot] != vectorId)
       return -1;
@@ -117,7 +117,7 @@ final class BinaryCodeCache {
   void put(final int vectorId, final long[] code, final int offset) {
     if (vectorId < 0)
       return;
-    final int slot = vectorId & mask;
+    final int slot = slotOf(vectorId);
     final int version = (int) VERSIONS.getVolatile(versions, slot);
     if ((version & 1) != 0 || ids[slot] == vectorId || !VERSIONS.compareAndSet(versions, slot, version, version + 1))
       return;
@@ -133,7 +133,7 @@ final class BinaryCodeCache {
   void remove(final int vectorId) {
     if (vectorId < 0)
       return;
-    final int slot = vectorId & mask;
+    final int slot = slotOf(vectorId);
     while (true) {
       final int version = (int) VERSIONS.getVolatile(versions, slot);
       if ((version & 1) != 0) {
@@ -233,11 +233,8 @@ final class BinaryCodeCache {
     return (1.0f + cosine) / 2.0f;
   }
 
-  /** The power of two at or above {@code size}, kept so the code array stays addressable by an int. */
-  private static int tableSizeFor(final int size, final int words) {
-    final int limit = Integer.highestOneBit(Math.max(1, (Integer.MAX_VALUE - 8) / words));
-    if (size >= limit)
-      return limit;
-    return size <= 1 ? 1 : Integer.highestOneBit(size - 1) << 1;
+  /** The slot of {@code vectorId}, which is not negative: see {@link FlatVectorCache}'s, which this one maps like. */
+  private int slotOf(final int vectorId) {
+    return vectorId < capacity ? vectorId : vectorId % capacity;
   }
 }

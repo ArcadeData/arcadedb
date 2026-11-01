@@ -257,7 +257,14 @@ public class NodeIdMapping {
    * If BFS reordering is applied, returns the reordered ID.
    */
   public int getGlobalId(final RID rid) {
-    final int bucketId = rid.getBucketId();
+    return getGlobalId(rid.getBucketId(), rid.getPosition());
+  }
+
+  /**
+   * {@link #getGlobalId(RID)} for a vertex known by its bucket and position, as an edge-list entry holds it: a scan of the
+   * adjacency resolves its targets without building a RID per entry (issue #11012).
+   */
+  public int getGlobalId(final int bucketId, final long position) {
     final int bucketIdx;
     if (bucketId >= 0 && bucketId < bucketIdToIdx.length)
       bucketIdx = bucketIdToIdx[bucketId];
@@ -270,7 +277,7 @@ public class NodeIdMapping {
       return -1;
     if (bucketIdx < 0)
       return -1;
-    final int localId = Arrays.binarySearch(positions[bucketIdx], rid.getPosition());
+    final int localId = Arrays.binarySearch(positions[bucketIdx], position);
     if (localId < 0)
       return -1;
     final int naturalId = bucketBase[bucketIdx] + localId;
