@@ -127,7 +127,9 @@ final class FullTextFunctionSearch {
    * in linear time and popped one row at a time, so a statement that reads k rows of n matches pays O(n + k log n) rather
    * than a full sort.
    * <p>
-   * A RID filter is applied to the matches before any of them is scored or loaded (issue #9909).
+   * A RID filter is applied to the matches before any of them is scored or loaded (issue #9909). Its predicate on the records,
+   * if any, is decided the same way in every bucket an index listing decides it, and tested on the loaded record in the
+   * others, so a record loaded there and rejected is skipped (issue #11069).
    * <p>
    * With a limit, best first, the search itself keeps only the best {@code limit} matches, which bounds what scoring
    * retains and what the cache holds. Those are the rows the plan consumes unless one of their records is gone: then the
@@ -144,6 +146,9 @@ final class FullTextFunctionSearch {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final RIDFilter ridFilter = pushdown.ridFilter();
+    // A predicate on the records that no index listing decided for a bucket is tested on each record once it is loaded
+    // (issue #11069): the search left those buckets' matches unlimited for it
+    final RIDFilter recordFilter = ridFilter != null && ridFilter.hasRecordPredicate() ? ridFilter : null;
     final IndexedFunctionPushdown.Order order = pushdown.order();
     final int limit = order == IndexedFunctionPushdown.Order.FUNCTION ? pushdown.limit() : -1;
     final Supplier<Map<RID, Float>> complete = () -> {
@@ -157,16 +162,16 @@ final class FullTextFunctionSearch {
     @SuppressWarnings("unchecked")
     final Map<RID, Float> cached = (Map<RID, Float>) context.getCachedValue(cacheKey);
     if (cached != null)
-      return () -> new MatchingRecords(database, cached, ridFilter, -1, null, ridFilter, order, guard);
+      return () -> new MatchingRecords(database, cached, ridFilter, -1, null, ridFilter, recordFilter, order, guard);
 
     if (limit < 1 || !returnsOnlyTargetRecords(target, context)) {
       if (ridFilter == null) {
         final Map<RID, Float> allResults = completeSearch(context);
-        return () -> new MatchingRecords(database, allResults, null, -1, null, null, order, guard);
+        return () -> new MatchingRecords(database, allResults, null, -1, null, null, null, order, guard);
       }
       final Map<RID, Float> accepted = FullTextSearch.search(index, query, -1, guard, restrictedFields, ridFilter);
       rememberSubset(context, accepted);
-      return () -> new MatchingRecords(database, accepted, null, -1, null, null, order, guard);
+      return () -> new MatchingRecords(database, accepted, null, -1, null, null, recordFilter, order, guard);
     }
 
     final Map<RID, Float> best = FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter);
@@ -175,8 +180,8 @@ final class FullTextFunctionSearch {
     rememberSubset(context, best);
     // Fewer matches than the limit: no bucket was cut short, so they are all the matches there are
     final boolean truncated = best.size() >= limit;
-    return () -> new MatchingRecords(database, best, null, truncated ? limit : -1, truncated ? complete : null, ridFilter, order,
-        guard);
+    return () -> new MatchingRecords(database, best, null, truncated ? limit : -1, truncated ? complete : null, ridFilter,
+        recordFilter, order, guard);
   }
 
   Object explainScoring() {
@@ -237,6 +242,8 @@ final class FullTextFunctionSearch {
     private final IndexedFunctionPushdown.Order order;
     /** Applied to the complete search the iteration continues with; it built its first heap from accepted matches. */
     private final RIDFilter                     continuationFilter;
+    /** Tests each loaded record against the filter's predicate on the records, or null when there is none (issue #11069). */
+    private final RIDFilter                     recordFilter;
     private       Supplier<Map<RID, Float>>     complete;
     private       int                           trustedPrefix;
     private       RID[]                         rids;
@@ -251,13 +258,14 @@ final class FullTextFunctionSearch {
      */
     private MatchingRecords(final DatabaseInternal database, final Map<RID, Float> matches, final RIDFilter filter,
         final int trustedPrefix, final Supplier<Map<RID, Float>> complete, final RIDFilter continuationFilter,
-        final IndexedFunctionPushdown.Order order, final WorkGuard guard) {
+        final RIDFilter recordFilter, final IndexedFunctionPushdown.Order order, final WorkGuard guard) {
       this.database = database;
       this.guard = guard;
       this.order = order;
       this.trustedPrefix = trustedPrefix;
       this.complete = complete;
       this.continuationFilter = continuationFilter;
+      this.recordFilter = recordFilter;
       buildHeap(matches, filter);
     }
 
@@ -290,7 +298,7 @@ final class FullTextFunctionSearch {
         guard.check();
         try {
           final Record record = database.lookupByRID(rid, true);
-          if (record != null)
+          if (record != null && (recordFilter == null || recordFilter.acceptsRecord(record)))
             return record;
         } catch (final RecordNotFoundException e) {
           // Record was deleted since the index was last updated, skip it

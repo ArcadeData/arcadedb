@@ -64,10 +64,7 @@ class Issue10850NoNarrowingReadsInFunctionsTest {
       // the strict helpers: parse a TEXT argument, and Integer.parseInt refuses what does not fit (#10699)
       "function/sql/SQLFunctionAbstract.java", 1, //
       "function/sql/vector/SQLFunctionVectorAbstract.java", 1, //
-      "function/sql/FunctionOptions.java", 1, //
-      // narrow a COMPUTED result back to the Integer type of the input (pow(int), sqrt(int)), not an argument
-      "function/sql/math/SQLFunctionPow.java", 1, //
-      "function/sql/math/SQLFunctionSquareRoot.java", 1,
+      "function/sql/FunctionOptions.java", 1,
       // year/month/day of a temporal value the engine built: components a LocalDate already holds as ints
       "function/temporal/DateConstructorFunction.java", 3));
 
@@ -85,10 +82,7 @@ class Issue10850NoNarrowingReadsInFunctionsTest {
       // toBoolean(): FLOAT and DOUBLE are refused before it, the integral value is tested against zero
       Map.entry("function/convert/ToBooleanFunction.java", 1),
       // the sign check of a value getInt/getLong already read strictly
-      Map.entry("function/sql/FunctionOptions.java", 1),
-      // narrow a COMPUTED result back to the Long type of the input (pow(long), sqrt(long)), not an argument
-      Map.entry("function/sql/math/SQLFunctionPow.java", 1), //
-      Map.entry("function/sql/math/SQLFunctionSquareRoot.java", 1)));
+      Map.entry("function/sql/FunctionOptions.java", 1)));
 
   @Test
   void noFunctionReadsAnIntArgumentThroughANarrowingConversion() throws IOException {

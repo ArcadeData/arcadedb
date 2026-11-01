@@ -87,6 +87,23 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
   }
 
   /**
+   * Issue #11098: an argument the field declares and the operation omits is null, as GraphQL defines it, and the statement of
+   * the directive reads it as null instead of being refused for a parameter with no value.
+   */
+  @Test
+  public void omittedArgumentIsBoundToNull() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName { name } }")) {
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      return null;
+    });
+  }
+
+  /**
    * Issue #8745: {@code __typename} on an object returned by a native query directive is the type the field returns.
    */
   @Test

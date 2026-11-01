@@ -205,8 +205,10 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
+    final Map<String, Object> bound = lookup.mergeParameters(parameters);
+    statement.checkParametersBound(bound);
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    return executeGuarded(statement, database, lookup.mergeParameters(parameters));
+    return executeGuarded(statement, database, bound);
   }
 
   @Override
@@ -227,9 +229,10 @@ public class SQLQueryEngine implements QueryEngine {
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
+    final Map<String, Object> bound = lookup.mergeParameters(parameters);
+    statement.checkParametersBound(bound);
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
 
-    final Map<String, Object> bound = lookup.mergeParameters(parameters);
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
@@ -250,9 +253,10 @@ public class SQLQueryEngine implements QueryEngine {
       final Map<String, Object> variables) {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
+    final Map<String, Object> bound = lookup.mergeParameters(parameters);
+    statement.checkParametersBound(bound);
     statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
 
-    final Map<String, Object> bound = lookup.mergeParameters(parameters);
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
@@ -368,9 +372,11 @@ public class SQLQueryEngine implements QueryEngine {
         // statement: idempotent statements as "query", everything else as "command".
         final String type = statement.isIdempotent() ? "query" : "command";
         final String databaseName = database.getName();
+        final Map<String, Object> bound = lookup.mergeParameters(parameters);
+        statement.checkParametersBound(bound);
         final long start = QueryMetricsRecorder.Holder.startNanos();
         try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
-          return executeGuarded(statement, executionDatabase(), lookup.mergeParameters(parameters));
+          return executeGuarded(statement, executionDatabase(), bound);
         } finally {
           QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
         }

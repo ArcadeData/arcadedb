@@ -100,6 +100,7 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
+import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -4401,6 +4402,9 @@ public class SelectExecutionPlanner {
               residual.getSubBlocks().add(condition);
           block = residual;
         }
+        // The property equalities the function may decide through an index before it loads a record (issue #11069). They stay
+        // in the filter after the fetch, which answers a record no index listing decided
+        final List<BinaryCondition> recordConditions = pushableRecordConditions(block, blockCandidateFunction, info);
         final IndexedFunctionPushdown.Order order = indexedFunctionRidOrder(blockCandidateFunction, info, context);
         // An OR splits the WHERE into branches whose rows are concatenated and deduplicated, so no branch alone knows how many
         // of its rows the LIMIT will take (issue #9895) - unless the branches are merged by score (issue #10022): a record
@@ -4408,9 +4412,11 @@ public class SelectExecutionPlanner {
         // above it there is ranked above it in the merge too
         final int functionLimit =
             (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez, info,
-                ridConditions, context) ? indexedFunctionRowLimit(blockCandidateFunction, block, info, order, context) : -1;
+                ridConditions, context) ?
+                indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
+                -1;
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
-            functionLimit, ridConditions, order, context);
+            functionLimit, ridConditions, recordConditions, order, context);
         if (order != IndexedFunctionPushdown.Order.FUNCTION)
           // The function answers in the RID order the ORDER BY asks for, and nothing after the fetch reorders the rows
           info.orderApplied = true;
@@ -4522,7 +4528,9 @@ public class SelectExecutionPlanner {
    * excludes something that can drop, add or reorder a row between the fetch and the LIMIT:
    * <ul>
    *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
-   *       holds for every row the function returns - a filter could reject a row the limit counted;</li>
+   *       holds for every row the function returns - a filter could reject a row the limit counted. The exception is a
+   *       property equality the function was handed to decide before the load ({@code recordConditions}, issue #11069): it
+   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter;</li>
    *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
    *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in, or than the
    *       {@code @rid} order it was asked to produce them in (issue #9909);</li>
@@ -4533,8 +4541,9 @@ public class SelectExecutionPlanner {
    * caller. The type filter that follows the fetch is the function's to respect: it is told the target and keeps the limit
    * only when every record it can return passes.
    */
-  private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual, final QueryPlanningInfo info,
-      final IndexedFunctionPushdown.Order order, final CommandContext context) {
+  private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual,
+      final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
+      final CommandContext context) {
     if (info.limit == null || info.deferredLetWhereClause != null)
       return -1;
     if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
@@ -4542,7 +4551,7 @@ public class SelectExecutionPlanner {
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
     // empty), so the function's condition is the very instance the block holds
     for (final BooleanExpression condition : residual.getSubBlocks())
-      if (condition != function)
+      if (condition != function && !containsInstance(recordConditions, condition))
         return -1;
     if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
       return -1;
@@ -4622,6 +4631,40 @@ public class SelectExecutionPlanner {
     return pushable == null ? List.of() : pushable;
   }
 
+  /**
+   * The conjuncts of {@code block} an indexed function may decide on its candidates through an index before it loads their
+   * records (issue #11069): {@code property = value}, the property bare on the left and the value known before the fetch, as
+   * for the {@code @rid} conditions. {@code WHERE SEARCH_INDEX(...) = true AND tenant = :t} used to load every match until
+   * enough of them passed the filter, which for a restrictive tenant is nearly all of them. One conjunct per property: a
+   * second one on the same property stays a plain filter. Whether an index can list the records, and whether the listing is
+   * exact, is the search's to find out at each execution.
+   */
+  private static List<BinaryCondition> pushableRecordConditions(final AndBlock block, final BinaryCondition function,
+      final QueryPlanningInfo info) {
+    List<BinaryCondition> pushable = null;
+    for (final BooleanExpression condition : block.getSubBlocks()) {
+      if (condition == function || !(condition instanceof final BinaryCondition binary)
+          || !(binary.getOperator() instanceof EqualsCompareOperator) || binary.getRight() == null)
+        continue;
+      final String property = RecordPredicateRidSet.propertyName(binary.getLeft());
+      if (property == null || property.isEmpty() || property.charAt(0) == '@' || property.charAt(0) == '$'
+          || !isKnownBeforeFetch(binary, info) || bindsProperty(pushable, property))
+        continue;
+      if (pushable == null)
+        pushable = new ArrayList<>(2);
+      pushable.add(binary);
+    }
+    return pushable == null ? List.of() : pushable;
+  }
+
+  private static boolean bindsProperty(final List<BinaryCondition> conditions, final String property) {
+    if (conditions != null)
+      for (final BinaryCondition condition : conditions)
+        if (property.equals(RecordPredicateRidSet.propertyName(condition.getLeft())))
+          return true;
+    return false;
+  }
+
   private static boolean isKnownBeforeFetch(final BooleanExpression condition, final QueryPlanningInfo info) {
     if (condition instanceof final BinaryCondition binary)
       return binary.getRight().isLiteral(true) || isVariableKnownBeforeFetch(binary.getRight().getMathExpression(), info);
@@ -4647,7 +4690,7 @@ public class SelectExecutionPlanner {
    * By identity: the pushed conditions were taken from this very block, and two conjuncts can be equal without being the
    * same one (a condition written twice is pushed twice and removed twice, which is still the same filter).
    */
-  private static boolean containsInstance(final List<BooleanExpression> conditions, final BooleanExpression condition) {
+  private static boolean containsInstance(final List<? extends BooleanExpression> conditions, final BooleanExpression condition) {
     for (final BooleanExpression c : conditions)
       if (c == condition)
         return true;

@@ -59,6 +59,18 @@ public class NamedParameter extends InputParameter {
     return result;
   }
 
+  /**
+   * Whether {@code params} holds a value for this parameter, {@code null} included, under any key {@link #getValue} reads: the
+   * prefixed name, the plain name, or the position (issue #11098).
+   */
+  boolean isBoundIn(final Map<String, Object> params) {
+    if (params == null)
+      return false;
+    final String prefixed = prefixedName().prefixed;
+    return params.containsKey(paramName) || (prefixed != null && params.containsKey(prefixed)) || (paramNumber >= 0
+        && params.containsKey(String.valueOf(paramNumber)));
+  }
+
   @Override
   public String toString() {
     return ":" + paramName;

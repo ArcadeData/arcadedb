@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.opencypher.query.CypherMultiTypeIndexes;
+import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.HashMap;
@@ -54,13 +55,18 @@ final class FullTextIndexes {
     return logical;
   }
 
-  /** Searches every index and merges the matches: a record belongs to one type, so no two indexes match the same RID. */
-  static Map<RID, Float> search(final List<TypeIndex> typeIndexes, final String queryText, final int limit, final WorkGuard guard) {
+  /**
+   * Searches every index and merges the matches: a record belongs to one type, so no two indexes match the same RID.
+   *
+   * @param filter the {@code where} and {@code filter} options the matches must pass, or null for none (issue #11069)
+   */
+  static Map<RID, Float> search(final List<TypeIndex> typeIndexes, final String queryText, final int limit, final WorkGuard guard,
+      final RIDFilter filter) {
     if (typeIndexes.size() == 1)
-      return FullTextSearch.search(typeIndexes.getFirst(), queryText, limit, guard);
+      return FullTextSearch.search(typeIndexes.getFirst(), queryText, limit, guard, null, filter);
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex typeIndex : typeIndexes)
-      merged.putAll(FullTextSearch.search(typeIndex, queryText, limit, guard));
+      merged.putAll(FullTextSearch.search(typeIndex, queryText, limit, guard, null, filter));
     return merged;
   }
 }

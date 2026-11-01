@@ -38,8 +38,8 @@ import java.util.stream.Stream;
  * {@code db.index.fulltext.queryRelationships()}.
  * </p>
  * <p>
- * The trailing {@code options} map is optional and carries {@code skip} and {@code limit}, exactly as on
- * {@link DbIndexFulltextQueryNodes}; see {@link FullTextQueryOptions} (issue #8103).
+ * The trailing {@code options} map is optional and carries {@code skip}, {@code limit}, {@code where} and {@code filter},
+ * exactly as on {@link DbIndexFulltextQueryNodes}; see {@link FullTextQueryOptions} (issues #8103, #11069).
  * </p>
  * <p>
  * Example (Neo4j-compatible):
@@ -95,7 +95,7 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
 
     final String indexName = args[0].toString();
     final String queryText = args[1].toString();
-    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args);
+    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args, context);
 
     final List<TypeIndex> typeIndexes = FullTextIndexes.resolve(context.getDatabase(), indexName);
 
@@ -112,7 +112,8 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextIndexes.search(typeIndexes, queryText, limit, WorkGuard.forCommandDeadline(context)),
+    return options.rows(
+        (limit, filter) -> FullTextIndexes.search(typeIndexes, queryText, limit, WorkGuard.forCommandDeadline(context), filter),
         "relationship", rid -> rid.asEdge(true)).stream();
   }
 }

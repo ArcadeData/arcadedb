@@ -55,8 +55,8 @@ class SQLFunctionSquareRootTest {
   void positiveInteger() {
     function.execute(null, null, null, new Object[] { 4 }, null);
     final Object result = function.getResult();
-    assertThat(result instanceof Integer).isTrue();
-    assertThat(result).isEqualTo(2);
+    // issue #11047: the root of an integral value is not truncated back into its width
+    assertThat(result).isEqualTo(2.0D);
   }
 
   @Test
@@ -70,8 +70,7 @@ class SQLFunctionSquareRootTest {
   void positiveLong() {
     function.execute(null, null, null, new Object[] { 4L }, null);
     final Object result = function.getResult();
-    assertThat(result instanceof Long).isTrue();
-    assertThat(result).isEqualTo(2L);
+    assertThat(result).isEqualTo(2.0D);
   }
 
   @Test
@@ -85,8 +84,7 @@ class SQLFunctionSquareRootTest {
   void positiveShort() {
     function.execute(null, null, null, new Object[] { (short) 4 }, null);
     final Object result = function.getResult();
-    assertThat(result instanceof Short).isTrue();
-    assertThat((short) 2).isEqualTo(result);
+    assertThat(result).isEqualTo(2.0D);
   }
 
   @Test
@@ -115,8 +113,7 @@ class SQLFunctionSquareRootTest {
   void positiveFloat() {
     function.execute(null, null, null, new Object[] { 4.0F }, null);
     final Object result = function.getResult();
-    assertThat(result instanceof Float).isTrue();
-    assertThat(result).isEqualTo(2.0F);
+    assertThat(result).isEqualTo(2.0D);
   }
 
   @Test
@@ -146,8 +143,8 @@ class SQLFunctionSquareRootTest {
   void positiveBigInteger() {
     function.execute(null, null, null, new Object[] { new BigInteger("4") }, null);
     final Object result = function.getResult();
-    assertThat(result instanceof BigInteger).isTrue();
-    assertThat(new BigInteger("2")).isEqualTo(result);
+    assertThat(result instanceof BigDecimal).isTrue();
+    assertThat((BigDecimal) result).isEqualByComparingTo(new BigDecimal("2"));
   }
 
   @Test

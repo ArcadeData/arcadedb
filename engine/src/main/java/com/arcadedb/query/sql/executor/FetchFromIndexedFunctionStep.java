@@ -18,8 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
@@ -27,8 +29,11 @@ import com.arcadedb.query.sql.parser.FromClause;
 
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -47,6 +52,12 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
    * or null for none (issue #9909). Resolved at every execution, since they can read parameters and variables.
    */
   private final List<BooleanExpression>       ridConditions;
+  /**
+   * The {@code property = value} conjuncts of the block the function may decide on its candidates through an index that lists
+   * the records they accept, before it loads them, or null for none (issue #11069). The plan still checks them after the fetch,
+   * so a candidate no listing decided is answered by its record.
+   */
+  private final List<BinaryCondition>         recordConditions;
   /** The order the plan needs the rows in (issue #9909). */
   private final IndexedFunctionPushdown.Order order;
 
@@ -55,23 +66,27 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget,
       final CommandContext context) {
-    this(functionCondition, queryTarget, -1, null, IndexedFunctionPushdown.Order.FUNCTION, context);
+    this(functionCondition, queryTarget, -1, null, null, IndexedFunctionPushdown.Order.FUNCTION, context);
   }
 
   /**
    * @param limit         how many rows of the function's answer the plan can consume, or -1 for all of them (see the
    *                      pushdown variant of {@link IndexableSQLFunction}{@code .searchFromTarget()})
-   * @param ridConditions the {@code @rid} conjuncts the answer must satisfy, which the plan does not check after the fetch,
-   *                      or null for none
-   * @param order         the order the plan needs the rows in
+   * @param ridConditions    the {@code @rid} conjuncts the answer must satisfy, which the plan does not check after the
+   *                         fetch, or null for none
+   * @param recordConditions the {@code property = value} conjuncts the function may decide before the load through an index,
+   *                         which the plan checks after the fetch as well, or null for none (issue #11069)
+   * @param order            the order the plan needs the rows in
    */
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final int limit,
-      final List<BooleanExpression> ridConditions, final IndexedFunctionPushdown.Order order, final CommandContext context) {
+      final List<BooleanExpression> ridConditions, final List<BinaryCondition> recordConditions,
+      final IndexedFunctionPushdown.Order order, final CommandContext context) {
     super(context);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
     this.limit = limit;
     this.ridConditions = ridConditions == null || ridConditions.isEmpty() ? null : List.copyOf(ridConditions);
+    this.recordConditions = recordConditions == null || recordConditions.isEmpty() ? null : List.copyOf(recordConditions);
     this.order = order;
   }
 
@@ -121,7 +136,9 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     if (fullResult == null) {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
-        final RIDFilter ridFilter = ridConditions != null ? RIDFilter.resolve(ridConditions, context) : null;
+        final RIDFilter ridFilter = ridConditions != null || recordConditions != null ?
+            RIDFilter.resolve(ridConditions != null ? ridConditions : List.of(), recordPredicate(context), context) :
+            null;
         if (ridFilter != null && ridFilter.acceptsNothing())
           // the @rid conditions contradict each other or name no RID: there is nothing to search for
           fullResult = Collections.emptyIterator();
@@ -136,6 +153,19 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     }
   }
 
+  /**
+   * The records the {@code property = value} conjuncts accept, with their values for this execution: the allow-list an index
+   * lists bucket by bucket for the search (issue #11069).
+   */
+  private Set<RID> recordPredicate(final CommandContext context) {
+    if (recordConditions == null)
+      return null;
+    final Map<String, Object> equalities = new LinkedHashMap<>(recordConditions.size() * 2);
+    for (final BinaryCondition condition : recordConditions)
+      equalities.put(RecordPredicateRidSet.propertyName(condition.getLeft()), condition.getRight().execute((Result) null, context));
+    return RecordPredicateRidSet.of(equalities, null, "WHERE", context);
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     String result =
@@ -145,7 +175,10 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     if (limit > -1)
       result += order == IndexedFunctionPushdown.Order.FUNCTION ? " (best " + limit + " needed)" : " (first " + limit + " needed)";
     if (ridConditions != null)
-      result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  RID FILTER (" + conditionsToString() + ")";
+      result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  RID FILTER (" + conditionsToString(ridConditions) + ")";
+    if (recordConditions != null)
+      result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  INDEX PRE-FILTER (" + conditionsToString(recordConditions)
+          + ") decided before the load where an index lists the records";
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
@@ -166,9 +199,9 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     return result;
   }
 
-  private String conditionsToString() {
+  private static String conditionsToString(final List<? extends BooleanExpression> conditions) {
     final StringBuilder builder = new StringBuilder();
-    for (final BooleanExpression condition : ridConditions) {
+    for (final BooleanExpression condition : conditions) {
       if (!builder.isEmpty())
         builder.append(" AND ");
       builder.append(condition);
