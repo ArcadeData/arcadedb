@@ -84,6 +84,8 @@ public class GraphQLSchema {
    */
   private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long", "JSON", "BigDecimal" };
   private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);
+  /** A declared default with no Java value: an object, which is not supported (issue #11098). */
+  private static final Object      UNSUPPORTED_DEFAULT = new Object();
 
   private final    Database            database;
   /**
@@ -574,8 +576,6 @@ public class GraphQLSchema {
     }
     return arguments;
   }
-
-  private static final Object UNSUPPORTED_DEFAULT = new Object();
 
   /** The Java value of a declared default: a scalar, or a list of them, or {@link #UNSUPPORTED_DEFAULT} for an object. */
   private static Object defaultValueOf(final Value value) {
