@@ -34,7 +34,8 @@ import java.util.TreeSet;
  * <p>
  * It is what a replica running a statement in a client's transaction sends to the leader instead of creating the types itself: the
  * replica's re-base past the new type requires exactly one schema entry, which separate {@code CREATE ... TYPE} statements per label
- * would not give. The permission to change the schema is asked by the type builder, as for any other route to a type.
+ * would not give. The answer is a hint, not a lock: the check and the create are not atomic, so two concurrent calls for the same
+ * new composite may both answer {@code true}. The permission to change the schema is asked by the type builder, as for any other route to a type.
  */
 public class SQLFunctionEnsureLabelTypes extends SQLFunctionAbstract {
   public static final String NAME = "ensureLabelTypes";

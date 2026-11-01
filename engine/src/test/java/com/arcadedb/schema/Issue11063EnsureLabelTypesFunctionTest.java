@@ -20,8 +20,13 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,6 +70,16 @@ class Issue11063EnsureLabelTypesFunctionTest extends TestHelper {
   void aLabelWithAQuoteIsPassedThroughIntact() {
     ensure("['it\\'s', 'Ld2']");
     assertThat(database.getSchema().existsType("it's")).isTrue();
+  }
+
+  @Test
+  void theRenderedStatementCarriesBackslashQuoteAndNewlineIntact() {
+    final Set<String> labels = new TreeSet<>(List.of("back\\slash", "it's", "new\nline"));
+    try (final ResultSet rs = database.command("sql", Labels.ensureLabelTypesStatement(labels))) {
+      assertThat(rs.next().<Boolean>getProperty("created")).isTrue();
+    }
+    for (final String label : labels)
+      assertThat(database.getSchema().existsType(label)).as(label).isTrue();
   }
 
   @Test

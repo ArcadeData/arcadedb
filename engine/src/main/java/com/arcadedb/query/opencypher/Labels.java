@@ -874,14 +874,14 @@ public final class Labels {
   }
 
   /** The statement that has the leader make the types of a label set in one schema frame, see {@code SQLFunctionEnsureLabelTypes}. */
-  private static String ensureLabelTypesStatement(final Set<String> uniqueLabels) {
+  public static String ensureLabelTypesStatement(final Set<String> uniqueLabels) {
     final StringBuilder sql = new StringBuilder("SELECT ensureLabelTypes([");
     boolean first = true;
     for (final String label : uniqueLabels) {
       if (!first)
         sql.append(", ");
       first = false;
-      sql.append('\'').append(label.replace("\\", "\\\\").replace("'", "\\'")).append('\'');
+      sql.append('\'').append(label.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")).append('\'');
     }
     return sql.append("]) AS created").toString();
   }
