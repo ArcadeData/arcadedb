@@ -13862,7 +13862,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   FlatVectorCache getSearchVectorCache() {
     FlatVectorCache cache = searchVectorCache;
-    final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), cache != null ? cache.capacity() : 0);
+    final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), FlatVectorCache.MAX_CAPACITY,
+        cache != null ? cache.capacity() : 0);
     if (wanted <= 0)
       return null;
 
@@ -13903,7 +13904,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (metadata.quantizationType != VectorQuantizationType.BINARY)
       return null;
     BinaryCodeCache codes = searchBinaryCodes;
-    final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions), codes != null ? codes.capacity() : 0);
+    final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
+        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0);
     if (wanted <= 0)
       return null;
 
@@ -13932,24 +13934,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The corpus is the vector ID range rather than the live count: both caches are direct-mapped by id (issues #10968 and
    * #11003), so a capacity at least the range is what keeps every vector in a slot of its own, and a deleted id keeps its
-   * place in the range. Each cache rounds its capacity up to a power of two, and past the range every slot fills, so a
-   * capacity whose round-up would pass the budget is rounded down instead: the budget is a bound, never doubled.
+   * place in the range. See {@link #searchCacheCapacity(long, long, int)} for the rule.
    * <p>
    * This runs on every search, and the heap reading polls every memory pool of the JVM. A cache that already has a slot for
    * every vector id cannot grow, so it is answered without the reading.
    *
    * @param bytesPerEntry   heap one entry costs
+   * @param maxCapacity     the most entries the cache can hold: a capacity asked past it would never be reached, and the
+   *                        cache rebuilt on every search for it
    * @param currentCapacity capacity of the cache the index holds, 0 for none
    *
    * @return the number of entries to hold, or 0 when caching is disabled
    */
-  private int searchCacheCapacity(final long bytesPerEntry, final int currentCapacity) {
+  private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity) {
     final int configured = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
     if (configured < 0)
       return 0;
     if (configured > 0)
-      return configured;
+      return Math.min(configured, maxCapacity);
 
     final int heapPercent = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT);
@@ -13961,10 +13964,38 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return currentCapacity;
 
     final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE, VectorHeapBudget.budgetBytes(heapPercent) / bytesPerEntry);
-    long wanted = Math.min(Math.min(affordable, idRange), Integer.MAX_VALUE / 2);
-    if (Long.highestOneBit(wanted) != wanted && Long.highestOneBit(wanted) << 1 > affordable)
-      wanted = Long.highestOneBit(wanted);
-    return (int) wanted;
+    return searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
+  }
+
+  /**
+   * The capacity rule of the search caches, apart from the readings it is taken over.
+   * <p>
+   * The capacity is the id range rounded up to a power of two, which leaves room for the index to grow and makes a growing
+   * index reallocate O(log n) times over its life - but never more than the budget affords. A round-up that does not fit
+   * the budget is cut to the budget itself, which still covers the whole range when the budget does: the caches take any
+   * capacity, an id below it is its own slot. Rounding it DOWN to a power of two instead, as before issue #11071, gave a
+   * 100,000-vector index of 1536 dimensions 65,536 slots under a budget of 120,000, and the ids past them evicted the ids they
+   * shared a slot with on every search: about 1.3x the search time.
+   * <p>
+   * A capacity cut to the budget can no longer double, so it could grow by a few slots every time the heap reading moves,
+   * and every growth starts the cache over empty. It only grows by an eighth or more, unless the eighth would leave
+   * the range uncovered while the budget covers it.
+   *
+   * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SIZE}
+   * @param affordable      the entries the budget affords, at least {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache
+   *                        can hold
+   * @param currentCapacity capacity of the cache the index holds, 0 for none
+   *
+   * @return the number of entries to hold
+   */
+  static int searchCacheCapacity(final long idRange, final long affordable, final int currentCapacity) {
+    if (currentCapacity >= idRange)
+      return currentCapacity;
+    final long roundUp = Long.highestOneBit(idRange - 1) << 1;
+    final long wanted = Math.min(Math.min(roundUp, affordable), Integer.MAX_VALUE / 2);
+    if (currentCapacity > 0 && wanted < currentCapacity + (currentCapacity >>> 3) && wanted < idRange)
+      return currentCapacity;
+    return (int) Math.max(wanted, currentCapacity);
   }
 
   /**

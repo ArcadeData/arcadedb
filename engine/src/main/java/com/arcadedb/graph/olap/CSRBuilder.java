@@ -24,10 +24,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.graph.EdgeLinkedList;
-import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.EdgeListScanner;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
@@ -35,10 +37,10 @@ import com.arcadedb.schema.*;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
-import com.arcadedb.utility.Pair;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -211,14 +213,7 @@ public class CSRBuilder {
     final Set<String> concreteVertexTypes = concreteVertexTypes(vertexTypes);
     registerVertexBuckets(mapping, concreteVertexTypes);
 
-    final Iterator<Record> collectIter = createVertexIterator(concreteVertexTypes);
-    while (collectIter.hasNext()) {
-      final Record record = collectIter.next();
-      final RID rid = record.getIdentity();
-      final int bucketIdx = mapping.getBucketIdxForBucketId(rid.getBucketId());
-      if (bucketIdx >= 0)
-        mapping.addNode(bucketIdx, rid.getPosition());
-    }
+    collectVertexPositions(mapping, concreteVertexTypes);
     mapping.compact();
 
     final int nodeCount = mapping.size();
@@ -266,8 +261,49 @@ public class CSRBuilder {
     final ScanObserver observer = scanObserver;
     final List<RID> scannedEdges = observer != null ? new ArrayList<>() : null;
     final List<RID> scannedTargets = observer != null ? new ArrayList<>() : null;
+    // ONE SINK FOR EVERY LIST: THE ENTRIES ARRIVE AS PRIMITIVES, NO RID OR PAIR PER EDGE (issue #11012)
+    final OutEntrySink sink = new OutEntrySink(mapping, bucketToEdgeTypeIdx, typeScans, nodeCount, inlineEdgeProps ? edgePropTypes : null,
+        uncoveredEdgeBuckets, scannedEdges, scannedTargets);
+    final EdgeListScanner edgeScanner = new EdgeListScanner((DatabaseInternal) database);
 
-    final Iterator<Record> mainIter = createVertexIterator(concreteVertexTypes);
+    // A view that extracts no vertex property needs nothing of a vertex but its out-edges, which the scanner reads from where the
+    // vertex record lies: the vertices are walked by the positions Phase A collected, with no record materialized (issue
+    // #11012). A schemaless type samples its first records for properties: they are read, and if a property turns up, the
+    // vertices not visited yet are read as records by the loop below, which skips the ones visited here
+    if (observer == null && !(extractProps && schemaComplete) && !hasReadListeners(concreteVertexTypes)) {
+      boolean recordsNeeded = false;
+      for (int bucketIdx = 0; bucketIdx < mapping.getNumBuckets() && !recordsNeeded; bucketIdx++) {
+        final int bucketId = mapping.getBucketId(bucketIdx);
+        final int base = mapping.getBucketBase(bucketIdx);
+        final int bucketSize = mapping.getBucketSize(bucketIdx);
+        for (int localId = 0; localId < bucketSize; localId++) {
+          final int globalId = base + localId;
+          final long position = mapping.getPosition(bucketIdx, localId);
+          visitedNodes[globalId >>> 6] |= 1L << globalId;
+          visitOrder[visitedCount++] = globalId;
+          sink.sourceGlobalId = globalId;
+
+          if (extractProps && propertySampleCount < propertySampleSize) {
+            final Vertex vertex = loadVertex(bucketId, position);
+            if (vertex == null)
+              continue;
+            newTypesInLastSample |= sampleProperties(vertex, detectedTypes, bucketColumns);
+            propertySampleCount++;
+            if (!detectedTypes.isEmpty()) {
+              fillProperties(vertex, bucketColumns[bucketIdx], localId, detectedTypes);
+              recordsNeeded = true;
+            }
+            edgeScanner.scan((VertexInternal) vertex, Vertex.DIRECTION.OUT, sink);
+            if (recordsNeeded)
+              break;
+          } else
+            edgeScanner.scan(bucketId, position, Vertex.DIRECTION.OUT, sink);
+        }
+      }
+    }
+
+    final Iterator<Record> mainIter = visitedCount == nodeCount ? Collections.emptyIterator() :
+        createVertexIterator(concreteVertexTypes);
     while (mainIter.hasNext()) {
       final Vertex vertex = (Vertex) mainIter.next();
       final RID rid = vertex.getIdentity();
@@ -287,22 +323,7 @@ public class CSRBuilder {
 
       // For schemaless properties: detect types from sampled records, creating columns lazily
       if (extractProps && !schemaComplete && propertySampleCount < propertySampleSize) {
-        for (final String propName : vertex.getPropertyNames()) {
-          if (detectedTypes.containsKey(propName))
-            continue;
-          if (!isPropertyIncluded(propName))
-            continue;
-          final Object value = vertex.get(propName);
-          if (value == null)
-            continue;
-          final Column.Type colType = detectColumnType(value);
-          if (colType != null) {
-            detectedTypes.put(propName, colType);
-            for (final ColumnStore cs : bucketColumns)
-              cs.createColumn(propName, colType);
-            newTypesInLastSample = true;
-          }
-        }
+        newTypesInLastSample |= sampleProperties(vertex, detectedTypes, bucketColumns);
         propertySampleCount++;
       }
 
@@ -313,62 +334,16 @@ public class CSRBuilder {
             NodeIdMapping.unpackLocalId(packed), detectedTypes);
       }
 
-      // Count degrees and collect edge pairs
-      final EdgeLinkedList outList = loadOutEdgeList(vertex);
-      if (outList != null) {
-        final Iterator<Pair<RID, RID>> entries = outList.entryIterator();
-        while (entries.hasNext()) {
-          final Pair<RID, RID> entry = entries.next();
-          final int edgeBucketId = entry.getFirst().getBucketId();
-          final int edgeTypeIdx = edgeBucketId >= 0 && edgeBucketId < bucketToEdgeTypeIdx.length ? bucketToEdgeTypeIdx[edgeBucketId] : -1;
-          if (edgeTypeIdx < 0) {
-            // AN EDGE OF A TYPE THE VIEW DOES NOT MATERIALIZE, LIGHTWEIGHT ONES INCLUDED: NO RECORD COUNT CAN SAY THAT
-            uncoveredEdgesSeen = true;
-            uncoveredEdgeBuckets.add(edgeBucketId);
-            continue;
-          }
-          final int targetGlobalId = mapping.getGlobalId(entry.getSecond());
-          if (targetGlobalId < 0)
-            continue;
-
-          TypeScan typeScan = typeScans[edgeTypeIdx];
-          if (typeScan == null)
-            typeScans[edgeTypeIdx] = typeScan = new TypeScan(nodeCount, inlineEdgeProps ? edgePropTypes : null);
-          typeScan.outDegrees[globalId]++;
-          typeScan.targets.add(targetGlobalId);
-          if (observer != null) {
-            scannedEdges.add(entry.getFirst());
-            scannedTargets.add(entry.getSecond());
-          }
-
-          // Extract edge properties inline — page is warm from linked list traversal
-          if (typeScan.edgeProperties != null) {
-            final Map<String, GrowingPropertyArray> propArrays = typeScan.edgeProperties;
-            final RID edgeRid = entry.getFirst();
-            if (edgeRid.getPosition() >= 0) {
-              try {
-                final Document edgeDoc = (Document) database.lookupByRID(edgeRid, true);
-                for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet()) {
-                  final Object value = edgeDoc.get(pt.getKey());
-                  propArrays.get(pt.getKey()).add(value);
-                }
-              } catch (final RecordNotFoundException e) {
-                for (final GrowingPropertyArray arr : propArrays.values())
-                  arr.addNull();
-              }
-            } else {
-              // Lightweight edge — no properties
-              for (final GrowingPropertyArray arr : propArrays.values())
-                arr.addNull();
-            }
-          }
-        }
-      }
+      // Count degrees and collect the targets, straight from the segments' bytes
+      sink.sourceGlobalId = globalId;
+      edgeScanner.scan((VertexInternal) vertex, Vertex.DIRECTION.OUT, sink);
 
       // Asked after the out-edges were read, never before: see setScanObserver()
       if (observer != null && observer.isWatched(rid))
         observer.observed(rid, scannedEdges, scannedTargets);
     }
+
+    uncoveredEdgesSeen |= sink.uncoveredEdgesSeen;
 
     // Warn if schema sampling stopped while still discovering new property types
     if (!schemaComplete && propertySampleCount >= propertySampleSize && newTypesInLastSample && nodeCount > propertySampleSize)
@@ -643,9 +618,75 @@ public class CSRBuilder {
     return multi;
   }
 
-  private EdgeLinkedList loadOutEdgeList(final Vertex vertex) {
-    // Dispatches on the head record type, so promoted (striped) super-node vertices work too (#5156).
-    return ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
+  /**
+   * Phase A: the positions of the vertices of the view, bucket by bucket. Read from the buckets' record tables, without
+   * materializing a vertex (issue #11012), unless a read listener has to see every vertex read: then they are iterated as
+   * records, as before.
+   */
+  private void collectVertexPositions(final NodeIdMapping mapping, final Set<String> concreteVertexTypes) {
+    if (hasReadListeners(concreteVertexTypes)) {
+      final Iterator<Record> collectIter = createVertexIterator(concreteVertexTypes);
+      while (collectIter.hasNext()) {
+        final RID rid = collectIter.next().getIdentity();
+        final int bucketIdx = mapping.getBucketIdxForBucketId(rid.getBucketId());
+        if (bucketIdx >= 0)
+          mapping.addNode(bucketIdx, rid.getPosition());
+      }
+      return;
+    }
+
+    for (final String typeName : concreteVertexTypes)
+      for (final Bucket bucket : database.getSchema().getType(typeName).getBuckets(false)) {
+        final int bucketIdx = mapping.getBucketIdxForBucketId(bucket.getFileId());
+        if (bucketIdx >= 0)
+          ((LocalBucket) bucket).forEachRecordPosition(position -> mapping.addNode(bucketIdx, position));
+      }
+  }
+
+  /**
+   * Detects the column types of a schemaless vertex's properties, creating the columns of the ones not seen yet.
+   *
+   * @return true when a new property type was found
+   */
+  private boolean sampleProperties(final Vertex vertex, final Map<String, Column.Type> detectedTypes, final ColumnStore[] bucketColumns) {
+    boolean newTypes = false;
+    for (final String propName : vertex.getPropertyNames()) {
+      if (detectedTypes.containsKey(propName))
+        continue;
+      if (!isPropertyIncluded(propName))
+        continue;
+      final Object value = vertex.get(propName);
+      if (value == null)
+        continue;
+      final Column.Type colType = detectColumnType(value);
+      if (colType != null) {
+        detectedTypes.put(propName, colType);
+        for (final ColumnStore cs : bucketColumns)
+          cs.createColumn(propName, colType);
+        newTypes = true;
+      }
+    }
+    return newTypes;
+  }
+
+  /** The vertex at the position, or null when the position no longer holds one (deleted since Phase A). */
+  private Vertex loadVertex(final int bucketId, final long position) {
+    try {
+      return database.lookupByRID(new RID(bucketId, position), true) instanceof Vertex vertex ? vertex : null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+  }
+
+  private boolean hasReadListeners(final Set<String> concreteVertexTypes) {
+    if (!(database.getEvents() instanceof RecordEventsRegistry registry) || registry.hasBeforeReadListeners()
+        || registry.hasAfterReadListeners())
+      return true;
+    for (final String typeName : concreteVertexTypes)
+      if (!(database.getSchema().getType(typeName) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
+          || type.hasAfterReadListeners())
+        return true;
+    return false;
   }
 
   private Map<String, Column.Type> detectEdgePropertyTypesFromSchema(final String[] edgeTypes) {
@@ -1148,6 +1189,81 @@ public class CSRBuilder {
    * What the scan collects for one edge type: the out-degree of every node and the targets in the order the scan met
    * them, with the edge properties in that same order when the view materializes them.
    */
+  /**
+   * Collects the out-edge entries of the vertex whose turn it is ({@link #sourceGlobalId}) into the per-type scans, as the
+   * scanner hands them over: four numbers per entry, no RID unless an edge's properties or a test observer asks for one.
+   */
+  private final class OutEntrySink implements EdgeListScanner.EntryVisitor {
+    private final NodeIdMapping                 mapping;
+    private final int[]                         bucketToEdgeTypeIdx;
+    private final TypeScan[]                    typeScans;
+    private final int                           nodeCount;
+    private final Map<String, Column.Type>      edgePropTypes;
+    private final IntHashSet                    uncoveredEdgeBuckets;
+    private final List<RID>                     scannedEdges;
+    private final List<RID>                     scannedTargets;
+    int                                         sourceGlobalId;
+    boolean                                     uncoveredEdgesSeen;
+
+    private OutEntrySink(final NodeIdMapping mapping, final int[] bucketToEdgeTypeIdx, final TypeScan[] typeScans, final int nodeCount,
+        final Map<String, Column.Type> edgePropTypes, final IntHashSet uncoveredEdgeBuckets, final List<RID> scannedEdges,
+        final List<RID> scannedTargets) {
+      this.mapping = mapping;
+      this.bucketToEdgeTypeIdx = bucketToEdgeTypeIdx;
+      this.typeScans = typeScans;
+      this.nodeCount = nodeCount;
+      this.edgePropTypes = edgePropTypes;
+      this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
+      this.scannedEdges = scannedEdges;
+      this.scannedTargets = scannedTargets;
+    }
+
+    @Override
+    public void visit(final int edgeBucketId, final long edgePosition, final int vertexBucketId, final long vertexPosition) {
+      final int edgeTypeIdx = edgeBucketId >= 0 && edgeBucketId < bucketToEdgeTypeIdx.length ? bucketToEdgeTypeIdx[edgeBucketId] : -1;
+      if (edgeTypeIdx < 0) {
+        // AN EDGE OF A TYPE THE VIEW DOES NOT MATERIALIZE, LIGHTWEIGHT ONES INCLUDED: NO RECORD COUNT CAN SAY THAT
+        uncoveredEdgesSeen = true;
+        uncoveredEdgeBuckets.add(edgeBucketId);
+        return;
+      }
+      final int targetGlobalId = mapping.getGlobalId(vertexBucketId, vertexPosition);
+      if (targetGlobalId < 0)
+        return;
+
+      TypeScan typeScan = typeScans[edgeTypeIdx];
+      if (typeScan == null)
+        typeScans[edgeTypeIdx] = typeScan = new TypeScan(nodeCount, edgePropTypes);
+      typeScan.outDegrees[sourceGlobalId]++;
+      typeScan.targets.add(targetGlobalId);
+      if (scannedEdges != null) {
+        scannedEdges.add(new RID(edgeBucketId, edgePosition));
+        scannedTargets.add(new RID(vertexBucketId, vertexPosition));
+      }
+
+      // Extract edge properties inline — page is warm from linked list traversal
+      if (typeScan.edgeProperties != null) {
+        final Map<String, GrowingPropertyArray> propArrays = typeScan.edgeProperties;
+        if (edgePosition >= 0) {
+          try {
+            final Document edgeDoc = (Document) database.lookupByRID(new RID(edgeBucketId, edgePosition), true);
+            for (final Map.Entry<String, Column.Type> pt : edgePropTypes.entrySet()) {
+              final Object value = edgeDoc.get(pt.getKey());
+              propArrays.get(pt.getKey()).add(value);
+            }
+          } catch (final RecordNotFoundException e) {
+            for (final GrowingPropertyArray arr : propArrays.values())
+              arr.addNull();
+          }
+        } else {
+          // Lightweight edge — no properties
+          for (final GrowingPropertyArray arr : propArrays.values())
+            arr.addNull();
+        }
+      }
+    }
+  }
+
   static final class TypeScan {
     int[]                                    outDegrees;
     final IntChunks                          targets = new IntChunks();
