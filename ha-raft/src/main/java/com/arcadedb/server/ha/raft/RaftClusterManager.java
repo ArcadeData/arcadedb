@@ -464,7 +464,7 @@ class RaftClusterManager {
       LogManager.instance().log(this, Level.INFO,
           "Leadership transfer requested but this node (%s) is not the leader; nothing to transfer", selfId);
       // Returns false rather than throwing, unlike the targeted overload: this is a published contract (#4809,
-      // and Issue4809NoTargetTransferLeadershipIT pins it) that embedded callers read as a boolean. The HTTP
+      // and HaLeadershipTransferIT pins it) that embedded callers read as a boolean. The HTTP
       // endpoint gets its "wrong node" 409 from a guard in PostTransferLeaderHandler instead, so the two
       // branches of that endpoint still answer alike without changing what this method promises Java callers.
       //

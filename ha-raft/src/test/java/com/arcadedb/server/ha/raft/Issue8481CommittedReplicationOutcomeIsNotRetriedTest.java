@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * answered 503, and the Java remote client resent the request - so a committed write ran a second time.
  * <p>
  * The end-to-end paths (the leader-local retry loop against a real cluster, and the HTTP answer read by the remote
- * client) are driven by {@link Issue8481CommittedWriteIsNotRetriedIT}; this class pins the contract each of them keys
+ * client) are driven by {@link HaForwardedWriteIdempotencyDisruptiveIT}; this class pins the contract each of them keys
  * on without a cluster.
  */
 class Issue8481CommittedReplicationOutcomeIsNotRetriedTest {

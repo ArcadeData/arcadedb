@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the commits in flight swapped its target away under a commit the client was then told had succeeded. A commit that goes on
  * outside the lock now registers itself under it, and the await waits for it to end.
  * <p>
- * The HA commit path itself is driven by {@code Issue10881RestoreWaitsForReplicatingCommitIT} in ha-raft. This drives the engine
+ * The HA commit path itself is driven by {@code HaRestoreClaimIT} in ha-raft. This drives the engine
  * half: the counter, the await, and the schema change that waited for the write lock while the refusal went up.
  */
 class Issue10881CommitsInFlightOutsideLockTest extends TestHelper {

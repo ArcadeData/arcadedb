@@ -40,9 +40,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SecurityCatchUp#submit} silently doing nothing when it has no server or no Raft server to work with (below),
  * and the executor's queue having no room for a third task while two are already in flight (not exercised here -
  * it needs the executor genuinely saturated by two blocked attempts, which needs a real cluster the way the
- * leader arm itself does; see {@code Issue8034SecurityCatchUpRearmIT}).
+ * leader arm itself does; see {@code HaSecurityMutationRoutingDisruptiveIT}).
  * <p>
- * The leader arm itself is driven end-to-end against a real cluster by {@code Issue8034SecurityCatchUpRearmIT}.
+ * The leader arm itself is driven end-to-end against a real cluster by {@code HaSecurityMutationRoutingDisruptiveIT} and
+ * {@code HaSecurityMutationRoutingTwoNodeIT}.
  * What is pinned here is the rule that arm relies on, without a cluster: {@link Outcome#ASKED} is the only
  * outcome that spends the request, and taking the latch is only ever permanent once a task has actually been
  * queued behind it.

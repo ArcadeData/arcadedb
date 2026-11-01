@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the ones taken while no session is open on the thread. That is precisely the set of calls
  * {@code RaftReplicatedDatabase.recordFileChanges} does not delegate away, and each one of them publishes exactly one
  * {@code SCHEMA_ENTRY}. Counting them in the engine keeps the assertion exact and deterministic; the end-to-end
- * follower-side count lives in {@code Issue6990BulkSchemaScriptIT}.
+ * follower-side count lives in {@code HaSchemaDeltaReplicationIT}.
  */
 class Issue6990BulkSchemaScopeTest extends TestHelper {
 

@@ -39,8 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * What {@link ClusterSecuritySeedQuery} makes of each answer the leader can give (code review on PR #7854).
  * <p>
- * The dial itself is covered end-to-end over a real socket by {@code Issue7835HaTlsRemainingPeerDialsIT} and
- * {@code Issue7833SecurityCatchUpIT}, but both drive the happy path. What those cannot reach is the set of
+ * The dial itself is covered end-to-end over a real socket by {@code HaTlsPeerDialIT} and
+ * {@code HaSecurityMutationRoutingTwoNodeIT}'s #7833 tests, but both drive the happy path. What those cannot reach is the set of
  * answers this client has to tell apart, because a healthy leader never produces them: the partial failure a
  * caller must report verbatim, the "you are not the leader" that must be re-resolved rather than reported, and
  * the malformed or unexpected answers that must become an {@code IOException} rather than a quiet empty list.

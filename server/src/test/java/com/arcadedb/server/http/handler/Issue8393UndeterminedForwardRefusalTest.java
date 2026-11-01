@@ -54,7 +54,7 @@ import static org.mockito.Mockito.when;
  * refusal that PROVES the address named the wrong node keeps the 400 and the warning.
  * <p>
  * The third refusal site, the SQL forward in {@code RaftReplicatedDatabase}, lives in the ha-raft module and is driven
- * end to end by {@code Issue7603LeaderForwardHopIT}.
+ * end to end by {@code HaForwardedWriteIdempotencyIT}.
  */
 class Issue8393UndeterminedForwardRefusalTest {
   private static final String LOCAL_PEER  = "peer-follower";

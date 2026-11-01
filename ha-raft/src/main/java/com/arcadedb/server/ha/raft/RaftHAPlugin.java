@@ -474,7 +474,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * keeps current on every node (issue #7549). The direction that costs is the safe one: a cache that is not a full
    * "yes" withholds the precondition, which is the pre-#7509 behaviour, never a divergence.
    */
-  // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
+  // @VisibleForTesting - HaSecurityMutationRoutingIT (#7559) drives this decision on a real follower
   String preconditionEveryPeerCanRead(final String expectedFingerprint) {
     if (expectedFingerprint == null)
       return null;

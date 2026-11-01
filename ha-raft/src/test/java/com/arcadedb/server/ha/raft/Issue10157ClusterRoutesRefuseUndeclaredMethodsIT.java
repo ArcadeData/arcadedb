@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every undeclared method must be answered 405 naming the declared one, and the cluster must come out exactly as it
  * went in - same leader, same term, same members.
  */
-class Issue10157ClusterRoutesRefuseUndeclaredMethodsIT extends BaseRaftHATest {
+class Issue10157ClusterRoutesRefuseUndeclaredMethodsIT extends SharedClusterRaftHATest {
 
   /** One concrete request path per HA route, and the one method the specification declares for it. */
   private static final Map<String, String> DECLARED = new LinkedHashMap<>() {{
