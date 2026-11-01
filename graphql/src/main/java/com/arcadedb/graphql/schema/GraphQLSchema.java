@@ -42,6 +42,7 @@ import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
 import com.arcadedb.graphql.parser.TypeName;
 import com.arcadedb.graphql.parser.TypeSystemDefinition;
+import com.arcadedb.graphql.parser.Value;
 import com.arcadedb.graphql.parser.ValueWithVariable;
 import com.arcadedb.graphql.parser.VariableDefinition;
 import com.arcadedb.graphql.parser.VariableDefinitions;
@@ -562,17 +563,35 @@ public class GraphQLSchema {
         continue;
       Object value = null;
       if (definition.getDefaultValue() != null) {
-        final AbstractValue defaultValue = definition.getDefaultValue().getValue().getValue();
-        if (defaultValue == null)
-          throw new CommandParsingException(
-              "Default value of GraphQL argument '" + name + "' is not a scalar: list and object default values are not supported");
-        value = defaultValue.getValue();
+        value = defaultValueOf(definition.getDefaultValue().getValue());
+        if (value == UNSUPPORTED_DEFAULT)
+          // an object default is not supported: the argument stays unbound, which only a statement that reads it refuses
+          continue;
       }
       if (arguments == null)
         arguments = new HashMap<>();
       arguments.put(name, value);
     }
     return arguments;
+  }
+
+  private static final Object UNSUPPORTED_DEFAULT = new Object();
+
+  /** The Java value of a declared default: a scalar, or a list of them, or {@link #UNSUPPORTED_DEFAULT} for an object. */
+  private static Object defaultValueOf(final Value value) {
+    final AbstractValue scalar = value.getValue();
+    if (scalar != null)
+      return scalar.getValue();
+    if (value.getListValue() == null)
+      return UNSUPPORTED_DEFAULT;
+    final List<Object> list = new ArrayList<>(value.getListValue().getValues().size());
+    for (final Value item : value.getListValue().getValues()) {
+      final Object element = defaultValueOf(item);
+      if (element == UNSUPPORTED_DEFAULT)
+        return UNSUPPORTED_DEFAULT;
+      list.add(element);
+    }
+    return list;
   }
 
   private static Map<String, Object> getArguments(final Arguments queryArguments, final Map<String, Object> variables) {

@@ -89,6 +89,20 @@ class Issue11047PowSqrtValueTest extends TestHelper {
   }
 
   @Test
+  void negativeBaseIsDecidedOnTheExponentAsWritten() {
+    final SQLFunctionPow pow = new SQLFunctionPow();
+    // fractional, although its double is 1.0: no real power
+    assertThat(pow.execute(null, null, null, new Object[] { -2, new BigDecimal("1.0000000000000000001") }, null)).isNull();
+    assertThat(pow.execute(null, null, null, new Object[] { -2.0, new BigDecimal("1.0000000000000000001") }, null)).isNull();
+    // an odd whole exponent past 2^53, whose double is even, keeps the sign
+    assertThat(pow.execute(null, null, null, new Object[] { -1.0, 9007199254740993L }, null)).isEqualTo(-1.0);
+    assertThat(pow.execute(null, null, null, new Object[] { -1, new BigInteger("9007199254740993") }, null)).isEqualTo(-1.0);
+    assertThat(pow.execute(null, null, null, new Object[] { -1.0, 9007199254740994L }, null)).isEqualTo(1.0);
+    // a whole decimal exponent is whole
+    assertThat(pow.execute(null, null, null, new Object[] { -2.0, new BigDecimal("3.00") }, null)).isEqualTo(-8.0);
+  }
+
+  @Test
   void zeroToANegativePowerIsRefused() {
     // the same answer whatever the base's type and the exponent's shape: no value, a typed error rather than infinity
     assertThatThrownBy(() -> single("SELECT pow(0, -1) AS v")).isInstanceOf(ArithmeticErrorException.class);

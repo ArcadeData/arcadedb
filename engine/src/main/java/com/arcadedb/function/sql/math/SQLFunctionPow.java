@@ -147,7 +147,19 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
   private static Object doublePow(final Number base, final Number exponent) {
     final double b = base.doubleValue();
     final double e = exponent.doubleValue();
-    final double power = Math.pow(b, e);
+    double power;
+    final BigDecimal exactExponent = b < 0 ? exactValue(exponent) : null;
+    if (exactExponent != null) {
+      // A negative base is decided on the exponent the caller wrote, not on its double: 1.0000000000000000001 is
+      // fractional (no real power) although its double is 1.0, and an odd whole exponent past 2^53 keeps its sign
+      final BigDecimal stripped = exactExponent.stripTrailingZeros();
+      if (stripped.scale() > 0)
+        return null;
+      final double magnitude = Math.pow(-b, e);
+      // a negative scale multiplies the unscaled value by a power of ten, which is even: read the parity without building it
+      power = stripped.scale() == 0 && stripped.unscaledValue().testBit(0) ? -magnitude : magnitude;
+    } else
+      power = Math.pow(b, e);
     if (Double.isNaN(power) && !Double.isNaN(b) && !Double.isNaN(e))
       // a negative base raised to a fractional exponent: no real result
       return null;
@@ -156,6 +168,22 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
       // an exact base whose power is past every range: refused like an overflow of the operators, not answered as infinity
       throw new ArithmeticErrorException("pow() overflow: " + base + " ^ " + exponent);
     return power;
+  }
+
+  /** The exact value of a finite exponent, or null for NaN and the infinities, which have none. */
+  private static BigDecimal exactValue(final Number exponent) {
+    return switch (exponent) {
+      case BigDecimal decimal -> decimal;
+      case BigInteger integer -> new BigDecimal(integer);
+      case Integer i -> BigDecimal.valueOf(i);
+      case Long l -> BigDecimal.valueOf(l);
+      case Short s -> BigDecimal.valueOf(s);
+      case Byte b -> BigDecimal.valueOf(b);
+      default -> {
+        final double d = exponent.doubleValue();
+        yield Double.isNaN(d) || Double.isInfinite(d) ? null : new BigDecimal(d);
+      }
+    };
   }
 
   private static Number exponentOf(final Object exponent) {

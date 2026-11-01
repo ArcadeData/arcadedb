@@ -42,7 +42,17 @@ class Issue11098DirectiveArgumentDefaultTest extends AbstractGraphQLTest {
         type Query {
           bookById(id: String): Book
           bookByName(bookNameParameter: String = "Mr. brain"): Book @sql(statement: "select from Book where name = :bookNameParameter")
+          booksByNames(names: [String] = ["Mr. brain", "Nobody"]): [Book] @sql(statement: "select from Book where name in :names")
         }""");
+  }
+
+  @Test
+  void omittedListArgumentTakesTheListDefault() {
+    executeTest(database -> {
+      defineTypes(database);
+      assertThat(names(database, "{ booksByNames { name } }", Map.of())).isEqualTo("Mr. brain");
+      return null;
+    });
   }
 
   @Test

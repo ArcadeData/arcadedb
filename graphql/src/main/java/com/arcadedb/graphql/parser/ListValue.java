@@ -29,5 +29,9 @@ public class ListValue extends SimpleNode {
     super(id);
   }
 
+  public List<Value> getValues() {
+    return values;
+  }
+
 }
 /* ParserGeneratorCC - OriginalChecksum=bbc6d6e1e0f7b2e23f8cd435deccb5e0 (do not edit this line) */
