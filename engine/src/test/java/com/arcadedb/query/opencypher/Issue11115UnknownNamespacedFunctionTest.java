@@ -78,6 +78,12 @@ class Issue11115UnknownNamespacedFunctionTest extends TestHelper {
   }
 
   @Test
+  void aCallAPredicateSimplificationDropsIsStillRefused() {
+    assertUnknownFunction("UNWIND [1] AS x WITH x WHERE true OR apoc.nope.n(x) RETURN x", "apoc.nope.n");
+    assertUnknownFunction("MATCH (n) WHERE false AND apoc.nope.o(n) RETURN n", "apoc.nope.o");
+  }
+
+  @Test
   void anUnknownFunctionInAWriteIsRefusedBeforeAnythingIsWritten() {
     database.getSchema().getOrCreateVertexType("W");
     assertUnknownFunction("CREATE (:W {v: 1}) WITH 1 AS one RETURN apoc.nope.j(one) AS s", "apoc.nope.j");

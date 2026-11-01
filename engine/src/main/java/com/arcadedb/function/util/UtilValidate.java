@@ -117,6 +117,11 @@ public class UtilValidate extends AbstractUtilFunction {
   private static boolean hasOversizedSpecifier(final String text) {
     final int length = text.length();
     for (int i = text.indexOf('%'); i >= 0 && i < length; i = text.indexOf('%', i + 1)) {
+      // '%%' is a literal percent, not a specifier: step over both
+      if (i + 1 < length && text.charAt(i + 1) == '%') {
+        ++i;
+        continue;
+      }
       long number = 0;
       for (int j = i + 1; j < length; j++) {
         final char c = text.charAt(j);

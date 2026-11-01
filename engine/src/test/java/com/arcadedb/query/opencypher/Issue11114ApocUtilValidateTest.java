@@ -94,6 +94,9 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
     // an argument index does not hide the width after it
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '%1$1001s', ['y']) RETURN 1 AS ok"))))
         .isEqualTo("%1$1001s [y]");
+    // '%%' is a literal percent, not the start of a specifier
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, 'usage 100%%<1001: %s', ['limit']) RETURN 1 AS ok"))))
+        .isEqualTo("usage 100%<1001: limit");
     // a width a real message uses still formats
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '[%5s]', ['y']) RETURN 1 AS ok"))))
         .isEqualTo("[    y]");

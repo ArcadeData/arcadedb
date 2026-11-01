@@ -429,7 +429,7 @@ public class BoltStructureMapper {
     // A key no point carries makes it an ordinary map, which a Point would silently strip (a {crs: 'wgs-84', x: 1, y: 2,
     // label: 'home'} literal, since crs names match in any case, issue #11113)
     for (final Object key : map.keySet())
-      if (!POINT_KEYS.contains(key))
+      if (!(key instanceof String name) || !POINT_KEYS.contains(name))
         return null;
     final Object crs = map.get("crs");
     if (!(crs instanceof String name && CypherPointFunction.sridOfCrs(name) != null) && !(map.get("srid") instanceof Number))

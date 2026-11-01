@@ -100,6 +100,8 @@ class Issue11113PointCrsNameCaseTest extends TestHelper {
     }
     // an ordinary map with a crs key that names no reference system still compares its strings exactly
     assertThat(single("RETURN {crs: 'abc'} = {crs: 'ABC'} AS same").<Boolean>getProperty("same")).isFalse();
+    // ... and so does one naming a reference system without being a point
+    assertThat(single("RETURN {crs: 'WGS-84'} = {crs: 'wgs-84'} AS same").<Boolean>getProperty("same")).isFalse();
   }
 
   @Test
