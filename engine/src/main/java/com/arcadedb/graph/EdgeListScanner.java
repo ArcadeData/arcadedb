@@ -66,18 +66,6 @@ import java.util.concurrent.Callable;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class EdgeListScanner {
-  /** Receives the entries of a list, one call per entry, newest first like every walk of the list. */
-  @FunctionalInterface
-  public interface EntryVisitor {
-    /**
-     * @param edgeBucketId   bucket of the edge: for a lightweight edge, the bucket of its type
-     * @param edgePosition   position of the edge, negative for a lightweight edge
-     * @param vertexBucketId bucket of the vertex at the other end
-     * @param vertexPosition position of the vertex at the other end
-     */
-    void visit(int edgeBucketId, long edgePosition, int vertexBucketId, long vertexPosition);
-  }
-
   // THE SEGMENT LAYOUT: RECORD TYPE (1 BYTE), USED BYTES (INT), PREVIOUS SEGMENT AS BUCKET (INT) + POSITION (LONG), THEN ENTRIES
   private static final int USED_OFFSET              = Binary.BYTE_SERIALIZED_SIZE;
   private static final int PREVIOUS_BUCKET_OFFSET   = USED_OFFSET + Binary.INT_SERIALIZED_SIZE;
@@ -222,9 +210,12 @@ public final class EdgeListScanner {
         limit <<= 1;
       }
 
-      // A PREVIOUS SEGMENT THAT CANNOT BE READ FAILS THE WALK, AS IT FAILS EdgeSegment.getPrevious()
+      // A PREVIOUS SEGMENT THAT IS GONE FAILS THE WALK, AS IT FAILS EdgeSegment.getPrevious(): readSegment() RAISES THE
+      // RecordNotFoundException OF THE LOOKUP. ONE THAT NAMES A RECORD OF ANOTHER KIND FAILED IT TOO, WITH THE CAST THE RECORD
+      // WALK MAKES: A VIEW BUILT FROM WHAT CAME BEFORE IT WOULD MISS THE REST OF THE LIST WITHOUT A WORD
       if (!readSegment(transaction, bucketId, position, visitor))
-        return;
+        throw new DatabaseOperationException(
+            "Edge list chain names record #" + bucketId + ":" + position + ", which is not an edge segment: run CHECK DATABASE");
     }
   }
 
@@ -269,7 +260,24 @@ public final class EdgeListScanner {
       return false;
 
     final int end = offset + used;
+    // EVERY ENTRY MUST END INSIDE THE USED BYTES, AND THE LAST ONE EXACTLY ON THEIR END: CHECKED BEFORE THE VISITOR SEES ANY, SO A
+    // DAMAGED SEGMENT GOES TO THE RECORD WALK WHOLE INSTEAD OF HANDING OUT ENTRIES DECODED FROM THE BYTES PAST IT
     int cursor = offset + MutableEdgeSegment.CONTENT_START_POSITION;
+    try {
+      while (cursor < end)
+        for (int number = 0; number < 4; number++) {
+          if (cursor >= end)
+            return false;
+          cursor += page.readNumberSize(cursor);
+        }
+    } catch (final IllegalArgumentException e) {
+      // A NUMBER THAT RUNS OFF THE PAGE
+      return false;
+    }
+    if (cursor != end)
+      return false;
+
+    cursor = offset + MutableEdgeSegment.CONTENT_START_POSITION;
     while (cursor < end) {
       final long edgeBucketId = page.readNumber(cursor);
       cursor += page.readNumberSize(cursor);
@@ -394,5 +402,17 @@ public final class EdgeListScanner {
     final RecordEvents events = database.getEvents();
     return !(events instanceof RecordEventsRegistry registry) || registry.hasBeforeReadListeners()
         || registry.hasAfterReadListeners();
+  }
+
+  /** Receives the entries of a list, one call per entry, newest first like every walk of the list. */
+  @FunctionalInterface
+  public interface EntryVisitor {
+    /**
+     * @param edgeBucketId   bucket of the edge: for a lightweight edge, the bucket of its type
+     * @param edgePosition   position of the edge, negative for a lightweight edge
+     * @param vertexBucketId bucket of the vertex at the other end
+     * @param vertexPosition position of the vertex at the other end
+     */
+    void visit(int edgeBucketId, long edgePosition, int vertexBucketId, long vertexPosition);
   }
 }

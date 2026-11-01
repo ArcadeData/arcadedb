@@ -115,6 +115,7 @@ public final class EdgeBucketMask {
 
   /** Whether this mask was built by {@link #ofBucketList} from this very list. */
   public boolean isBuiltFrom(final List<?> bucketIds) {
+    // IDENTITY, NOT equals(): THE LIST'S IDENTITY IS ITS VERSION, AND COMPARING THE ELEMENTS WOULD COST WHAT THE CACHE SAVES
     return source == bucketIds;
   }
 

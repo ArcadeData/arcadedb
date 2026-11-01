@@ -38,6 +38,7 @@ import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #11012: a full scan of the edge lists (the build of a Graph Analytical View) read every segment as a record and handed
@@ -153,6 +154,8 @@ class Issue11012EdgeListScannerTest extends TestHelper {
   void aFullScanAllocatesAFractionOfTheRecordWalkPerEntry() {
     final List<RID> vertices = createGraph();
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    // THE THREAD'S ALLOCATION COUNTER IS A HOTSPOT FEATURE: A JVM WITHOUT IT HAS NOTHING TO MEASURE
+    assumeTrue(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled());
     final long thread = Thread.currentThread().threadId();
 
     database.transaction(() -> {
