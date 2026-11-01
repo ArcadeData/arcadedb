@@ -109,6 +109,19 @@ class Issue11069FilteredFullTextSearchTest extends TestHelper {
   }
 
   @Test
+  void sqlConditionOnAPerRecordVariableIsNotPushedAsAConstant() {
+    createCorpus(1, true);
+    // $own changes from row to row: the condition stays a filter on the loaded records, and holds for each of them
+    final String perRecord = "SELECT FROM Doc LET $own = tenant WHERE " + SEARCH + " AND tenant = $own LIMIT " + WANTED;
+    assertThat(plan(perRecord)).doesNotContain("INDEX PRE-FILTER");
+    assertThat(tenantsOf(perRecord)).hasSize(WANTED);
+
+    // a global LET holds one value for the whole statement: it is pushed
+    final String global = "SELECT FROM Doc LET $t = (SELECT 'b' AS v).v[0] WHERE " + SEARCH + " AND tenant = $t LIMIT " + WANTED;
+    assertThat(tenantsOf(global)).containsOnly("b").hasSize(WANTED);
+  }
+
+  @Test
   void sqlCaseInsensitiveIndexListsASuperset() {
     createCorpus(2, false);
     database.command("sql", "CREATE INDEX ON Doc (tenant COLLATE ci) NOTUNIQUE");
