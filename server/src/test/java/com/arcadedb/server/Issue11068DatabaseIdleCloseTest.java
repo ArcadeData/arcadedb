@@ -25,9 +25,11 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -236,6 +238,28 @@ public class Issue11068DatabaseIdleCloseTest extends BaseGraphServerTest {
     assertThat(closer.check()).isEqualTo(1);
     assertThat(closer.check()).isEqualTo(1);
     assertThat(server.getDatabaseNames()).doesNotContain(SECOND, getDatabaseName());
+  }
+
+  @Test
+  void aClosedDatabaseRemovedFromDiskIsForgotten() throws Exception {
+    final ArcadeDBServer server = getServer(0);
+    server.createDatabase(SECOND, ComponentFile.MODE.READ_WRITE);
+    idleTimeout(1);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DATABASE_IDLE_EXCLUDE, getDatabaseName());
+    final DatabaseIdleCloser closer = server.getDatabaseIdleCloser();
+    assertThat(closeIdle()).isEqualTo(1);
+    assertThat(closer.getClosedAwaitingReopen()).isEqualTo(1);
+
+    // Deleted behind the server's back while closed: it will never be reopened, so it is not remembered for ever
+    FileUtils.deleteRecursively(
+        new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), SECOND));
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    while (server.isDatabaseAvailable(SECOND) && System.nanoTime() < deadline)
+      Thread.sleep(100);
+    assertThat(server.isDatabaseAvailable(SECOND)).isFalse();
+
+    closer.check();
+    assertThat(closer.getClosedAwaitingReopen()).isZero();
   }
 
   @Test

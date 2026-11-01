@@ -272,4 +272,14 @@ public class HttpSessionManager extends RWLockContext {
       return false;
     });
   }
+
+  /** The names of the databases a transaction session is open on, read once for a whole idle check (issue #11068). */
+  public Set<String> getSessionDatabaseNames() {
+    return executeInReadLock(() -> {
+      final Set<String> names = new HashSet<>();
+      for (final HttpSession session : sessions.values())
+        names.add(session.transaction.getDatabase().getName());
+      return names;
+    });
+  }
 }

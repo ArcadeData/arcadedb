@@ -31,6 +31,7 @@ import io.undertow.websockets.core.WebSocketChannel;
 
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.UUID;
@@ -478,6 +479,12 @@ public class WebSocketInsertSessionManager {
       if (session.databaseName.equals(databaseName))
         return true;
     return false;
+  }
+
+  /** Adds to {@code names} the databases an insert session is open on, read once for a whole idle check (issue #11068). */
+  public void collectSessionDatabaseNames(final Set<String> names) {
+    for (final WebSocketInsertSession session : sessions.values())
+      names.add(session.databaseName);
   }
 
   private void unregister(final WebSocketInsertSession session) {

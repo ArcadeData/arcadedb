@@ -168,6 +168,12 @@ public class DatabaseIdleCloser {
     final Set<String> excluded = parseExclusions(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_IDLE_EXCLUDE));
     final long now = System.nanoTime();
 
+    // A DATABASE CLOSED BY THIS AND REMOVED SINCE (DROPPED, DELETED FROM DISK) WILL NEVER BE REOPENED: NOTHING LEFT TO COUNT
+    closedByIdle.removeIf(name -> !server.isDatabaseAvailable(name));
+
+    // THE SESSIONS ARE READ ONCE FOR THE WHOLE CHECK, NOT ONCE PER DATABASE: THOUSANDS OF EACH WOULD MULTIPLY
+    final Set<String> pinnedBySessions = sessionDatabaseNames();
+
     // SAMPLE EVERY OPEN DATABASE: ONE THAT MOVED, OR IS IN USE NOW, WAS USED NOW
     final Set<String> open = server.getDatabaseNames();
     samples.keySet().retainAll(open);
@@ -188,7 +194,7 @@ public class DatabaseIdleCloser {
       }
       if (excluded.contains(name) || database.isReplicated())
         continue;
-      if (isInUse(name, database)) {
+      if (pinnedBySessions.contains(name) || isInUse(name, database)) {
         sample.lastUsedNanos = now;
         continue;
       }
@@ -215,6 +221,7 @@ public class DatabaseIdleCloser {
 
     // BEYOND THE CAP: THE LEAST RECENTLY USED FIRST, AMONG THOSE NOT IN USE
     if (maxOpen > 0 && budget > 0) {
+      // READ AGAIN ON PURPOSE, NOT HOISTED: THE IDLE CLOSES ABOVE ALREADY SHRANK THE OPEN SET
       int excess = server.getDatabaseNames().size() - maxOpen;
       if (excess > 0) {
         final List<Integer> order = new ArrayList<>(closable.size());
@@ -255,11 +262,16 @@ public class DatabaseIdleCloser {
     return reopens.get();
   }
 
+  /** How many databases this closed are still waiting to be reopened: bounded by the databases the server still has. */
+  int getClosedAwaitingReopen() {
+    return closedByIdle.size();
+  }
+
   private boolean close(final String name, final Sample sample, final boolean byCap) {
     final ServerDatabase database = sample.instance;
     // RE-ASKED UNDER THE REGISTRY LOCK, RIGHT BEFORE THE CLOSE: A REQUEST THAT ARRIVED SINCE THE SAMPLE KEEPS IT OPEN
     final boolean closed = server.closeIdleDatabase(name, database,
-        () -> activityOf(database) == sample.activity && !isInUse(name, database));
+        () -> activityOf(database) == sample.activity && !isInUse(name, database) && !hasSession(name));
     if (!closed)
       return false;
     samples.remove(name, sample);
@@ -275,12 +287,28 @@ public class DatabaseIdleCloser {
     return true;
   }
 
+  /**
+   * Whether {@code database} is in use now, the sessions aside: the check reads those once for every database
+   * ({@link #sessionDatabaseNames()}), the re-check before a close asks them for its one database ({@link #hasSession}).
+   */
   private boolean isInUse(final String name, final ServerDatabase database) {
     final DatabaseInternal embedded = database.getEmbedded();
     if (embedded instanceof LocalDatabase local && (local.hasActiveTransactionOnAnyThread() || local.isAsyncProcessing()))
       return true;
-    if (server.getRunningQueries().isRunningOn(name))
-      return true;
+    return server.getRunningQueries().isRunningOn(name);
+  }
+
+  /** The databases an HTTP transaction session or a WebSocket insert session is open on: their transactions live on no thread. */
+  private Set<String> sessionDatabaseNames() {
+    final HttpServer http = server.getHttpServer();
+    if (http == null)
+      return Set.of();
+    final Set<String> names = http.getSessionManager().getSessionDatabaseNames();
+    http.getInsertSessionManager().collectSessionDatabaseNames(names);
+    return names;
+  }
+
+  private boolean hasSession(final String name) {
     final HttpServer http = server.getHttpServer();
     return http != null && (http.getSessionManager().hasSessionOnDatabase(name) || http.getInsertSessionManager()
         .hasSessionOnDatabase(name));
