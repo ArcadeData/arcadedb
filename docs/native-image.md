@@ -219,7 +219,7 @@ minutes). There is likewise no free Windows-on-ARM runner.
 The image is built at `-O3` (the `native.opt` property in `native/pom.xml`), which inlines more than
 GraalVM's default `-O2`: faster code, a larger binary and a longer image build. The measurement is in
 [#11070](https://github.com/ArcadeData/arcadedb/issues/11070). Build at the default level with
-`-Dnative.opt=-O2`.
+`-Dnative.opt=-O2`, or a smaller binary with `-Dnative.opt=-Os`.
 
 ## CPU requirements
 
