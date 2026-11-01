@@ -87,6 +87,12 @@ import java.util.function.Function;
  * <p>
  * {@link IllegalArgumentException} is listed as well: the engine raises it for an unknown query language, and an embedded
  * caller catches it as such.
+ * <p>
+ * Adding an exception: a new class of {@code com.arcadedb.exception} whose {@code (String)} constructor takes its message gets
+ * one line here, and the scanning test fails until it has it. A message-only exception that lives in another package of the
+ * engine or of the network module ({@code FeatureNotImplementedException}, {@code TriggerExecutionException},
+ * {@code QuorumNotReachedException}, ...) is outside the scan, so whoever adds one adds its line here by hand. An exception
+ * that carries more than its message gets a structured mapping in the drivers instead, ahead of this table.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

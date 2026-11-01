@@ -57,7 +57,10 @@ import java.util.function.Function;
  * <p>
  * Degenerate arguments follow one rule across the family (issue #11052). A NULL vector argument answers NULL, the SQL
  * convention, so a row without an embedding yet answers NULL instead of failing the whole query ({@code vector.dimension}
- * answers 0, as {@code size()} does, issue #3099). An empty vector answers what the function answers on a zero vector:
+ * answers 0, as {@code size()} does, issue #3099). The searches and the reranker ({@code vector.neighbors},
+ * {@code vector.sparseNeighbors}, {@code vector.recommend}, {@code vector.discover}, {@code vector.rerank}) are outside
+ * this rule: their index name, query vector and count are supplied once for the whole query, no row can lack them, and a
+ * NULL one is refused as the caller's mistake. An empty vector answers what the function answers on a zero vector:
  * 0 for a norm or a distance, false for a predicate, an empty vector for an element-wise operation. Only a function that
  * has no value on it (cosine similarity, variance, standard deviation, sparsity, the quantizations: 0/0) refuses it.
  * {@code Issue11052VectorDegenerateArgumentsTest} checks the NULL rule over every registered {@code vector.*} function.
