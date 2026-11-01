@@ -289,6 +289,25 @@ class Issue11081ReadOnlyBoundedDemandTest {
   }
 
   @Test
+  void matchesPastTheCapAreStreamedWithoutBeingRemembered() {
+    // 2,000 x 3 x 2 = 12,000 matches per input row, past the 10,000 the memo keeps: each row runs the chain again
+    final String query = "UNWIND [1, 2] AS i OPTIONAL MATCH (a:GspHigh), (b:GspWitness), (c:GspLow) RETURN count(*) AS n";
+    assertThat(single(query, "n")).isEqualTo(2L * HIGH * 3 * 2);
+    final String profile = profile(query);
+    assertThat(counter(profile, "reused per a, b, c]", "match runs")).isEqualTo(2);
+    assertThat(counter(profile, "reused per a, b, c]", "reused")).isZero();
+  }
+
+  @Test
+  void anInputOfWholeBatchesEndsWithItsLastRow() {
+    // A step that fills its buffer no longer asks its input whether more follows: it learns it on the next pull
+    assertThat(column("UNWIND range(1, 200) AS i RETURN i", "i")).hasSize(200);
+    assertThat(column("UNWIND range(1, 300) AS i WITH i WHERE i % 3 = 0 RETURN i", "i")).hasSize(100);
+    assertThat(column("UNWIND range(1, 200) AS i RETURN DISTINCT i % 100 AS i", "i")).hasSize(100);
+    assertThat(column("MATCH (n:GspHigh) WHERE n.uid > 5 RETURN n.uid AS uid", "uid")).hasSize(HIGH);
+  }
+
+  @Test
   void anEmptyAnswerIsRememberedAsWell() {
     final String query = "UNWIND range(1, 4) AS i MATCH (r:GspRoot) OPTIONAL MATCH (r)<-[:GSP_LOW]-(x) RETURN i, x ORDER BY i";
     assertThat(rows(query)).containsExactly("1,null", "2,null", "3,null", "4,null");
