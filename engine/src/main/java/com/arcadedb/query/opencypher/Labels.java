@@ -855,6 +855,15 @@ public final class Labels {
       return compositeTypeName;
     }
 
+    // A replica in a transaction its client opened cannot make the types itself, and a local frame would be refused before the builder
+    // below could ask the leader (issue #11063): the leader makes them all in one frame, and what is left here finds them in place
+    if (!schema.existsType(compositeTypeName) && ((DatabaseInternal) schema.getEmbedded().getDatabase()).getWrappedDatabaseInstance()
+        .createMissingTypeOnTheLeader(compositeTypeName, () -> ensureLabelTypesStatement(uniqueLabels))
+        && isCompositeInPlace(schema, uniqueLabels, compositeTypeName)) {
+      createCompositeType(schema, uniqueLabels, compositeTypeName);
+      return compositeTypeName;
+    }
+
     // The async quiescence OUTSIDE the frame, which holds the database write lock the workers need to commit their batch: linking a
     // super type that has indexes waits for them to drain. Reentrant, so the builder inside rides on it
     try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) schema.getEmbedded().getDatabase()).quiesceAsync()) {
@@ -862,6 +871,19 @@ public final class Labels {
     }
 
     return compositeTypeName;
+  }
+
+  /** The statement that has the leader make the types of a label set in one schema frame, see {@code SQLFunctionEnsureLabelTypes}. */
+  private static String ensureLabelTypesStatement(final Set<String> uniqueLabels) {
+    final StringBuilder sql = new StringBuilder("SELECT ensureLabelTypes([");
+    boolean first = true;
+    for (final String label : uniqueLabels) {
+      if (!first)
+        sql.append(", ");
+      first = false;
+      sql.append('\'').append(label.replace("\\", "\\\\").replace("'", "\\'")).append('\'');
+    }
+    return sql.append("]) AS created").toString();
   }
 
   /** True when every label is a type, and so is the composite, which already inherits each of them: nothing to create or link. */
