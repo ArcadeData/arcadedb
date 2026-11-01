@@ -48,8 +48,11 @@ public class SQLFunctionEnsureLabelTypes extends SQLFunctionAbstract {
       final CommandContext context) {
     final List<String> labels = new ArrayList<>();
     if (params != null && params.length > 0 && params[0] instanceof Collection<?> collection)
-      for (final Object label : collection)
+      for (final Object label : collection) {
+        if (label == null)
+          throw new IllegalArgumentException("ensureLabelTypes() does not accept a null label");
         labels.add(label.toString());
+      }
     if (labels.isEmpty())
       throw new IllegalArgumentException("ensureLabelTypes() needs a non-empty list of labels");
 

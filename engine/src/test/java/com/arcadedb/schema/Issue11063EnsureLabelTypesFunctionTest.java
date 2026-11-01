@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11063: a follower inside a client transaction has the leader create the types of a multi-label node, and it must be ONE
@@ -64,6 +65,11 @@ class Issue11063EnsureLabelTypesFunctionTest extends TestHelper {
   void aLabelWithAQuoteIsPassedThroughIntact() {
     ensure("['it\\'s', 'Ld2']");
     assertThat(database.getSchema().existsType("it's")).isTrue();
+  }
+
+  @Test
+  void aNullLabelIsRefusedClearly() {
+    assertThatThrownBy(() -> ensure("['Le1', null]")).hasMessageContaining("null label");
   }
 
   /** The result set is lazy: the function runs when the row is read. */
