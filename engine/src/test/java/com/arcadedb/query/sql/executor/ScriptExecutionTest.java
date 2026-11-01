@@ -482,7 +482,8 @@ class ScriptExecutionTest extends TestHelper {
 
       ResultSet rs = database.command("sqlscript", script);
       Result item = rs.next();
-      assertThat((Integer) item.getProperty("result")).isEqualTo(8);
+      // sqrt() of an integral value is a Double since issue #11047
+      assertThat(item.<Number>getProperty("result").doubleValue()).isEqualTo(8.0);
 
       rs.close();
     });

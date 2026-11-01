@@ -287,12 +287,19 @@ public class FullTextQueryExecutor {
     }
   }
 
-  private IndexCursor executeQuery(final Query query, final int limit) {
+  private IndexCursor executeQuery(final Query query, int limit) {
     final Map<RID, AtomicInteger> scoreMap = collectQueryMatches(query);
-    if (ridFilter != null)
+    if (ridFilter != null) {
       // Before the scoring and the limit: the best matches are the best of those the filter keeps. The scores do not change,
       // the document frequencies were counted on the postings
+      final int bucketId = index.getAssociatedBucketId();
+      // A predicate on the records is decided through an index listing no longer than the matches (issue #11069)
+      ridFilter.listBucket(bucketId, scoreMap.size());
       scoreMap.keySet().removeIf(rid -> !ridFilter.accepts(rid));
+      if (!ridFilter.decidesBucket(bucketId))
+        // the predicate is left to the records once loaded: the best matches kept here could all fail it
+        limit = -1;
+    }
 
     // BM25 path: collectMatches above determined WHICH documents match (boolean/phrase/wildcard semantics). Re-rank that
     // candidate set with BM25 using the scoring tokens captured during matching.

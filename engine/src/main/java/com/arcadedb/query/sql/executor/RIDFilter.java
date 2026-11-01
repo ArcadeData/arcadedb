@@ -18,9 +18,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
@@ -36,9 +38,11 @@ import com.arcadedb.query.sql.parser.NeqOperator;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.logging.Level;
@@ -53,6 +57,15 @@ import java.util.logging.Level;
  * sub-query held in a variable, a null) is decided by evaluating the condition itself on the RID, which is what the
  * filter this replaces did with the record - an {@code @rid} reads the identity and loads nothing. Either way the
  * answer is the condition's own, so the planner can drop the conjuncts from the filter after the fetch.
+ * <p>
+ * It can also carry a set of candidates (issue #11069): the {@code filter} option of a full-text procedure, held as an exact
+ * allow-list like an {@code @rid IN}, or a predicate on the records - the {@code where} option, or the property equalities of
+ * a SQL {@code WHERE} - which no RID decides by itself. A predicate is decided through an index that lists the records it may
+ * accept, one bucket at a time: the search asks {@link #listBucket} once it knows how many matches the bucket holds, and the
+ * listing is read only when it is no longer than that, so it never costs more index entries than the bucket has matches. A
+ * bucket whose listing is exact is decided before any record is loaded ({@link #decidesBucket}); a bucket listed as a superset
+ * drops the matches outside it, and one with no listing keeps every match: there the records are tested once loaded
+ * ({@link #acceptsRecord}), and a search must not cut that bucket's matches to a limit before they are.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -71,6 +84,12 @@ public final class RIDFilter {
   private       Set<RID>                excluded;
   private       BooleanExpression[]     evaluated;
   private       boolean                 acceptsNothing;
+  /** The records' predicate, or null for none: decided per bucket through {@link #listings}. */
+  private       PredicateRidSet         predicate;
+  /** What each bucket {@link #listBucket listed} of the predicate's candidates: {@link #NOT_LISTED} when no index lists them. */
+  private       Map<Integer, PredicateRidSet.Candidates> listings;
+
+  private static final PredicateRidSet.Candidates NOT_LISTED = new PredicateRidSet.Candidates(Set.of(), false);
 
   private RIDFilter(final List<BooleanExpression> conditions, final CommandContext context) {
     this.conditions = conditions;
@@ -82,11 +101,27 @@ public final class RIDFilter {
    * {@link #isPushable(BooleanExpression)} accepted at planning time - against this execution's parameters and variables.
    */
   public static RIDFilter resolve(final List<BooleanExpression> conditions, final CommandContext context) {
+    return resolve(conditions, null, context);
+  }
+
+  /**
+   * {@link #resolve(List, CommandContext)} restricted to {@code candidates} as well (issue #11069): a {@link PredicateRidSet},
+   * decided through the indexes as described above, or any other set, an exact allow-list.
+   *
+   * @param conditions the {@code @rid} conditions, possibly empty
+   * @param candidates the candidates, or null for no restriction beyond the conditions
+   */
+  public static RIDFilter resolve(final List<BooleanExpression> conditions, final Set<RID> candidates, final CommandContext context) {
     final RIDFilter filter = new RIDFilter(conditions, context);
     final List<BooleanExpression> evaluated = new ArrayList<>(0);
     for (final BooleanExpression condition : conditions)
       if (!filter.resolveNatively(condition))
         evaluated.add(condition);
+    if (candidates instanceof PredicateRidSet predicateSet) {
+      filter.predicate = predicateSet;
+      filter.listings = new HashMap<>();
+    } else if (candidates != null)
+      filter.restrictAllowed(candidates);
     filter.evaluated = evaluated.toArray(new BooleanExpression[0]);
     filter.acceptsNothing = filter.computeAcceptsNothing();
     if (filter.allowed != null) {
@@ -152,12 +187,61 @@ public final class RIDFilter {
       return false;
     if (excluded != null && excluded.contains(rid))
       return false;
+    if (predicate != null) {
+      final PredicateRidSet.Candidates listed = listings.get(rid.getBucketId());
+      // a listing holds every member of its bucket, exact or not: what it does not hold is rejected
+      if (listed != null && listed != NOT_LISTED && !listed.rids().contains(rid))
+        return false;
+    }
     // A condition left to evaluation reads the RID's identity on its left and a value resolved without a record on its right:
     // it loads nothing, and a value it cannot compare answers false or null, which rejects the RID as the filter it replaces did
     for (final BooleanExpression condition : evaluated)
       if (!Boolean.TRUE.equals(condition.evaluate((Identifiable) rid, context)))
         return false;
     return true;
+  }
+
+  /**
+   * Lists the predicate's candidates in bucket {@code bucketId}, where the search found {@code matches} matches, if no more
+   * than that many: from then on {@link #accepts} decides the matches of the bucket against the listing. Nothing to do
+   * without a predicate, or for a bucket listed already (the first listing is kept, so a search repeated without its limit
+   * decides the bucket the same way).
+   */
+  public void listBucket(final int bucketId, final int matches) {
+    if (predicate == null || listings.containsKey(bucketId))
+      return;
+    final PredicateRidSet.Candidates listed = matches > 0 ? predicate.listCandidates(bucketId, matches) : null;
+    listings.put(bucketId, listed != null ? listed : NOT_LISTED);
+  }
+
+  /**
+   * Whether {@link #accepts} answers exactly for the RIDs of {@code bucketId}: always without a predicate; with one, only once
+   * the bucket is listed by an index that answers the whole predicate. Otherwise an accepted RID may still fail the predicate,
+   * which only its record tells ({@link #acceptsRecord}), so a search must not keep only the best ones of that bucket.
+   */
+  public boolean decidesBucket(final int bucketId) {
+    if (predicate == null)
+      return true;
+    final PredicateRidSet.Candidates listed = listings.get(bucketId);
+    return listed != null && listed.exact();
+  }
+
+  /** Whether the filter has a predicate on the records, which a RID alone may not decide (see {@link #decidesBucket}). */
+  public boolean hasRecordPredicate() {
+    return predicate != null;
+  }
+
+  /**
+   * {@link #accepts} for a record loaded already: a RID of a bucket the listing did not decide is decided by testing the record
+   * against the predicate, without loading it again.
+   */
+  public boolean acceptsRecord(final Record record) {
+    final RID rid = record.getIdentity();
+    if (!accepts(rid))
+      return false;
+    if (decidesBucket(rid.getBucketId()))
+      return true;
+    return record instanceof Document document && predicate.matches(document);
   }
 
   /**
@@ -178,6 +262,11 @@ public final class RIDFilter {
       if (!builder.isEmpty())
         builder.append(" AND ");
       builder.append(condition);
+    }
+    if (predicate != null) {
+      if (!builder.isEmpty())
+        builder.append(" AND ");
+      builder.append(predicate);
     }
     return builder.toString();
   }
@@ -313,7 +402,7 @@ public final class RIDFilter {
     public boolean hasNext() {
       while (next == null && source.hasNext()) {
         final Record record = source.next();
-        if (record != null && filter.accepts(record.getIdentity()))
+        if (record != null && filter.acceptsRecord(record))
           next = record;
       }
       return next != null;

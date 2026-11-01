@@ -47,26 +47,15 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
       final CommandContext context) {
     final Object inputValue = params[0];
 
-    if (inputValue == null) {
-      result = null;
-    } else if (inputValue instanceof Number number && number.doubleValue() < 0.0) {
-      result = null;
-    } else if (inputValue instanceof BigDecimal decimal) {
-      result = decimal.sqrt(new MathContext(10));
-    } else if (inputValue instanceof BigInteger integer) {
-      result = integer.sqrt();
-    } else if (inputValue instanceof Integer integer) {
-      result = Double.valueOf(Math.sqrt(integer)).intValue();
-    } else if (inputValue instanceof Long long1) {
-      result = Double.valueOf(Math.sqrt(long1)).longValue();
-    } else if (inputValue instanceof Short short1) {
-      result = Double.valueOf(Math.sqrt(short1)).shortValue();
-    } else if (inputValue instanceof Double double1) {
-      result = Math.sqrt(double1);
-    } else if (inputValue instanceof Float float1) {
-      result = Double.valueOf(Math.sqrt(float1)).floatValue();
-    } else {
-      throw new IllegalArgumentException("Argument to square root must be a number");
+    // The root of a number is a function of its value, not of the Java width it arrived in (issue #11047): sqrt(2) of an
+    // INTEGER is 1.414..., not 1. A DECIMAL keeps its exact arithmetic, rounded to DECIMAL128 like a decimal division
+    switch (inputValue) {
+    case null -> result = null;
+    case Number number when number.doubleValue() < 0.0 -> result = null;
+    case BigDecimal decimal -> result = decimal.sqrt(MathContext.DECIMAL128);
+    case BigInteger integer -> result = new BigDecimal(integer).sqrt(MathContext.DECIMAL128);
+    case Number number -> result = Math.sqrt(number.doubleValue());
+    default -> throw new IllegalArgumentException("Argument to square root must be a number");
     }
 
     return getResult();

@@ -42,6 +42,7 @@ import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
 import com.arcadedb.graphql.parser.TypeName;
 import com.arcadedb.graphql.parser.TypeSystemDefinition;
+import com.arcadedb.graphql.parser.Value;
 import com.arcadedb.graphql.parser.ValueWithVariable;
 import com.arcadedb.graphql.parser.VariableDefinition;
 import com.arcadedb.graphql.parser.VariableDefinitions;
@@ -83,6 +84,8 @@ public class GraphQLSchema {
    */
   private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long", "JSON", "BigDecimal" };
   private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);
+  /** A declared default with no Java value: an object, which is not supported (issue #11098). */
+  private static final Object      UNSUPPORTED_DEFAULT = new Object();
 
   private final    Database            database;
   /**
@@ -257,8 +260,8 @@ public class GraphQLSchema {
             if ("sql".equals(directiveName) ||
                 "gremlin".equals(directiveName) ||
                 "cypher".equals(directiveName))
-              return parseNativeQueryDirective(directiveName, directive, selection, operationSelectionSet, returnType, variables, fragments,
-                  registry);
+              return parseNativeQueryDirective(directiveName, directive, typeDefinition, selection, operationSelectionSet, returnType,
+                  variables, fragments, registry);
           }
         }
       }
@@ -377,7 +380,7 @@ public class GraphQLSchema {
     if (definitions == null || definitions.getVariableDefinitions().isEmpty())
       return Collections.emptyMap();
 
-    final Map<String, Object> variables = new HashMap<>(definitions.getVariableDefinitions().size());
+    final CoercedVariables variables = new CoercedVariables(definitions.getVariableDefinitions().size());
     for (final VariableDefinition definition : definitions.getVariableDefinitions()) {
       final VariableLiteral literal = definition.getVariableLiteral();
       if (literal == null)
@@ -411,9 +414,23 @@ public class GraphQLSchema {
         throw new CommandParsingException("GraphQL variable '$" + name + "' is declared as non-null but no value was passed");
 
       variables.put(name, null);
+      variables.omitted.add(name);
     }
 
     return variables;
+  }
+
+  /**
+   * The coerced variables of an operation, which also remember the ones declared with neither a value nor a default: an
+   * argument bound to one of those is not provided, so it takes the default of the argument, where an explicit null keeps
+   * null (issue #11098).
+   */
+  private static final class CoercedVariables extends HashMap<String, Object> {
+    private final Set<String> omitted = new HashSet<>();
+
+    private CoercedVariables(final int expectedSize) {
+      super(expectedSize * 2);
+    }
   }
 
   /**
@@ -503,7 +520,8 @@ public class GraphQLSchema {
     return value != null ? value.getValue() : null;
   }
 
-  private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection,
+  private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final FieldDefinition field,
+      final Selection selection,
       final SelectionSet selectionSet, final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments,
       final GraphQLTypeRegistry registry) {
     if (directive.getArguments() == null)
@@ -519,7 +537,7 @@ public class GraphQLSchema {
         final Object statementValue = resolveValue(argument.getValueWithVariable(), null);
         statement = statementValue != null ? statementValue.toString() : null;
 
-        arguments = getArguments(selection.getArguments(), variables);
+        arguments = withOmittedArguments(getArguments(selection.getArguments(), variables), field);
         projection = selectionSet;
       }
     }
@@ -533,12 +551,60 @@ public class GraphQLSchema {
         fragments);
   }
 
+  /**
+   * Binds every argument the field declares and the operation omitted: to its default value, or to null, which is what an
+   * omitted nullable argument means in GraphQL. The statement of the directive reads each one as a parameter, and a parameter
+   * with no value is refused rather than read as null (issue #11098).
+   */
+  private static Map<String, Object> withOmittedArguments(Map<String, Object> arguments, final FieldDefinition field) {
+    if (field == null || field.getArgumentsDefinition() == null)
+      return arguments;
+    for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions()) {
+      final String name = definition.getName().getValue();
+      if (arguments != null && arguments.containsKey(name))
+        continue;
+      Object value = null;
+      if (definition.getDefaultValue() != null) {
+        value = defaultValueOf(definition.getDefaultValue().getValue());
+        if (value == UNSUPPORTED_DEFAULT)
+          // an object default is not supported: the argument stays unbound, which only a statement that reads it refuses
+          continue;
+      }
+      if (arguments == null)
+        arguments = new HashMap<>();
+      arguments.put(name, value);
+    }
+    return arguments;
+  }
+
+  /** The Java value of a declared default: a scalar, or a list of them, or {@link #UNSUPPORTED_DEFAULT} for an object. */
+  private static Object defaultValueOf(final Value value) {
+    final AbstractValue scalar = value.getValue();
+    if (scalar != null)
+      return scalar.getValue();
+    if (value.getListValue() == null)
+      return UNSUPPORTED_DEFAULT;
+    final List<Object> list = new ArrayList<>(value.getListValue().getValues().size());
+    for (final Value item : value.getListValue().getValues()) {
+      final Object element = defaultValueOf(item);
+      if (element == UNSUPPORTED_DEFAULT)
+        return UNSUPPORTED_DEFAULT;
+      list.add(element);
+    }
+    return list;
+  }
+
   private static Map<String, Object> getArguments(final Arguments queryArguments, final Map<String, Object> variables) {
     Map<String, Object> arguments = null;
 
     if (queryArguments != null) {
       for (final Argument queryArgument : queryArguments.getList()) {
         final String argName = queryArgument.getName();
+        // AN ARGUMENT BOUND TO A VARIABLE THE CALLER DID NOT PROVIDE IS NOT PROVIDED EITHER (ISSUE #11098)
+        if (variables instanceof CoercedVariables coerced && !coerced.omitted.isEmpty() && queryArgument.getValueWithVariable() != null
+            && queryArgument.getValueWithVariable().getValue() instanceof VariableLiteral variable && coerced.omitted.contains(
+            variable.getName()))
+          continue;
         final Object argValue = resolveValue(queryArgument.getValueWithVariable(), variables);
 
         if (arguments == null)

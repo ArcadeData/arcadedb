@@ -108,8 +108,9 @@ import java.util.logging.Level;
  * Only {@link #contains}, {@link #isEmpty}, {@link #size} and, with a {@code filter}, {@link #iterator} are meaningful.
  * {@link #equals}, {@link #hashCode} and {@link #toString} are identity-based and never enumerate the set.
  * <p>
- * Public for {@link #matching} alone, the entry point of a caller outside this package (the Cypher {@code SEARCH} clause);
- * the option parsing of {@code of} stays with the vector functions of this package.
+ * Public for the callers outside this package: the Cypher {@code SEARCH} clause ({@link #matching}), and the full-text searches
+ * (issue #11069), which decide a {@code where} option of {@code db.index.fulltext.queryNodes} or the property equalities of a
+ * SQL {@code WHERE} through {@link #of} and {@link #listCandidates} before they score and load the matches.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -175,7 +176,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
    * @param filter       the RIDs of the {@code filter} option, or null when it is absent
    * @param functionName the function the option belongs to, for the error messages
    */
-  static Set<RID> of(final Object where, final Set<RID> filter, final String functionName, final CommandContext context) {
+  public static Set<RID> of(final Object where, final Set<RID> filter, final String functionName, final CommandContext context) {
     if (where == null)
       return filter;
     if (filter != null && filter.isEmpty())
@@ -259,6 +260,29 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       // gone, or not readable by the caller: not a candidate the caller may be answered
       return false;
     }
+    return matchesRecord(record);
+  }
+
+  /**
+   * Tests a record the caller loaded already, and remembers the answer as {@link #contains} would (issue #11069).
+   */
+  @Override
+  public boolean matches(final Document record) {
+    final RID rid = record.getIdentity();
+    if (rid != null) {
+      if (restrictTo != null && !restrictTo.contains(rid))
+        return false;
+      final Boolean known = decided.get(rid);
+      if (known != null)
+        return known;
+    }
+    final boolean accepted = matchesRecord(record);
+    if (rid != null)
+      decided.putIfAbsent(rid, accepted);
+    return accepted;
+  }
+
+  private boolean matchesRecord(final Document record) {
     if (condition != null)
       synchronized (this) {
         return Boolean.TRUE.equals(condition.matchesFilters(record, context));
@@ -498,9 +522,10 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   }
 
   /**
-   * The name of the property {@code expression} reads, when it is a bare property and nothing else.
+   * The name of the property {@code expression} reads, when it is a bare property and nothing else. The SQL planner asks it of
+   * the conjuncts it hands a full-text search to decide through an index (issue #11069).
    */
-  private static String propertyName(final Expression expression) {
+  public static String propertyName(final Expression expression) {
     if (expression == null || !(expression.getMathExpression() instanceof BaseExpression base) || base.getModifier() != null)
       return null;
     final BaseIdentifier identifier = base.getIdentifier();

@@ -57,7 +57,7 @@ public class PositionalParameter extends InputParameter {
   }
 
   // THE LOOKUP KEY IS BUILT ONCE PER NUMBER, NOT ONCE PER EVALUATION (A FILTER EVALUATES IT FOR EVERY ROW OF A SCAN)
-  private String key() {
+  String key() {
     return paramNumber >= 0 && paramNumber < SMALL_KEYS.length ? SMALL_KEYS[paramNumber] : String.valueOf(paramNumber);
   }
 

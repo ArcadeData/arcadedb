@@ -43,6 +43,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -124,42 +125,51 @@ public final class SqlAstInspector {
 
   /**
    * Whether every node reachable from {@code root} - through AST fields, collections, maps and arrays - satisfies
-   * {@code test}. A {@code null} root trivially does.
+   * {@code test}. A {@code null} root trivially does. The nodes are tested in the order the tree holds them, depth first.
+   * <p>
+   * Iterative, not recursive, like {@link #forEachNestedStatement}: a parsed expression chain can be thousands of nodes deep
+   * (issue #9148), and this runs on every execution that binds parameters (issue #11098), on whatever stack the caller has.
    */
   public static boolean allNodesMatch(final Object root, final Predicate<SimpleNode> test) {
-    if (root != null && !astFieldsReadable)
+    if (root == null)
+      return true;
+    if (!astFieldsReadable)
       return false;
-    return allNodesMatch(root, test, new IdentityHashMap<>());
-  }
-
-  private static boolean allNodesMatch(final Object node, final Predicate<SimpleNode> test, final IdentityHashMap<Object, Boolean> visited) {
-    if (isAstObject(node)) {
-      if (visited.put(node, Boolean.TRUE) != null)
-        return true;
-      if (node instanceof SimpleNode simpleNode && !test.test(simpleNode))
-        return false;
-      for (final Field f : AST_FIELDS.get(node.getClass())) {
-        final Object value;
-        try {
-          value = f.get(node);
-        } catch (final IllegalAccessException e) {
+    final IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
+    final ArrayDeque<Object> pending = new ArrayDeque<>();
+    final List<Object> children = new ArrayList<>();
+    pending.push(root);
+    while (!pending.isEmpty()) {
+      final Object node = pending.pop();
+      children.clear();
+      if (isAstObject(node)) {
+        if (visited.put(node, Boolean.TRUE) != null)
+          continue;
+        if (node instanceof SimpleNode simpleNode && !test.test(simpleNode))
           return false;
+        for (final Field f : AST_FIELDS.get(node.getClass())) {
+          try {
+            children.add(f.get(node));
+          } catch (final IllegalAccessException e) {
+            return false;
+          }
         }
-        if (value != null && !allNodesMatch(value, test, visited))
-          return false;
+      } else if (node instanceof Collection<?> collection)
+        children.addAll(collection);
+      else if (node instanceof Map<?, ?> map)
+        for (final Map.Entry<?, ?> entry : map.entrySet()) {
+          children.add(entry.getKey());
+          children.add(entry.getValue());
+        }
+      else if (node instanceof Object[] array)
+        Collections.addAll(children, array);
+
+      // PUSHED IN REVERSE, SO THEY ARE POPPED IN THE ORDER THE NODE HOLDS THEM
+      for (int i = children.size() - 1; i >= 0; i--) {
+        final Object child = children.get(i);
+        if (child != null)
+          pending.push(child);
       }
-    } else if (node instanceof Collection<?> collection) {
-      for (final Object item : collection)
-        if (!allNodesMatch(item, test, visited))
-          return false;
-    } else if (node instanceof Map<?, ?> map) {
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        if (!allNodesMatch(entry.getKey(), test, visited) || !allNodesMatch(entry.getValue(), test, visited))
-          return false;
-    } else if (node instanceof Object[] array) {
-      for (final Object item : array)
-        if (!allNodesMatch(item, test, visited))
-          return false;
     }
     return true;
   }
