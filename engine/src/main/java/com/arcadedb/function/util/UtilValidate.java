@@ -38,6 +38,8 @@ import java.util.IllegalFormatException;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class UtilValidate extends AbstractUtilFunction {
+  private static final int MAX_FORMAT_WIDTH = 1_000;
+
   @Override
   protected String getSimpleName() {
     return "validate";
@@ -87,6 +89,10 @@ public class UtilValidate extends AbstractUtilFunction {
     else
       return text;
 
+    // '%999999999s' would pad the message to a gigabyte: a width or precision beyond any real message is not formatted
+    if (hasOversizedSpecifier(text))
+      return text + " " + Arrays.toString(values);
+
     try {
       return String.format(text, values);
     } catch (final IllegalFormatException e) {
@@ -94,5 +100,29 @@ public class UtilValidate extends AbstractUtilFunction {
       // the text it chose rather than with a complaint about the format
       return text + " " + Arrays.toString(values);
     }
+  }
+
+  /**
+   * Whether a format specifier of {@code text} asks for a width or precision above {@link #MAX_FORMAT_WIDTH}. Every run of
+   * digits after a {@code %} and before its conversion character is measured: argument index, width and precision alike,
+   * which only errs towards not formatting a message no real guard writes.
+   */
+  private static boolean hasOversizedSpecifier(final String text) {
+    final int length = text.length();
+    for (int i = text.indexOf('%'); i >= 0 && i < length; i = text.indexOf('%', i + 1)) {
+      long number = 0;
+      for (int j = i + 1; j < length; j++) {
+        final char c = text.charAt(j);
+        if (c >= '0' && c <= '9') {
+          number = number * 10 + (c - '0');
+          if (number > MAX_FORMAT_WIDTH)
+            return true;
+        } else if (c == '.' || c == '$' || c == '-' || c == '#' || c == '+' || c == ' ' || c == ',' || c == '(')
+          number = 0;
+        else
+          break;
+      }
+    }
+    return false;
   }
 }

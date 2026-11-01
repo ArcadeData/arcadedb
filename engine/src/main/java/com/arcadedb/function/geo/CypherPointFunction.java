@@ -209,12 +209,12 @@ public class CypherPointFunction implements StatelessFunction {
    * {@code WGS-84}, one built since {@code wgs-84}.
    */
   public static boolean isGeographicCrs(final String crs) {
-    return crs.regionMatches(true, 0, CRS_WGS84_2D, 0, CRS_WGS84_2D.length());
+    return crs.equalsIgnoreCase(CRS_WGS84_2D) || crs.equalsIgnoreCase(CRS_WGS84_3D);
   }
 
   /** Whether a crs name is one of the two cartesian names, in any letter case (see {@link #isGeographicCrs}). */
   public static boolean isCartesianCrs(final String crs) {
-    return crs.regionMatches(true, 0, CRS_CARTESIAN_2D, 0, CRS_CARTESIAN_2D.length());
+    return crs.equalsIgnoreCase(CRS_CARTESIAN_2D) || crs.equalsIgnoreCase(CRS_CARTESIAN_3D);
   }
 
   private static boolean isKnownSrid(final int srid) {

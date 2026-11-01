@@ -84,6 +84,24 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
   }
 
   @Test
+  void anOversizedFormatWidthIsNotFormatted() {
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, 'x%999999999s', ['y']) RETURN 1 AS ok"))))
+        .isEqualTo("x%999999999s [y]");
+    // a width a real message uses still formats
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '[%5s]', ['y']) RETURN 1 AS ok"))))
+        .isEqualTo("[    y]");
+  }
+
+  @Test
+  void numberAndStringPredicates() {
+    assertThat(rows("CALL apoc.util.validate(0, 'bad') RETURN 1 AS ok")).hasSize(1);
+    assertThat(rows("CALL apoc.util.validate('false', 'bad') RETURN 1 AS ok")).hasSize(1);
+    assertThat(rows("CALL apoc.util.validate('', 'bad') RETURN 1 AS ok")).hasSize(1);
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(1, 'one') RETURN 1 AS ok")))).isEqualTo("one");
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate('yes', 'yes') RETURN 1 AS ok")))).isEqualTo("yes");
+  }
+
+  @Test
   void aNullPredicateDoesNotRaise() {
     assertThat(rows("CALL apoc.util.validate(null, 'bad', []) RETURN 1 AS ok")).hasSize(1);
   }
