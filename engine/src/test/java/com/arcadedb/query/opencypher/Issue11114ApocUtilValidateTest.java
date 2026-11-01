@@ -91,6 +91,9 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
     // '<' reuses the previous argument: its width is measured too
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '%s%<999999999s', ['y']) RETURN 1 AS ok"))))
         .isEqualTo("%s%<999999999s [y]");
+    // an argument index does not hide the width after it
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '%1$1001s', ['y']) RETURN 1 AS ok"))))
+        .isEqualTo("%1$1001s [y]");
     // a width a real message uses still formats
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '[%5s]', ['y']) RETURN 1 AS ok"))))
         .isEqualTo("[    y]");

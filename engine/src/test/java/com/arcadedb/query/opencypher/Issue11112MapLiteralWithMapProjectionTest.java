@@ -92,6 +92,14 @@ class Issue11112MapLiteralWithMapProjectionTest extends TestHelper {
   }
 
   @Test
+  void deeperNestingAndAListComprehension() {
+    assertThat(single("MATCH (n:Qa) RETURN { l1: n { l2: { l3: n { .k, l4: { v: n.k } } } } } AS m"))
+        .isEqualTo(Map.of("l1", Map.of("l2", Map.of("l3", Map.of("k", 1, "l4", Map.of("v", 1))))));
+    assertThat(single("MATCH (n:Qa) RETURN { xs: [x IN [1, 2] | { i: x, p: n { .k } }] } AS m"))
+        .isEqualTo(Map.of("xs", List.of(Map.of("i", 1L, "p", Map.of("k", 1)), Map.of("i", 2L, "p", Map.of("k", 1)))));
+  }
+
+  @Test
   void aProjectionThroughAVariableStillWorks() {
     assertThat(single("MATCH (n:Qa) WITH n { .k } AS p RETURN { a: p } AS m")).isEqualTo(Map.of("a", Map.of("k", 1)));
   }
