@@ -56,6 +56,8 @@ public class Issue11068DatabaseIdleCloseTest extends BaseGraphServerTest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     config.setValue(GlobalConfiguration.SERVER_DATABASE_IDLE_CHECK_INTERVAL, TimeUnit.HOURS.toMillis(1));
+    // The warm-up runs statements on an open database in the background: activity no test asked for
+    config.setValue(GlobalConfiguration.SERVER_QUERY_WARM_UP, false);
   }
 
   @AfterEach
@@ -251,12 +253,18 @@ public class Issue11068DatabaseIdleCloseTest extends BaseGraphServerTest {
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DATABASE_IDLE_TIMEOUT, millis);
   }
 
-  /** Two checks a little apart: the first samples the database, the second finds it unused past a 1 ms timeout. */
+  /**
+   * Checks a little apart, until one closes something: the first samples the database, a later one finds it unused past a 1 ms
+   * timeout. Several, so that background work landing between two of them (it moves the activity count) delays the close instead
+   * of failing the test; a database that is pinned stays open through all of them.
+   */
   private int closeIdle() throws InterruptedException {
     final DatabaseIdleCloser closer = getServer(0).getDatabaseIdleCloser();
     int closed = closer.check();
-    Thread.sleep(20);
-    closed += closer.check();
+    for (int attempt = 0; attempt < 10 && closed == 0; attempt++) {
+      Thread.sleep(20);
+      closed += closer.check();
+    }
     return closed;
   }
 

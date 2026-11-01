@@ -99,13 +99,18 @@ public class Issue11068BoltIdleCloseIT extends BaseBoltServerTest {
         Config.builder().withoutEncryption().build());
   }
 
-  /** Two checks a little apart: the first samples the database, the second finds it unused past a 1 ms timeout. */
+  /**
+   * Checks a little apart, until one closes something: the first samples the database, a later one finds it unused past a 1 ms
+   * timeout. Several, so that background work landing between two of them delays the close instead of failing the test.
+   */
   private int closeIdle() throws InterruptedException {
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DATABASE_IDLE_TIMEOUT, 1L);
     final DatabaseIdleCloser closer = getServer(0).getDatabaseIdleCloser();
     int closed = closer.check();
-    Thread.sleep(20);
-    closed += closer.check();
+    for (int attempt = 0; attempt < 10 && closed == 0; attempt++) {
+      Thread.sleep(20);
+      closed += closer.check();
+    }
     return closed;
   }
 }
