@@ -386,7 +386,8 @@ class Issue7931AbortedTransactionVectorLeakTest {
    * The id is DELETED for real before the swap, which is what makes the assertion bite: the replacement is built
    * from the committed pages and so does not carry the id at all, and lifting a tombstone is
    * {@code addOrUpdate(..., deleted=false)} - it would make the id LIVE again in a generation that never had it,
-   * pointing at an offset for a record that no longer exists. Without the identity check this test fails.
+   * pointing at an offset for a record that no longer exists. Without the check that the current generation still
+   * holds the tombstone, this test fails.
    */
   @Test
   void aRepublishedLocationIndexIsNeverHandedAnOffsetFromTheGenerationBeforeIt() throws Exception {
@@ -435,42 +436,47 @@ class Issue7931AbortedTransactionVectorLeakTest {
    * contract under that swap is what this pins, directly - the window itself is unreachable from a test thread,
    * being inside one {@code commit()} between two internal lock acquisitions.
    * <p>
-   * What must survive the re-anchor is everything that is generation-independent, and only that: the ids the
-   * replay allocated (forgotten and swept out of the delta buffer whatever generation is current) and the
-   * index-wide counters. What must not is everything addressed by a captured offset.
+   * Nothing is dropped by the re-anchor: a full rebuild carries the replay's tombstones over (issue #11099), so whether
+   * one can be lifted is decided per id at undo time, against the generation then in force.
    */
   @Test
-  void reAnchoringDropsOnlyWhatTheSwapMadeUnrestorable() throws Exception {
+  void reAnchoringKeepsEveryRecordForTheUndoToDecideAgainstTheCurrentGeneration() throws Exception {
     withDatabase(db -> {
       final LSMVectorIndex index = vectorIndex(db);
       index.buildVectorGraphNow();
 
       final VectorLocationIndex before = index.residentLocationsForTest();
       final int live = before.getActiveVectorIds().findFirst().orElseThrow();
+      final RID rid = before.getRid(live);
 
       final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index, before);
       undo.recordAllocated(4242);
-      undo.recordTombstoned(live, before.getOffsetAndFlag(live), before.getRid(live));
+      undo.recordTombstoned(live, before.getOffsetAndFlag(live), rid);
+      before.markDeleted(live);
       undo.mutationsCharged = 2;
       undo.mutablePagesCreated = 1;
 
       index.buildVectorGraphNow();
       final VectorLocationIndex after = index.residentLocationsForTest();
       assertThat(after).as("precondition: the rebuild must have republished the location index").isNotSameAs(before);
+      assertThat(after.isDeleted(live)).as("precondition: the rebuild carried the replay's tombstone over").isTrue();
 
       undo.rebaseTo(after);
 
       assertThat(undo.locationsAtReplay).as("the journal must now speak for the generation in force").isSameAs(after);
       assertThat(undo.tombstonedCount)
-          .as("the captured offsets address a generation the index no longer reads, so they must go").isZero();
-      assertThat(undo.droppedDeltaEntries)
-          .as("and so must the delta entries the deletes dropped, for the mirror reason").isNull();
+          .as("a tombstone the new generation carried over must still be liftable, so the re-anchor keeps it").isEqualTo(1);
       assertThat(undo.allocatedCount)
           .as("an id minted by this replay is illegitimate in EVERY generation, so it must survive the re-anchor "
               + "- dropping it is what would leave an uncommitted vector searchable")
           .isEqualTo(1);
       assertThat(undo.mutationsCharged).as("the counters are index-wide, not per generation").isEqualTo(2);
       assertThat(undo.mutablePagesCreated).isEqualTo(1);
+
+      undo.undoIndexReplay();
+
+      assertThat(after.isLive(live)).as("the abort lifts the carried tombstone").isTrue();
+      assertThat(after.getRid(live)).isEqualTo(rid);
     });
   }
 
