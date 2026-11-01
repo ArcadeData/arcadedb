@@ -403,6 +403,15 @@
       ]
     },
     {
+      "type": "com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
       "type": "com.arcadedb.function.sql.misc.SQLFunctionUUID",
       "methods": [
         {

@@ -80,9 +80,11 @@ public final class CorrelatedSubQueryCache {
    * Built-in functions whose answer can differ between two calls with the same arguments inside one execution, or
    * that evaluate a query string the static check cannot see into. Every other call must resolve to a built-in.
    * Every registered built-in is classified either here or in LetQueryStepCorrelatedResultCacheTest's reviewed list,
-   * which fails on a newly registered name until someone decides which side it belongs on.
+   * which fails on a newly registered name until someone decides which side it belongs on. {@code ensureLabelTypes}
+   * creates schema types and answers whether this call created them, so a second call answers differently.
    */
-  static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql");
+  static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql",
+      "ensurelabeltypes");
   /**
    * Built-in methods not trusted: {@code remove}/{@code removeAll} change a collection (today on a defensive copy, not
    * relied upon here), and {@code transform} resolves the methods it applies from its string arguments at run time,

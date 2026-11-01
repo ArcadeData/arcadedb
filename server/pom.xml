@@ -35,10 +35,11 @@
 
   <properties>
     <metrics.version>4.2.19</metrics.version>
-    <micrometer.version>1.17.1</micrometer.version>
+    <micrometer.version>1.17.2</micrometer.version>
+    <!-- Stays on 2.x until swagger-parser (test scope) ships a build for swagger-core 3: see .github/dependabot.yml -->
     <swagger.version>2.2.55</swagger.version>
     <swagger-parser.version>2.1.48</swagger-parser.version>
-    <snappy.version>1.1.10.11</snappy.version>
+    <snappy.version>1.1.10.12</snappy.version>
   </properties>
 
   <profiles>
