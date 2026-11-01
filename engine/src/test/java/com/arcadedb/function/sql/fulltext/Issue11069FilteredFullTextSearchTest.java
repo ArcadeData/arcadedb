@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,6 +65,20 @@ class Issue11069FilteredFullTextSearchTest extends TestHelper {
     assertThat(recordsLoadedBy(query)).as("records loaded for LIMIT " + WANTED + " of " + DOCUMENTS + " matches")
         .isLessThanOrEqualTo(WANTED + SLACK);
     assertThat(tenantsOf(query)).containsOnly("b").hasSize(WANTED);
+
+    // a null value lists nothing through the index: the condition is left to the records, and answers as without a search
+    final String nullTenant = "SELECT FROM Doc WHERE " + SEARCH + " AND tenant = :t LIMIT " + WANTED;
+    final Map<String, Object> nullParameter = new HashMap<>();
+    nullParameter.put("t", null);
+    try (final ResultSet rs = database.query("sql", nullTenant, nullParameter);
+        final ResultSet scan = database.query("sql", "SELECT count(@rid) AS c FROM Doc WHERE tenant = :t", nullParameter)) {
+      int rows = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+      assertThat((long) rows).isEqualTo(Math.min(WANTED, scan.next().<Number>getProperty("c").longValue()));
+    }
   }
 
   @Test

@@ -89,6 +89,13 @@ class Issue11047PowSqrtValueTest extends TestHelper {
   }
 
   @Test
+  void zeroToANegativePowerIsRefused() {
+    // the same answer whatever the base's type and the exponent's shape: no value, a typed error rather than infinity
+    assertThatThrownBy(() -> single("SELECT pow(0, -1) AS v")).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> single("SELECT pow(0, -1.5) AS v")).isInstanceOf(ArithmeticErrorException.class);
+  }
+
+  @Test
   void hugeResultIsRefusedNotTruncated() {
     assertThatThrownBy(() -> single("SELECT pow(2, 3000000000) AS v")).isInstanceOf(ArithmeticErrorException.class);
     // An exact integral answer with more digits than an exact decimal holds is rounded like a decimal, never wrapped

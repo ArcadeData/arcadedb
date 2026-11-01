@@ -101,7 +101,8 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
    */
   private static Object integralPow(final long base, final int exponent, final boolean longBase) {
     if (exponent < 0)
-      return Math.pow(base, exponent);
+      // through the same checks as every double power: 0 ^ -1 has no value and is refused, not answered as infinity
+      return doublePow(base, exponent);
 
     final long power;
     try {

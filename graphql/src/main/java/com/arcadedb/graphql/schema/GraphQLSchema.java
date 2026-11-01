@@ -377,7 +377,7 @@ public class GraphQLSchema {
     if (definitions == null || definitions.getVariableDefinitions().isEmpty())
       return Collections.emptyMap();
 
-    final Map<String, Object> variables = new HashMap<>(definitions.getVariableDefinitions().size());
+    final CoercedVariables variables = new CoercedVariables(definitions.getVariableDefinitions().size());
     for (final VariableDefinition definition : definitions.getVariableDefinitions()) {
       final VariableLiteral literal = definition.getVariableLiteral();
       if (literal == null)
@@ -411,9 +411,23 @@ public class GraphQLSchema {
         throw new CommandParsingException("GraphQL variable '$" + name + "' is declared as non-null but no value was passed");
 
       variables.put(name, null);
+      variables.omitted.add(name);
     }
 
     return variables;
+  }
+
+  /**
+   * The coerced variables of an operation, which also remember the ones declared with neither a value nor a default: an
+   * argument bound to one of those is not provided, so it takes the default of the argument, where an explicit null keeps
+   * null (issue #11098).
+   */
+  private static final class CoercedVariables extends HashMap<String, Object> {
+    private final Set<String> omitted = new HashSet<>();
+
+    private CoercedVariables(final int expectedSize) {
+      super(expectedSize * 2);
+    }
   }
 
   /**
@@ -567,6 +581,11 @@ public class GraphQLSchema {
     if (queryArguments != null) {
       for (final Argument queryArgument : queryArguments.getList()) {
         final String argName = queryArgument.getName();
+        // AN ARGUMENT BOUND TO A VARIABLE THE CALLER DID NOT PROVIDE IS NOT PROVIDED EITHER (ISSUE #11098)
+        if (variables instanceof CoercedVariables coerced && !coerced.omitted.isEmpty() && queryArgument.getValueWithVariable() != null
+            && queryArgument.getValueWithVariable().getValue() instanceof VariableLiteral variable && coerced.omitted.contains(
+            variable.getName()))
+          continue;
         final Object argValue = resolveValue(queryArgument.getValueWithVariable(), variables);
 
         if (arguments == null)
