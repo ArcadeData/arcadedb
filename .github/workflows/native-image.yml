@@ -170,7 +170,7 @@ jobs:
       # see docs/native-image.md "Prerequisites". Move the two together or not at all;
       # .github/scripts/check-native-graalvm-pin.py fails the `lint` job if they disagree.
       - name: Set up GraalVM (Community 25.0.2)
-        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.7
+        uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
         with:
           java-version: "25.0.2"
           distribution: "graalvm-community"
@@ -526,7 +526,7 @@ jobs:
 
       - name: Login to Docker Hub
         if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release || inputs.publish_nightly }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -631,7 +631,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
