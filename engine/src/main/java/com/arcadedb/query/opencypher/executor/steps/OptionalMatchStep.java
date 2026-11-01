@@ -424,13 +424,12 @@ public class OptionalMatchStep extends AbstractExecutionStep {
 
   /**
    * Whether the chain reads the same thing from both values: a record by its RID, anything else by equality. A record
-   * that has no RID is only the same as itself, where {@code equals} would match any other record without one.
+   * that has no RID matches nothing, where {@code equals} would match any other record without one: a miss only costs
+   * running the chain.
    */
   private static boolean sameValue(final Object a, final Object b) {
-    if (a == b)
-      return true;
     if (a == null || b == null)
-      return false;
+      return a == null && b == null;
     if (a instanceof Identifiable first && b instanceof Identifiable second) {
       final RID rid = first.getIdentity();
       return rid != null && rid.equals(second.getIdentity());
