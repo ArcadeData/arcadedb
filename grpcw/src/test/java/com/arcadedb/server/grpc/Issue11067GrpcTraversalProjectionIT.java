@@ -153,6 +153,39 @@ public class Issue11067GrpcTraversalProjectionIT extends BaseGrpcServerTest {
   }
 
   @Test
+  void aNestedRowWithColumnsOfItsOwnKeepsThem() {
+    // SELECT *, name AS alias keeps the record AND publishes a column of its own: collapsing the row to the record lost it
+    final GrpcValue value = project("(SELECT *, name AS alias FROM " + VERTEX + " WHERE name = 'b')", "a", null);
+    assertThat(value.getListValue().getValuesCount()).isEqualTo(1);
+    final GrpcMap row = value.getListValue().getValues(0).getMapValue();
+    assertThat(row.getEntriesMap().get("alias").getStringValue()).isEqualTo("b");
+    assertThat(row.getEntriesMap().get("@rid").getLinkValue().getRid()).isEqualTo(ridB);
+    assertThat(row.getEntriesMap().get("@type").getStringValue()).isEqualTo(VERTEX);
+  }
+
+  @Test
+  void theSoftLimitIsOneBudgetForEveryRecordOfTheList() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex(VERTEX).set("name", "hub").save();
+      hub.newEdge(EDGE, database.newVertex(VERTEX).set("name", "x").save());
+      hub.newEdge(EDGE, database.newVertex(VERTEX).set("name", "y").save());
+    });
+
+    final GrpcValue unbounded = project("out('" + EDGE + "')", "hub", projection(ProjectionEncoding.PROJECTION_AS_JSON, 0));
+    assertThat(unbounded.getListValue().getValuesCount()).isEqualTo(2);
+    final int first = unbounded.getListValue().getValues(0).getBytesValue().size();
+    final int second = unbounded.getListValue().getValues(1).getBytesValue().size();
+
+    // Room for the first record, not for both: each one fits the limit alone, the two do not fit it together
+    final GrpcValue bounded = project("out('" + EDGE + "')", "hub",
+        projection(ProjectionEncoding.PROJECTION_AS_JSON, first + second - 1));
+    assertThat(bounded.getListValue().getValues(0).getKindCase()).isEqualTo(GrpcValue.KindCase.BYTES_VALUE);
+    assertThat(bounded.getListValue().getValues(1).getKindCase()).as("over the budget: its link")
+        .isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+  }
+
+  @Test
   void theSoftLimitBoundsARecordInsideAList() {
     // A record the budget cannot hold goes out as its link (the JSON encoding's fallback): the budget sees a record nested
     // in a list, which it never did, since the list arm dropped the config the budget lives on

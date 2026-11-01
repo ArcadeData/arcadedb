@@ -5615,8 +5615,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           byte[] jsonBytes = json.toString().getBytes(StandardCharsets.UTF_8);
 
-          // Soft limit handling
-          if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
+          // Soft limit handling: against what is LEFT of the request's budget, as the MAP encoding counts it. Each record checked
+          // against the whole budget let a list of them, each under the limit, add up to many times it (issue #11048)
+          if (pc.softLimitBytes > 0 && pc.used.get() + jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
             if (debug)
               LogManager.instance().log(this, Level.FINE, """
@@ -5718,11 +5719,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Support ArcadeDB Result/ResultInternal as structural MAP
     if (o instanceof Result res) {
-      // A result that wraps a record (a sub-query row, a nested match) is that record, @rid and @type included, as HTTP sends it
-      if (res.isElement())
-        return toGrpcValue(res.toElement(), pc);
-
       GrpcMap.Builder mb = GrpcMap.newBuilder();
+      if (res.isElement()) {
+        final Document element = res.toElement();
+        // A result that is just a record (a sub-query row) is that record, encoded as the request asks for records
+        if (res.getPropertyNames().equals(element.getPropertyNames()))
+          return toGrpcValue(element, pc);
+        // A row with columns of its own besides the record (SELECT *, name AS alias; a Cypher RETURN n row): its columns, with the
+        // record's @rid and @type, as the HTTP serializer sends it
+        if (element.getIdentity() != null && element.getIdentity().isValid())
+          mb.putEntries(Property.RID_PROPERTY, GrpcValue.newBuilder()
+              .setLinkValue(GrpcLink.newBuilder().setRid(element.getIdentity().toString()).build()).setLogicalType("rid").build());
+        if (element.getType() != null)
+          mb.putEntries(Property.TYPE_PROPERTY, GrpcValue.newBuilder().setStringValue(element.getTypeName()).build());
+      }
       try {
         for (String k : res.getPropertyNames()) {
           mb.putEntries(k, toGrpcValue(res.getProperty(k), pc));

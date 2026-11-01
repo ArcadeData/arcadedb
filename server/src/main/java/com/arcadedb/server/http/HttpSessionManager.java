@@ -267,7 +267,7 @@ public class HttpSessionManager extends RWLockContext {
   public boolean hasSessionOnDatabase(final String databaseName) {
     return executeInReadLock(() -> {
       for (final HttpSession session : sessions.values())
-        if (databaseName.equals(session.transaction.getDatabase().getName()))
+        if (session.transaction != null && databaseName.equals(session.transaction.getDatabase().getName()))
           return true;
       return false;
     });
@@ -278,7 +278,8 @@ public class HttpSessionManager extends RWLockContext {
     return executeInReadLock(() -> {
       final Set<String> names = new HashSet<>();
       for (final HttpSession session : sessions.values())
-        names.add(session.transaction.getDatabase().getName());
+        if (session.transaction != null)
+          names.add(session.transaction.getDatabase().getName());
       return names;
     });
   }
