@@ -109,6 +109,32 @@ class Issue11012EdgeListScannerTest extends TestHelper {
     database.transaction(() -> assertSameEntriesAsTheRecordWalk(scanner, vertices));
   }
 
+  /** A visitor that walks the far end's list with the same scanner does not disturb the walk it is called from. */
+  @Test
+  void aVisitorMayScanAnotherListWithTheSameScanner() {
+    final List<RID> vertices = createGraph();
+    final EdgeListScanner scanner = new EdgeListScanner((DatabaseInternal) database);
+
+    database.transaction(() -> {
+      for (final RID rid : vertices.subList(0, 20)) {
+        final List<String> expected = new ArrayList<>();
+        scanner.scan(rid.getBucketId(), rid.getPosition(), Vertex.DIRECTION.OUT,
+            (edgeBucketId, edgePosition, vertexBucketId, vertexPosition) -> expected.add(vertexBucketId + ":" + vertexPosition));
+
+        final List<String> scanned = new ArrayList<>();
+        final long[] nested = new long[1];
+        scanner.scan(rid.getBucketId(), rid.getPosition(), Vertex.DIRECTION.OUT,
+            (edgeBucketId, edgePosition, vertexBucketId, vertexPosition) -> {
+              scanned.add(vertexBucketId + ":" + vertexPosition);
+              scanner.scan(vertexBucketId, vertexPosition, Vertex.DIRECTION.IN, (a, b, c, d) -> ++nested[0]);
+            });
+
+        assertThat(scanned).isEqualTo(expected);
+        assertThat(nested[0]).isPositive();
+      }
+    });
+  }
+
   @Test
   void aPositionThatHoldsNoVertexVisitsNothing() {
     final List<RID> vertices = createGraph();
