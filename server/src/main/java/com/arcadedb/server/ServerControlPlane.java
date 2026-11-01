@@ -825,7 +825,8 @@ public class ServerControlPlane {
    * The databases {@code user} is allowed to see on this server.
    */
   public Set<String> listAuthorizedDatabases(final ServerSecurityUser user) {
-    return filterAuthorizedDatabases(user, server.getDatabaseNames());
+    // Open or not (issue #11068): the next request opens one closed for idleness or not opened at startup
+    return filterAuthorizedDatabases(user, server.getAvailableDatabaseNames());
   }
 
   /**
@@ -1121,7 +1122,8 @@ public class ServerControlPlane {
 
     beginExclusive(databaseName, Operation.DROP);
     try {
-      if (!server.existsDatabase(databaseName))
+      // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened to be dropped
+      if (!server.isDatabaseAvailable(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
 
       dropDatabaseClusterWide(server.getDatabaseForOperator(databaseName), databaseName);

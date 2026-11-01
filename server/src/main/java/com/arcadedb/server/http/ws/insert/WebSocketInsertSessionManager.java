@@ -469,6 +469,17 @@ public class WebSocketInsertSessionManager {
     return channelId != null && byChannel.containsKey(channelId);
   }
 
+  /**
+   * Whether an insert session is open on {@code databaseName}: its transaction lives in the session between two chunks, on no
+   * thread, so a server closing idle databases asks here before it closes one (issue #11068).
+   */
+  public boolean hasSessionOnDatabase(final String databaseName) {
+    for (final WebSocketInsertSession session : sessions.values())
+      if (session.databaseName.equals(databaseName))
+        return true;
+    return false;
+  }
+
   private void unregister(final WebSocketInsertSession session) {
     sessions.remove(session.id, session);
     byChannel.remove(session.channelId, session.id);

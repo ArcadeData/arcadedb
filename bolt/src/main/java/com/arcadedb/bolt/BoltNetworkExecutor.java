@@ -1311,8 +1311,8 @@ public class BoltNetworkExecutor extends Thread {
       targetName = server.getConfiguration().getValueAsString(GlobalConfiguration.BOLT_DEFAULT_DATABASE);
 
       if (targetName == null || targetName.isEmpty()) {
-        // If no default configured, use the first available database the user is granted
-        final Collection<String> databases = server.getDatabaseNames();
+        // If no default configured, use the first available database the user is granted, open or not (issue #11068)
+        final Collection<String> databases = server.getAvailableDatabaseNames();
         if (databases.isEmpty()) {
           // Not a bad name - the caller named nothing - but a server with no database to fall back on, which is
           // also the state of a server still opening them. Transient, so the same connection succeeds once one
@@ -1502,7 +1502,8 @@ public class BoltNetworkExecutor extends Thread {
       // this request through authorizeDatabase() had no user been bound.
       // The port this connection reached, as the routing table advertises: the configured one may be 0, which asks
       // the operating system for a free port and is not an address anyone can dial (issue #8209)
-      for (final String dbName : ServerControlPlane.filterAuthorizedDatabases(user, server.getDatabaseNames())) {
+      // Open or not (issue #11068): the next request opens one closed for idleness or not opened at startup
+      for (final String dbName : ServerControlPlane.filterAuthorizedDatabases(user, server.getAvailableDatabaseNames())) {
         stream.syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
             getBoltAddress(socket.getLocalPort()), "primary",
             true, "online", "online", "", dbName.equals(database != null ? database.getName() : ""), false,

@@ -115,21 +115,31 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
           return;
         }
         admittedCall.admission = admission;
-        final RunningQuery runningQuery = register(method, headers, request, client(call));
-        // A cancelled call cancels its Context at once, on a thread of its own, while the handler still runs here
+        // Everything after the admission runs inside the try (issue #11061): a failure to list the call or to watch its Context
+        // escapes onHalfClose before the handler ever closes the AdmittedCall, and gRPC then closes the raw call, so the finally
+        // below is the only release point left for the slot
         final Context context = Context.current();
-        final Context.CancellationListener onCancel = cancelled -> runningQuery.terminate("client (call cancelled)");
-        context.addListener(onCancel, Runnable::run);
+        RunningQuery runningQuery = null;
+        Context.CancellationListener onCancel = null;
         try {
+          runningQuery = register(method, headers, request, client(call));
+          if (runningQuery != null) {
+            // A cancelled call cancels its Context at once, on a thread of its own, while the handler still runs here
+            final RunningQuery listed = runningQuery;
+            onCancel = cancelled -> listed.terminate("client (call cancelled)");
+            context.addListener(onCancel, Runnable::run);
+          }
           super.onHalfClose();
         } finally {
-          context.removeListener(onCancel);
+          if (onCancel != null)
+            context.removeListener(onCancel);
           try {
             // A NO-OP WHEN THE CALL WAS CLOSED BEFORE: THE TICKET GIVES THE SLOT BACK ONCE
             admission.close();
           } finally {
             // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER
-            runningQuery.close();
+            if (runningQuery != null)
+              runningQuery.close();
           }
         }
       }
@@ -162,9 +172,14 @@ class GrpcAdmissionInterceptor implements ServerInterceptor {
   /**
    * Opens the registry entry of an admitted RPC on the calling thread, described by its request when it carries a
    * statement (issue #9689). A transaction's statements run on the transaction's own thread, where the service binds it.
+   * {@code null} when the interceptor runs without a server, which keeps no registry ({@link StreamingLoadEntry} reads it
+   * the same way): the call is admitted and served, only not listed.
    */
   private RunningQuery register(final MethodDescriptor<?, ?> method, final Metadata headers, final Object request,
       final RunningQuery.Client client) {
+    if (server == null)
+      return null;
+
     // Who the call was authenticated as, by its headers or its session: never a name the payload carries
     final String user = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     String database = requestDatabase(request);

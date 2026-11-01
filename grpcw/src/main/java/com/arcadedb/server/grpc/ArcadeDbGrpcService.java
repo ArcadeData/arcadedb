@@ -5493,7 +5493,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (edoc.getType() != null)
         eb.setType(edoc.getTypeName());
       for (String k : edoc.getPropertyNames()) {
-        eb.putFields(k, toGrpcValue(edoc.get(k)));
+        eb.putFields(k, toGrpcValue(edoc.get(k), pc));
       }
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build(), null);
     }
@@ -5656,7 +5656,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             mb.putEntries("@type", GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build());
           }
           for (String k : doc.getPropertyNames()) {
-            mb.putEntries(k, toGrpcValue(doc.get(k)));
+            mb.putEntries(k, toGrpcValue(doc.get(k), pc));
           }
 
           return GrpcValue.newBuilder().setMapValue(mb.build()).build();
@@ -5684,10 +5684,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof TraversalPath path)
       return toGrpcValue(path.toMap(), pc);
 
+    // Issue #11048: every container arm below recurses WITH the request's projection config, as the document arms above do. A
+    // record reached through a list, a map or an array (SELECT both('E') AS n) is a projected value like a top-level one: without
+    // the config it was sent as a bare link where HTTP answers the record, and soft_limit_bytes never saw its bytes
     if (o instanceof Map<?, ?> m) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       for (var e : m.entrySet()) {
-        mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
+        mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue(), pc));
       }
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
     }
@@ -5695,7 +5698,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof Collection<?> c) {
       GrpcList.Builder lb = GrpcList.newBuilder();
       for (Object e : c)
-        lb.addValues(toGrpcValue(e));
+        lb.addValues(toGrpcValue(e, pc));
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
     }
 
@@ -5703,7 +5706,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       int len = java.lang.reflect.Array.getLength(o);
       GrpcList.Builder lb = GrpcList.newBuilder();
       for (int i = 0; i < len; i++) {
-        lb.addValues(toGrpcValue(java.lang.reflect.Array.get(o, i)));
+        lb.addValues(toGrpcValue(java.lang.reflect.Array.get(o, i), pc));
       }
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
     }
@@ -5715,16 +5718,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Support ArcadeDB Result/ResultInternal as structural MAP
     if (o instanceof Result res) {
+      // A result that wraps a record (a sub-query row, a nested match) is that record, @rid and @type included, as HTTP sends it
+      if (res.isElement())
+        return toGrpcValue(res.toElement(), pc);
+
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       try {
         for (String k : res.getPropertyNames()) {
-          mb.putEntries(k, toGrpcValue(res.getProperty(k)));
+          mb.putEntries(k, toGrpcValue(res.getProperty(k), pc));
         }
       } catch (Throwable ignore) {
       }
 
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
     }
+
+    // Issue #11044: out(), in(), outE(), inE() and the other graph functions return a lazy Iterable that is not a Collection, and a
+    // nested result set is an Iterator. Both are lists on the wire, as the HTTP serializer sends them: they used to fall to the
+    // String.valueOf() below and reach the client as "com.arcadedb.graph.GraphEngine$10@63e44da5"
+    if (o instanceof Iterable<?> it)
+      return dbgEnc("toGrpcValue", o, toGrpcList(it.iterator(), pc), null);
+    if (o instanceof Iterator<?> it)
+      return dbgEnc("toGrpcValue", o, toGrpcList(it, pc), null);
 
     // Fallback
     if (debug)
@@ -5734,6 +5749,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               summarizeJava(o));
 
     return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
+  }
+
+  private GrpcValue toGrpcList(final Iterator<?> iterator, final ProjectionConfig pc) {
+    final GrpcList.Builder lb = GrpcList.newBuilder();
+    while (iterator.hasNext())
+      lb.addValues(toGrpcValue(iterator.next(), pc));
+    return GrpcValue.newBuilder().setListValue(lb.build()).build();
   }
 
   private InsertOptions defaults(InsertOptions in) {
@@ -6567,19 +6589,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue, pc);
-  }
-
-  private GrpcValue convertPropToGrpcValue(String propName, Result result) {
-
-    final Object propValue = result.getProperty(propName);
-
-    if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance()
-          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-              summarizeJava(propValue),
-              propValue == null ? "null" : propValue.getClass());
-
-    return toGrpcValue(propValue);
   }
 
   private Object toJavaForProperty(final Database db, final MutableDocument parent, final DocumentType dtype,

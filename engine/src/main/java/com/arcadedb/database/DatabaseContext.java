@@ -28,6 +28,7 @@ import java.lang.ref.WeakReference;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -168,6 +169,39 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       // MEANWHILE, BOUNDED BY THE LIVE-THREAD COUNT
     }
     return result;
+  }
+
+  /**
+   * Whether any thread has a transaction open on the database at {@code databasePath} (the key {@link #removeAllContexts}
+   * takes), read without touching any of them: what a server asks before it closes a database for idleness, which must never
+   * roll back a client's transaction, however long it has been quiet (issue #11068). A transaction lives in the context of the
+   * thread that began it - a Postgres or Bolt connection, a gRPC transaction's executor - between the requests of its client.
+   * <p>
+   * The answer is a sample, read on another thread than the owners': it can miss a transaction begun while it runs, which the
+   * caller re-asks under its own lock, and a thread's stack changing under the read counts as a transaction, never as none.
+   *
+   * @param skip the threads whose transactions do not count, or {@code null}: the database's own asynchronous workers, which keep
+   *             a batch transaction open for as long as they live and which a close drains and commits by itself
+   */
+  public boolean hasActiveTransaction(final String databasePath, final Predicate<Thread> skip) {
+    for (final ThreadContexts threadContexts : CONTEXTS.values()) {
+      final DatabaseContextTL tl = threadContexts.contexts.get(databasePath);
+      if (tl == null)
+        continue;
+      if (skip != null) {
+        final Thread owner = threadContexts.owner.get();
+        if (owner != null && skip.test(owner))
+          continue;
+      }
+      try {
+        if (tl.hasActiveTransaction())
+          return true;
+      } catch (final RuntimeException e) {
+        // THE OWNER PUSHED OR POPPED WHILE THIS THREAD READ ITS STACK: IT IS IN THE MIDDLE OF A TRANSACTION BOUNDARY
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

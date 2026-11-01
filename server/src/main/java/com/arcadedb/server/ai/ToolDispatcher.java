@@ -201,7 +201,7 @@ public class ToolDispatcher {
     final String name = args.getString("name", null);
     if (name == null || name.isBlank())
       return errorJson("get_type requires a 'name' argument");
-    if (!server.existsDatabase(databaseName))
+    if (!server.isDatabaseAvailable(databaseName))
       return errorJson("Database '" + databaseName + "' does not exist");
     if (!user.canAccessToDatabase(databaseName))
       return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
