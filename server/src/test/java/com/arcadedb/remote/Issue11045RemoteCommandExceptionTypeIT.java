@@ -49,7 +49,7 @@ class Issue11045RemoteCommandExceptionTypeIT extends BaseGraphServerTest {
 
   @Test
   void aFailingStatementRaisesTheSameTypeEmbeddedAndRemote() {
-    final BasicDatabase embedded = getServer(0).getDatabase(DATABASE_NAME);
+    final BasicDatabase embedded = getServer(0).getDatabaseForClient(DATABASE_NAME);
 
     assertSameType(embedded, db -> db.query("sql", "insert into Doc set a = 1").close());
     assertSameType(embedded, db -> db.query("sql", "select from bucket:nosuchbucket").close());
