@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.NoSuchElementException;
 
@@ -33,7 +34,9 @@ import java.util.NoSuchElementException;
  * Example: LIMIT 10
  */
 public class LimitStep extends AbstractExecutionStep {
-  private final int limitCount;
+  private final int     limitCount;
+  // ON BY DEFAULT: ONLY THE PLANNER KNOWS THE STATEMENT CANNOT WRITE, AND A LIMIT 0 THAT DID NOT DRAIN A WRITE WOULD LOSE IT
+  private       boolean drainOnZeroLimit = true;
 
   /**
    * Creates a limit step.
@@ -46,6 +49,15 @@ public class LimitStep extends AbstractExecutionStep {
     this.limitCount = limitCount;
   }
 
+  /**
+   * Whether a {@code LIMIT 0} still drains its input, which is what runs the writes behind it. A statement that cannot write
+   * has nothing to run there, so its {@code LIMIT 0} answers without pulling the previous step at all (issue #11081).
+   */
+  public LimitStep setDrainOnZeroLimit(final boolean drainOnZeroLimit) {
+    this.drainOnZeroLimit = drainOnZeroLimit;
+    return this;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("LimitStep requires a previous step");
@@ -53,9 +65,14 @@ public class LimitStep extends AbstractExecutionStep {
     // When LIMIT is 0, still drain the previous step to ensure side effects
     // (CREATE, DELETE, SET, REMOVE) are executed, but return no results
     if (limitCount == 0) {
-      final ResultSet prevResults = prev.syncPull(context, nRecords);
-      while (prevResults.hasNext())
-        prevResults.next();
+      if (drainOnZeroLimit) {
+        final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+        final ResultSet prevResults = prev.syncPull(context, nRecords);
+        while (prevResults.hasNext()) {
+          guard.check();
+          prevResults.next();
+        }
+      }
       return new ResultSet() {
         @Override
         public boolean hasNext() { return false; }

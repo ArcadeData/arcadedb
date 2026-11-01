@@ -28,12 +28,14 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Execution step for UNION and UNION ALL queries.
@@ -54,6 +56,8 @@ import java.util.Set;
 public class UnionStep extends AbstractExecutionStep {
   private final List<CypherExecutionPlan> queryPlans;
   private final boolean removeDuplicates;
+  // RUNS ONE BRANCH: NULL FOR A STATEMENT-LEVEL UNION, WHICH RUNS IT ON THIS STEP'S CONTEXT
+  private final Function<CypherExecutionPlan, ResultSet> branchRunner;
   private final QueryStatistics aggregatedStatistics = new QueryStatistics();
 
   // THE KEYS A DISTINCT REMEMBERS, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585,
@@ -69,13 +73,27 @@ public class UnionStep extends AbstractExecutionStep {
    */
   public UnionStep(final List<CypherExecutionPlan> queryPlans, final boolean removeDuplicates,
                    final CommandContext context) {
+    this(queryPlans, removeDuplicates, null, context);
+  }
+
+  /**
+   * Creates a UnionStep whose branches are run by {@code branchRunner}: the body of a {@code CALL { }} or of a subquery
+   * expression runs each branch seeded with the outer row. The branches still run one after the other and only as far as
+   * the consumer pulls, so a {@code LIMIT} after the subquery stops before a later branch starts (issue #11082).
+   *
+   * @param branchRunner runs one branch, or null to run it on this step's context
+   */
+  public UnionStep(final List<CypherExecutionPlan> queryPlans, final boolean removeDuplicates,
+                   final Function<CypherExecutionPlan, ResultSet> branchRunner, final CommandContext context) {
     super(context);
     this.queryPlans = queryPlans;
     this.removeDuplicates = removeDuplicates;
+    this.branchRunner = branchRunner;
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       private int currentQueryIndex = 0;
       private ResultSet currentResultSet = null;
@@ -129,12 +147,14 @@ public class UnionStep extends AbstractExecutionStep {
 
             // Execute next query, on this step's context so the branch joins the enclosing statement's clock
             // instead of freezing one of its own (issue #7052).
-            currentResultSet = queryPlans.get(currentQueryIndex).execute(context);
+            final CypherExecutionPlan branch = queryPlans.get(currentQueryIndex);
+            currentResultSet = branchRunner != null ? branchRunner.apply(branch) : branch.execute(context);
             currentQueryIndex++;
           }
 
           // Fetch results from current query
           while (buffer.size() < n && currentResultSet.hasNext()) {
+            guard.check();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (context.isProfiling())
