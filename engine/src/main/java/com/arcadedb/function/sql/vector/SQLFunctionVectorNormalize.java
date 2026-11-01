@@ -46,14 +46,10 @@ public class SQLFunctionVectorNormalize extends SQLFunctionVectorAbstract {
     final Object vector = params[0];
 
     if (vector == null)
-      throw new CommandSQLParsingException("Vector cannot be null");
+      return null;
 
-    final float[] v = toFloatArray(vector);
-
-    if (v.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
-
-    return VectorUtils.normalize(v);
+    // An empty vector has magnitude 0 and comes back as it is, like any other zero vector (issue #11052)
+    return VectorUtils.normalize(toFloatArray(vector));
   }
 
   public String getSyntax() {

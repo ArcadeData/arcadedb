@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
@@ -32,6 +33,7 @@ import com.arcadedb.index.IndexMaintenanceSuspension;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.integration.importer.CanonicalNumber;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -1452,6 +1454,8 @@ public class GraphImporter implements AutoCloseable {
 
     database.begin();
     txOpen[0] = true;
+    // The transaction just pushed, so a commit that fails without resolving it is told from one that popped it (issue #11046)
+    final TransactionContext[] ownTx = { ImporterTransactions.currentTransaction(database) };
 
     final String filterAttr = vc.filterAttribute;
     final String filterVal = vc.filterValue;
@@ -1521,19 +1525,19 @@ public class GraphImporter implements AutoCloseable {
 
         count[0]++;
         if (count[0] % COMMIT_EVERY_ROWS == 0) {
-          // Cleared before the call, not after: LocalDatabase#commit() pops the transaction in a
-          // finally, so a commit that throws still leaves this method's transaction off the stack
-          txOpen[0] = false;
-          database.commit();
+          // The flag is cleared before the call and restored when the commit fails without resolving the
+          // transaction, which a refusal raised before the commit starts does (issue #11046)
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
           committed[0] = count[0];
           database.begin();
           txOpen[0] = true;
+          ownTx[0] = ImporterTransactions.currentTransaction(database);
           progress.report(count[0]);
         }
       });
 
+      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       txOpen[0] = false;
-      database.commit();
       committed[0] = count[0];
     } catch (final Exception e) {
       // Only when something was committed: below the first COMMIT_EVERY_ROWS the rollback takes the
@@ -1549,8 +1553,9 @@ public class GraphImporter implements AutoCloseable {
     } finally {
       // In the finally rather than in the catch so that an Error - an OutOfMemoryError is the one a
       // large import can realistically raise - resolves the transaction too. txOpen[0] is false on
-      // every path that already committed, which is what keeps this from rolling back the caller's
-      if (txOpen[0]) {
+      // every path that already committed, which is what keeps this from rolling back the caller's, and the
+      // transaction is asked to still be the live one, for a commit that failed and was restored (issue #11046)
+      if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
         txOpen[0] = false;
         try {
           database.rollback();

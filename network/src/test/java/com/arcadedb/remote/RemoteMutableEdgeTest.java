@@ -69,9 +69,9 @@ class RemoteMutableEdgeTest {
   }
 
   @Test
-  void getTypeThrowsUnsupported() {
-    assertThatThrownBy(() -> edge.getType())
-        .isInstanceOf(UnsupportedOperationException.class);
+  void getTypeAnswersTheTypeItHolds() {
+    // As the immutable edge it was copied from does (issue #11053)
+    assertThat(edge.getType()).isSameAs(mockEdgeType);
   }
 
   @Test

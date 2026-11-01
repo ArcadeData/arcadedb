@@ -42,11 +42,11 @@ public class SQLFunctionVectorAdd extends SQLFunctionVectorAbstract {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     validateParameterCount(params, 2);
-    validateNotNull(params[0], "Vector1");
-    validateNotNull(params[1], "Vector2");
 
     final Object a = params[0];
     final Object b = params[1];
+    if (a == null || b == null)
+      return null;
     final boolean aScalar = a instanceof Number;
     final boolean bScalar = b instanceof Number;
 

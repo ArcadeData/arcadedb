@@ -49,10 +49,8 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
     if (vectorObj == null)
       return null;
 
+    // An empty vector has norm 0, so it is not normalized, like any other zero vector (issue #11052)
     final float[] vector = toFloatArray(vectorObj);
-
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Default tolerance: 0.001
     final float tolerance = params.length == 2 && params[1] != null

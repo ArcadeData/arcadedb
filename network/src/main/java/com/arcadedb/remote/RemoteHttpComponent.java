@@ -38,6 +38,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
@@ -1271,7 +1272,8 @@ public class RemoteHttpComponent extends RWLockContext {
         // human-readable detail. Keep the detail message intact so a period in it no longer truncates the
         // text, and preserve the leader address so the client retains the hint to the current leader.
         return new ServerIsNotTheLeaderException(detail, exceptionArgs);
-      } else if (exception.equals(RecordNotFoundException.class.getName())) {
+      } else if (exception.equals(RecordNotFoundException.class.getName()) || exception.equals(
+          VertexNotFoundException.class.getName())) {
         // PARSE THE RID OUT OF THE DETAIL MESSAGE (e.g. "Record #12:7 not found"). BE ROBUST: THE MESSAGE MAY NOT CONTAIN A '#',
         // MAY NOT HAVE A TRAILING SPACE AFTER THE RID, OR MAY CARRY A MALFORMED TOKEN (see issue #4551). FALL BACK TO A null RID.
         RID rid = null;
@@ -1287,7 +1289,10 @@ public class RemoteHttpComponent extends RWLockContext {
             rid = null;
           }
         }
-        return new RecordNotFoundException(detail, rid);
+        // A MISSING EDGE ENDPOINT KEEPS ITS OWN TYPE (ISSUE #11045), WHICH IS STILL A RecordNotFoundException
+        return exception.equals(VertexNotFoundException.class.getName()) ?
+            new VertexNotFoundException(detail, rid, null) :
+            new RecordNotFoundException(detail, rid);
       } else if (exception.equals(DatabaseNotFoundException.class.getName())) {
         // THE NAME IS NO DATABASE OF THE SERVER (ISSUE #10872): PERMANENT, NOTHING TO RETRY
         return new DatabaseNotFoundException(detail);
@@ -1356,14 +1361,25 @@ public class RemoteHttpComponent extends RWLockContext {
         final NeedRetryException retryLater = new NeedRetryException(detail);
         retryLater.setRetryAfterMs(retryAfterMs(exceptionArgs, System.currentTimeMillis()));
         return retryLater;
-      } else if (statusCode == 503) {
+      }
+
+      // ANY OTHER ARCADEDB EXCEPTION THIS CLIENT HAS A CLASS FOR, REBUILT BY ITS NAME (ISSUE #11045): THE COMMAND FAMILY
+      // (CommandSQLParsingException, CommandExecutionException, ...) USED TO COME BACK AS AN UNTYPED RemoteException. A 503 KEEPS
+      // ITS STATUS-CODE CONTRACT BELOW: A TYPE REBUILT FROM IT HAS TO BE RETRYABLE TOO, OR IT COMES BACK AS A NeedRetryException
+      final RuntimeException rebuilt = RemoteExceptionRebuilder.rebuild(exception, detail);
+      if (rebuilt != null && (statusCode != 503 || rebuilt instanceof NeedRetryException))
+        return rebuilt;
+
+      if (statusCode == 503)
         // An unrecognised exception type (e.g. added by a newer server) delivered with 503 is still
         // retry-worthy by the status-code contract below.
         return new NeedRetryException(detail);
-      } else
-        // ELSE
-        return new RemoteException(
-            "Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
+
+      // A type this client cannot rebuild (a class of a newer server, or of a plugin) is still an ArcadeDBException, as
+      // RemoteException is one. The server's own sentence leads, as in the untyped arm below (issue #7716)
+      return new RemoteException(
+          "Error on executing remote command '" + operation + "': " + detail + " (httpErrorCode=" + statusCode + " exception="
+              + exception + ")");
     }
 
     // No typed exception in the payload. The server reserves 503 for deflections it wants the client to

@@ -107,6 +107,10 @@ class RemoteImmutableEdgeTest {
     assertThat(map).containsEntry("@cat", "e");
     assertThat(map).containsEntry("@type", "TestEdge");
     assertThat(map).containsEntry("@rid", "#5:0");
+    // The endpoints, as an embedded edge and the mutable copy modify() returns report them (issue #11053)
+    assertThat(map).containsEntry("@out", new RID("#1:0"));
+    assertThat(map).containsEntry("@in", new RID("#2:0"));
+    assertThat(edge.modify().toMap(true)).isEqualTo(map);
   }
 
   @Test

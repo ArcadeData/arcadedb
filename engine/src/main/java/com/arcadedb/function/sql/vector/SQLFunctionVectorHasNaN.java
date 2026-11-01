@@ -52,10 +52,7 @@ public class SQLFunctionVectorHasNaN extends SQLFunctionVectorAbstract {
     // collection) is mapped to NaN and detected below, instead of crashing the conversion.
     final float[] vector = toFloatArrayNaNForNull(vectorObj);
 
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
-
-    // Check for NaN values
+    // Check for NaN values. An empty vector holds none, as vector.hasNull answers (issue #11052)
     for (final float value : vector) {
       if (Float.isNaN(value)) {
         return true;

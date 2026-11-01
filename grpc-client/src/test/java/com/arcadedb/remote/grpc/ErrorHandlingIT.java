@@ -20,6 +20,7 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -91,8 +92,9 @@ class ErrorHandlingIT extends BaseGrpcClientServerTest {
   @Test
   @DisplayName("Invalid SQL query throws appropriate exception")
   void invalidQuery_throwsException() {
+    // The type the embedded engine raises, not an untyped remote error (issue #11045)
     assertThatThrownBy(() -> database.query("sql", "SELECTT FROM nowhere"))
-        .isInstanceOf(RemoteException.class);
+        .isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
