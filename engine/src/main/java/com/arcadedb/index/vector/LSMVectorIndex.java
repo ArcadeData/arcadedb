@@ -510,6 +510,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   private volatile List<DeltaVectorEntry> deltaVectors = new ArrayList<>();
 
+  // Run by a full rebuild between reading the live set from the pages and publishing it, so a test can commit in between
+  private volatile Runnable afterLiveSetReadForTest;
+
   /**
    * How many entries of {@link #deltaVectors} are currently holding their payload, i.e. what the buffer costs the
    * heap. Not derivable from the buffer size, which counts entries whose payload was declined too.
@@ -1095,14 +1098,44 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param liveEntries the live set the index must hold, already pointing at the file that is current now
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries) {
+    publishLocationIndex(liveEntries, null, Integer.MAX_VALUE);
+  }
+
+  /**
+   * {@link #publishLocationIndex(Collection)} for a live set read from the pages BEFORE the write lock was taken, as a
+   * full rebuild reads it: the commits that landed in between went into {@code replaced} only, and publishing the pages
+   * alone would lose them. A lost delete made the vector live again, so a search returned the deleted record; a lost
+   * insert left its record without a location, so the record's delete wrote no tombstone and the next rebuild brought the
+   * vector back from the pages (issue #11099). Both are taken over from {@code replaced}: a tombstone it holds for an id
+   * the pages still call live, and every live id it was handed from {@code idsFrom} on (the build's snapshot of the id
+   * sequence, so no id the pages answered for, which the page replay may have left out on purpose) that the pages did not
+   * yield.
+   *
+   * @param replaced the location index being replaced, or null when no commit can have landed since the pages were read
+   * @param idsFrom  the first id handed out after the pages started being read
+   */
+  private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries, final VectorLocationIndex replaced,
+      final int idsFrom) {
     // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
     // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
     // argument is an element-count estimate that it divides by the load factor itself (`initialCapacity +
     // (initialCapacity >>> 1) + 1`, rounded up to a power of two), unlike HashMap's, which is a bucket count.
     // Pre-adjusting on top of that provisioned ~1.33x more table than the rebuild can ever use.
     final VectorLocationIndex rebuilt = new VectorLocationIndex(Math.max(16, liveEntries.size()));
-    for (final VectorEntryForGraphBuild entry : liveEntries)
+    for (final VectorEntryForGraphBuild entry : liveEntries) {
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
+      if (replaced != null && replaced.isDeleted(entry.vectorId))
+        rebuilt.markDeleted(entry.vectorId);
+    }
+    if (replaced != null)
+      for (int id = Math.max(0, idsFrom); id < nextId.get(); id++)
+        if (!rebuilt.isLive(id) && replaced.isLive(id)) {
+          final long offsetAndFlag = replaced.getOffsetAndFlag(id);
+          final RID rid = replaced.getRid(id);
+          if (offsetAndFlag != VectorLocationIndex.ABSENT && rid != null)
+            rebuilt.addOrUpdate(id, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag),
+                rid, false);
+        }
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
     // A renumbering compaction (issue #5870) already reset `nextId` to the dense live count before calling this,
@@ -3719,6 +3752,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int[] finalActiveVectorIdsFromPages = ridToLatestVector.values().stream()
         .mapToInt(v -> v.vectorId).sorted().toArray();
 
+    final Runnable afterLiveSetRead = afterLiveSetReadForTest;
+    if (afterLiveSetRead != null)
+      afterLiveSetRead.run();
+
     // Acquire the write lock only to re-sync vectorIndex with what the pages actually hold. The
     // validation/preload phase that follows is O(active vectors) - one document read plus one vector copy each -
     // and used to run under this same lock, freezing every insert and every search on the index for the whole
@@ -3731,9 +3768,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // CRITICAL: If we couldn't read any live entry from pages, DON'T replace vectorIndex - use what's already
       // in memory! Publishing an empty location index here would drop entries that only exist in RAM.
       if (!ridToLatestVector.isEmpty()) {
-        // Update vectorIndex to match what we found on pages (sync it with disk state).
+        // Update vectorIndex to match what we found on pages (sync it with disk state), keeping the writes committed
+        // since the pages were read (issue #11099)
         if (!locationIndexAlreadyPublished)
-          publishLocationIndex(ridToLatestVector.values());
+          publishLocationIndex(ridToLatestVector.values(), vectorIndex(), deltaSnapshotId);
         vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
         // Build vector IDs from existing vectorIndex
@@ -13408,6 +13446,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** The location index as it stands, WITHOUT materialising it - the one raw read a test needs (issue #6722). */
   VectorLocationIndex residentLocationsForTest() {
     return residentLocations;
+  }
+
+  void setAfterLiveSetReadForTest(final Runnable hook) {
+    afterLiveSetReadForTest = hook;
   }
 
   /**
