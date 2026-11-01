@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -107,6 +108,64 @@ class Issue11012EdgeListScannerTest extends TestHelper {
 
     final EdgeListScanner scanner = new EdgeListScanner((DatabaseInternal) database);
     database.transaction(() -> assertSameEntriesAsTheRecordWalk(scanner, vertices));
+  }
+
+  /**
+   * Under REPEATABLE_READ the scanner reads the pages the transaction pinned, as the record walk does: an edge committed by
+   * another thread after the transaction read the list is seen by neither, and a list read after the commit is seen alike by
+   * both.
+   */
+  @Test
+  void underRepeatableReadTheScannerReadsThePinnedPagesAsTheRecordWalkDoes() throws Exception {
+    final List<RID> vertices = createGraph();
+    final RID hub = vertices.get(1);
+    final EdgeListScanner scanner = new EdgeListScanner((DatabaseInternal) database);
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      final List<String> before = recordWalk(hub);
+      assertThat(scan(scanner, hub)).isEqualTo(before);
+
+      // ANOTHER THREAD APPENDS TO THE SAME LIST AND COMMITS
+      final Thread writer = new Thread(() -> database.transaction(() -> {
+        for (int i = 0; i < 5; i++)
+          hub.asVertex().newEdge("KNOWS", vertices.get(10 + i).asVertex());
+      }));
+      writer.start();
+      writer.join();
+
+      // THE PINNED PAGES STILL ANSWER: THE SCANNER SEES WHAT THE RECORD WALK SEES, AND WHAT IT SAW BEFORE
+      assertThat(recordWalk(hub)).isEqualTo(before);
+      assertThat(scan(scanner, hub)).isEqualTo(before);
+    } finally {
+      database.rollback();
+    }
+
+    database.transaction(() -> {
+      final List<String> after = recordWalk(hub);
+      assertThat(after).hasSize(41 + 5);
+      assertThat(scan(scanner, hub)).isEqualTo(after);
+    });
+  }
+
+  private List<String> recordWalk(final RID rid) {
+    final List<String> entries = new ArrayList<>();
+    final EdgeLinkedList list = ((DatabaseInternal) database).getGraphEngine()
+        .getEdgeHeadChunk((VertexInternal) database.lookupByRID(rid, true), Vertex.DIRECTION.OUT);
+    final Iterator<Pair<RID, RID>> it = list.entryIterator();
+    while (it.hasNext()) {
+      final Pair<RID, RID> entry = it.next();
+      entries.add(entry.getFirst() + ">" + entry.getSecond());
+    }
+    return entries;
+  }
+
+  private static List<String> scan(final EdgeListScanner scanner, final RID rid) {
+    final List<String> entries = new ArrayList<>();
+    scanner.scan(rid.getBucketId(), rid.getPosition(), Vertex.DIRECTION.OUT,
+        (edgeBucketId, edgePosition, vertexBucketId, vertexPosition) -> entries.add(
+            "#" + edgeBucketId + ":" + edgePosition + ">#" + vertexBucketId + ":" + vertexPosition));
+    return entries;
   }
 
   /** A visitor that walks the far end's list with the same scanner does not disturb the walk it is called from. */
