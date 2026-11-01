@@ -42,9 +42,9 @@ import java.util.stream.Stream;
  * accepted by the SQL {@code SEARCH_INDEX()} function - there is no separate "index name" concept to reconcile.
  * </p>
  * <p>
- * The trailing {@code options} map is optional and carries {@code skip} and {@code limit}; see
- * {@link FullTextQueryOptions} for the keys, and for why the ones ArcadeDB cannot honour are refused by name
- * instead of ignored (issue #8103).
+ * The trailing {@code options} map is optional and carries {@code skip} and {@code limit}, and {@code where} and
+ * {@code filter} to restrict the matches before they apply (issue #11069); see {@link FullTextQueryOptions} for the keys,
+ * and for why the ones ArcadeDB cannot honour are refused by name instead of ignored (issue #8103).
  * </p>
  * <p>
  * Example (Neo4j-compatible):
@@ -100,7 +100,7 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
 
     final String indexName = args[0].toString();
     final String queryText = args[1].toString();
-    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args);
+    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args, context);
 
     final List<TypeIndex> typeIndexes = FullTextIndexes.resolve(context.getDatabase(), indexName);
 
@@ -117,7 +117,8 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextIndexes.search(typeIndexes, queryText, limit, WorkGuard.forCommandDeadline(context)),
+    return options.rows(
+        (limit, filter) -> FullTextIndexes.search(typeIndexes, queryText, limit, WorkGuard.forCommandDeadline(context), filter),
         "node", rid -> rid.asDocument(true)).stream();
   }
 }

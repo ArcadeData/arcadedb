@@ -60,6 +60,17 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  /** A third argument used to be ignored without a word: it is refused instead (issue #11069). */
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
 
@@ -132,6 +143,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       final IndexedFunctionPushdown pushdown) {
     if (oExpressions == null || oExpressions.length < 2)
       return List.of();
+    checkArity(oExpressions);
 
     final String indexName = resolveStringParam(oExpressions[0], context);
     final String queryString = resolveStringParam(oExpressions[1], context);

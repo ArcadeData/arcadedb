@@ -78,10 +78,10 @@ class Issue10699NoNarrowingIntReadsInFunctionsTest {
       Map.entry("vector/SQLFunctionVectorAbstract", 3),
       // the shared option-map reader: a text option parsed by Integer.parseInt, which refuses rather than truncates
       Map.entry("FunctionOptions", 1),
-      // narrow a COMPUTED result back to the type of the input (pow(int), sqrt(int), abs(short) after absExact), not an argument
-      Map.entry("math/SQLFunctionPow", 2),//
-      Map.entry("math/SQLFunctionSquareRoot", 2),//
+      // narrow a COMPUTED result back to the type of the input (abs(short) after absExact), not an argument
       Map.entry("math/SQLFunctionAbsoluteValue", 5),
+      // the exact power of an integral base answered as an INTEGER once it is known to fit (issue #11047)
+      Map.entry("math/SQLFunctionPow", 1),
       // sum(): an overflow check of the running long, and the INT result narrowed back once it is known to fit
       Map.entry("math/NumericSum", 2),
       // a list index computed from the size of the collected values, never from an argument

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 
 import java.util.Set;
@@ -61,6 +62,14 @@ public interface PredicateRidSet extends Set<RID> {
    */
   default boolean listsCandidates(final int bucketId) {
     return false;
+  }
+
+  /**
+   * Whether {@code record}, already loaded by the caller, is a member: {@link #contains} without loading it again. A full-text
+   * search tests the records it loaded anyway whose bucket no listing decided (issue #11069).
+   */
+  default boolean matches(final Document record) {
+    return contains(record.getIdentity());
   }
 
   /**

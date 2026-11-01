@@ -257,8 +257,8 @@ public class GraphQLSchema {
             if ("sql".equals(directiveName) ||
                 "gremlin".equals(directiveName) ||
                 "cypher".equals(directiveName))
-              return parseNativeQueryDirective(directiveName, directive, selection, operationSelectionSet, returnType, variables, fragments,
-                  registry);
+              return parseNativeQueryDirective(directiveName, directive, typeDefinition, selection, operationSelectionSet, returnType,
+                  variables, fragments, registry);
           }
         }
       }
@@ -503,7 +503,8 @@ public class GraphQLSchema {
     return value != null ? value.getValue() : null;
   }
 
-  private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection,
+  private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final FieldDefinition field,
+      final Selection selection,
       final SelectionSet selectionSet, final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments,
       final GraphQLTypeRegistry registry) {
     if (directive.getArguments() == null)
@@ -519,7 +520,7 @@ public class GraphQLSchema {
         final Object statementValue = resolveValue(argument.getValueWithVariable(), null);
         statement = statementValue != null ? statementValue.toString() : null;
 
-        arguments = getArguments(selection.getArguments(), variables);
+        arguments = withOmittedArguments(getArguments(selection.getArguments(), variables), field);
         projection = selectionSet;
       }
     }
@@ -531,6 +532,33 @@ public class GraphQLSchema {
 
     return new GraphQLResultSet(this, registry, resultSet, projection != null ? projection.getSelections() : null, returnType, variables,
         fragments);
+  }
+
+  /**
+   * Binds every argument the field declares and the operation omitted: to its default value, or to null, which is what an
+   * omitted nullable argument means in GraphQL. The statement of the directive reads each one as a parameter, and a parameter
+   * with no value is refused rather than read as null (issue #11098).
+   */
+  private static Map<String, Object> withOmittedArguments(Map<String, Object> arguments, final FieldDefinition field) {
+    if (field == null || field.getArgumentsDefinition() == null)
+      return arguments;
+    for (final InputValueDefinition definition : field.getArgumentsDefinition().getInputValueDefinitions()) {
+      final String name = definition.getName().getValue();
+      if (arguments != null && arguments.containsKey(name))
+        continue;
+      Object value = null;
+      if (definition.getDefaultValue() != null) {
+        final AbstractValue defaultValue = definition.getDefaultValue().getValue().getValue();
+        if (defaultValue == null)
+          throw new CommandParsingException(
+              "Default value of GraphQL argument '" + name + "' is not a scalar: list and object default values are not supported");
+        value = defaultValue.getValue();
+      }
+      if (arguments == null)
+        arguments = new HashMap<>();
+      arguments.put(name, value);
+    }
+    return arguments;
   }
 
   private static Map<String, Object> getArguments(final Arguments queryArguments, final Map<String, Object> variables) {

@@ -64,12 +64,12 @@ public class SQLFunctionDefinition implements FunctionDefinition {
 
   @Override
   public Object execute(final Object... parameters) {
-    // Bind parameters to a Map with their names
+    // Bind parameters to a Map with their names. A declared parameter the call omits is bound to null: optional by design, and
+    // bound, so the body is not refused for a placeholder with no value (issue #11098)
     final Map<String, Object> paramMap = new HashMap<>();
     if (parameterNames != null) {
-      for (int i = 0; i < parameterNames.length && i < parameters.length; i++) {
-        paramMap.put(parameterNames[i], parameters[i]);
-      }
+      for (int i = 0; i < parameterNames.length; i++)
+        paramMap.put(parameterNames[i], i < parameters.length ? parameters[i] : null);
     }
 
     // The rows of the body are held in a list, so they are under the element cap like any other sub-plan materialised (issue #10080)

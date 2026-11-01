@@ -19,8 +19,12 @@
 package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -29,8 +33,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Function;
-import java.util.function.IntFunction;
 
 /**
  * The trailing {@code options} map shared by {@code db.index.fulltext.queryNodes} and
@@ -43,19 +47,28 @@ import java.util.function.IntFunction;
  * when the index was created and has no query-time override - accepting the call and ignoring the key would run
  * the search under an analyzer the caller did not ask for and report success, which is worse than the arity error
  * this replaces.
+ * <p>
+ * {@code where} and {@code filter} restrict the matches before {@code skip} and {@code limit} apply, exactly as the same
+ * options of {@code db.index.vector.queryNodes} do (issue #11069): a {@code WHERE} after the {@code CALL} only sees the
+ * procedure's own top {@code limit}, so a restrictive filter there answered too few rows, or none. {@code where} is a map of
+ * property to value or a SQL condition on the record; {@code filter} a list of the RIDs (or records) the search may answer.
+ * A {@code where} an index can answer is decided on the matches before any record is loaded.
  */
 final class FullTextQueryOptions {
   static final String SKIP      = "skip";
   static final String LIMIT     = "limit";
   /** A Neo4j key ArcadeDB cannot honour; called out separately so its refusal can say why rather than "unknown". */
   static final String ANALYZER  = "analyzer";
+  static final String WHERE     = "where";
+  static final String FILTER    = "filter";
 
-  private static final Set<String> SUPPORTED_KEYS = Set.of(SKIP, LIMIT);
+  private static final Set<String> SUPPORTED_KEYS = Set.of(SKIP, LIMIT, WHERE, FILTER);
+  private static final String      SUPPORTED      = SKIP + ", " + LIMIT + ", " + WHERE + ", " + FILTER;
 
   /** Means "no limit", the same sentinel {@code FullTextSearch.search} takes. */
   static final int UNBOUNDED = -1;
 
-  private static final FullTextQueryOptions NONE = new FullTextQueryOptions(0, UNBOUNDED);
+  private static final FullTextQueryOptions NONE = new FullTextQueryOptions(0, UNBOUNDED, null);
 
   /**
    * Descending score, ties broken by RID.
@@ -73,12 +86,15 @@ final class FullTextQueryOptions {
       Comparator.<Map.Entry<RID, Float>, Float>comparing(Map.Entry::getValue, Comparator.reverseOrder())
           .thenComparing(Map.Entry::getKey);
 
-  private final int skip;
-  private final int limit;
+  private final int       skip;
+  private final int       limit;
+  /** The {@code where} and {@code filter} options, or null when neither is set. */
+  private final RIDFilter filter;
 
-  private FullTextQueryOptions(final int skip, final int limit) {
+  private FullTextQueryOptions(final int skip, final int limit, final RIDFilter filter) {
     this.skip = skip;
     this.limit = limit;
+    this.filter = filter;
   }
 
   /**
@@ -89,6 +105,13 @@ final class FullTextQueryOptions {
    * and the query string; the slot is possibly absent only because {@code getMinArgs()} stays at 2.
    */
   static FullTextQueryOptions parse(final String procedureName, final Object[] args) {
+    return parse(procedureName, args, null);
+  }
+
+  /**
+   * {@link #parse(String, Object[])} with the context a {@code where} or a {@code filter} option is resolved in.
+   */
+  static FullTextQueryOptions parse(final String procedureName, final Object[] args, final CommandContext context) {
     if (args.length < 3 || args[2] == null)
       return NONE;
 
@@ -104,16 +127,35 @@ final class FullTextQueryOptions {
       if (ANALYZER.equals(name))
         throw new CommandSemanticException(procedureName + "(): the 'analyzer' option is not supported - the analyzer "
             + "is fixed by the index metadata at index-creation time, so it cannot be overridden per query. "
-            + "Supported options: " + SKIP + ", " + LIMIT);
+            + "Supported options: " + SUPPORTED);
       if (!SUPPORTED_KEYS.contains(name))
         throw new CommandSemanticException(procedureName + "(): unsupported option '" + name + "'. Supported options: "
-            + SKIP + ", " + LIMIT);
+            + SUPPORTED);
     }
 
     final int skip = intOption(procedureName, options, SKIP, 0);
     final int limit = intOption(procedureName, options, LIMIT, UNBOUNDED);
+    final RIDFilter filter = filterOption(procedureName, options, context);
 
-    return skip == 0 && limit == UNBOUNDED ? NONE : new FullTextQueryOptions(skip, limit);
+    return skip == 0 && limit == UNBOUNDED && filter == null ? NONE : new FullTextQueryOptions(skip, limit, filter);
+  }
+
+  /**
+   * Reads {@code where} and {@code filter} into the filter the search decides the matches with, read as
+   * {@code vector.neighbors} reads the same options, or null when neither is set.
+   */
+  private static RIDFilter filterOption(final String procedureName, final Map<?, ?> options, final CommandContext context) {
+    final Object where = options.get(WHERE);
+    final Object filter = options.get(FILTER);
+    if (where == null && filter == null)
+      return null;
+    if (filter != null && !(filter instanceof List<?>))
+      throw new CommandSemanticException(
+          procedureName + "(): option '" + FILTER + "' must be a list of RIDs, got " + filter.getClass().getSimpleName());
+    if (context == null)
+      throw new IllegalStateException(procedureName + "(): the '" + WHERE + "' and '" + FILTER + "' options need a command context");
+    final Set<RID> candidates = SQLFunctionVectorAbstract.parsePreFilter((List<?>) filter, where, procedureName, context);
+    return RIDFilter.resolve(List.of(), candidates, context);
   }
 
   /**
@@ -171,9 +213,12 @@ final class FullTextQueryOptions {
     return limit;
   }
 
-  /** A {@code limit} of zero asks for no rows at all, so the search itself can be skipped. */
+  /**
+   * A {@code limit} of zero asks for no rows at all, and an empty {@code filter} admits none, so the search itself can be
+   * skipped.
+   */
   boolean returnsNothing() {
-    return limit == 0;
+    return limit == 0 || (filter != null && filter.acceptsNothing());
   }
 
   /**
@@ -208,21 +253,22 @@ final class FullTextQueryOptions {
    * search and the record load behind {@code loader} - so the arm is a live path under concurrency rather than
    * dead code, just not one a deterministic test can stage.
    *
-   * @param search     runs the underlying search for a given limit ({@link #UNBOUNDED} for all matches)
+   * @param search     runs the underlying search for a given limit ({@link #UNBOUNDED} for all matches) and filter (null
+   *                   for none)
    * @param yieldField the name of the record column this procedure yields ({@code node} or {@code relationship})
    * @param loader     turns a matched RID into the record to yield
    */
-  List<Result> rows(final IntFunction<Map<RID, Float>> search, final String yieldField,
+  List<Result> rows(final BiFunction<Integer, RIDFilter, Map<RID, Float>> search, final String yieldField,
       final Function<RID, Object> loader) {
     final int bound = searchLimit();
-    final Map<RID, Float> matches = search.apply(bound);
+    final Map<RID, Float> matches = search.apply(bound, filter);
     final List<Result> page = page(matches, yieldField, loader);
 
     // matches.size() < bound means the index had nothing more to give, so a short page is the true answer. The
     // comparison is an over-approximation for a multi-bucket index, whose match set is a union of per-bucket top-K
     // sets and can exceed the bound; that only ever costs a retry that finds the same rows.
     if (bound != UNBOUNDED && page.size() < limit && matches.size() >= bound)
-      return page(search.apply(UNBOUNDED), yieldField, loader);
+      return page(search.apply(UNBOUNDED, filter), yieldField, loader);
 
     return page;
   }
@@ -258,6 +304,10 @@ final class FullTextQueryOptions {
         // SEARCH_INDEX() SQL function's searchFromTarget()).
         continue;
       }
+
+      // A match of a bucket no index listing decided is tested on its record, loaded anyway to be yielded (issue #11069)
+      if (filter != null && record instanceof Record loaded && !filter.acceptsRecord(loaded))
+        continue;
 
       if (skipped < skip) {
         ++skipped;

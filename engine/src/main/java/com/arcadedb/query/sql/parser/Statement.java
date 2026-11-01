@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -32,8 +33,11 @@ import com.arcadedb.query.OperationType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -55,6 +59,8 @@ public class Statement extends SimpleNode {
   private transient volatile NestedClassification nestedClassification;
   // Memo of positionalParameterBounds(): the same reflective walk of the immutable tree, once per parsed instance
   private transient volatile ParameterBounds positionalParameterBounds;
+  // Memo of placeholders(): the ? and :name nodes of the tree, in the order the walk meets them, or null when it cannot be read
+  private transient volatile InputParameter[] placeholders;
 
   /**
    * How many positional values a statement must be bound to ({@code required}) and may be bound to ({@code accepted}).
@@ -409,6 +415,76 @@ public class Statement extends SimpleNode {
           "The statement has " + required + " positional parameter" + (required == 1 ? "" : "s") + " but " + values + " value"
               + (values == 1 ? " was" : "s were") + " passed: every placeholder takes exactly one value, null included" + (
               values > accepted ? ", and a list meant for one placeholder (as in 'IN ?') is passed as one value" : ""));
+  }
+
+  /**
+   * Refuses parameters bound by name that leave a placeholder of the statements without a value, before any of them runs (issue
+   * #11098): a {@code ?} or a {@code :name} with no key in the map was bound to {@code null} without a word, so an {@code INSERT}
+   * stored {@code null} and a {@code WHERE v = ?} matched nothing. A key bound to {@code null} is a value: it binds {@code null}.
+   * A {@code ?} is keyed by its position ({@code "0"} for the first); a {@code :name} by its name, the name with its colon, or its
+   * position, the keys it reads. A Postgres-style {@code $N} is left alone: when no value is bound at its position it reads the
+   * variable of that name, so a missing key is not an error there. Literals the statement cache turned into parameters are
+   * bound by the engine and always present.
+   *
+   * @param statements every statement of a script, bound to the parameters together
+   * @param parameters the parameters bound by name, or null for none
+   *
+   * @throws CommandParameterMissingException naming every placeholder with no key, in the order the statements mention them
+   */
+  public static void checkParametersBound(final Iterable<? extends Statement> statements, final Map<String, Object> parameters) {
+    Set<String> missing = null;
+    for (final Statement statement : statements)
+      missing = statement.collectMissingParameters(parameters, missing);
+    if (missing != null)
+      throw new CommandParameterMissingException(missing.toArray(new String[0]));
+  }
+
+  /** {@link #checkParametersBound(Iterable, Map)} for this statement alone. */
+  public void checkParametersBound(final Map<String, Object> parameters) {
+    final Set<String> missing = collectMissingParameters(parameters, null);
+    if (missing != null)
+      throw new CommandParameterMissingException(missing.toArray(new String[0]));
+  }
+
+  private Set<String> collectMissingParameters(final Map<String, Object> parameters, Set<String> missing) {
+    final InputParameter[] nodes = placeholders();
+    if (nodes == null)
+      // a tree that could not be read: nothing is refused on placeholders that are not known
+      return missing;
+    for (final InputParameter node : nodes) {
+      final String key;
+      if (node instanceof PositionalParameter positional) {
+        key = positional.key();
+        if (parameters != null && parameters.containsKey(key))
+          continue;
+      } else {
+        final NamedParameter named = (NamedParameter) node;
+        if (named.isBoundIn(parameters))
+          continue;
+        key = named.paramName;
+      }
+      if (missing == null)
+        missing = new LinkedHashSet<>();
+      missing.add(key);
+    }
+    return missing;
+  }
+
+  private InputParameter[] placeholders() {
+    InputParameter[] nodes = placeholders;
+    if (nodes == null) {
+      final List<InputParameter> found = new ArrayList<>(0);
+      final boolean readable = SqlAstInspector.allNodesMatch(this, node -> {
+        if (node instanceof PositionalParameter || node instanceof NamedParameter)
+          found.add((InputParameter) node);
+        return true;
+      });
+      nodes = readable ? found.toArray(new InputParameter[0]) : null;
+      if (nodes == null)
+        return null;
+      placeholders = nodes;
+    }
+    return nodes;
   }
 
   /** The position a {@code ?} or a {@code :name} takes its positional value from, or -1 for any other node. */
