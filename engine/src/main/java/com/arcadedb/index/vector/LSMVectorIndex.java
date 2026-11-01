@@ -1107,9 +1107,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * alone would lose them. A lost delete made the vector live again, so a search returned the deleted record; a lost
    * insert left its record without a location, so the record's delete wrote no tombstone and the next rebuild brought the
    * vector back from the pages (issue #11099). Both are taken over from {@code replaced}: a tombstone it holds for an id
-   * the pages still call live, and every live id it was handed from {@code idsFrom} on (the build's snapshot of the id
+   * the pages still call live, and every id it was handed from {@code idsFrom} on (the build's snapshot of the id
    * sequence, so no id the pages answered for, which the page replay may have left out on purpose) that the pages did not
-   * yield.
+   * yield, live or tombstoned.
+   * <p>
+   * Some of those tombstones belong to a commit replay whose transaction can still abort, and a rebuild cannot tell them
+   * apart: {@link #undoReplay} lifts them in whatever generation is current, which is why they are carried rather than
+   * dropped.
    *
    * @param replaced the location index being replaced, or null when no commit can have landed since the pages were read
    * @param idsFrom  the first id handed out after the pages started being read
@@ -1129,12 +1133,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
     if (replaced != null)
       for (int id = Math.max(0, idsFrom); id < nextId.get(); id++)
-        if (!rebuilt.isLive(id) && replaced.isLive(id)) {
-          final long offsetAndFlag = replaced.getOffsetAndFlag(id);
-          final RID rid = replaced.getRid(id);
-          if (offsetAndFlag != VectorLocationIndex.ABSENT && rid != null)
-            rebuilt.addOrUpdate(id, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag),
-                rid, false);
+        if (!rebuilt.isLive(id) && !rebuilt.isDeleted(id)) {
+          if (replaced.isLive(id)) {
+            final long offsetAndFlag = replaced.getOffsetAndFlag(id);
+            final RID rid = replaced.getRid(id);
+            if (offsetAndFlag != VectorLocationIndex.ABSENT && rid != null)
+              rebuilt.addOrUpdate(id, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag),
+                  rid, false);
+          } else if (replaced.isDeleted(id))
+            rebuilt.addOrUpdate(id, false, 0L, null, true);
         }
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
@@ -11413,7 +11420,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * which passes the set it has already built for its own sweep.
    */
   private static boolean disjoint(final IntHashSet allocated, final VectorIndexReplayUndo undo) {
-    for (int i = 0; i < undo.tombstonedCount; i++)
+    for (int i = undo.tombstonedAtRebase; i < undo.tombstonedCount; i++)
       if (allocated.contains(undo.tombstonedIds[i]))
         return false;
     return true;
@@ -11442,8 +11449,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } else if (undo.locationsAtReplay != locations)
       // A rebuild or a compaction republished the locations since an EARLIER operation of this same replay: put
       // and remove hold the write lock per call, not for the whole replay, so the window is between two of this
-      // transaction's own operations. Re-anchor now, per record, rather than let one boolean at undo time speak
-      // for operations written against two different instances. See VectorIndexReplayUndo.rebaseTo.
+      // transaction's own operations. See VectorIndexReplayUndo.rebaseTo.
       undo.rebaseTo(locations);
 
     return undo;
@@ -11501,14 +11507,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   void undoReplay(final VectorIndexReplayUndo undo) {
     // Materialising cannot be needed (the replay already did it) but is the contract of every other write path here.
-    final VectorLocationIndex locations = vectorIndex();
+    vectorIndex();
 
     lock.writeLock().lock();
     try {
-      // A compaction or a rebuild that republished the location index wholesale did so from the COMMITTED pages,
-      // so the offsets recorded in this journal address a data file the replacement may no longer be reading.
-      // Compare by identity - see VectorIndexReplayUndo.locationsAtReplay - and skip ONLY the two steps that
-      // replay those offsets. Everything else below still runs: see the note on the allocated-id sweep.
+      // Read under the lock: a rebuild publishes under it, and the tombstones below are judged against the generation in
+      // force, which a read before the lock could already have lost to a publish
+      final VectorLocationIndex locations = vectorIndex();
+      // A compaction or a rebuild may have republished the location index wholesale since the replay. Only the
+      // disjointness assertion below needs to know: the tombstones are decided per id against the current generation.
       final boolean locationsStillOurs = locations == undo.locationsAtReplay;
 
       // Built once and used twice - by the assertion below and by the delta-buffer sweep further down - so the
@@ -11558,37 +11565,64 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      // From here down, only what depends on the offsets captured at replay time, which is what a republished
-      // location index invalidates: the offsets address a data file a compaction may already have replaced.
-      for (int i = locationsStillOurs ? undo.tombstonedCount - 1 : -1; i >= 0; i--) {
+      // A tombstone is lifted only where the current generation still holds it. On the generation the replay wrote to,
+      // that is every one. A full rebuild that published since carries them over (issue #11099) and reads the same data
+      // file, so the captured offsets still address it. A compaction publishes no tombstone at all, and its rewritten file
+      // is exactly what the captured offsets no longer address, so nothing is lifted there. Walked in reverse, so an id
+      // tombstoned twice across a republish is restored from its newest record and then reads as live to the older one.
+      // `lifted` collects the ids made live again, `buffered` those of them that are back in the delta buffer.
+      IntHashSet lifted = null;
+      IntHashSet buffered = null;
+      for (int i = undo.tombstonedCount - 1; i >= 0; i--) {
         final long offsetAndFlag = undo.tombstonedOffsetAndFlag[i];
-        if (offsetAndFlag == VectorLocationIndex.ABSENT)
-          // Cannot happen - the id was live when it was recorded - but restoring a location from a sentinel would
+        if (offsetAndFlag == VectorLocationIndex.ABSENT || !locations.isDeleted(undo.tombstonedIds[i]))
+          // ABSENT cannot happen - the id was live when it was recorded - but restoring a location from a sentinel would
           // publish a wild offset, so decline instead: the id then stays tombstoned, which is the pre-fix behaviour.
           continue;
         // addOrUpdate with deleted=false is the exact inverse of markDeleted: it lifts the id out of the tombstone
         // set and puts its location back, in that order.
         locations.addOrUpdate(undo.tombstonedIds[i], VectorLocationIndex.isCompactedOf(offsetAndFlag),
             VectorLocationIndex.offsetOf(offsetAndFlag), undo.tombstonedRids[i], false);
+        if (lifted == null) {
+          lifted = new IntHashSet(undo.tombstonedCount * 2);
+          buffered = new IntHashSet(undo.tombstonedCount * 2);
+        }
+        lifted.add(undo.tombstonedIds[i]);
       }
 
-      if (locationsStillOurs && undo.droppedDeltaEntries != null) {
-        // Skipped on a republish, and nothing is lost by that: these entries belong to ids the rebuild read back
-        // as LIVE off the committed pages - this transaction's tombstone writes went down with its pages - so it
-        // folded them into the graph it just built and trimmed their buffer entries on purpose. Their vectors
-        // stay findable through that graph; re-adding would only duplicate what the walk already returns.
+      if (undo.droppedDeltaEntries != null) {
+        // The entries of the ids just made live again, still the same record's (a renumbering compaction reuses id
+        // numbers). After a full rebuild the vector may also be in the graph it built, which costs nothing but a
+        // duplicate the delta scan skips by RID; one written after the rebuild read the pages is findable only here
+        // until the next rebuild.
         //
         // Re-added directly rather than through queueDeltaEntry(): these entries were in the buffer a moment ago,
         // so re-applying the heap budget to them could only strip payloads the buffer had already accounted for.
         int restoredPayloads = 0;
         for (final DeltaVectorEntry entry : undo.droppedDeltaEntries) {
+          if (!locations.isLocationOf(entry.vectorId, entry.rid))
+            continue;
           deltaVectors.add(entry);
           if (entry.vector != null)
             ++restoredPayloads;
+          if (lifted != null)
+            buffered.add(entry.vectorId);
         }
         if (restoredPayloads > 0)
           deltaResidentPayloads.addAndGet(restoredPayloads);
       }
+
+      // A full rebuild that published since the replay built its graph without the ids it read as deleted, so a lifted id
+      // that neither the graph nor a restored entry holds is queued again, the way a restart re-queues the vectors its
+      // graph lacks. Without a payload: the delta scan reads it from the pages, and nothing is read under this lock.
+      if (lifted != null)
+        for (int i = 0; i < undo.tombstonedCount; i++) {
+          final int id = undo.tombstonedIds[i];
+          if (lifted.contains(id) && !buffered.contains(id) && !graphHolds(id)) {
+            deltaVectors.add(new DeltaVectorEntry(id, undo.tombstonedRids[i], null));
+            buffered.add(id);
+          }
+        }
 
       // Floored at zero on both counters: a rebuild that ran in the window already subtracted the mutations this
       // replay charged, and a compaction resets the page gauge outright, so an unclamped refund could drive either
@@ -13450,6 +13484,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setAfterLiveSetReadForTest(final Runnable hook) {
     afterLiveSetReadForTest = hook;
+  }
+
+  /** Whether the resident graph has a node for {@code vectorId}. */
+  private boolean graphHolds(final int vectorId) {
+    final int[] ordinalMap = ordinalToVectorId;
+    if (ordinalMap == null)
+      return false;
+    // A map a renumbering compaction translated holds -1 entries and is not sorted (issue #9241)
+    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    return (lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId)) >= 0;
+  }
+
+  /** Takes the delta-buffer entry of {@code vectorId} out of the buffer, as a delete's replay drops it, or null. */
+  DeltaVectorEntry takeDeltaEntryForTest(final int vectorId) {
+    lock.writeLock().lock();
+    try {
+      for (final DeltaVectorEntry entry : deltaVectors)
+        if (entry.vectorId == vectorId) {
+          deltaVectors.remove(entry);
+          if (entry.vector != null)
+            deltaResidentPayloads.decrementAndGet();
+          return entry;
+        }
+      return null;
+    } finally {
+      lock.writeLock().unlock();
+    }
   }
 
   /**

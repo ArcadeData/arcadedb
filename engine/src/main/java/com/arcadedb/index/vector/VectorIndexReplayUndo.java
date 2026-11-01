@@ -39,7 +39,8 @@ import java.util.List;
  * writes them ONTO the transaction's own index pages, so the allocation has to be decided while those pages are
  * being written, not after. The eager shape is workable here because everything it publishes stays reachable: the
  * in-memory state is reversible field by field, and the one way it can be republished from under the journal - a
- * concurrent compaction or rebuild - is detected by the {@link #locationsAtReplay} identity compare below. The
+ * concurrent compaction or rebuild - is answered by judging each tombstone against the generation in force at undo
+ * time (see {@link #locationsAtReplay}). The
  * sparse memtable has no such handle: once a flush has sealed it into a {@code .sparseseg} file, the posting is on
  * disk and no in-memory compensation can reach it.
  * <p>
@@ -59,7 +60,7 @@ import java.util.List;
  * <p>
  * The reversal additionally runs while the transaction still holds the index file's commit lock, which is what
  * keeps a concurrent TRANSACTION from having moved the same ids meanwhile. A compaction or a rebuild is not
- * covered by that lock, which is what {@link #locationsAtReplay} is for.
+ * covered by that lock: see {@link #locationsAtReplay}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -76,6 +77,11 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   long[] tombstonedOffsetAndFlag = null;
   RID[]  tombstonedRids          = null;
   int    tombstonedCount;
+  /**
+   * The tombstones recorded before the last {@link #rebaseTo}. A renumbering compaction reuses id numbers, so only the
+   * ones recorded since are on the id space the allocations below come from.
+   */
+  int    tombstonedAtRebase;
 
   /** The delta-buffer entries this replay's deletes dropped, which have to go back in. Null until one is dropped. */
   List<LSMVectorIndex.DeltaVectorEntry> droppedDeltaEntries = null;
@@ -90,11 +96,11 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   LSMVectorIndex.GraphState graphStateFlippedFrom = null;
 
   /**
-   * The location index the offset-dependent records below were written against. Compared by IDENTITY at undo
-   * time: a compaction or a rebuild republishes {@code residentLocations} wholesale, from the COMMITTED pages,
-   * and the replacement therefore never saw this transaction's entries at all. Compensating id by id against a
-   * replacement would be worse than unnecessary - the offsets recorded here address the file the compaction has
-   * already replaced.
+   * The location index the replay last wrote to. A compaction or a rebuild republishes {@code residentLocations}
+   * wholesale: a compaction from the committed pages alone, so it holds none of this transaction's tombstones and the
+   * offsets recorded here address the file it replaced; a full rebuild carries the tombstones over and reads the same
+   * file (issue #11099). The undo therefore judges each tombstone by whether the current generation still holds it, and
+   * this identity only scopes the disjointness assertion there.
    * <p>
    * NOT final, and re-anchored by {@link #rebaseTo}: one transaction's replay is not one locked section.
    * {@code put} and {@code remove} take and release the index write lock per call, so a rebuild can republish
@@ -116,24 +122,15 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   }
 
   /**
-   * Re-anchors the journal after the index republished its locations mid-replay, discarding what that made
-   * unrestorable: the tombstoned ids' captured offsets address a data file the replacement may no longer read,
-   * and the delta entries the deletes dropped belong to ids the replacement read back as LIVE off the committed
-   * pages - this transaction's tombstone writes went down with its pages - so it has already folded them into
-   * the graph it built and decided what the buffer holds for them.
-   * <p>
-   * Dropped rather than kept-and-skipped so the decision is per RECORD rather than per journal: without this, a
-   * single boolean at undo time would speak for operations written against two instances, and would skip
-   * restoring the tombstones of the ones that ran against the CURRENT one - leaving a live record's only vector
-   * tombstoned, the exact symptom this compensation exists to prevent.
-   * <p>
-   * Everything else survives: the allocated ids are forgotten and swept out of the delta buffer regardless of
-   * generation, and the counters are index-wide.
+   * Re-anchors the journal after the index republished its locations mid-replay. Nothing is discarded: a full rebuild
+   * carries the replay's tombstones into the generation it publishes (issue #11099), so they still have to be lifted on
+   * abort, and {@link LSMVectorIndex#undoReplay} decides that per id, against the generation in force at undo time,
+   * lifting a tombstone only where that generation still holds it. A compaction publishes none, which is how the offsets
+   * its rewrite invalidated are never replayed.
    */
   void rebaseTo(final VectorLocationIndex current) {
-    tombstonedCount = 0;
-    droppedDeltaEntries = null;
     locationsAtReplay = current;
+    tombstonedAtRebase = tombstonedCount;
   }
 
   /** An id this replay allocated: its location, its delta entry and its mutation have to go away on abort. */
