@@ -135,7 +135,7 @@ class Issue7134TargetedTransferRequiresLeaderTest {
 
   /**
    * The no-target overload keeps the boolean contract #4809 published and
-   * {@code Issue4809NoTargetTransferLeadershipIT} pins: a Java caller reads {@code false}, not an exception.
+   * {@code HaLeadershipTransferIT.transferOnNonLeaderReturnsFalseWithoutChangingLeader} pins: a Java caller reads {@code false}, not an exception.
    * The endpoint's 409 comes from a guard in the handler instead - see below - so the HTTP contract is uniform
    * without changing what this method promises embedded callers.
    */

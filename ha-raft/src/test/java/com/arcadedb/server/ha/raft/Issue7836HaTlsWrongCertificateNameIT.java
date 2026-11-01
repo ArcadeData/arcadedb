@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * A peer whose certificate is issued for a name the dial does NOT ask for (issue #7836).
  * <p>
- * {@code Issue7563HaTlsPeerDialIT} proves that a peer-to-peer dial completes a real handshake and that a client
+ * {@code HaTlsPeerDialIT} proves that a peer-to-peer dial completes a real handshake and that a client
  * trusting a foreign CA is rejected. Neither covers the third thing a handshake decides: whether the name on the
  * certificate is the name that was dialled. Nothing in the suite could notice if that check stopped happening,
  * because {@code RaftTestPki} issued one certificate - {@code CN=localhost},

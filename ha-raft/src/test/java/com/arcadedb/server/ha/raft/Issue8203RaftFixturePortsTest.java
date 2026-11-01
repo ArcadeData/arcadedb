@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -50,6 +51,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue8203RaftFixturePortsTest {
 
   private static final int FORMER_BASE_RAFT_PORT = 2434;
+
+  // One regex over every base that builds a Raft cluster, not a fixed list of three names: intermediate bases such as
+  // SharedClusterRaftHATest are added over time and a class on one of them must not slip past the guard.
+  private static final Pattern RAFT_FIXTURE = Pattern.compile(
+      "extends\\s+(BaseRaftHATest|BaseRaftHASslTest|BaseCompactionIndexCompletenessTest|SharedClusterRaftHATest|BaseMiniRaftTest)\\b");
+  private static final Pattern SHARED_CLUSTER_FIXTURE = Pattern.compile("extends\\s+SharedClusterRaftHATest\\b");
 
   /** A fixture that never starts a server: only the port bookkeeping of {@link BaseRaftHATest} runs. */
   private static class Fixture extends BaseRaftHATest {
@@ -152,7 +159,7 @@ class Issue8203RaftFixturePortsTest {
 
   /**
    * Source-level guard: no fixture may bring the fixed port back through its own {@code getServerAddresses()} or
-   * {@code onServerConfiguration()} override, as {@code RaftPriorityRejoinIT} and {@code Issue6091GrpcRoutingTableIT}
+   * {@code onServerConfiguration()} override, as {@code RaftPriorityRejoinIT} and {@code HaPeerAddressRoutingDeclaredGrpcIT}
    * did. The defect is a collision between two JVMs, which no single test run can observe.
    * <p>
    * The Bolt and gRPC modules build Raft clusters on {@link BaseRaftHATest} too, and this PR moved their fixtures off
@@ -168,11 +175,40 @@ class Issue8203RaftFixturePortsTest {
     final int boltFixtures = scanRaftFixtures(Path.of("..", "bolt", "src", "test", "java"), fixedRaftPort, offenders);
     final int grpcFixtures = scanRaftFixtures(Path.of("..", "grpcw", "src", "test", "java"), fixedRaftPort, offenders);
 
+    final int sharedClusterFixtures = countFiles(Path.of("src", "test", "java"), SHARED_CLUSTER_FIXTURE);
     assertThat(haRaftFixtures).as("the scan must find the ha-raft fixtures it guards, or it proves nothing").isGreaterThan(100);
     assertThat(boltFixtures).as("the scan must find the Bolt HA fixtures it guards, or it proves nothing").isGreaterThanOrEqualTo(2);
     assertThat(grpcFixtures).as("the scan must find the gRPC HA fixtures it guards, or it proves nothing").isGreaterThanOrEqualTo(10);
+    assertThat(sharedClusterFixtures)
+        .as("the scan must reach the fixtures extending SharedClusterRaftHATest, or the next intermediate base reopens the hole")
+        .isGreaterThanOrEqualTo(10);
     assertThat(offenders).as("Raft HA fixtures pinning a hand-picked Raft port instead of BaseRaftHATest.raftPort (issue #8203)")
         .isEmpty();
+  }
+
+  @Test
+  void aFixtureOnAnIntermediateBaseIsScanned(@TempDir final Path dir) throws IOException {
+    Files.writeString(dir.resolve("Probe.java"), "class Probe extends SharedClusterRaftHATest { static final int PORT = 2434; }",
+        StandardCharsets.UTF_8);
+    Files.writeString(dir.resolve("Clean.java"), "class Clean extends SharedClusterRaftHATest { }", StandardCharsets.UTF_8);
+    final Pattern fixedRaftPort = Pattern.compile("\\b" + FORMER_BASE_RAFT_PORT + "\\b|BASE_RAFT(_PORT)?\\s*=");
+    final List<String> offenders = new ArrayList<>();
+
+    final int fixtures = scanRaftFixtures(dir, fixedRaftPort, offenders);
+
+    assertThat(fixtures).as("both classes extend a Raft fixture base and must be counted").isEqualTo(2);
+    assertThat(offenders).containsExactly("Probe.java");
+  }
+
+  /** Counts the files under {@code root} whose source matches {@code fixture}. */
+  private static int countFiles(final Path root, final Pattern fixture) throws IOException {
+    int count = 0;
+    try (final Stream<Path> files = Files.walk(root)) {
+      for (final Path file : files.filter(p -> p.toString().endsWith(".java")).toList())
+        if (fixture.matcher(Files.readString(file, StandardCharsets.UTF_8)).find())
+          count++;
+    }
+    return count;
   }
 
   /** Adds every Raft fixture under {@code root} that matches {@code fixedRaftPort} to {@code offenders}; returns how many fixtures it saw. */
@@ -184,8 +220,7 @@ class Issue8203RaftFixturePortsTest {
         if (file.getFileName().toString().equals(Issue8203RaftFixturePortsTest.class.getSimpleName() + ".java"))
           continue;
         final String source = Files.readString(file, StandardCharsets.UTF_8);
-        if (!source.contains("extends BaseRaftHATest") && !source.contains("extends BaseRaftHASslTest")
-            && !source.contains("extends BaseCompactionIndexCompletenessTest"))
+        if (!RAFT_FIXTURE.matcher(source).find())
           continue;
         fixtures++;
         if (fixedRaftPort.matcher(source).find())

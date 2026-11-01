@@ -112,8 +112,14 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
    * its HTTP port, its Redis or Bolt listener and its databases. Nothing failed where it happened: the classes that ran after found
    * the HTTP port range taken one port more per test, and failed with "Unable to listen to a HTTP port" or on a database locked by
    * one of those servers (issue #10707's symptom). Refused here, at the start of the first test of such a class.
+   * <p>
+   * Skipped for a fixture that shares one cluster across the tests of a class ({@link #isClusterSharedAcrossTests()}):
+   * there the override without {@code @AfterEach} is the point, and the fixture stops the servers from its own
+   * {@code @AfterAll}.
    */
   private void checkEndTestIsALifecycleMethod() {
+    if (isClusterSharedAcrossTests())
+      return;
     final Method endTest;
     try {
       endTest = getClass().getMethod("endTest");
@@ -124,6 +130,15 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       throw new IllegalStateException(endTest.getDeclaringClass().getName()
           + " overrides endTest() without @AfterEach, so JUnit never calls it and the servers of every test are left running: "
           + "annotate the override with @AfterEach, or remove it when it only resets settings (endTest() already resets them all)");
+  }
+
+  /**
+   * Whether this fixture boots its servers once per class and calls {@link #beginTest()} / {@link #endTest()} from
+   * {@code @BeforeAll} / {@code @AfterAll} rather than per test. Only such a fixture may override {@code endTest()}
+   * without {@code @AfterEach}; see {@link #checkEndTestIsALifecycleMethod()}.
+   */
+  protected boolean isClusterSharedAcrossTests() {
+    return false;
   }
 
   private void prepareDatabase() {

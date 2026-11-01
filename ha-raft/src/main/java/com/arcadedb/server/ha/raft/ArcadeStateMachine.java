@@ -5246,7 +5246,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * to the full rebuild, without a restart.
    */
   // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
-  // which is the half a reader cannot tell from the call site and which Issue6988FullRebuildFallbackIT cannot show
+  // which is the half a reader cannot tell from the call site and which HaSchemaDeltaReplicationFullRebuildIT cannot show
   // (it sets the value once, at server start).
   boolean incrementalSchemaApplyEnabled() {
     // The server-scoped value when this state machine is wired to one, the global default otherwise: tests drive
@@ -5330,7 +5330,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Null is reachable, not hypothetical: no production caller nulls the field (grep for setRaftHAServer -
       // RaftHAServer:1419 is the only one), but it starts null and a state machine that has not been rewired
       // yet still carries null. Forgetting exactly that rewire on the recovery path is the regression
-      // Issue4839RecoveryRewiresStateMachineIT exists to catch.
+      // HaInPlaceRestartRecoveryIT.restartRewiresStateMachineRaftHAServer exists to catch.
       //
       // The skip ASSERTS its premise rather than assuming it (issue #8067, the sibling of #7901). "The leader's own
       // files are authoritative" says nothing about a leader that has no files: a node that applied this entry in a

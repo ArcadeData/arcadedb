@@ -19,9 +19,13 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,12 +34,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that writes issued via HTTP against a Raft follower are forwarded to the leader and
  * replicated to all nodes. In the Raft implementation, DML commands sent via the HTTP command
  * endpoint on a follower are forwarded to the leader, committed there, and then propagated to all
- * replicas via the Raft log.
+ * replicas via the Raft log. It also covers a commit made directly on a replica's embedded handle (issue #8784).
  */
 class RaftReplicationWriteAgainstReplicaIT extends BaseRaftHATest {
 
   private static final int    TXS          = 50; // sufficient to verify HTTP write forwarding
   private static final String REPLICA_TYPE = "RaftReplicaWrite";
+  private static final String PROBE_TYPE   = "Issue8784Probe";
 
   @Override
   protected int getServerCount() {
@@ -86,5 +91,58 @@ class RaftReplicationWriteAgainstReplicaIT extends BaseRaftHATest {
       assertThat(count[0]).as("Server %d should have %d vertices of type %s", i, expectedCount, REPLICA_TYPE)
           .isEqualTo(expectedCount);
     }
+  }
+
+  /**
+   * Issue #8784, from {@code Issue8784ReplicaCommitCallbacksIT}: a transaction committed on a replica must end as a commit
+   * (after-commit callbacks fired, commit counted, record clean).
+   */
+  @Test
+  void aCommitOnAReplicaFiresItsAfterCommitCallbacks() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.command("sql", "CREATE DOCUMENT TYPE " + PROBE_TYPE);
+    leaderDb.command("sql", "CREATE PROPERTY " + PROBE_TYPE + ".name STRING");
+    waitForAllServers();
+
+    final int replicaIndex = leaderIndex == 0 ? 1 : 0;
+    final Database replicaDb = getServerDatabase(replicaIndex, getDatabaseName());
+
+    // A write transaction: the replica's commit tail. A replica commits locally through phase 1 and ships the entry
+    // through Raft (RaftReplicatedDatabase.commit), not by forwarding the statement to the leader.
+    final AtomicInteger fired = new AtomicInteger();
+    replicaDb.begin();
+    final MutableDocument doc = replicaDb.newDocument(PROBE_TYPE).set("name", "from-replica");
+    doc.save();
+    final TransactionContext tx = ((DatabaseInternal) replicaDb).getTransaction();
+    tx.addAfterCommitCallback(fired::incrementAndGet);
+    final long commitCountBefore = tx.getCommitCount();
+    replicaDb.commit();
+
+    assertThat(fired.get()).as("the after-commit callback of a replica commit fires on the replica").isEqualTo(1);
+    assertThat(tx.getCommitCount()).as("the replica commit is counted").isEqualTo(commitCountBefore + 1);
+    assertThat(doc.isDirty()).as("the committed record is clean on the replica").isFalse();
+
+    // A transaction that wrote nothing: the read-only arm, on the replica.
+    final AtomicInteger firedReadOnly = new AtomicInteger();
+    replicaDb.begin();
+    ((DatabaseInternal) replicaDb).getTransaction().addAfterCommitCallback(firedReadOnly::incrementAndGet);
+    replicaDb.commit();
+    assertThat(firedReadOnly.get()).as("the after-commit callback of a read-only replica commit fires").isEqualTo(1);
+
+    // The same read-only arm on the leader.
+    final AtomicInteger firedOnLeader = new AtomicInteger();
+    leaderDb.begin();
+    ((DatabaseInternal) leaderDb).getTransaction().addAfterCommitCallback(firedOnLeader::incrementAndGet);
+    leaderDb.commit();
+    assertThat(firedOnLeader.get()).as("the after-commit callback of a read-only leader commit fires").isEqualTo(1);
+
+    waitForAllServers();
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServerDatabase(i, getDatabaseName()).countType(PROBE_TYPE, true)).as("count of node %d", i).isEqualTo(1L);
+
+    assertClusterConsistency();
   }
 }

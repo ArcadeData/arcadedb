@@ -29,8 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * back through the full {@code LocalSchema.load()}. Its whole value to an operator is that it takes effect on the
  * NEXT applied entry rather than on the next restart, which means the value must be read per entry and never cached.
  * <p>
- * {@code Issue6988FullRebuildFallbackIT} proves the flag reaches the apply path, but it sets the value once at server
- * start, so it cannot tell a per-entry read from a value latched during startup. This test pins that half.
+ * {@code HaSchemaDeltaReplicationFullRebuildIT} proves the flag reaches the apply path, but it sets the value once at
+ * server start, so it cannot tell a per-entry read from a value latched during startup. This test pins that half.
  */
 class Issue6988SchemaIncrementalApplySettingTest {
 
