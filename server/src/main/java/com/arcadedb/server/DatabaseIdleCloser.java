@@ -27,6 +27,7 @@ import com.arcadedb.server.http.HttpServer;
 import io.micrometer.core.instrument.Metrics;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +75,11 @@ public class DatabaseIdleCloser {
   static final String REOPENED_METER    = "arcadedb.server.databases.reopened";
   /** Closes that threw: the database is deregistered anyway, and its files may still be held until the instance lets go. */
   static final String CLOSE_FAILED_METER = "arcadedb.server.databases.idle_close_failed";
+
+  // THE CAP ORDERS ITS CANDIDATES BY ONE long EACH: 24 BITS OF INDEX (16M DATABASES) UNDER 39 BITS OF AGE IN MILLISECONDS (17 YEARS)
+  private static final int  INDEX_BITS     = 24;
+  private static final long INDEX_MASK     = (1L << INDEX_BITS) - 1;
+  private static final long MAX_AGE_MILLIS = (1L << (63 - INDEX_BITS)) - 1;
 
   private final ArcadeDBServer           server;
   /** What the last check saw of each open database. Read and written only by the check, under {@link #checkLock}. */
@@ -239,13 +245,17 @@ public class DatabaseIdleCloser {
       // READ AGAIN ON PURPOSE, NOT HOISTED: THE IDLE CLOSES ABOVE ALREADY SHRANK THE OPEN SET
       int excess = server.getDatabaseNames().size() - maxOpen;
       if (excess > 0) {
-        final List<Integer> order = new ArrayList<>(closable.size());
-        for (int i = 0; i < closable.size(); i++)
-          if (closable.get(i) != null)
-            order.add(i);
-        order.sort((a, b) -> Long.compare(closable.get(a).lastUsedNanos, closable.get(b).lastUsedNanos));
-        for (int k = 0; k < order.size() && excess > 0 && budget > 0; k++) {
-          final int i = order.get(k);
+        // ONE PRIMITIVE KEY PER CANDIDATE, ITS IDLE AGE IN MILLISECONDS ABOVE ITS INDEX: SORTED ASCENDING, THE OLDEST COME LAST
+        final long[] keys = new long[closable.size()];
+        int candidates = 0;
+        for (int i = 0; i < closable.size() && i <= INDEX_MASK; i++) {
+          final Sample sample = closable.get(i);
+          if (sample != null)
+            keys[candidates++] = (Math.min(TimeUnit.NANOSECONDS.toMillis(now - sample.lastUsedNanos), MAX_AGE_MILLIS) << INDEX_BITS) | i;
+        }
+        Arrays.sort(keys, 0, candidates);
+        for (int k = candidates - 1; k >= 0 && excess > 0 && budget > 0; k--) {
+          final int i = (int) (keys[k] & INDEX_MASK);
           if (close(closableNames.get(i), closable.get(i), true)) {
             ++closed;
             --budget;
