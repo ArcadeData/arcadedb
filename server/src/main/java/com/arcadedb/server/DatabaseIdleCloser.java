@@ -136,7 +136,8 @@ public class DatabaseIdleCloser {
         } catch (final Throwable e) {
           LogManager.instance().log(this, Level.WARNING, "Error on looking for idle databases to close", e);
         } finally {
-          if (scheduler == executor)
+          // NOT STOPPED, NOR STOPPED AND STARTED AGAIN WITH A NEW EXECUTOR, MEANWHILE
+          if (executor.equals(scheduler))
             scheduleNext(executor);
         }
       }, interval, TimeUnit.MILLISECONDS);

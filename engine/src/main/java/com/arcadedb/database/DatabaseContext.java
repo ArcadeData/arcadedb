@@ -196,8 +196,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       try {
         if (tl.hasActiveTransaction())
           return true;
-      } catch (final RuntimeException e) {
-        // THE OWNER PUSHED OR POPPED WHILE THIS THREAD READ ITS STACK: IT IS IN THE MIDDLE OF A TRANSACTION BOUNDARY
+      } catch (final IndexOutOfBoundsException | ConcurrentModificationException | NoSuchElementException e) {
+        // THE OWNER PUSHED OR POPPED WHILE THIS THREAD READ ITS STACK (AN ArrayList READ WITHOUT ITS OWNER'S SYNCHRONIZATION
+        // FAILS ONLY THIS WAY): IT IS IN THE MIDDLE OF A TRANSACTION BOUNDARY
         return true;
       }
     }
