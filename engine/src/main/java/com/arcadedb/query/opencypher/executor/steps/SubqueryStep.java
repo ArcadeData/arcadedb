@@ -80,6 +80,10 @@ public class SubqueryStep extends AbstractExecutionStep {
   private final Set<String> importedVariables;
   private final boolean importAllVariables;
   private final boolean innerMayWrite;
+  // SET BY THE PLANNER FOR A STATEMENT THAT CANNOT WRITE: THE BODY'S ROWS ARE THEN HANDED ON AS THEY ARE READ
+  private boolean streamBody;
+  // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
+  private ResultSet streamedBody;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -168,6 +172,16 @@ public class SubqueryStep extends AbstractExecutionStep {
     return imports;
   }
 
+  /**
+   * Hands the body's rows on as they are read instead of collecting them all first, so a consumer that stops early (a
+   * {@code LIMIT}) stops the body too (issue #11082). Only for a statement that cannot write: collecting is what runs a
+   * body's reads to completion before a write that follows the {@code CALL} sees the graph, and what lets the refresh of
+   * the outer bindings run after a writing body is done. A body that returns nothing is collected either way.
+   */
+  public void setStreamBody(final boolean streamBody) {
+    this.streamBody = streamBody && !innerMayWrite && subqueryClause.getInnerStatement().getReturnClause() != null;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (subqueryClause.isInTransactions())
@@ -251,6 +265,8 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
             continue;
           }
+          closeStreamedBody();
+          currentInnerResults = null;
 
           // Need a new outer row
           if (!prevResults.hasNext()) {
@@ -263,6 +279,21 @@ public class SubqueryStep extends AbstractExecutionStep {
           try {
             if (context.isProfiling())
               rowCount++;
+
+            if (streamBody) {
+              // The body reads as many rows at a time as this step was asked for, so a LIMIT after it bounds the body too
+              final ResultSet body = executeBody(currentOuterRow, context,
+                  Math.max(1, Math.min(nRecords, CypherExecutionPlan.SEEDED_BATCH_SIZE)));
+              if (body.hasNext()) {
+                streamedBody = body;
+                currentInnerResults = body;
+              } else {
+                body.close();
+                if (subqueryClause.isOptional())
+                  buffer.add(currentOuterRow);
+              }
+              continue;
+            }
 
             // Execute the inner query seeded with the outer row
             final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
@@ -436,13 +467,9 @@ public class SubqueryStep extends AbstractExecutionStep {
    */
   private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context) {
     final CypherStatement innerStatement = subqueryClause.getInnerStatement();
+    final ResultSet resultSet = executeBody(outerRow, context, CypherExecutionPlan.SEEDED_BATCH_SIZE);
 
-    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
-        database, innerStatement, parameters, database.getConfiguration(), null, expressionEvaluator);
-
-    final ResultSet resultSet = innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context);
-
-    try {
+    try (resultSet) {
       // Unit subquery: no RETURN clause — consume all inner rows for side effects only.
       // The outer row count must be preserved (one output row per outer row).
       if (innerStatement.getReturnClause() == null) {
@@ -472,6 +499,26 @@ public class SubqueryStep extends AbstractExecutionStep {
         refreshDocumentBindings(outerRow);
       }
     }
+  }
+
+  /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */
+  private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
+    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
+        database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(), null, expressionEvaluator);
+    return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
+  }
+
+  private void closeStreamedBody() {
+    if (streamedBody != null) {
+      streamedBody.close();
+      streamedBody = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    closeStreamedBody();
+    super.close();
   }
 
   /**
