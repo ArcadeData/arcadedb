@@ -68,15 +68,23 @@ public class PointWithinBBoxFunction implements StatelessFunction {
 
   private double[] extractCoordinates(final Object value) {
     if (value instanceof Map<?, ?> map) {
-      if (isGeographic(map))
-        return new double[] { ((Number) map.get("longitude")).doubleValue(), ((Number) map.get("latitude")).doubleValue() };
-      if (map.containsKey("x") && map.containsKey("y"))
-        return new double[] { ((Number) map.get("x")).doubleValue(), ((Number) map.get("y")).doubleValue() };
-      if (map.containsKey("longitude") && map.containsKey("latitude"))
-        return new double[] { ((Number) map.get("longitude")).doubleValue(), ((Number) map.get("latitude")).doubleValue() };
+      // A geographic point reads longitude/latitude first, any other x/y first; each falls back to the other pair, so a map
+      // that names its crs but carries only one of the two pairs still answers
+      final boolean geographic = isGeographic(map);
+      double[] coordinates = geographic ? pair(map, "longitude", "latitude") : pair(map, "x", "y");
+      if (coordinates == null)
+        coordinates = geographic ? pair(map, "x", "y") : pair(map, "longitude", "latitude");
+      if (coordinates != null)
+        return coordinates;
       throw new CommandExecutionException("Point must have x/y or longitude/latitude properties");
     }
     throw new CommandExecutionException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
+  }
+
+  private static double[] pair(final Map<?, ?> map, final String first, final String second) {
+    return map.get(first) instanceof Number a && map.get(second) instanceof Number b ?
+        new double[] { a.doubleValue(), b.doubleValue() } :
+        null;
   }
 
   private boolean isGeographic(final Object value) {

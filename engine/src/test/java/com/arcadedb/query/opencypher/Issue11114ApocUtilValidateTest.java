@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -87,6 +88,9 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
   void anOversizedFormatWidthIsNotFormatted() {
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, 'x%999999999s', ['y']) RETURN 1 AS ok"))))
         .isEqualTo("x%999999999s [y]");
+    // '<' reuses the previous argument: its width is measured too
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '%s%<999999999s', ['y']) RETURN 1 AS ok"))))
+        .isEqualTo("%s%<999999999s [y]");
     // a width a real message uses still formats
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '[%5s]', ['y']) RETURN 1 AS ok"))))
         .isEqualTo("[    y]");
@@ -99,6 +103,10 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
     assertThat(rows("CALL apoc.util.validate('', 'bad') RETURN 1 AS ok")).hasSize(1);
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(1, 'one') RETURN 1 AS ok")))).isEqualTo("one");
     assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate('yes', 'yes') RETURN 1 AS ok")))).isEqualTo("yes");
+    // a decimal too small for a double is still not zero
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate($p, 'tiny') RETURN 1 AS ok",
+        Map.of("p", new BigDecimal("1E-400")))))).isEqualTo("tiny");
+    assertThat(rows("CALL apoc.util.validate($p, 'zero') RETURN 1 AS ok", Map.of("p", BigDecimal.ZERO))).hasSize(1);
   }
 
   @Test
@@ -142,7 +150,11 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
   }
 
   private List<Result> rows(final String query) {
-    try (final ResultSet rs = database.query("opencypher", query)) {
+    return rows(query, Map.of());
+  }
+
+  private List<Result> rows(final String query, final Map<String, Object> parameters) {
+    try (final ResultSet rs = database.query("opencypher", query, parameters)) {
       final List<Result> rows = new ArrayList<>();
       while (rs.hasNext())
         rows.add(rs.next());

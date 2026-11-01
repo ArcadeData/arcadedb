@@ -71,6 +71,13 @@ class Issue11115UnknownNamespacedFunctionTest extends TestHelper {
   }
 
   @Test
+  void inAnyBranchOrConditionOfAConditionalQuery() {
+    assertUnknownFunction("WHEN true THEN RETURN 1 AS r ELSE MATCH (n:NoSuchType) RETURN apoc.nope.k(n) AS r", "apoc.nope.k");
+    assertUnknownFunction("WHEN false THEN RETURN 1 AS r WHEN true THEN RETURN apoc.nope.l(1) AS r", "apoc.nope.l");
+    assertUnknownFunction("WHEN apoc.nope.m(1) THEN RETURN 1 AS r ELSE RETURN 2 AS r", "apoc.nope.m");
+  }
+
+  @Test
   void anUnknownFunctionInAWriteIsRefusedBeforeAnythingIsWritten() {
     database.getSchema().getOrCreateVertexType("W");
     assertUnknownFunction("CREATE (:W {v: 1}) WITH 1 AS one RETURN apoc.nope.j(one) AS s", "apoc.nope.j");

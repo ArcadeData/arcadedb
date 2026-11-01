@@ -23,7 +23,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -291,7 +293,7 @@ public class Cypher25AntlrParser {
    */
   private static List<String> collectNamespacedFunctionCalls(final CypherStatement statement) {
     final Set<String> names = new LinkedHashSet<>();
-    CypherExpressionWalker.walk(statement, expression -> {
+    collectNamespacedFunctionCalls(statement, expression -> {
       if (expression instanceof FunctionCallExpression call) {
         final String name = call.getFunctionName();
         if (name.indexOf('.') > 0 && !CypherFunctionRegistry.hasFunction(name) && !CypherBuiltinFunctions.isBuiltin(name))
@@ -299,6 +301,20 @@ public class Cypher25AntlrParser {
       }
     });
     return names.isEmpty() ? List.of() : List.copyOf(names);
+  }
+
+  /**
+   * A conditional query is walked branch by branch, its conditions included: the walk of a statement does not descend into
+   * them, and an unknown function in a branch no row reaches must be refused all the same.
+   */
+  private static void collectNamespacedFunctionCalls(final CypherStatement statement, final CypherExpressionWalker.Visitor visitor) {
+    if (statement instanceof ConditionalStatement conditional) {
+      for (final Expression condition : conditional.getConditions())
+        CypherExpressionWalker.walk(condition, visitor);
+      for (final CypherStatement branch : conditional.getAllBranches())
+        collectNamespacedFunctionCalls(branch, visitor);
+    } else
+      CypherExpressionWalker.walk(statement, visitor);
   }
 
   private static Set<String> collectParameterNames(final ParseTree tree, final String query) {

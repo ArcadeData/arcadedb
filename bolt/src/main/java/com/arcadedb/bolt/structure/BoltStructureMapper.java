@@ -412,6 +412,9 @@ public class BoltStructureMapper {
 
   private static final byte SIG_DURATION = 0x45; // 'E' [months, days, seconds, nanoseconds]
 
+  // Every key point() writes (CypherPointFunction) and pointMap() decodes
+  private static final Set<String> POINT_KEYS = Set.of("x", "y", "z", "longitude", "latitude", "height", "crs", "srid");
+
   /**
    * Recognize a Cypher spatial point (a Map carrying numeric x/y or longitude/latitude, plus either a
    * recognized crs value - {@code cartesian}, {@code cartesian-3d}, {@code wgs-84}, {@code wgs-84-3d} in any letter
@@ -423,6 +426,11 @@ public class BoltStructureMapper {
   static BoltPointStructure toPointStructure(final Object value) {
     if (!(value instanceof Map<?, ?> map) || !map.containsKey("crs"))
       return null;
+    // A key no point carries makes it an ordinary map, which a Point would silently strip (a {crs: 'wgs-84', x: 1, y: 2,
+    // label: 'home'} literal, since crs names match in any case, issue #11113)
+    for (final Object key : map.keySet())
+      if (!POINT_KEYS.contains(key))
+        return null;
     final Object crs = map.get("crs");
     if (!(crs instanceof String name && CypherPointFunction.sridOfCrs(name) != null) && !(map.get("srid") instanceof Number))
       return null;

@@ -87,6 +87,28 @@ class Issue11113PointCrsNameCaseTest extends TestHelper {
     }
   }
 
+  @Test
+  void aPointStoredWithTheOldSpellingEqualsTheSamePointBuiltNow() {
+    final Map<String, Object> oldPoint = Map.of("longitude", 1.5, "latitude", 2.5, "x", 1.5, "y", 2.5, "crs", "WGS-84", "srid", 4326);
+    try (final ResultSet rs = database.query("opencypher", "RETURN $p = point({longitude: 1.5, latitude: 2.5}) AS same, "
+        + "$p = point({longitude: 1.5, latitude: 9.0}) AS other, $p <> point({longitude: 1.5, latitude: 2.5}) AS differs",
+        Map.of("p", oldPoint))) {
+      final Result row = rs.next();
+      assertThat(row.<Boolean>getProperty("same")).isTrue();
+      assertThat(row.<Boolean>getProperty("other")).isFalse();
+      assertThat(row.<Boolean>getProperty("differs")).isFalse();
+    }
+    // an ordinary map with a crs key that names no reference system still compares its strings exactly
+    assertThat(single("RETURN {crs: 'abc'} = {crs: 'ABC'} AS same").<Boolean>getProperty("same")).isFalse();
+  }
+
+  @Test
+  void aGeographicCrsMapCarryingOnlyXAndYIsReadByXAndY() {
+    final Result row = single("RETURN point.withinBBox({x: 12.5, y: 41.9, crs: 'wgs-84'}, point({longitude: 12, latitude: 41}), "
+        + "point({longitude: 13, latitude: 42})) AS inside");
+    assertThat(row.<Boolean>getProperty("inside")).isTrue();
+  }
+
   private String crs(final String pointExpression) {
     return single("RETURN " + pointExpression + ".crs AS crs").getProperty("crs");
   }

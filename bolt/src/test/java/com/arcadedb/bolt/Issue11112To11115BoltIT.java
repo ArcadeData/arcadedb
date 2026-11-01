@@ -93,6 +93,10 @@ public class Issue11112To11115BoltIT extends BaseBoltServerTest {
       assertThat(point.srid()).isEqualTo(4979);
       assertThat(point.z()).isEqualTo(3.0);
 
+      // an ordinary map that only shares a crs name with a point stays a map, every key included
+      assertThat(single(session, "RETURN {crs: 'wgs-84', x: 1, y: 2, label: 'home'} AS m").get("m").asMap())
+          .containsEntry("label", "home").containsEntry("crs", "wgs-84");
+
       // a point sent by the driver comes back with the same names
       final Record echo = single(session, "RETURN $p.crs AS crs", Map.of("p", point));
       assertThat(echo.get("crs").asString()).isEqualTo("wgs-84-3d");

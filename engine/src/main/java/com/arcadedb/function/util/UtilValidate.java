@@ -20,6 +20,8 @@ package com.arcadedb.function.util;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.IllegalFormatException;
@@ -74,6 +76,11 @@ public class UtilValidate extends AbstractUtilFunction {
       return b;
     if (predicate instanceof String str)
       return !str.isEmpty() && !"false".equalsIgnoreCase(str) && !"0".equals(str);
+    // signum, not doubleValue(): 1E-400 is not zero, though its double is
+    if (predicate instanceof BigDecimal d)
+      return d.signum() != 0;
+    if (predicate instanceof BigInteger i)
+      return i.signum() != 0;
     if (predicate instanceof Number n)
       return n.doubleValue() != 0.0;
     return true;
@@ -117,7 +124,7 @@ public class UtilValidate extends AbstractUtilFunction {
           number = number * 10 + (c - '0');
           if (number > MAX_FORMAT_WIDTH)
             return true;
-        } else if (c == '.' || c == '$' || c == '-' || c == '#' || c == '+' || c == ' ' || c == ',' || c == '(')
+        } else if (c == '.' || c == '$' || c == '<' || c == '-' || c == '#' || c == '+' || c == ' ' || c == ',' || c == '(')
           number = 0;
         else
           break;
