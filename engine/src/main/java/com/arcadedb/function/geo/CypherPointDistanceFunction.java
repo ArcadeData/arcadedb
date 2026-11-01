@@ -107,9 +107,9 @@ public class CypherPointDistanceFunction implements StatelessFunction {
   private static boolean isGeographic(final Map<?, ?> p) {
     final Object crs = p.get("crs");
     if (crs instanceof String s) {
-      if (s.startsWith("WGS-84"))
+      if (CypherPointFunction.isGeographicCrs(s))
         return true;
-      if (s.startsWith("cartesian"))
+      if (CypherPointFunction.isCartesianCrs(s))
         return false;
     }
     return p.containsKey("longitude") && p.containsKey("latitude");

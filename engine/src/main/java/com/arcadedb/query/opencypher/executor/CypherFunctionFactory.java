@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
@@ -118,10 +119,12 @@ import com.arcadedb.function.vector.VectorNormFunction;
 import com.arcadedb.function.vector.VectorSimilarityCosineFunction;
 import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Level;
@@ -301,7 +304,7 @@ public class CypherFunctionFactory {
         final SQLFunction sqlFunction = sqlFunctionFactory.getFunctionInstance(sqlFunctionName);
         return new SQLFunctionBridge(sqlFunction, cypherFunctionName);
       }
-      throw new CommandExecutionException("Unknown SQL function: " + sqlFunctionName);
+      throw FunctionValidator.unknownFunction(cypherFunctionName);
     }
 
     // Check CypherFunctionRegistry for namespaced functions (text.*, map.*, util.*, date.*, etc.)
@@ -333,7 +336,25 @@ public class CypherFunctionFactory {
         return customFunction;
     }
 
-    throw new CommandExecutionException("Unknown function: " + cypherFunctionName);
+    throw FunctionValidator.unknownFunction(cypherFunctionName);
+  }
+
+  /**
+   * Refuses a statement calling a namespaced function that neither a built-in nor a user-defined function of
+   * {@code database} answers, before anything of it runs: Neo4j's {@code Unknown function '...'} syntax error, naming it as
+   * written, which is what an unknown PLAIN function already gets at parse time. The parse cannot decide a namespaced name,
+   * since only the database knows its function libraries, so the name used to reach the execution and fail there as a
+   * server error, and only once a row called it (issue #11115).
+   *
+   * @param namespacedFunctionCalls the calls the parse could not answer with a built-in
+   *                                ({@code ParsedQuery.namespacedFunctionCalls()}), as written
+   */
+  public void checkNamespacedFunctionsResolve(final List<String> namespacedFunctionCalls, final Database database) {
+    for (int i = 0; i < namespacedFunctionCalls.size(); i++) {
+      final String name = namespacedFunctionCalls.get(i);
+      if (!hasFunction(name) && !CustomFunctionAdapter.exists(database.getSchema(), name))
+        throw FunctionValidator.unknownFunction(name);
+    }
   }
 
   private StatelessFunction getOrCreateCustomFunctionAdapter(final String functionName) {

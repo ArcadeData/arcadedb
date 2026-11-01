@@ -40,11 +40,14 @@ import java.util.Map;
  * {@code point({longitude: x, latitude: y})} per the universal GIS {@code (x, y)} convention. Neo4j
  * has no such positional form.</p>
  * <p>For the cartesian (x/y) form the {@code srid} and {@code crs} name are derived from each other (cartesian 7203 and
- * cartesian-3D 9157, WGS-84 4326 and WGS-84-3D 4979), known names are matched case-insensitively and stored in canonical
+ * cartesian-3d 9157, wgs-84 4326 and wgs-84-3d 4979), known names are matched case-insensitively and stored in canonical
  * spelling, an unknown crs name is kept without an srid and an unknown srid gets the cartesian name (both unlike Neo4j,
  * which rejects them), and a disagreeing pair or a dimension that does not match the srid is rejected (issue #3993).</p>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
- * the coordinate reference system.</p>
+ * the coordinate reference system, spelled as Neo4j spells it: {@code cartesian}, {@code cartesian-3d}, {@code wgs-84},
+ * {@code wgs-84-3d} (issue #11113). Points written before that fix carry {@code WGS-84}, {@code WGS-84-3D} or
+ * {@code cartesian-3D}, so a reader of a crs name compares it case-insensitively ({@link #isGeographicCrs},
+ * {@link #sridOfCrs}).</p>
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
  * when the string parses cleanly as a decimal (e.g. a node whose {@code lat} property was
  * declared as {@link com.arcadedb.schema.Type#STRING}). When coercion is impossible the
@@ -53,6 +56,11 @@ import java.util.Map;
  * argument error as an internal server fault (issue #5794).</p>
  */
 public class CypherPointFunction implements StatelessFunction {
+  public static final String CRS_CARTESIAN_2D = "cartesian";
+  public static final String CRS_CARTESIAN_3D = "cartesian-3d";
+  public static final String CRS_WGS84_2D     = "wgs-84";
+  public static final String CRS_WGS84_3D     = "wgs-84-3d";
+
   private static final int SRID_CARTESIAN_2D = 7203;
   private static final int SRID_CARTESIAN_3D = 9157;
   private static final int SRID_WGS84_2D     = 4326;
@@ -90,7 +98,7 @@ public class CypherPointFunction implements StatelessFunction {
       result.put("latitude", y);
       result.put("x", x);
       result.put("y", y);
-      result.put("crs", "WGS-84");
+      result.put("crs", CRS_WGS84_2D);
       result.put("srid", SRID_WGS84_2D);
       return result;
     }
@@ -120,7 +128,7 @@ public class CypherPointFunction implements StatelessFunction {
       addOptionalZ(result, map);
       if (result.containsKey("z"))
         result.put("height", result.get("z"));
-      result.put("crs", result.containsKey("z") ? "WGS-84-3D" : "WGS-84");
+      result.put("crs", result.containsKey("z") ? CRS_WGS84_3D : CRS_WGS84_2D);
       result.put("srid", result.containsKey("z") ? SRID_WGS84_3D : SRID_WGS84_2D);
     } else if (map.containsKey("x") || map.containsKey("y")) {
       // Cartesian coordinate system
@@ -181,17 +189,32 @@ public class CypherPointFunction implements StatelessFunction {
     return result;
   }
 
-  /** Neo4j SRID of a well-known CRS name, or null when the name is not one of the four Neo4j defines. */
-  private static Integer sridOfCrs(final String crs) {
-    if (crs.equalsIgnoreCase("cartesian"))
+  /**
+   * Neo4j SRID of a well-known CRS name in any letter case, or null when the name is not one of the four Neo4j defines.
+   */
+  public static Integer sridOfCrs(final String crs) {
+    if (crs.equalsIgnoreCase(CRS_CARTESIAN_2D))
       return SRID_CARTESIAN_2D;
-    if (crs.equalsIgnoreCase("cartesian-3D"))
+    if (crs.equalsIgnoreCase(CRS_CARTESIAN_3D))
       return SRID_CARTESIAN_3D;
-    if (crs.equalsIgnoreCase("WGS-84"))
+    if (crs.equalsIgnoreCase(CRS_WGS84_2D))
       return SRID_WGS84_2D;
-    if (crs.equalsIgnoreCase("WGS-84-3D"))
+    if (crs.equalsIgnoreCase(CRS_WGS84_3D))
       return SRID_WGS84_3D;
     return null;
+  }
+
+  /**
+   * Whether a crs name is one of the two WGS-84 names, in any letter case: a point stored before issue #11113 carries
+   * {@code WGS-84}, one built since {@code wgs-84}.
+   */
+  public static boolean isGeographicCrs(final String crs) {
+    return crs.regionMatches(true, 0, CRS_WGS84_2D, 0, CRS_WGS84_2D.length());
+  }
+
+  /** Whether a crs name is one of the two cartesian names, in any letter case (see {@link #isGeographicCrs}). */
+  public static boolean isCartesianCrs(final String crs) {
+    return crs.regionMatches(true, 0, CRS_CARTESIAN_2D, 0, CRS_CARTESIAN_2D.length());
   }
 
   private static boolean isKnownSrid(final int srid) {
@@ -203,13 +226,13 @@ public class CypherPointFunction implements StatelessFunction {
   }
 
   /** CRS name of a well-known Neo4j SRID; an unknown SRID falls back to the cartesian name of the given dimension. */
-  private static String crsOfSrid(final int srid, final boolean is3d) {
+  public static String crsOfSrid(final int srid, final boolean is3d) {
     return switch (srid) {
-      case SRID_WGS84_2D -> "WGS-84";
-      case SRID_WGS84_3D -> "WGS-84-3D";
-      case SRID_CARTESIAN_3D -> "cartesian-3D";
-      case SRID_CARTESIAN_2D -> "cartesian";
-      default -> is3d ? "cartesian-3D" : "cartesian";
+      case SRID_WGS84_2D -> CRS_WGS84_2D;
+      case SRID_WGS84_3D -> CRS_WGS84_3D;
+      case SRID_CARTESIAN_3D -> CRS_CARTESIAN_3D;
+      case SRID_CARTESIAN_2D -> CRS_CARTESIAN_2D;
+      default -> is3d ? CRS_CARTESIAN_3D : CRS_CARTESIAN_2D;
     };
   }
 

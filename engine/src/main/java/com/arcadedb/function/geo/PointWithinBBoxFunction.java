@@ -84,9 +84,9 @@ public class PointWithinBBoxFunction implements StatelessFunction {
       return false;
     final Object crs = map.get("crs");
     if (crs instanceof String s) {
-      if (s.startsWith("WGS-84"))
+      if (CypherPointFunction.isGeographicCrs(s))
         return true;
-      if (s.startsWith("cartesian"))
+      if (CypherPointFunction.isCartesianCrs(s))
         return false;
     }
     return map.containsKey("longitude") && map.containsKey("latitude") && !map.containsKey("x");

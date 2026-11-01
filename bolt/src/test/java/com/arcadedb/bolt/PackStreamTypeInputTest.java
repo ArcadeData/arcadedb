@@ -66,7 +66,7 @@ class PackStreamTypeInputTest {
   void decodesWgs84Point3D() throws Exception {
     final Object out = decode(SIG_POINT_3D, 4979L, 12.34, 56.78, 100.0);
     final Map<?, ?> m = (Map<?, ?>) out;
-    assertThat(m.get("crs")).isEqualTo("WGS-84-3D");
+    assertThat(m.get("crs")).isEqualTo("wgs-84-3d");
     assertThat(((Number) m.get("z")).doubleValue()).isEqualTo(100.0);
   }
 

@@ -2668,7 +2668,7 @@ public class CypherSemanticValidator {
     if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
       // Echo the spelling the client wrote, not the folded one: "Unknown function 'charat'" sends someone looking for
       // a name that never appeared in their query.
-      throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getOriginalFunctionName() + "'");
+      throw FunctionValidator.unknownFunction(func.getOriginalFunctionName());
     final List<Expression> args = func.getArguments();
     // The wrong number of arguments is the primary defect and must be reported as such, before the single-argument type
     // check below decides that e.g. atan2('x') - a binary function called with one argument - is a type error (#5484).

@@ -410,7 +410,7 @@ class OpenCypherSpatialFunctionsComprehensiveTest extends TestHelper {
     assertThat(z.doubleValue()).isCloseTo(8.0, within(0.001));
     assertThat(height).isNotNull();
     assertThat(height.doubleValue()).isCloseTo(8.0, within(0.001));
-    assertThat(crs).isEqualTo("WGS-84-3D");
+    assertThat(crs).isEqualTo("wgs-84-3d");
   }
 
   @Test
