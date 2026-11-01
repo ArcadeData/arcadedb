@@ -1900,6 +1900,7 @@ public class ArcadeDBServer {
         } catch (final RuntimeException e) {
           // Deregistered whatever the close did: the next request opens the files again, or is refused while they are held
           LogManager.instance().log(this, Level.SEVERE, "Error on closing idle database '%s'", e, databaseName);
+          Metrics.counter(DatabaseIdleCloser.CLOSE_FAILED_METER).increment();
         }
       }
     } finally {

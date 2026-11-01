@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -238,6 +239,37 @@ public class Issue11068DatabaseIdleCloseTest extends BaseGraphServerTest {
     assertThat(closer.check()).isEqualTo(1);
     assertThat(closer.check()).isEqualTo(1);
     assertThat(server.getDatabaseNames()).doesNotContain(SECOND, getDatabaseName());
+  }
+
+  @Test
+  void concurrentChecksCloseTheDatabaseOnce() throws Exception {
+    idleTimeout(1);
+    final DatabaseIdleCloser closer = getServer(0).getDatabaseIdleCloser();
+    closer.check();
+    Thread.sleep(20);
+
+    // An embedder's check racing another one: they take turns on the samples, and the database is closed and counted once
+    final int threads = 8;
+    final CountDownLatch start = new CountDownLatch(1);
+    final AtomicInteger closed = new AtomicInteger();
+    final Thread[] checkers = new Thread[threads];
+    for (int i = 0; i < threads; i++) {
+      checkers[i] = new Thread(() -> {
+        try {
+          start.await();
+          closed.addAndGet(closer.check());
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      checkers[i].start();
+    }
+    start.countDown();
+    for (final Thread checker : checkers)
+      checker.join(30_000);
+
+    assertThat(closed.get()).isEqualTo(1);
+    assertThat(closer.getIdleCloses()).isEqualTo(1);
   }
 
   @Test

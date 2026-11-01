@@ -37,6 +37,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 /**
@@ -71,10 +72,13 @@ import java.util.logging.Level;
 public class DatabaseIdleCloser {
   static final String IDLE_CLOSED_METER = "arcadedb.server.databases.idle_closed";
   static final String REOPENED_METER    = "arcadedb.server.databases.reopened";
+  /** Closes that threw: the database is deregistered anyway, and its files may still be held until the instance lets go. */
+  static final String CLOSE_FAILED_METER = "arcadedb.server.databases.idle_close_failed";
 
   private final ArcadeDBServer           server;
-  /** What the last check saw of each open database. Read and written only by the check, which runs on one thread at a time. */
+  /** What the last check saw of each open database. Read and written only by the check, under {@link #checkLock}. */
   private final Map<String, Sample>      samples      = new ConcurrentHashMap<>();
+  private final ReentrantLock            checkLock    = new ReentrantLock();
   /** The databases closed for idleness or by the cap and not opened since, to count their reopens. */
   private final Set<String>              closedByIdle = ConcurrentHashMap.newKeySet();
   private final AtomicLong               idleCloses   = new AtomicLong();
@@ -152,6 +156,17 @@ public class DatabaseIdleCloser {
    * embedder, or a test, that drives a check now instead of waiting for the next one.
    */
   public int check() {
+    // ONE CHECK AT A TIME: THE SCHEDULED ONE AND AN EMBEDDER'S SHARE THE SAMPLES. NOT THIS OBJECT'S MONITOR, WHICH stop() HOLDS
+    // WHILE IT WAITS FOR THE SCHEDULER
+    checkLock.lock();
+    try {
+      return checkLocked();
+    } finally {
+      checkLock.unlock();
+    }
+  }
+
+  private int checkLocked() {
     if (!server.isStarted())
       return 0;
 
