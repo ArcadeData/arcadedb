@@ -145,6 +145,11 @@ class Issue11081ReadOnlyBoundedDemandTest {
     database.transaction(
         () -> assertThat(commandRows("UNWIND range(1, 3) AS i CALL (i) { CREATE (:GspLow {uid: 100 + i}) } RETURN i LIMIT 0")).isEmpty());
     assertThat(single("MATCH (n:GspLow) WHERE n.uid > 100 RETURN count(n) AS c", "c")).isEqualTo(3L);
+
+    // The write is a procedure: the statement can write, so the LIMIT 0 still drains
+    database.transaction(() -> assertThat(commandRows("UNWIND range(1, 2) AS i CALL merge.node(['GspLow'], {uid: 300 + i}, {}, "
+        + "{}) YIELD node RETURN node LIMIT 0")).isEmpty());
+    assertThat(single("MATCH (n:GspLow) WHERE n.uid > 300 RETURN count(n) AS c", "c")).isEqualTo(2L);
   }
 
   // ---------------------------------------------------------------------------------------------------------------
