@@ -69,8 +69,7 @@ final class BinaryCodeCache {
    */
   BinaryCodeCache(final int dimensions, final int requestedCapacity) {
     this.words = wordsFor(dimensions);
-    // Capped so the code array stays addressable by an int
-    this.capacity = Math.min(Math.max(1, requestedCapacity), (Integer.MAX_VALUE - 8) / words);
+    this.capacity = Math.min(Math.max(1, requestedCapacity), maxCapacity(dimensions));
     this.versions = new int[capacity];
     this.ids = new int[capacity];
     Arrays.fill(ids, EMPTY);
@@ -80,6 +79,11 @@ final class BinaryCodeCache {
   /** @return the longs one code takes. */
   static int wordsFor(final int dimensions) {
     return (dimensions + 63) >>> 6;
+  }
+
+  /** @return the most codes a cache of {@code dimensions} can hold: the code array stays addressable by an int. */
+  static int maxCapacity(final int dimensions) {
+    return (Integer.MAX_VALUE - 8) / wordsFor(dimensions);
   }
 
   /** @return the heap one cached code costs: its words, its id and its version. */

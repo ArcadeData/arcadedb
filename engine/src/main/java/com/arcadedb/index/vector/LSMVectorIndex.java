@@ -13759,7 +13759,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   FlatVectorCache getSearchVectorCache() {
     FlatVectorCache cache = searchVectorCache;
-    final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), cache != null ? cache.capacity() : 0);
+    final int wanted = searchCacheCapacity(FlatVectorCache.bytesPerVector(metadata.dimensions), FlatVectorCache.MAX_CAPACITY,
+        cache != null ? cache.capacity() : 0);
     if (wanted <= 0)
       return null;
 
@@ -13800,7 +13801,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (metadata.quantizationType != VectorQuantizationType.BINARY)
       return null;
     BinaryCodeCache codes = searchBinaryCodes;
-    final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions), codes != null ? codes.capacity() : 0);
+    final int wanted = searchCacheCapacity(BinaryCodeCache.bytesPerCode(metadata.dimensions),
+        BinaryCodeCache.maxCapacity(metadata.dimensions), codes != null ? codes.capacity() : 0);
     if (wanted <= 0)
       return null;
 
@@ -13835,17 +13837,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * every vector id cannot grow, so it is answered without the reading.
    *
    * @param bytesPerEntry   heap one entry costs
+   * @param maxCapacity     the most entries the cache can hold: a capacity asked past it would never be reached, and the
+   *                        cache rebuilt on every search for it
    * @param currentCapacity capacity of the cache the index holds, 0 for none
    *
    * @return the number of entries to hold, or 0 when caching is disabled
    */
-  private int searchCacheCapacity(final long bytesPerEntry, final int currentCapacity) {
+  private int searchCacheCapacity(final long bytesPerEntry, final int maxCapacity, final int currentCapacity) {
     final int configured = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE);
     if (configured < 0)
       return 0;
     if (configured > 0)
-      return configured;
+      return Math.min(configured, maxCapacity);
 
     final int heapPercent = mutable.getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT);
@@ -13857,7 +13861,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return currentCapacity;
 
     final long affordable = Math.max(MIN_SEARCH_CACHE_SIZE, VectorHeapBudget.budgetBytes(heapPercent) / bytesPerEntry);
-    return searchCacheCapacity(idRange, affordable, currentCapacity);
+    return searchCacheCapacity(idRange, Math.min(affordable, maxCapacity), currentCapacity);
   }
 
   /**
@@ -13875,7 +13879,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the range uncovered while the budget covers it.
    *
    * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SIZE}
-   * @param affordable      the entries the budget affords, at least {@code MIN_SEARCH_CACHE_SIZE}
+   * @param affordable      the entries the budget affords, at least {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache
+   *                        can hold
    * @param currentCapacity capacity of the cache the index holds, 0 for none
    *
    * @return the number of entries to hold

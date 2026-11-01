@@ -76,6 +76,20 @@ class Issue11071SearchCacheCapacityTest {
     assertThat(LSMVectorIndex.searchCacheCapacity(100_000, 50_000, 122_000)).isEqualTo(122_000);
   }
 
+  /**
+   * A capacity past what the cache can hold would never be reached, and the cache rebuilt on every search for it: the wanted
+   * capacity is capped at the cache's own maximum, where it stays.
+   */
+  @Test
+  void theCapacityStaysAtTheMostTheCacheCanHold() {
+    final int max = BinaryCodeCache.maxCapacity(1536);
+    final long idRange = 4L * max;
+
+    final int first = LSMVectorIndex.searchCacheCapacity(idRange, max, 0);
+    assertThat(first).isEqualTo(max);
+    assertThat(LSMVectorIndex.searchCacheCapacity(idRange, max, first)).isEqualTo(first);
+  }
+
   @Test
   void aFlatCacheOfAnyCapacityKeepsEveryIdBelowItInASlotOfItsOwn() {
     final int capacity = 100;

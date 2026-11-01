@@ -2748,11 +2748,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageId), pageSize);
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
         for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-          final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
-          if (recordPositionInPage == 0)
+          final long recordSize;
+          try {
+            final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
+            if (recordPositionInPage == 0)
+              continue;
+            recordSize = page.readNumber(recordPositionInPage);
+          } catch (final RuntimeException e) {
+            // A CORRUPTED SLOT-TABLE ENTRY OR RECORD HEADER: SKIPPED AND LOGGED, AS BucketIterator SKIPS IT, SO THE POSITIONS
+            // STAY THE RECORDS A SCAN HANDS OUT
+            LogManager.instance().log(this, Level.SEVERE, "Error on reading record #%d:%d (error: %s)", fileId,
+                recordPosition(pageId, maxRecordsInPage, recordIdInPage), e.getMessage());
             continue;
+          }
           // THE RECORDS scan() HANDS OUT: A PLAIN ONE, A PLACEHOLDER POINTER, THE HEAD OF A CHUNK CHAIN
-          final long recordSize = page.readNumber(recordPositionInPage);
           if (recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK)
             consumer.accept(recordPosition(pageId, maxRecordsInPage, recordIdInPage));
         }
