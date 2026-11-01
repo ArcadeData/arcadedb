@@ -45,6 +45,8 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * <p>
  * <b>Layout.</b> Direct-mapped by vector id, like {@link BinaryCodeCache}: vector ids are dense and monotonic, so with a
  * capacity at least the id range every vector stays resident; past it, a later id takes the slot of an earlier one. The
+ * capacity is any count, not a power of two: an id below it is its own slot (issue #11071, a capacity rounded down to a
+ * power of two below the id range made a third of the ids of a 100,000-vector index evict each other on every search). The
  * components live in chunks of up to {@link #MAX_CHUNK_FLOATS} floats, each allocated on the first write into it, so the
  * heap is claimed as vectors are loaded rather than all at once, and no single allocation grows with the capacity. Like
  * {@link VectorCache} it is a cache and not a store: a miss is answered by the index pages, and the owner clears it whenever
@@ -73,6 +75,8 @@ final class FlatVectorCache {
    * capacity floor provides for (8,192 slots of 1536 dimensions would be 50 MB).
    */
   static final int MAX_CHUNK_FLOATS = 1 << 20;
+  /** Largest capacity, in vectors. */
+  static final int MAX_CAPACITY     = 1 << 30;
 
   private static final VarHandle         STAMPS = MethodHandles.arrayElementVarHandle(long[].class);
   /** Version 0, id -1: the stamp of a slot that holds nothing. */
@@ -90,7 +94,7 @@ final class FlatVectorCache {
   private static final VarHandle COUNTERS = MethodHandles.arrayElementVarHandle(long[].class);
 
   private final int                                 dimensions;
-  private final int                                 mask;
+  private final int                                 capacity;
   // version << 32 | id. Version even: the slot is stable. Odd: a writer owns it
   private final long[]                              stamps;
   private final int                                 chunkShift;
@@ -100,7 +104,7 @@ final class FlatVectorCache {
 
   /**
    * @param dimensions        the width of the vectors
-   * @param requestedCapacity the vectors to hold, rounded up to a power of two
+   * @param requestedCapacity the vectors to hold, exactly: any count, not only a power of two (issue #11071)
    */
   FlatVectorCache(final int dimensions, final int requestedCapacity) {
     this(dimensions, requestedCapacity, MAX_CHUNK_FLOATS);
@@ -111,17 +115,18 @@ final class FlatVectorCache {
     if (dimensions <= 0)
       throw new IllegalArgumentException("dimensions must be positive, got " + dimensions);
     this.dimensions = dimensions;
-    final int capacity = tableSizeFor(Math.max(1, requestedCapacity));
-    this.mask = capacity - 1;
+    this.capacity = Math.min(MAX_CAPACITY, Math.max(1, requestedCapacity));
     this.stamps = new long[capacity];
     Arrays.fill(stamps, EMPTY);
 
-    // Slots per chunk: the largest power of two whose components fit a chunk, never more than the capacity. One slot when
-    // a single vector is wider than a chunk: its chunk is then exactly one vector.
-    final int slotsPerChunk = Math.min(capacity, Math.max(1, Integer.highestOneBit(Math.max(1, maxChunkFloats / dimensions))));
+    // Slots per chunk: the largest power of two whose components fit a chunk, never more than the capacity needs. One slot
+    // when a single vector is wider than a chunk: its chunk is then exactly one vector. The last chunk is cut to the slots
+    // the capacity leaves it (chunkFor)
+    final int slotsPerChunk = Math.min(powerOfTwoAtOrAbove(capacity),
+        Math.max(1, Integer.highestOneBit(Math.max(1, maxChunkFloats / dimensions))));
     this.chunkShift = Integer.numberOfTrailingZeros(slotsPerChunk);
     this.chunkMask = slotsPerChunk - 1;
-    this.chunks = new AtomicReferenceArray<>(capacity / slotsPerChunk);
+    this.chunks = new AtomicReferenceArray<>((capacity + slotsPerChunk - 1) / slotsPerChunk);
   }
 
   /** @return the heap one cached vector costs: its components and its stamp. */
@@ -130,7 +135,7 @@ final class FlatVectorCache {
   }
 
   int capacity() {
-    return stamps.length;
+    return capacity;
   }
 
   int dimensions() {
@@ -143,7 +148,7 @@ final class FlatVectorCache {
    */
   float similarity(final int vectorId, final VectorFloat<?> query, final VectorSimilarityFunction function) {
     if (vectorId >= 0) {
-      final int slot = vectorId & mask;
+      final int slot = slotOf(vectorId);
       final long stamp = (long) STAMPS.getAcquire(stamps, slot);
       if ((int) stamp == vectorId && (stamp & (1L << 32)) == 0) {
         // Plain read: the writer that published this stamp took the chunk from the array before its release, and the
@@ -170,7 +175,7 @@ final class FlatVectorCache {
    */
   VectorFloat<?> get(final int vectorId) {
     if (vectorId >= 0) {
-      final int slot = vectorId & mask;
+      final int slot = slotOf(vectorId);
       final long stamp = (long) STAMPS.getAcquire(stamps, slot);
       if ((int) stamp == vectorId && (stamp & (1L << 32)) == 0) {
         final VectorFloat<?> chunk = chunks.getPlain(slot >>> chunkShift);
@@ -198,7 +203,7 @@ final class FlatVectorCache {
   void put(final int vectorId, final VectorFloat<?> vector) {
     if (vectorId < 0 || vector == null || vector.length() != dimensions)
       return;
-    final int slot = vectorId & mask;
+    final int slot = slotOf(vectorId);
     final long stamp = (long) STAMPS.getVolatile(stamps, slot);
     final long version = stamp >>> 32;
     if ((version & 1) != 0 || (int) stamp == vectorId)
@@ -219,7 +224,7 @@ final class FlatVectorCache {
   void remove(final int vectorId) {
     if (vectorId < 0)
       return;
-    final int slot = vectorId & mask;
+    final int slot = slotOf(vectorId);
     while (true) {
       final long stamp = (long) STAMPS.getVolatile(stamps, slot);
       final long version = stamp >>> 32;
@@ -322,7 +327,9 @@ final class FlatVectorCache {
       synchronized (chunks) {
         chunk = chunks.get(index);
         if (chunk == null) {
-          chunk = VTS.createFloatVector((chunkMask + 1) * dimensions);
+          // The last chunk holds only the slots the capacity leaves it
+          final int slots = Math.min(chunkMask + 1, capacity - (index << chunkShift));
+          chunk = VTS.createFloatVector(slots * dimensions);
           chunks.set(index, chunk);
         }
       }
@@ -343,10 +350,17 @@ final class FlatVectorCache {
     return total;
   }
 
-  /** The power of two at or above {@code size}, capped at 2^30. */
-  private static int tableSizeFor(final int size) {
-    if (size >= 1 << 30)
-      return 1 << 30;
+  /**
+   * The slot of {@code vectorId}, which is not negative: the id itself below the capacity, so a capacity that covers the id
+   * range keeps every vector in a slot of its own whatever the capacity is, and the remainder past it. The remainder costs a
+   * division, but only on an id the capacity does not cover, which is a miss most of the time anyway.
+   */
+  private int slotOf(final int vectorId) {
+    return vectorId < capacity ? vectorId : vectorId % capacity;
+  }
+
+  /** The power of two at or above {@code size}, for {@code size} in [1, 2^30]. */
+  private static int powerOfTwoAtOrAbove(final int size) {
     return size <= 1 ? 1 : Integer.highestOneBit(size - 1) << 1;
   }
 }

@@ -106,7 +106,7 @@ class FlatVectorCacheTest {
 
   @Test
   void denseIdsUpToTheCapacityStayResidentAndALaterIdTakesTheSlotOfAnEarlierOne() {
-    final FlatVectorCache cache = new FlatVectorCache(2, 100);
+    final FlatVectorCache cache = new FlatVectorCache(2, 128);
     assertThat(cache.capacity()).isEqualTo(128);
 
     for (int id = 0; id < 128; id++)

@@ -533,6 +533,26 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     }
   }
 
+  /**
+   * Hands every entry of this segment to {@code visitor} as the four numbers it is stored as, newest first like every walk,
+   * decoding no RID (issue #11012).
+   */
+  public void forEachEntry(final EdgeListScanner.EntryVisitor visitor) {
+    final int used = getUsed();
+    int position = CONTENT_START_POSITION;
+    while (position < used) {
+      final long edgeBucketId = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      final long edgePosition = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      final long vertexBucketId = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      final long vertexPosition = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      visitor.visit((int) edgeBucketId, edgePosition, (int) vertexBucketId, vertexPosition);
+    }
+  }
+
   @Override
   public EdgeSegment getPrevious() {
     final RID nextRID = getPreviousRID();

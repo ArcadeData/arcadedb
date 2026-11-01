@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalEdgeType;
 
 import java.util.Arrays;
 import java.util.List;
@@ -45,12 +46,16 @@ public final class EdgeBucketMask {
   private final int       lastBucketId;
   private final boolean[] dense;
   private final int[]     sorted;
+  // THE BUCKET LIST OF A TYPE THIS MASK WAS BUILT FROM, SEE ofBucketList(): null FOR A MASK BUILT FROM IDS
+  private final List<?>   source;
 
-  private EdgeBucketMask(final int firstBucketId, final int lastBucketId, final boolean[] dense, final int[] sorted) {
+  private EdgeBucketMask(final int firstBucketId, final int lastBucketId, final boolean[] dense, final int[] sorted,
+      final List<?> source) {
     this.firstBucketId = firstBucketId;
     this.lastBucketId = lastBucketId;
     this.dense = dense;
     this.sorted = sorted;
+    this.source = source;
   }
 
   /**
@@ -58,6 +63,13 @@ public final class EdgeBucketMask {
    * type are skipped. Returns {@code null} when nothing is left to match.
    */
   public static EdgeBucketMask of(final DatabaseInternal database, final String[] edgeTypes) {
+    if (edgeTypes.length == 1) {
+      // ONE TYPE, THE COMMON CASE: THE MASK THE TYPE KEEPS, SO A HOP BUILDS NOTHING (#11007)
+      final EdgeType type = edgeTypeOf(database, edgeTypes[0]);
+      if (type instanceof LocalEdgeType localType)
+        return localType.getPolymorphicBucketMask();
+    }
+
     // ONE SCHEMA LOOKUP PER TYPE: THE (CACHED) BUCKET LISTS ARE KEPT FROM THE FIRST PASS AND UNBOXED ONCE
     final List<?>[] perType = new List<?>[edgeTypes.length];
     int total = 0;
@@ -86,6 +98,28 @@ public final class EdgeBucketMask {
    * uses the same mask on the vertex bucket the entry carries (issue #9539).
    */
   public static EdgeBucketMask ofBucketIds(final int[] ids) {
+    return ofBucketIds(ids, null);
+  }
+
+  /**
+   * The mask over a type's bucket list, which the type keeps for every walk (see {@link LocalEdgeType#getPolymorphicBucketMask()})
+   * until {@link #isBuiltFrom} says the list it was built from has been replaced. The type replaces the list, it never changes
+   * it in place, so the identity of the list is its version. Returns {@code null} for an empty list.
+   */
+  public static EdgeBucketMask ofBucketList(final List<Integer> bucketIds) {
+    final int[] ids = new int[bucketIds.size()];
+    for (int i = 0; i < ids.length; i++)
+      ids[i] = bucketIds.get(i);
+    return ofBucketIds(ids, bucketIds);
+  }
+
+  /** Whether this mask was built by {@link #ofBucketList} from this very list. */
+  public boolean isBuiltFrom(final List<?> bucketIds) {
+    // IDENTITY, NOT equals(): THE LIST'S IDENTITY IS ITS VERSION, AND COMPARING THE ELEMENTS WOULD COST WHAT THE CACHE SAVES
+    return source == bucketIds; // NOPMD: the identity of the list is its version
+  }
+
+  private static EdgeBucketMask ofBucketIds(final int[] ids, final List<?> source) {
     if (ids.length == 0)
       return null;
     Arrays.sort(ids);
@@ -99,9 +133,9 @@ public final class EdgeBucketMask {
       final boolean[] dense = new boolean[max - min + 1];
       for (final int id : ids)
         dense[id - min] = true;
-      return new EdgeBucketMask(min, max, dense, null);
+      return new EdgeBucketMask(min, max, dense, null, source);
     }
-    return new EdgeBucketMask(min, max, null, ids);
+    return new EdgeBucketMask(min, max, null, ids, source);
   }
 
   /**
@@ -123,15 +157,17 @@ public final class EdgeBucketMask {
   }
 
   private static List<Integer> bucketIdsOf(final DatabaseInternal database, final String typeName) {
+    final EdgeType type = edgeTypeOf(database, typeName);
+    // CACHED BY THE TYPE, NOT BUILT: CALLING IT ONCE PER PASS COSTS NOTHING
+    return type != null ? type.getBucketIds(true) : null;
+  }
+
+  private static EdgeType edgeTypeOf(final DatabaseInternal database, final String typeName) {
     if (!database.getSchema().existsType(typeName))
       return null;
 
     // A vertex or document type sharing the name of the requested edge type cannot match any edge:
     // skip it like a non-existent type instead of failing with a ClassCastException (issue #5194)
-    if (!(database.getSchema().getType(typeName) instanceof EdgeType type))
-      return null;
-
-    // CACHED BY THE TYPE, NOT BUILT: CALLING IT ONCE PER PASS COSTS NOTHING
-    return type.getBucketIds(true);
+    return database.getSchema().getType(typeName) instanceof EdgeType type ? type : null;
   }
 }

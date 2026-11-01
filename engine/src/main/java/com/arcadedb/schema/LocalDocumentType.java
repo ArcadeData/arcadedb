@@ -150,7 +150,9 @@ public class LocalDocumentType implements DocumentType {
   protected volatile List<Bucket>                   buckets                      = new ArrayList<>();
   protected volatile List<Bucket>                   cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected volatile List<Integer>                  bucketIds                    = new ArrayList<>();
-  protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS. ALWAYS REPLACED, NEVER CHANGED IN PLACE: LocalEdgeType KEEPS A BUCKET MASK
+  // BUILT FROM IT AND TELLS IT IS STALE BY THE IDENTITY OF THE LIST (#11007)
+  protected volatile List<Integer>                  cachedPolymorphicBucketIds   = Collections.emptyList();
   // Fifth member of the same copy-on-write family: reassigned by setBucketSelectionStrategy, read lock-free by
   // getBucketIdByRecord/getBucketIndexByKeys on the record-write path and by the planner's partition pruning through
   // getBucketSelectionStrategy(), so it is volatile for the same reason as the four lists above (issue #7119).
