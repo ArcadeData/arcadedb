@@ -266,6 +266,34 @@ public final class DistinctSemiJoin {
     return sorted(reads);
   }
 
+  /**
+   * The names a {@code MATCH} clause can read off its input row - those its patterns bind or join on and those its
+   * inline properties and {@code WHERE} read - when the rows it produces for an input row are a function of their values
+   * alone: two input rows with the same values for them get the same matches. Null when the clause holds a shape whose
+   * reads are not modelled (a pattern inside an expression, a subquery expression) or calls a function that can answer
+   * differently for the same arguments. Asked by an {@code OPTIONAL MATCH} that remembers its matches (issue #11083).
+   * <p>
+   * The names the clause binds for itself are in the key as well: the input row does not hold them, so they add nothing
+   * to it, and a name the planner did not know was bound before is still compared rather than missed.
+   */
+  public static List<String> matchMemoKey(final MatchClause match) {
+    final Set<String> reads = new HashSet<>();
+    final PerRowCheck check = new PerRowCheck(true);
+    for (final PathPattern pattern : match.getPathPatterns()) {
+      if (!addReadNames(CypherReferencedVariables.of(pattern), reads))
+        return null;
+      check.topLevelPattern = pattern;
+      CypherExpressionWalker.walk(pattern, check);
+      check.topLevelPattern = null;
+    }
+    if (match.hasWhereClause()) {
+      final BooleanExpression condition = match.getWhereClause().getConditionExpression();
+      if (condition == null || !readsPredicate(condition, reads, check))
+        return null;
+    }
+    return check.ok ? sorted(reads) : null;
+  }
+
   private static boolean readsPredicate(final BooleanExpression predicate, final Set<String> reads,
       final PerRowCheck check) {
     if (predicate == null)

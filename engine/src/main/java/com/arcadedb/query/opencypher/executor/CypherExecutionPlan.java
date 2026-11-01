@@ -227,6 +227,9 @@ public class CypherExecutionPlan {
    */
   private static final String ROW_COUNT_ALIAS = " rowCount";
 
+  /** The rows a seeded body ({@code CALL { }}, a subquery expression) reads at a time when its caller names no demand. */
+  public static final int SEEDED_BATCH_SIZE = 100;
+
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
   private final Map<String, Object>  parameters;
@@ -547,6 +550,15 @@ public class CypherExecutionPlan {
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow, final CommandContext outerContext) {
+    return executeWithSeedRow(seedRow, outerContext, SEEDED_BATCH_SIZE);
+  }
+
+  /**
+   * {@link #executeWithSeedRow(Result, CommandContext)}, reading {@code batchSize} rows at a time: a {@code CALL { }} whose
+   * rows stream asks for no more than its own consumer did, so the {@code LIMIT 3} after it reads three rows of the body
+   * and not a batch of a hundred (issue #11082).
+   */
+  public ResultSet executeWithSeedRow(final Result seedRow, final CommandContext outerContext, final int batchSize) {
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
       final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
@@ -558,36 +570,20 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
-      // The deadline is inherited because the WorkGuard below reads it; nothing else is, because nothing else
+      // The deadline is inherited because the UnionStep's WorkGuard reads it; nothing else is, because nothing else
       // is read. No expression is ever evaluated against this ctx - each branch re-enters this method with the
       // REAL outerContext - so inheriting the statement clock here would be dead weight.
       inheritCommandDeadline(ctx, outerContext);
 
-      // Execute each branch with the seed row, collect all results
-      final WorkGuard unionGuard = WorkGuard.forCommandDeadline(ctx);
-      final List<ResultInternal> allResults = new ArrayList<>();
-      final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
-      for (final CypherExecutionPlan branchPlan : branchPlans) {
-        // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext,
-        // so it takes the non-union path below and does its own inherit under the same gate. A second copy
-        // here would be one more thing to keep in step with that gate (issue #6977).
-        try (final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext)) {
-          while (rs.hasNext()) {
-            unionGuard.check();
-            final Result row = rs.next();
-            if (removeDuplicates) {
-              final String key = buildResultKey(row);
-              if (!seen.add(key))
-                continue;
-            }
-            final ResultInternal copy = new ResultInternal();
-            for (final String prop : row.getPropertyNames())
-              copy.setProperty(prop, row.getProperty(prop));
-            allResults.add(copy);
-          }
-        }
-      }
-      return new IteratorResultSet(allResults.iterator());
+      // Each branch runs seeded with the row, one after the other and only as far as the consumer pulls: collecting every
+      // branch first ran the whole body for a LIMIT the first branch could satisfy (issue #11082). The UNION de-duplicates
+      // on the canonical keys of the statement-level UNION, under the same heap limit.
+      // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext, so it takes
+      // the non-union path below and does its own inherit under the same gate. A second copy here would be one more
+      // thing to keep in step with that gate (issue #6977).
+      final UnionStep unionStep = new UnionStep(branchPlans, removeDuplicates,
+          branchPlan -> branchPlan.executeWithSeedRow(seedRow, outerContext, batchSize), ctx);
+      return unionStep.syncPull(ctx, batchSize);
     }
 
     final BasicCommandContext context = new BasicCommandContext();
@@ -654,7 +650,7 @@ public class CypherExecutionPlan {
     if (rootStep == null)
       return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
 
-    return rootStep.syncPull(context, 100);
+    return rootStep.syncPull(context, batchSize);
   }
 
   /**
@@ -828,17 +824,6 @@ public class CypherExecutionPlan {
     Object boundValue(final String name) {
       return seedRow.getProperty(name);
     }
-  }
-
-  private static String buildResultKey(final Result result) {
-    final StringBuilder sb = new StringBuilder();
-    for (final String prop : result.getPropertyNames()) {
-      sb.append(prop).append("=");
-      final Object value = result.getProperty(prop);
-      sb.append(value == null ? "null" : value.toString());
-      sb.append("|");
-    }
-    return sb.toString();
   }
 
   /**
@@ -1663,7 +1648,7 @@ public class CypherExecutionPlan {
       currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final int limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -2077,6 +2062,9 @@ public class CypherExecutionPlan {
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
+        // Nothing in a statement that cannot write needs the body's reads finished before the next clause: its rows stream,
+        // so a LIMIT after the CALL stops the body too (issue #11082)
+        subqueryStep.setStreamBody(statement.isReadOnly());
         if (currentStep != null) {
           subqueryStep.setPrevious(currentStep);
         }
@@ -2178,7 +2166,7 @@ public class CypherExecutionPlan {
       currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -2287,7 +2275,7 @@ public class CypherExecutionPlan {
       currentStep = skipStep;
     }
     if (limitVal != null) {
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       if (currentStep != null)
         limitStep.setPrevious(currentStep);
       currentStep = limitStep;
@@ -2821,6 +2809,7 @@ public class CypherExecutionPlan {
     if (isOptional && matchChainStart != null) {
       final OptionalMatchStep optionalStep =
           new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
+      rememberOptionalMatches(optionalStep, matchClause);
 
       if (stepBeforeMatch != null) {
         optionalStep.setPrevious(stepBeforeMatch);
@@ -3497,6 +3486,24 @@ public class CypherExecutionPlan {
       withStep.setDrainOnZeroLimit(true);
   }
 
+  /**
+   * Lets an OPTIONAL MATCH hand its matches to the next input rows that hold the same values for what it reads, instead of
+   * running its chain again for each (issue #11083). Only in a statement that cannot write: nothing can then change what
+   * the chain reads between two input rows.
+   */
+  private void rememberOptionalMatches(final OptionalMatchStep optionalStep, final MatchClause matchClause) {
+    if (statement.isReadOnly())
+      optionalStep.setMemoKey(DistinctSemiJoin.matchMemoKey(matchClause));
+  }
+
+  /**
+   * A LIMIT of this statement. A {@code LIMIT 0} drains its input so the writes behind it run; a statement that cannot write
+   * has none, so its {@code LIMIT 0} answers without running anything behind it (issue #11081).
+   */
+  private LimitStep newLimitStep(final int limit, final CommandContext context) {
+    return new LimitStep(limit, context).setDrainOnZeroLimit(!statement.isReadOnly());
+  }
+
   private static long keepFirst(final CypherFunctionFactory functionFactory, final CommandContext context, final boolean dropsRows,
       final Expression skip, final Expression limit) {
     if (dropsRows)
@@ -4010,6 +4017,7 @@ public class CypherExecutionPlan {
             // for pulling results through the entire chain including any filter steps
             final OptionalMatchStep optionalStep =
                 new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
+            rememberOptionalMatches(optionalStep, matchClause);
 
             // OptionalMatchStep pulls from stepBeforeMatch
             if (stepBeforeMatch != null) {
@@ -4249,7 +4257,7 @@ public class CypherExecutionPlan {
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(),
           context);
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -6980,7 +6988,7 @@ public class CypherExecutionPlan {
     }
     if (statement.getLimit() != null) {
       final LimitStep limitStep =
-          new LimitStep(evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
+          newLimitStep(evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
