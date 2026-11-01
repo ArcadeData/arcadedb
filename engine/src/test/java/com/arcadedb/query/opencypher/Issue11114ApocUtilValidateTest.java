@@ -76,6 +76,14 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
   }
 
   @Test
+  void aMessageTheParamsDoNotFitStillAbortsWithTheMessage() {
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, 'id %d missing', ['abc']) RETURN 1 AS ok"))))
+        .isEqualTo("id %d missing [abc]");
+    assertThat(rootMessage(catchThrowable(() -> rows("CALL apoc.util.validate(true, '%s and %s', ['one']) RETURN 1 AS ok"))))
+        .isEqualTo("%s and %s [one]");
+  }
+
+  @Test
   void aNullPredicateDoesNotRaise() {
     assertThat(rows("CALL apoc.util.validate(null, 'bad', []) RETURN 1 AS ok")).hasSize(1);
   }

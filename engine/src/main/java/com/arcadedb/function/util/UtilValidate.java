@@ -20,7 +20,9 @@ package com.arcadedb.function.util;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.IllegalFormatException;
 
 /**
  * util.validate(predicate, message[, params]) - Throws an exception carrying {@code message} if the predicate is TRUE, as
@@ -77,10 +79,20 @@ public class UtilValidate extends AbstractUtilFunction {
 
   private static String message(final Object message, final Object params) {
     final String text = message != null ? message.toString() : "Validation failed";
+    final Object[] values;
     if (params instanceof Collection<?> list && !list.isEmpty())
-      return String.format(text, list.toArray());
-    if (params instanceof Object[] array && array.length > 0)
-      return String.format(text, array);
-    return text;
+      values = list.toArray();
+    else if (params instanceof Object[] array && array.length > 0)
+      values = array;
+    else
+      return text;
+
+    try {
+      return String.format(text, values);
+    } catch (final IllegalFormatException e) {
+      // A message the params do not fit ('%d' given a string, a placeholder too many): the query still aborts, and with
+      // the text it chose rather than with a complaint about the format
+      return text + " " + Arrays.toString(values);
+    }
   }
 }
