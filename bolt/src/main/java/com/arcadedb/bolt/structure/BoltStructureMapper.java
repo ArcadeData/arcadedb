@@ -55,6 +55,8 @@ import java.util.*;
  * Maps ArcadeDB objects to BOLT PackStream values.
  */
 public class BoltStructureMapper {
+  // Every key point() writes (CypherPointFunction) and pointMap() decodes
+  private static final Set<String> POINT_KEYS = Set.of("x", "y", "z", "longitude", "latitude", "height", "crs", "srid");
 
   /**
    * Convert an ArcadeDB value to a PackStream-compatible value.
@@ -411,9 +413,6 @@ public class BoltStructureMapper {
   private static final byte SIG_POINT_3D = 0x59; // 'Y' [srid, x, y, z]
 
   private static final byte SIG_DURATION = 0x45; // 'E' [months, days, seconds, nanoseconds]
-
-  // Every key point() writes (CypherPointFunction) and pointMap() decodes
-  private static final Set<String> POINT_KEYS = Set.of("x", "y", "z", "longitude", "latitude", "height", "crs", "srid");
 
   /**
    * Recognize a Cypher spatial point (a Map carrying numeric x/y or longitude/latitude, plus either a
