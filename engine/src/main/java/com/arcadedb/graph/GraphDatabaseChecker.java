@@ -1049,6 +1049,21 @@ public class GraphDatabaseChecker {
     }
   }
 
+  /**
+   * A LIGHTWEIGHT entry (negative position) whose bucket id no longer resolves to a type: the edge type was dropped
+   * while the entry was still in the list (UNSAFE, or a version before the DROP TYPE guard of #10923, #11142). There is no
+   * record behind it and no type to read it with, so every reader and {@code delete()} of the vertex fails on it.
+   */
+  private boolean isStaleLightweightEntry(final RID edgeRID) {
+    return edgeRID.getPosition() < 0 && database.getSchema().getTypeByBucketId(edgeRID.getBucketId()) == null;
+  }
+
+  private static void reportStaleLightweightEntry(final CheckReport report, final RID edgeRID, final RID vertexIdentity) {
+    report.warn("vertex " + vertexIdentity + " lists a lightweight edge in bucket " + edgeRID.getBucketId()
+        + " whose edge type no longer exists");
+    ++report.invalidLinks;
+  }
+
   private static Edge asEdgeOrDanglingEntry(final RID edgeRID) {
     try {
       return edgeRID.asEdge(true);
@@ -1151,6 +1166,9 @@ public class GraphDatabaseChecker {
               report.corrupt(edgeRID);
               removeEntry = true;
               ++report.invalidLinks;
+            } else if (isStaleLightweightEntry(edgeRID)) {
+              reportStaleLightweightEntry(report, edgeRID, vertexIdentity);
+              removeEntry = true;
             } else {
               if (edgeRID.getPosition() < 0)
                 // LIGHTWEIGHT EDGE
@@ -1388,6 +1406,9 @@ public class GraphDatabaseChecker {
               report.corrupt(edgeRID);
               removeEntry = true;
               ++report.invalidLinks;
+            } else if (isStaleLightweightEntry(edgeRID)) {
+              reportStaleLightweightEntry(report, edgeRID, vertexIdentity);
+              removeEntry = true;
             } else {
               try {
                 if (edgeRID.getPosition() < 0) {
