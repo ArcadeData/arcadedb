@@ -498,7 +498,7 @@ public class CallStep extends AbstractExecutionStep {
       closeAfterFailure(resultStream, e);
       if (callClause.isOptional())
         return null;
-      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
+      throw new CommandExecutionException("Error executing procedure: " + procedure.getName() + causeMessage(e), e);
     }
   }
 
@@ -536,8 +536,18 @@ public class CallStep extends AbstractExecutionStep {
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
-      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
+      throw new CommandExecutionException("Error executing function: " + function.getName() + causeMessage(e), e);
     }
+  }
+
+  /**
+   * The message of the failure a procedure or function raised, for the error that wraps it: a driver shows the wrapper's
+   * message only, and the cause is often the whole point - {@code apoc.util.validate}'s is the text the query itself chose
+   * to abort with (issue #11114). Neo4j reports it the same way ({@code Failed to invoke procedure ...: Caused by: ...}).
+   */
+  private static String causeMessage(final Exception e) {
+    final String message = e.getMessage();
+    return message != null && !message.isEmpty() ? ": " + message : "";
   }
 
   /**

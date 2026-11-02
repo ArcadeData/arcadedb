@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.function.CypherBuiltinFunctions;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -34,6 +36,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -72,11 +75,16 @@ public class Cypher25AntlrParser {
    * comment is not a node at all. Carrying them next to the statement means the caller can check the
    * supplied parameter map without re-scanning the query on every execution.
    *
-   * @param statement  the parsed AST
-   * @param parameters names referenced by the query, without the leading {@code $}, in the order they
-   *                   appear; empty when the query is parameterless
+   * @param statement               the parsed AST
+   * @param parameters              names referenced by the query, without the leading {@code $}, in the order they
+   *                                appear; empty when the query is parameterless
+   * @param namespacedFunctionCalls the namespaced function calls ({@code mylib.f}, {@code apoc.coll.sortMulti}) no
+   *                                built-in function answers, as written: only the database knows whether they name a
+   *                                user-defined function, so they are resolved before every execution, where an
+   *                                unknown one is refused as an unknown plain function is at parse time (issue #11115);
+   *                                empty for the common query that calls none
    */
-  public record ParsedQuery(CypherStatement statement, Set<String> parameters) {
+  public record ParsedQuery(CypherStatement statement, Set<String> parameters, List<String> namespacedFunctionCalls) {
   }
 
   /**
@@ -205,8 +213,8 @@ public class Cypher25AntlrParser {
       CypherSemanticValidator.validate(statement);
 
       // After validation, so that an error names the query as written (issue #9598)
-      return new ParsedTree(new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query)),
-          statementContext);
+      return new ParsedTree(new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query),
+          collectNamespacedFunctionCalls(statementContext)), statementContext);
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
@@ -253,6 +261,40 @@ public class Cypher25AntlrParser {
         database.getConfiguration().getValueAsInteger(GlobalConfiguration.CYPHER_MAX_CLAUSES);
     // A limit below 1 would reject every query: fall back to the default instead
     return configured < 1 ? (Integer) GlobalConfiguration.CYPHER_MAX_CLAUSES.getDefValue() : configured;
+  }
+
+  /**
+   * The namespaced function calls of the query that no built-in function answers, in their written spelling and without
+   * duplicates (see {@link ParsedQuery#namespacedFunctionCalls()}). A name some built-in answers, the APOC aliases included,
+   * is dropped here, once per parse, so the check before each execution only pays for the names that can be user-defined.
+   * A {@code sql.} name and a dotted SQL function are kept: the SQL function factory is open to registration at run time.
+   * <p>
+   * Read off the parse tree, not the AST: the AST builder simplifies a predicate such as {@code true OR apoc.nope.f(n)} to
+   * {@code true}, which would drop the call before it is checked, and the tree also holds every branch and condition of a
+   * conditional query. Iterative, so a deeply nested query cannot overflow the stack here.
+   */
+  private static List<String> collectNamespacedFunctionCalls(final ParseTree root) {
+    Set<String> names = null;
+    final ArrayDeque<ParseTree> pending = new ArrayDeque<>();
+    pending.push(root);
+    while (!pending.isEmpty()) {
+      final ParseTree node = pending.pop();
+      if (node instanceof Cypher25Parser.FunctionInvocationContext call) {
+        final Cypher25Parser.FunctionNameContext functionName = call.functionName();
+        if (!functionName.namespace().symbolicNameString().isEmpty()) {
+          final String name = ParserUtils.qualifiedName(functionName.namespace(), functionName.symbolicNameString());
+          final String folded = name.toLowerCase(Locale.ROOT);
+          if (!CypherFunctionRegistry.hasFunction(folded) && !CypherBuiltinFunctions.isBuiltin(folded)) {
+            if (names == null)
+              names = new LinkedHashSet<>();
+            names.add(name);
+          }
+        }
+      }
+      for (int i = node.getChildCount() - 1; i >= 0; i--)
+        pending.push(node.getChild(i));
+    }
+    return names == null ? List.of() : List.copyOf(names);
   }
 
   /**

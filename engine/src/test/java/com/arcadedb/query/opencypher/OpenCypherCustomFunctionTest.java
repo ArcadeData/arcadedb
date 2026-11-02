@@ -19,7 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
@@ -78,12 +78,13 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     // command(), not query(): an unresolved dotted name is indistinguishable at parse time from a custom
     // DEFINE FUNCTION call, so query() now rejects it up front as not idempotent (issue #6418) before ever
     // trying to resolve it. command() has no such gate and reaches the actual "unknown function" error below.
+    // Refused before the query runs, as the client error an unknown plain function is (issue #11115)
     assertThatThrownBy(() -> {
       final ResultSet rs = database.command("opencypher", "RETURN nonexistent.func() as result");
       rs.hasNext(); // Force query evaluation (queries are lazy)
     })
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("Unknown function");
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Unknown function 'nonexistent.func'");
   }
 
   @Test

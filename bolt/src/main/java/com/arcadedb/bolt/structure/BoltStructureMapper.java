@@ -23,6 +23,7 @@ import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -54,6 +55,8 @@ import java.util.*;
  * Maps ArcadeDB objects to BOLT PackStream values.
  */
 public class BoltStructureMapper {
+  // Every key point() writes (CypherPointFunction) and pointMap() decodes
+  private static final Set<String> POINT_KEYS = Set.of("x", "y", "z", "longitude", "latitude", "height", "crs", "srid");
 
   /**
    * Convert an ArcadeDB value to a PackStream-compatible value.
@@ -411,12 +414,10 @@ public class BoltStructureMapper {
 
   private static final byte SIG_DURATION = 0x45; // 'E' [months, days, seconds, nanoseconds]
 
-  private static final Set<String> RECOGNIZED_CRS = Set.of("cartesian", "cartesian-3D", "WGS-84", "WGS-84-3D");
-
   /**
    * Recognize a Cypher spatial point (a Map carrying numeric x/y or longitude/latitude, plus either a
-   * recognized crs value - {@code cartesian}, {@code cartesian-3D}, {@code WGS-84}, {@code WGS-84-3D} -
-   * or a numeric srid key) and encode it as a native Bolt Point structure. This is deliberately tighter
+   * recognized crs value - {@code cartesian}, {@code cartesian-3d}, {@code wgs-84}, {@code wgs-84-3d} in any letter
+   * case, since a point stored before issue #11113 carries {@code WGS-84} - or a numeric srid key) and encode it as a native Bolt Point structure. This is deliberately tighter
    * than "any map with a crs key": an ordinary user map that happens to carry an unrelated crs value must
    * not be misencoded as a Point on the wire. Returns null when the value is not a point so the caller
    * falls through to generic Map handling.
@@ -424,8 +425,13 @@ public class BoltStructureMapper {
   static BoltPointStructure toPointStructure(final Object value) {
     if (!(value instanceof Map<?, ?> map) || !map.containsKey("crs"))
       return null;
+    // A key no point carries makes it an ordinary map, which a Point would silently strip (a {crs: 'wgs-84', x: 1, y: 2,
+    // label: 'home'} literal, since crs names match in any case, issue #11113)
+    for (final Object key : map.keySet())
+      if (!(key instanceof String name) || !POINT_KEYS.contains(name))
+        return null;
     final Object crs = map.get("crs");
-    if ((crs == null || !RECOGNIZED_CRS.contains(crs)) && !(map.get("srid") instanceof Number))
+    if (!(crs instanceof String name && CypherPointFunction.sridOfCrs(name) != null) && !(map.get("srid") instanceof Number))
       return null;
     final Double x = pointCoord(map, "x", "longitude");
     final Double y = pointCoord(map, "y", "latitude");
@@ -447,7 +453,7 @@ public class BoltStructureMapper {
     if (map.get("srid") instanceof Number n)
       return n.intValue();
     final String crs = map.get("crs") != null ? map.get("crs").toString() : "";
-    if (crs.startsWith("WGS-84"))
+    if (CypherPointFunction.isGeographicCrs(crs))
       return is3d ? 4979 : 4326;
     return is3d ? 9157 : 7203; // cartesian
   }
@@ -663,21 +669,7 @@ public class BoltStructureMapper {
     m.put("y", y);
     if (z != null)
       m.put("z", z);
-    m.put("crs", crsForSrid(srid, z != null));
+    m.put("crs", CypherPointFunction.crsOfSrid(srid, z != null));
     return m;
-  }
-
-  /**
-   * Map an SRID to its Neo4j-compatible crs name. Known SRIDs (4326 WGS-84, 4979 WGS-84-3D,
-   * 9157 cartesian-3D) map explicitly; any other SRID falls back to cartesian(-3D) based on
-   * dimensionality.
-   */
-  private static String crsForSrid(final int srid, final boolean is3d) {
-    return switch (srid) {
-      case 4326 -> "WGS-84";
-      case 4979 -> "WGS-84-3D";
-      case 9157 -> "cartesian-3D";
-      default -> is3d ? "cartesian-3D" : "cartesian";
-    };
   }
 }

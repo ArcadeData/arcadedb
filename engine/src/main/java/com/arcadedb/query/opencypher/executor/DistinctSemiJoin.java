@@ -123,7 +123,7 @@ public final class DistinctSemiJoin {
       "text.split", "text.uppercamelcase", "time", "toboolean", "tobooleanlist", "tobooleanornull", "tofloat",
       "tofloatlist", "tofloatornull", "tointeger", "tointegerlist", "tointegerornull", "tolower", "tostring",
       "tostringlist", "tostringornull", "toupper", "trim", "type", "upper", "util.compress", "util.decompress",
-      "util.md5", "util.sha1", "util.sha256", "util.sha512", "util.sleep", "util.validate", "valuetype", "vector",
+      "util.md5", "util.sha1", "util.sha256", "util.sha512", "util.sleep", "util.validate", "util.validatepredicate", "valuetype", "vector",
       "vector_dimension_count", "vector.create", "vector.dimension.count", "vector.distance",
       "vector.distance.cosine", "vector.distance.euclidean", "vector.distance.manhattan", "vector.norm",
       "vector.similarity.cosine", "vector.similarity.euclidean", "zoned_datetime", "zoned_time");

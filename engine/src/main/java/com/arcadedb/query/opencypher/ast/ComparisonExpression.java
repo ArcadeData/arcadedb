@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
@@ -465,6 +466,10 @@ public class ComparisonExpression implements BooleanExpression {
         for (final Object key : leftMap.keySet()) {
           final Object lv = leftMap.get(key);
           final Object rv = rightMap.get(key);
+          // A point stored before issue #11113 spells its crs WGS-84, one built since wgs-84: the same reference system
+          if ("crs".equals(key) && lv instanceof String lc && rv instanceof String rc && lc.equalsIgnoreCase(rc)
+              && CypherPointFunction.sridOfCrs(lc) != null && isPointShaped(leftMap) && isPointShaped(rightMap))
+            continue;
           final Object cmp = new ComparisonExpression(
               new LiteralExpression(lv, ""), Operator.EQUALS,
               new LiteralExpression(rv, "")).evaluateTernary(null, null);
@@ -663,4 +668,9 @@ public class ComparisonExpression implements BooleanExpression {
     return value instanceof Float float1 ? Type.widenFloat(float1) : value.doubleValue();
   }
 
+
+  /** A point map has numeric x/y (see {@code CypherValues.isPointShaped}): an ordinary map with a crs key compares as written. */
+  private static boolean isPointShaped(final Map<?, ?> map) {
+    return map.get("x") instanceof Number && map.get("y") instanceof Number;
+  }
 }

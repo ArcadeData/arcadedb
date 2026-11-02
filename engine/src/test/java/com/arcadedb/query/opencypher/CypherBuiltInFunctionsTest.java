@@ -772,14 +772,14 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   void utilValidateSuccess() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.validate");
-    final Boolean result = (Boolean) fn.execute(new Object[] { true, "Should not throw" }, null);
+    final Boolean result = (Boolean) fn.execute(new Object[] { false, "Should not throw" }, null);
     assertThat(result).isTrue();
   }
 
   @Test
   void utilValidateFailure() {
     final StatelessFunction fn = CypherFunctionRegistry.get("util.validate");
-    assertThatThrownBy(() -> fn.execute(new Object[] { false, "Validation failed!" }, null))
+    assertThatThrownBy(() -> fn.execute(new Object[] { true, "Validation failed!" }, null))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
