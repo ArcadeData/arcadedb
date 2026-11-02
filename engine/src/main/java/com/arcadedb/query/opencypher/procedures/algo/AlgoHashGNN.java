@@ -165,8 +165,10 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
 
     // Every node starts as its own sample in every slot, with its race time for that slot: -ln(1 - U), U uniform in
     // [0, 1) from 53 bits of the slot's hash, so the time is Exp(1) and the minimum over a set falls on any member
-    // with probability proportional to its weight. Bounded per node, unbounded over the graph, and it runs before the
-    // message-passing loop, so the checkpoint inside that loop never sees it.
+    // with probability proportional to its weight. StrictMath rather than Math: Math.log1p may be an intrinsic whose
+    // last bit differs between JVMs and CPUs, and a seeded run has to answer the same embeddings everywhere. Bounded
+    // per node, unbounded over the graph, and it runs before the message-passing loop, so the checkpoint inside that
+    // loop never sees it.
     int[][] samples = new int[n][density];
     double[][] races = new double[n][density];
     int step = 0;
@@ -176,7 +178,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
       for (int k = 0; k < density; k++) {
         guard.checkPeriodically(step++);
         sampleRow[k] = i;
-        raceRow[k] = -Math.log1p(-((mix(slotKeys[k] + i * GOLDEN_GAMMA) >>> 11) * 0x1.0p-53));
+        raceRow[k] = -StrictMath.log1p(-((mix(slotKeys[k] + i * GOLDEN_GAMMA) >>> 11) * 0x1.0p-53));
       }
     }
 
@@ -246,9 +248,9 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
   }
 
   /** The SplitMix64 finaliser: a bijective 64-bit mixer, so distinct inputs never collide. */
-  private static long mix(long z) {
-    z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
-    z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
-    return z ^ (z >>> 31);
+  private static long mix(final long value) {
+    final long first = (value ^ (value >>> 30)) * 0xBF58476D1CE4E5B9L;
+    final long second = (first ^ (first >>> 27)) * 0x94D049BB133111EBL;
+    return second ^ (second >>> 31);
   }
 }
