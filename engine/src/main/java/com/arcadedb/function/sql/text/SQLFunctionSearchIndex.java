@@ -109,8 +109,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     final Schema schema = context.getDatabase().getSchema();
     // a logical index over several types (issue #11014) is searched through its members; a name that is an index is not a logical
     // one, so the walk of the types is paid only by a name that is not
-    if (!schema.existsIndex(indexName))
-      return MultiTypeIndexes.find(schema, indexName) != null;
+    if (!schema.existsIndex(indexName) && MultiTypeIndexes.find(schema, indexName) != null)
+      return true;
 
     final Index index = schema.getIndexByName(indexName);
     return index instanceof TypeIndex;
