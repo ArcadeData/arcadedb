@@ -117,6 +117,45 @@ class FileUtilsTest {
   }
 
   @Test
+  void atomicCopyPublishesAHardLinkByDefault() throws Exception {
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    Files.writeString(source, "generation-1");
+
+    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+
+    assertThat(Files.isSameFile(source, target)).as("the default publication shares the inode").isTrue();
+  }
+
+  @Test
+  void atomicCopyWithoutHardLinkWritesAnIndependentFileAndNeverLinks() throws Exception {
+    // Issue #11097: a file system can accept a hard link yet lose the data once the other name is replaced, so the
+    // caller must be able to ask for a byte copy and never see createLink attempted.
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    final byte[] content = { 0, 0x7f, (byte) 0x80, (byte) 0xe9, (byte) 0xff };
+    Files.write(source, content);
+    Files.writeString(target, "an older generation");
+
+    final AtomicInteger linkAttempts = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("createLink"))
+        linkAttempts.incrementAndGet();
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicCopyFile(source.toFile(), target.toFile(), true, false);
+    }
+
+    assertThat(linkAttempts.get()).isZero();
+    assertThat(Files.isSameFile(source, target)).isFalse();
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    assertThat(Files.readAllBytes(source)).isEqualTo(content);
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactlyInAnyOrder(source, target);
+    }
+  }
+
+  @Test
   void defaultAtomicWriteRetainsTheExistingFallbackForUnsupportedFileSystems() throws Exception {
     final Path target = tempDir.resolve("config.json").toAbsolutePath();
     Files.writeString(target, "old");

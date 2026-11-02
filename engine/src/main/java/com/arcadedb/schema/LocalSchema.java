@@ -5655,7 +5655,11 @@ public class LocalSchema implements Schema {
       // generation before this one or the one before that - complete either way - next to a schema.json that the
       // atomic write guarantees is complete, so the fallback it exists for is never needed in that window.
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      FileUtils.atomicCopyFile(configurationFile, copy, false);
+      // #11097: with arcadedb.schema.hardLinkPrevious=false the link is skipped for a plain byte copy (a full read of
+      // schema.json plus an fsync'd write, still without the directory fsync above), for file systems that accept a link
+      // but lose the data under the second name once the first is replaced. The notes above describe the link path.
+      FileUtils.atomicCopyFile(configurationFile, copy, false,
+          database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SCHEMA_HARD_LINK_PREVIOUS));
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.

@@ -506,6 +506,10 @@ public class FileUtils {
    * which encodes in UTF-8.
    */
   public static void atomicWriteFile(final File file, final byte[] content) throws IOException {
+    atomicWriteFile(file, content, true);
+  }
+
+  private static void atomicWriteFile(final File file, final byte[] content, final boolean syncDirectory) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -520,7 +524,7 @@ public class FileUtils {
         fos.flush();
         fos.getFD().sync();
       }
-      publishAtomically(tmp, target, true);
+      publishAtomically(tmp, target, syncDirectory);
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -532,7 +536,7 @@ public class FileUtils {
    * {@code source} is never unlinked in the process. As in {@link #atomicWriteFile(File, byte[])}, the parent
    * directory is fsync'd after the rename so the published name survives a power failure (issue #7465).
    * <p>
-   * A hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
+   * Unless {@link #atomicCopyFile(File, File, boolean, boolean)} is told not to, a hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
    * which costs one inode operation instead of a full read + write + fsync of the source, and is
    * byte-exact by construction (no charset can be applied to bytes that are never decoded). Filesystems
    * that do not support links (FAT/exFAT, some network mounts) fall back to reading the source and
@@ -554,16 +558,34 @@ public class FileUtils {
    * {@link #atomicWriteFile}: that publication fsyncs the directory, which makes every rename made in it so far
    * durable at once, so a second fsync here buys nothing and costs a full device flush on every call. Until then the
    * copy is published but only process-crash durable: after a power failure {@code target} holds either its previous
-   * complete content or the full copy, never a partial one, exactly as with the fsync. The fallback copy for a file
-   * store without links always fsyncs.
+   * complete content or the full copy, never a partial one, exactly as with the fsync. The byte-copy path (no links on
+   * the file store, or {@code useHardLink} false) always fsyncs the copy's file, and the directory only when
+   * {@code syncDirectory} is true.
    *
    * @param syncDirectory {@code false} only when the caller fsyncs the target's directory itself right after
    */
   public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory) throws IOException {
+    atomicCopyFile(source, target, syncDirectory, true);
+  }
+
+  /**
+   * {@link #atomicCopyFile(File, File, boolean)}, with {@code useHardLink} {@code false} to skip the hard link and
+   * always publish a byte copy (issue #11097). For a file system that accepts {@code createLink} yet does not keep the
+   * data readable under the second name once the first is replaced, which no exception announces.
+   *
+   * @param useHardLink {@code false} to never attempt {@link Files#createLink}
+   */
+  public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory,
+      final boolean useHardLink) throws IOException {
     final Path from = source.toPath().toAbsolutePath();
     final Path to = target.toPath().toAbsolutePath();
     final Path dir = to.getParent();
     createDirectoriesDurably(dir);
+
+    if (!useHardLink) {
+      atomicWriteFile(target, Files.readAllBytes(from), syncDirectory);
+      return;
+    }
 
     // Unique by construction, so the link below never races another writer for the name.
     final Path tmp = dir.resolve(target.getName() + "." + UUID.randomUUID() + ".tmp");
@@ -572,7 +594,7 @@ public class FileUtils {
         Files.createLink(tmp, from);
       } catch (final UnsupportedOperationException | FileSystemException e) {
         // No links on this file store: pay for the copy instead. Still a byte copy, never a decode.
-        atomicWriteFile(target, Files.readAllBytes(from));
+        atomicWriteFile(target, Files.readAllBytes(from), syncDirectory);
         return;
       }
       publishAtomically(tmp, to, syncDirectory);
