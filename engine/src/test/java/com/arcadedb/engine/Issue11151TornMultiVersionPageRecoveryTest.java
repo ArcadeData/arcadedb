@@ -23,6 +23,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +35,10 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -166,14 +174,143 @@ class Issue11151TornMultiVersionPageRecoveryTest {
       raf.write(sentinel);
     }
 
-    final Database reopened = factory.open();
+    final CapturingLogger captured = new CapturingLogger();
+    final Logger previousLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(captured);
+    final Database reopened;
+    try {
+      reopened = factory.open();
+    } finally {
+      LogManager.instance().setLogger(previousLogger);
+    }
     try {
       final Dictionary dictionary = ((DatabaseInternal) reopened).getSchema().getDictionary();
       assertThat(dictionary.getNameById(crashed.ids()[0]))
           .as("the older entry must stay skipped, the sentinel survives").isEqualTo("X" + NAMES[0].substring(1));
+      // #11152: A SKIP THE REPLAY CANNOT TELL FROM A BENIGN ONE IS REPORTED, ONCE FOR THE PAGE
+      assertThat(captured.warnings()).as("the skipped entries of the gapped chain are reported once per page").hasSize(1);
+      assertThat(captured.warnings().get(0)).contains("cannot repair the page from the WAL");
     } finally {
       reopened.close();
       factory.close();
+    }
+  }
+
+  /** The repair of a complete chain is not a skip to report: no warning. */
+  @Test
+  void repairedChainDoesNotWarn() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    final Crashed crashed = crashWithPendingNames(factory);
+    writeHeader(crashed, crashed.finalVersion());
+
+    final CapturingLogger captured = new CapturingLogger();
+    final Logger previousLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(captured);
+    final Database reopened;
+    try {
+      reopened = factory.open();
+    } finally {
+      LogManager.instance().setLogger(previousLogger);
+    }
+    try {
+      assertThat(captured.warnings()).isEmpty();
+    } finally {
+      reopened.close();
+      factory.close();
+    }
+  }
+
+  /**
+   * #11152: the repair is not specific to the schema dictionary. The same replay runs for every paginated component, so a
+   * bucket page (the records of a type) torn across several pending versions has to come back whole too: each record was
+   * its own commit, so each one is a version of the same page.
+   */
+  @Test
+  void bucketPageTornAcrossSeveralPendingVersionsIsFullyRepairedByRecovery() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    final int total = 5;
+    final List<RID> rids = new ArrayList<>();
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    db.getSchema().createDocumentType("Doc");
+    db.transaction(() -> db.newDocument("Doc").set("n", -1).save());
+    db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Doc").getBuckets(false).get(0);
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
+
+    assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+        .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
+
+    for (int i = 0; i < total; ++i) {
+      final int n = i;
+      db.transaction(() -> {
+        final MutableDocument doc = db.newDocument("Doc").set("n", n);
+        doc.save();
+        rids.add(doc.getIdentity());
+      });
+    }
+
+    final ImmutablePage committed = db.getPageManager()
+        .getImmutablePage(new PageId(db, bucket.getFileId(), 0), file.getPageSize(), false, false);
+    final long finalVersion = committed.getVersion();
+    final int finalContentSize = committed.getContentSize();
+    final String filePath = file.getFilePath();
+
+    ((LocalDatabase) db).kill();
+    db.close();
+
+    // SECTOR 0 OF THE LAST VERSION REACHED THE DISK, THE RECORDS BEHIND IT DID NOT
+    try (final RandomAccessFile raf = new RandomAccessFile(filePath, "rw")) {
+      raf.seek(0);
+      assertThat(raf.readInt()).as("the new records must not have reached the disk").isLessThan((int) finalVersion - 1);
+      raf.seek(0);
+      raf.writeInt((int) finalVersion);
+      raf.writeInt(finalContentSize);
+    }
+
+    final Database reopened = factory.open();
+    try {
+      for (int i = 0; i < total; ++i)
+        assertThat(reopened.lookupByRID(rids.get(i), true).asDocument().getInteger("n"))
+            .as("record %s must survive a torn bucket page (#11152)", rids.get(i)).isEqualTo(i);
+    } finally {
+      reopened.close();
+      factory.close();
+    }
+  }
+
+  private static final class CapturingLogger implements Logger {
+    private final List<String> warnings = new CopyOnWriteArrayList<>();
+
+    List<String> warnings() {
+      return warnings;
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
+        final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12,
+        final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+      record(level, message);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
+        final Object... args) {
+      record(level, message);
+    }
+
+    @Override
+    public void flush() {
+      // NO-OP
+    }
+
+    private void record(final Level level, final String message) {
+      if (level == Level.WARNING && message != null && message.startsWith("Crash recovery skipped the WAL entry"))
+        warnings.add(message);
     }
   }
 }
