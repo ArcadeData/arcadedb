@@ -1227,11 +1227,10 @@ public class TransactionManager {
    * It is safe only when the WAL holds EVERY version after this entry up to the one on disk: the replay then ends on the last
    * writer of each byte, exactly as the commits did. An entry followed by a gap would overwrite bytes that a later version,
    * whose WAL file was dropped after a successful fsync (so it is durable), had changed.
-   */
-  /**
-   * The first version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry of for
-   * the page: 0 when the chain is complete (the entry is a repair candidate), -1 when the question does not apply (not a crash
-   * recovery replay, or the replay already applied an entry to the page).
+   * <br>
+   * Returns the first version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry
+   * of for the page: 0 when the chain is complete (the entry is a repair candidate), -1 when the question does not apply (not a
+   * crash recovery replay, or the replay already applied an entry to the page).
    */
   private long firstMissingChainVersion(final int fileId, final int pageNumber, final long entryVersion, final long diskVersion) {
     final Map<Long, IntHashSet> versions = recoveryPageVersions;
