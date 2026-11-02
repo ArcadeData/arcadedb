@@ -199,6 +199,19 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
     // null sorts first; reading through to the record would answer "T" for both and compare them equal
     assertThat(item.compare(projectedNull, plain, context)).isNegative();
     assertThat(item.compare(plain, plain, context)).isZero();
+
+    // the context variable paths read the attribute the same way: the column first, then the record
+    context.setVariable("p", projectedNull);
+    assertThat(context.getVariable("$p.@type")).isNull();
+    assertThat(context.getVariablePath("$p.@type")).isNull();
+    assertThat(context.getVariable("$p.@rid")).isEqualTo(record.getIdentity());
+    assertThat(context.getVariablePath("$p.@rid")).isEqualTo(record.getIdentity());
+
+    final ResultInternal projectedOther = new ResultInternal(database).setElement(record);
+    projectedOther.setProperty("@type", "Other");
+    context.setVariable("o", projectedOther);
+    assertThat(context.getVariable("$o.@type")).isEqualTo("Other");
+    assertThat(context.getVariablePath("$o.@type")).isEqualTo("Other");
   }
 
   /** `$row.@type` over a LET row that wraps no record. */

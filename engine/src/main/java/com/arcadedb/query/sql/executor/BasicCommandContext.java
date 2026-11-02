@@ -156,7 +156,7 @@ public class BasicCommandContext implements CommandContext {
         if (result instanceof Result result1) {
           // Record attributes as the projection reads them: off the record, or off the row when it wraps none (issue #11131)
           if (RecordAttribute.isRowAttribute(firstPart))
-            result = RecordAttribute.evaluate(result1, firstPart);
+            result = RecordAttribute.resolve(result1, firstPart);
           else
             result = result1.getProperty(firstPart);
         } else if (result instanceof Map map)
@@ -229,7 +229,7 @@ public class BasicCommandContext implements CommandContext {
     if (fieldName != null) {
       // record attributes as getVariablePath() reads them: off the record, or off the row when it wraps none (issue #11131)
       if (result instanceof Result result1)
-        result = RecordAttribute.isRowAttribute(fieldName) ? RecordAttribute.evaluate(result1, fieldName) : result1.getProperty(fieldName);
+        result = RecordAttribute.isRowAttribute(fieldName) ? RecordAttribute.resolve(result1, fieldName) : result1.getProperty(fieldName);
     }
     return result != null ? result : defaultValue;
   }

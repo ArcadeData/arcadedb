@@ -33,8 +33,6 @@ import java.util.logging.Level;
 public class OrderByItem {
   public static final String   ASC  = "ASC";
   public static final String   DESC = "DESC";
-  // marks a property the row does not carry, apart from one it carries with a null value
-  private static final Object  ABSENT = new Object();
   protected           String   alias;
   public Modifier    modifier;
   public String      recordAttr;
@@ -100,28 +98,22 @@ public class OrderByItem {
     }
   }
 
-  /**
-   * A column of the attribute's name the row carries first, a null one included, then the attribute of the row itself, as
-   * the projection reads it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows
-   * unordered). Not @this: a whole record has no order of its own.
-   */
-  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
-  private Object recordAttributeValue(final Result row, final boolean rowAttribute) {
-    final Object value = row.getPropertyIfPresent(recordAttr, ABSENT);
-    if (value != ABSENT)
-      return value;
-    return rowAttribute ? RecordAttribute.evaluate(row, recordAttr) : null;
-  }
-
   public int compare(final Result a, final Result b, final CommandContext context) {
     Object aVal = null;
     Object bVal = null;
 
     int result = 0;
     if (recordAttr != null) {
-      final boolean rowAttribute = RecordAttribute.isRowAttribute(recordAttr);
-      aVal = recordAttributeValue(a, rowAttribute);
-      bVal = recordAttributeValue(b, rowAttribute);
+      // a column of the attribute's name the row carries first, a null one included, then the attribute of the row itself, as
+      // the projection reads it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows
+      // unordered). Not @this: a whole record has no order of its own
+      if (RecordAttribute.isRowAttribute(recordAttr)) {
+        aVal = RecordAttribute.resolve(a, recordAttr);
+        bVal = RecordAttribute.resolve(b, recordAttr);
+      } else {
+        aVal = a.getProperty(recordAttr);
+        bVal = b.getProperty(recordAttr);
+      }
     } else if (alias != null) {
       aVal = a.getProperty(alias);
       bVal = b.getProperty(alias);

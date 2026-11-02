@@ -33,7 +33,9 @@ import java.util.Objects;
 import static com.arcadedb.schema.Property.*;
 
 public class RecordAttribute extends SimpleNode {
-  protected String name;
+  // marks a property the row does not carry, apart from one it carries with a null value
+  private static final Object ABSENT = new Object();
+  protected            String name;
 
   public RecordAttribute() {
   }
@@ -111,6 +113,17 @@ public class RecordAttribute extends SimpleNode {
       return currentRecord;
     }
     return null;
+  }
+
+  /**
+   * The value a row answers for the row attribute {@code name} (see {@link #isRowAttribute(String)}) when the attribute is read by
+   * name: a column of that name the row carries first, a null one included, then the attribute of the row itself. A projection
+   * that kept its record (`SELECT @type AS ..., *`) carries both, and the column is what the row says.
+   */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
+  public static Object resolve(final Result row, final String name) {
+    final Object value = row.getPropertyIfPresent(name, ABSENT);
+    return value != ABSENT ? value : evaluate(row, name);
   }
 
   /**
