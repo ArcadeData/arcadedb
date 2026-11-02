@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -75,6 +76,8 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoMaxKCut extends AbstractAlgoProcedure {
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("direction", "maxIterations", "relTypes", "restarts", "seed", "weightProperty");
 
   @Override
   public String getName() {
@@ -109,7 +112,7 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     if (rawK < 2)
       throw new IllegalArgumentException(getName() + "(): k must be ≥ 2, got " + rawK);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 1, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null), "config", CONFIG_KEYS);
     final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations", 1) : 100;
     final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts", 1) : 3;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;

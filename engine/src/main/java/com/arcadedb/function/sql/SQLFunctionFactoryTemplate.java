@@ -54,16 +54,36 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
    * </p>
    */
   public void register(final SQLFunction function) {
-    functions.put(function.getName().toLowerCase(Locale.ENGLISH), function);
+    functions.put(key(function.getName()), function);
     // Register the primary alias and any additional aliases (for backward compatibility / synonyms)
     registerAliasKeys(function, function);
     // Also register in the unified FunctionRegistry for cross-engine access
     FunctionRegistry.register(function);
   }
 
+  /**
+   * Removes the function registered under {@code name} (any case), together with the other names it registered itself
+   * under (its own name and aliases) while they still resolve to that same registration, so no name the registration added
+   * keeps answering after it is gone. Case-insensitive like every other lookup of this factory (issue #11051):
+   * {@code unregister("Acme.Twice")} used to remove nothing for a function registered as {@code "Acme.Twice"}, since the map
+   * only holds lower-case keys.
+   */
   public void unregister(final String name) {
-    functions.remove(name);
+    final Object removed = functions.remove(key(name));
+    final SQLFunction probe = removed instanceof SQLFunction function ? function :
+        removed instanceof Class<?> clazz && SQLFunction.class.isAssignableFrom(clazz) ? probeFunctionInstance(clazz) : null;
+    if (probe != null) {
+      removeIfMappedTo(probe.getName(), removed);
+      removeIfMappedTo(probe.getAlias(), removed);
+      for (final String extra : probe.getAliases())
+        removeIfMappedTo(extra, removed);
+    }
     // Note: Not unregistering from FunctionRegistry to maintain cross-engine availability
+  }
+
+  private void removeIfMappedTo(final String name, final Object registration) {
+    if (name != null)
+      functions.remove(key(name), registration);
   }
 
   /**
@@ -77,7 +97,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
    * </p>
    */
   public void register(final String name, final Object function) {
-    functions.put(name.toLowerCase(Locale.ENGLISH), function);
+    functions.put(key(name), function);
     // If it's an instance (not a class), also register in unified registry and handle aliases
     if (function instanceof SQLFunction sqlFunction) {
       registerAliasKeys(sqlFunction, function);
@@ -101,9 +121,18 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
   private void registerAliasKeys(final SQLFunction probe, final Object value) {
     final String alias = probe.getAlias();
     if (alias != null)
-      functions.put(alias.toLowerCase(Locale.ENGLISH), value);
+      functions.put(key(alias), value);
     for (final String extra : probe.getAliases())
-      functions.put(extra.toLowerCase(Locale.ENGLISH), value);
+      functions.put(key(extra), value);
+  }
+
+  /**
+   * The map key of {@code name}: function names are case-insensitive, so every access to the map goes through this one rule.
+   * When a method lower-cased on its own and another did not, a CALL of {@code vector.l2Distance} was refused under the very
+   * name the function registers itself with, while {@code SELECT vector.l2Distance(...)} answered (issue #11051).
+   */
+  protected static String key(final String name) {
+    return name.toLowerCase(Locale.ENGLISH);
   }
 
   /**
@@ -121,16 +150,16 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 
   @Override
   public boolean hasFunction(final String name) {
-    return functions.containsKey(name);
+    return functions.containsKey(key(name));
   }
 
   /**
-   * Whether {@code name} (lower case) was registered as one INSTANCE, which every query shares and which nobody may reconfigure
+   * Whether {@code name} (any case) was registered as one INSTANCE, which every query shares and which nobody may reconfigure
    * on behalf of another, rather than as a class, of which {@link #getFunctionInstance(String)} makes a fresh instance for each
    * call (the stateful functions, the aggregates above all).
    */
   public boolean isSharedInstance(final String name) {
-    return functions.get(name) instanceof SQLFunction;
+    return functions.get(key(name)) instanceof SQLFunction;
   }
 
   @Override
@@ -140,7 +169,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 
   @Override
   public SQLFunction getFunctionInstance(final String name) throws CommandExecutionException {
-    final Object obj = functions.get(name.toLowerCase(Locale.ENGLISH));
+    final Object obj = functions.get(key(name));
     if (obj == null)
       return null;
 

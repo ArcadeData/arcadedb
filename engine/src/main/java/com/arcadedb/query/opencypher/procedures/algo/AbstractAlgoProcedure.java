@@ -58,6 +58,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
@@ -250,6 +252,22 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     throw new IllegalArgumentException(
         getName() + "(): " + paramName + " must be a map, got " + arg.getClass().getSimpleName());
+  }
+
+  /**
+   * {@link #extractMap} for a configuration map whose keys the procedure reads by name: a key outside {@code allowedKeys} is
+   * refused rather than ignored (issue #11145). Every key is optional, so a misspelt one ({@code maxIteration},
+   * {@code seedProprety}) used to be dropped in silence and the call answered a run with the default in its place, a result
+   * that looks right and means something else. Keys are case-sensitive, like every Cypher map key.
+   */
+  protected Map<String, Object> extractConfig(final Object arg, final String paramName, final Set<String> allowedKeys) {
+    final Map<String, Object> config = extractMap(arg, paramName);
+    if (config != null)
+      for (final String key : config.keySet())
+        if (!allowedKeys.contains(key))
+          throw new IllegalArgumentException(
+              getName() + "(): unknown " + paramName + " key '" + key + "', expected one of " + new TreeSet<>(allowedKeys));
+    return config;
   }
 
   /**
@@ -918,6 +936,25 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return GraphEngine.parseDirection(dir);
   }
 
+  /**
+   * Resolves a {@code direction} config value: {@code absent} when the value is absent or null, otherwise one of OUT, IN or
+   * BOTH (any case). Anything else is refused rather than coerced, since the three answer genuinely different questions:
+   * {@code 'INCOMING'} is what someone reaching for IN types, and coercing it would answer a question the caller did not ask
+   * with a plausible-looking result. The default is the procedure's to choose, because they differ: the rank procedures push
+   * rank along stored edges (OUT), the community procedures read both sides (BOTH).
+   */
+  protected Vertex.DIRECTION extractDirection(final Object value, final Vertex.DIRECTION absent) {
+    if (value == null)
+      return absent;
+    if (!(value instanceof String s))
+      throw new IllegalArgumentException(getName() + "(): direction must be a string, one of OUT, IN or BOTH, got " + value);
+    try {
+      return GraphEngine.parseDirection(s);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(getName() + "(): " + e.getMessage(), e);
+    }
+  }
+
   /** @see GraphEngine#buildAdjacencyList(List, Map, Vertex.DIRECTION, String[]) */
   protected int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes) {
@@ -1049,6 +1086,15 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return new GraphData(dense, dense.getNodeIdUpperBound(), memory, incomingSideContext(db, context));
       }
     }
+    return new GraphData(loadVertices(db, nodeLabels, memory), memory, incomingSideContext(db, context));
+  }
+
+  /**
+   * {@link #loadGraph} from the records alone, whatever view is registered: for a call that found the view does not hold a
+   * node it needs (a source vertex created after the view's last build) and has to answer over the current graph instead.
+   */
+  protected GraphData loadGraphFromRecords(final Database db, final String[] nodeLabels, final CommandContext context) {
+    final MemoryBudget memory = newMemoryBudget(db);
     return new GraphData(loadVertices(db, nodeLabels, memory), memory, incomingSideContext(db, context));
   }
 

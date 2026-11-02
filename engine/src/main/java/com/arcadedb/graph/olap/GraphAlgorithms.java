@@ -1653,10 +1653,41 @@ public final class GraphAlgorithms {
       throw new IllegalArgumentException("rank has " + rank.length + " entries, expected " + n);
     final int[] nodeOfRank = rank != null ? invertRank(rank) : null;
 
-    final int[] labels = new int[n];
-    final int[] newLabels = new int[n];
+    final int[] initialLabels = new int[n];
     for (int i = 0; i < n; i++)
-      labels[i] = rank != null ? rank[i] : i;
+      initialLabels[i] = rank != null ? rank[i] : i;
+
+    final int[] labels = labelPropagation(view, maxIters, initialLabels, null, direction, checkpoint, edgeTypes);
+    if (nodeOfRank != null)
+      for (int i = 0; i < n; i++)
+        labels[i] = nodeOfRank[labels[i]];
+    return labels;
+  }
+
+  /**
+   * Label propagation from caller-defined starting labels: the kernel the other overloads run, and the one
+   * {@code algo.labelpropagation({seedProperty})} runs directly (issue #11145). Several nodes may start with the same label
+   * (the seeds of one class), and a node marked in {@code fixed} keeps its starting label for the whole run while still
+   * spreading it to its neighbours, which is what semi-supervised classification asks for. Ties between equally frequent
+   * labels go to the smallest label, so the order of the label values is the tie-break order.
+   *
+   * @param initialLabels the starting label of every dense node; not modified
+   * @param fixed         the nodes whose label never changes, or {@code null} for none
+   *
+   * @return the final label of every dense node, in the same space as {@code initialLabels}
+   */
+  public static int[] labelPropagation(final GraphAnalyticalView.Pinned view, final int maxIters, final int[] initialLabels,
+      final boolean[] fixed, final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
+    final int n = view.getNodeMapping().size();
+    if (initialLabels.length != n)
+      throw new IllegalArgumentException("initialLabels has " + initialLabels.length + " entries, expected " + n);
+    if (fixed != null && fixed.length != n)
+      throw new IllegalArgumentException("fixed has " + fixed.length + " entries, expected " + n);
+    if (n == 0)
+      return new int[0];
+
+    final int[] labels = initialLabels.clone();
+    final int[] newLabels = new int[n];
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
@@ -1717,6 +1748,9 @@ public final class GraphAlgorithms {
         boolean localChanged = false;
 
         for (int u = start; u < end; u++) {
+          // A seed keeps its label: newLabels already holds it from the copy above
+          if (fixed != null && fixed[u])
+            continue;
           // Collect neighbor labels into thread-local buffer
           int pos = 0;
           for (int t = 0; t < typeCount; t++) {
@@ -1771,9 +1805,6 @@ public final class GraphAlgorithms {
       if (!anyChanged.get())
         break;
     }
-    if (nodeOfRank != null)
-      for (int i = 0; i < n; i++)
-        labels[i] = nodeOfRank[labels[i]];
     return labels;
   }
 

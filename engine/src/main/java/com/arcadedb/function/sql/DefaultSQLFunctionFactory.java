@@ -170,7 +170,6 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorSum;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorToString;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorVariance;
 
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -399,13 +398,14 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
   }
 
   /**
-   * Whether {@code lowercaseName} still resolves to the implementation this factory registered for it at
+   * Whether {@code name} (any case, issue #11051) still resolves to the implementation this factory registered for it at
    * construction. False for a name added later AND for a built-in name an application re-registered with its own
    * implementation, since {@link #register} silently replaces.
    */
-  public boolean isBuiltIn(final String lowercaseName) {
-    final Object builtIn = builtInFunctions.get(lowercaseName);
-    return builtIn != null && builtIn == getFunctions().get(lowercaseName);
+  public boolean isBuiltIn(final String name) {
+    final String key = key(name);
+    final Object builtIn = builtInFunctions.get(key);
+    return builtIn != null && builtIn == getFunctions().get(key);
   }
 
   /**
@@ -419,6 +419,6 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
    * the reading it was parsed with.
    */
   public boolean hasNamespacedFunction(final String qualifiedName) {
-    return hasFunction(qualifiedName.toLowerCase(Locale.ENGLISH)) || FunctionRegistry.hasStatelessFunction(qualifiedName);
+    return hasFunction(qualifiedName) || FunctionRegistry.hasStatelessFunction(qualifiedName);
   }
 }

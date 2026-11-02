@@ -65,6 +65,9 @@ import java.util.stream.Stream;
 public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
   public static final String NAME = "algo.allsimplepaths";
 
+  /** The keys the options map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> OPTION_KEYS = Set.of("skipRelTypes", "skipVertexTypes");
+
   @Override
   public String getName() {
     return NAME;
@@ -102,7 +105,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String[] relTypes = extractRelTypes(args[2], context);
     final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
-    final Map<String, Object> options = extractMap(argOrDefault(args, 4, null), "options");
+    final Map<String, Object> options = extractConfig(argOrDefault(args, 4, null), "options", OPTION_KEYS);
     final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes", true, context);
     final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes", false, context);
 
