@@ -239,8 +239,14 @@ class Issue10915VectorIndexSizedOnFirstVectorTest extends TestHelper {
 
     reopenDatabase();
 
-    assertThat(vectorIndex("emb").getDimensions()).isEqualTo(8);
-    assertThat(nearestIds("emb", 1, List.of(99.0, 1.0, 1.0, 1.0, 0.5, 0.0, 2.0, 0.25))).containsExactly("d99");
+    final LSMVectorIndex index = vectorIndex("emb");
+    assertThat(index.getDimensions()).isEqualTo(8);
+    // The codebooks themselves are what the index sized on its first vector must have built: trained and encoding every
+    // vector. Which id a PRODUCT search answers first is not part of that: the codebooks come out of JVector's k-means++,
+    // seeded from ThreadLocalRandom, so the approximate top-1 of near-ties changes from one training to the next (#11035)
+    assertThat(index.isPQSearchAvailable()).isTrue();
+    assertThat(index.getPQVectorCount()).isEqualTo(100);
+    assertThat(nearestIds("emb", 1, List.of(99.0, 1.0, 1.0, 1.0, 0.5, 0.0, 2.0, 0.25))).hasSize(1);
   }
 
   private LSMVectorIndex vectorIndex(final String name) {

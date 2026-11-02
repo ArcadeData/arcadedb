@@ -39,7 +39,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #10865: a property declared on a SUPERTYPE was invisible to the JSON serializer, which looked the declaration up on
@@ -188,8 +187,11 @@ class Issue10865InheritedDateAndMidnightMillisTest extends TestHelper {
   }
 
   @Test
-  void dateStillRefusesMillisThatAreNotAMidnight() {
-    assertThatThrownBy(() -> written(DAY_MILLIS + 1)).isInstanceOf(IllegalArgumentException.class);
+  void dateReadsMillisThatAreNotAMidnightAsTheirDay() {
+    // no day count any class of a DATE can hold, so the milliseconds it is: the day they fall in, as a java.util.Date, Calendar
+    // or LocalDateTime implementation of the DATE reads them (issue #11025, it used to be refused here and stored there)
+    assertThat(written(DAY_MILLIS + 1)).isEqualTo(DAY);
+    assertThat(written(DAY_MILLIS + 86_399_999L)).isEqualTo(DAY);
   }
 
   @Test

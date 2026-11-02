@@ -40,6 +40,12 @@ public class PostgresPortal {
   public List<Result>              cachedResultSet;
   public Map<String, PostgresType> columns;
   public boolean                   ignoreExecution      = false;
+  /**
+   * True for a statement whose text is empty (or only whitespace and ';'): a valid statement that runs nothing, as PostgreSQL
+   * registers it. Describe answers it {@code NoData} and Execute {@code EmptyQueryResponse} instead of a command tag (issue
+   * #11028). It is also {@link #ignoreExecution}, so nothing reaches an engine.
+   */
+  public boolean                   emptyQuery           = false;
   public boolean                   isExpectingResult;
   public boolean                   executed             = false;
   /**
@@ -205,6 +211,7 @@ public class PostgresPortal {
     portal.sqlStatement = template.sqlStatement;
     portal.parameterTypes = template.parameterTypes;
     portal.ignoreExecution = template.ignoreExecution;
+    portal.emptyQuery = template.emptyQuery;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
     portal.transactionControl = template.transactionControl;

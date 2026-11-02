@@ -1033,7 +1033,10 @@ public class PostgresNetworkExecutor extends Thread {
         portal.sessionCommand = null;
       }
 
-      if (portal.ignoreExecution)
+      if (portal.emptyQuery)
+        // An empty statement has no command tag: EmptyQueryResponse takes the place of CommandComplete (issue #11028)
+        emptyQueryResponse();
+      else if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
         // CommandComplete, not NoData - NoData ('n') is a Describe-only reply and is never a legal answer to
         // Execute (issue #6930). The tag comes from portal.query, so getTag() spells it BEGIN/COMMIT/ROLLBACK
@@ -3617,15 +3620,18 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      if (portal.query.isEmpty()) {
-        emptyQueryResponse();
-        return;
-      }
-
       final String upperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
-      if (upperCaseText.startsWith("SAVEPOINT ") ||
+      if (portal.query.isEmpty()) {
+        // An empty statement is a statement (issue #11028): PostgreSQL's exec_parse_message registers it and answers
+        // ParseComplete, its Describe answers NoData and its Execute EmptyQueryResponse. Answering EmptyQueryResponse HERE gave
+        // the Parse a reply that belongs to Execute and left the name unregistered, so the Bind/Describe/Execute pipelined
+        // behind it failed with "prepared statement does not exist" (pgjdbc's prepareStatement("") among them)
+        portal.emptyQuery = true;
+        portal.isExpectingResult = false;
+        portal.ignoreExecution = true;
+      } else if (upperCaseText.startsWith("SAVEPOINT ") ||
           upperCaseText.startsWith("RELEASE ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
