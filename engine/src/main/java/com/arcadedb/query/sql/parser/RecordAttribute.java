@@ -135,7 +135,8 @@ public class RecordAttribute extends SimpleNode {
 
   /**
    * True for the attributes {@link #evaluate(Result, String)} reads off the record, or off the row when it wraps none: {@code @rid},
-   * {@code @type}, {@code @cat}, {@code @in} and {@code @out}.
+   * {@code @type}, {@code @cat}, {@code @in} and {@code @out}. Not {@code @this}: that is the row itself, answered by
+   * {@link #evaluate(Result, String)} only.
    */
   public static boolean isRowAttribute(final String name) {
     return RID_PROPERTY.equalsIgnoreCase(name) || isStructuralAttribute(name);
@@ -148,7 +149,9 @@ public class RecordAttribute extends SimpleNode {
       return CAT_PROPERTY;
     else if (IN_PROPERTY.equalsIgnoreCase(name))
       return IN_PROPERTY;
-    return OUT_PROPERTY;
+    else if (OUT_PROPERTY.equalsIgnoreCase(name))
+      return OUT_PROPERTY;
+    return name;
   }
 
   private static boolean isStructuralAttribute(final String name) {
