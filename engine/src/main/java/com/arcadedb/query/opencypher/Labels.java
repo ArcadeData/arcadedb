@@ -856,8 +856,9 @@ public final class Labels {
     }
 
     // A replica in a transaction its client opened cannot make the types itself, and a local frame would be refused before the builder
-    // below could ask the leader (issue #11063): the leader makes them all in one frame, and what is left here finds them in place
-    if (!schema.existsType(compositeTypeName) && ((DatabaseInternal) schema.getEmbedded().getDatabase()).getWrappedDatabaseInstance()
+    // below could ask the leader (issue #11063): the leader makes them all in one frame, and what is left here finds them in place.
+    // Asked also for a composite that exists but is incomplete, a label type missing or not linked (issue #11064): the leader completes it
+    if (((DatabaseInternal) schema.getEmbedded().getDatabase()).getWrappedDatabaseInstance()
         .createMissingTypeOnTheLeader(compositeTypeName, () -> ensureLabelTypesStatement(uniqueLabels))
         && isCompositeInPlace(schema, uniqueLabels, compositeTypeName)) {
       createCompositeType(schema, uniqueLabels, compositeTypeName);
