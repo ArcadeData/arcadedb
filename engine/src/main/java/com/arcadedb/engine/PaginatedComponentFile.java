@@ -347,9 +347,9 @@ public class PaginatedComponentFile extends ComponentFile {
 
       final boolean withMetaData = metaData || claimed == SYNC_METADATA;
       try {
-        channel.force(withMetaData);
+        FileUtils.force(channel, withMetaData);
       } catch (final ClosedChannelException e) {
-        reopenAndRetry("force", () -> channel.force(withMetaData));
+        reopenAndRetry("force", () -> FileUtils.force(channel, withMetaData));
       }
       forced = true;
       return true;

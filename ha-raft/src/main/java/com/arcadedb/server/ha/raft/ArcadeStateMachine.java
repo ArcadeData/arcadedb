@@ -4946,7 +4946,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         out.seek(chunk.offset());
         out.write(chunk.bytes());
         if (chunk.last())
-          out.getFD().sync();
+          FileUtils.sync(out.getFD());
       }
 
       if (!chunk.last()) {
@@ -5062,7 +5062,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final File incoming = new File(target.getPath() + ".incoming");
     try (final FileOutputStream out = new FileOutputStream(incoming)) {
       out.write(blob.bytes());
-      out.getFD().sync();
+      FileUtils.sync(out.getFD());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Received TimeSeries sealed blob for type '%s' shard %d (db=%s) whose storage engine is unavailable, and "

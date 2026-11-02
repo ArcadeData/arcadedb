@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,8 @@ class Issue4509WALRotationFsyncTest extends TestHelper {
 
   @Override
   protected void beginTest() {
+    // these tests are about fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
     database.getSchema().createDocumentType("RotV");
   }
 

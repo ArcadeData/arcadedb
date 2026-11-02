@@ -27,6 +27,7 @@ import com.arcadedb.log.LogManager;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -521,7 +522,7 @@ public class FileUtils {
       try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
         fos.write(content);
         fos.flush();
-        fos.getFD().sync();
+        sync(fos.getFD());
       }
       publishAtomically(tmp, target, syncDirectory);
     } finally {
@@ -652,13 +653,15 @@ public class FileUtils {
    * store at this point; failing the caller here would turn a weaker durability guarantee into a failed schema save,
    * which is the worse of the two outcomes.
    *
+   * Skipped, without opening the directory, while {@link GlobalConfiguration#FILE_SYNC} is off.
+   *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be. Returned for the test
-   * that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off. Returned
+   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
    */
   public static boolean forceDirectory(final Path dir) {
-    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM)
+    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
       return false;
 
     // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
@@ -673,6 +676,23 @@ public class FileUtils {
       reportNoDirectorySync(dir);
       return false;
     }
+  }
+
+  /**
+   * {@link FileChannel#force(boolean)}, skipped while {@link GlobalConfiguration#FILE_SYNC} is off. Every fsync of a file
+   * goes through here or {@link #sync(FileDescriptor)}, so the setting has one meaning.
+   */
+  public static void force(final FileChannel channel, final boolean metaData) throws IOException {
+    if (GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
+      channel.force(metaData);
+  }
+
+  /**
+   * {@link FileDescriptor#sync()}, skipped while {@link GlobalConfiguration#FILE_SYNC} is off.
+   */
+  public static void sync(final FileDescriptor fd) throws IOException {
+    if (GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
+      fd.sync();
   }
 
   private static void reportNoDirectorySync(final Path dir) {

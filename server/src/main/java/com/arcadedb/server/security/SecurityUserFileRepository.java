@@ -91,7 +91,7 @@ public class SecurityUserFileRepository {
           // here would fsync and publish a truncated server-users.jsonl, which load() cannot parse and falls back
           // to createDefault() - a single 'root' user and nobody else, silently (issue #7825).
           FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
-          channel.force(true);
+          FileUtils.force(channel, true);
         }
 
         // Restrict to owner-only (mode 600) before publishing, matching ApiTokenConfiguration, so the
@@ -221,7 +221,7 @@ public class SecurityUserFileRepository {
         // A short copy renamed into place would be logged as "saved" while missing the tail of the operator's file.
         if (position != size)
           throw new IOException("Copied only " + position + " of " + size + " bytes");
-        copy.force(true);
+        FileUtils.force(copy, true);
       }
       applyOwnerOnlyPermissions(tmp);
       try {

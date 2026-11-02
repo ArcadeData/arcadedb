@@ -377,7 +377,7 @@ public class ApiTokenConfiguration {
         // by degrading to the empty token store (fail-closed), so a silent short write here would cost every API
         // token until the file is restored (issue #7825).
         FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
-        channel.force(true);
+        FileUtils.force(channel, true);
       }
 
       restrictToOwner(tmp);

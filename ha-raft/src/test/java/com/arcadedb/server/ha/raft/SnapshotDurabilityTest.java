@@ -18,6 +18,9 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -48,6 +51,17 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SnapshotDurabilityTest {
+
+  @BeforeEach
+  void fileSyncOn() {
+    // these tests are about fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
+  }
+
+  @AfterEach
+  void restoreFileSync() {
+    GlobalConfiguration.FILE_SYNC.reset();
+  }
 
   @Test
   void fsyncDirectorySucceedsOnRealDirectory(@TempDir final Path dir) {
