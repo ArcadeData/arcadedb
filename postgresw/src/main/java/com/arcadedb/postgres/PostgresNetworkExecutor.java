@@ -957,6 +957,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (!portal.catalogQuery || portal.columns == null)
       portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
           announced && portal.statement != null && portal.statement.namedStatement);
+    if (!portal.catalogQuery)
+      applyDeclaredColumns(portal.sqlStatement, rows, portal.columns);
     if (announced && portal.statement != null && portal.statement.namedStatement && !portal.catalogQuery)
       stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
@@ -1440,6 +1442,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (!answersNoRows) {
         Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
             : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
+        if (catalogAnswer == null)
+          applyDeclaredColumns(parsedStatement, cachedResultSet, columns);
         if (columns.isEmpty() && cachedResultSet.isEmpty()) {
           final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
               parsedStatement);
@@ -1705,6 +1709,60 @@ public class PostgresNetworkExecutor extends Thread {
       names.addAll(row.getElement().get().getPropertyNames());
     names.addAll(row.getPropertyNames());
     return names;
+  }
+
+  /**
+   * Holds the columns sampled from {@code rows} to the schema when the statement is a SELECT over a schema type (issue
+   * #11026): the announced columns are a property of the declaration, not of which rows matched and whether any carried a
+   * value, which is what {@code Describe('S')} already answers. A declared property the statement projects but no row
+   * carries is added, typed from the schema; one that is announced as the varchar placeholder of a NULL on every row takes
+   * its declared type. A column a row does carry keeps its sampled type (issue #6447), and undeclared properties stay
+   * as sampled. Nothing is done for a result with no row: that is answered from the schema already.
+   *
+   * @param columns the columns {@link #getColumns} sampled, completed in place
+   */
+  private void applyDeclaredColumns(final Statement parsed, final List<Result> rows, final Map<String, PostgresType> columns) {
+    if (rows == null || rows.isEmpty() || columns == null || !(parsed instanceof SelectStatement select))
+      return;
+
+    final DocumentType type = resolveQueryTargetType(parsed);
+    if (type == null)
+      return;
+
+    final Map<String, PostgresType> declared = new LinkedHashMap<>();
+    collectDeclaredColumns(type, declared);
+    if (declared.isEmpty())
+      return;
+
+    final Map<String, PostgresType> expected = applyProjection(select.getProjection(), declared);
+    if (expected == null)
+      return;
+
+    boolean added = false;
+    for (final Map.Entry<String, PostgresType> entry : expected.entrySet()) {
+      final String name = entry.getKey();
+      final PostgresType declaredType = declared.get(name);
+      // an alias or a computed item is not a declared property: its type is the sampled one
+      if (declaredType == null || declaredType != entry.getValue())
+        continue;
+
+      final PostgresType sampled = columns.get(name);
+      if (sampled == null) {
+        columns.put(name, declaredType);
+        added = true;
+      } else if (sampled == PostgresType.VARCHAR && declaredType != PostgresType.VARCHAR && isNullOnEveryRow(rows, name))
+        columns.put(name, declaredType);
+    }
+
+    if (added)
+      moveSystemColumnsLast(columns);
+  }
+
+  private static boolean isNullOnEveryRow(final List<Result> rows, final String property) {
+    for (final Result row : rows)
+      if (row.getProperty(property) != null)
+        return false;
+    return true;
   }
 
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
@@ -2972,6 +3030,7 @@ public class PostgresNetworkExecutor extends Thread {
         resultSetOpen = false;
         buffered = browseAndCacheBoundedResultSet(resultSet);
         columns = getColumns(buffered, resolveQueryTargetType(parsed), resolveAliasToSourceProperty(parsed));
+        applyDeclaredColumns(parsed, buffered, columns);
         if (columns.isEmpty() && buffered.isEmpty()) {
           final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(queryText, language, parameters, parsed);
           if (schemaColumns != null)
