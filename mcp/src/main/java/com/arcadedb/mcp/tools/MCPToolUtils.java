@@ -67,8 +67,9 @@ public class MCPToolUtils {
     if (requireRead && !permissions.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
-    if (!server.existsDatabase(databaseName)) {
-      final Set<String> installed = new TreeSet<>(server.getDatabaseNames());
+    // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened below
+    if (!server.isDatabaseAvailable(databaseName)) {
+      final Set<String> installed = new TreeSet<>(server.getAvailableDatabaseNames());
       installed.removeIf(db -> requireRead
           ? !canReadDatabase(user, config, db)
           : !canAccessDatabase(user, config, db));

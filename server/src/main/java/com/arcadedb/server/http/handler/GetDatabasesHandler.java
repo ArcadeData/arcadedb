@@ -37,7 +37,8 @@ public class GetDatabasesHandler extends AbstractServerHttpHandler {
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload)
       throws Exception {
-    final Set<String> installedDatabases = filterAuthorizedDatabases(user, httpServer.getServer().getDatabaseNames());
+    // Open or not (issue #11068): the next request opens one closed for idleness or not opened at startup
+    final Set<String> installedDatabases = filterAuthorizedDatabases(user, httpServer.getServer().getAvailableDatabaseNames());
 
     final JSONObject response = new JSONObject()
         .put("version", Constants.getVersion())

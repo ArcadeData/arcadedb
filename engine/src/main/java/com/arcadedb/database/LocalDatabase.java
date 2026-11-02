@@ -709,6 +709,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     modificationCount.incrementAndGet();
   }
 
+  /**
+   * A number that moves whenever this instance is used - a query, a command, a transaction ended, a record read or written, a
+   * scan, a count, a write of any kind - and only then: two equal samples mean nothing used the database in between. What a
+   * server samples to tell an idle database from a used one (issue #11068), read without allocating or taking a lock.
+   */
+  public long getActivityCount() {
+    return stats.total() + modificationCount.get();
+  }
+
+  /**
+   * Whether any thread, not only the calling one, has a transaction open on this database (issue #11068): what a server asks
+   * before closing a database nobody is using. The asynchronous workers' batch transactions do not count, since a close drains
+   * and commits them; ask {@link #isAsyncProcessing()} for the work they still have queued.
+   */
+  public boolean hasActiveTransactionOnAnyThread() {
+    final DatabaseAsyncExecutorImpl executor = async;
+    return DatabaseContext.INSTANCE.hasActiveTransaction(databasePath, executor != null ? executor::isOneOfMyWorkers : null);
+  }
+
   @Override
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
@@ -818,6 +837,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     executeInReadLock(() -> {
       checkDatabaseIsOpen();
+      // A CLOSE FOR REOPEN HAS STARTED (AN IDLE CLOSE, issue #11068; AN HA REINSTALL): THE INSTANCE IS STILL OPEN WHILE IT DRAINS
+      // ITS ASYNCHRONOUS WORK, BUT ITS TEARDOWN WOULD ROLL BACK A TRANSACTION BEGUN NOW. REFUSED AS RETRYABLE: THE RETRY FINDS THE
+      // DATABASE REOPENED. NOT TO THE ASYNCHRONOUS WORKERS, WHOSE BATCHES ARE WHAT THE DRAIN WAITS FOR
+      if (closedForReopen) {
+        final DatabaseAsyncExecutorImpl executor = async;
+        if (executor == null || !executor.isCurrentThreadOneOfMyWorkers())
+          throw new DatabaseIsReopeningException(name);
+      }
 
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(databasePath);

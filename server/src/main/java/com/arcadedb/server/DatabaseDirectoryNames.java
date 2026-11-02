@@ -89,6 +89,15 @@ final class DatabaseDirectoryNames {
 
   /** Whether the database directory holds a database named {@code name}, open or not. */
   boolean contains(final String name) {
+    return current().names.contains(name);
+  }
+
+  /** The names of the databases the directory holds, open or not (issue #11068): an immutable set. */
+  Set<String> names() {
+    return current().names;
+  }
+
+  private Listing current() {
     Listing current = listing;
     final long now = System.nanoTime();
     if (current == null || current.generation != generation.get())
@@ -101,7 +110,7 @@ final class DatabaseDirectoryNames {
       } finally {
         checking.set(false);
       }
-    return current.names.contains(name);
+    return current;
   }
 
   /** The server changed the directory: the next question lists it again. */

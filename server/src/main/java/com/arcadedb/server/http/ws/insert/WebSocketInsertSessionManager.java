@@ -31,6 +31,7 @@ import io.undertow.websockets.core.WebSocketChannel;
 
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.UUID;
@@ -467,6 +468,23 @@ public class WebSocketInsertSessionManager {
    */
   public boolean hasSessionOnChannel(final UUID channelId) {
     return channelId != null && byChannel.containsKey(channelId);
+  }
+
+  /**
+   * Whether an insert session is open on {@code databaseName}: its transaction lives in the session between two chunks, on no
+   * thread, so a server closing idle databases asks here before it closes one (issue #11068).
+   */
+  public boolean hasSessionOnDatabase(final String databaseName) {
+    for (final WebSocketInsertSession session : sessions.values())
+      if (session.databaseName.equals(databaseName))
+        return true;
+    return false;
+  }
+
+  /** Adds to {@code names} the databases an insert session is open on, read once for a whole idle check (issue #11068). */
+  public void collectSessionDatabaseNames(final Set<String> names) {
+    for (final WebSocketInsertSession session : sessions.values())
+      names.add(session.databaseName);
   }
 
   private void unregister(final WebSocketInsertSession session) {

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.gremlin;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -103,7 +104,17 @@ public class ArcadeGraphManager implements GraphManager {
     if (graph == null || isStale(graph)) {
       graph = getOrCreateArcadeGraph(graphName);
     }
+    bindRequestPrincipal(graph);
     return graph;
+  }
+
+  /**
+   * The request this thread runs reaches {@code graph}: its principal is bound on the graph's database, which may have been opened
+   * after the request started (issue #11068), by this request or by another one. A no-op for a database already bound.
+   */
+  private static void bindRequestPrincipal(final Graph graph) {
+    if (graph instanceof ArcadeGraph arcadeGraph && arcadeGraph.getDatabase() instanceof DatabaseInternal database)
+      GremlinPrincipalPropagatingExecutorService.bindRequestPrincipal(database);
   }
 
   @Override
@@ -116,12 +127,13 @@ public class ArcadeGraphManager implements GraphManager {
   public Set<String> getTraversalSourceNames() {
     // Return both registered traversal sources and available databases
     // This is needed because validateTraversalSourceAlias checks this set
-    // before calling getTraversalSource
+    // before calling getTraversalSource. Open or not (issue #11068): a database closed for idleness, or not opened at
+    // startup, is opened by getTraversalSource, and 'g' keeps naming the same database whichever databases are open now
     final Set<String> names = new HashSet<>(traversalSources.keySet());
     if (serverInstance != null) {
-      names.addAll(serverInstance.getDatabaseNames());
+      names.addAll(serverInstance.getAvailableDatabaseNames());
       // Also include "g" alias for script-based queries
-      if (!serverInstance.getDatabaseNames().isEmpty()) {
+      if (!serverInstance.getAvailableDatabaseNames().isEmpty()) {
         names.add("g");
       }
     }
@@ -137,7 +149,7 @@ public class ArcadeGraphManager implements GraphManager {
    */
   public static String resolveDatabaseName(final String traversalSourceName) {
     if ("g".equals(traversalSourceName) && serverInstance != null) {
-      final Set<String> dbNames = serverInstance.getDatabaseNames();
+      final Set<String> dbNames = serverInstance.getAvailableDatabaseNames();
       if (!dbNames.isEmpty())
         return dbNames.contains("graph") ? "graph" : dbNames.iterator().next();
     }
@@ -175,8 +187,10 @@ public class ArcadeGraphManager implements GraphManager {
     // targets a closed LocalDatabase and every traversal would fail with DatabaseIsClosedException,
     // so it must be rebuilt against the reopened database (issue #5307).
     TraversalSource ts = traversalSources.get(traversalSourceName);
-    if (ts != null && !isStale(graphs.get(dbName)))
+    if (ts != null && !isStale(graphs.get(dbName))) {
+      bindRequestPrincipal(ts.getGraph());
       return ts;
+    }
 
     // Try to (re)create from database
     final Graph graph = getOrCreateArcadeGraph(dbName);
@@ -184,6 +198,7 @@ public class ArcadeGraphManager implements GraphManager {
       ts = graph.traversal();
       traversalSources.put(traversalSourceName, ts);
       syncScriptGlobal(traversalSourceName);
+      bindRequestPrincipal(graph);
     } else
       ts = null;
 
@@ -226,7 +241,7 @@ public class ArcadeGraphManager implements GraphManager {
   public Bindings getAsBindings() {
     // Ensure 'g' is available for script-based queries before returning bindings
     if (!traversalSources.containsKey("g") && serverInstance != null) {
-      final Set<String> dbNames = serverInstance.getDatabaseNames();
+      final Set<String> dbNames = serverInstance.getAvailableDatabaseNames();
       if (!dbNames.isEmpty()) {
         // This will create and cache the traversal source for 'g'
         getTraversalSource("g");
@@ -248,13 +263,18 @@ public class ArcadeGraphManager implements GraphManager {
     TraversalSource ts = traversalSources.get(name);
     if (ts != null && isStale(ts.getGraph()))
       ts = null;
-    if (ts == null && "g".equals(name) && serverInstance != null && !serverInstance.getDatabaseNames().isEmpty())
+    if (ts == null && "g".equals(name) && serverInstance != null && !serverInstance.getAvailableDatabaseNames().isEmpty())
       ts = getTraversalSource(name);
-    if (ts != null)
+    if (ts != null) {
+      bindRequestPrincipal(ts.getGraph());
       return ts;
+    }
 
     final Graph graph = graphs.get(name);
-    return graph != null && !isStale(graph) ? graph : null;
+    if (graph == null || isStale(graph))
+      return null;
+    bindRequestPrincipal(graph);
+    return graph;
   }
 
   /** The names a script can see: every registered graph and traversal source, and {@code g} once a database exists. */
@@ -374,20 +394,11 @@ public class ArcadeGraphManager implements GraphManager {
       // against the reopened database instead of failing forever with DatabaseIsClosedException.
       LogManager.instance().log(this, Level.INFO,
           "Evicting stale Gremlin graph for database '%s' after its underlying database was reopened", databaseName);
-      graphs.remove(databaseName);
-      final Set<String> evicted = new HashSet<>();
-      traversalSources.entrySet().removeIf(e -> {
-        if (e.getValue().getGraph() != graph)
-          return false;
-        evicted.add(e.getKey());
-        return true;
-      });
-      syncScriptGlobal(databaseName);
-      evicted.forEach(this::syncScriptGlobal);
+      evictGraph(databaseName, graph);
     }
 
-    // Check if database exists
-    if (!serverInstance.existsDatabase(databaseName)) {
+    // Check if database exists, open or not (issue #11068): one closed for idleness, or not opened at startup, is opened below
+    if (!serverInstance.isDatabaseAvailable(databaseName)) {
       LogManager.instance().log(this, Level.FINE,
           "Database '%s' does not exist in ArcadeDBServer", databaseName);
       return null;
@@ -412,6 +423,35 @@ public class ArcadeGraphManager implements GraphManager {
           "Failed to create ArcadeGraph for database '%s': %s", databaseName, e.getMessage());
       return null;
     }
+  }
+
+  /**
+   * The server deregistered {@code databaseName} - closed for idleness, by {@code close database}, dropped (issue #11068): its
+   * graph and every traversal source over it, the {@code g} alias included, leave the manager AND the executor's own copy of the
+   * global bindings. That copy is what a script request's bindings are built from, ahead of the live ones, so a traversal source
+   * left in it over the closed instance answered every later script with the closed database's error instead of letting the
+   * live bindings open the database again. The database itself is not touched: a graph a client names next is built again on
+   * whatever instance the server then opens. Only a stale graph is evicted: the callback can arrive after the database was
+   * opened again, and the graph built on the new instance then stays.
+   */
+  void onDatabaseUnregistered(final String databaseName) {
+    final Graph graph = graphs.get(databaseName);
+    if (graph != null && isStale(graph))
+      evictGraph(databaseName, graph);
+  }
+
+  /** Removes {@code graph}, registered under {@code databaseName}, and the traversal sources over it, from here and from the executor's bindings. */
+  private void evictGraph(final String databaseName, final Graph graph) {
+    graphs.remove(databaseName, graph);
+    final Set<String> evicted = new HashSet<>();
+    traversalSources.entrySet().removeIf(e -> {
+      if (e.getValue().getGraph() != graph)
+        return false;
+      evicted.add(e.getKey());
+      return true;
+    });
+    syncScriptGlobal(databaseName);
+    evicted.forEach(this::syncScriptGlobal);
   }
 
   /**

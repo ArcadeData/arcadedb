@@ -48,7 +48,8 @@ public class MCPResources {
     final JSONArray resources = new JSONArray();
 
     if (config.isAllowReads())
-      for (final String databaseName : new TreeSet<>(server.getDatabaseNames())) {
+      // Open or not (issue #11068): reading one closed for idleness, or not opened at startup, opens it
+      for (final String databaseName : new TreeSet<>(server.getAvailableDatabaseNames())) {
         if (!MCPToolUtils.canReadDatabase(user, config, databaseName))
           continue;
 
@@ -73,7 +74,7 @@ public class MCPResources {
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
     final String databaseName = parseSchemaURI(uri);
-    if (databaseName == null || !server.existsDatabase(databaseName)
+    if (databaseName == null || !server.isDatabaseAvailable(databaseName)
         || !MCPToolUtils.canReadDatabase(user, config, databaseName))
       throw new MCPResourceNotFoundException("Resource not found: " + uri);
 

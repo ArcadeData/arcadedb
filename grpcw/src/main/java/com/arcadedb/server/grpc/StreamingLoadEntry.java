@@ -35,11 +35,20 @@ import java.util.function.Supplier;
  * {@code PER_STREAM} transaction mode holds one write transaction from its first chunk to its last, between chunks
  * too, and that is what an administrator has to be able to see and stop.
  * <p>
- * <b>How a termination reaches the load.</b> Every chunk runs inside {@link #enter()}, which binds the entry on the
- * thread, so the rows' checks and the commits the chunk attempts obey it as any statement's do. A load that is idle
- * between two chunks is reached by the termination listener given to {@link #open}, which runs only when no chunk is
- * running ({@link #runIfIdle}): it closes the call, and the handler retracts what the stream's mode can still retract
- * on the stream's own thread, where its transaction lives, before it {@link #close() closes} the entry.
+ * <b>How a termination reaches the load.</b> Every chunk runs with the entry bound on its thread - the first one from the
+ * moment it {@link #open opens} the entry, since there is none to bind when it enters - so the rows' checks and
+ * the commits the chunk attempts obey it as any statement's do. A load that is idle between two chunks is reached by the
+ * termination listener given to {@link #open}, which must never act under a running chunk: it closes the call, and the
+ * handler retracts what the stream's mode can still retract on the stream's own thread, where its transaction lives,
+ * before it {@link #close() closes} the entry. The four loads get that exclusion in one of two ways (issue #11059):
+ * <ul>
+ * <li>{@code InsertStream}, {@code GraphBatchLoad} and {@code TimeSeriesWriteStream} receive their chunks on whichever
+ * gRPC thread delivers them, so each chunk runs inside {@link #enter()}, which takes the working lock, and the listener
+ * acts only through {@link #runIfIdle}, which tries it;</li>
+ * <li>{@code InsertBidirectional} already runs every message on a single thread of its own, so a chunk only
+ * {@link #bind() binds} the entry, and its listener takes no lock: it marks the stream cancelled and queues the end of
+ * the stream on that same thread, behind the message running now, which serialises the two just the same.</li>
+ * </ul>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -55,6 +64,8 @@ final class StreamingLoadEntry {
   /** Held by a chunk while it runs, so the termination listener of an idle stream never acts under a running chunk. */
   private final ReentrantLock        working = new ReentrantLock();
   private volatile RunningQuery      entry;
+  /** What {@link #open} bound for the chunk that opened the entry, inside {@link #enter()}: read and written under {@link #working}. */
+  private RunningQuery.Binding       openingBinding;
 
   /**
    * Must be built on the call's gRPC Context - inside the RPC handler, as every caller does - since that is where
@@ -86,6 +97,10 @@ final class StreamingLoadEntry {
     opened.setStatement("grpc", text);
     entry = opened;
     opened.onTerminate(onTerminate);
+    // The chunk that opens the entry is bound for the rest of its work like every later chunk: it entered before there was an
+    // entry to bind, so its first rows and the commit they reach would not see a termination. Closed by that chunk's binding
+    if (working.isHeldByCurrentThread())
+      openingBinding = opened.bind();
   }
 
   /**
@@ -98,7 +113,17 @@ final class StreamingLoadEntry {
     working.lock();
     final RunningQuery current = entry;
     if (current == null)
-      return working::unlock;
+      // The chunk that may open the entry: what open() bound for it is closed with it
+      return () -> {
+        try {
+          final RunningQuery.Binding opening = openingBinding;
+          openingBinding = null;
+          if (opening != null)
+            opening.close();
+        } finally {
+          working.unlock();
+        }
+      };
     final RunningQuery.Binding binding = current.bind();
     return () -> {
       try {

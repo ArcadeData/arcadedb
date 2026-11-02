@@ -2870,7 +2870,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * because a second database's workers are threads of the same class but not of this executor.
    */
   public boolean isCurrentThreadOneOfMyWorkers() {
-    return Thread.currentThread() instanceof AsyncThread worker && worker.getOwner() == this;
+    return isOneOfMyWorkers(Thread.currentThread());
+  }
+
+  /** Whether {@code thread} is a worker of this executor, the same test as {@link #isCurrentThreadOneOfMyWorkers()}. */
+  public boolean isOneOfMyWorkers(final Thread thread) {
+    return thread instanceof AsyncThread worker && worker.getOwner() == this;
   }
 
   /**

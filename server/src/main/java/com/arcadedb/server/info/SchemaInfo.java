@@ -137,8 +137,9 @@ public class SchemaInfo {
    */
   public static JSONObject forUser(final ArcadeDBServer server, final ServerSecurityUser user,
       final String databaseName) {
-    if (!server.existsDatabase(databaseName)) {
-      final Set<String> installed = new TreeSet<>(server.getDatabaseNames());
+    // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened below
+    if (!server.isDatabaseAvailable(databaseName)) {
+      final Set<String> installed = new TreeSet<>(server.getAvailableDatabaseNames());
       installed.removeIf(db -> !user.canAccessToDatabase(db));
       throw new IllegalArgumentException(
           "Database '" + databaseName + "' does not exist. Available databases: " + installed);

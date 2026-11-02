@@ -1922,6 +1922,32 @@ public enum GlobalConfiguration {
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
 
+  SERVER_DATABASE_IDLE_TIMEOUT("arcadedb.server.databaseIdleTimeout", SCOPE.SERVER, """
+      Closes a database no client has used for this long, in milliseconds (0 = never). Used means any query, command, \
+      transaction or record operation, from any protocol; a database with a transaction open, a statement running or \
+      asynchronous work queued is never closed, however long it has been quiet. The files stay where they are and the \
+      next request of any protocol reopens the database, as one not opened at startup is. A replicated (HA) database is \
+      never closed, nor one listed in arcadedb.server.databaseIdleExclude""", Long.class, 0L),
+
+  SERVER_DATABASE_IDLE_CHECK_INTERVAL("arcadedb.server.databaseIdleCheckInterval", SCOPE.SERVER, """
+      How often, in milliseconds, the server looks for databases to close for idleness \
+      (arcadedb.server.databaseIdleTimeout) or beyond the cap on open databases (arcadedb.server.maxOpenDatabases). \
+      Idleness is measured at this resolution""", Long.class, 60_000L),
+
+  SERVER_DATABASE_IDLE_MAX_CLOSES_PER_CHECK("arcadedb.server.databaseIdleMaxClosesPerCheck", SCOPE.SERVER, """
+      The most databases one check closes, for idleness and for the cap on open databases together, so that a burst \
+      of databases going idle at once is closed over several checks (0 = no bound)""", Integer.class, 10),
+
+  SERVER_DATABASE_IDLE_EXCLUDE("arcadedb.server.databaseIdleExclude", SCOPE.SERVER, """
+      Comma-separated names of the databases never closed for idleness or for the cap on open databases""", String.class,
+      ""),
+
+  SERVER_MAX_OPEN_DATABASES("arcadedb.server.maxOpenDatabases", SCOPE.SERVER, """
+      The most databases kept open at once (0 = no cap). Beyond it, each idle check closes the least recently used \
+      databases that are not in use, idle timeout or not, until the count is back under the cap. A database in use is \
+      never closed, so the cap can be exceeded while more databases than that are busy. The same exclusions as the idle \
+      timeout apply""", Integer.class, 0),
+
   SERVER_QUERY_WARM_UP("arcadedb.server.queryWarmUp", SCOPE.SERVER, """
       Once the server is online, warms the query stack in the background: parses a SQL statement and runs a trivial \
       statement in SQL and OpenCypher on a database the server holds open, so the first client request does not pay for \

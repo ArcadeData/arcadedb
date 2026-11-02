@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.google.protobuf.Descriptors.FieldDescriptor;
+import com.google.protobuf.Message;
 import io.grpc.ForwardingServerCall;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
@@ -68,18 +70,31 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
     final ServerCall<ReqT, RespT> wrappedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
       // gRPC may invoke sendMessage and close on different threads, so publish the flag with
       // volatile to guarantee the value written in sendMessage is visible in close.
-      private volatile boolean inBandFailure = false;
+      private volatile boolean           inBandFailure = false;
+      // The response type of a call never changes, so its "success" field is looked up once, at the first message. The
+      // calls into a ServerCall are serialised by the gRPC contract, so these two need no publication of their own
+      private          boolean           successFieldResolved;
+      private          FieldDescriptor   successField;
 
       @Override
       public void sendMessage(final RespT message) {
-        // executeCommand reports execution failures in-band as ExecuteCommandResponse.success=false
-        // while still closing the RPC with status OK (unlike executeQuery/createRecord, which call
-        // onError). Without this check every command failure would be counted as a success. Detect
-        // the in-band failure here so it is reflected in the error counter at close() time.
-        if (message instanceof ExecuteCommandResponse response && !response.getSuccess())
+        // Some RPCs answer a failure in-band, with success=false in a response closed with status OK: a vetoed
+        // updateRecord or deleteRecord does (issue #11054), and executeCommand used to. Without this check each of them
+        // would be counted as a success. The check is not a list of message types, which went stale as soon as a second
+        // one joined the set: any response whose type declares a top-level boolean "success" field and sends it false is
+        // an in-band failure, so an RPC added later is covered without being listed here.
+        if (!inBandFailure && message instanceof Message response && isInBandFailure(response))
           inBandFailure = true;
 
         super.sendMessage(message);
+      }
+
+      private boolean isInBandFailure(final Message response) {
+        if (!successFieldResolved) {
+          successField = successField(response);
+          successFieldResolved = true;
+        }
+        return successField != null && !(Boolean) response.getField(successField);
       }
 
       @Override
@@ -105,6 +120,12 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
     };
 
     return next.startCall(wrappedCall, headers);
+  }
+
+  /** The top-level, non-repeated boolean {@code success} field of {@code response}'s type, or {@code null} when it has none. */
+  static FieldDescriptor successField(final Message response) {
+    final FieldDescriptor field = response.getDescriptorForType().findFieldByName("success");
+    return field != null && !field.isRepeated() && field.getJavaType() == FieldDescriptor.JavaType.BOOLEAN ? field : null;
   }
 
   /**

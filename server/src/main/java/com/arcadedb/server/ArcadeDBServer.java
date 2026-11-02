@@ -104,6 +104,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -257,6 +258,7 @@ public class ArcadeDBServer {
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
   // that plugin is enabled.
   private final       BackupCoordinator                     backupCoordinator                    = new BackupCoordinator();
+  private final       DatabaseIdleCloser                    idleCloser                           = new DatabaseIdleCloser(this);
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   // The databases a 'close database' command closed and nothing opened since: a client request does not reopen them, so a
   // database closed for maintenance stays closed until 'open database' (issue #10234)
@@ -763,6 +765,9 @@ public class ArcadeDBServer {
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
+
+    // Issue #11068: closes the databases nobody uses, when arcadedb.server.databaseIdleTimeout or maxOpenDatabases asks for it
+    idleCloser.start();
 
     // A server registered with a support key registers itself as an installation of the portal (after a delay, in the background)
     if (supportService != null)
@@ -1378,6 +1383,9 @@ public class ArcadeDBServer {
 
     status = STATUS.SHUTTING_DOWN;
 
+    // Before the databases close: a check running now must not close one the shutdown is closing too
+    CodeUtils.executeIgnoringExceptions(idleCloser::stop, "Error on stopping the idle database closer", false);
+
     // Before anything it reports on goes away: the monitor reads the event log and the configured database
     // directory, and one restart per leaked daemon thread is what an embedded start/stop cycle would cost.
     if (serverMonitor != null) {
@@ -1812,8 +1820,94 @@ public class ArcadeDBServer {
     return serverDatabase;
   }
 
+  /** The names of the databases open on this server now. {@link #getAvailableDatabaseNames()} adds the ones not open. */
   public Set<String> getDatabaseNames() {
     return Collections.unmodifiableSet(databases.keySet());
+  }
+
+  /**
+   * The names of every database of this server a client can use, open or not: the open ones, and those on disk that nothing
+   * opened yet or that were closed for idleness (issue #11068) - every one of which {@link #getDatabaseForClient} and
+   * {@link #getDatabaseForRequest} open on their first request. What a listing shows ({@code list databases}, Studio,
+   * {@code SHOW DATABASES}): with {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} off, or once a database was closed
+   * for idleness, a listing of the open ones only would answer as if those did not exist. A database an operator holds (closed
+   * by {@code close database}, being restored or dropped) is left out, as it was before: it is not available until the operator
+   * gives it back.
+   * <p>
+   * Lock-free and without a look at the disk on each call, like {@link #isDatabaseOfServer}: the part not open is answered from
+   * the listing of the database directory kept in memory.
+   */
+  public Set<String> getAvailableDatabaseNames() {
+    final DatabaseDirectoryNames names = databaseDirectoryNames;
+    final Set<String> onDisk = names != null ? names.names() : Set.of();
+    if (onDisk.isEmpty())
+      return getDatabaseNames();
+    final Set<String> result = new HashSet<>(databases.keySet());
+    for (final String name : onDisk)
+      if (!isDatabaseHeld(name) && !isReservedDatabaseName(name))
+        result.add(name);
+    return Collections.unmodifiableSet(result);
+  }
+
+  /**
+   * Whether {@code databaseName} is one of {@link #getAvailableDatabaseNames()}: open, or on disk and not held by an operator, so
+   * a client's first request opens it (issue #11068). The question an existence check of one name asks, without building the set.
+   */
+  public boolean isDatabaseAvailable(final String databaseName) {
+    if (databaseName == null || databaseName.isEmpty())
+      return false;
+    return existsDatabase(databaseName) || (!isDatabaseHeld(databaseName) && !isReservedDatabaseName(databaseName)
+        && isDatabaseOfServer(databaseName));
+  }
+
+  /** The instance registered under {@code databaseName}, open or not, or {@code null}: never opens anything. */
+  ServerDatabase getRegisteredDatabase(final String databaseName) {
+    return databases.get(databaseName);
+  }
+
+  /** What closes the databases nobody uses (issue #11068), with its counters. */
+  public DatabaseIdleCloser getDatabaseIdleCloser() {
+    return idleCloser;
+  }
+
+  /**
+   * Closes {@code expected}, the instance registered under {@code databaseName}, because nobody uses it (issue #11068), and
+   * deregisters it. Unlike a {@code close database} it keeps no mark: the database is left as one not opened at startup is, and
+   * the next request of any protocol opens it again. Closed FOR REOPEN, so a request that resolved this instance a moment before
+   * is refused with the retryable {@code DatabaseIsReopeningException} and its retry finds the database reopened.
+   * <p>
+   * Takes the maintenance slot of a close first, as {@code close database} does, so a backup, an export or an import running
+   * through the instance keeps it open; then decides and acts under {@link #databasesLock}, the lock every open of a closed or
+   * absent database takes, so no request opens the directory again while this instance still holds it. {@code stillIdle} is
+   * asked there, right before the close: a request that used the database since the caller sampled it keeps it open.
+   *
+   * @return whether the database was closed
+   */
+  boolean closeIdleDatabase(final String databaseName, final ServerDatabase expected, final BooleanSupplier stillIdle) {
+    if (backupCoordinator.begin(databaseName, Operation.CLOSE) != null)
+      return false;
+    try {
+      synchronized (databasesLock) {
+        if (status != STATUS.ONLINE || databases.get(databaseName) != expected || !expected.isOpen() || isDatabaseHeld(
+            databaseName) || !stillIdle.getAsBoolean())
+          return false;
+
+        // Listed again: the database is still on disk, and a listing taken while it was registered may not show it (#10567)
+        invalidateDatabaseDirectoryNames();
+        databases.remove(databaseName);
+        try {
+          expected.getEmbedded().closeForReopen();
+        } catch (final RuntimeException e) {
+          // Deregistered whatever the close did: the next request opens the files again, or is refused while they are held
+          LogManager.instance().log(this, Level.SEVERE, "Error on closing idle database '%s'", e, databaseName);
+          Metrics.counter(DatabaseIdleCloser.CLOSE_FAILED_METER).increment();
+        }
+      }
+    } finally {
+      backupCoordinator.end(databaseName, Operation.CLOSE);
+    }
+    notifyUnregistered(databaseName);
+    return true;
   }
 
   /**
@@ -2566,6 +2660,7 @@ public class ArcadeDBServer {
         databases.put(databaseName, db);
         closedByCommand.remove(databaseName);
         loaded = true;
+        idleCloser.onOpened(databaseName);
 
         // Only once the copy is open and registered on the leader: a mark dropped before an open that then failed
         // would leave the copy reopenable by this node as a follower, never having been verified. And only when the

@@ -120,7 +120,7 @@ public final class AiSchemaDigest {
    * @throws SecurityException        when the user may not access it
    */
   public static String forUser(final ArcadeDBServer server, final ServerSecurityUser user, final String databaseName) {
-    if (!server.existsDatabase(databaseName))
+    if (!server.isDatabaseAvailable(databaseName))
       throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
     if (!user.canAccessToDatabase(databaseName))
       throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
