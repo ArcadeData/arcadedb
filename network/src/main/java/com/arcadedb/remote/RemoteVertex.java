@@ -73,7 +73,7 @@ public class RemoteVertex {
     appendBoundTypes(query, edgeTypes, params);
 
     query.append(").size() as count from ").append(vertex.getIdentity());
-    try (final ResultSet resultSet = remoteDatabase.query("sql", query.toString(), params)) {
+    try (final ResultSet resultSet = remoteDatabase.queryUncounted("sql", query.toString(), params)) {
       // the query is anchored to the vertex's own RID: it answers nothing only when the vertex no longer exists
       if (!resultSet.hasNext())
         throw new RecordNotFoundException("Record " + vertex.getIdentity() + " not found", vertex.getIdentity());
@@ -298,7 +298,7 @@ public class RemoteVertex {
   public boolean isConnectedTo(final Identifiable toVertex) {
     final String query =
         "select from ( select both() as vertices from " + vertex.getIdentity() + " ) where vertices contains " + toVertex.getIdentity();
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
+    final ResultSet resultSet = remoteDatabase.queryUncounted("sql", query, null);
     return resultSet.hasNext();
   }
 
@@ -306,7 +306,7 @@ public class RemoteVertex {
     final String query =
         "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "() as vertices from " + vertex.getIdentity()
             + " ) where vertices contains " + toVertex.getIdentity();
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
+    final ResultSet resultSet = remoteDatabase.queryUncounted("sql", query, null);
     return resultSet.hasNext();
   }
 
@@ -316,7 +316,7 @@ public class RemoteVertex {
     final String query =
         "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(:edgeType) as vertices from "
             + vertex.getIdentity() + " ) where vertices contains " + toVertex.getIdentity();
-    final ResultSet resultSet = remoteDatabase.query("sql", query, Map.of("edgeType", edgeType));
+    final ResultSet resultSet = remoteDatabase.queryUncounted("sql", query, Map.of("edgeType", edgeType));
     return resultSet.hasNext();
   }
 
@@ -446,6 +446,6 @@ public class RemoteVertex {
       query.append(" SKIP ").append(skip);
     if (limit > 0)
       query.append(" LIMIT ").append(limit);
-    return remoteDatabase.query("sql", query.toString(), params);
+    return remoteDatabase.queryUncounted("sql", query.toString(), params);
   }
 }

@@ -500,6 +500,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * <p>This is a backward-incompatible change for callers that use {@code rollback()} in a {@code catch}/
    * cleanup block: such callers should wrap the call in {@code try/catch} if a throw from an already-reaped
    * transaction must not mask an earlier exception.
+   *
+   * <p>With no transaction open on this client (never begun, already committed, already rolled back) it returns
+   * without contacting the server, as the embedded engine does (issue #11057): a defensive rollback in a
+   * {@code finally} must not turn a committed unit of work into a reported failure.
    */
   @Override
   public void rollback() {
@@ -508,7 +512,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     stats.txRollbacks.incrementAndGet();
 
     if (transactionId == null)
-      throw new TransactionException("Transaction not begun");
+      return;
 
     logTx("ROLLBACK(local)", null);
     checkCrossThreadUse("before RollbackTransaction");
@@ -706,6 +710,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return commandInternal(language, command, params);
   }
 
+  /** The schema metadata reads of the driver, over gRPC like every other command of this connection (issue #11056). */
+  @Override
+  protected ResultSet commandUncounted(final String language, final String command, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    return commandInternal(language, command, params);
+  }
+
   private ResultSet commandInternal(final String language, final String command, final Map<String, Object> params) {
 
     ExecuteCommandRequest.Builder requestBuilder = ExecuteCommandRequest.newBuilder()
@@ -762,9 +773,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   @Override
   public ResultSet query(final String language, final String query, final Object... args) {
-    checkDatabaseIsOpen();
-    stats.queries.incrementAndGet();
-
+    // NOT COUNTED HERE: THE OVERLOAD IT DELEGATES TO COUNTS THE QUERY, AND COUNTING IN BOTH MADE ONE QUERY TWO (ISSUE #11056)
     final Map<String, Object> params = mapArgs(args);
 
     RemoteGrpcConfig remoteGrpcConfig = new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
@@ -793,7 +802,21 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
+    return executeQuery(language, query, remoteGrpcConfig, params);
+  }
 
+  /**
+   * The driver's own reads ({@code countType}, {@code lookupByRID}, the walks of a remote vertex) each count their own
+   * statistic, the one the embedded engine counts for the same call, so they are not also filed as a query (issue #11056).
+   */
+  @Override
+  protected ResultSet queryUncounted(final String language, final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    return executeQuery(language, query, new RemoteGrpcConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0), params);
+  }
+
+  private ResultSet executeQuery(final String language, final String query, final RemoteGrpcConfig remoteGrpcConfig,
+      final Map<String, Object> params) {
     ExecuteQueryRequest.Builder requestBuilder = ExecuteQueryRequest.newBuilder()
         .setDatabase(getName())
         .setQuery(query)
@@ -1279,11 +1302,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // the filter, so a name carrying a back-tick or a quote is the name the caller asked for rather than a
     // different one or a parse error - the same fix RemoteDatabase.iterateType() got for #7914 (issue #8050).
     final String query = "select from " + Identifier.quote(typeName) + (polymorphic ? "" : " where @type = :typeName");
+    checkDatabaseIsOpen();
+    stats.iterateType.incrementAndGet();
     return polymorphic ? streamQuery(query) : streamQuery(query, Map.of("typeName", typeName));
   }
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
+    checkDatabaseIsOpen();
+    stats.iterateBucket.incrementAndGet();
     return streamQuery("select from " + bucketTarget(bucketName));
   }
 
@@ -1444,7 +1471,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   public long countBucket(final String bucketName) {
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
-    ResultSet result = query("sql", "select count(*) as count from " + bucketTarget(bucketName));
+    ResultSet result = queryUncounted("sql", "select count(*) as count from " + bucketTarget(bucketName), null);
     if (result.hasNext()) {
       Number count = result.next().getProperty("count");
       return count != null ? count.longValue() : 0;
@@ -1460,7 +1487,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // iterateType() uses (issue #8050).
     final String appendix = polymorphic ? "" : " where @type = :typeName";
     final Map<String, Object> params = polymorphic ? Map.of() : Map.of("typeName", typeName);
-    ResultSet result = query("sql", "select count(*) as count from " + Identifier.quote(typeName) + appendix, params);
+    ResultSet result = queryUncounted("sql", "select count(*) as count from " + Identifier.quote(typeName) + appendix, params);
     if (result.hasNext()) {
       Number count = result.next().getProperty("count");
       return count != null ? count.longValue() : 0;
@@ -1481,6 +1508,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
+    return lookupByRIDUncounted(rid, loadContent);
+  }
+
+  private Record lookupByRIDUncounted(final RID rid, final boolean loadContent) {
     final LookupByRidRequest.Builder reqBuilder = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
         .setCredentials(buildCredentials());
 
@@ -1524,8 +1555,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     stats.existsRecord.incrementAndGet();
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
+    checkDatabaseIsOpen();
     try {
-      lookupByRID(rid, false);
+      // UNCOUNTED: AN EXISTENCE CHECK IS ONE existsRecord, AS ON THE EMBEDDED ENGINE, NOT ALSO A READ (ISSUE #11056)
+      lookupByRIDUncounted(rid, false);
       return true;
     } catch (RecordNotFoundException e) {
       return false;
@@ -2122,6 +2155,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
+        // ONE readRecord PER RECORD THE ITERATION YIELDS, AS THE EMBEDDED BucketIterator COUNTS EVERY RECORD IT READS (ISSUE #11056)
+        stats.readRecord.incrementAndGet();
         return grpcRecordToDBRecord(currentBatch.next());
       }
     };

@@ -55,7 +55,7 @@ class RemoteSchemaTest {
     // even when no type uses it (issue #7797 follow-up). Tests below only care about type-attached buckets, so
     // this default keeps them unchanged; a test asserting on a standalone bucket overrides it explicitly.
     final ResultSet emptyBuckets = buildSchemaResultSet();
-    when(mockDatabase.command("sql", "select from schema:buckets")).thenReturn(emptyBuckets);
+    when(mockDatabase.commandUncounted("sql", "select from schema:buckets", null)).thenReturn(emptyBuckets);
   }
 
   @Test
@@ -421,7 +421,7 @@ class RemoteSchemaTest {
   @Test
   void reloadWithTimeSeriesTypeDoesNotThrow() {
     final ResultSet rs = buildSchemaResultSet(buildTypeRecord("MySeries", "t"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(rs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(rs);
 
     schema.reload();
 
@@ -433,7 +433,7 @@ class RemoteSchemaTest {
   @Test
   void reloadWithUnknownTypeCodeDoesNotThrow() {
     final ResultSet rs = buildSchemaResultSet(buildTypeRecord("FutureType", "x"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(rs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(rs);
 
     schema.reload();
 
@@ -447,7 +447,7 @@ class RemoteSchemaTest {
         buildTypeRecord("Knows", "edge"),
         buildTypeRecord("Readings", "t")
     );
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(rs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(rs);
 
     schema.reload();
 
@@ -464,39 +464,39 @@ class RemoteSchemaTest {
   void existsTypeRetriesReloadOnCacheMissAndFindsNewlyCreatedType() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet freshRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"), buildTypeRecord("Address", "vertex"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, freshRs);
 
     schema.reload();
     assertThat(schema.existsType("Person")).isTrue();
 
     // "Address" was created by raw DDL after the cache warmed up: not yet known to this cache.
     assertThat(schema.existsType("Address")).isTrue();
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   @Test
   void getTypeRetriesReloadOnCacheMissAndFindsNewlyCreatedType() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet freshRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"), buildTypeRecord("Address", "vertex"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, freshRs);
 
     schema.reload();
 
     final DocumentType t = schema.getType("Address");
     assertThat(t.getName()).isEqualTo("Address");
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   @Test
   void getTypeOrNullRetriesReloadOnCacheMissAndFindsNewlyCreatedType() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet freshRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"), buildTypeRecord("Address", "vertex"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, freshRs);
 
     schema.reload();
 
     assertThat(schema.getTypeOrNull("Address")).isNotNull();
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   @Test
@@ -504,25 +504,25 @@ class RemoteSchemaTest {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     // The retry itself finds the same snapshot again: the type genuinely does not exist anywhere.
     final ResultSet retryRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, retryRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, retryRs);
 
     schema.reload();
 
     assertThat(schema.existsType("DoesNotExist")).isFalse();
     // Bounded: checkSchemaIsLoaded()'s initial load, plus exactly one retry - never an unbounded loop.
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   @Test
   void getTypeStillThrowsForGenuinelyMissingTypeAfterOneRetry() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet retryRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, retryRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, retryRs);
 
     schema.reload();
 
     assertThatThrownBy(() -> schema.getType("DoesNotExist")).isInstanceOf(SchemaException.class);
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   // Reviewer follow-up on #6446: getBucketByName()/getBucketByNameIfExists() shared the exact same
@@ -533,37 +533,37 @@ class RemoteSchemaTest {
   void getBucketByNameRetriesReloadOnCacheMissAndFindsNewlyCreatedBucket() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet freshRs = buildTypeRecordWithBucket("Address", "vertex", "address_bucket");
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, freshRs);
 
     schema.reload();
 
     final Bucket b = schema.getBucketByName("address_bucket");
     assertThat(b.getName()).isEqualTo("address_bucket");
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   @Test
   void getBucketByNameIfExistsRetriesReloadOnCacheMissAndFindsNewlyCreatedBucket() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet freshRs = buildTypeRecordWithBucket("Address", "vertex", "address_bucket");
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, freshRs);
 
     schema.reload();
 
     assertThat(schema.getBucketByNameIfExists("address_bucket")).isNotNull();
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   @Test
   void getBucketByNameStillThrowsForGenuinelyMissingBucketAfterOneRetry() {
     final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     final ResultSet retryRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, retryRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(staleRs, retryRs);
 
     schema.reload();
 
     assertThatThrownBy(() -> schema.getBucketByName("does_not_exist")).isInstanceOf(SchemaException.class);
-    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+    verify(mockDatabase, times(2)).commandUncounted("sql", "select from schema:types", null);
   }
 
   // Issue #7172: servers up to 26.9.1 answer "create ... type X if not exists" with ZERO rows when X already
@@ -575,7 +575,7 @@ class RemoteSchemaTest {
     final ResultSet noRows = buildSchemaResultSet();
     final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Doc", "document"));
     when(mockDatabase.command("sql", "create document type `Doc` if not exists")).thenReturn(noRows);
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(schemaRs);
 
     final DocumentType type = schema.getOrCreateDocumentType("Doc");
 
@@ -588,7 +588,7 @@ class RemoteSchemaTest {
     final ResultSet noRows = buildSchemaResultSet();
     final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
     when(mockDatabase.command("sql", "create vertex type `Person` if not exists")).thenReturn(noRows);
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(schemaRs);
 
     final VertexType type = schema.getOrCreateVertexType("Person");
 
@@ -601,7 +601,7 @@ class RemoteSchemaTest {
     final ResultSet noRows = buildSchemaResultSet();
     final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Knows", "edge"));
     when(mockDatabase.command("sql", "create edge type `Knows` if not exists")).thenReturn(noRows);
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(schemaRs);
 
     final EdgeType type = schema.getOrCreateEdgeType("Knows");
 
@@ -616,7 +616,7 @@ class RemoteSchemaTest {
     final ResultSet emptySchema = buildSchemaResultSet();
     final ResultSet emptySchemaRetry = buildSchemaResultSet();
     when(mockDatabase.command("sql", "create vertex type `Person` if not exists")).thenReturn(noRows);
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(emptySchema, emptySchemaRetry);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(emptySchema, emptySchemaRetry);
 
     assertThatThrownBy(() -> schema.getOrCreateVertexType("Person")).isInstanceOf(SchemaException.class);
   }
@@ -628,7 +628,7 @@ class RemoteSchemaTest {
     final ResultSet noRows = buildSchemaResultSet();
     final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Person", "document"));
     when(mockDatabase.command("sql", "create vertex type `Person` if not exists")).thenReturn(noRows);
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(schemaRs);
 
     assertThatThrownBy(() -> schema.getOrCreateVertexType("Person"))
         .isInstanceOf(SchemaException.class)
@@ -640,7 +640,7 @@ class RemoteSchemaTest {
     final ResultSet noRows = buildSchemaResultSet();
     final ResultSet schemaRs = buildSchemaResultSet(buildTypeRecord("Knows", "vertex"));
     when(mockDatabase.command("sql", "create edge type `Knows` if not exists")).thenReturn(noRows);
-    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(schemaRs);
+    when(mockDatabase.commandUncounted("sql", "select from schema:types", null)).thenReturn(schemaRs);
 
     assertThatThrownBy(() -> schema.getOrCreateEdgeType("Knows"))
         .isInstanceOf(SchemaException.class)

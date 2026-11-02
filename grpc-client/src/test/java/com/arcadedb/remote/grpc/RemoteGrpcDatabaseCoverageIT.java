@@ -433,11 +433,10 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGrpcClientServerTest {
   }
 
   @Test
-  @DisplayName("rollback() without begin() throws TransactionException")
-  void rollbackWithoutBeginThrows() {
-    assertThatThrownBy(() -> grpc.rollback())
-        .isInstanceOf(TransactionException.class)
-        .hasMessageContaining("not begun");
+  @DisplayName("rollback() without begin() is a no-op, as on the embedded engine (issue #11057)")
+  void rollbackWithoutBeginIsANoOp() {
+    grpc.rollback();
+    assertThat(grpc.isTransactionActive()).isFalse();
   }
 
   @Test
