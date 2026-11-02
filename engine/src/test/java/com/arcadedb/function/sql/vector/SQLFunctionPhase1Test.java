@@ -358,11 +358,8 @@ class SQLFunctionPhase1Test extends TestHelper {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
-    assertThatThrownBy(() -> function.execute(null, null, null,
-        new Object[] { null },
-        context))
-        .isInstanceOf(CommandSQLParsingException.class)
-        .hasMessageContaining("null");
+    // A NULL vector answers NULL instead of failing the whole query (issue #11052)
+    assertThat(function.execute(null, null, null, new Object[] { null }, context)).isNull();
   }
 
   @Test

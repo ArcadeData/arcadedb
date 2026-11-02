@@ -52,10 +52,8 @@ public class SQLFunctionVectorToString extends SQLFunctionVectorAbstract {
     if (vectorObj == null)
       return null;
 
+    // An empty vector formats as an empty list, as the asString() method on it does (issue #11052)
     final float[] vector = toFloatArray(vectorObj);
-
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Parse format (default: COMPACT)
     VectorUtils.StringFormat format = VectorUtils.StringFormat.COMPACT;

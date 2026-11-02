@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * This is the L2 norm: sqrt(sum of squared components).
  * <p>
  * Also available as {@code vector.l2Norm} / {@code vectorL2Norm}, symmetric with
- * {@code vector.l1Norm} and {@code vector.lInfNorm}.
+ * {@code vector.l1Norm} and {@code vector.lInfNorm}: the three answer NULL for a NULL vector and 0 for an empty one.
  * <p>
  * Delegates to {@link VectorUtils#magnitude(float[])}.
  *
@@ -48,8 +48,9 @@ public class SQLFunctionVectorMagnitude extends SQLFunctionVectorAbstract {
 
     final Object vector = params[0];
 
+    // A NULL vector answers NULL, as vector.l1Norm and vector.lInfNorm do (issue #11052)
     if (vector == null)
-      throw new CommandSQLParsingException("Vector cannot be null");
+      return null;
 
     final float[] v = toFloatArray(vector);
 

@@ -52,10 +52,7 @@ public class SQLFunctionVectorLInfNorm extends SQLFunctionVectorAbstract {
 
     final float[] vector = toFloatArray(vectorObj);
 
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
-
-    // Calculate L∞ norm: max absolute value
+    // Calculate L∞ norm: max absolute value. An empty vector folds to 0, as vector.l2Norm answers (issue #11052)
     float maxAbs = 0.0f;
     for (final float value : vector)
       maxAbs = Math.max(maxAbs, Math.abs(value));
