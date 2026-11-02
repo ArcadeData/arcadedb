@@ -27,12 +27,16 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.sql.parser.RecordAttribute;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 /**
  * Basic implementation of CommandContext interface that stores variables in a map. Supports parent/child context to build a tree
@@ -154,10 +158,9 @@ public class BasicCommandContext implements CommandContext {
 
         if (result instanceof Result result1) {
           // Handle special metadata properties for Result objects
-          if ("@rid".equals(firstPart))
-            result = result1.getIdentity().orElse(null);
-          else if ("@type".equals(firstPart))
-            result = result1.getElement().map(Document::getTypeName).orElse(null);
+          // a row that wraps no record answers @type from its own property, as it answers @rid (issue #11131)
+          if (isRecordAttribute(firstPart))
+            result = RecordAttribute.evaluate(result1, firstPart);
           else
             result = result1.getProperty(firstPart);
         } else if (result instanceof Map map)
@@ -230,10 +233,15 @@ public class BasicCommandContext implements CommandContext {
       result = database.getGlobalVariable(name);
 
     if (fieldName != null) {
+      // @rid and @type as getVariablePath() reads them: off the record, or off the row when it wraps none (issue #11131)
       if (result instanceof Result result1)
-        result = result1.getProperty(fieldName);
+        result = isRecordAttribute(fieldName) ? RecordAttribute.evaluate(result1, fieldName) : result1.getProperty(fieldName);
     }
     return result != null ? result : defaultValue;
+  }
+
+  private static boolean isRecordAttribute(final String name) {
+    return RID_PROPERTY.equals(name) || TYPE_PROPERTY.equals(name);
   }
 
   @Override

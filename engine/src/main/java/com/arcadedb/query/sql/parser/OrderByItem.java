@@ -27,8 +27,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.logging.Level;
 
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-
 /**
  * Created by luigidellaquila on 06/02/15.
  */
@@ -106,18 +104,14 @@ public class OrderByItem {
 
     int result = 0;
     if (recordAttr != null) {
+      // a projected column of the attribute's name first, then the attribute of the row itself, as the projection reads
+      // it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows unordered)
       aVal = a.getProperty(recordAttr);
-      if (aVal == null) {
-        if (RID_PROPERTY.equalsIgnoreCase(recordAttr)) {
-          aVal = a.getIdentity().orElse(null);
-        } //TODO check other attributes
-      }
+      if (aVal == null)
+        aVal = RecordAttribute.evaluate(a, recordAttr);
       bVal = b.getProperty(recordAttr);
-      if (bVal == null) {
-        if (RID_PROPERTY.equalsIgnoreCase(recordAttr)) {
-          bVal = b.getIdentity().orElse(null);
-        } //TODO check other attributes
-      }
+      if (bVal == null)
+        bVal = RecordAttribute.evaluate(b, recordAttr);
     } else if (alias != null) {
       aVal = a.getProperty(alias);
       bVal = b.getProperty(alias);

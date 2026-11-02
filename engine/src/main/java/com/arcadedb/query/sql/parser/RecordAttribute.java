@@ -74,25 +74,30 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public Object evaluate(final Result currentRecord, final CommandContext context) {
+    return evaluate(currentRecord, name);
+  }
+
+  /**
+   * The value of the record attribute {@code name} ({@code @rid}, {@code @type}, {@code @this}, ...) of a row, for the callers
+   * that hold the attribute's name rather than a parsed node (ORDER BY, a {@code $variable.@type} path).
+   */
+  public static Object evaluate(final Result currentRecord, final String name) {
     if (RID_PROPERTY.equalsIgnoreCase(name)) {
       return currentRecord.getIdentity().orElse(null);
-    } else if (TYPE_PROPERTY.equalsIgnoreCase(name)) {
-      return currentRecord.getElement().map(Document::getTypeName).orElse(null);
-    } else if (CAT_PROPERTY.equalsIgnoreCase(name) && currentRecord.getElement().isPresent()) {
-      final Document record = currentRecord.getElement().get();
-      if (record instanceof Vertex)
-        return "v";
-      else if (record instanceof Edge)
-        return "e";
-      else
-        return "d";
+    } else if (isStructuralAttribute(name)) {
+      final Document record = currentRecord.getElement().orElse(null);
+      if (record == null)
+        // A row that wraps no record (an expanded vectorNeighbors() row, a projected sub-query row) carries the attribute as
+        // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131)
+        return currentRecord.getProperty(name);
 
-    } else if (IN_PROPERTY.equalsIgnoreCase(name) && //
-        currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
-      return currentRecord.getElement().get().asEdge().getIn();
-    } else if (OUT_PROPERTY.equalsIgnoreCase(name) && //
-        currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
-      return currentRecord.getElement().get().asEdge().getOut();
+      if (TYPE_PROPERTY.equalsIgnoreCase(name))
+        return record.getTypeName();
+      else if (CAT_PROPERTY.equalsIgnoreCase(name))
+        return record instanceof Vertex ? "v" : record instanceof Edge ? "e" : "d";
+      else if (record instanceof Edge edge)
+        return IN_PROPERTY.equalsIgnoreCase(name) ? edge.getIn() : edge.getOut();
+      return null;
     } else if (THIS_PROPERTY.equalsIgnoreCase(name)) {
       // Return the entire current record or value
       // For element-based results, return the element
@@ -107,6 +112,12 @@ public class RecordAttribute extends SimpleNode {
     }
     return null;
   }
+
+  private static boolean isStructuralAttribute(final String name) {
+    return TYPE_PROPERTY.equalsIgnoreCase(name) || CAT_PROPERTY.equalsIgnoreCase(name) || IN_PROPERTY.equalsIgnoreCase(name)
+        || OUT_PROPERTY.equalsIgnoreCase(name);
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();
