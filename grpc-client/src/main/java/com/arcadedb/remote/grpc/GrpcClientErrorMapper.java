@@ -25,12 +25,16 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
+import com.arcadedb.remote.RemoteExceptionRebuilder;
 import com.arcadedb.server.grpc.LeaderRedirectProtocol;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -296,6 +300,8 @@ final class GrpcClientErrorMapper {
       case "com.arcadedb.exception.ConcurrentModificationException" -> new ConcurrentModificationException(msg);
       case "com.arcadedb.exception.NeedRetryException" -> new NeedRetryException(msg);
       case "com.arcadedb.exception.RecordNotFoundException" -> new RecordNotFoundException(msg, null);
+      // A missing edge endpoint keeps its own type (issue #11045), which is still a RecordNotFoundException
+      case "com.arcadedb.exception.VertexNotFoundException" -> new VertexNotFoundException(msg, null, null);
       // A name that is no database (issue #10795): answered NOT_FOUND, which the status fallback reads as a missing record
       case "com.arcadedb.exception.DatabaseNotFoundException" -> new DatabaseNotFoundException(msg);
       case "com.arcadedb.exception.TimeoutException" -> new TimeoutException(msg);
@@ -311,9 +317,21 @@ final class GrpcClientErrorMapper {
       case "com.arcadedb.exception.SchemaException" -> code == Status.Code.ALREADY_EXISTS ?
           new AlreadyExistsException(alreadyExistsKind(trailers), msg) :
           new SchemaException(msg);
-      // Unknown class: let the caller fall back to status-code mapping.
-      default -> null;
+      // A listener refused the write (issues #10085, #10161): a refusal of the request, typed so it is not read as a fault
+      case "com.arcadedb.exception.RecordVetoedException" -> new RecordVetoedException(msg);
+      case "com.arcadedb.exception.ValidationException" -> new ValidationException(msg);
+      default -> rebuildByName(exceptionClass, code, msg);
     };
+  }
+
+  /**
+   * Any other ArcadeDB exception this client has a class for, rebuilt by its name as the HTTP driver does (issue #11045): the
+   * command family used to fall back to the status code, which reads none of it. An {@code UNAVAILABLE} keeps the status-code
+   * contract: a type rebuilt from it has to be retryable too. Null (an unknown class) lets the caller fall back to the status.
+   */
+  private static RuntimeException rebuildByName(final String exceptionClass, final Status.Code code, final String msg) {
+    final RuntimeException rebuilt = RemoteExceptionRebuilder.rebuild(exceptionClass, msg);
+    return rebuilt != null && (code != Status.Code.UNAVAILABLE || rebuilt instanceof NeedRetryException) ? rebuilt : null;
   }
 
   /**

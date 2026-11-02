@@ -101,12 +101,16 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
     return this;
   }
 
+  // The endpoints are metadata of an edge, as the embedded ImmutableEdge and the RemoteMutableEdge this record turns into on
+  // modify() report them: a record read with the driver used to lose them and gain them back once modified (issue #11053)
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());
+      result.put(Property.IN_PROPERTY, in);
+      result.put(Property.OUT_PROPERTY, out);
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -119,6 +123,8 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "e");
       result.put(Property.TYPE_PROPERTY, getTypeName());
+      result.put(Property.IN_PROPERTY, in);
+      result.put(Property.OUT_PROPERTY, out);
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

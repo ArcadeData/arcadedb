@@ -88,6 +88,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (params == null || params.length < 4 || params.length > 5)
       throw new CommandSQLParsingException(getSyntax());
 
+    // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
+    validateNotNull(params[0], NAME + " index name");
     final String indexSpec = params[0].toString();
 
     final int[]   queryIndices = sparseToIntArray(params[1]);

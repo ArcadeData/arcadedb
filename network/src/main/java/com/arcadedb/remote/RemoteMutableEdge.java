@@ -129,11 +129,6 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   @Override
-  public DocumentType getType() {
-    throw new UnsupportedOperationException("Schema API are not supported in remote database");
-  }
-
-  @Override
   public Database getDatabase() {
     throw new UnsupportedOperationException("Embedded Database API not supported in remote database");
   }

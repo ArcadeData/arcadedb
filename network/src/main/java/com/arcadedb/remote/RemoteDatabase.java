@@ -1150,7 +1150,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);
-    } catch (final RemoteException | ArcadeDBException e) {
+    } catch (final ArcadeDBException e) {
+      // A RemoteException is one too (issue #11045)
       throw e;
     } catch (final IOException e) {
       throw new RemoteException("Error on executing streamed " + operation, e);

@@ -21,7 +21,6 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphBatch;
@@ -447,18 +446,10 @@ public class Neo4jImporter {
             // #8073), and gating on ownsTransaction alone would also skip this for a transaction the defensive
             // branch above pushed, which this method is nonetheless the only one able to commit or roll back.
             if (pushedTransaction && context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
-              // Cleared before the call, matching CSVImporterFormat.loadEdges()'s convention - but restored on
-              // failure: DatabaseContext#popIfNotLastTransaction() does not pop the outermost transaction, so a
-              // commit() that fails on this one (the common case here) can leave it still active rather than
-              // popped, and ownTransactionIsResolvable() below needs txOpen[0] true again to notice (issue #8116
-              // review: the same class of bug RDFImporterFormat.load()'s periodic/trailing commits were fixed for).
-              txOpen[0] = false;
-              try {
-                database.commit();
-              } catch (final RuntimeException | Error commitFailure) {
-                txOpen[0] = database.isTransactionActive();
-                throw commitFailure;
-              }
+              // Through the one commit protocol of this class, which restores the flag on failure (issues #8116,
+              // #11046). Gated like the trailing commit: a parsingCallback that resolved this transaction leaves a
+              // caller's on top, which is not this loop's to commit (issue #7328)
+              commitOwnTransaction(txOpen, ownTx[0]);
               committedVertices[0] = context.createdVertices.get();
               database.begin();
               txOpen[0] = true;
@@ -483,18 +474,7 @@ public class Neo4jImporter {
         // one is the one this method pushed. Once that one is gone - a parsingCallback of the caller's that
         // resolved it, say - the ambient test sees the CALLER's outer transaction instead and commits that
         // (issue #7328, the same asymmetry #7272 fixed on the four other row loops).
-        if (ownTransactionIsResolvable(txOpen[0], ownTx[0])) {
-          // Restored on failure for the same reason the periodic commit above is: a commit() that fails without
-          // popping the outermost transaction must still leave ownTransactionIsResolvable() able to see it, so the
-          // finally block's rollback runs instead of leaking it.
-          txOpen[0] = false;
-          try {
-            database.commit();
-          } catch (final RuntimeException | Error commitFailure) {
-            txOpen[0] = database.isTransactionActive();
-            throw commitFailure;
-          }
-        }
+        commitOwnTransaction(txOpen, ownTx[0]);
         txOpen[0] = false;
         committedVertices[0] = context.createdVertices.get();
         completed = true;
@@ -811,56 +791,30 @@ public class Neo4jImporter {
    * Reads the JSONL file line by line, calling the callback for each valid JSON record.
    * Used by syncSchema (which only reads, no record creation) with its own transaction management.
    */
-  /**
-   * The transaction currently on top of this thread's stack, or {@code null} when there is none - and also when the
-   * {@link Database} implementation does not expose its stack at all (a remote database), which the guard below
-   * treats as "cannot tell" rather than as "not mine".
-   */
+  /** The transaction on top of this thread's stack, see {@link ImporterTransactions#currentTransaction}. */
   private TransactionContext currentTransaction() {
-    return database instanceof final DatabaseInternal internal ? internal.getTransactionIfExists() : null;
+    return ImporterTransactions.currentTransaction(database);
+  }
+
+  /** Whether the loop's own transaction is the live one, see {@link ImporterTransactions#isOwnTransactionLive}. */
+  private boolean ownTransactionIsResolvable(final boolean txOpen, final TransactionContext ownTransaction) {
+    return ImporterTransactions.isOwnTransactionLive(database, txOpen, ownTransaction);
   }
 
   /**
-   * Whether a commit or a rollback issued right now would resolve THIS import's transaction, and not somebody
-   * else's.
-   * <p>
-   * The flag is not enough on its own. {@code begin()} nests, so the stack can hold a caller's transaction under
-   * this import's, and everything that runs inside the row loop - {@code parsingCallback} above all, which belongs
-   * to the caller - can resolve this import's transaction without the flag ever hearing about it. A commit issued
-   * on that stale flag pops and commits the caller's work instead, silently, which is the defect #7272 fixed on
-   * the other row loops and this one kept (issue #7328).
-   * <p>
-   * Identity plus liveness is what settles it: a resolved nested transaction is off the stack, so the top is a
-   * different object; a resolved bottom transaction is still there but inactive; and a fresh {@code begin()} by
-   * the callback pushes a new object rather than reviving this one. The only case identity cannot separate is a
-   * bottom transaction resolved and re-begun, and a bottom transaction means there is no caller transaction
-   * underneath to protect.
-   *
-   * The contract this puts on {@code parsingCallback}, which is the one thing running in here that the caller
-   * writes: it must not return with an extra transaction of its own left open. A callback that resolves this
-   * import's transaction is handled - that is the case this guard exists for - but one that pushes a transaction
-   * on top of it and never resolves that leaves the import's own buried, and the guard will then correctly refuse
-   * to touch what is on top rather than resolving the wrong one. Nothing here unwinds a stack somebody else grew:
-   * popping transactions this importer did not push is precisely the defect being fixed.
-   *
-   * @param txOpen        this loop's own flag: false once the loop has resolved its transaction itself
-   * @param ownTransaction the transaction the loop's last {@code begin()} left current, or {@code null} when the
-   *                       implementation does not expose it - in which case the flag is all there is, as before
+   * Commits the loop's own transaction through the one commit protocol of the importers, which restores the flag when the
+   * commit fails without resolving it (issue #11046), see {@link ImporterTransactions#commitOwnTransaction}.
    */
-  private boolean ownTransactionIsResolvable(final boolean txOpen, final TransactionContext ownTransaction) {
-    if (!txOpen)
-      return false;
-    if (ownTransaction == null)
-      return database.isTransactionActive();
-    return ownTransaction.isActive() && currentTransaction() == ownTransaction;
+  private void commitOwnTransaction(final boolean[] txOpen, final TransactionContext ownTransaction) {
+    ImporterTransactions.commitOwnTransaction(database, txOpen, ownTransaction);
   }
 
   private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     database.begin();
-    // Whether the transaction just opened is still the current one - cleared right before the commit below so a
-    // rollback in the finally can never pop a transaction this method has already committed away, let alone the
-    // caller's own (issue #7272).
-    boolean txOpen = true;
+    // Whether the transaction just opened is still the current one - cleared by the commit below so a rollback in the
+    // finally can never pop a transaction this method has already committed away, let alone the caller's own (issue
+    // #7272), and restored when that commit fails without resolving it (issue #11046).
+    final boolean[] txOpen = { true };
     // The transaction this method pushed, so the commit and the rollback below can prove the live one is still it.
     // See the same pair in parseVertices(): begin() nests, and the callback can resolve this transaction from
     // under us (issue #7328).
@@ -895,20 +849,12 @@ public class Neo4jImporter {
       // database.isTransactionActive(), for the reason spelled out at the same point in parseVertices(): begin()
       // nests, so ambient liveness is no evidence that the live transaction is the one this method pushed
       // (issue #7328).
-      //
-      // The flag is cleared BEFORE the commit, not after, and parseVertices() does the same: a commit that throws
-      // skips everything below it, so clearing afterwards would leave the flag set and hand the finally below a
-      // transaction this method no longer owns - which on a Database that does not expose its stack degrades to
-      // the ambient test and rolls back the CALLER's.
-      if (ownTransactionIsResolvable(txOpen, ownTx)) {
-        txOpen = false;
-        database.commit();
-      }
-      txOpen = false;
+      commitOwnTransaction(txOpen, ownTx);
+      txOpen[0] = false;
     } finally {
       // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
       // can realistically raise - resolves the transaction too.
-      if (ownTransactionIsResolvable(txOpen, ownTx)) {
+      if (ownTransactionIsResolvable(txOpen[0], ownTx)) {
         try {
           database.rollback();
         } catch (final Exception rollbackFailure) {

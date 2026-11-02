@@ -52,10 +52,7 @@ public class SQLFunctionVectorHasInf extends SQLFunctionVectorAbstract {
     // is correctly ignored here instead of crashing the conversion.
     final float[] vector = toFloatArrayNaNForNull(vectorObj);
 
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
-
-    // Check for infinite values
+    // Check for infinite values. An empty vector holds none, as vector.hasNull answers (issue #11052)
     for (final float value : vector) {
       if (Float.isInfinite(value)) {
         return true;

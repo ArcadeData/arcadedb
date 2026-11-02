@@ -47,7 +47,7 @@ public class SQLFunctionVectorScale extends SQLFunctionVectorAbstract {
     final Object scalarObj = params[1];
 
     if (vector == null || scalarObj == null)
-      throw new CommandSQLParsingException("Vector and scalar cannot be null");
+      return null;
 
     final float[] v = toFloatArray(vector);
 
