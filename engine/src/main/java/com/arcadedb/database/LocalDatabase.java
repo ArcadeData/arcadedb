@@ -879,7 +879,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void commit() {
     executeInReadLock(() -> {
-      checkTransactionIsActive(false);
+      checkTransactionToEnd();
 
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
@@ -915,7 +915,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     executeInReadLock(() -> {
       try {
-        checkTransactionIsActive(false);
+        checkTransactionToEnd();
 
         final DatabaseContext.DatabaseContextTL current =
             DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
@@ -2719,6 +2719,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public ComponentFile.MODE getMode() {
     return mode;
+  }
+
+  /**
+   * What {@link #commit()} and {@link #rollback()} check: the database is open and a transaction is active. Not
+   * {@link #checkTransactionIsActive(boolean)}, which asserts a WRITE intent: on a read-only database it raised
+   * {@code DatabaseIsReadOnlyException} before looking for a transaction, so the read transaction {@link #begin()} opens there
+   * could be neither committed nor rolled back, and an idle {@code rollback()} threw instead of being the no-op
+   * {@code BasicDatabase.rollback()} promises (issue #11057). A write inside that transaction is still refused where it is made.
+   */
+  private void checkTransactionToEnd() {
+    checkDatabaseIsOpen();
+    if (!isTransactionActive())
+      throw new TransactionException("Transaction not begun");
   }
 
   @Override

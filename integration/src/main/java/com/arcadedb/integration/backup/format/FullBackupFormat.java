@@ -94,6 +94,12 @@ public class FullBackupFormat extends AbstractBackupFormat {
    */
   private boolean schemaArchived;
 
+  /**
+   * Whether this backup has opened its output, which truncates whatever the path held. Until then a failure has written
+   * nothing, so with {@code -o} the archive already at the path is still the previous, complete backup and must survive it.
+   */
+  private boolean outputOpened;
+
   private interface BackupCallback {
     void backup(BackupArchiveWriter archive) throws Exception;
   }
@@ -141,10 +147,14 @@ public class FullBackupFormat extends AbstractBackupFormat {
     // ONE CLEANUP ARM FOR EVERY WAY OUT THAT IS NOT A COMPLETED ARCHIVE, Error INCLUDED (ISSUE #11060): THE TWO PER-BRANCH
     // DELETES THIS REPLACES CAUGHT Exception ONLY, SO AN OutOfMemoryError - THE REALISTIC FAILURE ON A LARGE ARCHIVE - LEFT
     // THE CLAIMED, PARTIALLY WRITTEN FILE ON DISK FOR RETENTION TO COUNT AND FOR AN OPERATOR TO RESTORE FROM
+    outputOpened = false;
     try {
       writeBackup(backupFile, compressionLevel, compressionThreads, maxMBPerSecond);
     } catch (final Throwable t) {
-      deletePartialArchive(backupFile, t);
+      // WITHOUT -o THE FILE IS THIS BACKUP'S OWN CLAIM, EMPTY OR PARTIAL, AND GOES EITHER WAY. WITH -o IT IS DELETED ONLY ONCE THIS
+      // ATTEMPT OPENED IT: A FAILURE BEFORE THAT (THE LOG LINE, THE COMPACTION PAUSE) HAS NOT TOUCHED THE PREVIOUS BACKUP
+      if (outputOpened || !settings.overwriteFile)
+        deletePartialArchive(backupFile, t);
       throw t;
     }
   }
@@ -832,6 +842,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   private void encryptFile(final File backupFile, final StreamCallback callback) throws Exception {
     try (final FileOutputStream fos = new FileOutputStream(backupFile)) {
+      outputOpened = true;
       final OutputStream archiveStream;
       if (settings.encryptionKey != null) {
         // Generate a random salt (e.g., 16 bytes)

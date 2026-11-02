@@ -177,8 +177,8 @@ public interface BasicDatabase extends AutoCloseable {
    * Rolls back the current transaction. If it was a sub-transaction, then the previous in the stack becomes active again.
    * <p>
    * With no active transaction (never begun, already committed or already rolled back) it does nothing and does not throw,
-   * on every implementation: a defensive rollback in a {@code finally} block runs after a successful commit too, and must not
-   * turn a committed unit of work into a reported failure.
+   * on every implementation and in every open mode, read-only included: a defensive rollback in a {@code finally} block runs
+   * after a successful commit too, and must not turn a committed unit of work into a reported failure.
    */
   void rollback();
 

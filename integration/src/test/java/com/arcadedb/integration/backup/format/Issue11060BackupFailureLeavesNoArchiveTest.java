@@ -20,11 +20,14 @@ package com.arcadedb.integration.backup.format;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.backup.Backup;
 import com.arcadedb.integration.backup.BackupException;
+import com.arcadedb.integration.backup.BackupSettings;
+import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -131,6 +134,61 @@ class Issue11060BackupFailureLeavesNoArchiveTest {
       }
     }
     TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * PR #11124 review: with {@code -o} the path holds the previous backup, which this one truncates only when it opens its
+   * output. A failure before that - here the first log line of the backup - has not touched it, so it must survive; deleting
+   * it would turn a failed backup into the loss of the last good one.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void aFailureBeforeTheOutputIsOpenedKeepsThePreviousBackupWithOverwrite(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+      final byte[] previous = Files.readAllBytes(new File(BACKUP_FILE).toPath());
+
+      final ConsoleLogger failingLogger = new ConsoleLogger(0, message -> {
+        if (message.startsWith("Executing full backup"))
+          throw new IllegalStateException("log failure injected by issue #11060");
+      });
+      assertThatThrownBy(() -> overwritingBackup(database, failingLogger).backupDatabase())
+          .hasMessageContaining("log failure injected by issue #11060");
+
+      assertThat(new File(BACKUP_FILE)).as("the previous backup must survive a failure that never opened the output").exists();
+      assertThat(Files.readAllBytes(new File(BACKUP_FILE).toPath())).isEqualTo(previous);
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /** The counterweight: once the output is opened the previous backup is truncated, and the partial one is deleted. */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void aFailureAfterTheOutputIsOpenedDeletesThePartialArchiveWithOverwrite(final boolean snapshot) throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+
+    try (final Database database = createDatabase()) {
+      new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase();
+      FullBackupFormat.beforeSealedStoreReadForTesting = file -> {
+        throw new IllegalStateException("failure injected by issue #11060");
+      };
+
+      assertThatThrownBy(() -> overwritingBackup(database, new ConsoleLogger(0, message -> {
+      })).backupDatabase()).hasMessageContaining("failure injected by issue #11060");
+      assertThat(new File(BACKUP_FILE)).as("the truncated archive must not be left behind").doesNotExist();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
+  private static FullBackupFormat overwritingBackup(final Database database, final ConsoleLogger logger) {
+    final BackupSettings settings = new BackupSettings();
+    settings.format = "full";
+    settings.file = BACKUP_FILE;
+    settings.overwriteFile = true;
+    settings.verboseLevel = 0;
+    return new FullBackupFormat((DatabaseInternal) database, settings, logger);
   }
 
   private static Throwable catchFailure(final Runnable runnable) {
