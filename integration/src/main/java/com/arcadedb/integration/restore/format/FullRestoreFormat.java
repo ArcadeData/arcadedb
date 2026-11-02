@@ -44,6 +44,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.security.spec.KeySpec;
+import java.util.Arrays;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -58,7 +59,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   private static final int ENCRYPTION_HEADER_FIELD_SIZE = 16;
 
   private interface RestoreCallback {
-    ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile) throws Exception;
+    ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile, ZipArchiveTail.TailCapturingInputStream archiveStream)
+        throws Exception;
   }
 
   /**
@@ -125,6 +127,12 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
    * replaced database and the restored copy coexist until the swap, as they already did on the server.
    */
   private void restoreFrom(final RestoreInputSource inputSource) throws Exception {
+    // BEFORE ANYTHING IS EXTRACTED OR REPLACED: AN ARCHIVE THE BACKUP DID NOT FINISH IS REFUSED UP FRONT WHEN IT CAN BE ASKED.
+    // THE SEQUENTIAL WALK CHECKS THE SAME ON THE BYTES IT STREAMS, WHICH IS ALL AN http(s) ARCHIVE CAN BE ASKED (ISSUE #11041)
+    final File archiveOnDisk = inputSource.randomAccessArchive();
+    if (archiveOnDisk != null)
+      checkArchiveOnDiskIsTerminated(archiveOnDisk);
+
     final File databaseDirectory = new File(settings.databaseDirectory).getAbsoluteFile();
     // AN EARLY ANSWER ONLY, SO A RESTORE THAT CANNOT LAND IS NOT EXTRACTED FIRST: THE MOVE IN moveIntoPlace IS THE CHECK
     // THAT COUNTS, BECAUSE A DIRECTORY CAN APPEAR BETWEEN THIS LINE AND THAT ONE
@@ -265,8 +273,72 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   }
 
   /**
+   * Refuses an archive on disk that does not end with the central directory a finished backup writes last, or whose end
+   * records do not describe it ({@link ZipArchiveTail}, issue #11041). Reads only the tail of the file: for an encrypted
+   * archive, whose cipher is CTR, the tail is decrypted from the counter of its first block without reading the front.
+   */
+  private void checkArchiveOnDiskIsTerminated(final File archive) throws Exception {
+    try (final RandomAccessFile file = new RandomAccessFile(archive, "r")) {
+      final long fileLength = file.length();
+      if (settings.encryptionKey == null) {
+        final int length = (int) Math.min(fileLength, ZipArchiveTail.CAPACITY);
+        final byte[] tail = new byte[length];
+        file.seek(fileLength - length);
+        file.readFully(tail);
+        ZipArchiveTail.declaredEntries(tail, length, fileLength, settings.inputFileURL, false);
+        return;
+      }
+
+      if (fileLength < 2L * ENCRYPTION_HEADER_FIELD_SIZE)
+        // THE WALK REFUSES IT, NAMING THE HEADER FIELD IT ENDS IN
+        return;
+
+      final byte[] salt = new byte[ENCRYPTION_HEADER_FIELD_SIZE];
+      final byte[] iv = new byte[ENCRYPTION_HEADER_FIELD_SIZE];
+      file.readFully(salt);
+      file.readFully(iv);
+
+      final long archiveLength = fileLength - 2L * ENCRYPTION_HEADER_FIELD_SIZE;
+      final int length = (int) Math.min(archiveLength, ZipArchiveTail.CAPACITY);
+      final Cipher cipher = Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
+      final int blockSize = cipher.getBlockSize();
+      final long firstBlock = (archiveLength - length) / blockSize;
+      final int intoFirstBlock = (int) ((archiveLength - length) % blockSize);
+      cipher.init(Cipher.DECRYPT_MODE, deriveKey(salt), new IvParameterSpec(counterOfBlock(iv, firstBlock)));
+
+      final byte[] encrypted = new byte[intoFirstBlock + length];
+      file.seek(2L * ENCRYPTION_HEADER_FIELD_SIZE + firstBlock * blockSize);
+      file.readFully(encrypted);
+      final byte[] tail = Arrays.copyOfRange(cipher.doFinal(encrypted), intoFirstBlock, intoFirstBlock + length);
+      ZipArchiveTail.declaredEntries(tail, length, archiveLength, settings.inputFileURL, true);
+    }
+  }
+
+  /**
+   * The CTR counter block {@code block} of a stream that starts at {@code iv}: the IV plus the block index, as one big-endian
+   * number the width of the IV, which is how the JDK's CTR mode advances it.
+   */
+  static byte[] counterOfBlock(final byte[] iv, final long block) {
+    final byte[] counter = iv.clone();
+    long add = block;
+    int carry = 0;
+    for (int i = counter.length - 1; i >= 0 && (add != 0 || carry != 0); --i) {
+      final int sum = (counter[i] & 0xFF) + (int) (add & 0xFF) + carry;
+      counter[i] = (byte) sum;
+      carry = sum >>> 8;
+      add >>>= 8;
+    }
+    return counter;
+  }
+
+  /**
    * The one-thread stream walk, which is both the pre-#6086 path and the only one available for an http(s) or an
    * encrypted archive.
+   * <p>
+   * The walk reads the local headers only, so an archive cut at an entry boundary is a walk that stops early. What follows the
+   * last entry is therefore read too, and has to be the central directory a finished backup writes last, declaring the
+   * entries the walk extracted (issue #11041): the same verdict the parallel path gets from {@code ZipFile}, on the bytes this
+   * walk streamed, which is all an http(s) archive offers.
    */
   private ParallelZipExtractor.ExtractStats restoreSequentially(final RestoreInputSource inputSource,
       final File databaseDirectory) throws Exception {
@@ -277,7 +349,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     // IT, FOR A CHANGE THAT COSTS ONE 256 KB BUFFER. THE COPY BUFFER ABOVE IT IS WORTH ALMOST NOTHING BY COMPARISON
     // (3.96 s AT 8 KB AGAINST 3.92 s AT 256 KB), WHICH IS WHY THE ISSUE'S "THE 8 KB BUFFER IS SUSPICIOUSLY SMALL"
     // HYPOTHESIS WAS THE WRONG ONE: THE RESTORE IS INFLATE-BOUND, NOT WRITE-BOUND
-    return decryptFile(new BufferedInputStream(inputSource.openStream(), ParallelZipExtractor.BUFFER_SIZE), zipFile -> {
+    return decryptFile(new BufferedInputStream(inputSource.openStream(), ParallelZipExtractor.BUFFER_SIZE), (zipFile, archiveStream) -> {
       int restoredFiles = 0;
       long databaseOrigSize = 0L;
 
@@ -291,6 +363,11 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         // RENDERS -1 AS "PERCENTAGE UNKNOWN", WHICH IS THE TRUE ANSWER RATHER THAN A GUESSED ONE (ISSUE #7385)
         reportRestoreProgress(restoredFiles, -1L);
       }
+
+      // BEFORE THE CLOSE, WHICH CLOSES THE STREAM UNDERNEATH
+      archiveStream.drain();
+      ZipArchiveTail.checkEntriesRead(ZipArchiveTail.declaredEntries(archiveStream.tail(), archiveStream.tailLength(),
+          archiveStream.length(), settings.inputFileURL, settings.encryptionKey != null), restoredFiles, settings.inputFileURL);
 
       zipFile.close();
 
@@ -407,20 +484,13 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   private ParallelZipExtractor.ExtractStats decryptFile(final InputStream fis,
       final FullRestoreFormat.RestoreCallback callback) throws Exception {
-    final ZipInputStream zipFile;
+    final ZipArchiveTail.TailCapturingInputStream archiveStream;
     if (settings.encryptionKey != null) {
       // Read salt from the beginning of the file (16 bytes). readNBytes() and not read(): a single read() may return
       // fewer bytes than asked, which a socket does routinely between two segments of an http(s) archive (issue #10773)
       final byte[] salt = readHeaderField(fis, "salt");
 
-      // Derive the key using PBKDF2 with the salt
-      final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-      final KeySpec spec = new PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536,
-          256);
-      final SecretKey tmp = factory.generateSecret(spec);
-      final byte[] keyBytes = tmp.getEncoded();
-
-      final SecretKey secretKey = new SecretKeySpec(keyBytes, settings.encryptionAlgorithm);
+      final SecretKey secretKey = deriveKey(salt);
       // Read IV from the beginning of the file
       final byte[] iv = readHeaderField(fis, "IV");
       final IvParameterSpec ivSpec = new IvParameterSpec(iv);
@@ -429,17 +499,24 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       final Cipher cipher = Cipher.getInstance(settings.encryptionAlgorithm + "/CTR/NoPadding");
       cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec);
 
-      // Wrap the input stream with CipherInputStream
-      final CipherInputStream cis = new CipherInputStream(fis, cipher);
-      zipFile = new ZipInputStream(cis, StandardCharsets.UTF_8);
+      // Wrap the input stream with CipherInputStream. The tail is kept of the DECRYPTED stream, the ZIP archive itself
+      archiveStream = new ZipArchiveTail.TailCapturingInputStream(new CipherInputStream(fis, cipher));
     } else
-      zipFile = new ZipInputStream(fis, StandardCharsets.UTF_8);
+      archiveStream = new ZipArchiveTail.TailCapturingInputStream(fis);
 
+    final ZipInputStream zipFile = new ZipInputStream(archiveStream, StandardCharsets.UTF_8);
     try {
-      return callback.restore(zipFile);
+      return callback.restore(zipFile, archiveStream);
     } finally {
       zipFile.close();
     }
+  }
+
+  /** The key an encrypted archive was written with, derived from the password and the archive's salt with PBKDF2. */
+  private SecretKey deriveKey(final byte[] salt) throws Exception {
+    final SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+    final KeySpec spec = new PBEKeySpec(settings.encryptionKey.toCharArray(), salt, 65536, 256);
+    return new SecretKeySpec(factory.generateSecret(spec).getEncoded(), settings.encryptionAlgorithm);
   }
 
   /**

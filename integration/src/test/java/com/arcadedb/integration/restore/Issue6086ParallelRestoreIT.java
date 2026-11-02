@@ -247,9 +247,9 @@ class Issue6086ParallelRestoreIT {
    * Zip-slip, on both paths. The parallel path can do strictly better than the sequential one and has to: it reads the
    * central directory before it starts, so it knows every entry name up front and can refuse the archive before a
    * single file has been written. The sequential walk only learns a name when it reaches it, so it stops at the bad
-   * entry with the good ones already extracted - which is the pre-existing behaviour, asserted here so that the
-   * difference is a recorded decision rather than an accident. Since issue #11058 both extract into a staging directory
-   * that a failed restore removes, so neither leaves the target behind.
+   * entry with the good ones already on disk - which is the pre-existing behaviour, asserted here so that the
+   * difference is a recorded decision rather than an accident. Either way the restore then removes the directory it
+   * created (issue #11041), so the extractor is asked directly whether it wrote anything.
    */
   @ParameterizedTest
   @ValueSource(strings = { "../escaped.txt", "sub/escaped.txt", ".." })
@@ -260,12 +260,17 @@ class Issue6086ParallelRestoreIT {
       writeArchive(hostileArchive, "innocent.txt", hostileName);
 
       FileUtils.deleteRecursively(destination);
-      assertThatThrownBy(() -> restore(hostileArchive, RESTORED_PATH, 8, null)).isInstanceOf(RestoreException.class);
-      assertThat(destination).as("the parallel path refuses the archive and leaves no target behind").doesNotExist();
+      assertThat(destination.mkdirs()).isTrue();
+      assertThatThrownBy(() -> new ParallelZipExtractor(8, new ConsoleLogger(0)).extract(new File(hostileArchive), destination))
+          .isInstanceOf(IOException.class);
+      assertThat(destination.list()).as("the parallel path refuses the archive before writing anything").isEmpty();
 
       FileUtils.deleteRecursively(destination);
+      assertThatThrownBy(() -> restore(hostileArchive, RESTORED_PATH, 8, null)).isInstanceOf(RestoreException.class);
+      assertThat(destination).as("a refused restore leaves nothing behind").doesNotExist();
+
       assertThatThrownBy(() -> restore(hostileArchive, RESTORED_PATH, 0, null)).isInstanceOf(RestoreException.class);
-      assertThat(destination).as("the sequential path leaves no target behind either (issue #11058)").doesNotExist();
+      assertThat(destination).as("a refused restore leaves nothing behind").doesNotExist();
     } finally {
       new File(hostileArchive).delete();
       FileUtils.deleteRecursively(destination);
@@ -294,7 +299,13 @@ class Issue6086ParallelRestoreIT {
       FileUtils.deleteRecursively(new File(RESTORED_PATH));
       assertThatThrownBy(() -> restore(duplicateArchive, RESTORED_PATH, 8, null)).isInstanceOf(RestoreException.class)
           .hasRootCauseMessage("The backup archive contains two entries named 'twice.txt'");
-      assertThat(new File(RESTORED_PATH)).doesNotExist();
+      assertThat(new File(RESTORED_PATH)).as("a refused restore leaves nothing behind (issue #11041)").doesNotExist();
+
+      final File destination = new File(RESTORED_PATH);
+      assertThat(destination.mkdirs()).isTrue();
+      assertThatThrownBy(() -> new ParallelZipExtractor(8, new ConsoleLogger(0)).extract(new File(duplicateArchive), destination))
+          .hasMessage("The backup archive contains two entries named 'twice.txt'");
+      assertThat(destination.list()).as("refused before anything is written").isEmpty();
     } finally {
       new File(duplicateArchive).delete();
       FileUtils.deleteRecursively(new File(RESTORED_PATH));

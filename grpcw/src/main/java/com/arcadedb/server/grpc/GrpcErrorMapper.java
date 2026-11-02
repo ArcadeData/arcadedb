@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
@@ -83,6 +84,15 @@ public final class GrpcErrorMapper {
    * taken name, and must keep doing so.
    */
   public static final Metadata.Key<String> NAME_TAKEN_KEY = Metadata.Key.of("arcadedb-name-taken",
+      Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Trailer carrying the {@link DatabaseNotAvailableException.Reason} of a database the server has and does not serve now
+   * ({@link ErrorCategory#UNAVAILABLE}, issue #11049): what the HTTP body carries in {@code exceptionArgs}. A {@link Enum#name()},
+   * plain ASCII and bounded, so it survives production concealment. It is also what tells this {@code UNAVAILABLE} - a database
+   * an operator holds, which no retry of the transaction clears - from the admin service's {@code UNAVAILABLE}, which names a
+   * {@link NeedRetryException}: a client that does not know the class the trailer next to it names still reads the verdict.
+   */
+  public static final Metadata.Key<String> UNAVAILABLE_REASON_KEY = Metadata.Key.of("arcadedb-unavailable-reason",
       Metadata.ASCII_STRING_MARSHALLER);
 
   /**
@@ -239,6 +249,8 @@ public final class GrpcErrorMapper {
       addDuplicatedKeyTrailers(trailers, dup, conceal);
     } else {
       code = statusCodeFor(category);
+      if (category == ErrorCategory.UNAVAILABLE)
+        trailers.put(UNAVAILABLE_REASON_KEY, unavailableReason(cause).name());
     }
 
     if (conceal)
@@ -297,6 +309,16 @@ public final class GrpcErrorMapper {
       case DATABASE_NOT_FOUND -> Status.Code.NOT_FOUND;
       case SERVER -> Status.Code.INTERNAL;
     };
+  }
+
+  /**
+   * The state that keeps the database from serving the request, as the HTTP handler puts it in {@code exceptionArgs}: the
+   * reason of the {@link DatabaseNotAvailableException} along the chain, or {@link DatabaseNotAvailableException.Reason#UNAVAILABLE}
+   * for a handle closed under the request ({@code DatabaseIsClosedException}), which does not say by what.
+   */
+  private static DatabaseNotAvailableException.Reason unavailableReason(final Throwable cause) {
+    final DatabaseNotAvailableException notAvailable = CauseChain.find(cause, DatabaseNotAvailableException.class);
+    return notAvailable != null ? notAvailable.getReason() : DatabaseNotAvailableException.Reason.UNAVAILABLE;
   }
 
   /**
