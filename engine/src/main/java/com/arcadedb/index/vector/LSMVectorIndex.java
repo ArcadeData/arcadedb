@@ -11177,8 +11177,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      if (metadata.dimensions < 1)
-        sizeOnVector(vector.length);
+      if (metadata.dimensions < 1) {
+        // A node that did not see the size decided - a follower promoted by a failover, a database reopened before the schema
+        // was saved - holds vectors that already fix it, and a vector of another length must be refused as by any sized
+        // index, not size the index a second time (issue #10993). Outside the decision lock: it reads records
+        deriveDimensionsFromData();
+        if (metadata.dimensions < 1)
+          sizeOnVector(vector.length);
+      }
 
       if (vector.length != metadata.dimensions)
         throw new IllegalArgumentException(
@@ -11273,8 +11279,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * being put. Decided once, under a lock of its own: of several threads putting their first vector together the first one
    * decides and the others compare their vector with its answer, so a vector of another length is refused as it is by any
    * sized index. The decision outlives the transaction that made it - a rollback does not give the size back, which the
-   * other transactions may already have relied on - and is persisted with the next save of the schema. Another node learns it
-   * from the vectors it replicates ({@link #deriveDimensionsFromData}) and from the schema the leader ships, not from this call.
+   * other transactions may already have relied on - and is persisted with the next save of the schema. Another node does not
+   * learn it from this call, nor from a schema the leader ships (a commit of records ships none, only a schema change does): it
+   * learns it from the vectors it replicates ({@link #deriveDimensionsFromData}), before its first search, graph build or put.
    *
    * @param length the length of the vector being put
    */
@@ -11311,8 +11318,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           other.publishDimensions(length);
     publishDimensions(length);
     LogManager.instance().log(this, Level.INFO, "Vector index '%s' took its dimensions from its first vector: %d", indexName, length);
-    // Saved by the next schema save - the commit of the transaction that decided it, under HA shipped with the schema - and
-    // not here: this runs while a record is saved, under the lock that a schema change takes exclusively
+    // Saved by the next schema save - the commit of the transaction that decided it, on the node that decided it; the other
+    // nodes of a cluster derive it from the vectors they hold - and not here: this runs while a record is saved, under the lock
+    // that a schema change takes exclusively
     getDatabase().getSchema().getEmbedded().markDirty();
   }
 
