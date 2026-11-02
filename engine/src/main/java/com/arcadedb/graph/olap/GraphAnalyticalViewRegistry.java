@@ -160,10 +160,13 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
-   * Unregisters {@code view} from {@code name} only while it is the view registered there, and answers whether it was: a view
-   * whose background work failed must not unregister the one that replaced it under the same name (issue #11032).
+   * Frees {@code name} from a view whose background work failed and records why, in one step under the registry lock, and only
+   * while {@code view} is the view registered there (issue #11032). Answers whether it was. The view that replaced it under the
+   * same name keeps the name, and a registration or a {@code shutdownAll()} cannot slip between the removal and the record: the
+   * first would inherit the old failure, the second would see a closed database pinned in the failure map again.
    */
-  public static boolean unregister(final Database database, final String name, final GraphAnalyticalView view) {
+  public static boolean unregisterFailed(final Database database, final String name, final GraphAnalyticalView view,
+      final Throwable error) {
     synchronized (REGISTRY) {
       final Database unwrapped = unwrap(database);
       final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
@@ -171,6 +174,7 @@ public class GraphAnalyticalViewRegistry {
         return false;
       if (views.isEmpty())
         REGISTRY.remove(unwrapped);
+      FAILURES.computeIfAbsent(unwrapped, k -> new HashMap<>()).put(name, error);
       return true;
     }
   }

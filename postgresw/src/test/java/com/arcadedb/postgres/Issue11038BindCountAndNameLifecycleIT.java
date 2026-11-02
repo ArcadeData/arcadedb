@@ -163,6 +163,22 @@ class Issue11038BindCountAndNameLifecycleIT extends PostgresWireProtocolTestBase
       final List<WireMessage> answered = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(answered)).containsExactly('2', 'D', 'C', 'Z');
       assertThat(firstDataRowValue(answered)).isEqualTo("2");
+
+      // With standard_conforming_strings on (the default) 'x\' is a whole literal, its backslash an ordinary character: read
+      // with backslash escapes, the literal would run on and swallow the $1 that follows it
+      sendParse(out, "s3b", "SELECT id FROM " + TYPE + " WHERE 'x\\' <> 'y' AND id = $1");
+      sendDescribe(out, 'S', "s3b");
+      sendSync(out);
+      final List<WireMessage> describedBackslash = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(describedBackslash)).as(describedBackslash.toString()).startsWith('1', 't');
+      assertThat(parameterCountOf(describedBackslash.get(1))).isEqualTo(1);
+
+      sendBind(out, "", "s3b", "1");
+      sendExecute(out, "");
+      sendSync(out);
+      final List<WireMessage> answeredBackslash = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answeredBackslash)).containsExactly('2', 'D', 'C', 'Z');
+      assertThat(firstDataRowValue(answeredBackslash)).isEqualTo("1");
     });
   }
 

@@ -52,6 +52,9 @@ class Issue11018ParameterPlaceholderCountTest {
     assertThat(highestParameterPlaceholder("SELECT a -- $9\nFROM t WHERE a = $1")).isEqualTo(1);
     assertThat(highestParameterPlaceholder("SELECT a /* $9 unterminated")).isEqualTo(0);
     assertThat(highestParameterPlaceholder("SELECT '$9 unterminated")).isEqualTo(0);
+    assertThat(highestParameterPlaceholder("SELECT $$ $9 $$ FROM t WHERE a = $1")).as("a dollar-quoted literal").isEqualTo(1);
+    assertThat(highestParameterPlaceholder("SELECT $tag$ $9 $tag$ FROM t WHERE a = $2")).isEqualTo(2);
+    assertThat(highestParameterPlaceholder("SELECT $$ $9 unterminated")).isEqualTo(9);
   }
 
   @Test

@@ -102,8 +102,10 @@ public class MaterializedViewScheduler {
     // the same records, so a follower recomputing the view independently would diverge from it. Resolved through the current
     // wrapper on every tick: the scheduled reference is the raw LocalDatabase LocalSchema was built with, captured before the
     // server wrapped the database for HA. A follower that is promoted refreshes from its next tick on.
-    if (((DatabaseInternal) database).isFollower())
+    if (database instanceof DatabaseInternal internal && internal.isFollower()) {
+      LogManager.instance().log(this, Level.FINE, "Periodic refresh of view '%s' skipped: this node is a follower", view.getName());
       return;
+    }
 
     final String databasePath = database.getDatabasePath();
     final boolean contextInstalledHere = DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null;

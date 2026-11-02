@@ -1201,8 +1201,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.FAILED;
     unregisterChangeListeners();
     GraphTraversalProviderRegistry.unregister(database, this);
-    if (name != null && GraphAnalyticalViewRegistry.unregister(database, name, this))
-      GraphAnalyticalViewRegistry.recordFailure(database, name, e);
+    if (name != null)
+      GraphAnalyticalViewRegistry.unregisterFailed(database, name, this, e);
   }
 
   /**

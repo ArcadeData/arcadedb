@@ -102,12 +102,19 @@ class Issue11032Issue11021GavBackgroundWorkTest extends TestHelper {
         null, null, GraphAnalyticalView.UpdateMode.OFF);
     GraphAnalyticalViewRegistry.register(database, VIEW, second);
     try {
-      assertThat(GraphAnalyticalViewRegistry.unregister(database, VIEW, first)).as("the old view no longer owns the name")
-          .isFalse();
+      final RuntimeException oldFailure = new RuntimeException("the old view's build");
+      assertThat(GraphAnalyticalViewRegistry.unregisterFailed(database, VIEW, first, oldFailure))
+          .as("the old view no longer owns the name").isFalse();
       assertThat(GraphAnalyticalViewRegistry.get(database, VIEW)).isSameAs(second);
-      assertThat(GraphAnalyticalViewRegistry.unregister(database, VIEW, second)).isTrue();
+      assertThat(GraphAnalyticalViewRegistry.getFailure(database, VIEW)).as("nor does it leave its failure on the successor")
+          .isNull();
+
+      final RuntimeException failure = new RuntimeException("the successor's build");
+      assertThat(GraphAnalyticalViewRegistry.unregisterFailed(database, VIEW, second, failure)).isTrue();
       assertThat(GraphAnalyticalViewRegistry.get(database, VIEW)).isNull();
+      assertThat(GraphAnalyticalViewRegistry.getFailure(database, VIEW)).isSameAs(failure);
     } finally {
+      GraphAnalyticalViewRegistry.clearFailure(database, VIEW);
       first.shutdown();
       second.shutdown();
     }

@@ -3427,7 +3427,10 @@ public class PostgresNetworkExecutor extends Thread {
 
       final PostgresPortal portal = new PostgresPortal(query.query, query.language);
       final int paramCount = channel.readUnsignedShort();
-      final int highestPlaceholder = highestParameterPlaceholder(query.query);
+      // Counted on the text the engine lexes, where a $N is resolved: the wire text still carries PostgreSQL's literals, whose
+      // backslashes mean something else under standard_conforming_strings (issue #11018 review). Reused for the parse below
+      final String engineText = toEngineText(query.language, query.query);
+      final int highestPlaceholder = highestParameterPlaceholder(engineText);
 
       if (paramCount > 0) {
         portal.parameterTypes = new ArrayList<>(Math.max(paramCount, Math.min(highestPlaceholder, MAX_STATEMENT_PARAMETERS)));
@@ -3674,7 +3677,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-              portal.sqlStatement = sqlEngine.parse(toEngineText("sql", query.query), (DatabaseInternal) database);
+              portal.sqlStatement = sqlEngine.parse(engineText, (DatabaseInternal) database);
               final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
               if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
@@ -4747,9 +4750,11 @@ public class PostgresNetworkExecutor extends Thread {
    * The highest {@code $N} placeholder {@code query} references (e.g. 3 for a text that mentions {@code $3}), 0 for none, and a
    * number above {@link #MAX_STATEMENT_PARAMETERS} for one no Bind could ever supply.
    * <p>
-   * Read the way the SQL lexer reads the text, because a value is now refused when the count is wrong (issue #11018): a {@code $N}
+   * Read the way the ArcadeDB SQL lexer reads the text, because a value is now refused when the count is wrong (issue #11018), so
+   * {@code query} is the ENGINE text ({@link #toEngineText}), whose string literals are already in the lexer's form: a {@code $N}
    * inside a single- or double-quoted string, a back-tick quoted name, a line comment ({@code -- } to the end of the line) or a
-   * block comment is not a placeholder, and a backslash escapes the character after it in all three quoted forms. A
+   * block comment is not a placeholder, and a backslash escapes the character after it in all three quoted forms. A PostgreSQL
+   * dollar-quoted literal ({@code $$...$$}, {@code $tag$...$tag$}), which the engine text keeps as it was, is skipped too. A
    * {@code $N} followed by a letter or digit is part of an identifier, as {@code $1abc} is. It used to be a regular expression over
    * the raw text, which counted {@code '$5'} as a fifth parameter.
    */
@@ -4780,10 +4785,30 @@ public class PostgresNetworkExecutor extends Thread {
         if (!partOfIdentifier && position > highest)
           highest = (int) position;
         i = j;
+      } else if (c == '$') {
+        final int end = endOfDollarQuotedLiteral(query, i);
+        i = end > 0 ? end : i + 1;
       } else
         ++i;
     }
     return highest;
+  }
+
+  /**
+   * The index right after the PostgreSQL dollar-quoted literal opened at {@code start} ({@code $$...$$} or
+   * {@code $tag$...$tag$}, a tag not starting with a digit), or -1 when none opens there or it is not closed.
+   */
+  private static int endOfDollarQuotedLiteral(final String query, final int start) {
+    final int length = query.length();
+    int i = start + 1;
+    if (i < length && (Character.isLetter(query.charAt(i)) || query.charAt(i) == '_'))
+      while (i < length && (Character.isLetterOrDigit(query.charAt(i)) || query.charAt(i) == '_'))
+        ++i;
+    if (i >= length || query.charAt(i) != '$')
+      return -1;
+    final String tag = query.substring(start, i + 1);
+    final int close = query.indexOf(tag, i + 1);
+    return close < 0 ? -1 : close + tag.length();
   }
 
   private PostgresPortal getPortal(final String name, final boolean remove) {
