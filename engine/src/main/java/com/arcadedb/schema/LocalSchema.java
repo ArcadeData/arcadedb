@@ -5734,8 +5734,10 @@ public class LocalSchema implements Schema {
       }
     }
 
-    final long prevGeneration = dirtyGeneration.get();
-    dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
+    // READ AND MARKED UNDER THE WRITE LOCK, INSIDE THE CALLBACK BELOW (issue #11040): read before the lock, it is stale by
+    // the time a caller that waited for the lock decides whether to restore it
+    // (the -1 is never read: the restore below runs only after the callback has set it)
+    final long[] prevGeneration = { -1L };
 
     final boolean suspendIntermediateSaves = deferIntermediateSchemaSaves && !multipleUpdate;
     if (suspendIntermediateSaves)
@@ -5748,6 +5750,8 @@ public class LocalSchema implements Schema {
         // UNDER THE WRITE LOCK, SO THE DEPTH IS CONSISTENT: A NESTED FRAME (A TYPE CREATION AND THE BUCKET CREATIONS
         // INSIDE IT) SEES THE FRAME ENCLOSING IT
         final boolean outermost = recordingDepth++ == 0;
+        prevGeneration[0] = dirtyGeneration.get();
+        dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
         if (outermost) {
           recordingThread = Thread.currentThread();
           recordingSavePending = false;
@@ -5817,6 +5821,13 @@ public class LocalSchema implements Schema {
             }
           }
           --recordingDepth;
+          // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty, and never over the work of
+          // a nested frame that is still waiting to be written (#8635). Under the write lock, so that "we made it dirty"
+          // is read against the generation no other frame can move meanwhile: a caller that waited for the lock and
+          // was refused used to declare the schema clean over the change of the one that got it first, whose save an open
+          // transaction had postponed, so neither the commit nor the close wrote it (issue #11040)
+          if (!executed[0] && !keepDirty[0] && prevGeneration[0] <= savedGeneration)
+            savedGeneration = dirtyGeneration.get();
         }
       });
 
@@ -5833,10 +5844,6 @@ public class LocalSchema implements Schema {
     } finally {
       if (suspendIntermediateSaves)
         multipleUpdate = false;
-      if (!executed[0] && !keepDirty[0] && prevGeneration <= savedGeneration)
-        // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty, and never over the work of
-        // a nested frame that is still waiting to be written (#8635)
-        savedGeneration = dirtyGeneration.get();
     }
   }
 

@@ -41,6 +41,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -147,7 +149,16 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       propertyName = indexSpec.substring(bracketStart + 1, indexSpec.length() - 1);
     } else {
       // Assume it's just an index name
-      final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
+      final Schema schema = context.getDatabase().getSchema();
+      // The name of a vector index over several labels (issue #11014) designates the per-type indexes it spans. They share the
+      // similarity function, so their distances merge as the buckets of one index do. An index name is unique across the database,
+      // so a name that is an index is not a logical one, and the walk of the types is paid only by a name that is not
+      final List<TypeIndex> logical = schema.existsIndex(indexSpec) ? null : MultiTypeIndexes.resolve(schema, indexSpec);
+      if (logical != null)
+        return executeWithLogicalIndex(indexSpec, logical, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance,
+            context);
+
+      final Index directIndex = schema.getIndexByName(indexSpec);
       if (directIndex instanceof TypeIndex typeIndex) {
         return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
       }
@@ -182,6 +193,30 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
     return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
+  }
+
+  private Object executeWithLogicalIndex(final String name, final List<TypeIndex> members, final Object key, final int limit,
+      final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final float maxDistance, final CommandContext context) {
+    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+    for (final TypeIndex member : members) {
+      final var bucketIndexes = member.getIndexesOnBuckets();
+      if (bucketIndexes == null || bucketIndexes.length == 0)
+        throw new CommandSQLParsingException("Index '" + member.getName() + "' has no bucket indexes");
+      final List<LSMVectorIndex> memberIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class, null);
+      if (memberIndexes.isEmpty())
+        throw new CommandSQLParsingException("Index '" + member.getName() + "' is not a vector index");
+      vectorIndexes.addAll(memberIndexes);
+    }
+    if (vectorIndexes.isEmpty())
+      throw new CommandSQLParsingException("Index '" + name + "' has no vector index left");
+
+    // A filter that matched nothing is not "no filter" (issue #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
+
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance,
+        context);
   }
 
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,

@@ -33,7 +33,9 @@ import java.util.Objects;
 import static com.arcadedb.schema.Property.*;
 
 public class RecordAttribute extends SimpleNode {
-  protected String name;
+  // marks a property the row does not carry, apart from one it carries with a null value
+  private static final Object ABSENT = new Object();
+  protected            String name;
 
   public RecordAttribute() {
   }
@@ -74,25 +76,27 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public Object evaluate(final Result currentRecord, final CommandContext context) {
+    return evaluate(currentRecord, name);
+  }
+
+  /**
+   * The value of the record attribute {@code name} ({@code @rid}, {@code @type}, {@code @this}, ...) of a row, for the callers
+   * that hold the attribute's name rather than a parsed node (ORDER BY, a {@code $variable.@type} path).
+   */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
+  public static Object evaluate(final Result currentRecord, final String name) {
     if (RID_PROPERTY.equalsIgnoreCase(name)) {
       return currentRecord.getIdentity().orElse(null);
-    } else if (TYPE_PROPERTY.equalsIgnoreCase(name)) {
-      return currentRecord.getElement().map(Document::getTypeName).orElse(null);
-    } else if (CAT_PROPERTY.equalsIgnoreCase(name) && currentRecord.getElement().isPresent()) {
-      final Document record = currentRecord.getElement().get();
-      if (record instanceof Vertex)
-        return "v";
-      else if (record instanceof Edge)
-        return "e";
-      else
-        return "d";
+    } else if (isStructuralAttribute(name)) {
+      final Document record = currentRecord.getElement().orElse(null);
+      if (record == null) {
+        // A row that wraps no record (an expanded vectorNeighbors() row, a projected sub-query row) carries the attribute as
+        // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131)
+        final Object value = column(currentRecord, name);
+        return value != ABSENT ? value : null;
+      }
 
-    } else if (IN_PROPERTY.equalsIgnoreCase(name) && //
-        currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
-      return currentRecord.getElement().get().asEdge().getIn();
-    } else if (OUT_PROPERTY.equalsIgnoreCase(name) && //
-        currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
-      return currentRecord.getElement().get().asEdge().getOut();
+      return evaluateOnRecord(record, name);
     } else if (THIS_PROPERTY.equalsIgnoreCase(name)) {
       // Return the entire current record or value
       // For element-based results, return the element
@@ -107,6 +111,81 @@ public class RecordAttribute extends SimpleNode {
     }
     return null;
   }
+
+  /**
+   * The value a row answers for the row attribute {@code name} (see {@link #isRowAttribute(String)}) when the attribute is read by
+   * name: a column of that name the row carries first, a null one included, then the attribute of the row itself. A projection
+   * that kept its record (`SELECT @type AS ..., *`) carries both, and the column is what the row says.
+   */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
+  public static Object resolve(final Result row, final String name) {
+    final Object value = column(row, name);
+    return value != ABSENT ? value : evaluate(row, name);
+  }
+
+  /**
+   * The column the row carries for the attribute {@code name}, a null one included, or {@link #ABSENT}. The attribute's name is
+   * matched case-insensitively and a key is not: the spelling as written first, then the canonical one ({@code @TYPE} finds a
+   * stored {@code @type}), so a key stored under the exact spelling wins, even holding null.
+   */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
+  private static Object column(final Result row, final String name) {
+    final Object value = row.getPropertyIfPresent(name, ABSENT);
+    if (value != ABSENT)
+      return value;
+    final String canonical = canonicalName(name);
+    return canonical.equals(name) ? ABSENT : row.getPropertyIfPresent(canonical, ABSENT);
+  }
+
+  /**
+   * The value of the row attribute {@code name} ({@code @rid}, {@code @type}, {@code @cat}, {@code @in}, {@code @out}, see
+   * {@link #isRowAttribute(String)}) of a record, or null for any other name, {@code @this} included: unlike
+   * {@link #evaluate(Result, String)} this reads the record's own attributes only.
+   */
+  public static Object evaluateOnRecord(final Document record, final String name) {
+    if (RID_PROPERTY.equalsIgnoreCase(name))
+      return record.getIdentity();
+    else if (TYPE_PROPERTY.equalsIgnoreCase(name))
+      return record.getTypeName();
+    else if (CAT_PROPERTY.equalsIgnoreCase(name))
+      return record instanceof Vertex ? "v" : record instanceof Edge ? "e" : "d";
+    else if (record instanceof Edge edge) {
+      if (IN_PROPERTY.equalsIgnoreCase(name))
+        return edge.getIn();
+      else if (OUT_PROPERTY.equalsIgnoreCase(name))
+        return edge.getOut();
+    }
+    return null;
+  }
+
+  /**
+   * True for the attributes {@link #evaluate(Result, String)} reads off the record, or off the row when it wraps none: {@code @rid},
+   * {@code @type}, {@code @cat}, {@code @in} and {@code @out}. Not {@code @this}: that is the row itself, answered by
+   * {@link #evaluate(Result, String)} only.
+   */
+  public static boolean isRowAttribute(final String name) {
+    return RID_PROPERTY.equalsIgnoreCase(name) || isStructuralAttribute(name);
+  }
+
+  private static String canonicalName(final String name) {
+    if (RID_PROPERTY.equalsIgnoreCase(name))
+      return RID_PROPERTY;
+    else if (TYPE_PROPERTY.equalsIgnoreCase(name))
+      return TYPE_PROPERTY;
+    else if (CAT_PROPERTY.equalsIgnoreCase(name))
+      return CAT_PROPERTY;
+    else if (IN_PROPERTY.equalsIgnoreCase(name))
+      return IN_PROPERTY;
+    else if (OUT_PROPERTY.equalsIgnoreCase(name))
+      return OUT_PROPERTY;
+    return name;
+  }
+
+  private static boolean isStructuralAttribute(final String name) {
+    return TYPE_PROPERTY.equalsIgnoreCase(name) || CAT_PROPERTY.equalsIgnoreCase(name) || IN_PROPERTY.equalsIgnoreCase(name)
+        || OUT_PROPERTY.equalsIgnoreCase(name);
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

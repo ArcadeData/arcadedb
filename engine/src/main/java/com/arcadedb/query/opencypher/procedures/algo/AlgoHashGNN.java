@@ -35,17 +35,44 @@ import java.util.stream.Stream;
 /**
  * Procedure: algo.hashgnn([config])
  *
- * <p>HashGNN: a training-free graph neural network that uses locality-sensitive hashing
- * to aggregate neighbourhood information (Hamilton 2020, extended). Each node is initialised
- * with a sparse random binary feature vector derived from its structural identity. For each
- * propagation round the node's feature set is OR-combined with those of its neighbours, then
- * reduced to a fixed-size MinHash sketch. The final embedding is the L2-normalised MinHash
- * signature concatenated across all propagation rounds.</p>
+ * <p>HashGNN: a training-free graph neural network that replaces the learned aggregation of a message-passing
+ * network with MinHash sampling (Wu et al., "Hashing-Accelerated Graph Neural Networks for Link Prediction", 2021).
+ * Each node draws {@code embeddingDensity} samples from the nodes around it, and nodes whose neighbourhoods overlap draw
+ * the same samples: a node and its neighbours share many, two nodes far apart share none.</p>
+ *
+ * <p>Each sample slot {@code k} is a consistent weighted sample (an exponential race). Every node {@code s} draws one
+ * race time {@code E_k(s) ~ Exp(1)} from a hash shared by the whole graph, and node {@code u} keeps, in slot
+ * {@code k}, the node with the smallest race time scaled by its distance from {@code u}: one round of message passing
+ * lets a node take its neighbours' best times multiplied by {@code degree(u) / neighborInfluence}, its own time staying
+ * as it is. So the node itself weighs 1, its neighbours together weigh {@code neighborInfluence}, at any degree, and
+ * every further hop weighs {@code neighborInfluence} again of the one before. Because the hash is shared, two nodes
+ * keep the same sample in a slot with a probability that grows with how much of their weighted neighbourhoods they
+ * share. The embedding hashes every sample into one of {@code embeddingDimension} positions and is the L2-normalised
+ * binary vector of the positions hit: each is {@code 1 / sqrt(positionCount)}, the others 0.</p>
+ *
+ * <p>Three alternatives fail, and the shape above is what is left once they are ruled out (issue #11144):
+ * <ul>
+ *   <li>OR-combining feature sets every round and MinHash-reducing once at the end: nothing bounds the density, a few
+ *   rounds over a few dozen nodes set every feature, and every node of the region gets the same vector - all zeros
+ *   once every feature is set and {@code (a * f + b) mod numFeatures} runs over its whole period.</li>
+ *   <li>Random features of the embedding space as the sampled items: a neighbourhood's union covers most of that
+ *   space, so the features that hash lowest are picked everywhere and unrelated nodes look alike. Node identities are
+ *   as many as the nodes, so disjoint neighbourhoods cannot pick the same sample.</li>
+ *   <li>Unweighted MinHash per round, with fresh hash functions each round: the samples coalesce like a voter model,
+ *   and on a small dense graph a few rounds leave every node with the same vector again. With the same hash functions
+ *   each round it becomes the MinHash of the {@code iterations}-hop ball, identical for every node once the ball
+ *   covers the graph. The per-hop weight is what keeps a node's own neighbourhood ahead of the rest of the graph.</li>
+ * </ul>
+ * </p>
  *
  * <p>Config map parameters (all optional):
  * <ul>
  *   <li>{@code embeddingDimension} (int, default 128, max {@value AbstractAlgoProcedure#MAX_EMBEDDING_DIMENSION}) – output embedding size</li>
- *   <li>{@code iterations} (int, default 4) – number of message-passing rounds</li>
+ *   <li>{@code embeddingDensity} (int, default {@code max(1, embeddingDimension / 8)}, at most {@code embeddingDimension}) –
+ *   samples per node, so the most non-zero entries an embedding can have</li>
+ *   <li>{@code iterations} (int, default 4) – number of message-passing rounds, the farthest hop a sample can come from</li>
+ *   <li>{@code neighborInfluence} (double, default 1.0, at least 0) – weight of a node's neighbours, all together,
+ *   against the node itself; lower keeps the embedding local, higher reaches farther</li>
  *   <li>{@code relTypes} (String, default all) – comma-separated edge type names</li>
  *   <li>{@code direction} (String, default BOTH)</li>
  *   <li>{@code seed} (long, default -1) – random seed; -1 = random</li>
@@ -60,15 +87,17 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>Working set: two {@code nodeCount x (4 x embeddingDimension)} feature matrices plus one
- * {@code nodeCount x embeddingDimension} embedding matrix - the feature pair being the larger of the two -
- * reserved through {@link AbstractAlgoProcedure.MemoryBudget} before the first is allocated.</p>
+ * <p>Working set: two {@code nodeCount x embeddingDensity} sample matrices and two race-time matrices of the same
+ * shape, reserved through {@link AbstractAlgoProcedure.MemoryBudget} before the first is allocated. The embedding rows
+ * are built one at a time as the result is consumed, so no {@code nodeCount x embeddingDimension} matrix exists.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoHashGNN extends AbstractAlgoProcedure {
   /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
-  private static final Set<String> CONFIG_KEYS = Set.of("direction", "embeddingDimension", "iterations", "relTypes", "seed");
+  private static final Set<String> CONFIG_KEYS = Set.of("direction", "embeddingDensity", "embeddingDimension", "iterations",
+      "neighborInfluence", "relTypes", "seed");
+  private static final long        GOLDEN_GAMMA = 0x9E3779B97F4A7C15L;
 
   @Override
   public String getName() {
@@ -88,7 +117,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
 
   @Override
   public String getDescription() {
-    return "Generates training-free node embeddings using locality-sensitive hashing with MinHash sketches aggregated over neighbourhood feature sets";
+    return "Generates training-free node embeddings from consistent weighted MinHash samples of each node's neighbourhood";
   }
 
   @Override
@@ -102,7 +131,15 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
+    final int density = config != null && config.get("embeddingDensity") instanceof Number n ? extractInt(n, "embeddingDensity", 1) : Math.max(1, embDim / 8);
+    if (density > embDim)
+      throw new IllegalArgumentException(
+          getName() + "(): embeddingDensity must not exceed embeddingDimension (" + embDim + "), got " + density);
     final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 4;
+    final double neighborInfluence = config != null && config.get("neighborInfluence") instanceof Number n ? n.doubleValue() : 1.0;
+    if (!Double.isFinite(neighborInfluence) || neighborInfluence < 0.0)
+      throw new IllegalArgumentException(
+          getName() + "(): neighborInfluence must be a finite number of at least 0, got " + neighborInfluence);
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
@@ -115,116 +152,109 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    // Use 4× over-parameterised bit space for good hash quality
-    final int numFeatures = Math.max(embDim * 4, 64);
-
-    // Three nodeCount-scaled matrices live at once here, and the two feature matrices - not the embedding one -
-    // are the larger pair: they are four times as wide as the embedding, so even as booleans they cost half a
-    // byte per embedding dimension per node against the embedding's eight. The embeddingDimension cap bounds a
-    // row, not a matrix; at the default of 128 the three together cost about 2 KB per node. The node count and
-    // the knob are all the estimates need, so they are reserved before the adjacency lists are materialised: a
-    // call that cannot afford its matrices should not first pay the O(edges) build.
+    // The node count and the knobs are all the estimates need, so they are reserved before the adjacency lists are
+    // materialised: a call that cannot afford its matrices should not first pay the O(edges) build.
     final MemoryBudget memory = graph.memory();
-    memory.reserve(saturatingProduct(2L, matrixBytes(n, numFeatures, BOOLEAN_BYTES)), "the feature matrices",
-        "2 matrices of " + n + " nodes x " + numFeatures + " features (embeddingDimension=" + embDim + " x 4)");
-    memory.reserve(matrixBytes(n, embDim, DOUBLE_BYTES), "the embedding matrix",
-        n + " nodes x embeddingDimension=" + embDim);
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, density, INT_BYTES)), "the sample matrices",
+        "2 matrices of " + n + " nodes x embeddingDensity=" + density);
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, density, DOUBLE_BYTES)), "the race-time matrices",
+        "2 matrices of " + n + " nodes x embeddingDensity=" + density);
 
     final int[][] adj = graph.adjacency(dir, relTypes);
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
+    final long positionKey = rng.nextLong();
+    final long[] slotKeys = new long[density];
+    for (int k = 0; k < density; k++)
+      slotKeys[k] = rng.nextLong();
 
-    // Initialise: each node gets ~12.5% sparse random binary feature vector
-    final boolean[][] features = new boolean[n][numFeatures];
+    // Every node starts as its own sample in every slot, with its race time for that slot: -ln(1 - U), U uniform in
+    // [0, 1) from 53 bits of the slot's hash, so the time is Exp(1) and the minimum over a set falls on any member
+    // with probability proportional to its weight. StrictMath rather than Math: Math.log1p may be an intrinsic whose
+    // last bit differs between JVMs and CPUs, and a seeded run has to answer the same embeddings everywhere. Bounded
+    // per node, unbounded over the graph, and it runs before the message-passing loop, so the checkpoint inside that
+    // loop never sees it.
+    int[][] samples = new int[n][density];
+    double[][] races = new double[n][density];
+    int step = 0;
     for (int i = 0; i < n; i++) {
-      // Rejection sampling over numFeatures bits, once per node. Bounded per node, unbounded over the graph -
-      // and it runs BEFORE the message-passing loop, so the checkpoint inside that loop never sees it.
-      guard.checkPeriodically(i);
-      // Use per-node deterministic seed for reproducible initialisation
-      final Random nodeRng = seed >= 0 ? new Random(seed + i * 1_000_003L) :
-          new Random(graph.getRID(i).hashCode() * 1_000_003L + i);
-      int set = 0;
-      final int target = numFeatures / 8; // 12.5% density
-      while (set < target) {
-        final int bit = nodeRng.nextInt(numFeatures);
-        if (!features[i][bit]) {
-          features[i][bit] = true;
-          set++;
-        }
+      final int[] sampleRow = samples[i];
+      final double[] raceRow = races[i];
+      for (int k = 0; k < density; k++) {
+        guard.checkPeriodically(step++);
+        sampleRow[k] = i;
+        raceRow[k] = -StrictMath.log1p(-((mix(slotKeys[k] + i * GOLDEN_GAMMA) >>> 11) * 0x1.0p-53));
       }
     }
 
-    // Pre-compute MinHash hash function parameters: h_d(x) = (a*x + b) mod numFeatures
-    // Using two arrays of coprime pairs (a[d], b[d])
-    final int[] hashA = new int[embDim];
-    final int[] hashB = new int[embDim];
-    for (int d = 0; d < embDim; d++) {
-      // Ensure a is odd (to guarantee full-period LCG-style coverage)
-      hashA[d] = rng.nextInt(numFeatures / 2) * 2 + 1;
-      hashB[d] = rng.nextInt(numFeatures);
-    }
-
-    // Iterative message passing: OR-combine neighbour features, then MinHash-reduce
-    final boolean[][] newFeatures = new boolean[n][numFeatures];
+    // Round r answers, per slot, the best race over the r-hop ball: min(own best, neighbours' best x hop factor). It
+    // reads round r-1 and writes a second pair of matrices, so a round moves a sample exactly one hop whatever order
+    // the nodes are visited in: in place, a sample could cross several hops in one round, depending on the load order.
+    int[][] nextSamples = new int[n][density];
+    double[][] nextRaces = new double[n][density];
     for (int iter = 0; iter < iterations; iter++) {
       // iterations is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the
       // full count: the guard is the only thing that can end a run the caller no longer wants.
       guard.check();
+      step = 0;
       for (int i = 0; i < n; i++) {
-        // A single message-passing round walks the whole graph, so on a large one the checkpoint belongs inside it.
-        guard.checkPeriodically(i);
-        System.arraycopy(features[i], 0, newFeatures[i], 0, numFeatures);
+        // The counter runs per neighbour visited rather than per node: a supernode walks its whole adjacency at once.
+        guard.checkPeriodically(step++);
+        final int[] bestSample = nextSamples[i];
+        final double[] bestRace = nextRaces[i];
+        System.arraycopy(samples[i], 0, bestSample, 0, density);
+        System.arraycopy(races[i], 0, bestRace, 0, density);
+        // Dividing the neighbours' weight by the degree is what makes neighborInfluence their weight ALL TOGETHER: on
+        // a hub the neighbours would otherwise drown the node itself, and every hop multiplies that over again.
+        final double hopFactor = adj[i].length / neighborInfluence;
         for (final int j : adj[i]) {
-          for (int f = 0; f < numFeatures; f++)
-            newFeatures[i][f] |= features[j][f];
-        }
-      }
-      // Swap
-      for (int i = 0; i < n; i++) {
-        guard.checkPeriodically(i);
-        System.arraycopy(newFeatures[i], 0, features[i], 0, numFeatures);
-      }
-    }
-
-    // Compute MinHash signature → float embedding.
-    //
-    // This phase, not the loop `iterations` drives, is where an algo.hashgnn call actually spends its time, and
-    // until issue #6295 it was the one phase no checkpoint reached. Per node it costs embeddingDimension x
-    // numFeatures = 4 x embeddingDimension² operations - 6.7e7 at the 4096 cap - and that bounded per-node figure
-    // is then multiplied by an unbounded node count. Measured: 113 seconds against a 1000 ms
-    // arcadedb.command.timeout on 2000 nodes, and the call RETURNED rather than aborting.
-    //
-    // The lens that missed it looked for knobs with no ceiling; embeddingDimension has one (#6065), which is
-    // exactly why it looked handled. The question that finds it is "which loop over the node count has no
-    // checkpoint", and the phases after the knob-driven loop are where to ask it.
-    //
-    // The counter spans both loops rather than sitting on either: on a wide embedding one node is already 6.7e7
-    // operations, so a per-node checkpoint would be too coarse, and on a narrow one (embeddingDimension 1, 64
-    // features) a per-dimension clock read would cost more than the work it guards. One check per 1024
-    // (node, dimension) pairs is bounded by numFeatures x 1024 operations either way.
-    final double[][] embeddings = new double[n][embDim];
-    int reductionStep = 0;
-    for (int i = 0; i < n; i++) {
-      for (int d = 0; d < embDim; d++) {
-        guard.checkPeriodically(reductionStep++);
-        int minHash = Integer.MAX_VALUE;
-        final int a = hashA[d], b = hashB[d];
-        for (int f = 0; f < numFeatures; f++) {
-          if (features[i][f]) {
-            final int h = Math.floorMod(a * f + b, numFeatures);
-            if (h < minHash)
-              minHash = h;
+          guard.checkPeriodically(step++);
+          final int[] neighbourSamples = samples[j];
+          final double[] neighbourRaces = races[j];
+          for (int k = 0; k < density; k++) {
+            final double race = neighbourRaces[k] * hopFactor;
+            if (race < bestRace[k]) {
+              bestRace[k] = race;
+              bestSample[k] = neighbourSamples[k];
+            }
           }
         }
-        embeddings[i][d] = minHash == Integer.MAX_VALUE ? 0.0 : (double) minHash / numFeatures;
       }
-      normalizeL2(embeddings[i]);
+      final int[][] swapSamples = samples;
+      samples = nextSamples;
+      nextSamples = swapSamples;
+      final double[][] swapRaces = races;
+      races = nextRaces;
+      nextRaces = swapRaces;
     }
 
+    final int[][] finalSamples = samples;
     return IntStream.range(0, n).mapToObj(i -> {
+      final double[] embedding = new double[embDim];
+      // A sample drawn in two slots, or two samples hashed to one position, hit one position: between 1 and `density`.
+      int hit = 0;
+      for (final int s : finalSamples[i]) {
+        final int position = (int) (((mix(positionKey + s * GOLDEN_GAMMA) >>> 32) * embDim) >>> 32);
+        if (embedding[position] == 0.0) {
+          embedding[position] = 1.0;
+          hit++;
+        }
+      }
+      final double value = 1.0 / Math.sqrt(hit);
+      for (int d = 0; d < embDim; d++)
+        if (embedding[d] != 0.0)
+          embedding[d] = value;
+
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", graph.getRID(i));
-      r.setProperty("embedding", toEmbeddingList(embeddings[i]));
+      r.setProperty("embedding", toEmbeddingList(embedding));
       return (Result) r;
     });
+  }
+
+  /** The SplitMix64 finaliser: a bijective 64-bit mixer, so distinct inputs never collide. */
+  private static long mix(final long value) {
+    final long first = (value ^ (value >>> 30)) * 0xBF58476D1CE4E5B9L;
+    final long second = (first ^ (first >>> 27)) * 0x94D049BB133111EBL;
+    return second ^ (second >>> 31);
   }
 }

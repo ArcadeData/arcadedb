@@ -69,6 +69,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
@@ -133,6 +134,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -457,6 +459,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * write (issue #6191).
    */
   private final AtomicBoolean selfForwardWarned = new AtomicBoolean(false);
+  /** The leader's answer to ensureLabelTypes was "unknown function" (issue #11064): said once per database, as {@link #selfForwardWarned}. */
+  private final AtomicBoolean unknownEnsureLabelTypesWarned = new AtomicBoolean(false);
 
   /**
    * Emits the "a peer forwarded a write here and this node is not the leader either" notice only once per
@@ -1709,6 +1713,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // so that a statement told to retry for no apparent reason can be explained
         LogManager.instance().log(this, Level.FINE, "The leader's answer to '%s' carries no 'created' flag: a transaction that "
             + "already wrote is not re-based past type '%s'", createStatement, typeName);
+    } catch (final RuntimeException e) {
+      // A leader that predates the function (a mixed-version cluster, issue #11064) answers a SQL error, not the retryable refusal:
+      // nothing was created, so go on as before the function existed and let the caller's own schema change be refused as it was
+      if (!isUnknownFunctionAnswer(e, SQLFunctionEnsureLabelTypes.NAME))
+        throw e;
+      if (unknownEnsureLabelTypesWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING, "The leader does not know the function '%s' (it runs an older version): "
+            + "a multi-label CREATE in a client transaction on this node is refused until the leader is upgraded. This notice is "
+            + "logged only once per database.", SQLFunctionEnsureLabelTypes.NAME);
+      return false;
     }
     awaitTypeApplied(raft, typeName, leaderApplied.get());
 
@@ -1731,6 +1745,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           + "Raft index " + preparedAt + ", and another schema change was applied since), so it could not commit. The type exists "
           + "now: retry the transaction");
     return true;
+  }
+
+  /**
+   * Whether a failed forward is the answer of a leader that has no SQL function of that name, in the message or in a cause (issue
+   * #11064). The SQL engine words it two ways, "Unknown function name 'name'" (the lookup) and "Function not found: name" (the call).
+   */
+  // @VisibleForTesting
+  static boolean isUnknownFunctionAnswer(final Throwable error, final String functionName) {
+    final String lookup = ("Unknown function name '" + functionName + "'").toLowerCase(Locale.ENGLISH);
+    final String call = ("Function not found: " + functionName).toLowerCase(Locale.ENGLISH);
+    for (Throwable t = error; t != null; t = t.getCause()) {
+      final String message = t.getMessage() != null ? t.getMessage().toLowerCase(Locale.ENGLISH) : null;
+      if (message != null && (message.contains(lookup) || message.contains(call)))
+        return true;
+    }
+    return false;
   }
 
   /**
