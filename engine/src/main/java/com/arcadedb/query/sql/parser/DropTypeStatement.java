@@ -20,7 +20,9 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -31,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
+import java.util.Iterator;
 import java.util.Map;
 
 public class DropTypeStatement extends DDLStatement {
@@ -44,7 +47,7 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   /**
-   * Batchable into a DDL script's bulk schema scope (issue #6990). Dropping a type unregisters it and deletes its files. The one record-level touch is a single hasNext() probe that refuses to drop a populated vertex or edge type, which is bounded by one record.
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Dropping a type unregisters it and deletes its files. The record-level touch is a probe that refuses to drop a populated vertex or edge type; for an edge type with no records it also scans the vertices' outgoing adjacency lists for lightweight edges (#10923).
    */
   @Override
   public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
@@ -78,7 +81,8 @@ public class DropTypeStatement extends DDLStatement {
     }
 
     if (!unsafe && (typez.getType() == Vertex.RECORD_TYPE || typez.getType() == Edge.RECORD_TYPE)) {
-      final boolean hasRecords = context.getDatabase().iterateType(typez.getName(), false).hasNext();
+      final boolean hasRecords = context.getDatabase().iterateType(typez.getName(), false).hasNext() ||
+          typez.getType() == Edge.RECORD_TYPE && hasLightweightEdges(context.getDatabase(), schema, typez.getName());
       if (hasRecords) {
         //check vertex or edge
         if (typez.getType() == Vertex.RECORD_TYPE) {
@@ -87,7 +91,7 @@ public class DropTypeStatement extends DDLStatement {
         } else if (typez.getType() == Edge.RECORD_TYPE) {
           // FOUND EDGE TYPE
           throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
-              + "' because it contains Edges. Use 'DELETE EDGE' command first to avoid broken vertices in a database, or apply the 'UNSAFE' keyword to force it");
+              + "' because it contains Edges. Use 'DELETE FROM " + typeName + "' first to avoid broken vertices in a database, or apply the 'UNSAFE' keyword to force it");
         }
       }
     }
@@ -101,6 +105,23 @@ public class DropTypeStatement extends DDLStatement {
     result.setProperty("dropped", true);
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * A lightweight edge holds no record, so the record probe cannot see it: the only place it lives is the adjacency list of
+   * its source vertex. Scans the outgoing side of every vertex (bidirectional and unidirectional types both write it) and
+   * stops at the first hit.
+   */
+  private static boolean hasLightweightEdges(final Database database, final Schema schema, final String edgeTypeName) {
+    for (final DocumentType type : schema.getTypes()) {
+      if (type.getType() != Vertex.RECORD_TYPE)
+        continue;
+      final Iterator<Record> vertices = database.iterateType(type.getName(), false);
+      while (vertices.hasNext())
+        if (vertices.next().asVertex().countEdges(Vertex.DIRECTION.OUT, edgeTypeName) > 0)
+          return true;
+    }
+    return false;
   }
 
   @Override
