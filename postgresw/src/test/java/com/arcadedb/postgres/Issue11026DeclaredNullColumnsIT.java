@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
-import java.sql.ResultSetMetaData;
+import ResultSetMetaData;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
@@ -60,7 +60,7 @@ class Issue11026DeclaredNullColumnsIT extends PostgresWireProtocolTestBase {
     final Properties properties = new Properties();
     properties.setProperty("preferQueryMode", "simple");
     try (final Connection connection = connect(properties); final Statement statement = connection.createStatement();
-        final java.sql.ResultSet rs = statement.executeQuery("SELECT n FROM NullCol26")) {
+        final ResultSet rs = statement.executeQuery("SELECT n FROM NullCol26")) {
       assertThat(rs.getMetaData().getColumnTypeName(1)).isEqualTo("int4");
       assertThat(rs.next()).isTrue();
       rs.getInt(1);
@@ -73,7 +73,7 @@ class Issue11026DeclaredNullColumnsIT extends PostgresWireProtocolTestBase {
     final Properties properties = new Properties();
     properties.setProperty("preferQueryMode", "simple");
     try (final Connection connection = connect(properties); final Statement statement = connection.createStatement();
-        final java.sql.ResultSet rs = statement.executeQuery("SELECT * FROM NullCol26")) {
+        final ResultSet rs = statement.executeQuery("SELECT * FROM NullCol26")) {
       assertWildcardShape(rs);
     }
   }
@@ -96,7 +96,7 @@ class Issue11026DeclaredNullColumnsIT extends PostgresWireProtocolTestBase {
     final Properties properties = new Properties();
     properties.setProperty("prepareThreshold", "0");
     try (final Connection connection = connect(properties); final PreparedStatement ps = connection.prepareStatement(
-        "SELECT * FROM NullCol26"); final java.sql.ResultSet rs = ps.executeQuery()) {
+        "SELECT * FROM NullCol26"); final ResultSet rs = ps.executeQuery()) {
       assertWildcardShape(rs);
     }
   }
@@ -109,7 +109,7 @@ class Issue11026DeclaredNullColumnsIT extends PostgresWireProtocolTestBase {
     assertThat(columnsOf(properties, "SELECT k FROM NullCol26")).containsExactly("k:varchar");
   }
 
-  private static void assertWildcardShape(final java.sql.ResultSet rs) throws Exception {
+  private static void assertWildcardShape(final ResultSet rs) throws Exception {
     final ResultSetMetaData meta = rs.getMetaData();
     final List<String> columns = new ArrayList<>();
     for (int i = 1; i <= meta.getColumnCount(); i++)
@@ -124,7 +124,7 @@ class Issue11026DeclaredNullColumnsIT extends PostgresWireProtocolTestBase {
 
   private List<String> columnsOf(final Properties properties, final String sql) throws Exception {
     try (final Connection connection = connect(properties); final PreparedStatement ps = connection.prepareStatement(sql);
-        final java.sql.ResultSet rs = ps.executeQuery()) {
+        final ResultSet rs = ps.executeQuery()) {
       final ResultSetMetaData meta = rs.getMetaData();
       final List<String> columns = new ArrayList<>();
       for (int i = 1; i <= meta.getColumnCount(); i++)
