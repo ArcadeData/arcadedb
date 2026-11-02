@@ -4651,7 +4651,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // bytes the directory scan already refuses to read.
         if (tailIsUnfinishedBlock) {
           indexFile.setLength(blockStart);
-          indexChannel.force(true);
+          FileUtils.force(indexChannel, true);
           repairs.add("dropped " + orphanTailBytes + " byte(s) of an incomplete write trailing the last block");
         }
 
@@ -5224,7 +5224,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File incoming = new File(basePath + ".ts.sealed.incoming");
     try (final FileOutputStream fos = new FileOutputStream(incoming)) {
       fos.write(bytes);
-      fos.getFD().sync();
+      FileUtils.sync(fos.getFD());
     }
     installSealedFile(incoming);
   }
@@ -5745,7 +5745,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void writeHeaderOnce(final ByteBuffer buf, final boolean metaData) throws IOException {
     final FileChannel channel = indexChannel;
     FileUtils.writeFully(channel, buf, 0);
-    channel.force(metaData);
+    FileUtils.force(channel, metaData);
   }
 
   private void rewriteHeader() throws IOException {

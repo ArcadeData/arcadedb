@@ -41,6 +41,7 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
+import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
@@ -5243,7 +5244,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         throw new IOException("Cannot create directory " + dir.getAbsolutePath());
       try (final FileOutputStream out = new FileOutputStream(marker)) {
         out.write((Instant.now() + " " + reason + System.lineSeparator()).getBytes(StandardCharsets.UTF_8));
-        out.getFD().sync();
+        FileUtils.sync(out.getFD());
       }
       return true;
     } catch (final IOException | RuntimeException e) {

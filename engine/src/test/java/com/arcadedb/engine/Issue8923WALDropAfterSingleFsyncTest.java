@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
@@ -87,6 +88,8 @@ class Issue8923WALDropAfterSingleFsyncTest extends TestHelper {
 
   @Override
   protected void beginTest() {
+    // these tests are about fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
     // The once-a-second housekeeping timer runs the same pass on the same pool: stop it so it cannot drop the files
     // seeded below between the test's own passes.
     try {

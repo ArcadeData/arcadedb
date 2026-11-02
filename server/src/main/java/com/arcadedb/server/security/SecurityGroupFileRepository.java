@@ -190,7 +190,7 @@ public class SecurityGroupFileRepository {
         // 'version' and falls back to createDefault() - silently widening every group to the default permissions
         // (issue #7825).
         FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
-        channel.force(true);
+        FileUtils.force(channel, true);
       }
       try {
         Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);

@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import io.github.jbellis.jvector.disk.IndexWriter;
 
 import java.io.IOException;
@@ -86,7 +87,7 @@ public class SimpleFileIndexWriter implements IndexWriter {
     flush();
     for (int reopens = 0; ; ) {
       try {
-        channel.force(true);
+        FileUtils.force(channel, true);
         return;
       } catch (final ClosedByInterruptException e) {
         if (++reopens > MAX_REOPENS)

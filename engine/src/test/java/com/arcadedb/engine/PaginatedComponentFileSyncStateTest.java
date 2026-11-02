@@ -18,8 +18,10 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
@@ -64,10 +66,17 @@ class PaginatedComponentFileSyncStateTest {
   private final BasicDatabase                db    = Mockito.mock(BasicDatabase.class);
   private final List<PaginatedComponentFile> files = new ArrayList<>();
 
+  @BeforeEach
+  void fileSyncOn() {
+    // the failures come from a real fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
+  }
+
   @AfterEach
   void tearDown() {
     for (final PaginatedComponentFile f : files)
       f.close();
+    GlobalConfiguration.FILE_SYNC.reset();
   }
 
   @Test
