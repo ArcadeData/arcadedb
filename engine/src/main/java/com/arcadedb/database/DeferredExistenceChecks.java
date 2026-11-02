@@ -163,7 +163,13 @@ public class DeferredExistenceChecks {
    */
   private Map<RID, WriteTally> journal;
 
-  /** True once {@link #journal} reached {@link #JOURNAL_LIMIT}: it was dropped, and nothing more is journaled until the scope closes. */
+  /**
+   * True once {@link #journal} reached {@link #JOURNAL_LIMIT}: it was dropped, nothing more is journaled, and
+   * {@link #retractJournaledWrites} gives nothing back. It holds for as long as a provisional record is pending, not for the whole
+   * scope: {@link #completed} clears it with the journal once the last provisional record is complete (issue #11037), since what
+   * the statement wrote until then stands and a later provisional record has no claim on it, and {@link #close()} clears it at the end
+   * of the statement.
+   */
   private boolean journalOverflowed;
 
   /**
