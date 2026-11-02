@@ -266,8 +266,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++) {
       double total = 0.0;
       for (final double w : weights[i]) {
-        // A negative weight would hand a neighbour a negative score, and an infinite one all of it: neither is a walk
-        if (!(w >= 0.0) || Double.isInfinite(w))
+        // A negative weight would hand a neighbour a negative score, and an infinite or NaN one all or none of it: no walk
+        if (w < 0.0 || !Double.isFinite(w))
           throw new IllegalArgumentException(
               getName() + "(): the edge weights of '" + weightProperty + "' must be finite and non-negative, got " + w);
         total += w;
@@ -288,7 +288,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         if (score == 0.0)
           continue;
         // Edges that all weigh 0 lead nowhere: the score goes back to the sources, as for a node with no edge
-        if (!(totalWeight[j] > 0.0)) {
+        if (totalWeight[j] <= 0.0) {
           dangling += score;
           continue;
         }

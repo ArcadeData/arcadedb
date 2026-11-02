@@ -148,6 +148,20 @@ class Issue11145LabelPropagationSeedsTest extends TestHelper {
   }
 
   @Test
+  void seedValuesAreNotNodeIndexes() throws Exception {
+    // A seed far larger than the node count, and a negative one: label ids are assigned per distinct value, so neither is
+    // read as an index, and the unseeded nodes are numbered past the largest seed whatever its sign
+    buildGraph();
+    database.command("opencypher", "MATCH (n:N) WHERE n.k = 0 SET n.label = 1000000000000");
+    database.command("opencypher", "MATCH (n:N) WHERE n.k = 5 SET n.label = -3");
+    final Map<Integer, Object> expected = Map.of(0, 1000000000000L, 1, 1000000000000L, 2, 1000000000000L, 3, -3L, 4, -3L, 5,
+        -3L);
+    assertThat(rows("{seedProperty: 'label', fixedSeeds: true}")).isEqualTo(expected);
+    createView();
+    assertThat(rows("{seedProperty: 'label', fixedSeeds: true}")).isEqualTo(expected);
+  }
+
+  @Test
   void invalidSeedConfigurationsAreRefused() {
     buildGraph();
     assertThatThrownBy(() -> rows("{fixedSeeds: true}")).hasMessageContaining("fixedSeeds needs seedProperty");
