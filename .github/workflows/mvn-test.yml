@@ -194,11 +194,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # fork-count: Surefire JVMs running test classes side by side. One test JVM already keeps about 2 of the
+        # runner's 4 vCPUs busy, so 2 forks fill it: measured on the engine lane in a 4-CPU/16 GB container, 1 fork
+        # 970 s, 2 forks 618 s, 3 forks 660 s, 4 forks 666 s (and +2.5 GB of memory per fork). The modules shard
+        # stays at 1 until its test isolation has been checked the way the engine's was
         include:
           - shard: engine
             modules: engine
+            fork-count: 2
           - shard: modules
             modules: '!engine,!e2e,!load-tests'
+            fork-count: 1
     # A hung test used to burn the workflow's whole budget in silence (run 29645471373 sat for
     # 2h15m on a deadlocked shared thread pool). Cap the job so a hang costs minutes, not hours.
     timeout-minutes: 60
@@ -266,7 +272,7 @@ jobs:
           ) &
           watchdog=$!
           set +e
-          ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '${{ matrix.modules }}' -DexcludedGroups=slow,benchmark,vector -Dsurefire.includes=**/*Test.java
+          ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '${{ matrix.modules }}' -DexcludedGroups=slow,benchmark,vector -Dsurefire.includes=**/*Test.java -Dsurefire.forkCount=${{ matrix.fork-count }}
           status=$?
           kill "$watchdog" 2>/dev/null || true
           exit $status

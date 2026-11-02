@@ -59,6 +59,10 @@
              fsync -->
         <arcadedb.fileSync>false</arcadedb.fileSync>
 
+        <!-- Surefire JVMs running test classes side by side: a property, not a literal, so -Dsurefire.forkCount=N
+             on the command line wins over it (a literal in the plugin configuration beats -D) -->
+        <surefire.forkCount>1</surefire.forkCount>
+
         <!-- Default surefire tag exclusion (issue #5697): keep this as a property, not a literal
              <excludedGroups> in the surefire <configuration> below. A literal there would win over
              the same-named -D user property on the command line (plugin configuration beats -D),
@@ -361,7 +365,7 @@
                     </properties>
                     <!--                            cucumber.filter.name="not .*IT.*"-->
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
-                    <forkCount>1</forkCount>
+                    <forkCount>${surefire.forkCount}</forkCount>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                         <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it. Cost: one
