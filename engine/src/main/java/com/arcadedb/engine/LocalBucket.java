@@ -57,6 +57,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 import java.util.function.LongConsumer;
 import java.util.logging.Level;
@@ -97,6 +98,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
+  /** The reason a chain walk gives when a continuation slot was freed; the chunk index it left follows it (#10987). */
+  private static final   String                    CHUNK_SLOT_CLEANED_REASON        = "chunk slot cleaned at chunk ";
+  private static final   long                      HEAD_FREE_RECHECK_NANOS          = 50_000L;
   /**
    * What {@link #decodeNextChunkLink} answers for a chunk that is the last of its chain. Not a value the next-chunk field
    * stores (that is 0): the decoded link is a bucket position, where 0 is a real chunk (#10853).
@@ -6090,7 +6094,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
           if (nextRecordPositionInPage == 0) {
-            brokenChainReason = "chunk slot cleaned at chunk " + (chunks - 1);
+            brokenChainReason = CHUNK_SLOT_CLEANED_REASON + (chunks - 1);
             break;
           }
 
@@ -6139,6 +6143,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // problem that does not exist.
         final String confirmed = confirmBrokenChunkChain(originalRID, chainTrace, chunks, record, lastNextChunkPointer,
                 headMarker);
+        if (confirmed != null && brokenChainReason.startsWith(CHUNK_SLOT_CLEANED_REASON) && isHeadFreedAfterItsTails(firstPageId,
+                firstChunkSlot, maxRetries))
+          // #10987: A DELETE PUBLISHES ITS PAGES ONE AT A TIME, AND A TAIL CAN BE PUBLISHED BEFORE THE HEAD. THE CHAIN THAT LOOKED
+          // CORRUPTED WAS A RECORD BEING DELETED, AND THE HEAD IS GONE NOW: A DELETED RECORD, WHICH THE SCAN SKIPS
+          throw new RecordNotFoundException("Multi-page record " + originalRID + " was deleted during read", originalRID);
+
         if (confirmed != null)
           // Both reasons when they differ, and they can: this walk carries a loop detector the confirmation walk
           // answers as the wrong marker it finds where the chain doubles back. The first is what the READ hit, the
@@ -6249,6 +6259,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     throw new DatabaseOperationException("Failed to load multi-page record " + originalRID);
+  }
+
+  /**
+   * Whether a chain broken by a freed chunk slot is a record whose delete is still being published (#10987). A delete frees
+   * the chunks and the head in pages of their own, readers take no lock, and the pages are published in an order the
+   * reader does not control: a tail page can be visible while the head still is, which is a chain indistinguishable from a
+   * corrupted one for as long as the window lasts. Waits for the head to follow, a few microseconds at a time and for at most
+   * {@code maxRetries} re-reads, and answers whether it did. A chain whose head never goes away is corrupted, and pays
+   * only this bounded wait for its diagnosis.
+   */
+  private boolean isHeadFreedAfterItsTails(final PageId firstPageId, final int firstChunkSlot, final int maxRetries)
+          throws IOException {
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      LockSupport.parkNanos(HEAD_FREE_RECHECK_NANOS << Math.min(attempt, 6));
+      database.getPageManager().incrementChunkChainReadRetries();
+
+      // The page manager, not the transaction: this only looks, and must not pin an image the read does not rely on
+      final BasePage head = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+      if (head == null || getRecordPositionInPage(head, firstChunkSlot) == 0)
+        return true;
+    }
+    return false;
   }
 
   /**
