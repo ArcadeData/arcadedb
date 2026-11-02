@@ -83,6 +83,7 @@ public class RecordAttribute extends SimpleNode {
    * The value of the record attribute {@code name} ({@code @rid}, {@code @type}, {@code @this}, ...) of a row, for the callers
    * that hold the attribute's name rather than a parsed node (ORDER BY, a {@code $variable.@type} path).
    */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
   public static Object evaluate(final Result currentRecord, final String name) {
     if (RID_PROPERTY.equalsIgnoreCase(name)) {
       return currentRecord.getIdentity().orElse(null);
@@ -90,16 +91,12 @@ public class RecordAttribute extends SimpleNode {
       final Document record = currentRecord.getElement().orElse(null);
       if (record == null) {
         // A row that wraps no record (an expanded vectorNeighbors() row, a projected sub-query row) carries the attribute as
-        // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131). The name is
-        // matched case-insensitively, the key is not: a row usually stores the canonical spelling
-        final Object value = currentRecord.getProperty(name);
-        if (value != null)
-          return value;
-        final String canonical = canonicalStructuralName(name);
-        return canonical.equals(name) ? null : currentRecord.getProperty(canonical);
+        // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131)
+        final Object value = column(currentRecord, name);
+        return value != ABSENT ? value : null;
       }
 
-      return evaluate(record, name);
+      return evaluateOnRecord(record, name);
     } else if (THIS_PROPERTY.equalsIgnoreCase(name)) {
       // Return the entire current record or value
       // For element-based results, return the element
@@ -122,15 +119,30 @@ public class RecordAttribute extends SimpleNode {
    */
   @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
   public static Object resolve(final Result row, final String name) {
-    final Object value = row.getPropertyIfPresent(name, ABSENT);
+    final Object value = column(row, name);
     return value != ABSENT ? value : evaluate(row, name);
   }
 
   /**
-   * The value of the row attribute {@code name} ({@code @rid}, {@code @type}, {@code @cat}, {@code @in}, {@code @out}, see
-   * {@link #isRowAttribute(String)}) of a record, or null for any other name.
+   * The column the row carries for the attribute {@code name}, a null one included, or {@link #ABSENT}. The attribute's name is
+   * matched case-insensitively and a key is not: the spelling as written first, then the canonical one ({@code @TYPE} finds a
+   * stored {@code @type}), so a key stored under the exact spelling wins, even holding null.
    */
-  public static Object evaluate(final Document record, final String name) {
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // identity against the private sentinel is the point
+  private static Object column(final Result row, final String name) {
+    final Object value = row.getPropertyIfPresent(name, ABSENT);
+    if (value != ABSENT)
+      return value;
+    final String canonical = canonicalName(name);
+    return canonical.equals(name) ? ABSENT : row.getPropertyIfPresent(canonical, ABSENT);
+  }
+
+  /**
+   * The value of the row attribute {@code name} ({@code @rid}, {@code @type}, {@code @cat}, {@code @in}, {@code @out}, see
+   * {@link #isRowAttribute(String)}) of a record, or null for any other name, {@code @this} included: unlike
+   * {@link #evaluate(Result, String)} this reads the record's own attributes only.
+   */
+  public static Object evaluateOnRecord(final Document record, final String name) {
     if (RID_PROPERTY.equalsIgnoreCase(name))
       return record.getIdentity();
     else if (TYPE_PROPERTY.equalsIgnoreCase(name))
@@ -155,8 +167,10 @@ public class RecordAttribute extends SimpleNode {
     return RID_PROPERTY.equalsIgnoreCase(name) || isStructuralAttribute(name);
   }
 
-  private static String canonicalStructuralName(final String name) {
-    if (TYPE_PROPERTY.equalsIgnoreCase(name))
+  private static String canonicalName(final String name) {
+    if (RID_PROPERTY.equalsIgnoreCase(name))
+      return RID_PROPERTY;
+    else if (TYPE_PROPERTY.equalsIgnoreCase(name))
       return TYPE_PROPERTY;
     else if (CAT_PROPERTY.equalsIgnoreCase(name))
       return CAT_PROPERTY;

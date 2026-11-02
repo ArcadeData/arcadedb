@@ -212,6 +212,21 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
     context.setVariable("o", projectedOther);
     assertThat(context.getVariable("$o.@type")).isEqualTo("Other");
     assertThat(context.getVariablePath("$o.@type")).isEqualTo("Other");
+
+    // ORDER BY @TYPE finds the projected @type column, not the record's type: "Other" sorts before "T"
+    final OrderByItem upperCase = new OrderByItem();
+    upperCase.setRecordAttr("@TYPE");
+    assertThat(upperCase.compare(projectedOther, plain, context)).isNegative();
+    assertThat(context.getVariable("$o.@TYPE")).isEqualTo("Other");
+
+    // a key stored under the exact spelling wins over the canonical one, even holding null
+    final ResultInternal bothSpellings = new ResultInternal(database);
+    bothSpellings.setProperty("@TYPE", null);
+    bothSpellings.setProperty("@type", "T");
+    context.setVariable("b", bothSpellings);
+    assertThat(context.getVariable("$b.@TYPE")).isNull();
+    assertThat(context.getVariablePath("$b.@TYPE")).isNull();
+    assertThat(context.getVariable("$b.@type")).isEqualTo("T");
   }
 
   /** `$row.@type` over a LET row that wraps no record. */
