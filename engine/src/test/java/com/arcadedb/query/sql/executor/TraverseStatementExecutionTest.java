@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -275,6 +277,17 @@ class TraverseStatementExecutionTest extends TestHelper {
       assertThat(namesOf("select name from (traverse out('" + e + "') from :root STRATEGY DEPTH_FIRST) where $depth <= 2", params))
           .containsExactlyInAnyOrder("R", "a", "b", "c");
     });
+  }
+
+  @Test
+  void historyIsAnOrdinaryVariableName() {
+    // TRAVERSE never set a $history variable, so reserving the name only refused it to users. The context variables TRAVERSE does set stay reserved.
+    try (final ResultSet rs = database.command("sqlscript", "LET $history = 42; RETURN $history;")) {
+      assertThat(rs.next().<Object>getProperty("value")).isEqualTo(42);
+    }
+    for (final String reserved : new String[] { "depth", "path", "stack" })
+      assertThatThrownBy(() -> database.command("sqlscript", "LET $" + reserved + " = 1; RETURN $" + reserved + ";").close())
+          .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("reserved");
   }
 
   private List<String> namesOf(final String query, final Map<String, Object> params) {

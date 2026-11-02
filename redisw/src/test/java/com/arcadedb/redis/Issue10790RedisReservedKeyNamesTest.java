@@ -67,9 +67,9 @@ public class Issue10790RedisReservedKeyNamesTest extends BaseRedisServerTest {
       jedis.sendCommand(Protocol.Command.SELECT, getDatabaseName());
       assertThat(jedis.set("depth", "selected")).isEqualTo("OK");
       assertThat(jedis.hget(getDatabaseName(), "depth")).isEqualTo("selected");
-      assertThat(jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(), "{\"id\":\"history\",\"v\":1}")).isEqualTo(1L);
-      assertThat(jedis.hexists(getDatabaseName(), "history")).isTrue();
-      assertThat(jedis.hdel(getDatabaseName(), "depth", "history")).isEqualTo(2L);
+      assertThat(jedis.sendCommand(Protocol.Command.HSET, getDatabaseName(), "{\"id\":\"stack\",\"v\":1}")).isEqualTo(1L);
+      assertThat(jedis.hexists(getDatabaseName(), "stack")).isTrue();
+      assertThat(jedis.hdel(getDatabaseName(), "depth", "stack")).isEqualTo(2L);
     }
   }
 
@@ -114,7 +114,7 @@ public class Issue10790RedisReservedKeyNamesTest extends BaseRedisServerTest {
       }
       assertThat(get(database, name)).isEqualTo("ql-" + name);
     }
-    try (final ResultSet rs = database.command("redis", "MULTI\nSET $parent block\nINCR $history\nGET $parent\nEXEC")) {
+    try (final ResultSet rs = database.command("redis", "MULTI\nSET $parent block\nINCR $stack\nGET $parent\nEXEC")) {
       final List<?> replies = (List<?>) rs.next().getProperty("value");
       assertThat(((Number) replies.get(1)).longValue()).isEqualTo(1L);
       assertThat(replies.get(2)).isEqualTo("block");
@@ -124,8 +124,8 @@ public class Issue10790RedisReservedKeyNamesTest extends BaseRedisServerTest {
     try (final Jedis jedis = connect()) {
       assertThat(jedis.get(getDatabaseName() + ".parent")).isEqualTo("ql-parent");
       assertThat(jedis.get(getDatabaseName() + ".$parent")).isEqualTo("block");
-      assertThat(jedis.get(getDatabaseName() + ".history")).isEqualTo("ql-history");
-      assertThat(jedis.get(getDatabaseName() + ".$history")).isEqualTo("1");
+      assertThat(jedis.get(getDatabaseName() + ".stack")).isEqualTo("ql-stack");
+      assertThat(jedis.get(getDatabaseName() + ".$stack")).isEqualTo("1");
     }
   }
 
