@@ -382,6 +382,7 @@ public final class CypherFunctionRegistry {
     register(new UtilDecompress());
     register(new UtilSleep());
     register(new UtilValidate());
+    register(new UtilValidatePredicate());
   }
 
   private static void registerAggFunctions() {

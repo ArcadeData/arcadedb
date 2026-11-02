@@ -21,8 +21,11 @@ package com.arcadedb.function.cypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.Schema;
 
 /**
  * Adapter for custom user-defined functions (SQL, JavaScript, Cypher).
@@ -48,37 +51,58 @@ public class CustomFunctionAdapter implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     // Lazy lookup from schema each time (handles function redefinition)
-    final Database database = context.getDatabase();
-
-    if (!database.getSchema().hasFunctionLibrary(libraryName))
-      throw new CommandExecutionException("Unknown function: " + fullName);
-
-    // Try exact match first
-    final FunctionDefinition function;
-    try {
-      function = database.getSchema().getFunction(libraryName, functionName);
-    } catch (final IllegalArgumentException e) {
-      // Not found under this exact name: fall through to a case-insensitive search
-      return executeCaseInsensitive(database, args);
-    }
-    // FunctionLibraryDefinition is a public extension point: a third-party implementation that violates the
-    // "getFunction() never returns null" contract gets a clear error here instead of a raw NPE.
+    final FunctionDefinition function = resolve(context.getDatabase().getSchema(), libraryName, functionName);
+    // A function dropped while a query calling it is still planned or running: the same client error the check before the
+    // execution gives (issue #11115), not a server fault
     if (function == null)
-      throw new CommandExecutionException(
-          "Function library '" + libraryName + "' returned null for '" + functionName + "', violating the FunctionLibraryDefinition.getFunction() contract");
+      throw FunctionValidator.unknownFunction(fullName);
     return function.execute(args);
   }
 
-  private Object executeCaseInsensitive(final Database database, final Object[] args) {
-    final var library = database.getSchema().getFunctionLibrary(libraryName);
-    for (final Object funcObj : library.getFunctions()) {
-      if (funcObj instanceof FunctionDefinition) {
-        final FunctionDefinition func = (FunctionDefinition) funcObj;
-        if (func.getName().equalsIgnoreCase(functionName))
-          return func.execute(args);
-      }
+  /**
+   * Whether {@code dottedName} ({@code library.function}, the library possibly dotted itself) names a user-defined function
+   * of the database, in any letter case.
+   */
+  public static boolean exists(final Schema schema, final String dottedName) {
+    final int dot = dottedName.lastIndexOf('.');
+    if (dot <= 0 || dot >= dottedName.length() - 1)
+      return false;
+    return resolve(schema, dottedName.substring(0, dot), dottedName.substring(dot + 1)) != null;
+  }
+
+  /**
+   * The user-defined function {@code functionName} of the library {@code libraryName}, or null when there is none. Both names
+   * match in any letter case, as Cypher function names do: an exact match is tried first, so the common case costs one lookup
+   * each. Cypher folds the name it is called by to lower case, so a library or function defined with an upper-case letter was
+   * only reachable through the case-insensitive pass.
+   */
+  public static FunctionDefinition resolve(final Schema schema, final String libraryName, final String functionName) {
+    final FunctionLibraryDefinition<?> library = library(schema, libraryName);
+    if (library == null)
+      return null;
+
+    if (library.hasFunction(functionName)) {
+      final FunctionDefinition function = library.getFunction(functionName);
+      // FunctionLibraryDefinition is a public extension point: a third-party implementation that violates the
+      // "getFunction() never returns null" contract gets a clear error here instead of a raw NPE.
+      if (function == null)
+        throw new CommandExecutionException("Function library '" + library.getName() + "' returned null for '" + functionName
+            + "', violating the FunctionLibraryDefinition.getFunction() contract");
+      return function;
     }
 
-    throw new CommandExecutionException("Unknown function: " + fullName);
+    for (final FunctionDefinition function : library.getFunctions())
+      if (function.getName().equalsIgnoreCase(functionName))
+        return function;
+    return null;
+  }
+
+  private static FunctionLibraryDefinition<?> library(final Schema schema, final String libraryName) {
+    if (schema.hasFunctionLibrary(libraryName))
+      return schema.getFunctionLibrary(libraryName);
+    for (final FunctionLibraryDefinition<?> library : schema.getFunctionLibraries())
+      if (library.getName().equalsIgnoreCase(libraryName))
+        return library;
+    return null;
   }
 }

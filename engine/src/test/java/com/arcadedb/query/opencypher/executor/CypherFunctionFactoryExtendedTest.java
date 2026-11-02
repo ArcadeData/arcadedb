@@ -20,7 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
@@ -169,15 +169,15 @@ class CypherFunctionFactoryExtendedTest {
   @Test
   void shouldThrowForUnknownFunction() {
     assertThatThrownBy(() -> factory.getFunctionExecutor("unknownfunction"))
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("Unknown function");
   }
 
   @Test
   void shouldThrowForUnknownSQLFunction() {
     assertThatThrownBy(() -> factory.getFunctionExecutor("sql.unknownfunction"))
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("Unknown SQL function");
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Unknown function 'sql.unknownfunction'");
   }
 
   @Test

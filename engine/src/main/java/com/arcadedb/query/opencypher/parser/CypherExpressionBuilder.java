@@ -1405,6 +1405,10 @@ class CypherExpressionBuilder {
    * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
    * Does NOT recurse into FunctionInvocationContext to avoid matching map literals inside function arguments.
    * This ensures that func({a: 1}) is recognized as a function call, not as the map literal.
+   * <p>
+   * Does NOT recurse into a map projection either: a map literal inside one ({@code n { c: { e: 1 } }}) is the value of
+   * one of its entries, and the projection is what the expression is (issue #11112). {@link #findMapProjectionRecursive}
+   * stops at a map literal for the same reason, so between the two the OUTERMOST of them is the one found.
    */
   Cypher25Parser.MapContext findMapRecursive(final ParseTree node) {
     if (node == null)
@@ -1415,7 +1419,7 @@ class CypherExpressionBuilder {
 
     // Do NOT recurse into function invocations - they should be recognized separately
     // and their internal arguments (including map literals) parsed later
-    if (node instanceof Cypher25Parser.FunctionInvocationContext)
+    if (node instanceof Cypher25Parser.FunctionInvocationContext || node instanceof Cypher25Parser.MapProjectionContext)
       return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
@@ -1508,6 +1512,10 @@ class CypherExpressionBuilder {
 
   /**
    * Recursively find MapProjectionContext in the parse tree.
+   * <p>
+   * Does NOT recurse into a map literal: a projection inside one ({@code { a: n { .k }, b: 1 }}) is the value of one of
+   * its entries, and answering it for the whole expression dropped the literal's keys and every other entry (issue
+   * #11112). {@link #findMapRecursive} stops at a projection for the same reason.
    */
   Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
       final ParseTree node) {
@@ -1516,6 +1524,9 @@ class CypherExpressionBuilder {
 
     if (node instanceof Cypher25Parser.MapProjectionContext)
       return (Cypher25Parser.MapProjectionContext) node;
+
+    if (node instanceof Cypher25Parser.MapContext)
+      return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.MapProjectionContext found = findMapProjectionRecursive(node.getChild(i));

@@ -244,6 +244,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           database.getCypherStatementCache().getParameterized(actualQuery);
       final ParsedQuery parsed = lookup.statement();
       final CypherStatement statement = parsed.statement();
+      // A namespaced function no built-in answers is refused before anything runs, as an unknown plain one is at parse time
+      // (issue #11115); before the idempotency refusal below, which such a call would otherwise trip first
+      CYPHER_FUNCTION_FACTORY.checkNamespacedFunctionsResolve(parsed.namespacedFunctionCalls(), database);
 
       // Make any session parameters (SESSION SET) visible to this query as $name.
       final QuerySession session = currentQuerySession();
@@ -346,6 +349,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           database.getCypherStatementCache().getParameterized(actualQuery);
       final ParsedQuery parsed = lookup.statement();
       final CypherStatement statement = parsed.statement();
+      // A namespaced function no built-in answers is refused before anything runs, as an unknown plain one is at parse time
+      // (issue #11115); before the idempotency refusal below, which such a call would otherwise trip first
+      CYPHER_FUNCTION_FACTORY.checkNamespacedFunctionsResolve(parsed.namespacedFunctionCalls(), database);
 
       // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
       // once and thread it to the merge, the parameter check and executeSession (avoids repeated
