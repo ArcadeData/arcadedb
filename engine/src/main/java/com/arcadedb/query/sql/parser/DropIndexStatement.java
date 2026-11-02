@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -67,7 +69,12 @@ public class DropIndexStatement extends DDLStatement {
         if (!(idx instanceof IndexInternal internal) || internal.getTypeIndex() == null)
           toDrop.add(idx.getName());
 
+      // the logical indexes over several types (issue #11014) are read first: their per-type indexes go with the rest, and the names
+      // are forgotten once they have
+      final List<MultiTypeIndexes.Entry> logicalIndexes = MultiTypeIndexes.entries(db.getSchema());
       db.getSchema().getEmbedded().dropIndexes(toDrop);
+      for (final MultiTypeIndexes.Entry logical : logicalIndexes)
+        MultiTypeIndexes.remove(db.getSchema(), logical.name());
 
       for (final Index idx : indexes) {
         final ResultInternal result = new ResultInternal(db);
@@ -79,11 +86,21 @@ public class DropIndexStatement extends DDLStatement {
       }
 
     } else {
-      if (!db.getSchema().existsIndex(name.getValue()) && !ifExists) {
-        throw new CommandExecutionException("Index not found: " + name.getValue());
-      }
+      final Schema schema = db.getSchema();
+      final String indexName = name.getValue();
+      // The name of a logical index over several types (issue #11014): what its statement built goes with the name. An index name is
+      // unique across the database, so a name that is an index is not a logical one
+      final MultiTypeIndexes.Entry logical = schema.existsIndex(indexName) ? null : MultiTypeIndexes.find(schema, indexName);
+      if (logical != null)
+        MultiTypeIndexes.drop(schema, logical);
+      else {
+        if (!schema.existsIndex(indexName) && !ifExists)
+          throw new CommandExecutionException("Index not found: " + indexName);
 
-      db.getSchema().dropIndex(name.getValue());
+        // dropping a member alone would leave the logical index naming it, and covering fewer types than it says
+        MultiTypeIndexes.requireNotMember(schema, indexName);
+        schema.dropIndex(indexName);
+      }
 
       final ResultInternal result = new ResultInternal();
       result.setProperty("operation", "drop index");

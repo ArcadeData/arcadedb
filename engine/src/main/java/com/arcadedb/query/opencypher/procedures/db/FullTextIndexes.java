@@ -20,10 +20,8 @@ package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
-import com.arcadedb.query.opencypher.query.CypherMultiTypeIndexes;
 import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
@@ -45,14 +43,7 @@ final class FullTextIndexes {
 
   /** The per-type full-text indexes behind the name, at least one. */
   static List<TypeIndex> resolve(final Database database, final String indexName) {
-    final List<TypeIndex> logical = CypherMultiTypeIndexes.resolve(database.getSchema(), indexName);
-    if (logical == null)
-      return List.of(FullTextSearch.resolveFullTextIndex(database, indexName));
-    if (logical.isEmpty())
-      throw new CommandExecutionException("Index '" + indexName + "' has no full-text index left");
-    for (final TypeIndex typeIndex : logical)
-      FullTextSearch.resolveFullTextIndex(database, typeIndex.getName());
-    return logical;
+    return FullTextSearch.resolveFullTextIndexes(database, indexName);
   }
 
   /**
