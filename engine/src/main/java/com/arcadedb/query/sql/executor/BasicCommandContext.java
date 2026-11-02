@@ -164,7 +164,7 @@ public class BasicCommandContext implements CommandContext {
         else if (result instanceof Document document) {
           // Handle special metadata properties that are not stored in the document
           if (RecordAttribute.isRowAttribute(firstPart))
-            result = RecordAttribute.evaluate(new ResultInternal(document), firstPart);
+            result = RecordAttribute.evaluate(document, firstPart);
           else
             result = document.get(firstPart);
         }

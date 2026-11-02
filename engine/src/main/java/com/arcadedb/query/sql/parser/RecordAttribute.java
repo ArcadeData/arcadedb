@@ -91,13 +91,7 @@ public class RecordAttribute extends SimpleNode {
         // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131)
         return currentRecord.getProperty(name);
 
-      if (TYPE_PROPERTY.equalsIgnoreCase(name))
-        return record.getTypeName();
-      else if (CAT_PROPERTY.equalsIgnoreCase(name))
-        return record instanceof Vertex ? "v" : record instanceof Edge ? "e" : "d";
-      else if (record instanceof Edge edge)
-        return IN_PROPERTY.equalsIgnoreCase(name) ? edge.getIn() : edge.getOut();
-      return null;
+      return evaluate(record, name);
     } else if (THIS_PROPERTY.equalsIgnoreCase(name)) {
       // Return the entire current record or value
       // For element-based results, return the element
@@ -109,6 +103,26 @@ public class RecordAttribute extends SimpleNode {
         return internal.getValue();
       }
       return currentRecord;
+    }
+    return null;
+  }
+
+  /**
+   * The value of the row attribute {@code name} ({@code @rid}, {@code @type}, {@code @cat}, {@code @in}, {@code @out}, see
+   * {@link #isRowAttribute(String)}) of a record, or null for any other name.
+   */
+  public static Object evaluate(final Document record, final String name) {
+    if (RID_PROPERTY.equalsIgnoreCase(name))
+      return record.getIdentity();
+    else if (TYPE_PROPERTY.equalsIgnoreCase(name))
+      return record.getTypeName();
+    else if (CAT_PROPERTY.equalsIgnoreCase(name))
+      return record instanceof Vertex ? "v" : record instanceof Edge ? "e" : "d";
+    else if (record instanceof Edge edge) {
+      if (IN_PROPERTY.equalsIgnoreCase(name))
+        return edge.getIn();
+      else if (OUT_PROPERTY.equalsIgnoreCase(name))
+        return edge.getOut();
     }
     return null;
   }

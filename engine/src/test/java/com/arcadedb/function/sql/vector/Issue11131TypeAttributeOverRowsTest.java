@@ -21,6 +21,8 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -155,6 +157,29 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
         types.add(rs.next().getProperty("@type"));
       assertThat(types).containsExactly("B", "B", "A", "A");
     }
+  }
+
+  /** ORDER BY @out / @in over edge records orders by the endpoint RIDs, as ORDER BY @rid does. */
+  @Test
+  void orderByEdgeEndpointsOrdersEdgeRows() {
+    database.transaction(() -> {
+      final Vertex hub = database.newVertex("V").set("name", "hub").save();
+      for (int i = 0; i < 4; i++)
+        database.newVertex("V").set("name", "s" + i).save().newEdge("E", hub).save();
+    });
+    for (final String attribute : new String[] { "@out", "@in" })
+      for (final String direction : new String[] { "ASC", "DESC" }) {
+        final String query = "SELECT FROM E ORDER BY " + attribute + " " + direction + ", @rid";
+        try (final ResultSet rs = database.query("sql", query)) {
+          final List<RID> endpoints = new ArrayList<>();
+          while (rs.hasNext()) {
+            final Edge edge = rs.next().getElement().orElseThrow().asEdge();
+            endpoints.add("@out".equals(attribute) ? edge.getOut() : edge.getIn());
+          }
+          assertThat(endpoints).as(query).hasSize(5)
+              .isSortedAccordingTo("ASC".equals(direction) ? Comparator.<RID>naturalOrder() : Comparator.<RID>reverseOrder());
+        }
+      }
   }
 
   /** `$row.@type` over a LET row that wraps no record. */
