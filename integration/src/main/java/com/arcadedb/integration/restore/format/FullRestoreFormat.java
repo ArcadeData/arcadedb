@@ -433,7 +433,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         fileOut.write(BUFFER, 0, len);
       }
       // DURABLE BEFORE THE RESTORE REPORTS SUCCESS: SEE ParallelZipExtractor, WHICH DOES THE SAME PER ENTRY (ISSUE #8626)
-      fileOut.getFD().sync();
+      FileUtils.sync(fileOut.getFD());
     }
 
     final long origSize = uncompressedFile.length();

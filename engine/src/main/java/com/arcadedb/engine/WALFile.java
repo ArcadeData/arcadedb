@@ -278,10 +278,10 @@ public class WALFile extends LockContext {
    */
   void force(final boolean metaData) throws IOException {
     try {
-      channel.force(metaData);
+      FileUtils.force(channel, metaData);
     } catch (final ClosedChannelException e) {
       retryAfterReopen(e, "force", () -> {
-        channel.force(metaData);
+        FileUtils.force(channel, metaData);
         return null;
       });
     }

@@ -259,7 +259,7 @@ public class ParallelZipExtractor {
         // A RESTORED FILE IS DURABLE WHEN THE RESTORE SAYS IT IS DONE, NOT WHEN THE OS GETS ROUND TO WRITING IT BACK: THE
         // DATABASE OPENED ON IT FORCES ONLY THE FILES IT WRITES ITSELF (ISSUE #8626), SO NOTHING LATER SYNCS A FILE THAT
         // IS ONLY READ. EACH WORKER SYNCS ITS OWN ENTRY, SO THE FSYNCS RUN AS PARALLEL AS THE EXTRACTION
-        out.getFD().sync();
+        FileUtils.sync(out.getFD());
       } finally {
         bufferPool.offer(buffer);
       }

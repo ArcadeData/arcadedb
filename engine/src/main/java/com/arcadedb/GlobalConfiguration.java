@@ -230,6 +230,15 @@ public enum GlobalConfiguration {
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
 
+  FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """
+      FOR TESTING ONLY. Set it to false to skip every fsync ArcadeDB issues: data and WAL files, the directory \
+      entries of created and renamed files, schema and configuration saves, security files, backups, restores and \
+      HA snapshots. Data then survives a process crash, because the operating system still writes it, but not a \
+      power failure or an OS crash. Only the exact text false turns it off, so a typo keeps the fsync. The default \
+      follows the JVM system property of the same name, so a test run that sets it keeps it across \
+      GlobalConfiguration.resetAll()""",
+      Boolean.class, true, null, value -> !"false".equalsIgnoreCase(System.getProperty("arcadedb.fileSync"))),
+
   TX_WAL_GROUP_COMMIT("arcadedb.txWalGroupCommit", SCOPE.DATABASE, """
       With arcadedb.txWalFlush 1 or 2, moves the write and the flush of the WAL out of the commit's file locks and shares \
       the flush between the transactions committing at the same time: a commit still returns only once its WAL is on \

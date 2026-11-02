@@ -24,6 +24,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -229,13 +230,13 @@ public final class SortedIndexBuildRecoveryMarker {
 
   private static void forceFile(final Path path) throws IOException {
     try (FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     }
   }
 
   private static void forceDirectory(final Path path) {
     try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     } catch (final IOException | UnsupportedOperationException ignore) {
       // The manifest itself is forced; directory fsync is best effort where supported.
     }

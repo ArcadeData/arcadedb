@@ -82,6 +82,8 @@ class Issue7768InterruptedWalSlotTest extends TestHelper {
 
   @Override
   protected void beginTest() {
+    // forceReopensAChannelTheInterruptClosed needs a real fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
     database.getSchema().createDocumentType("Doc");
   }
 

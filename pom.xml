@@ -53,6 +53,12 @@
         <skipITs>true</skipITs>
         <skipTests>false</skipTests>
 
+        <!-- arcadedb.fileSync for the unit tests: no fsync, which halved the engine lane (19:36 -> 9:09 on macOS),
+             spent mostly on the directory and file fsyncs of every schema save and file creation. A test that
+             asserts on fsync turns it back on itself. A property, so -Darcadedb.fileSync=true runs the suite with
+             fsync -->
+        <arcadedb.fileSync>false</arcadedb.fileSync>
+
         <!-- Default surefire tag exclusion (issue #5697): keep this as a property, not a literal
              <excludedGroups> in the surefire <configuration> below. A literal there would win over
              the same-named -D user property on the command line (plugin configuration beats -D),
@@ -362,6 +368,7 @@
                              Throwable per window opened (a backup or an HA snapshot), next to a barrier that drains
                              and suspends the flush pipeline - nothing on the read, write or commit paths -->
                         <arcadedb.pageSnapshotTrackOpeners>true</arcadedb.pageSnapshotTrackOpeners>
+                        <arcadedb.fileSync>${arcadedb.fileSync}</arcadedb.fileSync>
                     </systemPropertyVariables>
                     <argLine>
                         @{argLine}

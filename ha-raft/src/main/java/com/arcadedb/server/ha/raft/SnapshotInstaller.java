@@ -2455,7 +2455,7 @@ public final class SnapshotInstaller {
           // after the swap (when the backup is already gone) would expose torn/partial files with no
           // way to roll back (issue #4830).
           cos.flush();
-          fos.getFD().sync();
+          FileUtils.sync(fos.getFD());
 
           extracted.put(entryName, new long[] { uncompressedBytes, crc.getValue() });
         }
@@ -2855,7 +2855,7 @@ public final class SnapshotInstaller {
   private static void writeFileForced(final Path file, final String content) throws IOException {
     Files.writeString(file, content);
     try (final FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     }
   }
 
@@ -2871,7 +2871,7 @@ public final class SnapshotInstaller {
     if (dir == null)
       return;
     try (final FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
           "Directory fsync not supported or failed for %s: %s", null, dir, e.getMessage());

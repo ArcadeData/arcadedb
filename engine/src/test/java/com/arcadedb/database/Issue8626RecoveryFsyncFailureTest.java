@@ -18,10 +18,12 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -41,8 +43,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue8626RecoveryFsyncFailureTest {
   private static final String DB_PATH = "target/databases/Issue8626RecoveryFsyncFailureTest";
 
+  @BeforeEach
+  void fileSyncOn() {
+    // the failure comes from a real fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
+  }
+
   @AfterEach
   void cleanup() {
+    GlobalConfiguration.FILE_SYNC.reset();
     LocalDatabase.TEST_BEFORE_RECOVERY_REPLAY_HOOK = null;
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     try {
