@@ -32,8 +32,11 @@ import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #9518 over Gremlin Server: a traversal or a script the query admission gate does not start is answered with an
@@ -76,7 +79,9 @@ class QueryAdmissionGateGremlinIssue9518Test extends AbstractGremlinServerIT {
         assertThat(g.V().count().next()).isNotNull();
         assertThat(client.submit("g.V().count()").all().get()).hasSize(1);
       }
-      assertThat(gate.getRunning()).isZero();
+      // THE SERVER GIVES THE LAST SLOT BACK IN onQuerySuccess, ON ITS gremlinPool THREAD AFTER THE RESPONSE IS WRITTEN: THE
+      // CLIENT CAN READ THE RESULT FIRST. A LEAKED SLOT STAYS AT 1 AND STILL FAILS HERE
+      await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(gate.getRunning()).isZero());
     } finally {
       cluster.close();
     }
