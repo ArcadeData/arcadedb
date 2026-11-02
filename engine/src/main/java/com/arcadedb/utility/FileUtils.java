@@ -536,7 +536,8 @@ public class FileUtils {
    * {@code source} is never unlinked in the process. As in {@link #atomicWriteFile(File, byte[])}, the parent
    * directory is fsync'd after the rename so the published name survives a power failure (issue #7465).
    * <p>
-   * Unless {@link #atomicCopyFile(File, File, boolean, boolean)} is told not to, a hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
+   * Unless {@link #atomicCopyFile(File, File, boolean, boolean)} is told not to, a hard link is attempted first:
+   * it makes {@code target} a second name for the bytes already on disk,
    * which costs one inode operation instead of a full read + write + fsync of the source, and is
    * byte-exact by construction (no charset can be applied to bytes that are never decoded). Filesystems
    * that do not support links (FAT/exFAT, some network mounts) fall back to reading the source and
