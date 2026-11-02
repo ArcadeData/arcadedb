@@ -1023,8 +1023,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         final AtomicBoolean continueScan = new AtomicBoolean(true);
 
         for (final Bucket b : type.getBuckets(polymorphic)) {
+          // A record is of the type that owns its bucket, not of the type the scan was asked for (#11066): the
+          // delete events and every getType() read are dispatched off it. Resolved once per bucket, not per record.
+          final DocumentType bucketType = polymorphic ? schema.getTypeByBucketId(b.getFileId()) : type;
+          final DocumentType recordType = bucketType != null ? bucketType : type;
           b.scan((rid, view) -> {
-            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid,
+            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
                 view, null);
             continueScan.set(callback.onRecord(record));
             return continueScan.get();

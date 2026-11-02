@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -346,6 +347,10 @@ class Issue9683InheritedExternalPropertyTest extends TestHelper {
     child.createProperty("blob", Type.STRING).setExternal(true);
   }
 
+  /**
+   * A record of a subtype handed out tagged with its PARENT type. A polymorphic scan no longer does that (#11066), but any
+   * caller holding a record of the wrong type must still get the subtype's own EXTERNAL property resolved from the bucket.
+   */
   private Document scanParentPolymorphically() {
     final Document[] found = new Document[1];
     database.transaction(() -> database.scanType("Parent", true, record -> {
@@ -353,7 +358,10 @@ class Issue9683InheritedExternalPropertyTest extends TestHelper {
       return false;
     }));
     assertThat(found[0]).isNotNull();
-    return found[0];
+    final RID rid = found[0].getIdentity();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final Binary content = ((LocalBucket) db.getSchema().getBucketById(rid.getBucketId())).getRecord(rid);
+    return (Document) db.getRecordFactory().newImmutableRecord(db, db.getSchema().getType("Parent"), rid, content, null);
   }
 
   private RID saveDocument(final String typeName, final String blob) {
