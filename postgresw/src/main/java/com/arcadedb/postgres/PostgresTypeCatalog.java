@@ -468,6 +468,8 @@ public class PostgresTypeCatalog {
   private static String storage(final PostgresType type) {
     if (type == PostgresType.NUMERIC)
       return "m";
+    if (type == PostgresType.INT2VECTOR)
+      return "p";
     return type.size > 0 ? "p" : "x";
   }
 
@@ -482,6 +484,8 @@ public class PostgresTypeCatalog {
       final PostgresType element = PostgresType.byCode(type.elementCode);
       return element != null && "d".equals(align(element)) ? "d" : "i";
     }
+    if (type == PostgresType.NAME)
+      return "c";
     return switch (type.size) {
       case 1 -> "c";
       case 2 -> "s";
@@ -515,9 +519,10 @@ public class PostgresTypeCatalog {
       return "A";
     return switch (type) {
       case BOOLEAN -> "B";
-      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC -> "N";
+      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC, OID -> "N";
       case DATE, TIMESTAMP -> "D";
-      case CHAR, VARCHAR, TEXT, BPCHAR -> "S";
+      case CHAR, VARCHAR, TEXT, BPCHAR, NAME -> "S";
+      case INT2VECTOR -> "A";
       default -> "U"; // user-defined, which is where PostgreSQL itself files json
     };
   }
