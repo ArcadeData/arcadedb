@@ -62,6 +62,13 @@ public class DateUtils {
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
   public static final  long                                         MS_IN_A_DAY               = 24 * 60 * 60 * 1000L; // 86_400_000
   /**
+   * The largest count of epoch days, either side of 1970, that every class a DATE can be held as can hold: a
+   * {@code java.util.Date} and a {@code Calendar} keep a day as the epoch milliseconds of its UTC midnight in a {@code long}, so
+   * this is {@code Long.MAX_VALUE / MS_IN_A_DAY}, the year 292,278,994 (a {@code LocalDate} reaches 3.4 times further). See
+   * {@link #dateNumberToEpochDays(long)}.
+   */
+  public static final  long                                         MAX_DATE_DAY_COUNT        = Math.floorDiv(Long.MAX_VALUE, MS_IN_A_DAY);
+  /**
    * The timestamp in every generated file name (backup and export archives). Pinned to {@link Locale#ROOT} so the name
    * is Gregorian with ASCII digits whatever the JVM's default locale: the server's backup retention parses these names
    * back and orders them, and a locale-formatted name was either misdated (th-TH's Buddhist year) or unreadable
@@ -209,22 +216,51 @@ public class DateUtils {
   }
 
   /**
-   * Reads a number given for a DATE as a count of epoch days, unless it is the epoch MILLISECONDS of a UTC midnight, which is
-   * read as that day. A DATE is a count of days on disk and on the remote client's record wire (#4601), but a {@code LocalDate}
-   * travelling as a query parameter, or a date sent by an HTTP client, is written as the milliseconds of its UTC midnight
-   * ({@code JSONObject}, #9037), and nothing on the way tells the two apart. Read as days, those milliseconds are a day past
-   * the year 238,000 (26.10.2 refused them as out of range, earlier versions stored null), so a non-zero exact multiple of a
-   * day's milliseconds is read as milliseconds instead (issue #10865). The only day counts that reading takes away are the
-   * multiples of 86,400,000 days, all of them more than 236,000 years away from 1970; zero is the same day either way.
+   * The count of epoch days a number WRITTEN into a DATE stands for, the same whatever class holds the DATE ({@code LocalDate},
+   * {@code java.util.Date}, {@code Calendar} or {@code LocalDateTime}, issues #10910 and #11025), read in this order:
+   * <ol>
+   *   <li>the epoch MILLISECONDS of a UTC midnight are that day. A DATE is a count of days on disk and on the remote client's
+   *   record wire (#4601), but a {@code LocalDate} travelling as a query parameter, or a date sent by an HTTP client, is written
+   *   as the milliseconds of its UTC midnight ({@code JSONObject}, #9037), and nothing on the way tells the two apart. The only
+   *   day counts this reading takes away are the multiples of 86,400,000 days, all of them more than 236,000 years away from
+   *   1970; zero is the same day either way (issue #10865);</li>
+   *   <li>any other number up to {@link #MAX_DATE_DAY_COUNT} either side of zero is a count of days;</li>
+   *   <li>a number past that is no day count every class of a DATE can hold, so it is the epoch milliseconds it is (a "now" in
+   *   milliseconds is such a number) and stands for the UTC day those milliseconds fall in, as a {@code java.util.Date} written
+   *   into a DATE does (see {@link #isDateNumberMillis(long)}).</li>
+   * </ol>
+   * The reading has a window: a non-midnight milliseconds value small enough to be a day count (below about 1.07e11, that is
+   * before 1973-05-21 as milliseconds) is a day count. The bound of the second rule is the one every class can hold, not the
+   * larger one of {@code LocalDate}: bounding it there let a {@code LocalDate} store as a day of the year 547 million what a
+   * {@code java.util.Date} refused, and what was the milliseconds of a day of 1976 (issue #11025).
    * {@code Type} applies it to a value WRITTEN into a DATE property only, never to a comparison.
    *
-   * @param number a count of epoch days, or the epoch milliseconds of a UTC midnight
+   * @param number a count of epoch days, or epoch milliseconds
    *
-   * @return the count of epoch days
+   * @return the count of epoch days, within {@link #MAX_DATE_DAY_COUNT} of zero
+   *
+   * @throws IllegalArgumentException for milliseconds whose day is before the first one a {@code java.util.Date} can hold
+   *                                  (within about 300 days of {@code Long.MIN_VALUE}): refused whatever class holds the DATE
    */
   public static long dateNumberToEpochDays(final long number) {
     // floorMod/floorDiv for the house rule (#7638); on an exact multiple they answer what '%' and '/' would
-    return number != 0 && Math.floorMod(number, MS_IN_A_DAY) == 0 ? Math.floorDiv(number, MS_IN_A_DAY) : number;
+    if (number != 0 && Math.floorMod(number, MS_IN_A_DAY) == 0)
+      return Math.floorDiv(number, MS_IN_A_DAY);
+    if (number >= -MAX_DATE_DAY_COUNT && number <= MAX_DATE_DAY_COUNT)
+      return number;
+    final long days = Math.floorDiv(number, MS_IN_A_DAY);
+    if (days < -MAX_DATE_DAY_COUNT)
+      throw new IllegalArgumentException("Date value " + number + " is outside the supported range");
+    return days;
+  }
+
+  /**
+   * True when {@link #dateNumberToEpochDays(long)} reads {@code number} as epoch milliseconds that are not a UTC midnight (its
+   * third rule): a {@code java.util.Date}, {@code Calendar} or {@code LocalDateTime} holding the DATE keeps that instant, time of
+   * day included, as it always did, and what is stored is its day, the one every class reads (issue #11025).
+   */
+  public static boolean isDateNumberMillis(final long number) {
+    return number < -MAX_DATE_DAY_COUNT || number > MAX_DATE_DAY_COUNT;
   }
 
   /**

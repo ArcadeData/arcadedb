@@ -386,32 +386,21 @@ public enum Type {
   }
 
   /**
-   * True when a day count (see {@link DateUtils#dateNumberToEpochDays(long)}) is a day a {@code LocalDate} can hold. A number
-   * beyond that was never a day count, and a DATE held as a {@code java.util.Date}, {@code Calendar} or {@code LocalDateTime}
-   * kept reading it as epoch milliseconds before issue #10910, so it still is (a "now" in milliseconds is such a number).
-   * <p>
-   * The reading is a heuristic and has a window: a non-midnight milliseconds value small enough to be a day count (below about
-   * 1.07e11, that is before 1973 as milliseconds) is a day count, as it is for the default {@code LocalDate} implementation.
-   */
-  private static boolean isDayCount(final long days) {
-    return days >= LocalDate.MIN.toEpochDay() && days <= LocalDate.MAX.toEpochDay();
-  }
-
-  /**
    * The epoch milliseconds a number written into a DATE column stands for when the DATE is held as a {@code java.util.Date} or a
-   * {@code Calendar}: the UTC midnight of the day it counts, or, for a number that is no day count, the milliseconds it already
-   * is. A day count whose milliseconds do not fit a {@code long} is refused instead of wrapping to an unrelated date (issue
-   * #10910).
+   * {@code Calendar}, on the day {@link DateUtils#dateNumberToEpochDays(long)} reads, the one day every class of a DATE reads
+   * for that number (issues #10910 and #11025): the UTC midnight of a day count, or the milliseconds a number read as
+   * milliseconds already is. A day count is within {@link DateUtils#MAX_DATE_DAY_COUNT} of zero, so its milliseconds always fit
+   * a {@code long}.
    */
   private static long dateNumberToEpochMillis(final long number) {
     final long days = DateUtils.dateNumberToEpochDays(number);
-    if (!isDayCount(days))
-      return number;
-    try {
-      return Math.multiplyExact(days, DateUtils.MS_IN_A_DAY);
-    } catch (final ArithmeticException e) {
-      throw new IllegalArgumentException("Date value " + number + " is outside the supported range", e);
-    }
+    return DateUtils.isDateNumberMillis(number) ? number : days * DateUtils.MS_IN_A_DAY;
+  }
+
+  /** The same for a DATE held as a {@code LocalDateTime} (issues #10910 and #11025). */
+  private static LocalDateTime dateNumberToLocalDateTime(final long number) {
+    final long days = DateUtils.dateNumberToEpochDays(number);
+    return DateUtils.isDateNumberMillis(number) ? DateUtils.localDateTimeFromEpochMillis(number) : LocalDate.ofEpochDay(days).atStartOfDay();
   }
 
   /**
@@ -717,11 +706,8 @@ public enum Type {
           calendar.setTimeInMillis(dateNumberToEpochMillis(DateUtils.numberToEpochUnits(number)));
           return calendar;
         }
-        if (ofClass == LocalDateTime.class) {
-          final long days = DateUtils.dateNumberToEpochDays(DateUtils.numberToEpochUnits(number));
-          if (isDayCount(days))
-            return LocalDate.ofEpochDay(days).atStartOfDay();
-        }
+        if (ofClass == LocalDateTime.class)
+          return dateNumberToLocalDateTime(DateUtils.numberToEpochUnits(number));
       }
       // the declared property is carried so a number out of the element range is refused instead of clamped; a date
       // conversion expects a date property, not the collection one
@@ -1108,12 +1094,10 @@ public enum Type {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
-          // a DATE held as a LocalDateTime reads a number as days, like every other implementation of it (issue #10910)
-          if (isDateProperty(property)) {
-            final long days = dateNumberToEpochDays(DateUtils.numberToEpochUnits(number), property);
-            if (isDayCount(days))
-              return LocalDate.ofEpochDay(days).atStartOfDay();
-          }
+          // a DATE held as a LocalDateTime reads a number as the day every other implementation of it reads (issues #10910,
+          // #11025)
+          if (isDateProperty(property))
+            return dateNumberToLocalDateTime(DateUtils.numberToEpochUnits(number));
           // epoch MILLIS of a DATETIME, not the day count DateUtils.date() reads (issue #9324)
           return DateUtils.localDateTimeFromEpochMillis(DateUtils.numberToEpochUnits(number));
         } else if (value instanceof LocalDate date) {

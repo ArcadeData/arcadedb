@@ -1840,6 +1840,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   private boolean applyUpdate(final Record record, final boolean writeNow, final boolean discardRecordAfter,
       final boolean fireEvents) {
+    // Whether the update is an edge-list write only, read ONCE here, before either arm writes anything (issue #11024): the write-now
+    // arm reaches the page before it counts the write, and a page write that keeps the instance (discardRecordAfter false) hands it
+    // the new buffer through setBuffer(), which clears the flags. Read after it, every property write of that arm was property-less.
+    // Known positively, not from the absence of an assignment: a list or map changed in place assigns no property either, and it
+    // is content all the same.
+    final boolean structural = isEdgeListWriteOnly(record);
     if (!writeNow && isTransactionActive()) {
       // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
       // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -1900,14 +1906,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
         }
-        countCompletedUpdate(tx, record);
+        countCompletedUpdate(tx, record, structural);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
             "transaction", e);
       }
     } else {
       updateRecordNoLock(record, discardRecordAfter);
-      countCompletedUpdate(getTransaction(), record);
+      countCompletedUpdate(getTransaction(), record, structural);
     }
 
     // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
@@ -1960,12 +1966,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return false;
   }
 
-  /** Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it. */
-  private void countCompletedUpdate(final TransactionContext tx, final Record record) {
+  /**
+   * Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it.
+   *
+   * @param structural true when the update assigned no property, as the caller observed it BEFORE the write: the record cannot be
+   *                   asked here, since a write that reached the page already cleared what it would answer (issue #11024)
+   */
+  private static boolean isEdgeListWriteOnly(final Record record) {
+    if (!(record instanceof MutableDocument document))
+      // an edge segment, or any other record that holds no properties
+      return true;
+    return document instanceof MutableVertex vertex && vertex.areEdgeListHeadsAssigned() && !document.arePropertiesAssigned();
+  }
+
+  private void countCompletedUpdate(final TransactionContext tx, final Record record, final boolean structural) {
     tx.countCompletedRecordWrite();
     if (DeferredExistenceChecks.anyScopeArmed())
-      DeferredExistenceChecks.updateCounted(this, record.getIdentity(),
-          !(record instanceof MutableDocument document) || !document.arePropertiesAssigned());
+      DeferredExistenceChecks.updateCounted(this, record.getIdentity(), structural);
   }
 
   public Document getOriginalDocument(final Record record) {

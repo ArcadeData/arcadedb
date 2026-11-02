@@ -5014,8 +5014,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Trains the PQ codebook of this index on at most {@code pqTrainingLimit} vectors (issue #10514).
    * <p>
-   * The sample is a fixed-seed random subset of the ordinals, so the same data trains the same codebook, and it never
-   * has fewer vectors than there are clusters, which JVector's k-means++ refuses. JVector caps whatever it is given at
+   * The sample is a fixed-seed random subset of the ordinals, so the same data always trains on the same vectors, and it
+   * never has fewer vectors than there are clusters, which JVector's k-means++ refuses. The codebook itself is NOT a
+   * function of the data: JVector seeds k-means++ from {@code ThreadLocalRandom} and runs it in parallel, so two trainings
+   * of one sample give different centroids, and an approximate search over near-ties may rank them differently (#11035). JVector caps whatever it is given at
    * {@link ProductQuantization#MAX_PQ_TRAINING_SET_SIZE} on its own, so the effective size is capped at that too and
    * {@link #getLastPqTrainingSampleSize()} reports what the codebook really saw.
    */

@@ -430,11 +430,14 @@ public class DeferredExistenceChecks {
    * held when the statement started.
    * <p>
    * What has to hold for a give-back to be right, in one place: every lightweight edge the statement connects while a provisional
-   * record is pending is reported ({@link #lightEdgeConnected}); a write is classified property-less only when
-   * {@code MutableDocument.arePropertiesAssigned()} is still false when it is counted (the flag is reset by a save that reaches the
-   * page, never by the deferred update that is counted, and {@code aPropertyWrittenWhileTheProvisionalRecordIsPendingStillRefusesTheCommit}
-   * fails without it); a record created by the statement is given back only when it is deleted in the transaction or is an edge
-   * segment with no edge; and whatever cannot be shown is kept, which only ever refuses a commit that could have been allowed.
+   * record is pending is reported ({@link #lightEdgeConnected}); a write is classified property-less only when it is KNOWN to be an
+   * edge-list write: a record that holds no properties (an edge segment), or a vertex whose edge-list head was set and to which no
+   * property was assigned, both read when the update STARTED, before it wrote anything (a page write that keeps the instance resets
+   * the flags, and the write-now arm of {@code LocalDatabase.applyUpdate} makes it before it counts), and never inferred from the
+   * absence of an assignment, which a list or map changed in place shares (issue #11024,
+   * {@code Issue11024PropertyWriteClassificationTest}); a record created
+   * by the statement is given back only when it is deleted in the transaction or is an edge segment with no edge; and whatever
+   * cannot be shown is kept, which only ever refuses a commit that could have been allowed.
    */
   private void retractJournaledWrites() {
     if (journal == null || journalOverflowed || journal.isEmpty())
