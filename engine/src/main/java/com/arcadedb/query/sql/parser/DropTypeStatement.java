@@ -82,7 +82,7 @@ public class DropTypeStatement extends DDLStatement {
 
     if (!unsafe && (typez.getType() == Vertex.RECORD_TYPE || typez.getType() == Edge.RECORD_TYPE)) {
       final boolean hasRecords = context.getDatabase().iterateType(typez.getName(), false).hasNext() ||
-          typez.getType() == Edge.RECORD_TYPE && hasLightweightEdges(context.getDatabase(), schema, typez.getName());
+          (typez.getType() == Edge.RECORD_TYPE && hasLightweightEdges(context.getDatabase(), schema, typez.getName()));
       if (hasRecords) {
         //check vertex or edge
         if (typez.getType() == Vertex.RECORD_TYPE) {
@@ -118,7 +118,7 @@ public class DropTypeStatement extends DDLStatement {
         continue;
       final Iterator<Record> vertices = database.iterateType(type.getName(), false);
       while (vertices.hasNext())
-        if (vertices.next().asVertex().countEdges(Vertex.DIRECTION.OUT, edgeTypeName) > 0)
+        if (vertices.next().asVertex().getEdges(Vertex.DIRECTION.OUT, edgeTypeName).iterator().hasNext())
           return true;
     }
     return false;

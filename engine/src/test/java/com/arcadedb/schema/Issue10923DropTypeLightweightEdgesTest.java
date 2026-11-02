@@ -114,4 +114,28 @@ class Issue10923DropTypeLightweightEdgesTest extends TestHelper {
     database.command("sql", "DROP TYPE EOTHER");
     assertThat(database.getSchema().existsType("EOTHER")).isFalse();
   }
+
+  @Test
+  void lightEdgeOnAVertexOfASubtypeIsFound() {
+    database.command("sql", "CREATE VERTEX TYPE V");
+    database.command("sql", "CREATE VERTEX TYPE SubV EXTENDS V");
+    database.command("sql", "CREATE EDGE TYPE EL LIGHTWEIGHT");
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("SubV").save();
+      final MutableVertex b = database.newVertex("SubV").save();
+      a.newLightEdge("EL", b);
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "DROP TYPE EL")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("contains Edges");
+  }
+
+  @Test
+  void dropOfEdgeTypeWithRecordEdgesIsRefused() {
+    final MutableVertex[] v = createVerticesAndSchema("CREATE EDGE TYPE ER");
+    database.transaction(() -> v[0].newEdge("ER", v[1]));
+
+    assertThatThrownBy(() -> database.command("sql", "DROP TYPE ER")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("contains Edges");
+  }
 }
