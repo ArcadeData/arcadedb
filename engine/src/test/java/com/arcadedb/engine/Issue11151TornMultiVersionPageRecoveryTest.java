@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,62 +66,111 @@ class Issue11151TornMultiVersionPageRecoveryTest {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 
-  @Test
-  void dictionaryTornAcrossSeveralPendingVersionsIsFullyRepairedByRecovery() throws Exception {
-    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+  private record Crashed(int[] ids, String dictionaryFilePath, long finalVersion, int finalContentSize, int firstNameOffset) {
+  }
+
+  /**
+   * Adds {@link #NAMES} to the dictionary one commit each, keeps their pages off the disk and kills the database, so that the
+   * WAL holds one version of dictionary page 0 per name and the data file still holds the old page.
+   */
+  private Crashed crashWithPendingNames(final DatabaseFactory factory) throws Exception {
     if (factory.exists())
       factory.open().drop();
 
     final int[] ids = new int[NAMES.length];
-    final String dictionaryFilePath;
-    final int pageSize;
-    final long finalVersion;
-    final int finalContentSize;
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    db.getSchema().createDocumentType("Doc");
+    db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 
-    {
-      final DatabaseInternal db = (DatabaseInternal) factory.create();
-      db.getSchema().createDocumentType("Doc");
-      db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+    final Dictionary dictionary = db.getSchema().getDictionary();
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(dictionary.getFileId());
 
-      final Dictionary dictionary = db.getSchema().getDictionary();
-      final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(dictionary.getFileId());
-      dictionaryFilePath = file.getFilePath();
-      pageSize = file.getPageSize();
+    // KEEP THE NEW NAMES OFF THE DISK: EACH ONE IS ITS OWN COMMIT, HENCE ITS OWN VERSION OF DICTIONARY PAGE 0 IN THE WAL
+    assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+        .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
 
-      // KEEP THE NEW NAMES OFF THE DISK: EACH ONE IS ITS OWN COMMIT, HENCE ITS OWN VERSION OF DICTIONARY PAGE 0 IN THE WAL
-      assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
-          .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
+    for (int i = 0; i < NAMES.length; ++i)
+      ids[i] = dictionary.getIdByName(NAMES[i], true);
 
-      for (int i = 0; i < NAMES.length; ++i)
-        ids[i] = dictionary.getIdByName(NAMES[i], true);
-
-      final ImmutablePage committed = db.getPageManager()
-          .getImmutablePage(new PageId(db, dictionary.getFileId(), 0), pageSize, false, false);
-      finalVersion = committed.getVersion();
-      finalContentSize = committed.getContentSize();
-
-      ((LocalDatabase) db).kill();
-      db.close();
+    final ImmutablePage committed = db.getPageManager()
+        .getImmutablePage(new PageId(db, dictionary.getFileId(), 0), file.getPageSize(), false, false);
+    // WHERE THE ENTRY OF THE FIRST NEW NAME STARTS IN THE FILE: AFTER THE PAGE HEADER, AT THE POSITION THE LOAD READS IT FROM
+    int firstNameOffset = -1;
+    committed.setBufferPosition(4);
+    while (committed.getBufferPosition() < committed.getContentSize()) {
+      final int position = committed.getBufferPosition();
+      if (committed.readString().equals(NAMES[0]) && firstNameOffset < 0)
+        firstNameOffset = BasePage.PAGE_HEADER_SIZE + position;
     }
+    assertThat(firstNameOffset).isPositive();
 
-    // FORGE THE TORN WRITE: SECTOR 0 (VERSION, CONTENT SIZE) OF THE LAST VERSION REACHED THE DISK, THE NAMES BEHIND IT DID NOT
-    try (final RandomAccessFile raf = new RandomAccessFile(dictionaryFilePath, "rw")) {
+    final Crashed crashed = new Crashed(ids, file.getFilePath(), committed.getVersion(), committed.getContentSize(),
+        firstNameOffset);
+
+    ((LocalDatabase) db).kill();
+    db.close();
+    return crashed;
+  }
+
+  /** Forges the header (sector 0) a torn flush persisted alone: the given version and the content size of the last commit. */
+  private static void writeHeader(final Crashed crashed, final long version) throws Exception {
+    try (final RandomAccessFile raf = new RandomAccessFile(crashed.dictionaryFilePath(), "rw")) {
       raf.seek(0);
-      final int diskVersion = raf.readInt();
-      assertThat(diskVersion).as("the new names must not have reached the disk").isLessThan((int) finalVersion - 1);
+      assertThat(raf.readInt()).as("the new names must not have reached the disk").isLessThan((int) crashed.finalVersion() - 1);
       raf.seek(0);
-      raf.writeInt((int) finalVersion);
-      raf.writeInt(finalContentSize);
+      raf.writeInt((int) version);
+      raf.writeInt(crashed.finalContentSize());
     }
+  }
+
+  @Test
+  void dictionaryTornAcrossSeveralPendingVersionsIsFullyRepairedByRecovery() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    final Crashed crashed = crashWithPendingNames(factory);
+
+    // SECTOR 0 OF THE LAST VERSION REACHED THE DISK, THE NAMES BEHIND IT DID NOT
+    writeHeader(crashed, crashed.finalVersion());
 
     final Database reopened = factory.open();
     try {
       final Dictionary dictionary = ((DatabaseInternal) reopened).getSchema().getDictionary();
       for (int i = 0; i < NAMES.length; ++i) {
         assertThat(dictionary.getIdByName(NAMES[i], false))
-            .as("'%s' must keep the id records already carry (#11151)", NAMES[i]).isEqualTo(ids[i]);
-        assertThat(dictionary.getNameById(ids[i])).isEqualTo(NAMES[i]);
+            .as("'%s' must keep the id records already carry (#11151)", NAMES[i]).isEqualTo(crashed.ids()[i]);
+        assertThat(dictionary.getNameById(crashed.ids()[i])).isEqualTo(NAMES[i]);
       }
+    } finally {
+      reopened.close();
+      factory.close();
+    }
+  }
+
+  /**
+   * A page whose disk version is beyond the newest version in the WAL had its later versions written and fsynced before their
+   * WAL files were dropped. Re-applying an older entry then could overwrite bytes of those durable versions, so the entries
+   * must stay skipped: a byte planted where an older entry wrote has to survive the recovery.
+   */
+  @Test
+  void olderEntriesAreNotReappliedWhenTheWalChainToTheDiskVersionHasAGap() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    final Crashed crashed = crashWithPendingNames(factory);
+
+    // THE DISK CLAIMS TWO VERSIONS BEYOND THE LAST ONE THE WAL KNOWS: NO ENTRY HAS A COMPLETE CHAIN TO IT
+    writeHeader(crashed, crashed.finalVersion() + 2);
+
+    // PLANT A SENTINEL WHERE THE ENTRY OF THE FIRST NAME WROTE: ITS LENGTH, THEN THE NAME WITH ITS FIRST LETTER CHANGED
+    try (final RandomAccessFile raf = new RandomAccessFile(crashed.dictionaryFilePath(), "rw")) {
+      final byte[] sentinel = ("X" + NAMES[0].substring(1)).getBytes(StandardCharsets.UTF_8);
+      raf.seek(crashed.firstNameOffset());
+      raf.write(sentinel.length);
+      raf.write(sentinel);
+    }
+
+    final Database reopened = factory.open();
+    try {
+      final Dictionary dictionary = ((DatabaseInternal) reopened).getSchema().getDictionary();
+      assertThat(dictionary.getNameById(crashed.ids()[0]))
+          .as("the older entry must stay skipped, the sentinel survives").isEqualTo("X" + NAMES[0].substring(1));
     } finally {
       reopened.close();
       factory.close();
