@@ -5736,6 +5736,7 @@ public class LocalSchema implements Schema {
 
     // READ AND MARKED UNDER THE WRITE LOCK, INSIDE THE CALLBACK BELOW (issue #11040): read before the lock, it is stale by
     // the time a caller that waited for the lock decides whether to restore it
+    // (the -1 is never read: the restore below runs only after the callback has set it)
     final long[] prevGeneration = { -1L };
 
     final boolean suspendIntermediateSaves = deferIntermediateSchemaSaves && !multipleUpdate;
