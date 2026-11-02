@@ -247,8 +247,9 @@ class Issue6086ParallelRestoreIT {
    * Zip-slip, on both paths. The parallel path can do strictly better than the sequential one and has to: it reads the
    * central directory before it starts, so it knows every entry name up front and can refuse the archive before a
    * single file has been written. The sequential walk only learns a name when it reaches it, so it stops at the bad
-   * entry with the good ones already on disk - which is the pre-existing behaviour, asserted here so that the
-   * difference is a recorded decision rather than an accident.
+   * entry with the good ones already extracted - which is the pre-existing behaviour, asserted here so that the
+   * difference is a recorded decision rather than an accident. Since issue #11058 both extract into a staging directory
+   * that a failed restore removes, so neither leaves the target behind.
    */
   @ParameterizedTest
   @ValueSource(strings = { "../escaped.txt", "sub/escaped.txt", ".." })
@@ -260,10 +261,11 @@ class Issue6086ParallelRestoreIT {
 
       FileUtils.deleteRecursively(destination);
       assertThatThrownBy(() -> restore(hostileArchive, RESTORED_PATH, 8, null)).isInstanceOf(RestoreException.class);
-      assertThat(destination.list()).as("the parallel path refuses the archive before writing anything").isEmpty();
+      assertThat(destination).as("the parallel path refuses the archive and leaves no target behind").doesNotExist();
 
       FileUtils.deleteRecursively(destination);
       assertThatThrownBy(() -> restore(hostileArchive, RESTORED_PATH, 0, null)).isInstanceOf(RestoreException.class);
+      assertThat(destination).as("the sequential path leaves no target behind either (issue #11058)").doesNotExist();
     } finally {
       new File(hostileArchive).delete();
       FileUtils.deleteRecursively(destination);
@@ -292,7 +294,7 @@ class Issue6086ParallelRestoreIT {
       FileUtils.deleteRecursively(new File(RESTORED_PATH));
       assertThatThrownBy(() -> restore(duplicateArchive, RESTORED_PATH, 8, null)).isInstanceOf(RestoreException.class)
           .hasRootCauseMessage("The backup archive contains two entries named 'twice.txt'");
-      assertThat(new File(RESTORED_PATH).list()).isEmpty();
+      assertThat(new File(RESTORED_PATH)).doesNotExist();
     } finally {
       new File(duplicateArchive).delete();
       FileUtils.deleteRecursively(new File(RESTORED_PATH));

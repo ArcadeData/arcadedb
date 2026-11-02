@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -149,12 +150,18 @@ public interface BasicDatabase extends AutoCloseable {
   /**
    * Begins a new transaction. If a transaction is already begun, the current transaction is parked and a new sub-transaction is begun. The new sub-transaction
    * does not access to the content of the previous transaction. Sub transactions are totally isolated.
+   * <p>
+   * Sub-transactions are an embedded-engine feature: a remote database keeps one server-side transaction per session, so on a
+   * remote database a {@code begin()} while a transaction is already active throws a {@link TransactionException}.
    */
   void begin();
 
   /**
    * Begins a new transaction specifying the isolation level. If a transaction is already begun, the current transaction is parked and a new sub-transaction is
    * begun. The new sub-transaction does not access to the content of the previous transaction. Sub transactions are totally isolated.
+   * <p>
+   * As for {@link #begin()}, a remote database does not nest: a {@code begin()} while a transaction is already active throws a
+   * {@link TransactionException}.
    *
    * @param isolationLevel Isolation level between the following: READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE
    */
@@ -162,11 +169,16 @@ public interface BasicDatabase extends AutoCloseable {
 
   /**
    * Commits the current transaction. If it was a sub-transaction, then the previous in the stack becomes active again.
+   * Committing with no active transaction throws a {@link TransactionException}.
    */
   void commit();
 
   /**
    * Rolls back the current transaction. If it was a sub-transaction, then the previous in the stack becomes active again.
+   * <p>
+   * With no active transaction (never begun, already committed or already rolled back) it does nothing and does not throw,
+   * on every implementation: a defensive rollback in a {@code finally} block runs after a successful commit too, and must not
+   * turn a committed unit of work into a reported failure.
    */
   void rollback();
 

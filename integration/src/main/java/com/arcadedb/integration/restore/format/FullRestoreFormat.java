@@ -41,6 +41,8 @@ import javax.crypto.spec.SecretKeySpec;
 
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
 import java.security.spec.KeySpec;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -77,6 +79,19 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     File randomAccessArchive() {
       return remoteStream == null && localFile.isFile() ? localFile : null;
     }
+
+    /**
+     * Releases the remote stream, which is opened before the target directory is checked: a restore refused there, or one
+     * that failed before reading the archive to its end, used to leave the connection open.
+     */
+    void close() {
+      if (remoteStream != null)
+        try {
+          remoteStream.close();
+        } catch (final IOException e) {
+          // NOTHING LEFT TO READ FROM IT: THE RESTORE HAS ALREADY ENDED, ONE WAY OR THE OTHER
+        }
+    }
   }
 
   public FullRestoreFormat(final DatabaseInternal database, final RestoreSettings settings, final ConsoleLogger logger) {
@@ -88,20 +103,107 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     settings.validate();
 
     final RestoreInputSource inputSource = openInputFile();
+    try {
+      restoreFrom(inputSource);
+    } finally {
+      inputSource.close();
+    }
+  }
 
-    final File databaseDirectory = new File(settings.databaseDirectory);
-    if (databaseDirectory.exists()) {
-      if (!settings.overwriteDestination)
-        throw new RestoreException(
-            "The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
+  /**
+   * Extracts into a STAGING directory, a hidden sibling of the target, and moves it into place only once the archive was
+   * extracted and checked (issue #11058). Before, the archive was extracted straight into the target, so a restore that failed
+   * part way left a half-written directory there that nothing removed: every later restore into that path, the retry of the
+   * same command with a good archive included, was refused with "already exist", and with {@code -o} the database being
+   * replaced had already been deleted before a byte was read. Now a failed restore leaves the target exactly as it found it -
+   * absent, or the database {@code -o} would have replaced - and the retry is the same command.
+   * <p>
+   * The server's restore ({@code ServerControlPlane.performRestore}) already followed this policy around the call (issue
+   * #5027); it lives here now, in the code that makes the mess, so the CLI and embedded callers get it too. The staging
+   * directory is a sibling so the final move is a rename on one filesystem, and dot-prefixed so a server scanning the parent
+   * never takes it for a database ({@code ArcadeDBServer.RESERVED_DATABASE_PREFIX}). The price is disk: with {@code -o} the
+   * replaced database and the restored copy coexist until the swap, as they already did on the server.
+   */
+  private void restoreFrom(final RestoreInputSource inputSource) throws Exception {
+    final File databaseDirectory = new File(settings.databaseDirectory).getAbsoluteFile();
+    // AN EARLY ANSWER ONLY, SO A RESTORE THAT CANNOT LAND IS NOT EXTRACTED FIRST: THE MOVE IN moveIntoPlace IS THE CHECK
+    // THAT COUNTS, BECAUSE A DIRECTORY CAN APPEAR BETWEEN THIS LINE AND THAT ONE
+    if (databaseDirectory.exists() && !settings.overwriteDestination)
+      throw new RestoreException(
+          "The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
 
-      FileUtils.deleteRecursively(databaseDirectory);
+    final File parentDirectory = databaseDirectory.getParentFile();
+    final File stagingDirectory = new File(parentDirectory, "." + databaseDirectory.getName() + ".restore-" + System.nanoTime());
+    try {
+      Files.createDirectories(parentDirectory.toPath());
+      Files.createDirectory(stagingDirectory.toPath());
+    } catch (final IOException e) {
+      throw new RestoreException(
+          "Error on restoring database: the database directory '%s' cannot be created".formatted(settings.databaseDirectory), e);
     }
 
-    if (!databaseDirectory.mkdirs())
-      throw new RestoreException(
-          "Error on restoring database: the database directory '%s' cannot be created".formatted(settings.databaseDirectory));
+    try {
+      final long beginTime = System.currentTimeMillis();
+      final ParallelZipExtractor.ExtractStats stats = extractAndCheck(inputSource, stagingDirectory);
+      final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
+      // THE FILES WERE SYNCED ONE BY ONE AS THEY WERE EXTRACTED; THEIR NAMES LIVE IN THE DIRECTORY, AND THE DIRECTORY ITSELF
+      // IS RENAMED INTO ITS PARENT, SO BOTH ARE FORCED TOO OR A POWER LOSS CAN STILL LOSE THE RESTORE (ISSUE #8626)
+      FileUtils.forceDirectory(stagingDirectory.toPath());
+      moveIntoPlace(stagingDirectory, databaseDirectory);
+      FileUtils.forceDirectory(parentDirectory.toPath());
+
+      logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
+          FileUtils.getSizeAsString(inputSource.fileSize()), FileUtils.getSizeAsString(stats.uncompressedSize()),
+          stats.uncompressedSize() > 0 ? (stats.uncompressedSize() - inputSource.fileSize()) * 100 / stats.uncompressedSize() : 0);
+    } catch (final Throwable t) {
+      // Throwable: AN OutOfMemoryError HALFWAY THROUGH A LARGE ARCHIVE LEAVES THE SAME HALF-WRITTEN DIRECTORY AS AN EXCEPTION
+      FileUtils.deleteRecursively(stagingDirectory);
+      throw t;
+    }
+  }
+
+  /**
+   * Moves the staged restore to the target. Without {@code -o} it is one rename that fails if the target appeared while the
+   * archive was extracted, rather than replacing it: this restore was accepted because there was nothing there. With {@code -o}
+   * the database being replaced is renamed aside first and deleted only after the restored copy took its name, and put back
+   * if that rename fails, so there is no moment at which neither exists on disk.
+   */
+  private void moveIntoPlace(final File stagingDirectory, final File databaseDirectory) throws IOException {
+    if (settings.overwriteDestination && databaseDirectory.exists()) {
+      final File replaced = new File(databaseDirectory.getParentFile(),
+          "." + databaseDirectory.getName() + ".replaced-" + System.nanoTime());
+      Files.move(databaseDirectory.toPath(), replaced.toPath());
+      try {
+        Files.move(stagingDirectory.toPath(), databaseDirectory.toPath());
+      } catch (final IOException | RuntimeException e) {
+        try {
+          Files.move(replaced.toPath(), databaseDirectory.toPath());
+        } catch (final IOException | RuntimeException putBack) {
+          e.addSuppressed(putBack);
+        }
+        throw e;
+      }
+      FileUtils.deleteRecursively(replaced);
+      return;
+    }
+
+    // NO REPLACE_EXISTING AND NO ATOMIC_MOVE: WITHOUT THE FIRST THE MOVE REFUSES AN EXISTING TARGET, AND ATOMIC_MOVE WOULD LET
+    // rename(2) SILENTLY REPLACE AN EMPTY ONE ON POSIX (SEE ServerControlPlane.swapRestoredDatabase, ISSUE #7441)
+    try {
+      Files.move(stagingDirectory.toPath(), databaseDirectory.toPath());
+    } catch (final FileAlreadyExistsException e) {
+      throw new RestoreException(
+          "The database directory '%s' was created while the restore was running: the restored copy was discarded rather than replace it".formatted(
+              settings.databaseDirectory), e);
+    }
+  }
+
+  /**
+   * Extracts the archive into {@code directory} and checks the result is a database.
+   */
+  private ParallelZipExtractor.ExtractStats extractAndCheck(final RestoreInputSource inputSource, final File directory)
+      throws Exception {
     // THE PARALLEL PATH NEEDS RANDOM ACCESS TO THE ARCHIVE. NEITHER OF THE OTHER TWO INPUT SOURCES CAN GIVE IT: AN
     // http(s) ARCHIVE IS A ONE-SHOT STREAM, AND AN ENCRYPTED ONE IS A SINGLE CIPHER STREAM THAT ONLY DECRYPTS FRONT TO
     // BACK. BOTH FALL BACK TO THE SEQUENTIAL WALK RATHER THAN BEING REFUSED - A RESTORE MUST NEVER FAIL BECAUSE OF A
@@ -113,29 +215,15 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     logger.logLine(0, "Executing full restore of database from file '%s' to '%s' (%s)...", settings.inputFileURL,
         settings.databaseDirectory, parallel ? threads + " threads" : "single threaded");
 
-    final long beginTime = System.currentTimeMillis();
-
     final ParallelZipExtractor.ExtractStats stats = parallel ?
-        new ParallelZipExtractor(threads, logger, progressCallback).extract(randomAccessArchive, databaseDirectory) :
-        restoreSequentially(inputSource, databaseDirectory);
-
-    final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
+        new ParallelZipExtractor(threads, logger, progressCallback).extract(randomAccessArchive, directory) :
+        restoreSequentially(inputSource, directory);
 
     if (stats.files() == 0)
       throw new RestoreException("Unable to perform restore");
 
-    checkRestoredDirectoryIsADatabase(databaseDirectory);
-
-    // THE FILES WERE SYNCED ONE BY ONE AS THEY WERE EXTRACTED; THEIR NAMES LIVE IN THE DIRECTORY, AND THE DIRECTORY ITSELF
-    // WAS JUST CREATED IN ITS PARENT, SO BOTH ARE FORCED TOO OR A POWER LOSS CAN STILL LOSE THE RESTORE (ISSUE #8626)
-    FileUtils.forceDirectory(databaseDirectory.toPath());
-    final File parentDirectory = databaseDirectory.getAbsoluteFile().getParentFile();
-    if (parentDirectory != null)
-      FileUtils.forceDirectory(parentDirectory.toPath());
-
-    logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
-        FileUtils.getSizeAsString(inputSource.fileSize()), FileUtils.getSizeAsString(stats.uncompressedSize()),
-        stats.uncompressedSize() > 0 ? (stats.uncompressedSize() - inputSource.fileSize()) * 100 / stats.uncompressedSize() : 0);
+    checkRestoredDirectoryIsADatabase(directory);
+    return stats;
   }
 
   /**
