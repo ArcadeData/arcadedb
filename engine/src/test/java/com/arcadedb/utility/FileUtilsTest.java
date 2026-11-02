@@ -117,20 +117,9 @@ class FileUtilsTest {
   }
 
   @Test
-  void atomicCopyPublishesAHardLinkByDefault() throws Exception {
-    final Path source = tempDir.resolve("schema.json");
-    final Path target = tempDir.resolve("schema.prev.json");
-    Files.writeString(source, "generation-1");
-
-    FileUtils.atomicCopyFile(source.toFile(), target.toFile());
-
-    assertThat(Files.isSameFile(source, target)).as("the default publication shares the inode").isTrue();
-  }
-
-  @Test
-  void atomicCopyWithoutHardLinkWritesAnIndependentFileAndNeverLinks() throws Exception {
+  void atomicCopyNeverLinksAndWritesAnIndependentFile() throws Exception {
     // Issue #11097: a file system can accept a hard link yet lose the data once the other name is replaced, so the
-    // caller must be able to ask for a byte copy and never see createLink attempted.
+    // copy must never be a link.
     final Path source = tempDir.resolve("schema.json");
     final Path target = tempDir.resolve("schema.prev.json");
     final byte[] content = { 0, 0x7f, (byte) 0x80, (byte) 0xe9, (byte) 0xff };
@@ -143,7 +132,7 @@ class FileUtilsTest {
         linkAttempts.incrementAndGet();
       return invocation.callRealMethod();
     })) {
-      FileUtils.atomicCopyFile(source.toFile(), target.toFile(), true, false);
+      FileUtils.atomicCopyFile(source.toFile(), target.toFile());
     }
 
     assertThat(linkAttempts.get()).isZero();

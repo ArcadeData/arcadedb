@@ -5643,11 +5643,11 @@ public class LocalSchema implements Schema {
       // the new one, so between the two statements schema.json DID NOT EXIST and while the writer ran it was
       // truncated. A crash in that window left a database whose schema file was missing - recoverable only from
       // schema.prev.json - and any concurrent reader (the backup's lock-free t0 configuration capture, the HA
-      // snapshot ship) could observe nothing, or half a JSON document. The copy is published as a hard link where
-      // the file store allows it, so it costs an inode operation rather than a re-read of the whole schema, and it
-      // is atomic on the target either way: schema.prev.json is what readConfiguration() falls back TO, so it can
-      // never be half-written. It is also byte-identical by construction - literally the same bytes, so no charset
-      // from setEncoding() is applied to it on the way out.
+      // snapshot ship) could observe nothing, or half a JSON document. The copy is atomic on the target:
+      // schema.prev.json is what readConfiguration() falls back TO, so it can never be half-written. It is a byte copy
+      // - the same bytes, so no charset from setEncoding() is applied to it on the way out - and NOT a hard link
+      // (#11097): a file system can accept a link and still lose the data under the second name once the first is
+      // replaced, which would leave the recovery copy unreadable.
       //
       // #8635: WITHOUT ITS OWN DIRECTORY FSYNC. The write of schema.json below publishes into the same directory and
       // fsyncs it, which makes this rename durable too, so a second fsync here was a full device flush bought for
@@ -5655,11 +5655,7 @@ public class LocalSchema implements Schema {
       // generation before this one or the one before that - complete either way - next to a schema.json that the
       // atomic write guarantees is complete, so the fallback it exists for is never needed in that window.
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      // #11097: with arcadedb.schema.hardLinkPrevious=false the link is skipped for a plain byte copy (a full read of
-      // schema.json plus an fsync'd write, still without the directory fsync above), for file systems that accept a link
-      // but lose the data under the second name once the first is replaced. The notes above describe the link path.
-      FileUtils.atomicCopyFile(configurationFile, copy, false,
-          database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SCHEMA_HARD_LINK_PREVIOUS));
+      FileUtils.atomicCopyFile(configurationFile, copy, false);
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.

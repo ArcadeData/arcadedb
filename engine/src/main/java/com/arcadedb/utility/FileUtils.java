@@ -45,7 +45,6 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
-import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -536,15 +535,13 @@ public class FileUtils {
    * {@code source} is never unlinked in the process. As in {@link #atomicWriteFile(File, byte[])}, the parent
    * directory is fsync'd after the rename so the published name survives a power failure (issue #7465).
    * <p>
-   * Unless {@link #atomicCopyFile(File, File, boolean, boolean)} is told not to, a hard link is attempted first:
-   * it makes {@code target} a second name for the bytes already on disk,
-   * which costs one inode operation instead of a full read + write + fsync of the source, and is
-   * byte-exact by construction (no charset can be applied to bytes that are never decoded). Filesystems
-   * that do not support links (FAT/exFAT, some network mounts) fall back to reading the source and
-   * republishing it through {@link #atomicWriteFile(File, byte[])}.
+   * The copy is a real one: the source is read and the bytes are republished through
+   * {@link #atomicWriteFile(File, byte[])}, never decoded. It is deliberately NOT a hard link (issue #11097): a file
+   * system can accept {@code createLink} and still lose the data under the second name once the first is replaced
+   * (a SeaweedFS FUSE mount does), which no exception announces and which would leave the one file a recovery relies
+   * on unreadable.
    *
-   * @param source the file to copy; must exist. The link fast path additionally needs it on the same file store as
-   *               {@code target}, which is the case for every caller today (both names sit in the database directory)
+   * @param source the file to copy; must exist
    * @param target the name to publish the copy under, replaced if it already exists
    */
   public static void atomicCopyFile(final File source, final File target) throws IOException {
@@ -559,49 +556,13 @@ public class FileUtils {
    * {@link #atomicWriteFile}: that publication fsyncs the directory, which makes every rename made in it so far
    * durable at once, so a second fsync here buys nothing and costs a full device flush on every call. Until then the
    * copy is published but only process-crash durable: after a power failure {@code target} holds either its previous
-   * complete content or the full copy, never a partial one, exactly as with the fsync. The byte-copy path (no links on
-   * the file store, or {@code useHardLink} false) always fsyncs the copy's file, and the directory only when
-   * {@code syncDirectory} is true.
+   * complete content or the full copy, never a partial one, exactly as with the fsync. The copy's own file is always
+   * fsync'd; the directory only when {@code syncDirectory} is true.
    *
    * @param syncDirectory {@code false} only when the caller fsyncs the target's directory itself right after
    */
   public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory) throws IOException {
-    atomicCopyFile(source, target, syncDirectory, true);
-  }
-
-  /**
-   * {@link #atomicCopyFile(File, File, boolean)}, with {@code useHardLink} {@code false} to skip the hard link and
-   * always publish a byte copy (issue #11097). For a file system that accepts {@code createLink} yet does not keep the
-   * data readable under the second name once the first is replaced, which no exception announces.
-   *
-   * @param useHardLink {@code false} to never attempt {@link Files#createLink}
-   */
-  public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory,
-      final boolean useHardLink) throws IOException {
-    final Path from = source.toPath().toAbsolutePath();
-    final Path to = target.toPath().toAbsolutePath();
-    final Path dir = to.getParent();
-    createDirectoriesDurably(dir);
-
-    if (!useHardLink) {
-      atomicWriteFile(target, Files.readAllBytes(from), syncDirectory);
-      return;
-    }
-
-    // Unique by construction, so the link below never races another writer for the name.
-    final Path tmp = dir.resolve(target.getName() + "." + UUID.randomUUID() + ".tmp");
-    try {
-      try {
-        Files.createLink(tmp, from);
-      } catch (final UnsupportedOperationException | FileSystemException e) {
-        // No links on this file store: pay for the copy instead. Still a byte copy, never a decode.
-        atomicWriteFile(target, Files.readAllBytes(from), syncDirectory);
-        return;
-      }
-      publishAtomically(tmp, to, syncDirectory);
-    } finally {
-      Files.deleteIfExists(tmp);
-    }
+    atomicWriteFile(target, Files.readAllBytes(source.toPath().toAbsolutePath()), syncDirectory);
   }
 
   /**

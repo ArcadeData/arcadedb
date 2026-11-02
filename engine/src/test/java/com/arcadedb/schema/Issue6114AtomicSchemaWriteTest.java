@@ -34,7 +34,6 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -49,7 +48,6 @@ import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mockStatic;
 
 /**
@@ -154,31 +152,24 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
   }
 
   @Test
-  void theSavedPreviousGenerationDoesNotRereadTheWholeSchema() throws Exception {
-    // The previous generation is published as a hard link where the file store supports one, so a schema save
-    // costs an inode operation instead of a full read + write + fsync of a file that can reach megabytes on a
-    // large schema. Reading the primary back would silently reintroduce that cost on every DDL statement.
+  void thePreviousGenerationIsPublishedAsACopyNeverALink() throws Exception {
+    // Issue #11097 reversed the earlier design (a hard link, to avoid re-reading the schema): a file system can accept
+    // a link and still lose the data under the second name once the first is replaced, which left the recovery copy
+    // unreadable. The previous generation is now always a byte copy.
     createIndexedRecord();
     final LocalSchema schema = database.getSchema().getEmbedded();
     final Path primary = schemaPath();
-    assumeTrue(supportsHardLinks(primary.getParent()), "the file store hosting the test databases has no hard links");
     final byte[] before = Files.readAllBytes(primary);
-    final AtomicInteger reads = new AtomicInteger();
     final AtomicInteger links = new AtomicInteger();
     try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
-      final String method = invocation.getMethod().getName();
-      if ((method.equals("readAllBytes") || method.equals("readString") || method.equals("copy"))
-          && primary.equals(invocation.getArgument(0)))
-        reads.incrementAndGet();
-      else if (method.equals("createLink"))
+      if (invocation.getMethod().getName().equals("createLink"))
         links.incrementAndGet();
       return invocation.callRealMethod();
     })) {
-      schema.update(replacement(schema, "linked"));
+      schema.update(replacement(schema, "copied"));
     }
 
-    assertThat(links.get()).as("the previous generation must be published by link, not by copy").isEqualTo(1);
-    assertThat(reads.get()).as("the primary schema must not be read back to save the previous generation").isZero();
+    assertThat(links.get()).as("the previous generation must never be published by link").isZero();
     assertThat(Files.readAllBytes(previousPath())).isEqualTo(before);
     assertNoTemporaryFiles();
   }
@@ -379,21 +370,6 @@ class Issue6114AtomicSchemaWriteTest extends TestHelper {
     while (!completed.getAsBoolean()) {
       stopwatch.assertGaveUpWithin(boundMs, whatItSeparates);
       Thread.sleep(10);
-    }
-  }
-
-  /** Probes the file store so the link assertion above is skipped, not failed, on FAT/exFAT and the like. */
-  private static boolean supportsHardLinks(final Path dir) throws IOException {
-    final Path source = Files.createTempFile(dir, "link-probe.", ".tmp");
-    final Path link = dir.resolve("link-probe." + UUID.randomUUID() + ".tmp");
-    try {
-      Files.createLink(link, source);
-      return true;
-    } catch (final UnsupportedOperationException | FileSystemException e) {
-      return false;
-    } finally {
-      Files.deleteIfExists(link);
-      Files.deleteIfExists(source);
     }
   }
 

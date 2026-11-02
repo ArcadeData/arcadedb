@@ -18,7 +18,6 @@
  */
 package com.arcadedb.schema;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -33,19 +32,12 @@ import static org.mockito.Mockito.mockStatic;
 /**
  * Issue #11097: {@code schema.prev.json} was always published as a hard link to {@code schema.json}. A file system
  * that accepts the link but loses the data once the original name is replaced (SeaweedFS FUSE) left the fallback copy
- * unreadable. {@link GlobalConfiguration#SCHEMA_HARD_LINK_PREVIOUS} turns the link off in favor of a byte copy.
+ * unreadable. It is now always a byte copy.
  */
 class Issue11097SchemaPrevWithoutHardLinkTest extends TestHelper {
 
   @Test
-  void schemaSaveLinksPreviousGenerationByDefault() {
-    assertThat(linkAttemptsDuringSchemaChange("DefaultLink")).isPositive();
-  }
-
-  @Test
-  void schemaSaveNeverLinksWhenTheSettingIsOff() throws Exception {
-    database.getConfiguration().setValue(GlobalConfiguration.SCHEMA_HARD_LINK_PREVIOUS, false);
-
+  void schemaSaveNeverLinksThePreviousGeneration() throws Exception {
     assertThat(linkAttemptsDuringSchemaChange("NoLink")).isZero();
 
     final Path dir = Path.of(database.getDatabasePath());
@@ -55,7 +47,8 @@ class Issue11097SchemaPrevWithoutHardLinkTest extends TestHelper {
 
     // Second change: schema.prev.json must hold the complete previous generation, readable on its own.
     final String generationBefore = Files.readString(schema);
-    database.getSchema().createDocumentType("NoLink2");
+    assertThat(linkAttemptsDuringSchemaChange("NoLink2")).isZero();
+    assertThat(Files.isSameFile(schema, prev)).isFalse();
     assertThat(Files.readString(prev)).isEqualTo(generationBefore);
   }
 
