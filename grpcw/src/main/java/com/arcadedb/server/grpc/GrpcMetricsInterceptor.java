@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.google.protobuf.Descriptors.FieldDescriptor;
+import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Message;
 import io.grpc.ForwardingServerCall;
 import io.grpc.Metadata;
@@ -41,6 +42,7 @@ import io.micrometer.core.instrument.Timer;
  * slice request/error/duration by gRPC method and gRPC status code.
  */
 class GrpcMetricsInterceptor implements ServerInterceptor {
+  private static final String ARCADEDB_MESSAGE_PACKAGE = "com.arcadedb.server.grpc.";
 
   static final String REQUESTS_METER = "grpc.requests.total";
   static final String ERRORS_METER   = "grpc.errors.total";
@@ -122,8 +124,15 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
     return next.startCall(wrappedCall, headers);
   }
 
-  /** The top-level, non-repeated boolean {@code success} field of {@code response}'s type, or {@code null} when it has none. */
+  /**
+   * The top-level, non-repeated boolean {@code success} field of {@code response}'s type, or {@code null} when it has none. Only the
+   * ArcadeDB messages are inspected: {@code getDescriptorForType()} makes protobuf build the message's field-accessor table
+   * reflectively, which the native image registers for the ArcadeDB messages only, so asking a foreign response (the gRPC reflection
+   * or health services') failed the RPC there with "Generated message class ... missing method".
+   */
   static FieldDescriptor successField(final Message response) {
+    if (!(response instanceof DynamicMessage) && !response.getClass().getName().startsWith(ARCADEDB_MESSAGE_PACKAGE))
+      return null;
     final FieldDescriptor field = response.getDescriptorForType().findFieldByName("success");
     return field != null && !field.isRepeated() && field.getJavaType() == FieldDescriptor.JavaType.BOOLEAN ? field : null;
   }
