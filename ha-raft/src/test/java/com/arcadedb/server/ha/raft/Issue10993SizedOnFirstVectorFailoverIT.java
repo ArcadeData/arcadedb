@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static com.arcadedb.server.ha.raft.Issue10993SizedOnFirstVectorHATest.DIMENSIONS;
@@ -37,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * Keeps a fresh cluster per test ({@link BaseRaftHATest}); each test stops the leader for good.
  */
+@Tag("slow")
 class Issue10993SizedOnFirstVectorFailoverIT extends BaseRaftHATest {
 
   @Override
