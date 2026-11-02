@@ -3192,10 +3192,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // with a graph resident, it sent every search to wait on graphBuildLock for the whole rebuild instead of
       // answering from that graph plus the delta scan, as it does during an async rebuild (issue #11129). So LOADING
       // only when nothing is resident, where a search has nothing to answer from but this build.
-      if (graphIndex == null)
+      final ImmutableGraphIndex graphBefore = graphIndex;
+      if (graphBefore == null)
         graphState = GraphState.LOADING;
-      mutationsSinceSerialize.set(0);
-      buildGraphFromScratchWithRetry(graphCallback, false, false);
+      // Zeroed for the build's duration: with the state no longer forced to LOADING, the pending count is what the
+      // search, inactivity and chained triggers read, and they would start a second full rebuild behind this one for
+      // mutations this build is about to absorb. Handed back when the build fails without publishing a graph, so the
+      // vectors it did not absorb still count towards the next rebuild instead of being scanned for the rest of the
+      // session (PR #11130 review).
+      final int pendingBefore = mutationsSinceSerialize.getAndSet(0);
+      boolean built = false;
+      try {
+        buildGraphFromScratchWithRetry(graphCallback, false, false);
+        built = true;
+      } finally {
+        if (!built && graphIndex == graphBefore)
+          mutationsSinceSerialize.addAndGet(pendingBefore);
+      }
     } finally {
       status.set(INDEX_STATUS.AVAILABLE);
     }

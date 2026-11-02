@@ -137,7 +137,7 @@ class Issue11129ExplicitBuildDoesNotStallSearchTest {
     assertThat(stat("graphRebuildCount")).isEqualTo(rebuildsBefore + 1);
     // The vector written during the build is past the build's snapshot: still pending, and still searchable
     assertThat(stat("graphState")).isEqualTo(LSMVectorIndex.GraphState.MUTABLE.ordinal());
-    try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM V")) {
+    try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM V")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(COUNT + 1L);
     }
     assertThat(search(new Random(29))).isEqualTo(K);
@@ -156,6 +156,36 @@ class Issue11129ExplicitBuildDoesNotStallSearchTest {
     assertThat(index.isWarm()).isTrue();
     assertThat(stat("graphState")).isEqualTo(LSMVectorIndex.GraphState.IMMUTABLE.ordinal());
     assertThat(search(new Random(31))).isEqualTo(K);
+  }
+
+  @Test
+  void aFailedExplicitBuildKeepsThePendingMutationsCounted() {
+    index.buildVectorGraphNow();
+    final int writes = 5;
+    db.transaction(() -> {
+      final Random random = new Random(41);
+      for (int i = 0; i < writes; i++)
+        db.newDocument("V").set("vec", randomVector(random)).save();
+    });
+    final long pending = stat("mutationsSinceRebuild");
+    assertThat(pending).as("precondition: the writes are pending").isGreaterThanOrEqualTo(writes);
+    final long rebuildsBefore = stat("graphRebuildCount");
+
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    try {
+      index.buildVectorGraphNow((phase, processed, total, accesses) -> {
+        if ("validating".equals(phase))
+          throw new IllegalStateException("build aborted by the test");
+      });
+    } catch (final RuntimeException e) {
+      failure.set(e);
+    }
+
+    assertThat(failure.get()).as("the build must have failed").isNotNull();
+    assertThat(stat("graphRebuildCount")).as("nothing published").isEqualTo(rebuildsBefore);
+    assertThat(stat("mutationsSinceRebuild")).as("the mutations the failed build did not absorb still count")
+        .isEqualTo(pending);
+    assertThat(search(new Random(43))).isEqualTo(K);
   }
 
   @Test
@@ -189,14 +219,13 @@ class Issue11129ExplicitBuildDoesNotStallSearchTest {
   }
 
   /**
-   * @return what the task returned, or the {@link TimeoutException} if it did not finish while the build was parked
+   * @return what the task returned, or the exception it failed with ({@link TimeoutException} if it did not finish while
+   * the build was parked)
    */
   private Object runOffTheBuilder(final Callable<Object> task) {
     final Future<Object> future = executor.submit(task);
     try {
       return future.get(HANG_SECS, TimeUnit.SECONDS);
-    } catch (final TimeoutException e) {
-      return e;
     } catch (final Exception e) {
       return e;
     }
