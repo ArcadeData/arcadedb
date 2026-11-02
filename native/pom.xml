@@ -180,6 +180,17 @@
             losing its -march build arg or docs/native-image.md naming different baselines.
         -->
         <native.march>compatibility</native.march>
+        <!--
+            native-image optimization level (#11070). -O3 inlines more aggressively than GraalVM's default
+            -O2: faster code for a larger binary and a longer image build. The timed A/B behind it (same
+            engine and glue built at -O2 and at -O3, -march=compatibility) and the size and build-time cost
+            are in #11070; that measurement covers the embedded library, the server binary is measured on
+            the pull request. Override it on the command line:
+
+              -Dnative.opt=-O2   GraalVM's default level
+              -Dnative.opt=-Os   smallest binary
+        -->
+        <native.opt>-O3</native.opt>
     </properties>
 
     <dependencyManagement>
@@ -376,6 +387,8 @@
                         <buildArg>--no-fallback</buildArg>
                         <!-- Minimum CPU the binary runs on; see the native.march property and #10581. -->
                         <buildArg>-march=${native.march}</buildArg>
+                        <!-- Optimization level; see the native.opt property and #11070. -->
+                        <buildArg>${native.opt}</buildArg>
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                         <buildArg>--enable-url-protocols=http,https</buildArg>
                         <buildArg>--add-modules=jdk.incubator.vector</buildArg>
