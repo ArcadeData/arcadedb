@@ -1187,7 +1187,8 @@ public enum GlobalConfiguration {
       triangle and truss algorithms, the random-walk buffers of algo.node2vec (walksPerNode x nodeCount walks of \
       walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory (one row of \
       iterations entries per node), the nodeCount x dimension embedding and feature matrices of algo.node2vec, \
-      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, algo.simRank, \
+      algo.fastrp and algo.graphsage, the nodeCount x embeddingDensity sample and race-time matrices of \
+      algo.hashgnn, the nodeCount x nodeCount matrices of algo.apsp, algo.simRank, \
       algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and terminal-pair arrays of \
       algo.steinerTree. Most of these have no graph-derived ceiling to clamp against - unlike a top-k bound, which \
       is capped by the node count - so a large but perfectly in-range int, a terminal list of any length, or simply \
