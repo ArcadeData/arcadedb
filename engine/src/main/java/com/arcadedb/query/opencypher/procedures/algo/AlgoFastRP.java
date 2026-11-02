@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Random;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -69,6 +70,8 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoFastRP extends AbstractAlgoProcedure {
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("dimensions", "direction", "iterations", "normalization", "relTypes", "seed", "selfInfluence");
 
   @Override
   public String getName() {
@@ -100,7 +103,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final int dimensions = config != null && config.get("dimensions") instanceof Number n ? extractEmbeddingDimension(n, "dimensions") : 128;
     final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 4;
     final double normStrength = config != null && config.get("normalization") instanceof Number n ? n.doubleValue() : 0.0;

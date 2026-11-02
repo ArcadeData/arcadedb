@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Random;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -74,6 +75,9 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoNode2Vec extends AbstractAlgoProcedure {
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("direction", "embeddingDimension", "iterations", "learningRate", "negSamples",
+      "p", "q", "relTypes", "seed", "walkLength", "walksPerNode", "windowSize");
 
   @Override
   public String getName() {
@@ -105,7 +109,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final int dim =
         config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
     final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength", 1) : 80;

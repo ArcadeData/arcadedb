@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Random;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -63,6 +64,9 @@ import java.util.stream.Stream;
 public class AlgoSLPA extends AbstractAlgoProcedure {
   public static final String NAME = "algo.slpa";
 
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("iterations", "relTypes", "seed", "threshold");
+
   @Override
   public String getName() {
     return NAME;
@@ -92,7 +96,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
 
     final int iterations = config != null && config.get("iterations") instanceof Number num ?
         extractInt(num, "iterations", 1) : 20;
