@@ -23,9 +23,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -53,8 +55,8 @@ import java.util.logging.Level;
  *   <li>The scan visits every record in the type. Records already relocated in the previous run are now in
  *       their correct bucket and pass through the in-place save path; they are not queued for another move.
  *   <li>The move phase looks up each pending RID with {@link com.arcadedb.database.Database#lookupByRID};
- *       a previously-deleted record returns {@code null} and the loop skips it cleanly without creating a
- *       ghost record.
+ *       a previously-deleted record raises {@link RecordNotFoundException}, which the loop catches and
+ *       counts ({@code recordsSkipped}), skipping it cleanly without creating a ghost record.
  * </ul>
  * Repeated invocations therefore converge: a fully-clean rebuild is a no-op (no misplaced records to move),
  * a partially-completed one finishes the remaining work.
@@ -156,8 +158,20 @@ public class RebuildTypeStatement extends DDLStatement {
               + "the type under the new partitioning instead.");
     }
 
+    // A repartition relocates a record within its own type (#11066). The scan below is asked about the named type
+    // and the move phase re-creates every relocated record as that type, so a subtype record would be re-created as
+    // a record of the supertype: new RID, no subtype-only index entry, countType(subtype) down to zero. Repartition
+    // each type on its own instead (one REBUILD TYPE <type> WITH repartition = true per type of the hierarchy).
+    if (finalRepartition && polymorphic)
+      throw new CommandSQLParsingException(
+          "REBUILD TYPE on type '" + typeName.getStringValue() + "' with POLYMORPHIC and repartition = true is not "
+              + "supported: a repartition relocates a record within its own type, and the move phase can only "
+              + "re-create records of the named type. Run REBUILD TYPE <type> WITH repartition = true once per "
+              + "type of the hierarchy instead.");
+
     final long[] count = { 0L };
     final long[] moved = { 0L };
+    final long[] skipped = { 0L };
     // Records that have been written to their final layout AND committed in an earlier batch.
     // For non-repartition rebuilds this advances on every per-record save (every visit produces
     // a save). For repartition rebuilds the scan only saves the records that are already in the
@@ -199,6 +213,9 @@ public class RebuildTypeStatement extends DDLStatement {
         if (finalRepartition) {
           final MutableDocument m = (MutableDocument) rec.modify();
           final RID currentRid = m.getIdentity();
+          // Asks the NAMED type: correct only while the scan is non-polymorphic (a subtype record would need
+          // m.getType()). executeRebuild refuses POLYMORPHIC + repartition up front (#11066); lift that guard only
+          // together with this line and the db.newDocument(typeName) re-creation in the move phase.
           final Bucket targetBucket = type.getBucketIdByRecord(m, false);
           if (currentRid != null && targetBucket != null && targetBucket.getFileId() != currentRid.getBucketId()) {
             // Buffered move - apply after scan to keep iterator stability. Only the RID is
@@ -259,10 +276,9 @@ public class RebuildTypeStatement extends DDLStatement {
       // strategy. RIDs change.
       // <p>
       // <b>Concurrent-delete safety.</b> Between the scan's RID capture and this loop another
-      // commit may have deleted the original record. {@code lookupByRID} returns {@code null}
-      // in that case; we MUST skip the insert too, otherwise we'd materialise a ghost record
-      // with no original to replace. The whole delete+insert pair is gated on
-      // {@code oldRecord != null}.
+      // commit may have deleted the original record. {@code lookupByRID} throws
+      // {@link RecordNotFoundException} in that case; we catch it and MUST skip the insert too, otherwise we'd
+      // materialise a ghost record with no original to replace. The skip is counted and reported.
       if (finalRepartition && pendingMoveRids != null) {
         // Move-phase commit cadence tracks the move counter and adds it to the scan-phase
         // committed saves. The error-recovery message uses {@code committedBefore[0]} to tell
@@ -275,7 +291,16 @@ public class RebuildTypeStatement extends DDLStatement {
         // executes inside the still-open scan TX; commit cadence below mirrors the scan phase.
         for (int i = 0; i < pendingMoveRids.size(); i++) {
           final RID oldRid = pendingMoveRids.get(i);
-          final var oldRecord = db.lookupByRID(oldRid, true);
+          Record oldRecord;
+          try {
+            oldRecord = db.lookupByRID(oldRid, true);
+          } catch (final RecordNotFoundException e) {
+            // Deleted between the scan's RID capture and this loop: nothing to move, and nothing to re-create.
+            oldRecord = null;
+            skipped[0]++;
+            // Visited by the scan but never rewritten: it is not a rebuilt record.
+            count[0]--;
+          }
           if (oldRecord instanceof Document oldDoc) {
             // Snapshot the current property map at move time, not at scan time, so concurrent
             // updates between scan and move are honoured (the new value lands at the bucket
@@ -284,6 +309,7 @@ public class RebuildTypeStatement extends DDLStatement {
             // total record payload.
             final Map<String, Object> snapshot = new HashMap<>(oldDoc.toMap(false));
             db.deleteRecord(oldRecord);
+            // The named type is the record's type only because POLYMORPHIC + repartition is refused (#11066).
             final MutableDocument fresh = db.newDocument(typeName.getStringValue());
             fresh.fromMap(snapshot);
             fresh.save();
@@ -305,8 +331,8 @@ public class RebuildTypeStatement extends DDLStatement {
         ldt.setNeedsRepartition(false);
       final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
       LogManager.instance().log(this, Level.INFO,
-          "REBUILD TYPE '%s' completed: %,d records re-serialised (repartition moves=%,d) in %,d ms",
-          null, typeName.getStringValue(), count[0], moved[0], elapsedMs);
+          "REBUILD TYPE '%s' completed: %,d records re-serialised (repartition moves=%,d, skipped as deleted=%,d) in %,d ms",
+          null, typeName.getStringValue(), count[0], moved[0], skipped[0], elapsedMs);
     } catch (Exception e) {
       if (implicitTx && db.isTransactionActive())
         db.rollback();
@@ -350,8 +376,10 @@ public class RebuildTypeStatement extends DDLStatement {
     result.setProperty("polymorphic", polymorphic);
     result.setProperty("repartition", finalRepartition);
     result.setProperty("recordsRebuilt", count[0]);
-    if (finalRepartition)
+    if (finalRepartition) {
       result.setProperty("recordsMoved", moved[0]);
+      result.setProperty("recordsSkipped", skipped[0]);
+    }
     if (reclaimSkipped) {
       final String warning = "REBUILD TYPE " + typeName.getStringValue()
           + " ran inside a caller-supplied transaction; paired external buckets were NOT reclaimed because "
