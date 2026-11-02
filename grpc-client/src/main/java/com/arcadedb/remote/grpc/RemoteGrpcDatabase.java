@@ -395,7 +395,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
         if (mapped instanceof NeedRetryException)
           throw mapped;
-        throw new TransactionException("Error on transaction begin", e);
+        // The typed refusal as the cause, as the HTTP client does: a database an operator closed says so, with its reason
+        // (issue #11049), rather than through a status a caller would have to parse
+        throw new TransactionException("Error on transaction begin", mapped);
       }
 
       debugTx = new TxDebug(this.getName(), /* label set by TM */ null);

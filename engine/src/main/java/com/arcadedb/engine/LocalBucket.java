@@ -7054,8 +7054,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * The bucket position the "pointer to the next chunk" field of a chunk header links to, or {@link #NO_NEXT_CHUNK} when
-   * the chunk is the last of its chain (#10853). Every reader of the field goes through this and nothing else, because the
-   * field has two encodings and only this method knows both:
+   * the chunk is the last of its chain (#10853). Every reader that INTERPRETS the field goes through this and nothing else,
+   * because the field has two encodings and only this method knows both. The one reader that does not interpret it, a
+   * splice that writes the link back unchanged as the tail of a new chunk, goes through {@link #readNextChunkLinkAsStored}
+   * instead, so a search for either name finds every reader of the field (#11036):
    * <ul>
    * <li>{@code 0} ends the chain. That is why a LEGACY link cannot name position 0 of the bucket (#10701);</li>
    * <li>a positive value is a legacy link: the absolute position {@code pageNumber * maxRecordsInPage + slot}, which is
@@ -7074,6 +7076,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (link > 0L)
       return link;
     return link == 0L ? NO_NEXT_CHUNK : -(link + 1L);
+  }
+
+  /**
+   * The "pointer to the next chunk" field at {@code offset} of {@code page} exactly as stored, in whichever encoding the
+   * chain used ({@link #decodeNextChunkLink}), for the one reader that never interprets it: a splice that hands it on
+   * verbatim as the tail of the chunk it inserts ({@link #writeContinuationChunks}). The end of chain is 0 in both
+   * encodings, so the copy stays correct whichever form a writer starts storing. Any reader that compares, follows or
+   * frees the link must decode it instead (#11036).
+   */
+  private static long readNextChunkLinkAsStored(final BasePage page, final int offset) {
+    return page.readLong(offset);
   }
 
   /**
@@ -8026,7 +8039,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     final byte[] movedContent = new byte[released];
     page.readByteArray(contentOffset + keptChunkSize, movedContent, 0, released);
-    final long chainTail = page.readLong(nextChunkPointerOffset);
+    final long chainTail = readNextChunkLinkAsStored(page, nextChunkPointerOffset);
 
     final RID[] fingerprintsToCarry = offPageFingerprintsStillCurrent();
 
