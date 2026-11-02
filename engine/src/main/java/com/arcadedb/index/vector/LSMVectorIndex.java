@@ -3187,10 +3187,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
       throw new NeedRetryException("Vector index '" + indexName + "' is not available for rebuild");
 
     try {
-      // Force rebuild from on-disk pages, bypassing mutation thresholds and lazy-load behavior.
-      graphState = GraphState.LOADING;
-      mutationsSinceSerialize.set(0);
-      buildGraphFromScratchWithRetry(graphCallback, false, false);
+      // Force rebuild from on-disk pages, bypassing mutation thresholds and lazy-load behavior. The build does not need
+      // LOADING (it never reads the state), and LOADING means "no graph in memory yet" to ensureGraphAvailable(): set
+      // with a graph resident, it sent every search to wait on graphBuildLock for the whole rebuild instead of
+      // answering from that graph plus the delta scan, as it does during an async rebuild (issue #11129). So LOADING
+      // only when nothing is resident, where a search has nothing to answer from but this build.
+      final ImmutableGraphIndex graphBefore = graphIndex;
+      if (graphBefore == null)
+        graphState = GraphState.LOADING;
+      // Zeroed for the build's duration: with the state no longer forced to LOADING, the pending count is what the
+      // search, inactivity and chained triggers read, and they would start a second full rebuild behind this one for
+      // mutations this build is about to absorb. Handed back when the build fails without publishing a graph, so the
+      // vectors it did not absorb still count towards the next rebuild instead of being scanned for the rest of the
+      // session (PR #11130 review).
+      final int pendingBefore = mutationsSinceSerialize.getAndSet(0);
+      boolean built = false;
+      try {
+        buildGraphFromScratchWithRetry(graphCallback, false, false);
+        built = true;
+      } finally {
+        if (!built && graphIndex == graphBefore)
+          mutationsSinceSerialize.addAndGet(pendingBefore);
+      }
     } finally {
       status.set(INDEX_STATUS.AVAILABLE);
     }
@@ -11669,8 +11687,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Only when the refund brought the pending work back to nothing: anything still charged was charged by
       // another writer since, and that writer needs the graph to stay MUTABLE.
+      // LOADING means "no graph in memory yet", which a graph published since the replay (a build, or the persisted
+      // graph loaded by a search) has made false: put back, it would send every later search to wait on graphBuildLock
+      // and re-validate the persisted graph as if nothing were resident (issue #11129). Settled is what that graph is.
       if (undo.graphStateFlippedFrom != null && graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() <= 0)
-        this.graphState = undo.graphStateFlippedFrom;
+        this.graphState = undo.graphStateFlippedFrom == GraphState.LOADING && graphIndex != null ?
+            GraphState.IMMUTABLE :
+            undo.graphStateFlippedFrom;
 
       if (undo.mutablePagesCreated > 0)
         currentMutablePages.updateAndGet(v -> Math.max(0, v - undo.mutablePagesCreated));
