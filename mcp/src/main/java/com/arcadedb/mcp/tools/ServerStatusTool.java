@@ -33,6 +33,7 @@ public class ServerStatusTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "server_status")
+        .put("annotations", MCPToolUtils.annotations("Server status", true, false, true))
         .put("description", "Get ArcadeDB server information including version, server name, available query languages, and HA/cluster status.")
         .put("inputSchema", new JSONObject()
             .put("type", "object")

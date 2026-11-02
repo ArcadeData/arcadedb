@@ -36,6 +36,7 @@ public class GetServerSettingsTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "get_server_settings")
+        .put("annotations", MCPToolUtils.annotations("Get server settings", true, false, true))
         .put("description",
             """
             Retrieve ArcadeDB server configuration settings. \

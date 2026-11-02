@@ -53,6 +53,21 @@ public class MCPToolUtils {
   }
 
   /**
+   * The MCP {@code annotations} of a tool definition (issue #11170): hints a client reads to decide when to ask the
+   * user before a call. They never authorize anything: the MCP configuration and the user's permissions still do.
+   * {@code openWorldHint} is always false, because a tool only reaches the server that serves it.
+   */
+  public static JSONObject annotations(final String title, final boolean readOnly, final boolean destructive,
+      final boolean idempotent) {
+    return new JSONObject()
+        .put("title", title)
+        .put("readOnlyHint", readOnly)
+        .put("destructiveHint", destructive)
+        .put("idempotentHint", idempotent)
+        .put("openWorldHint", false);
+  }
+
+  /**
    * Resolves a database by name, throwing an {@link IllegalArgumentException} with the list of databases
    * accessible to the user when the requested database does not exist, so the LLM can self-correct
    * without a separate list_databases round-trip.

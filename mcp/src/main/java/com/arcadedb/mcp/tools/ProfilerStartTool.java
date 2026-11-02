@@ -34,6 +34,7 @@ public class ProfilerStartTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "profiler_start")
+        .put("annotations", MCPToolUtils.annotations("Start the query profiler", false, false, false))
         .put("description",
             """
             Start the query profiler to capture query execution data. \

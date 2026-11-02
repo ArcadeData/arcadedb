@@ -47,6 +47,7 @@ public class QueryTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "query")
+        .put("annotations", MCPToolUtils.annotations("Run a read-only query", true, false, true))
         .put("description",
             """
             Execute a read-only (idempotent) query against an ArcadeDB database. Use this for SELECT, MATCH, and other read operations. \

@@ -38,6 +38,7 @@ public class VectorSearchTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "vector_search")
+        .put("annotations", MCPToolUtils.annotations("Vector similarity search", true, false, true))
         .put("description",
             """
             Search a dense LSM_VECTOR or sparse LSM_SPARSE_VECTOR index using a pre-computed query vector. \

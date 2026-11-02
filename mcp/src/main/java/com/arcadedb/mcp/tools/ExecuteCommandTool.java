@@ -47,6 +47,7 @@ public class ExecuteCommandTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "execute_command")
+        .put("annotations", MCPToolUtils.annotations("Execute a command", false, true, false))
         .put("description",
             """
             Execute a non-idempotent command against an ArcadeDB database. Use this for INSERT, UPDATE, DELETE, CREATE TYPE, and other write operations. \

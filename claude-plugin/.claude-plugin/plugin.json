@@ -1,0 +1,36 @@
+{
+  "name": "arcadedb",
+  "displayName": "ArcadeDB",
+  "version": "1.0.0",
+  "description": "Connect to your own ArcadeDB server through its built-in MCP endpoint: explore the schema, run Cypher/SQL/Gremlin queries, search vectors and full text, and update records within the permissions the server grants.",
+  "author": {
+    "name": "Arcade Data Ltd",
+    "email": "info@arcadedata.com",
+    "url": "https://arcadedb.com"
+  },
+  "homepage": "https://docs.arcadedb.com/#mcp-server",
+  "repository": "https://github.com/ArcadeData/arcadedb",
+  "license": "Apache-2.0",
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://docs.arcadedb.com/#mcp-server",
+  "supportUrl": "https://github.com/ArcadeData/arcadedb/issues",
+  "privacyPolicyUrl": "https://arcadedb.com/privacy.html",
+  "termsOfServiceUrl": "https://arcadedb.com/terms.html",
+  "keywords": ["arcadedb", "database", "graph", "cypher", "sql", "gremlin", "vector", "mcp"],
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "ArcadeDB server URL",
+      "description": "Base URL of your ArcadeDB server, without a trailing slash and without /api/v1/mcp, e.g. http://localhost:2480 or https://arcadedb.example.com",
+      "default": "http://localhost:2480",
+      "required": true
+    },
+    "api_token": {
+      "type": "string",
+      "title": "ArcadeDB API token",
+      "description": "An API token created in ArcadeDB Studio (Security > API Tokens). Its 'apitoken:<name>' must be listed in the MCP allowed users (Server > MCP)",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}

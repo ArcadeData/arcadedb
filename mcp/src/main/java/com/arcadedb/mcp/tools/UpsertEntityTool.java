@@ -33,6 +33,7 @@ public class UpsertEntityTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "upsert_entity")
+        .put("annotations", MCPToolUtils.annotations("Create or update a vertex", false, true, true))
         .put("description",
             """
             Create or update a single vertex addressed by a match key, without duplicating it. The record is matched \

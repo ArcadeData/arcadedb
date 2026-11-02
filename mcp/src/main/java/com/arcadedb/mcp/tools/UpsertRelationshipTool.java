@@ -33,6 +33,7 @@ public class UpsertRelationshipTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "upsert_relationship")
+        .put("annotations", MCPToolUtils.annotations("Create or update an edge", false, true, true))
         .put("description",
             """
             Create or update a single directed edge between two vertices, without duplicating it. Each endpoint is \
