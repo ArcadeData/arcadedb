@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.schema.MultiTypeIndexes;
 
 import java.util.List;
 
@@ -104,6 +105,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (indexName == null)
       return false;
 
+    // a logical index over several types (issue #11014) is searched through its members
+    if (MultiTypeIndexes.find(context.getDatabase().getSchema(), indexName) != null)
+      return true;
+
     final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
     return index instanceof TypeIndex;
   }
@@ -173,6 +178,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (indexName == null || queryString == null)
       return null;
 
+    final List<TypeIndex> logical = MultiTypeIndexes.resolve(context.getDatabase().getSchema(), indexName);
+    if (logical != null && !logical.isEmpty())
+      return search(indexName, queryString, context).explainScoring();
+
     final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
     if (!(index instanceof final TypeIndex typeIndex))
       return null;
@@ -188,13 +197,22 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   // ---- Private helpers ----
 
   /**
-   * The search of the named full-text index, which is validated here.
+   * The search of the named full-text index, or of the per-type indexes of the logical index of that name (issue #11014), which
+   * are validated here.
    *
    * @throws SchemaException          if no index carries that name
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   private static FullTextFunctionSearch search(final String indexName, final String queryString, final CommandContext context) {
-    return new FullTextFunctionSearch(FullTextSearch.resolveFullTextIndex(context.getDatabase(), indexName), queryString, null);
+    // Resolved once per statement: the function runs once per row, and the name of a logical index is found by walking the types
+    final String membersKey = "search_index_members:" + indexName;
+    @SuppressWarnings("unchecked")
+    List<TypeIndex> indexes = (List<TypeIndex>) context.getCachedValue(membersKey);
+    if (indexes == null) {
+      indexes = FullTextSearch.resolveFullTextIndexes(context.getDatabase(), indexName);
+      context.setCachedValue(membersKey, indexes);
+    }
+    return new FullTextFunctionSearch(indexes, indexName, queryString, null);
   }
 
   /**

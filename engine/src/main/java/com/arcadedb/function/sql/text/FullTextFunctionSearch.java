@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
@@ -58,7 +59,7 @@ import java.util.function.Supplier;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class FullTextFunctionSearch {
-  private final TypeIndex    index;
+  private final List<TypeIndex> indexes;
   private final String       query;
   private final List<String> restrictedFields;
   private final String       cacheKey;
@@ -69,15 +70,27 @@ final class FullTextFunctionSearch {
    *                         the index
    */
   FullTextFunctionSearch(final TypeIndex index, final String query, final List<String> restrictedFields) {
-    this.index = index;
+    this(List.of(index), index.getName(), query, restrictedFields);
+  }
+
+  /**
+   * The search of a logical index over several types (issue #11014): the per-type indexes are searched one after the other and
+   * their matches merged by score, as the openCypher procedures do. A record belongs to one type, so no two indexes match the same
+   * RID. BM25 statistics are those of each per-type index, so a score is relative to the index of its own type.
+   *
+   * @param name the name the statement used, which keys the cache
+   */
+  FullTextFunctionSearch(final List<TypeIndex> indexes, final String name, final String query,
+      final List<String> restrictedFields) {
+    this.indexes = indexes;
     this.query = query;
     this.restrictedFields = restrictedFields;
     if (restrictedFields == null) {
-      this.cacheKey = "search_index:" + index.getName() + ":" + query;
-      this.subsetCacheKey = "search_index_best:" + index.getName() + ":" + query;
+      this.cacheKey = "search_index:" + name + ":" + query;
+      this.subsetCacheKey = "search_index_best:" + name + ":" + query;
     } else {
-      this.cacheKey = "search_fields:" + index.getName() + ":" + restrictedFields + ":" + query;
-      this.subsetCacheKey = "search_fields_best:" + index.getName() + ":" + restrictedFields + ":" + query;
+      this.cacheKey = "search_fields:" + name + ":" + restrictedFields + ":" + query;
+      this.subsetCacheKey = "search_fields_best:" + name + ":" + restrictedFields + ":" + query;
     }
   }
 
@@ -169,12 +182,12 @@ final class FullTextFunctionSearch {
         final Map<RID, Float> allResults = completeSearch(context);
         return () -> new MatchingRecords(database, allResults, null, -1, null, null, null, order, guard);
       }
-      final Map<RID, Float> accepted = FullTextSearch.search(index, query, -1, guard, restrictedFields, ridFilter);
+      final Map<RID, Float> accepted = searchAll(-1, guard, ridFilter);
       rememberSubset(context, accepted);
       return () -> new MatchingRecords(database, accepted, null, -1, null, null, recordFilter, order, guard);
     }
 
-    final Map<RID, Float> best = FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter);
+    final Map<RID, Float> best = searchAll(limit, guard, ridFilter);
     // The map holds each bucket's best matches, so up to buckets x limit entries: their union contains the global best
     // `limit`, which is the prefix the iteration trusts
     rememberSubset(context, best);
@@ -185,13 +198,28 @@ final class FullTextFunctionSearch {
   }
 
   Object explainScoring() {
-    return FullTextSearch.explainScoring(index, query, restrictedFields);
+    if (indexes.size() == 1)
+      return FullTextSearch.explainScoring(indexes.getFirst(), query, restrictedFields);
+    // a logical index: one explanation per member, under its name
+    final JSONObject explain = new JSONObject();
+    for (final TypeIndex index : indexes)
+      explain.put(index.getName(), FullTextSearch.explainScoring(index, query, restrictedFields));
+    return explain;
+  }
+
+  /** The matches of every index, each searched with the limit and the filter; a limit of -1 is unbounded. */
+  private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter) {
+    if (indexes.size() == 1)
+      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter);
+    final Map<RID, Float> merged = new HashMap<>();
+    for (final TypeIndex index : indexes)
+      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter));
+    return merged;
   }
 
   /** Every match with its score, cached for the statement. Stops when the statement is terminated or past its deadline. */
   private Map<RID, Float> completeSearch(final CommandContext context) {
-    final Map<RID, Float> allResults = FullTextSearch.search(index, query, -1, WorkGuard.forCommandDeadline(context),
-        restrictedFields, null);
+    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null);
     context.setCachedValue(cacheKey, allResults);
     return allResults;
   }
@@ -223,8 +251,12 @@ final class FullTextFunctionSearch {
     final Identifier targetType = target != null && target.getItem() != null ? target.getItem().getIdentifier() : null;
     if (targetType == null)
       return false;
-    final DocumentType indexType = context.getDatabase().getSchema().getType(index.getTypeName());
-    return indexType != null && indexType.isSubTypeOf(targetType.getStringValue());
+    for (final TypeIndex index : indexes) {
+      final DocumentType indexType = context.getDatabase().getSchema().getType(index.getTypeName());
+      if (indexType == null || !indexType.isSubTypeOf(targetType.getStringValue()))
+        return false;
+    }
+    return true;
   }
 
   /**

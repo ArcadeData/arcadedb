@@ -70,6 +70,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -1566,7 +1567,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // Checked before anything is created, so a refused statement leaves no type or property behind
     if (indexName != null) {
-      final boolean taken = schema.existsIndex(indexName) || CypherMultiTypeIndexes.find(schema, indexName) != null;
+      final boolean taken = schema.existsIndex(indexName) || MultiTypeIndexes.find(schema, indexName) != null;
       if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
         if (ddl.isIfNotExists())
           return;
@@ -1597,7 +1598,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
   /**
    * {@code CREATE VECTOR INDEX} and {@code CREATE FULLTEXT INDEX} over several labels or relationship types (issue #10914):
-   * one index per type, tied together by the name {@link CypherMultiTypeIndexes} records. The name is taken like any index
+   * one index per type, tied together by the name {@link MultiTypeIndexes} records. The name is taken like any index
    * name; with none, one is made from the labels and the properties. A statement that fails part-way drops the indexes it
    * built, so it leaves nothing behind but the types it named.
    */
@@ -1610,7 +1611,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         ddl.getConstraintName() :
         String.join("_", labels) + "_" + String.join("_", propertyNames) + "_" + kind.name().toLowerCase(Locale.ROOT);
 
-    final boolean taken = schema.existsIndex(indexName) || CypherMultiTypeIndexes.find(schema, indexName) != null;
+    final boolean taken = schema.existsIndex(indexName) || MultiTypeIndexes.find(schema, indexName) != null;
     if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
       if (ddl.isIfNotExists())
         return;
@@ -1642,8 +1643,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
       if (kind == CypherDDLStatement.IndexKind.VECTOR)
         requireSameVectorShape(schema, indexNames);
-      CypherMultiTypeIndexes.register(schema,
-          new CypherMultiTypeIndexes.Entry(indexName, kind, ddl.isForRelationship(), labels, ddl.getPropertyNames(), indexNames, owned));
+      MultiTypeIndexes.register(schema,
+          new MultiTypeIndexes.Entry(indexName, kind == CypherDDLStatement.IndexKind.VECTOR ? MultiTypeIndexes.Kind.VECTOR : MultiTypeIndexes.Kind.FULLTEXT, ddl.isForRelationship(), labels, ddl.getPropertyNames(), indexNames, owned));
     } catch (final RuntimeException e) {
       for (final String name : owned)
         try {
@@ -1985,14 +1986,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String indexName = ddl.getConstraintName();
-    final CypherMultiTypeIndexes.Entry logical = CypherMultiTypeIndexes.find(schema, indexName);
+    final MultiTypeIndexes.Entry logical = MultiTypeIndexes.find(schema, indexName);
     if (logical != null) {
-      // the indexes the statement built go with the name; one that was there before it stays. The name goes last, so a drop
-      // that fails part-way can be retried
-      for (final String owned : logical.owned())
-        if (schema.existsIndex(owned))
-          schema.dropIndex(owned);
-      CypherMultiTypeIndexes.remove(schema, indexName);
+      // the indexes the statement built go with the name; one that was there before it stays
+      MultiTypeIndexes.drop(schema, logical);
       stats.incIndexesRemoved();
       return;
     }
@@ -2005,6 +2002,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (owner != null)
       throw new SchemaException(
           "Index '" + indexName + "' belongs to constraint '" + owner + "': use DROP CONSTRAINT " + owner + " to drop it");
+    MultiTypeIndexes.requireNotMember(schema, indexName);
     schema.dropIndex(indexName);
     stats.incIndexesRemoved();
   }
