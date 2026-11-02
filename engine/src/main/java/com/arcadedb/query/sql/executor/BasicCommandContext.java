@@ -27,6 +27,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.sql.parser.RecordAttribute;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.HashMap;
@@ -153,21 +154,17 @@ public class BasicCommandContext implements CommandContext {
         otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
 
         if (result instanceof Result result1) {
-          // Handle special metadata properties for Result objects
-          if ("@rid".equals(firstPart))
-            result = result1.getIdentity().orElse(null);
-          else if ("@type".equals(firstPart))
-            result = result1.getElement().map(Document::getTypeName).orElse(null);
+          // Record attributes as the projection reads them: off the record, or off the row when it wraps none (issue #11131)
+          if (RecordAttribute.isRowAttribute(firstPart))
+            result = RecordAttribute.resolve(result1, firstPart);
           else
             result = result1.getProperty(firstPart);
         } else if (result instanceof Map map)
           result = map.get(firstPart);
         else if (result instanceof Document document) {
           // Handle special metadata properties that are not stored in the document
-          if ("@rid".equals(firstPart))
-            result = document.getIdentity();
-          else if ("@type".equals(firstPart))
-            result = document.getTypeName();
+          if (RecordAttribute.isRowAttribute(firstPart))
+            result = RecordAttribute.evaluateOnRecord(document, firstPart);
           else
             result = document.get(firstPart);
         }
@@ -230,8 +227,9 @@ public class BasicCommandContext implements CommandContext {
       result = database.getGlobalVariable(name);
 
     if (fieldName != null) {
+      // record attributes as getVariablePath() reads them: off the record, or off the row when it wraps none (issue #11131)
       if (result instanceof Result result1)
-        result = result1.getProperty(fieldName);
+        result = RecordAttribute.isRowAttribute(fieldName) ? RecordAttribute.resolve(result1, fieldName) : result1.getProperty(fieldName);
     }
     return result != null ? result : defaultValue;
   }
