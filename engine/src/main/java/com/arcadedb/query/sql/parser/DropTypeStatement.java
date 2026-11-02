@@ -110,7 +110,8 @@ public class DropTypeStatement extends DDLStatement {
   /**
    * A lightweight edge holds no record, so the record probe cannot see it: the only place it lives is the adjacency list of
    * its source vertex. Scans the outgoing side of every vertex (bidirectional and unidirectional types both write it) and
-   * stops at the first hit.
+   * stops at the first hit. A full scan only happens for an edge type with no records and no light edges, a rare DDL
+   * statement; UNSAFE skips it. Vertex types are iterated non-polymorphically because schema.getTypes() already lists every subtype.
    */
   private static boolean hasLightweightEdges(final Database database, final Schema schema, final String edgeTypeName) {
     for (final DocumentType type : schema.getTypes()) {
