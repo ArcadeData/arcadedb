@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,11 +111,12 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
   @Test
   void typeInWhereAndOrderByOverExpandedNeighbours() {
     try (final ResultSet rs = database.query("sql",
-        "SELECT name FROM (SELECT expand(" + VN + ")) WHERE @type = 'T' ORDER BY @type, name", (Object) QUERY)) {
+        "SELECT name FROM (SELECT expand(" + VN + ")) WHERE @type = 'T' ORDER BY @type, name DESC", (Object) QUERY)) {
       final List<String> names = new ArrayList<>();
       while (rs.hasNext())
         names.add(rs.next().getProperty("name"));
-      assertThat(names).hasSize(3);
+      // every row is of type T, so the second key alone orders them
+      assertThat(names).hasSize(3).contains("n0", "n1").isSortedAccordingTo(Comparator.reverseOrder());
     }
   }
 
@@ -186,6 +188,20 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
     assertThat(context.getVariablePath("$row.@type")).isEqualTo("T");
     assertThat(context.getVariablePath("$rec.@type")).isEqualTo("T");
     assertThat(context.getVariablePath("$rec.@rid")).isEqualTo(record.getIdentity());
+
+    // case-insensitive as in the projection, and the other attributes the projection answers
+    assertThat(context.getVariable("$rec.@TYPE")).isEqualTo("T");
+    final Document vertex = database.iterateType("V", false).next().asDocument();
+    final Document edge = database.iterateType("E", false).next().asDocument();
+    context.setVariable("v", new ResultInternal(vertex));
+    context.setVariable("e", new ResultInternal(edge));
+    context.setVariable("doc", vertex);
+    assertThat(context.getVariable("$v.@cat")).isEqualTo("v");
+    assertThat(context.getVariablePath("$e.@cat")).isEqualTo("e");
+    assertThat(context.getVariablePath("$e.@in")).isEqualTo(edge.asEdge().getIn());
+    assertThat(context.getVariablePath("$doc.@cat")).isEqualTo("v");
+    assertThat(context.getVariablePath("$doc.@rid")).isEqualTo(vertex.getIdentity());
+    assertThat(context.getVariablePath("$doc.name")).isEqualTo(vertex.get("name"));
   }
 
   /** Not vector-specific: any row that wraps no record and carries `@type` answers it. */

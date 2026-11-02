@@ -105,12 +105,14 @@ public class OrderByItem {
     int result = 0;
     if (recordAttr != null) {
       // a projected column of the attribute's name first, then the attribute of the row itself, as the projection reads
-      // it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows unordered)
+      // it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows unordered). Not @this:
+      // a whole record has no order of its own
+      final boolean rowAttribute = RecordAttribute.isRowAttribute(recordAttr);
       aVal = a.getProperty(recordAttr);
-      if (aVal == null)
+      if (aVal == null && rowAttribute)
         aVal = RecordAttribute.evaluate(a, recordAttr);
       bVal = b.getProperty(recordAttr);
-      if (bVal == null)
+      if (bVal == null && rowAttribute)
         bVal = RecordAttribute.evaluate(b, recordAttr);
     } else if (alias != null) {
       aVal = a.getProperty(alias);

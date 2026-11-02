@@ -35,9 +35,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static com.arcadedb.schema.Property.TYPE_PROPERTY;
-
 /**
  * Basic implementation of CommandContext interface that stores variables in a map. Supports parent/child context to build a tree
  * of contexts. If a variable is not found on current object the search is applied recursively on child contexts.
@@ -157,9 +154,8 @@ public class BasicCommandContext implements CommandContext {
         otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
 
         if (result instanceof Result result1) {
-          // Handle special metadata properties for Result objects
-          // a row that wraps no record answers @type from its own property, as it answers @rid (issue #11131)
-          if (isRecordAttribute(firstPart))
+          // Record attributes as the projection reads them: off the record, or off the row when it wraps none (issue #11131)
+          if (RecordAttribute.isRowAttribute(firstPart))
             result = RecordAttribute.evaluate(result1, firstPart);
           else
             result = result1.getProperty(firstPart);
@@ -167,10 +163,8 @@ public class BasicCommandContext implements CommandContext {
           result = map.get(firstPart);
         else if (result instanceof Document document) {
           // Handle special metadata properties that are not stored in the document
-          if ("@rid".equals(firstPart))
-            result = document.getIdentity();
-          else if ("@type".equals(firstPart))
-            result = document.getTypeName();
+          if (RecordAttribute.isRowAttribute(firstPart))
+            result = RecordAttribute.evaluate(new ResultInternal(document), firstPart);
           else
             result = document.get(firstPart);
         }
@@ -233,15 +227,11 @@ public class BasicCommandContext implements CommandContext {
       result = database.getGlobalVariable(name);
 
     if (fieldName != null) {
-      // @rid and @type as getVariablePath() reads them: off the record, or off the row when it wraps none (issue #11131)
+      // record attributes as getVariablePath() reads them: off the record, or off the row when it wraps none (issue #11131)
       if (result instanceof Result result1)
-        result = isRecordAttribute(fieldName) ? RecordAttribute.evaluate(result1, fieldName) : result1.getProperty(fieldName);
+        result = RecordAttribute.isRowAttribute(fieldName) ? RecordAttribute.evaluate(result1, fieldName) : result1.getProperty(fieldName);
     }
     return result != null ? result : defaultValue;
-  }
-
-  private static boolean isRecordAttribute(final String name) {
-    return RID_PROPERTY.equals(name) || TYPE_PROPERTY.equals(name);
   }
 
   @Override
