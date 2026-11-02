@@ -494,6 +494,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Test-only: see setBeforeBuildScanForTest() and setAfterBuildWatchOpenedForTest()
   private volatile Runnable      beforeBuildScanForTest;
   private volatile Runnable      afterBuildWatchOpenedForTest;
+  // Test-only: see setBeforeDiskRestoreForTest()
+  private volatile Runnable      beforeDiskRestoreForTest;
   // SHUTDOWN_AWAIT_MS, shortened only by setShutdownAwaitMsForTest()
   private volatile long          shutdownAwaitMs    = SHUTDOWN_AWAIT_MS;
   // Raised by shutdown(): a build() that learns the outcome of the build that superseded it must not report success
@@ -937,22 +939,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           // good, its latch counted down and nothing on the way, so a waiter could not tell it from a slow one (issue #11011)
           synchronized (GraphAnalyticalView.this) {
             closeBuildWatch(watch);
-            if (myGeneration == generation) {
-              this.buildError = e;
-              if (snapshot != null) {
-                this.status = Status.STALE;
-              } else {
-                this.status = Status.FAILED;
-                unregisterChangeListeners();
-                // Unregister failed GAV so the name can be reused for a fresh build
-                GraphTraversalProviderRegistry.unregister(database, this);
-                if (name != null) {
-                  GraphAnalyticalViewRegistry.unregister(database, name);
-                  // What the schema:graphAnalyticalViews row reports until the view is built again or dropped
-                  GraphAnalyticalViewRegistry.recordFailure(database, name, e);
-                }
-              }
-            }
+            if (myGeneration == generation)
+              failBackgroundWork(e);
             GraphAnalyticalView.this.notifyAll();
           }
           logBuildFailure("Async build", e);
@@ -973,19 +961,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       });
     } catch (final RejectedExecutionException e) {
       closeBuildWatch(watch);
-      this.buildError = e;
-      if (snapshot != null)
-        this.status = Status.STALE;
-      else {
-        // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
-        this.status = Status.FAILED;
-        unregisterChangeListeners();
-        GraphTraversalProviderRegistry.unregister(database, this);
-        if (name != null) {
-          GraphAnalyticalViewRegistry.unregister(database, name);
-          GraphAnalyticalViewRegistry.recordFailure(database, name, e);
-        }
-      }
+      // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
+      failBackgroundWork(e);
       this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
@@ -1198,6 +1175,34 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       current = current.getCause();
     }
     return false;
+  }
+
+  /**
+   * The one answer to "what happens to a view whose background work failed" (issue #11032), given by every handler of an
+   * asynchronous build and of a deferred restore from disk, whether the task ran and failed or the executor refused it. Called
+   * holding this view's monitor, by the generation the failure belongs to.
+   * <p>
+   * With a snapshot the view keeps serving it, STALE. With nothing to serve it goes FAILED and leaves: its change listeners and
+   * its traversal provider are unregistered, and so is its name, so a CREATE of the same name builds it afresh, while the reason
+   * stays in the registry for the schema row until the view is built again or dropped. A restore failing does not say the
+   * definition is bad, but neither does a build failing of an {@link OutOfMemoryError}: both leave a view with nothing to
+   * serve, and the definition stays persisted either way.
+   * <p>
+   * The name is freed only while this is still the view registered under it. A view dropped and re-created meanwhile must not
+   * lose its successor to the old one's failure, and a database closing empties the registry first, where recording the
+   * failure would pin the closed database in it.
+   */
+  private void failBackgroundWork(final Throwable e) {
+    buildError = e;
+    if (snapshot != null) {
+      status = Status.STALE;
+      return;
+    }
+    status = Status.FAILED;
+    unregisterChangeListeners();
+    GraphTraversalProviderRegistry.unregister(database, this);
+    if (name != null && GraphAnalyticalViewRegistry.unregister(database, name, this))
+      GraphAnalyticalViewRegistry.recordFailure(database, name, e);
   }
 
   /**
@@ -4104,8 +4109,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // how much further replicated data has landed since - the same failure shape as the lost-recency-marker case,
     // but permanent rather than self-healing. Leader-only mirrors the existing precedent for HA-unsafe derived
     // state (see TimeSeriesMaintenanceScheduler.runMaintenance()) with no compile dependency on the HA module.
+    // isFollower() and not this reference's own flags (issue #11021): a view restored at open holds the raw LocalDatabase,
+    // built before the server wrapped it for HA, whose isReplicated() is false forever. The same holds for the three below.
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return;
     final Snapshot snap = this.snapshot;
     if (snap == null || snap.asOfTransactionId < 0)
@@ -4150,7 +4157,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (name == null || status != Status.READY || contractionHierarchies.length == 0)
       return;
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return;
     final Snapshot snap = this.snapshot;
     if (snap == null || snap.asOfTransactionId < 0 || (snap.overlay != null && snap.overlay.hasChanges()))
@@ -4217,7 +4224,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
       return false;
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return false;
     if (!dbInternal.getTransactionManager().isRecencySignalReliable())
       return false;
@@ -4287,6 +4294,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           BUILD_PERMITS.acquireUninterruptibly();
           final boolean restored;
           try {
+            final Runnable beforeRestore = beforeDiskRestoreForTest;
+            if (beforeRestore != null)
+              beforeRestore.run();
             restored = tryRestoreFromPersistedCsr(myGeneration);
           } finally {
             BUILD_PERMITS.release();
@@ -4305,12 +4315,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           // unexpected (e.g. the database closing mid-check, or the heap running out) would otherwise leave status stuck at
           // BUILDING forever - awaitDeferredDiskRestoreSettled()'s loop would then busy-spin on every
           // future checkBuilt() call (its latch is already counted down, so await() returns instantly,
-          // and status never leaves BUILDING to end the loop). Mirrors buildAsync()'s own catch exactly.
+          // and status never leaves BUILDING to end the loop). The same failBackgroundWork() as buildAsync()'s own catch
+          // (issue #11032): a restore that dies with nothing to serve frees the name exactly as a failed build does.
           synchronized (this) {
-            if (myGeneration == generation) {
-              buildError = e;
-              status = snapshot != null ? Status.STALE : Status.FAILED;
-            }
+            if (myGeneration == generation)
+              failBackgroundWork(e);
             notifyAll();
           }
           logBuildFailure("Deferred restore", e);
@@ -4321,14 +4330,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       });
     } catch (final RejectedExecutionException e) {
-      // Mirrors buildAsync()'s equivalent handler exactly (review on PR #6633): buildError/notifyAll()
-      // were missing here, and status was unconditionally NOT_BUILT even when a prior snapshot exists
-      // (e.g. a rebuild superseded by this same dispatch, or a stale-but-still-served one) - both quietly
-      // made getBuildError()/isReady()'s STALE+useWhenStale path less reliable for this rejection path
-      // than for every other one in this class.
+      // The same failBackgroundWork() as buildAsync()'s equivalent handler (review on PR #6633, issue #11032): buildError and
+      // notifyAll() were missing here once, then the teardown that frees the name, so getBuildError(), isReady()'s
+      // STALE+useWhenStale path and a CREATE of the same name answered differently for this rejection path.
       deferredRestoreInFlight = false;
-      buildError = e;
-      status = snapshot != null ? Status.STALE : Status.FAILED;
+      failBackgroundWork(e);
       notifyAll();
       latch.countDown();
       taskCompleted();
@@ -4393,7 +4399,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // e.g. left over from a promotion/demotion - must never be restored on this node either. Checked before
     // isRecencySignalReliable() purely because it is the cheaper of the two disqualifying checks.
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return false;
     // The certificate is a plain equality check against the database's last committed transaction id, which is
     // only sound while that counter's own history is verifiably continuous. If this open couldn't reconstruct it
@@ -5565,6 +5571,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /** Test-only hook: run as a build's watch is published, before its listeners are armed, which may throw from there. */
+  /**
+   * Test-only hook: runs in the deferred restore's task right before the persisted file is read, where a {@link Error} it
+   * throws reaches the task's own handler as a failure inside the read would (issue #11032).
+   */
+  void setBeforeDiskRestoreForTest(final Runnable hook) {
+    this.beforeDiskRestoreForTest = hook;
+  }
+
   void setAfterBuildWatchOpenedForTest(final Runnable hook) {
     this.afterBuildWatchOpenedForTest = hook;
   }

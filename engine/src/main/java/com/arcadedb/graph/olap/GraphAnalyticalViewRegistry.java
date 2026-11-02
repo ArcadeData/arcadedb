@@ -160,6 +160,22 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
+   * Unregisters {@code view} from {@code name} only while it is the view registered there, and answers whether it was: a view
+   * whose background work failed must not unregister the one that replaced it under the same name (issue #11032).
+   */
+  public static boolean unregister(final Database database, final String name, final GraphAnalyticalView view) {
+    synchronized (REGISTRY) {
+      final Database unwrapped = unwrap(database);
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
+      if (views == null || !views.remove(name, view))
+        return false;
+      if (views.isEmpty())
+        REGISTRY.remove(unwrapped);
+      return true;
+    }
+  }
+
+  /**
    * Shuts down all GAVs for a database without removing schema definitions.
    * Called during database close to release resources while preserving persistence for next open.
    */

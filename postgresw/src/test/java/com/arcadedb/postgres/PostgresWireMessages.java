@@ -71,6 +71,49 @@ final class PostgresWireMessages {
   }
 
   /**
+   * Parse ('P') declaring a prepared statement with the given parameter type OIDs, which may be fewer than the
+   * placeholders the text references.
+   */
+  static void sendParseWithTypes(final DataOutputStream out, final String statementName, final String query, final int... typeOids)
+      throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, statementName);
+    writeCString(body, query);
+    body.write(typeOids.length >>> 8);
+    body.write(typeOids.length); // int16 numParamDataTypes
+    for (final int oid : typeOids)
+      body.write(new byte[] { (byte) (oid >>> 24), (byte) (oid >>> 16), (byte) (oid >>> 8), (byte) oid });
+    sendMessage(out, 'P', body);
+  }
+
+  /**
+   * Bind ('B') with explicit parameter format codes and text-encoded values, so a test can send a format-code count that
+   * does not match the value count.
+   */
+  static void sendBindWithFormats(final DataOutputStream out, final String portalName, final String statementName, final int[] formatCodes,
+      final String... values) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, portalName);
+    writeCString(body, statementName);
+    body.write(formatCodes.length >>> 8);
+    body.write(formatCodes.length); // int16 numParamFormatCodes
+    for (final int code : formatCodes) {
+      body.write(code >>> 8);
+      body.write(code);
+    }
+    body.write(values.length >>> 8);
+    body.write(values.length); // int16 numParamValues
+    for (final String value : values) {
+      final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+      body.write(new byte[] { (byte) (bytes.length >>> 24), (byte) (bytes.length >>> 16), (byte) (bytes.length >>> 8), (byte) bytes.length });
+      body.write(bytes);
+    }
+    body.write(0);
+    body.write(0); // int16 numResultFormatCodes = 0
+    sendMessage(out, 'B', body);
+  }
+
+  /**
    * Bind ('B') creating a portal from an already-parsed statement, with no parameters and no requested result
    * formats.
    */
