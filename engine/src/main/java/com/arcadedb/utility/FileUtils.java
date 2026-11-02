@@ -560,6 +560,26 @@ public class FileUtils {
    * @param syncDirectory {@code false} only when the caller fsyncs the target's directory itself right after
    */
   public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory) throws IOException {
+    atomicCopyFile(source, target, syncDirectory, true);
+  }
+
+  /**
+   * {@link #atomicCopyFile(File, File, boolean)}, with the hard link fast path made optional (issue #11097).
+   * <p>
+   * Some file systems accept {@code link()} but do not give a linked file POSIX semantics: on a SeaweedFS FUSE mount
+   * the second name loses its data once the original name is replaced, so it lists with its size and cannot be read.
+   * No exception is thrown at link time, so the fallback cannot detect that; the caller has to opt out.
+   *
+   * @param useHardLink {@code false} to always publish a plain byte copy, never a link
+   */
+  public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory,
+      final boolean useHardLink) throws IOException {
+    if (!useHardLink) {
+      // atomicWriteFile() fsyncs the parent directory, which is a superset of what syncDirectory=false asks for.
+      atomicWriteFile(target, Files.readAllBytes(source.toPath().toAbsolutePath()));
+      return;
+    }
+
     final Path from = source.toPath().toAbsolutePath();
     final Path to = target.toPath().toAbsolutePath();
     final Path dir = to.getParent();

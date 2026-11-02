@@ -117,6 +117,30 @@ class FileUtilsTest {
   }
 
   @Test
+  void atomicCopyWithoutHardLinkNeverCreatesALinkAndStaysDetached() throws Exception {
+    // #11097: a file system can accept link() yet lose the linked data, so the caller must be able to opt out.
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    final byte[] content = { 0, (byte) 0x80, (byte) 0xff };
+    Files.write(source, content);
+    Files.writeString(target, "an older generation");
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("createLink"))
+        throw new AssertionError("a hard link was requested although it was disabled");
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicCopyFile(source.toFile(), target.toFile(), false, false);
+    }
+
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    assertThat(Files.readAllBytes(source)).isEqualTo(content);
+    assertThat(Files.getAttribute(target, "unix:ino")).isNotEqualTo(Files.getAttribute(source, "unix:ino"));
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactlyInAnyOrder(source, target);
+    }
+  }
+
+  @Test
   void defaultAtomicWriteRetainsTheExistingFallbackForUnsupportedFileSystems() throws Exception {
     final Path target = tempDir.resolve("config.json").toAbsolutePath();
     Files.writeString(target, "old");

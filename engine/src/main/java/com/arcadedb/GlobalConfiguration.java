@@ -269,6 +269,10 @@ public enum GlobalConfiguration {
       "Run a SQL script whose statements are ALL schema definition DDL inside a single schema recording session, so the batch is persisted - and, under HA, replicated as one Raft entry - once instead of once per statement (issue #6990). The trade is that the database write lock, and the schema recording session with it, are held for the whole script instead of once per statement. Under HA an ordinary commit on the leader waits out an active recording session for at most arcadedb.ha.quorumTimeout before proceeding anyway, so a script whose execution outlasts that widens the window the #4083 guard covers - a window a long index build already opens today. Set to false to go back to one session per statement",
       Boolean.class, true),
 
+  SCHEMA_HARD_LINK_PREVIOUS("arcadedb.schema.hardLinkPrevious", SCOPE.DATABASE,
+      "Publish schema.prev.json, the fallback copy readConfiguration() uses when schema.json is damaged, as a hard link to the previous schema.json, which costs one inode operation. Set to false to write it as a plain byte copy instead: needed on file systems that accept hard links but do not keep the data of a linked file once the original name is replaced (some FUSE, network and object-store-backed mounts, e.g. SeaweedFS), where a hard linked schema.prev.json lists with its size but cannot be read back (issue #11097). Even when true, the plain copy is used on file systems that refuse links",
+      Boolean.class, true),
+
   TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", SCOPE.DATABASE, "Default number of buckets to create per type", Integer.class,
       1),
 

@@ -5655,7 +5655,9 @@ public class LocalSchema implements Schema {
       // generation before this one or the one before that - complete either way - next to a schema.json that the
       // atomic write guarantees is complete, so the fallback it exists for is never needed in that window.
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      FileUtils.atomicCopyFile(configurationFile, copy, false);
+      // #11097: the link is opt-out, for file systems that accept it but lose the linked data when schema.json is replaced.
+      FileUtils.atomicCopyFile(configurationFile, copy, false,
+          database.getConfiguration().getValueAsBoolean(GlobalConfiguration.SCHEMA_HARD_LINK_PREVIOUS));
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.
