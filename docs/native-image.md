@@ -214,6 +214,13 @@ wants roughly 80% of system RAM and this build's image heap is ~630 MB. Build th
 locally instead - it is fast on a real Mac (`mvn -Pnative -pl native -am -DskipTests package`, a few
 minutes). There is likewise no free Windows-on-ARM runner.
 
+## Optimization level
+
+The image is built at `-O3` (the `native.opt` property in `native/pom.xml`), which inlines more than
+GraalVM's default `-O2`: faster code, a larger binary and a longer image build. The measurement is in
+[#11070](https://github.com/ArcadeData/arcadedb/issues/11070). Build at the default level with
+`-Dnative.opt=-O2`, or a smaller binary with `-Dnative.opt=-Os`.
+
 ## CPU requirements
 
 `native-image` compiles for one CPU baseline, set with `-march`, and a binary only starts on a CPU
