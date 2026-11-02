@@ -3416,6 +3416,11 @@ class GraphAnalyticalViewTest extends TestHelper {
             case "isLeader" -> {
               return leader;
             }
+            // This view is the replicated instance the view was handed, so it answers for itself (issue #11021). Delegated, the
+            // question would resolve the real database's own wrapper, which is not this view
+            case "isFollower" -> {
+              return !leader;
+            }
             }
           try {
             return method.invoke(delegate, args);

@@ -275,20 +275,21 @@ class Issue6659PortalStreamingIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
-  @DisplayName("[#6659] binding the name of a suspended stream again ends the old cursor and starts a fresh one")
+  @DisplayName("[#6659] binding the unnamed portal of a suspended stream again ends the old cursor and starts a fresh one")
   void rebindingAStreamedPortalStartsAFreshCursor() throws Exception {
     createRows(ROWS);
 
     withConnection((out, in) -> {
       beginBlock(out, in);
       sendParse(out, QUERY);
-      sendBind(out, "P1");
-      sendExecute(out, "P1", 3);
+      // The unnamed portal: a NAMED one must be closed before its name is bound again (42P03, issue #11034)
+      sendBind(out, "");
+      sendExecute(out, "", 3);
       sendSync(out);
       assertThat(dataRowIds(readUntilReadyForQuery(in))).isEqualTo(sequence(0, 3));
 
-      sendBind(out, "P1");
-      sendExecute(out, "P1", 2);
+      sendBind(out, "");
+      sendExecute(out, "", 2);
       sendSync(out);
       assertThat(dataRowIds(readUntilReadyForQuery(in))).isEqualTo(sequence(0, 2));
       assertThat(liveEntries(QUERY)).as("the first cursor ended with its portal").isEqualTo(1);

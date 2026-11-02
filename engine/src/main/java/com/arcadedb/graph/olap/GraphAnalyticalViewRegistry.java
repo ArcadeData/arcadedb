@@ -160,6 +160,26 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
+   * Frees {@code name} from a view whose background work failed and records why, in one step under the registry lock, and only
+   * while {@code view} is the view registered there (issue #11032). Answers whether it was. The view that replaced it under the
+   * same name keeps the name, and a registration or a {@code shutdownAll()} cannot slip between the removal and the record: the
+   * first would inherit the old failure, the second would see a closed database pinned in the failure map again.
+   */
+  public static boolean unregisterFailed(final Database database, final String name, final GraphAnalyticalView view,
+      final Throwable error) {
+    synchronized (REGISTRY) {
+      final Database unwrapped = unwrap(database);
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
+      if (views == null || !views.remove(name, view))
+        return false;
+      if (views.isEmpty())
+        REGISTRY.remove(unwrapped);
+      FAILURES.computeIfAbsent(unwrapped, k -> new HashMap<>()).put(name, error);
+      return true;
+    }
+  }
+
+  /**
    * Shuts down all GAVs for a database without removing schema definitions.
    * Called during database close to release resources while preserving persistence for next open.
    */

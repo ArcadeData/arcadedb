@@ -12071,7 +12071,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return true when standalone (never replicated) or on the current leader
    */
   static boolean isCompactionAllowedOnThisNode(final DatabaseInternal database) {
-    return !database.isReplicated() || database.isLeader();
+    // Through the current wrapper: getDatabase() is the raw instance the schema was loaded with (issue #11021)
+    return !database.isFollower();
   }
 
   /**

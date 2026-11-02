@@ -58,6 +58,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -449,16 +450,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private       long    reserved;
     // Sized from the heap (issue #11011): the limit starts at the fixed floor and is raised, the first time a reservation needs
     // more, to what the heap can give the call. Small calls never read the heap
-    private final boolean auto;
-    private       boolean sizedFromHeap;
-    private       long    freeHeap       = -1L;
-    private       long    pageCache;
+    private final boolean      auto;
+    // The free-heap reading an automatic budget is sized from: HeapUsage's, or a fixed figure in a test (issue #11030)
+    private final LongSupplier freeHeapReading;
+    private       boolean      sizedFromHeap;
+    private       long         freeHeap       = -1L;
+    private       long         pageCache;
     // What the call can take without giving up any page of the cache
-    private       long    withoutReclaim = Long.MAX_VALUE;
+    private       long         withoutReclaim = Long.MAX_VALUE;
 
-    private MemoryBudget(final long limit, final boolean auto) {
+    private MemoryBudget(final long limit, final boolean auto, final LongSupplier freeHeapReading) {
       this.limit = limit;
       this.auto = auto;
+      this.freeHeapReading = freeHeapReading;
     }
 
     /**
@@ -472,7 +476,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       sizedFromHeap = true;
       // The reading that never under-reports what is live: a young collection does not refresh the old generation's
       // post-collection figure, and a stale one would credit the call with heap that is not free
-      freeHeap = HeapUsage.conservativeAvailableHeapBytes();
+      freeHeap = freeHeapReading.getAsLong();
       if (freeHeap < 0)
         return;
       pageCache = PageManager.INSTANCE.getReadCacheRAM();
@@ -758,11 +762,20 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}.
    */
   protected MemoryBudget newMemoryBudget(final Database db) {
+    return newMemoryBudget(db, HeapUsage::conservativeAvailableHeapBytes);
+  }
+
+  /**
+   * {@link #newMemoryBudget(Database)} sized, when automatic, from {@code freeHeapReading} instead of the live heap: the seam a
+   * test of the sizing policy drives with a fixed reading, so its verdict never depends on what the JVM running it holds
+   * (issue #11030). A negative reading is an unknown one.
+   */
+  MemoryBudget newMemoryBudget(final Database db, final LongSupplier freeHeapReading) {
     final long configured = db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY);
     if (configured != 0)
-      return new MemoryBudget(configured, false);
+      return new MemoryBudget(configured, false, freeHeapReading);
     // 0: sized from the heap the call can get, never below the fixed budget it replaces (issue #11011)
-    return new MemoryBudget(fixedBudgetFloor(), true);
+    return new MemoryBudget(fixedBudgetFloor(), true, freeHeapReading);
   }
 
   /**

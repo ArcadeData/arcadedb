@@ -114,17 +114,12 @@ public class TimeSeriesMaintenanceScheduler {
     // engine operations also self-gate via runWithCompactionReplication, but skipping here avoids
     // the wasted DatabaseContext init + transaction churn on every follower tick.
     //
-    // The two flags MUST be read off getWrappedDatabaseInstance() and not off the scheduled reference
-    // (issue #6948). Every schedule() call site hands over the instance LocalSchema was built with, and
-    // LocalSchema's `database` field is final and captured inside LocalDatabase.openInternal() - before the
-    // server has wrapped the database for HA, and never updated afterwards. So the scheduled reference is the
-    // raw LocalDatabase, whose isReplicated() is the DatabaseInternal default `false`, and this skip could
-    // never fire for anyone. getWrappedDatabaseInstance() resolves the CURRENT wrapper on every tick, which is
-    // the same idiom the operations below already use to reach runWithCompactionReplication - which is why the
-    // consequence was wasted work on every follower tick rather than divergence.
+    // The scheduled reference is the raw LocalDatabase LocalSchema was built with, captured before the server wrapped the
+    // database for HA (issue #6948): isFollower() resolves the CURRENT wrapper on every tick, where the reference's own
+    // isReplicated() is false forever. The operations below resolve it the same way to reach runWithCompactionReplication,
+    // which is why the consequence was wasted work on every follower tick rather than divergence.
     final DatabaseInternal dbInternal = (DatabaseInternal) db;
-    final DatabaseInternal replicationView = dbInternal.getWrappedDatabaseInstance();
-    if (replicationView != null && replicationView.isReplicated() && !replicationView.isLeader())
+    if (dbInternal.isFollower())
       return;
 
     // The maintenance thread is created by a ScheduledExecutorService and does not

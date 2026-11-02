@@ -174,7 +174,7 @@ public class PostgresNetworkExecutor extends Thread {
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
   /** PostgreSQL itself caps a statement at 65535 parameters. */
-  private static final int                                            MAX_STATEMENT_PARAMETERS = 65535;
+  static final int                                                    MAX_STATEMENT_PARAMETERS = 65535;
   /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
   private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
       "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
@@ -634,6 +634,9 @@ public class PostgresNetworkExecutor extends Thread {
     if (closeType == 'P')
       closePortalCursor(getPortal(prepStatementOrPortal, true));
     else if (closeType == 'S')
+      // The portals bound from the statement stay executable (issue #11034). The protocol documentation says closing a statement
+      // closes them, but PostgreSQL does not: DropPreparedStatement() only releases the plan source, each portal holds its own
+      // reference to the plan, and its Execute keeps answering. A portal here is likewise a copy of the statement (bindFrom())
       preparedStatements.remove(prepStatementOrPortal);
 
     if (DEBUG)
@@ -3175,7 +3178,10 @@ public class PostgresNetworkExecutor extends Thread {
       // failed one leaves no portal under it; the only exception is skip-until-Sync, where PostgreSQL DISCARDS
       // the message unread and it must leave the name exactly as it found it - the same boundary parseCommand()
       // draws. skipUntilSync cannot change while the rest of this message is read, so it is safe to test here.
-      if (!skipUntilSync)
+      // A NAMED portal is not replaced at all (issue #11034): a Bind naming a live one is refused with 42P03 below and the
+      // portal is left alone. That failure, like any other, aborts the block the portal lives in, so it cannot answer again:
+      // an implicit block drops it at Sync, an explicit one refuses its Execute until COMMIT/ROLLBACK drops it.
+      if (!skipUntilSync && portalName.isEmpty())
         closePortalCursor(portals.remove(portalName));
 
       // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
@@ -3199,7 +3205,7 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
                 Thread.currentThread().threadId());
 
-      final int paramFormatCount = channel.readShort();
+      final int paramFormatCount = channel.readUnsignedShort();
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
             paramFormatCount, Thread.currentThread().threadId());
@@ -3211,11 +3217,24 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
-      final int paramValuesCount = channel.readShort();
+      final int paramValuesCount = channel.readUnsignedShort();
       totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
             paramValuesCount, Thread.currentThread().threadId());
+
+      // PostgreSQL's exec_bind_message() refuses both mismatches with 08P01 before anything runs (issue #11018). A Bind short of
+      // a value left its $N to the engine, which reads a $N with nothing bound at its position as the variable of that name:
+      // an UPDATE wrote NULL and answered success. The values are still read off the wire, but not deserialized.
+      final String bindViolation;
+      if (paramFormatCount > 1 && paramFormatCount != paramValuesCount)
+        bindViolation = "bind message has " + paramFormatCount + " parameter formats but " + paramValuesCount + " parameters";
+      else if (preparedStatement != null && paramValuesCount != requiredParameters(preparedStatement))
+        bindViolation = "bind message supplies " + paramValuesCount + " parameters, but prepared statement \"" + sourcePreparedStatement
+            + "\" requires " + requiredParameters(preparedStatement);
+      else
+        bindViolation = null;
+
       if (paramValuesCount > 0) {
         portal.parameterValues = new ArrayList<>(paramValuesCount);
         for (int i = 0; i < paramValuesCount; i++) {
@@ -3255,6 +3274,10 @@ public class PostgresNetworkExecutor extends Thread {
           paramsConsumed = i + 1;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().threadId());
+
+          if (bindViolation != null)
+            // Refused once the message is consumed: converting a value that will never be bound could only fail differently
+            continue;
 
           // Determine format code according to PostgreSQL protocol:
           // - If paramFormatCount == 0: all parameters use text format (0)
@@ -3307,6 +3330,13 @@ public class PostgresNetworkExecutor extends Thread {
         // pipelined behind the failing message gets no second ErrorResponse of its own.
         return;
 
+      if (bindViolation != null && preparedStatement != null) {
+        // Ahead of the aborted-block refusal, in PostgreSQL's order. A Bind from a missing statement is refused for that below
+        setExtendedProtocolError();
+        writeError(ERROR_SEVERITY.ERROR, bindViolation, "08P01");
+        return;
+      }
+
       if (errorInTransaction && !endsTransactionBlock(preparedStatement)) {
         // A prepared COMMIT/ROLLBACK/END is let through (issue #8029): it is the statement that ends the block, and
         // executeCommand() runs it as the rollback it has to be. Refusing it here left a client that reuses a cached
@@ -3334,6 +3364,9 @@ public class PostgresNetworkExecutor extends Thread {
         refuseMissingPreparedStatement(sourcePreparedStatement);
         return;
       }
+
+      if (refuseLiveNamedPortal(portalName))
+        return;
 
       portals.put(portalName, portal);
       if (DEBUG)
@@ -3393,26 +3426,30 @@ public class PostgresNetworkExecutor extends Thread {
       final Query query = getLanguageAndQuery(normalizeStatementText(readString()));
 
       final PostgresPortal portal = new PostgresPortal(query.query, query.language);
-      final int paramCount = channel.readShort();
+      final int paramCount = channel.readUnsignedShort();
+      // Counted on the text the engine lexes, where a $N is resolved: the wire text still carries PostgreSQL's literals, whose
+      // backslashes mean something else under standard_conforming_strings (issue #11018 review). Reused for the parse below
+      final String engineText = toEngineText(query.language, query.query);
+      final int highestPlaceholder = highestParameterPlaceholder(engineText);
 
       if (paramCount > 0) {
-        portal.parameterTypes = new ArrayList<>(paramCount);
+        portal.parameterTypes = new ArrayList<>(Math.max(paramCount, Math.min(highestPlaceholder, MAX_STATEMENT_PARAMETERS)));
         for (int i = 0; i < paramCount; i++) {
           final long param = channel.readUnsignedInt();
           portal.parameterTypes.add(param);
         }
-      } else {
-        // Client sent paramCount=0 (e.g., asyncpg, node-postgres)
-        // Detect $N placeholders in the query to determine actual parameter count
-        final int detectedParams = detectParameterPlaceholders(query.query);
-        if (detectedParams > 0) {
-          portal.parameterTypes = new ArrayList<>(detectedParams);
-          for (int i = 0; i < detectedParams; i++) {
-            // Use VARCHAR (OID 1043) as default type instead of 0 (unspecified)
-            // This prevents asyncpg from trying to introspect unknown types via pg_type
-            portal.parameterTypes.add((long) PostgresType.VARCHAR.code);
-          }
-        }
+        // The statement requires a value for every $N up to the highest its text references, declared or not (issue #11018):
+        // PostgreSQL infers the type of the ones the client left out, and bindCommand() checks the count against this list.
+        // UNSPECIFIED is what bindCommand() already deserialized those values as.
+        if (highestPlaceholder <= MAX_STATEMENT_PARAMETERS)
+          for (int i = paramCount; i < highestPlaceholder; i++)
+            portal.parameterTypes.add(0L);
+      } else if (highestPlaceholder > 0 && highestPlaceholder <= MAX_STATEMENT_PARAMETERS) {
+        // Client sent paramCount=0 (e.g., asyncpg, node-postgres): the $N placeholders in the query are the parameter count.
+        // VARCHAR (OID 1043) rather than 0 (unspecified) keeps asyncpg from introspecting unknown types via pg_type.
+        portal.parameterTypes = new ArrayList<>(highestPlaceholder);
+        for (int i = 0; i < highestPlaceholder; i++)
+          portal.parameterTypes.add((long) PostgresType.VARCHAR.code);
       }
 
       final int actualParamCount = portal.parameterTypes != null ? portal.parameterTypes.size() : 0;
@@ -3440,6 +3477,9 @@ public class PostgresNetworkExecutor extends Thread {
         // follow-up).
         final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
         if (isTransactionEndStatement(abortedUpperCaseText) || endsTransactionBlock(parsedTransactionControl(portal))) {
+          if (refuseLiveNamedStatement(portalName))
+            // Refused like any other redefinition of a live statement, before it recovers anything
+            return;
           rollbackActiveTransaction();
           sessionSettings.rollback();
           // Clears skipUntilSync as well, so the Bind/Execute the client pipelines behind this Parse (that is
@@ -3493,8 +3533,11 @@ public class PostgresNetworkExecutor extends Thread {
       // Bind that followed resurrected it: the client received, for the statement this server had just refused,
       // a complete successful answer built from a DIFFERENT statement - BindComplete, RowDescription, the old
       // statement's rows and a success tag (issue #7906). Two round trips apart, so skip-until-Sync (#7775) does
-      // not reach it. Only the prepared statement is dropped, not the portals already bound from it: PostgreSQL
-      // keeps those alive too, each holding the plan it was bound with.
+      // not reach it. Only the prepared statement is dropped, not the portals already bound from it: each holds the
+      // plan it was bound with, as a PostgreSQL portal holds its own reference to the cached plan.
+      //
+      // Only the UNNAMED statement can be replaced this way (issue #11034): a Parse naming a live statement is refused
+      // with 42P05, as StorePreparedStatement() refuses it, and the statement keeps its text. The client closes it first.
       //
       // "ANYTHING THAT CAN FAIL" MEANS ANYTHING THAT CAN FAIL AND LEAVE THE CONNECTION USABLE, which is where
       // this sits rather than immediately after readString() reads the name. The reads above it - the query
@@ -3503,7 +3546,17 @@ public class PostgresNetworkExecutor extends Thread {
       // cannot matter to anybody. The two early returns above it are the deliberate half of the boundary: an
       // aborted block and a skip-until-Sync discard are PostgreSQL DISCARDING this message, not refusing it, and
       // a discarded Parse must leave the name exactly as it found it.
+      if (refuseLiveNamedStatement(portalName))
+        return;
       preparedStatements.remove(portalName);
+
+      if (highestPlaceholder > MAX_STATEMENT_PARAMETERS) {
+        // No Bind can carry that many values (its count is an int16), so the statement could never run: refused here rather
+        // than registered with a parameter list sized by a number the client chose
+        setExtendedProtocolError();
+        writeError(ERROR_SEVERITY.ERROR, "there is no parameter $" + highestPlaceholder, "42P02");
+        return;
+      }
 
       if (portal.query.isEmpty()) {
         emptyQueryResponse();
@@ -3624,7 +3677,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-              portal.sqlStatement = sqlEngine.parse(toEngineText("sql", query.query), (DatabaseInternal) database);
+              portal.sqlStatement = sqlEngine.parse(engineText, (DatabaseInternal) database);
               final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
               if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
@@ -3914,6 +3967,7 @@ public class PostgresNetworkExecutor extends Thread {
       preparedStatements.clear();
       dropPortals();
     }
+    // The portals bound from a deallocated statement stay executable, as after a Close('S'): see closeCommand() (issue #11034)
     case DEALLOCATE_ALL -> preparedStatements.clear();
     case DEALLOCATE -> {
       if (preparedStatements.remove(command.name()) == null)
@@ -4685,21 +4739,76 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Detects $N style parameter placeholders in a query and returns the count.
-   * PostgreSQL uses $1, $2, etc. for positional parameters.
-   * Returns the highest parameter number found (e.g., "$3" returns 3).
+   * How many values a Bind of {@code statement} must supply: one per entry of its parameter list, which Parse sized to the highest
+   * {@code $N} the text references or to the types the client declared, whichever is larger (issue #11018).
    */
-  private int detectParameterPlaceholders(final String query) {
-    int maxParam = 0;
-    final Pattern pattern = Pattern.compile("\\$(\\d+)");
-    final Matcher matcher = pattern.matcher(query);
-    while (matcher.find()) {
-      final int paramNum = Integer.parseInt(matcher.group(1));
-      if (paramNum > maxParam) {
-        maxParam = paramNum;
-      }
+  private static int requiredParameters(final PostgresPortal statement) {
+    return statement.parameterTypes != null ? statement.parameterTypes.size() : 0;
+  }
+
+  /**
+   * The highest {@code $N} placeholder {@code query} references (e.g. 3 for a text that mentions {@code $3}), 0 for none, and a
+   * number above {@link #MAX_STATEMENT_PARAMETERS} for one no Bind could ever supply.
+   * <p>
+   * Read the way the ArcadeDB SQL lexer reads the text, because a value is now refused when the count is wrong (issue #11018), so
+   * {@code query} is the ENGINE text ({@link #toEngineText}), whose string literals are already in the lexer's form: a {@code $N}
+   * inside a single- or double-quoted string, a back-tick quoted name, a line comment ({@code -- } to the end of the line) or a
+   * block comment is not a placeholder, and a backslash escapes the character after it in all three quoted forms. A PostgreSQL
+   * dollar-quoted literal ({@code $$...$$}, {@code $tag$...$tag$}), which the engine text keeps as it was, is skipped too. A
+   * {@code $N} followed by a letter or digit is part of an identifier, as {@code $1abc} is. It used to be a regular expression over
+   * the raw text, which counted {@code '$5'} as a fifth parameter.
+   */
+  static int highestParameterPlaceholder(final String query) {
+    int highest = 0;
+    final int length = query.length();
+    int i = 0;
+    while (i < length) {
+      final char c = query.charAt(i);
+      if (c == '\'' || c == '"' || c == '`') {
+        // A quoted string or name: skip to the matching quote, stepping over every escaped character
+        ++i;
+        while (i < length && query.charAt(i) != c)
+          i += query.charAt(i) == '\\' ? 2 : 1;
+        ++i;
+      } else if (c == '-' && i + 2 < length && query.charAt(i + 1) == '-' && query.charAt(i + 2) == ' ') {
+        while (i < length && query.charAt(i) != '\n')
+          ++i;
+      } else if (c == '/' && i + 1 < length && query.charAt(i + 1) == '*') {
+        final int end = query.indexOf("*/", i + 2);
+        i = end < 0 ? length : end + 2;
+      } else if (c == '$' && i + 1 < length && query.charAt(i + 1) >= '0' && query.charAt(i + 1) <= '9') {
+        long position = 0;
+        int j = i + 1;
+        for (; j < length && query.charAt(j) >= '0' && query.charAt(j) <= '9'; ++j)
+          position = Math.min(position * 10 + (query.charAt(j) - '0'), Integer.MAX_VALUE);
+        final boolean partOfIdentifier = j < length && (Character.isLetterOrDigit(query.charAt(j)) || query.charAt(j) == '_');
+        if (!partOfIdentifier && position > highest)
+          highest = (int) position;
+        i = j;
+      } else if (c == '$') {
+        final int end = endOfDollarQuotedLiteral(query, i);
+        i = end > 0 ? end : i + 1;
+      } else
+        ++i;
     }
-    return maxParam;
+    return highest;
+  }
+
+  /**
+   * The index right after the PostgreSQL dollar-quoted literal opened at {@code start} ({@code $$...$$} or
+   * {@code $tag$...$tag$}, a tag not starting with a digit), or -1 when none opens there or it is not closed.
+   */
+  private static int endOfDollarQuotedLiteral(final String query, final int start) {
+    final int length = query.length();
+    int i = start + 1;
+    if (i < length && (Character.isLetter(query.charAt(i)) || query.charAt(i) == '_'))
+      while (i < length && (Character.isLetterOrDigit(query.charAt(i)) || query.charAt(i) == '_'))
+        ++i;
+    if (i >= length || query.charAt(i) != '$')
+      return -1;
+    final String tag = query.substring(start, i + 1);
+    final int close = query.indexOf(tag, i + 1);
+    return close < 0 ? -1 : close + tag.length();
   }
 
   private PostgresPortal getPortal(final String name, final boolean remove) {
@@ -5348,6 +5457,31 @@ public class PostgresNetworkExecutor extends Thread {
       writeCommandComplete(portal.query, portal.cursorRows);
     }
     profile.addSerializationNanos(System.nanoTime() - serStart);
+  }
+
+  /**
+   * Refuses a Parse naming a prepared statement that already exists with PostgreSQL's {@code 42P05} (issue #11034) and answers
+   * true, or answers false when the name is free. Only a named statement must be closed before it is redefined: the unnamed one is
+   * replaced by every Parse that names it.
+   */
+  private boolean refuseLiveNamedStatement(final String name) {
+    if (name.isEmpty() || !preparedStatements.containsKey(name))
+      return false;
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "prepared statement \"" + name + "\" already exists", "42P05");
+    return true;
+  }
+
+  /**
+   * The Bind-side twin of {@link #refuseLiveNamedStatement(String)}: a Bind naming a portal that already exists is refused with
+   * {@code 42P03}, as {@code CreatePortal()} refuses it, and the portal is left as it was. Only the unnamed portal is replaced.
+   */
+  private boolean refuseLiveNamedPortal(final String name) {
+    if (name.isEmpty() || !portals.containsKey(name))
+      return false;
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "cursor \"" + name + "\" already exists", "42P03");
+    return true;
   }
 
   /**

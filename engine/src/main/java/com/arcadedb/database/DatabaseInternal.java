@@ -538,6 +538,30 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * True when this node is a follower of a cluster, so the engine-internal background work that writes replicated or derived
+   * state (a periodic materialized view refresh, TimeSeries maintenance, an analytical view's persisted certificate, a vector
+   * index compaction) must leave it to the leader, whose results the follower receives.
+   * <p>
+   * The one form of that test that cannot be written dead (issues #6948, #11021, #11031). A component that captured its database
+   * at schema load holds the raw {@code LocalDatabase}: it is built before the server wraps the database for HA and never sees
+   * the wrapper, so its own {@link #isReplicated()} is the default {@code false} forever, and a guard
+   * {@code isReplicated() && !isLeader()} written against it never fires. This resolves the instance the node is CURRENTLY
+   * served through, on every call, following {@link #getWrappedDatabaseInstance()} to the instance that answers for itself (the
+   * replicated wrapper does), so a promotion or a demotion is seen at the next call.
+   */
+  default boolean isFollower() {
+    DatabaseInternal current = this;
+    // A server handle wraps the local database, which points at the replicated wrapper: two hops at most, bounded anyway
+    for (int hop = 0; hop < 4; hop++) {
+      final DatabaseInternal next = current.getWrappedDatabaseInstance();
+      if (next == null || next == current)
+        break;
+      current = next;
+    }
+    return current.isReplicated() && !current.isLeader();
+  }
+
+  /**
    * Registers the post-mutation bytes of a TimeSeries sealed-store file so the HA layer can ship them
    * to followers as part of the current compaction/maintenance replication unit. No-op when standalone:
    * the sealed store is a node-local derived artifact that does not need replication outside HA.
