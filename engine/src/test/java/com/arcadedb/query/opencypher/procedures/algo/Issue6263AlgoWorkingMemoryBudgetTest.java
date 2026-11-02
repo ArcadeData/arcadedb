@@ -152,26 +152,27 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
   }
 
   @Test
-  void hashGnnRejectsFeatureMatricesLargerThanTheBudget() {
-    // The feature matrices, not the embedding one, are the larger pair here: they are four times as wide, so
-    // even stored as booleans they cost half a byte per dimension per node against the embedding's eight.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L);
+  void hashGnnRejectsSampleMatricesLargerThanTheBudget() {
+    // Since #11144 the working set is sized by embeddingDensity (default embeddingDimension / 8 = 16), not by the
+    // dimension: two int matrices of 4 nodes x 16 samples are 2 x (4 x (32 + 16 x 4)) = 768 bytes with row headers.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 512L);
 
     assertThatThrownBy(() -> drain("CALL algo.hashgnn({seed: 42}) YIELD node RETURN node"))
         .hasStackTraceContaining(
-            "the feature matrices would need 4352 bytes (2 matrices of 4 nodes x 512 features (embeddingDimension=128 x 4))")
+            "the sample matrices would need 768 bytes (2 matrices of 4 nodes x embeddingDensity=16)")
         .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 
   @Test
-  void hashGnnChargesTheEmbeddingMatrixOnTopOfTheFeatureMatrices() {
-    // 4352 bytes of feature matrices fit a 6000-byte budget; the 4224-byte embedding matrix on top does not.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 6000L);
+  void hashGnnChargesTheRaceMatricesOnTopOfTheSampleMatrices() {
+    // 768 bytes of sample matrices and the 384 of the loaded graph fit a 2000-byte budget; the 1280 bytes of race
+    // times on top (doubles, 2 x (4 x (32 + 16 x 8))) do not.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 2000L);
 
     assertThatThrownBy(() -> drain("CALL algo.hashgnn({seed: 42}) YIELD node RETURN node"))
-        .hasStackTraceContaining("the embedding matrix would need 4224 bytes (4 nodes x embeddingDimension=128)")
-        // 4736 rather than 4352: the 384 bytes of the loaded graph, priced since #6317.
-        .hasStackTraceContaining("on top of the 4736 bytes this call already reserved");
+        .hasStackTraceContaining(
+            "the race-time matrices would need 1280 bytes (2 matrices of 4 nodes x embeddingDensity=16)")
+        .hasStackTraceContaining("on top of the 1152 bytes this call already reserved");
   }
 
   @Test

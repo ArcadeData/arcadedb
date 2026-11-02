@@ -189,8 +189,8 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     // Outside the propagation rounds, so the checkpoint inside them never sees this: nodeCount x (iterations + 1)
     // boxed map merges, which is the same product the label memory is priced on. The budget bounds the heap that
     // product costs and says nothing about the time, so at a raised arcadedb.cypher.algoMaxWorkingMemory this
-    // grows without any checkpoint behind it (issue #6295). The counter spans both loops for the same reason it
-    // does in algo.hashgnn: a per-node check is too coarse when one node remembers a million labels.
+    // grows without any checkpoint behind it (issue #6295). The counter spans both loops: a per-node check is too
+    // coarse when one node remembers a million labels.
     @SuppressWarnings("unchecked")
     final List<Long>[] allCommunities = new List[n];
     int postStep = 0;
