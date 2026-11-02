@@ -47,6 +47,12 @@ Ask in plain language, for example "which databases do I have?", "show me the sc
 most connected people in the `social` graph?". Read-only tools run freely; tools that change data are marked as
 destructive, so Claude Code asks before running them.
 
+## Versioning
+
+The plugin is versioned on its own, not with ArcadeDB releases: `version` in `.claude-plugin/plugin.json` is bumped
+whenever a file of the plugin changes (skill, server config, settings). Claude Code keeps an installed plugin on its
+version until that field changes, so a change without a bump does not reach existing users.
+
 ## Permissions
 
 The server decides what the assistant can do, twice: the MCP configuration (which operations MCP may perform at all)

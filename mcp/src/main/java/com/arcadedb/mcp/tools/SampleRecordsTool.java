@@ -48,7 +48,7 @@ public class SampleRecordsTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "sample_records")
-        .put("annotations", MCPToolUtils.annotations("Sample records", true, false, true))
+        .put("annotations", MCPToolUtils.annotations("Sample records", true, false, true, false))
         .put("description",
             "Return the first records in storage order from at most 20 selected database types so an agent can inspect "
                 + "actual value shapes. This is not a random or representative sample. When types is omitted, edge types "

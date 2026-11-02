@@ -35,7 +35,7 @@ public class ListDatabasesTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "list_databases")
-        .put("annotations", MCPToolUtils.annotations("List databases", true, false, true))
+        .put("annotations", MCPToolUtils.annotations("List databases", true, false, true, false))
         .put("description", "List all databases available to the authenticated user on the ArcadeDB server.")
         .put("inputSchema", new JSONObject()
             .put("type", "object")

@@ -8,11 +8,11 @@
     "email": "info@arcadedata.com",
     "url": "https://arcadedb.com"
   },
-  "homepage": "https://docs.arcadedb.com/#mcp-server",
+  "homepage": "https://docs.arcadedb.com/arcadedb/reference/mcp/mcp",
   "repository": "https://github.com/ArcadeData/arcadedb",
   "license": "Apache-2.0",
   "icon": "./.claude-plugin/icon.png",
-  "documentationUrl": "https://docs.arcadedb.com/#mcp-server",
+  "documentationUrl": "https://docs.arcadedb.com/arcadedb/reference/mcp/mcp",
   "supportUrl": "https://github.com/ArcadeData/arcadedb/issues",
   "privacyPolicyUrl": "https://arcadedb.com/privacy.html",
   "termsOfServiceUrl": "https://arcadedb.com/terms.html",

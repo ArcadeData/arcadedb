@@ -47,7 +47,8 @@ public class ExecuteCommandTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "execute_command")
-        .put("annotations", MCPToolUtils.annotations("Execute a command", false, true, false))
+        // Open world: LOAD CSV and IMPORT DATABASE fetch remote URLs unless the server disabled them
+        .put("annotations", MCPToolUtils.annotations("Execute a command", false, true, false, true))
         .put("description",
             """
             Execute a non-idempotent command against an ArcadeDB database. Use this for INSERT, UPDATE, DELETE, CREATE TYPE, and other write operations. \
@@ -89,7 +90,7 @@ public class ExecuteCommandTool {
     final Database database = access.database();
 
     // Analyze once for both permission checking and execution (avoids double parsing)
-    final QueryEngine engine = database.getQueryEngine(language);
+    final QueryEngine engine = MCPToolUtils.analyzableQueryEngine(database, language);
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
     checkPermission(analyzed.getOperationTypes(), access.permissions());
 
@@ -180,7 +181,7 @@ public class ExecuteCommandTool {
    * @return the set of operation types
    */
   public static Set<OperationType> getOperationTypes(final Database database, final String command, final String language) {
-    final QueryEngine engine = database.getQueryEngine(language);
+    final QueryEngine engine = MCPToolUtils.analyzableQueryEngine(database, language);
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
     return analyzed.getOperationTypes();
   }

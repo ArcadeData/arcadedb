@@ -30,7 +30,7 @@ public class ProfilerStopTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "profiler_stop")
-        .put("annotations", MCPToolUtils.annotations("Stop the query profiler", false, false, false))
+        .put("annotations", MCPToolUtils.annotations("Stop the query profiler", false, false, false, false))
         .put("description",
             """
             Stop the query profiler and return the captured profiling data. \

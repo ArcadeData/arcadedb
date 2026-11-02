@@ -22,7 +22,8 @@ queryable with several languages.
 
 ## Choosing a query language
 
-The `language` argument accepts `cypher` (the default), `sql`, `gremlin`, `graphql` and `mongo`.
+The `language` argument accepts `cypher` (the default), `sql`, `gremlin`, `graphql` and `mongo`. Scripting languages
+(`js`, `python`, ...) are refused: they would run before the server could check what they do.
 
 - **Cypher** for graph patterns and traversals: `MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN c.name, count(p) AS staff`.
 - **ArcadeDB SQL** when the user asks for SQL, for schema changes, and for document-style work. It is not ANSI SQL:
@@ -41,12 +42,15 @@ Pass user-supplied values as literals carefully: quote strings, never concatenat
 - ArcadeDB does not generate embeddings. Ask the user for the embedding model used to build the index and supply vectors
   of the same dimension.
 - `upsert_entity` and `upsert_relationship` create or update a vertex or an edge addressed by match keys, without
-  duplicating it. They are the safe way to maintain a knowledge graph or agent memory. A UNIQUE index on the match keys
-  avoids a full scan per call and duplicates under concurrent writers.
+  duplicating it, which makes them the right tools to maintain a knowledge graph or agent memory. They still overwrite
+  the properties of a record they match, so the write-safety rules below apply to them too, and `setProperties` must not
+  change a match key, or the next call with the same keys creates a new record. A UNIQUE index on the match keys avoids
+  a full scan per call and duplicates under concurrent writers.
 
 ## Write safety
 
-`execute_command`, `upsert_*` and `set_server_setting` change the database or the server. Before running one:
+`execute_command`, `upsert_entity`, `upsert_relationship` and `set_server_setting` change the database or the server.
+Before running one:
 
 - say what will change, and for `UPDATE` / `DELETE` first run the matching `SELECT` / `MATCH` with `query` and report how
   many records it touches;

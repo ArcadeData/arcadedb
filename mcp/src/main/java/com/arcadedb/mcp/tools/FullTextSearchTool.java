@@ -44,7 +44,7 @@ public class FullTextSearchTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "full_text_search")
-        .put("annotations", MCPToolUtils.annotations("Full-text search", true, false, true))
+        .put("annotations", MCPToolUtils.annotations("Full-text search", true, false, true, false))
         .put("description",
             """
             Search a full-text index and return the matching records ranked by relevance score. \

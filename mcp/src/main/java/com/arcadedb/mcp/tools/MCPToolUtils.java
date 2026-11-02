@@ -27,6 +27,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.polyglot.PolyglotQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -55,16 +56,30 @@ public class MCPToolUtils {
   /**
    * The MCP {@code annotations} of a tool definition (issue #11170): hints a client reads to decide when to ask the
    * user before a call. They never authorize anything: the MCP configuration and the user's permissions still do.
-   * {@code openWorldHint} is always false, because a tool only reaches the server that serves it.
+   *
+   * @param openWorld whether the tool can reach hosts other than this server, as a query language that fetches a URL
+   *                  ({@code LOAD CSV}, {@code IMPORT DATABASE}) does
    */
   public static JSONObject annotations(final String title, final boolean readOnly, final boolean destructive,
-      final boolean idempotent) {
+      final boolean idempotent, final boolean openWorld) {
     return new JSONObject()
         .put("title", title)
         .put("readOnlyHint", readOnly)
         .put("destructiveHint", destructive)
         .put("idempotentHint", idempotent)
-        .put("openWorldHint", false);
+        .put("openWorldHint", openWorld);
+  }
+
+  /**
+   * The query engine of a tool that runs the caller's query or command text. A scripting engine evaluates the script
+   * already in {@code analyze()}, which is where the tool decides whether the text is read-only or allowed by the MCP
+   * configuration, so the script would run before either check could refuse it: it is refused here, before analysis.
+   */
+  public static QueryEngine analyzableQueryEngine(final Database database, final String language) {
+    final QueryEngine engine = database.getQueryEngine(language);
+    if (engine instanceof PolyglotQueryEngine)
+      throw new SecurityException("Scripting language '" + language + "' is not available through MCP");
+    return engine;
   }
 
   /**
