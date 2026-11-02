@@ -86,10 +86,16 @@ public class RecordAttribute extends SimpleNode {
       return currentRecord.getIdentity().orElse(null);
     } else if (isStructuralAttribute(name)) {
       final Document record = currentRecord.getElement().orElse(null);
-      if (record == null)
+      if (record == null) {
         // A row that wraps no record (an expanded vectorNeighbors() row, a projected sub-query row) carries the attribute as
-        // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131)
-        return currentRecord.getProperty(name);
+        // a property, as it carries @rid, which Result.getIdentity() reads back the same way (issue #11131). The name is
+        // matched case-insensitively, the key is not: a row usually stores the canonical spelling
+        final Object value = currentRecord.getProperty(name);
+        if (value != null)
+          return value;
+        final String canonical = canonicalStructuralName(name);
+        return canonical.equals(name) ? null : currentRecord.getProperty(canonical);
+      }
 
       return evaluate(record, name);
     } else if (THIS_PROPERTY.equalsIgnoreCase(name)) {
@@ -133,6 +139,16 @@ public class RecordAttribute extends SimpleNode {
    */
   public static boolean isRowAttribute(final String name) {
     return RID_PROPERTY.equalsIgnoreCase(name) || isStructuralAttribute(name);
+  }
+
+  private static String canonicalStructuralName(final String name) {
+    if (TYPE_PROPERTY.equalsIgnoreCase(name))
+      return TYPE_PROPERTY;
+    else if (CAT_PROPERTY.equalsIgnoreCase(name))
+      return CAT_PROPERTY;
+    else if (IN_PROPERTY.equalsIgnoreCase(name))
+      return IN_PROPERTY;
+    return OUT_PROPERTY;
   }
 
   private static boolean isStructuralAttribute(final String name) {

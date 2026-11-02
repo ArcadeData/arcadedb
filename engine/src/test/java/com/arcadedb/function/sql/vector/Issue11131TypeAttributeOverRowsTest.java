@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.OrderByItem;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -182,6 +183,24 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
       }
   }
 
+  /** A column of the attribute's name the row carries wins over the record's attribute, a null one included. */
+  @Test
+  void orderByTypeKeepsAProjectedNull() {
+    final Document record = database.iterateType("T", false).next().asDocument();
+    // a projection row that keeps its record: content plus element
+    final ResultInternal projectedNull = new ResultInternal(database).setElement(record);
+    projectedNull.setProperty("@type", null);
+    final ResultInternal plain = new ResultInternal(record);
+
+    final OrderByItem item = new OrderByItem();
+    item.setRecordAttr("@type");
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    // null sorts first; reading through to the record would answer "T" for both and compare them equal
+    assertThat(item.compare(projectedNull, plain, context)).isNegative();
+    assertThat(item.compare(plain, plain, context)).isZero();
+  }
+
   /** `$row.@type` over a LET row that wraps no record. */
   @Test
   void typeOfALetRowWithoutRecord() {
@@ -214,8 +233,10 @@ class Issue11131TypeAttributeOverRowsTest extends TestHelper {
     assertThat(context.getVariablePath("$rec.@type")).isEqualTo("T");
     assertThat(context.getVariablePath("$rec.@rid")).isEqualTo(record.getIdentity());
 
-    // case-insensitive as in the projection, and the other attributes the projection answers
+    // case-insensitive as in the projection, on a record and on a row that stores the canonical key
     assertThat(context.getVariable("$rec.@TYPE")).isEqualTo("T");
+    assertThat(context.getVariable("$row.@TYPE")).isEqualTo("T");
+    assertThat(context.getVariablePath("$row.@Type")).isEqualTo("T");
     final Document vertex = database.iterateType("V", false).next().asDocument();
     final Document edge = database.iterateType("E", false).next().asDocument();
     context.setVariable("v", new ResultInternal(vertex));
