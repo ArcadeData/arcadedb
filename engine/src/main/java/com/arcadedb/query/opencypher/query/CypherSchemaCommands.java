@@ -39,6 +39,7 @@ import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
@@ -383,10 +384,10 @@ public final class CypherSchemaCommands {
     // the indexes a vector or full-text index over several labels built are listed once, under its name (issue #10914). Only
     // the ones whose name is listed are left out of the per-type rows: a user who cannot read every label sees the others
     final List<String> readableNames = readable.stream().map(DocumentType::getName).toList();
-    final List<CypherMultiTypeIndexes.Entry> logicalEntries = new ArrayList<>();
+    final List<MultiTypeIndexes.Entry> logicalEntries = new ArrayList<>();
     final Set<String> spanned = new HashSet<>();
-    for (final CypherMultiTypeIndexes.Entry entry : CypherMultiTypeIndexes.entries(database.getSchema()))
-      if (readableNames.containsAll(entry.labels()) && !CypherMultiTypeIndexes.resolve(database.getSchema(), entry.name()).isEmpty()) {
+    for (final MultiTypeIndexes.Entry entry : MultiTypeIndexes.entries(database.getSchema()))
+      if (readableNames.containsAll(entry.labels()) && !MultiTypeIndexes.resolve(database.getSchema(), entry.name()).isEmpty()) {
         logicalEntries.add(entry);
         spanned.addAll(entry.owned());
       }
@@ -406,8 +407,8 @@ public final class CypherSchemaCommands {
         found.add(new Object[] { index, neoType, edge, List.of(type.getName()), owner, index.getName() });
       }
     }
-    for (final CypherMultiTypeIndexes.Entry entry : logicalEntries) {
-      final List<TypeIndex> members = CypherMultiTypeIndexes.resolve(database.getSchema(), entry.name());
+    for (final MultiTypeIndexes.Entry entry : logicalEntries) {
+      final List<TypeIndex> members = MultiTypeIndexes.resolve(database.getSchema(), entry.name());
       final String neoType = indexType(members.getFirst().getType());
       if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
         continue;

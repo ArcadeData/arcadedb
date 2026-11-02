@@ -16,13 +16,11 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.opencypher.query;
+package com.arcadedb.schema;
 
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.opencypher.ast.CypherDDLStatement.IndexKind;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -51,11 +49,13 @@ import java.util.logging.Level;
  * are those of each per-type index, so a score is relative to its own type and not exactly the score one Neo4j index spanning
  * all the labels would give.
  * <p>
- * <b>SQL.</b> The per-type indexes are ordinary indexes, so SQL searches each type through its own index name
- * ({@code SEARCH_INDEX('Post[title,body]', ...)}, {@code vector.neighbors('Post[e]', ...)}) and what SQL writes is in the index
- * the logical name resolves to. The logical name itself is not known to SQL: a query across the types is one SQL query per type.
+ * <b>SQL (issue #11014).</b> The logical name is resolved by SQL too: {@code SEARCH_INDEX('docs', ...)} and
+ * {@code vector.neighbors('emb', ...)} fan out to the per-type indexes and merge, as the Cypher procedures do. The per-type
+ * indexes stay ordinary indexes, searchable by their own names, and what SQL writes is in the index the logical name resolves
+ * to. {@code DROP INDEX} of the logical name drops what the statement built, as in Cypher, and {@code DROP INDEX} of a member
+ * is refused ({@link #requireNotMember}) rather than leaving the logical index covering fewer types.
  */
-public final class CypherMultiTypeIndexes {
+public final class MultiTypeIndexes {
   static final String KEY_PREFIX = "cypher.multiindex.";
 
   /**
@@ -69,11 +69,15 @@ public final class CypherMultiTypeIndexes {
    * @param indexes      the names of the per-type indexes it spans, one per label
    * @param owned        the names of the per-type indexes the statement created
    */
-  public record Entry(String name, IndexKind kind, boolean relationship, List<String> labels, List<String> properties,
+  public enum Kind {
+    VECTOR, FULLTEXT
+  }
+
+  public record Entry(String name, Kind kind, boolean relationship, List<String> labels, List<String> properties,
                       List<String> indexes, List<String> owned) {
   }
 
-  private CypherMultiTypeIndexes() {
+  private MultiTypeIndexes() {
   }
 
   /** The record of the logical index with that name, or null when none has it. Names are unique across the database. */
@@ -124,15 +128,47 @@ public final class CypherMultiTypeIndexes {
     return indexes;
   }
 
+  /** The logical index that has the per-type index of that name among its members, or null when none has it. */
+  public static Entry findMember(final Schema schema, final String indexName) {
+    if (indexName == null)
+      return null;
+    for (final Entry entry : entries(schema))
+      if (entry.indexes().contains(indexName))
+        return entry;
+    return null;
+  }
+
+  /**
+   * Refuses to drop a per-type index a logical index spans: the logical entry would go on naming it, and cover fewer types than it
+   * says. The logical name is dropped instead, which takes what its statement built with it.
+   */
+  public static void requireNotMember(final Schema schema, final String indexName) {
+    final Entry entry = findMember(schema, indexName);
+    if (entry != null)
+      throw new SchemaException("Index '" + indexName + "' is a member of the multi-type index '" + entry.name() + "': drop '"
+          + entry.name() + "' instead, which drops the indexes it created");
+  }
+
+  /**
+   * Drops the logical index: the per-type indexes its statement built go with the name, one that was there before it stays. The name
+   * goes last, so a drop that fails part-way can be retried.
+   */
+  public static void drop(final Schema schema, final Entry entry) {
+    for (final String owned : entry.owned())
+      if (schema.existsIndex(owned))
+        schema.dropIndex(owned);
+    remove(schema, entry.name());
+  }
+
   /** The names of the per-type indexes some logical index created, which {@code SHOW INDEXES} lists under the logical name. */
-  static List<String> ownedIndexNames(final Schema schema) {
+  public static List<String> ownedIndexNames(final Schema schema) {
     final List<String> owned = new ArrayList<>();
     for (final Entry entry : entries(schema))
       owned.addAll(entry.owned());
     return owned;
   }
 
-  static void register(final Schema schema, final Entry entry) {
+  public static void register(final Schema schema, final Entry entry) {
     final String json = new JSONObject().put("kind", entry.kind().name()).put("relationship", entry.relationship())
         .put("labels", new JSONArray(entry.labels())).put("properties", new JSONArray(entry.properties()))
         .put("indexes", new JSONArray(entry.indexes())).put("owned", new JSONArray(entry.owned())).toString();
@@ -141,7 +177,7 @@ public final class CypherMultiTypeIndexes {
   }
 
   /** Forgets the logical index, from every type that holds its record. The per-type indexes are not touched. */
-  static void remove(final Schema schema, final String name) {
+  public static void remove(final Schema schema, final String name) {
     final String key = KEY_PREFIX + name;
     for (final DocumentType type : schema.getTypes())
       if (type.getCustomValue(key) != null)
@@ -153,12 +189,12 @@ public final class CypherMultiTypeIndexes {
       return null;
     try {
       final JSONObject json = new JSONObject(value.toString());
-      return new Entry(name, IndexKind.valueOf(json.getString("kind")), json.getBoolean("relationship", false),
+      return new Entry(name, Kind.valueOf(json.getString("kind")), json.getBoolean("relationship", false),
           strings(json.getJSONArray("labels", new JSONArray())), strings(json.getJSONArray("properties", new JSONArray())),
           strings(json.getJSONArray("indexes", new JSONArray())), strings(json.getJSONArray("owned", new JSONArray())));
     } catch (final RuntimeException e) {
       // unreadable: not a logical index
-      LogManager.instance().log(CypherMultiTypeIndexes.class, Level.WARNING, "Unreadable record of logical index '%s': %s", name,
+      LogManager.instance().log(MultiTypeIndexes.class, Level.WARNING, "Unreadable record of logical index '%s': %s", name,
           e.getMessage());
       return null;
     }

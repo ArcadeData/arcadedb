@@ -32,6 +32,7 @@ import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -98,6 +99,28 @@ public class FullTextSearch {
       throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
 
     return typeIndex;
+  }
+
+  /**
+   * Resolves the full-text indexes a name designates, at least one: the one {@code Type[property]} index, or the per-type indexes
+   * a {@code CREATE FULLTEXT INDEX ... FOR (n:A|B)} spans, which SQL and openCypher resolve alike (issues #10914 and #11014).
+   *
+   * @throws com.arcadedb.exception.SchemaException if no index carries that name
+   * @throws CommandExecutionException              if the index exists but is not a full-text type index, or is a logical index
+   *                                                none of whose per-type indexes is left
+   */
+  public static List<TypeIndex> resolveFullTextIndexes(final Database database, final String indexName) {
+    // An index name is unique across the database, so a name that is an index is not a logical one: the lookup of the logical
+    // records walks the types, and is paid only by a name that is not an index
+    final Schema schema = database.getSchema();
+    final List<TypeIndex> logical = schema.existsIndex(indexName) ? null : MultiTypeIndexes.resolve(schema, indexName);
+    if (logical == null)
+      return List.of(resolveFullTextIndex(database, indexName));
+    if (logical.isEmpty())
+      throw new CommandExecutionException("Index '" + indexName + "' has no full-text index left");
+    for (final TypeIndex typeIndex : logical)
+      resolveFullTextIndex(database, typeIndex.getName());
+    return logical;
   }
 
   /**

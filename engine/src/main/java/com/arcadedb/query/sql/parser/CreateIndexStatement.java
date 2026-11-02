@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeGeoIndexBuilder;
@@ -311,6 +312,12 @@ public class CreateIndexStatement extends DDLStatement {
     // Validated before the existsIndex guard for the same reason as the collation above: a statement the engine cannot read is wrong
     // whether or not the index it asks for already exists.
     final IndexBuildMode buildMode = readBuildMode(context, indexType);
+
+    // The name of a logical index over several types (issue #11014) is taken, and by an index that is not the one asked for: answering
+    // "already exists" on IF NOT EXISTS would leave the requested index uncreated
+    if (!database.getSchema().existsIndex(indexName) && MultiTypeIndexes.find(database.getSchema(), indexName) != null)
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+          "Index '" + indexName + "' already exists as a multi-type index");
 
     if (database.getSchema().existsIndex(indexName)) {
       if (ifNotExists) {
