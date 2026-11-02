@@ -174,6 +174,9 @@ class Issue11145LabelPropagationSeedsTest extends TestHelper {
     // An integral value of a floating type is an integer
     database.command("opencypher", "MATCH (n:N) WHERE n.k = 0 SET n.label = 3.0");
     assertThat(rows("{seedProperty: 'label', fixedSeeds: true}").get(0)).isEqualTo(3L);
+    // A seed so large that the unseeded nodes cannot be numbered past it without overflowing
+    database.command("opencypher", "MATCH (n:N) WHERE n.k = 0 SET n.label = 9223372036854775807");
+    assertThatThrownBy(() -> rows("{seedProperty: 'label'}")).hasMessageContaining("leaves no room");
   }
 
   private void buildGraph() {
