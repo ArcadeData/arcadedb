@@ -307,9 +307,10 @@ jobs:
       # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
       # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
       # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
-      # so it is kept whenever the lane goes red (issue #6322).
+      # so it is kept whenever the lane goes red (issue #6322). It is kept on a green run too: the job log has
+      # only per-class times, and the per-method ones are what tell which tests make the lane slow (#11168).
       - name: Upload unit test reports
-        if: failure()
+        if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-test-reports-${{ matrix.shard }}
@@ -424,7 +425,7 @@ jobs:
       # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload slow unit test reports
-        if: failure()
+        if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: slow-unit-test-reports-${{ matrix.shard }}
@@ -517,7 +518,7 @@ jobs:
       # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload vector unit test reports
-        if: failure()
+        if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vector-unit-test-reports
@@ -730,7 +731,7 @@ jobs:
       # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
       # so it is kept whenever the lane goes red (issue #6322).
       - name: Upload integration test reports
-        if: failure()
+        if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-test-reports
