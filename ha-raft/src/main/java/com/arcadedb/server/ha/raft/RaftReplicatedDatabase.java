@@ -52,7 +52,6 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
-import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.engine.UnreferencedFiles;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -70,6 +69,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
@@ -459,6 +459,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * write (issue #6191).
    */
   private final AtomicBoolean selfForwardWarned = new AtomicBoolean(false);
+  /** The leader's answer to ensureLabelTypes was "unknown function" (issue #11064): said once per database, as {@link #selfForwardWarned}. */
   private final AtomicBoolean unknownEnsureLabelTypesWarned = new AtomicBoolean(false);
 
   /**
