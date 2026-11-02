@@ -434,8 +434,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * <p>
    * The record is read as before where reading it does more than load it: a read listener or trigger on the database or on the
    * type sees (and can veto) every record the search hands out, and an index the calling transaction wrote to answers its own
-   * rows from the transaction, not from the committed locations. The permission to read the bucket is asked here, once per
-   * index, since no read will ask it for a row that is never loaded.
+   * rows from the transaction, not from the committed locations. The permission to read the bucket is asked by
+   * {@link #neighbourRecord} for each row it makes, as the read did, since no read will ask it for a row that is never loaded.
    */
   private static LSMVectorIndex[] deferredRecordReads(final BasicDatabase db, final List<LSMVectorIndex> vectorIndexes) {
     if (!(db instanceof DatabaseInternal database) || !(database.getEvents() instanceof RecordEventsRegistry events)
@@ -451,7 +451,6 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (!(database.getSchema().getTypeByBucketId(bucketId) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
           || type.hasAfterReadListeners())
         continue;
-      database.checkPermissionsOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD);
       if (deferring == null)
         deferring = new LSMVectorIndex[vectorIndexes.size()];
       deferring[i] = index;
@@ -474,6 +473,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     try {
       if (deferredBy == null)
         return (Document) db.lookupByRID(rid, true);
+      // The check the read makes (LocalBucket.getRecord), for the row being emitted only: a bucket the caller cannot read
+      // fails the query when it contributes a row, not when it was merely searched
+      ((DatabaseInternal) db).checkPermissionsOnFile(rid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
       // Under REPEATABLE_READ the lookup reads the record all the same, and a record that is gone throws as it always did
       return deferredBy.hasLiveVector(rid) ? (Document) db.lookupByRID(rid, false) : null;
     } catch (final RecordNotFoundException e) {

@@ -5054,6 +5054,14 @@ public enum GlobalConfiguration {
       timer.schedule(new TimerTask() {
         @Override
         public void run() {
+          // Two concurrent writes can leave this schedule behind a value it does not match: the callback of one runs before
+          // the other stores its value. The schedule follows the stored value, so a timer left running for a period that is
+          // no longer set ends itself here instead of dumping forever
+          final long current = DUMP_METRICS_EVERY.getValueAsLong() * 1000;
+          if (current != periodMs) {
+            reschedule(current);
+            return;
+          }
           Profiler.INSTANCE.dumpMetrics(System.out);
         }
       }, periodMs, periodMs);

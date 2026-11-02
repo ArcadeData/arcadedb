@@ -176,12 +176,14 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
     final LSMVectorIndex index = indexWithAFilledDeltaBuffer(extraMetadata, inTheGraph);
 
     final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
-    final int[] tested = new int[1];
+    final int[] tested = new int[2];
     final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph);
 
     assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
         .isInstanceOf(TimeoutException.class);
     assertThat(tested[0]).as("membership tests before the search stopped").isLessThanOrEqualTo(2 * 1024);
+    // The walk ends on the graph's records; it is the scan of the buffer, which tests the others, that has to stop
+    assertThat(tested[1]).as("membership tests of a record of the delta buffer").isGreaterThan(0);
   }
 
   /**
@@ -228,7 +230,12 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
           }
-        return admitted.contains(o);
+        if (admitted.contains(o))
+          return true;
+        // tested[1], when the caller passes one, counts the tests of a record outside `admitted`
+        if (tested.length > 1)
+          tested[1]++;
+        return false;
       }
 
       @Override
