@@ -1307,7 +1307,7 @@ public class PostgresNetworkExecutor extends Thread {
           endTransactionBlockState();
           // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
           writeCommandComplete("ROLLBACK", 0);
-        } else if (queryText.isEmpty()) {
+        } else if (isEmptyStatement(queryText)) {
           emptyQueryResponse();
         } else {
           // Every other statement is refused, not silently swallowed (issue #6457): the client needs an
@@ -1318,7 +1318,7 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      if (queryText.isEmpty()) {
+      if (isEmptyStatement(queryText)) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
         // PostgreSQL closes the transaction even for an empty query string (issue #8214)
         commitSimpleQueryTransaction();
@@ -3623,11 +3623,12 @@ public class PostgresNetworkExecutor extends Thread {
       final String upperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
-      if (portal.query.isEmpty()) {
+      if (isEmptyStatement(portal.query)) {
         // An empty statement is a statement (issue #11028): PostgreSQL's exec_parse_message registers it and answers
         // ParseComplete, its Describe answers NoData and its Execute EmptyQueryResponse. Answering EmptyQueryResponse HERE gave
         // the Parse a reply that belongs to Execute and left the name unregistered, so the Bind/Describe/Execute pipelined
         // behind it failed with "prepared statement does not exist" (pgjdbc's prepareStatement("") among them)
+        portal.query = "";
         portal.emptyQuery = true;
         portal.isExpectingResult = false;
         portal.ignoreExecution = true;
@@ -4913,6 +4914,20 @@ public class PostgresNetworkExecutor extends Thread {
     if (normalized.endsWith(";"))
       normalized = normalized.substring(0, normalized.length() - 1).trim();
     return normalized;
+  }
+
+  /**
+   * True for a statement text made only of {@code ;} and whitespace, empty included: PostgreSQL's parser finds no statement in
+   * it, so it is the empty query on both protocols (issue #11028). {@link #normalizeStatementText} strips one {@code ;} only,
+   * so {@code ";;"} reaches here as {@code ";"}.
+   */
+  static boolean isEmptyStatement(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c != ';' && !Character.isWhitespace(c))
+        return false;
+    }
+    return true;
   }
 
   private Query getLanguageAndQuery(final String query) {

@@ -31,6 +31,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -107,6 +109,45 @@ class Issue11024PropertyWriteClassificationTest extends TestHelper {
     assertThat(fired[0]).as("the listener wrote the property while the vertex was provisional").isTrue();
 
     assertCommitRefusedAndNothingStands();
+  }
+
+  /**
+   * A list changed in place assigns no property, so {@code arePropertiesAssigned()} stays false, but the update changes the record's
+   * content all the same: it is no edge-list write, and must keep the commit refused on both arms (issue #11024 review).
+   */
+  @ParameterizedTest(name = "writeNow={0}")
+  @ValueSource(booleans = { false, true })
+  void aListChangedInPlaceWhileTheProvisionalRecordIsPendingStillRefusesTheCommit(final boolean writeNow) {
+    database.transaction(() -> database.command("sql", "UPDATE T SET tags = ['a'] WHERE k = 1").close());
+
+    final boolean[] fired = new boolean[1];
+    listener = record -> {
+      if (fired[0] || !record.asDocument().getTypeName().equals("V"))
+        return;
+      fired[0] = true;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM T WHERE k = 1")) {
+        final MutableDocument other = rs.next().getElement().orElseThrow().modify();
+        final List<Object> tags = other.getList("tags");
+        tags.add("x");
+        assertThat(other.arePropertiesAssigned()).as("an in-place change assigns no property").isFalse();
+        if (writeNow)
+          assertThat(((DatabaseInternal) database).updateRecordWithEventsNoLock(other, false)).isTrue();
+        else
+          other.save();
+      }
+    };
+    database.getEvents().registerListener(listener);
+
+    database.begin();
+    assertStatementFails(() -> database.command("opencypher", "CREATE (v:V {k: 15}) RETURN v").close());
+    assertThat(fired[0]).isTrue();
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    if (database.isTransactionActive())
+      database.rollback();
+    try (final ResultSet rs = database.query("sql", "SELECT tags FROM T WHERE k = 1")) {
+      assertThat(rs.next().<List<Object>>getProperty("tags")).containsExactly("a");
+    }
   }
 
   /** The control of the write-now arm: an update that assigns no property is still given back with the statement. */

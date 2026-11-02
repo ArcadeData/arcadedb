@@ -106,7 +106,7 @@ class Issue11028EmptyParseIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('2', 'I', 'Z');
 
         // text that normalizes to nothing is an empty statement too
-        for (final String text : new String[] { "   ", ";", " ; " }) {
+        for (final String text : new String[] { "   ", ";", " ; ", ";;", " ; \n ; ;" }) {
           sendParse(out, "", text);
           sendBind(out, "", "");
           sendExecute(out, "");
@@ -121,6 +121,23 @@ class Issue11028EmptyParseIT extends PostgresWireProtocolTestBase {
         sendExecute(out, "");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', '2', 'T', 'D', 'C', 'Z');
+      });
+    }
+  }
+
+  @Test
+  @DisplayName("[#11028] a simple query of semicolons only is the empty query too")
+  void aSimpleQueryOfSemicolonsOnlyIsTheEmptyQuery() throws Exception {
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        for (final String text : new String[] { "", ";", ";;", " ; ; " }) {
+          sendSimpleQuery(out, text);
+          assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("'%s'", text).containsExactly('I', 'Z');
+        }
       });
     }
   }
