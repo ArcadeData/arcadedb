@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -93,7 +94,10 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoHashGNN extends AbstractAlgoProcedure {
-  private static final long GOLDEN_GAMMA = 0x9E3779B97F4A7C15L;
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("direction", "embeddingDensity", "embeddingDimension", "iterations",
+      "neighborInfluence", "relTypes", "seed");
+  private static final long        GOLDEN_GAMMA = 0x9E3779B97F4A7C15L;
 
   @Override
   public String getName() {
@@ -125,7 +129,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
     final int density = config != null && config.get("embeddingDensity") instanceof Number n ? extractInt(n, "embeddingDensity", 1) : Math.max(1, embDim / 8);
     if (density > embDim)

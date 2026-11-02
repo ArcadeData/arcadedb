@@ -183,6 +183,36 @@ class Issue11038BindCountAndNameLifecycleIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  @DisplayName("[#11029] a statement whose only $N is inside a literal declares no parameter when Parse declares no types")
+  void literalDollarDigitsDeclareNoParameter() throws Exception {
+    runOnConnection((out, in) -> {
+      // The shape asyncpg and node-postgres send: zero declared types, so the count comes from the text alone. Each of
+      // these holds a $N only inside a quoted construct, so PostgreSQL describes no parameter and binds none. A dollar-quoted
+      // body ($$ $3 $$) is skipped by the same scan (Issue11018ParameterPlaceholderCountTest), but the SQL engine does not
+      // parse that literal form, so it cannot be executed here
+      final String[] statements = { "SELECT 'price is $1 today' AS v", "SELECT \"$2\" FROM " + TYPE + " LIMIT 1",
+          "SELECT 'a' AS v /* $5 */", "SELECT 'a' AS v -- $6\n" };
+      for (int i = 0; i < statements.length; i++) {
+        final String name = "lit" + i;
+        sendParse(out, name, statements[i]);
+        sendDescribe(out, 'S', name);
+        sendSync(out);
+        final List<WireMessage> described = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(described)).as(statements[i] + " " + described).startsWith('1', 't');
+        assertThat(parameterCountOf(described.get(1))).as(statements[i]).isEqualTo(0);
+
+        sendBind(out, "", name, new String[0]);
+        sendExecute(out, "");
+        sendSync(out);
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).as(statements[i]).doesNotContain('E');
+      }
+
+      sendSimpleQuery(out, "SELECT 'price is $1 today' AS v");
+      assertThat(firstDataRowValue(readUntilReadyForQuery(in))).isEqualTo("price is $1 today");
+    });
+  }
+
+  @Test
   @DisplayName("[#11018] a Bind with several format codes that do not match its value count is refused with 08P01")
   void bindWithMismatchedFormatCodesIsRefused() throws Exception {
     runOnConnection((out, in) -> {
