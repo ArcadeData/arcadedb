@@ -133,7 +133,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
           getName() + "(): embeddingDensity must not exceed embeddingDimension (" + embDim + "), got " + density);
     final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 4;
     final double neighborInfluence = config != null && config.get("neighborInfluence") instanceof Number n ? n.doubleValue() : 1.0;
-    if (!(neighborInfluence >= 0.0) || Double.isInfinite(neighborInfluence))
+    if (!Double.isFinite(neighborInfluence) || neighborInfluence < 0.0)
       throw new IllegalArgumentException(
           getName() + "(): neighborInfluence must be a finite number of at least 0, got " + neighborInfluence);
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
