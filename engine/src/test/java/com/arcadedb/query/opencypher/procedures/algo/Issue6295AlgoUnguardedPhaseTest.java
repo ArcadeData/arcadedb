@@ -18,14 +18,11 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -33,7 +30,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #6295 - the phase an {@code algo.*} call actually spends its time in is not always
@@ -52,11 +48,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code algo.slpa}'s {@code mostFrequent} (O(degree²) for one listener, between two per-node checkpoints), and
  * the pre-loop initialisation of {@code algo.hashgnn}, {@code algo.fastrp} and {@code algo.graphsage}.
  * <p>
- * <b>Only {@code algo.hashgnn}'s reduction is pinned as a binary outcome here</b>, and the reason the others are
- * not is worth recording rather than papering over. A test of that kind needs a fixture where the unguarded phase
- * outlasts a deadline that the guarded phase before it comfortably survives, and only the reduction gives that: it
- * is three orders of magnitude larger than the message-passing round beside it. The rest are the same defect at a
- * far smaller scale, and their cost sits within a small factor of the guarded phase that precedes them - SLPA's
+ * <b>None of them is pinned as a binary outcome here any more.</b> {@code algo.hashgnn}'s reduction was, as the one
+ * phase three orders of magnitude larger than the message-passing round beside it, until #11144 removed it: the
+ * embedding is now built from {@code embeddingDensity} samples per node, with no {@code embeddingDimension²} step
+ * left to isolate, and a deadline on {@code algo.hashgnn} is covered by the iteration-knob sweep of #6264. A test of
+ * that kind needs a fixture where the unguarded phase outlasts a deadline that the guarded phase before it
+ * comfortably survives. The rest are the same defect at a far smaller scale, and their cost sits within a small
+ * factor of the guarded phase that precedes them - SLPA's
  * propagation and its post-processing are both O(nodeCount x iterations) and were measured at the same order, and
  * the initialisation phases of {@code algo.fastrp} and {@code algo.graphsage} are O(nodeCount x dimension) beside a
  * first layer that costs the same. Any threshold picked between two phases that close together would be measuring
@@ -81,41 +79,9 @@ class Issue6295AlgoUnguardedPhaseTest {
   }
 
   /**
-   * {@code algo.hashgnn}'s MinHash reduction, with the {@code iterations} loop deliberately reduced to a single
-   * round so that the checkpoint #6264 put inside it runs once, before any real work, and cannot be what fires.
-   * <p>
-   * 300 nodes at {@code embeddingDimension: 4096} (the ceiling #6065 set) is 300 x 4096 x 16384 ≈ 2e10 inner iterations
-   * in the reduction against 300 x 2 x 16384 ≈ 1e7 in the single message-passing round - three orders of magnitude apart,
-   * so a 1 s deadline can only land in the reduction. Without a checkpoint there the call grinds through all of it and
-   * returns embeddings; with one it gives up about a second in.
-   * <p>
-   * The size is what keeps the test from racing the clock (issue #9360). The reduction costs {@code embeddingDimension²}
-   * per node, so the same 300-node cycle took 4.0 s to 5.4 s at 2048 (a 4x to 5x margin over the 1 s deadline, the
-   * headroom that sent the sibling APSP test red on a fast runner in #8653) and takes ~21 s at 4096 on an Apple-silicon
-   * workstation with no deadline: about 21x. The dimension cannot go higher, so the margin comes from the quadratic.
-   */
-  @Test
-  @Tag("slow")
-  @Timeout(300)
-  void hashGnnObservesTheDeadlineInsideTheMinHashReduction() {
-    cycle("test-issue-6295-hashgnn-minhash", 300);
-    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1_000L);
-
-    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-    assertThatThrownBy(() -> drain(
-        "CALL algo.hashgnn({embeddingDimension: 4096, iterations: 1, seed: 1}) YIELD node RETURN node"))
-        .as("the reduction is where an algo.hashgnn call spends its time, so it is where the deadline has to be seen")
-        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
-
-    // Between the two outcomes: the abort lands ~1 s after the deadline is armed, the same call run to completion takes
-    // ~21 s here. Generous on purpose, a wider bound cannot turn a passing run red, and it stays below the full run
-    stopwatch.assertGaveUpWithin(10_000L, "a reduction aborted from inside, not one run to completion");
-  }
-
-  /**
    * The counterweight: with no deadline configured, every procedure the sweep touched still produces its result at
-   * an ordinary size. A checkpoint that aborted a healthy run, or one placed where it changes the answer, would
-   * satisfy the test above and fail here - which is what covers the phases that cannot be isolated by a deadline.
+   * an ordinary size. A checkpoint that aborted a healthy run, or one placed where it changes the answer, would fail
+   * here - which is what covers the phases that cannot be isolated by a deadline.
    */
   @Test
   @Timeout(120)
