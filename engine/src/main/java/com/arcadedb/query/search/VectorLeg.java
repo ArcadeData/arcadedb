@@ -241,14 +241,18 @@ public final class VectorLeg {
   private static ResolvedVectorIndex resolveLogical(final Schema schema, final MultiTypeIndexes.Entry entry) {
     final List<TypeIndex> members = MultiTypeIndexes.resolve(schema, entry.name());
     ResolvedVectorIndex first = null;
+    final List<TypeIndex> searchable = new ArrayList<>(members.size());
     for (final TypeIndex member : members) {
       final ResolvedVectorIndex described = describe(member);
-      if (described != null && first == null)
+      if (described == null)
+        continue;
+      searchable.add(member);
+      if (first == null)
         first = described;
     }
     if (first == null)
       throw new IllegalArgumentException("Vector index '" + entry.name() + "' has no searchable bucket indexes");
-    return new ResolvedVectorIndex(first.typeIndex(), first.dimensions(), first.scoring(), entry.name(), members);
+    return new ResolvedVectorIndex(first.typeIndex(), first.dimensions(), first.scoring(), entry.name(), searchable);
   }
 
   /**

@@ -33,7 +33,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -107,16 +106,7 @@ public final class FullTextQuery {
     // entries instead of every match in the index.
     final Map<RID, Float> hits;
     try {
-      if (typeIndexes.size() == 1)
-        hits = FullTextSearch.search(typeIndex, queryText, limit);
-      else {
-        // A logical index over several types (issue #11137): a record belongs to one type, so no two members match the same RID and
-        // putAll never overwrites; each member brings up to 'limit' matches, whose union contains the global best 'limit'. BM25
-        // statistics are those of each member, so a score is relative to the member of its own type
-        hits = new HashMap<>();
-        for (final TypeIndex member : typeIndexes)
-          hits.putAll(FullTextSearch.search(member, queryText, limit));
-      }
+      hits = FullTextSearch.search(typeIndexes, queryText, limit);
     } catch (final FullTextQueryParseException e) {
       // Lucene syntax the parser rejects is the caller's mistake and must be answered as one - HTTP 400, gRPC
       // INVALID_ARGUMENT - rather than as an internal error with a stack trace in the server log (issue #7393).

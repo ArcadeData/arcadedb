@@ -117,8 +117,7 @@ class Issue11137LogicalMultiTypeIndexNameTest extends TestHelper {
         .put("k", 3));
     assertThat(response.getString("vectorIndexName")).isEqualTo("emb");
     assertThat(response.getString("fulltextIndexName")).isEqualTo("docs");
-    final JSONArray results = response.getJSONArray("results");
-    assertThat(results.length()).isGreaterThanOrEqualTo(2);
+    assertThat(propertyIds(response.getJSONArray("results"))).contains("a1", "p1");
   }
 
   @Test
@@ -127,6 +126,7 @@ class Issue11137LogicalMultiTypeIndexNameTest extends TestHelper {
         .put("queryVector", new JSONArray(List.of(1.0, 0.0))).put("fulltextIndexName", "docs").put("fulltextQuery", "recipes")
         .put("expand", new JSONObject().put("depth", 1)).put("k", 3));
     assertThat(response.getString("fulltextIndexName")).isEqualTo("docs");
+    assertThat(propertyIds(response.getJSONArray("results"))).contains("a1", "p1");
   }
 
   @Test

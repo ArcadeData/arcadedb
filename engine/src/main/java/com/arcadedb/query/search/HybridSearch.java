@@ -596,15 +596,7 @@ public final class HybridSearch {
     // analyzer or search-engine fault - is a server fault and stays a 500 with its stack trace.
     final Map<RID, Float> hits;
     try {
-      if (typeIndexes.size() == 1)
-        hits = FullTextSearch.search(typeIndex, queryText, limit);
-      else {
-        // a record belongs to one type, so no two members match the same RID; the union of each member's best `limit` contains
-        // the global best, and the fusion takes the leg's ranking from the sort below
-        hits = new HashMap<>();
-        for (final TypeIndex member : typeIndexes)
-          hits.putAll(FullTextSearch.search(member, queryText, limit));
-      }
+      hits = FullTextSearch.search(typeIndexes, queryText, limit);
     } catch (final FullTextQueryParseException e) {
       throw invalidExpression("full-text leg", e);
     }
