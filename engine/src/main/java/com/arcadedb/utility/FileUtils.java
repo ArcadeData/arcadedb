@@ -570,7 +570,8 @@ public class FileUtils {
    * the second name loses its data once the original name is replaced, so it lists with its size and cannot be read.
    * No exception is thrown at link time, so the fallback cannot detect that; the caller has to opt out.
    *
-   * @param useHardLink {@code false} to always publish a plain byte copy, never a link
+   * @param useHardLink {@code false} to always publish a plain byte copy, never a link. That copy reads the whole source
+   *                    into memory, so it is meant for small files such as the schema
    */
   public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory,
       final boolean useHardLink) throws IOException {

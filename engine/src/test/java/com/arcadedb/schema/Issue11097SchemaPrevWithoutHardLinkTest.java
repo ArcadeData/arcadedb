@@ -25,9 +25,11 @@ import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
 import java.nio.file.Files;
+import java.nio.file.FileSystems;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mockStatic;
 
 /**
@@ -41,6 +43,7 @@ class Issue11097SchemaPrevWithoutHardLinkTest extends TestHelper {
 
   @Test
   void schemaSaveWritesAPlainCopyWhenHardLinkIsDisabled() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("unix"));
     database.getConfiguration().setValue(GlobalConfiguration.SCHEMA_HARD_LINK_PREVIOUS, false);
     database.getSchema().createDocumentType("First");
     final Path schema = Path.of(database.getDatabasePath(), "schema.json");
@@ -62,10 +65,18 @@ class Issue11097SchemaPrevWithoutHardLinkTest extends TestHelper {
   @Test
   void schemaSaveStillLinksByDefault() throws Exception {
     database.getSchema().createDocumentType("First");
-    database.getSchema().createDocumentType("Second");
     final Path previous = Path.of(database.getDatabasePath(), "schema.prev.json");
+    final int[] links = { 0 };
 
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("createLink"))
+        links[0]++;
+      return invocation.callRealMethod();
+    })) {
+      database.getSchema().createDocumentType("Second");
+    }
+
+    assertThat(links[0]).as("the default keeps the hard link fast path").isEqualTo(1);
     assertThat(Files.exists(previous)).isTrue();
-    assertThat(Files.getAttribute(previous, "unix:nlink")).isEqualTo(1);
   }
 }
