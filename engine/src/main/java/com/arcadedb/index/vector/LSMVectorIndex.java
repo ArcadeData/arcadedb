@@ -8484,18 +8484,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * O(k) per query rather than O(delta), and the sort is O(delta log k) rather than O(delta log delta)
    * (issue #5391). Scoring an entry that still carries its payload allocates nothing at all; one whose payload
    * the buffer's heap budget declined costs a page read and one conversion here instead (issue #7357).
+   * <p>
+   * The scan honours the search's {@code guard} (issue #11110), as the graph walk does through
+   * {@link LiveVectorBitsFilter}: it tests the allow-list once per buffered entry, and the buffer is not only the
+   * vectors written since the last build but also every vector a build left unreachable, so a walk that ends early
+   * hands the rest of the search to this loop. {@code null} for a scan nothing can stop.
    */
   private void mergeWithDeltaScan(final VectorFloat<?> queryVectorFloat, final int k,
-      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay) {
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay,
+      final WorkGuard guard) {
     // The buffer as the calling transaction sees it: its own uncommitted rows appended, the rows it superseded
     // dropped (issue #7378). Without an overlay this is the plain volatile snapshot and costs nothing extra.
-    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay));
+    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay), guard);
   }
 
   /** {@link #mergeWithDeltaScan} scoring the buffer with {@code scorer}, the scorer of the search it merges into. */
   private void mergeWithDeltaScan(final CandidateScorer scorer, final int k, final Set<RID> allowedRIDs,
-      final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay) {
-    mergeWithDeltaScan(scorer, k, allowedRIDs, results, mergedDelta(overlay));
+      final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay, final WorkGuard guard) {
+    mergeWithDeltaScan(scorer, k, allowedRIDs, results, mergedDelta(overlay), guard);
   }
 
   /**
@@ -8505,12 +8511,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * committed buffer plus an allocation sized to it, on the path whose contract is microseconds.
    */
   private void mergeWithDeltaScan(final VectorFloat<?> queryVectorFloat, final int k,
-      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta) {
-    mergeWithDeltaScan(exactScorer(queryVectorFloat, null), k, allowedRIDs, results, currentDelta);
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta,
+      final WorkGuard guard) {
+    mergeWithDeltaScan(exactScorer(queryVectorFloat, null), k, allowedRIDs, results, currentDelta, guard);
   }
 
   private void mergeWithDeltaScan(final CandidateScorer scorer, final int k,
-      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta) {
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta,
+      final WorkGuard guard) {
     if (currentDelta.isEmpty() || k <= 0)
       return;
 
@@ -8546,7 +8554,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     boolean added = false;
     int compared = 0;
+    int scanned = 0;
     for (final DeltaVectorEntry delta : currentDelta) {
+      if (guard != null)
+        guard.checkPeriodically(++scanned);
       if (filtered && !allowedRIDs.contains(delta.rid))
         continue;
 
@@ -8659,13 +8670,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void mergeWithDeltaScanApproximate(final VectorFloat<?> queryVectorFloat, final int k,
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay,
-      final ProductQuantization pq) {
+      final ProductQuantization pq, final WorkGuard guard) {
     // pq is the codebook of the codes the caller's graph beam is scored with, pinned with them (issue #10786): every row
     // below has to be scored through the same codebook, and re-reading it here could pick up a rebuild's.
     if (pq == null) {
       // Not reached from the PQ search, which always has a codebook beside its codes. Exact scoring is the honest
       // fallback: it is what the graph side degrades to as well once PQ is gone, so the two stay on one scale.
-      mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay));
+      mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay), guard);
       return;
     }
 
@@ -8690,7 +8701,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       graphRIDs.add(row.getFirst());
 
     // Stage 1 - the cheap exact prune, unchanged. Whatever it contributes is a superset of the rows that can matter.
-    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, currentDelta);
+    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, currentDelta, guard);
     if (results.isEmpty())
       return;
 
@@ -8952,15 +8963,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void preFilterApproximate(final ScoreFunction.ApproximateScoreFunction scoreFunction, final int k,
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final int[] ordinalMap,
-      final TransactionVectorOverlay overlay) {
+      final TransactionVectorOverlay overlay, final WorkGuard guard) {
     final RidHashSet seenRIDs = new RidHashSet(results.size());
     for (final Pair<RID, Float> r : results)
       seenRIDs.add(r.getFirst());
 
     final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
     boolean added = false;
-    for (final int ordinal : candidates)
-      added |= scoreOrdinalApproximate(ordinal, scoreFunction, allowedRIDs, results, ordinalMap, seenRIDs, overlay);
+    // Checked as bruteForceScan checks its own candidates (issue #11110)
+    for (int i = 0; i < candidates.length; i++) {
+      guard.checkPeriodically(i);
+      added |= scoreOrdinalApproximate(candidates[i], scoreFunction, allowedRIDs, results, ordinalMap, seenRIDs, overlay);
+    }
 
     if (added) {
       results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
@@ -9047,7 +9061,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return new ArrayList<>(0);
     final int scoredRows = preFilter.scoredRows(k);
     final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scoredRows, preFilter.scored().size() + 1));
-    mergeWithDeltaScan(scorer, scoredRows, preFilter.scored(), results, overlay);
+    mergeWithDeltaScan(scorer, scoredRows, preFilter.scored(), results, overlay, guard);
     bruteForceScan(scorer, scoredRows, preFilter.scored(), results, ordinalMap, overlay, guard);
     return preFilter.nearestMembers(results, k);
   }
@@ -9084,8 +9098,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scoredRows, preFilter.scored().size() + 1));
     // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes, so delta rows
     // merged here are ranked against - and returned alongside - approximate scores.
-    mergeWithDeltaScanApproximate(queryVectorFloat, scoredRows, preFilter.scored(), results, overlay, codes.quantization());
-    preFilterApproximate(scoreFunction, scoredRows, preFilter.scored(), results, ordinalMap, overlay);
+    mergeWithDeltaScanApproximate(queryVectorFloat, scoredRows, preFilter.scored(), results, overlay, codes.quantization(), guard);
+    preFilterApproximate(scoreFunction, scoredRows, preFilter.scored(), results, ordinalMap, overlay, guard);
     return preFilter.nearestMembers(results, k);
   }
 
@@ -9450,7 +9464,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (!deltaVectors.isEmpty() || pendingCount(overlay) > 0) {
             final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
             final List<Pair<RID, Float>> results = new ArrayList<>(k);
-            mergeWithDeltaScan(qvf, k, allowedRIDs, results, overlay);
+            mergeWithDeltaScan(qvf, k, allowedRIDs, results, overlay, guard);
             return results;
           }
           return Collections.emptyList();
@@ -9547,7 +9561,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         // Merge with delta vectors inserted since last graph rebuild
-        mergeWithDeltaScan(scorer, k, allowedRIDs, results, overlay);
+        mergeWithDeltaScan(scorer, k, allowedRIDs, results, overlay, guard);
 
         // Issue #3722: if graph search + delta merge could not fill the request, fall back to a brute-force scan.
         // This handles degraded graph quality after rebuilds with corrupted pages.
@@ -9970,7 +9984,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // findNeighborsFromVector extends. Before issue #6501 this returned an empty list even when every vector
           // in the index was sitting in the buffer.
           final GroupedSearchState deltaOnly = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows,
-              allowedRIDs, groupKeyResolver, candidateScorer(queryVector, queryVectorFloat, null, null), deltaSnapshot, candidates);
+              allowedRIDs, groupKeyResolver, candidateScorer(queryVector, queryVectorFloat, null, null), deltaSnapshot, candidates, guard);
           if (!deltaOnly.mergesDelta())
             return Collections.emptyList();
           deltaOnly.drainDelta();
@@ -10080,7 +10094,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         boolean walked = false;
         try {
           state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows, allowedRIDs, groupKeyResolver,
-              scorer, deltaSnapshot, candidates);
+              scorer, deltaSnapshot, candidates, guard);
 
           final int candidateBudget = Math.min(graphSize,
               (int) Math.min(Integer.MAX_VALUE, (long) effectiveEfSearch * GROUPED_SEARCH_CANDIDATE_BUDGET_FACTOR));
@@ -10279,7 +10293,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     scored.sort(Comparator.comparing(Pair::getSecond));
 
     final GroupedSearchState state = new GroupedSearchState(limit, groupSize, onlyGroups, maxDistance, maxRows,
-        preFilter.members(), groupKeyResolver, scorer, deltaSnapshot, rerankCandidates);
+        preFilter.members(), groupKeyResolver, scorer, deltaSnapshot, rerankCandidates, guard);
     for (final Pair<RID, Float> candidate : scored) {
       if (state.isFull() || candidate.getSecond() >= maxDistance)
         break;
@@ -10374,7 +10388,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     private GroupedSearchState(final int limit, final int groupSize, final Set<Object> onlyGroups, final float maxDistance,
         final int maxRows, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
-        final CandidateScorer scorer, final List<DeltaVectorEntry> deltaSnapshot, final GroupedCandidates rerankCandidates) {
+        final CandidateScorer scorer, final List<DeltaVectorEntry> deltaSnapshot, final GroupedCandidates rerankCandidates,
+        final WorkGuard guard) {
       this.allowedRIDs = allowedRIDs;
       this.onlyGroups = onlyGroups;
       this.rerankCandidates = rerankCandidates;
@@ -10385,7 +10400,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // can address (issue #6066) - recomputing it here in int would reopen the same overflow the caller closed.
       this.results = new ArrayList<>(maxRows);
       this.deltaSnapshot = deltaSnapshot;
-      this.deltaCursor = scoreDeltaCandidates(scorer, allowedRIDs, deltaSnapshot);
+      this.deltaCursor = scoreDeltaCandidates(scorer, allowedRIDs, deltaSnapshot, guard);
       this.deltaCandidates = deltaCursor == null ? 0 : deltaCursor.size();
       this.admitted = deltaCursor == null ? null : new RidHashSet(maxRows);
     }
@@ -10528,7 +10543,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * own (issue #7357).
    */
   private ScoredCandidateCursor scoreDeltaCandidates(final CandidateScorer scorer, final Set<RID> allowedRIDs,
-      final List<DeltaVectorEntry> deltaSnapshot) {
+      final List<DeltaVectorEntry> deltaSnapshot, final WorkGuard guard) {
     // No overlay parameter here on purpose: `deltaSnapshot` is already the merged view. The grouped search takes it
     // once, at the top of findNeighborsFromVectorGrouped, and hands the same list to every plan and to the
     // GroupedSearchState that indexes back into it by position - so the calling transaction's own pending rows
@@ -10549,6 +10564,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final VectorSimilarityFunction similarity = metadata.similarityFunction;
     int kept = 0;
     for (int i = 0; i < buffered; i++) {
+      // The search's bound, as in mergeWithDeltaScan (issue #11110)
+      if (guard != null)
+        guard.checkPeriodically(i + 1);
       final DeltaVectorEntry entry = deltaSnapshot.get(i);
       if (filtered && !allowedRIDs.contains(entry.rid))
         continue;
@@ -10766,7 +10784,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (!deltaVectors.isEmpty() || pendingCount(overlay) > 0) {
             final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
             final List<Pair<RID, Float>> results = new ArrayList<>(k);
-            mergeWithDeltaScan(qvf, k, allowedRIDs, results, overlay);
+            mergeWithDeltaScan(qvf, k, allowedRIDs, results, overlay, guard);
             return results;
           }
           return Collections.emptyList();
@@ -10899,9 +10917,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // above rather than exactly (issue #6559 item 2) - see mergeWithDeltaScanApproximate for why ranking the two
           // against each other on different scales let quantization error, not the data, decide which row won.
           if (rerank)
-            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
+            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay, guard);
           else
-            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay, pinnedCodes.quantization());
+            mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results, overlay, pinnedCodes.quantization(), guard);
 
           // Log performance metrics. FINE, not INFO (issue #6559 item 3): this path's entire reason to exist is
           // microsecond latency, so an unconditional per-query INFO line - on the query rate this path is built for -
@@ -11091,6 +11109,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // not halved: the two populations are charged separately and an overlay is bounded by the transaction's write
     // set, while the buffer is bounded by nothing - so the buffer is where the pressure actually comes from.
     return TransactionVectorOverlay.open(getDatabase(), this, vts, deltaPayloadCapacity());
+  }
+
+  /**
+   * Whether the calling transaction has written to this index and not committed yet (issue #10973). Its own rows are then
+   * answered from what it queued, which the committed locations behind {@link #hasLiveVector(RID)} do not hold.
+   */
+  public boolean isWrittenByCurrentTransaction() {
+    return transactionOverlay() != null;
+  }
+
+  /**
+   * Whether the committed index still holds a live vector of {@code rid} (issue #10973): the in-memory answer, from the reverse
+   * index of the locations, to "is this search result still there?". A delete removes the location in the commit that deletes
+   * the record, so a caller that hands a search result on without reading its record asks this instead, and reads no page for
+   * it. It cannot see a record removed from its bucket behind the index's back (a crash, a restore): only reading the record
+   * notices that one, and {@code REBUILD INDEX} repairs it.
+   */
+  public boolean hasLiveVector(final RID rid) {
+    return vectorIndex().getVectorIdsForRid(rid).length > 0;
   }
 
   /**

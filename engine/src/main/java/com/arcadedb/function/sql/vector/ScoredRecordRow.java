@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.exception.RecordNotFoundException;
 
 import java.util.AbstractMap;
 import java.util.Collection;
@@ -48,6 +49,11 @@ import java.util.Set;
  * row carried every property twice - the embedding and the passage, the largest ones, included. A projection, a
  * {@code record.name} path, a re-ranker and any caller that asks for the key still get the record. A record property named
  * {@code record}, or a value written under the key, is a real entry and is enumerated.
+ * <p>
+ * The record itself can be one whose content is not read yet (issue #10973, see {@code SQLFunctionVectorNeighbors}): its
+ * {@code @rid} and {@code @type} are answered without reading it, and the first property asked of the row reads it. A record
+ * found gone by that read (removed from its bucket behind the index's back) answers no property, rather than failing the
+ * query that asked.
  */
 final class ScoredRecordRow extends AbstractMap<String, Object> {
   static final         String RECORD = "record";
@@ -90,8 +96,8 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
       return record.getTypeName();
     if (name.equals(RECORD))
       // a property of the same name wins over the record, as it did in the eager copy
-      return record.has(RECORD) ? record.get(RECORD) : record;
-    return record.get(name);
+      return has(RECORD) ? property(RECORD) : record;
+    return property(name);
   }
 
   @Override
@@ -100,7 +106,7 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
       return materialized.containsKey(key) || isRecordKey(key);
     if (!(key instanceof String name))
       return false;
-    return name.equals(scoreKey) || name.equals(RID) || name.equals(TYPE) || name.equals(RECORD) || record.has(name);
+    return name.equals(scoreKey) || name.equals(RID) || name.equals(TYPE) || name.equals(RECORD) || has(name);
   }
 
   @Override
@@ -163,12 +169,34 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
     return !recordKeyRemoved && RECORD.equals(key);
   }
 
+  /** A property of the record, or null when the record is gone (see the class javadoc). */
+  private Object property(final String name) {
+    try {
+      return record.get(name);
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+  }
+
+  private boolean has(final String name) {
+    try {
+      return record.has(name);
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+  }
+
   private LinkedHashMap<String, Object> materialize() {
     if (materialized == null) {
-      final Set<String> names = record.getPropertyNames();
+      Set<String> names;
+      try {
+        names = record.getPropertyNames();
+      } catch (final RecordNotFoundException e) {
+        names = Set.of();
+      }
       final LinkedHashMap<String, Object> copy = new LinkedHashMap<>(names.size() + 5);
       for (final String prop : names)
-        copy.put(prop, record.get(prop));
+        copy.put(prop, property(prop));
       copy.put(RID, record.getIdentity());
       copy.put(TYPE, record.getTypeName());
       copy.put(scoreKey, score);

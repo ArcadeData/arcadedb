@@ -19,9 +19,11 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -38,6 +40,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RidHashSet;
@@ -355,6 +359,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // the real candidate count; allNeighbors.size() is that clamp having already happened, per index and summed.
     final RidHashSet emitted = new RidHashSet(Math.min(limit, allNeighbors.size()));
 
+    // Issue #10973: a row whose record nothing reads (SELECT @rid, distance FROM (SELECT expand(...))) is made without reading
+    // it, see deferredRecordReads. The grouped path reads the group key of every row, so it reads the record anyway
+    final LSMVectorIndex[] deferring = groupBy == null ? deferredRecordReads(db, vectorIndexes) : null;
+
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       // Stop conditions:
       //   - groupBy unset: stop once we collected `limit` rows
@@ -376,10 +384,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (!emitted.add(rid))
         continue;
 
-      final Document record;
-      try {
-        record = (Document) db.lookupByRID(rid, true);
-      } catch (final RecordNotFoundException e) {
+      final Document record = neighbourRecord(db, rid, deferring);
+      if (record == null) {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,
         // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
@@ -411,6 +417,68 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     }
 
     return result;
+  }
+
+  /**
+   * The indexes whose rows are made without reading their record (issue #10973), at the position of each in
+   * {@code vectorIndexes}, or null when none is. A row reads its record on the first property asked of it
+   * ({@link ScoredRecordRow}), so a query that projects only {@code @rid}, {@code @type} and the distance reads no record at
+   * all: on a quantized index (INT8, BINARY, PRODUCT) the walk scores the codes and touches no document either, and the
+   * record read was the whole page footprint of the search.
+   * <p>
+   * The read was also how a row learned that its record is gone. A deferred row asks the index instead
+   * ({@link LSMVectorIndex#hasLiveVector}), which a committed delete updates in the same commit, so a delete that overlaps
+   * the search still costs a candidate and not an answer row (issue #9368). What only the read can see is a record removed
+   * from its bucket behind the index's back (a crash, a restore): such a row is answered with no properties, as the Java API
+   * answers its RID, until {@code REBUILD INDEX} repairs the index.
+   * <p>
+   * The record is read as before where reading it does more than load it: a read listener or trigger on the database or on the
+   * type sees (and can veto) every record the search hands out, and an index the calling transaction wrote to answers its own
+   * rows from the transaction, not from the committed locations. The permission to read the bucket is asked here, once per
+   * index, since no read will ask it for a row that is never loaded.
+   */
+  private static LSMVectorIndex[] deferredRecordReads(final BasicDatabase db, final List<LSMVectorIndex> vectorIndexes) {
+    if (!(db instanceof DatabaseInternal database) || !(database.getEvents() instanceof RecordEventsRegistry events)
+        || events.hasBeforeReadListeners() || events.hasAfterReadListeners())
+      return null;
+
+    LSMVectorIndex[] deferring = null;
+    for (int i = 0; i < vectorIndexes.size(); i++) {
+      final LSMVectorIndex index = vectorIndexes.get(i);
+      final int bucketId = index.getAssociatedBucketId();
+      if (bucketId < 0 || index.isWrittenByCurrentTransaction())
+        continue;
+      if (!(database.getSchema().getTypeByBucketId(bucketId) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
+          || type.hasAfterReadListeners())
+        continue;
+      database.checkPermissionsOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+      if (deferring == null)
+        deferring = new LSMVectorIndex[vectorIndexes.size()];
+      deferring[i] = index;
+    }
+    return deferring;
+  }
+
+  /**
+   * The record of a neighbour, read now unless its index defers the read (see {@link #deferredRecordReads}), or null when the
+   * record is gone.
+   */
+  private static Document neighbourRecord(final BasicDatabase db, final RID rid, final LSMVectorIndex[] deferring) {
+    LSMVectorIndex deferredBy = null;
+    if (deferring != null)
+      for (final LSMVectorIndex index : deferring)
+        if (index != null && index.getAssociatedBucketId() == rid.getBucketId()) {
+          deferredBy = index;
+          break;
+        }
+    try {
+      if (deferredBy == null)
+        return (Document) db.lookupByRID(rid, true);
+      // Under REPEATABLE_READ the lookup reads the record all the same, and a record that is gone throws as it always did
+      return deferredBy.hasLiveVector(rid) ? (Document) db.lookupByRID(rid, false) : null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
   }
 
   /**

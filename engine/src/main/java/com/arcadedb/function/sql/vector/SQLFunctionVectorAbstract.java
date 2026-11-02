@@ -22,6 +22,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -404,13 +405,31 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     // Without a transaction there is no own write to see. Every database a SQL function runs on is a DatabaseInternal (the
     // engine evaluates server-side); the type test only guards the cast
     if (!(db instanceof DatabaseInternal database) || !database.isTransactionActive())
-      return held;
+      return isReadable(held) ? held : null;
     final TransactionContext tx = database.getTransaction();
     final RID rid = held.getIdentity();
     if (tx.isDeletedInTransaction(rid))
       return null;
     // A RID that held a document holds a document: the written copy is never another kind of record
-    return tx.getWrittenRecord(rid) instanceof Document written ? written : held;
+    if (tx.getWrittenRecord(rid) instanceof Document written)
+      return written;
+    return isReadable(held) ? held : null;
+  }
+
+  /**
+   * False for a record {@code vector.neighbors} handed on without reading it (issue #10973) that the read now finds gone: removed
+   * from its bucket behind the index's back, so the index still answered it. The read is the one the caller is about to make
+   * anyway, since it asks for the record to read it; a record already read costs nothing here.
+   */
+  private static boolean isReadable(final Document held) {
+    if (!(held instanceof ImmutableDocument unread) || unread.getBuffer() != null)
+      return true;
+    try {
+      unread.getPropertyNames();
+      return true;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
   }
 
   /**

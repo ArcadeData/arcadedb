@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -124,24 +125,110 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
     index.buildVectorGraphNow();
     assertThat(index.isPQSearchAvailable()).as("the PQ path must be the one tested").isTrue();
 
-    // A plain allow-list, not a predicate one, so nothing but the walk's own filter can stop it. Unbounded in size, so the
+    // A plain allow-list, not a predicate one, so nothing but the search's own checks can stop it. Unbounded in size, so the
     // walk is taken rather than the pre-filter plan; the deadline passes on its first membership test
     final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
-    final boolean[] slept = new boolean[1];
-    final Set<RID> slowAllowList = new AbstractSet<>() {
+    final int[] tested = new int[1];
+    final Set<RID> slowAllowList = admitNothingAfterTheDeadline(tested);
+
+    assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
+        .isInstanceOf(TimeoutException.class);
+    // Issue #11110: the search tests every one of the 6,000 vectors once, but not all of them in the walk. On this
+    // collinear data a build can leave thousands of nodes unreachable, and those are re-queued into the delta buffer and
+    // tested by its scan instead; a walk shorter than one check stride (1024 tests) never looked at the deadline, and
+    // the scan never looked at it at all. Both check now, each once per stride, so the search stops within a stride
+    // of each whichever way the build split the vectors
+    assertThat(tested[0]).as("membership tests before the search stopped").isLessThanOrEqualTo(2 * 1024);
+  }
+
+  /**
+   * Issue #11110: the vectors written since the last graph build are answered by a linear scan of the delta buffer, which
+   * tests the allow-list once per entry and did not look at the search's deadline. Here the allow-list admits the 1,200
+   * vectors of the graph, so the walk fills its beam and ends long before its first check, and rejects the 3,000 of the
+   * buffer: the scan is what has to stop.
+   */
+  @Test
+  void theDeltaBufferScanStopsAtTheDeadline() {
+    assertDeltaScanStopsAtTheDeadline("");
+  }
+
+  @Test
+  void theDeltaBufferScanOfAProductQuantizedIndexStopsAtTheDeadline() {
+    assertDeltaScanStopsAtTheDeadline(", \"quantization\": \"PRODUCT\", \"pqClusters\": 16");
+  }
+
+  @Test
+  void theDeltaBufferScanOfAGroupedSearchStopsAtTheDeadline() {
+    final Set<RID> inTheGraph = new HashSet<>();
+    final LSMVectorIndex index = indexWithAFilledDeltaBuffer("", inTheGraph);
+
+    final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
+    final int[] tested = new int[1];
+    final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph);
+
+    assertThatThrownBy(() -> index.findNeighborsFromVectorGrouped(new float[] { 0f, 1f }, 3, 1, -1, slowAllowList,
+        RID::getPosition, guard)).isInstanceOf(TimeoutException.class);
+    assertThat(tested[0]).as("membership tests before the search stopped").isLessThanOrEqualTo(2 * 1024);
+  }
+
+  private void assertDeltaScanStopsAtTheDeadline(final String extraMetadata) {
+    final Set<RID> inTheGraph = new HashSet<>();
+    final LSMVectorIndex index = indexWithAFilledDeltaBuffer(extraMetadata, inTheGraph);
+
+    final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
+    final int[] tested = new int[1];
+    final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph);
+
+    assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
+        .isInstanceOf(TimeoutException.class);
+    assertThat(tested[0]).as("membership tests before the search stopped").isLessThanOrEqualTo(2 * 1024);
+  }
+
+  /**
+   * 1,200 vectors in the graph (a graph of 1,000 or more is not rebuilt synchronously before a search), then 3,000 more that
+   * no rebuild takes out of the delta buffer. {@code inTheGraph} receives the records of the first 1,200.
+   */
+  private LSMVectorIndex indexWithAFilledDeltaBuffer(final String extraMetadata, final Set<RID> inTheGraph) {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 1_000_000);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO, 0f);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO, 0f);
+    createDocs(1_200, 0, extraMetadata);
+    final LSMVectorIndex index = indexOf();
+    index.buildVectorGraphNow();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Doc")) {
+      while (rs.hasNext())
+        inTheGraph.add(rs.next().getIdentity().get());
+    }
+    database.transaction(() -> {
+      for (int i = 0; i < 3_000; i++)
+        database.newVertex("Doc").set("name", "late" + i, "tenant", "big", "vector", new float[] { 10_000 + i, 1f }).save();
+    });
+    final long buffered = index.getStats().getOrDefault("deltaVectorsCount", -1L);
+    assertThat(buffered).as("the late vectors must be in the delta buffer, not in the graph").isGreaterThanOrEqualTo(3_000L);
+    return index;
+  }
+
+  /** {@link #admitAfterTheDeadline(int[], Set)} admitting nothing. */
+  private static Set<RID> admitNothingAfterTheDeadline(final int[] tested) {
+    return admitAfterTheDeadline(tested, Set.of());
+  }
+
+  /**
+   * Counts its membership tests, sleeps past the deadline on the first one and admits only {@code admitted}, so a search that
+   * needs a record outside it keeps testing until something looks at the deadline. Unbounded in size, so no pre-filter plan is
+   * taken.
+   */
+  private static Set<RID> admitAfterTheDeadline(final int[] tested, final Set<RID> admitted) {
+    return new AbstractSet<>() {
       @Override
       public boolean contains(final Object o) {
-        if (!slept[0]) {
-          slept[0] = true;
+        if (tested[0]++ == 0)
           try {
             Thread.sleep(2_500);
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
           }
-        }
-        // Admits nothing, so the walk never fills its result queue and keeps going: the guard checks once per 1024 membership
-        // tests, and a walk that met fewer ended before it ever looked at the deadline (hence the larger graph)
-        return false;
+        return admitted.contains(o);
       }
 
       @Override
@@ -154,9 +241,6 @@ class Issue10782SearchClauseSelectiveWhereTest extends TestHelper {
         throw new UnsupportedOperationException();
       }
     };
-
-    assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
-        .isInstanceOf(TimeoutException.class);
   }
 
   @Test

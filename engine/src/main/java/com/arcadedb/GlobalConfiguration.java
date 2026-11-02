@@ -59,21 +59,17 @@ public enum GlobalConfiguration {
         return value;
       }),
 
+  // Issue #11119: the timer thread exists only while a positive period is set. It used to be started by the static
+  // initializer whatever the value, and nothing cancelled it: one idle thread on the JVM, and in a native image an
+  // isolate that could never be torn down, since java.util.TimerThread ignores interrupts.
   DUMP_METRICS_EVERY("arcadedb.dumpMetricsEvery", SCOPE.JVM,
       "Dumps the metrics at startup, shutdown and every configurable amount of time (in seconds)", Long.class, 0, new Callable<>() {
     @Override
     public Object call(final Object value) {
       final long time = (long) value * 1000;
-      if (time > 0) {
+      if (time > 0)
         Profiler.INSTANCE.dumpMetrics(System.out);
-
-        TIMER.schedule(new TimerTask() {
-          @Override
-          public void run() {
-            Profiler.INSTANCE.dumpMetrics(System.out);
-          }
-        }, time, time);
-      }
+      MetricsDumpTimer.reschedule(time);
       return value;
     }
   }),
@@ -3624,7 +3620,6 @@ public enum GlobalConfiguration {
    */
   private final        IntSupplier              minimum;
   public final static  String                   PREFIX = "arcadedb.";
-  private static final Timer                    TIMER;
   // Issue #7281: set for the duration of readConfiguration(), so DUMP_CONFIG_AT_STARTUP's callback can tell a
   // startup pass that has not finished applying the other settings from a later write it can dump straight away.
   // Left without an initializer on purpose: an enum's constants are constructed before any static field
@@ -3671,8 +3666,6 @@ public enum GlobalConfiguration {
   private static final Set<String> FORMER_KEYS_REPORTED;
 
   static {
-    TIMER = new Timer(true);
-
     final Map<String, GlobalConfiguration> byKey = new HashMap<>(values().length * 2);
     for (final GlobalConfiguration v : values())
       byKey.put(v.key.toLowerCase(Locale.ENGLISH), v);
@@ -5037,5 +5030,33 @@ public enum GlobalConfiguration {
            OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES -> true;
       default -> false;
     };
+  }
+
+  /**
+   * The timer behind {@link #DUMP_METRICS_EVERY} (issue #11119). A nested class so nothing about it is initialized before
+   * the setting asks for it: the enum's constants are constructed, and their callbacks can run, before any static field of
+   * the enum is assigned. Every write of the setting replaces the schedule instead of adding to it, and a period that is not
+   * positive cancels the timer, which ends its thread.
+   */
+  private static final class MetricsDumpTimer {
+    static final String THREAD_NAME = "ArcadeDB-DumpMetrics";
+    private static Timer timer;
+
+    private static synchronized void reschedule(final long periodMs) {
+      if (timer != null) {
+        timer.cancel();
+        timer = null;
+      }
+      if (periodMs <= 0)
+        return;
+
+      timer = new Timer(THREAD_NAME, true);
+      timer.schedule(new TimerTask() {
+        @Override
+        public void run() {
+          Profiler.INSTANCE.dumpMetrics(System.out);
+        }
+      }, periodMs, periodMs);
+    }
   }
 }
