@@ -106,7 +106,7 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   public void reload() {
-    final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
+    final ResultSet resultSet = remoteDatabase.queryUncounted("sql", "select from " + rid, null);
     if (resultSet.hasNext()) {
       final Document document = resultSet.next().toElement();
 

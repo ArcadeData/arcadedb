@@ -89,7 +89,7 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   public void reload() {
-    final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
+    final ResultSet resultSet = remoteDatabase.queryUncounted("sql", "select from " + rid, null);
     if (resultSet.hasNext()) {
       final Document document = resultSet.next().toElement();
 
@@ -172,7 +172,7 @@ public class RemoteMutableEdge extends MutableEdge {
   }
 
   private Vertex loadVertex(final RID rid) {
-    final ResultSet result = remoteDatabase.query("sql", "select from " + rid);
+    final ResultSet result = remoteDatabase.readRecordOrEmpty(rid);
     if (result.hasNext())
       return result.next().getVertex().get();
     return null;

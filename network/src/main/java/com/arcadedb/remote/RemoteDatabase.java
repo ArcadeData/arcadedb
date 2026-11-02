@@ -176,7 +176,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public long getSize() {
     checkDatabaseIsOpen();
-    try (final ResultSet resultSet = command("sql", "select size from schema:database")) {
+    try (final ResultSet resultSet = commandUncounted("sql", "select size from schema:database", null)) {
       final Result result = resultSet.nextIfAvailable();
       if (result != null)
         return (long) Type.convert(null, result.getProperty("size"), Long.class);
@@ -603,8 +603,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.txRollbacks.incrementAndGet();
 
+    // NOTHING TO ROLL BACK IS NOT AN ERROR, AS ON THE EMBEDDED ENGINE ("ALREADY ROLLED BACK" IN LocalDatabase.rollback()):
+    // commit() CLEARS THE SESSION IN ITS finally, SO THE DEFENSIVE ROLLBACK IN A finally RUNS HERE ON THE SUCCESS PATH,
+    // AFTER THE DATA IS DURABLE, AND THROWING WOULD REPORT A COMMITTED UNIT OF WORK AS FAILED (ISSUE #11057)
     if (getSessionId() == null)
-      throw new TransactionException("Transaction not begun");
+      return;
 
     try {
       HttpRequest request =
@@ -745,10 +748,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   public Record lookupByRID(final RID rid) {
-    stats.readRecord.incrementAndGet();
-    if (rid == null)
-      throw new IllegalArgumentException("Record is null");
-
+    // NOT COUNTED HERE: THE OVERLOAD IT DELEGATES TO COUNTS THE READ, AND COUNTING IN BOTH MADE ONE READ TWO (ISSUE #11056)
     return lookupByRID(rid, true);
   }
 
@@ -758,8 +758,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
+    checkDatabaseIsOpen();
     try {
-      lookupByRID(rid, false);
+      // UNCOUNTED: AN EXISTENCE CHECK IS ONE existsRecord, AS ON THE EMBEDDED ENGINE, NOT ALSO A READ AND A QUERY (ISSUE #11056)
+      lookupByRIDUncounted(rid);
       return true;
     } catch (RecordNotFoundException e) {
       return false;
@@ -773,7 +775,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
-    final ResultSet result = query("sql", "select from " + rid);
+    return lookupByRIDUncounted(rid);
+  }
+
+  private Record lookupByRIDUncounted(final RID rid) {
+    final ResultSet result = queryUncounted("sql", "select from " + rid, null);
     if (!result.hasNext())
       throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
@@ -821,9 +827,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     final String query = "select from " + Identifier.quote(typeName)
         + (polymorphic ? "" : " where @type = :typeName");
 
-    final ResultSet resultSet = polymorphic ?
-        query("sql", query) :
-        query("sql", query, Map.of("typeName", typeName));
+    checkDatabaseIsOpen();
+    stats.iterateType.incrementAndGet();
+    final ResultSet resultSet = queryUncounted("sql", query, polymorphic ? null : Map.of("typeName", typeName));
+    return countedRecordIterator(resultSet);
+  }
+
+  /**
+   * The records of an iteration, one {@code readRecord} per record yielded, as the embedded {@code BucketIterator} counts every
+   * record it reads (issue #11056).
+   */
+  private Iterator<Record> countedRecordIterator(final ResultSet resultSet) {
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
@@ -832,7 +846,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       @Override
       public Record next() {
-        return resultSet.next().getElement().get();
+        final Record record = resultSet.next().getElement().get();
+        stats.readRecord.incrementAndGet();
+        return record;
       }
     };
   }
@@ -852,18 +868,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    final ResultSet resultSet = query("sql", "select from " + bucketTarget(bucketName));
-    return new Iterator<>() {
-      @Override
-      public boolean hasNext() {
-        return resultSet.hasNext();
-      }
-
-      @Override
-      public Record next() {
-        return resultSet.next().getElement().get();
-      }
-    };
+    checkDatabaseIsOpen();
+    stats.iterateBucket.incrementAndGet();
+    final ResultSet resultSet = queryUncounted("sql", "select from " + bucketTarget(bucketName), null);
+    return countedRecordIterator(resultSet);
   }
 
   @Override
@@ -882,7 +890,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
                            final Map<String, Object> params) {
     checkDatabaseIsOpen();
     stats.commands.incrementAndGet();
+    return commandUncounted(language, command, params);
+  }
 
+  /**
+   * Runs a command without moving any statistic, for the driver's own reads of the schema metadata ({@link RemoteSchema},
+   * {@link #getSize()}): the embedded schema answers them without running anything, so they are not a {@code command()} of the
+   * application, and filing them as one grew {@code commands} on a read-only workload (issue #11056). Sent as a command
+   * rather than a query so it is still answered by the leader, as before.
+   */
+  protected ResultSet commandUncounted(final String language, final String command, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
     return (ResultSet) databaseCommand("command", language, command, params, true,
         (connection, response) -> createResultSet(response));
   }
@@ -920,10 +938,32 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> params) {
     checkDatabaseIsOpen();
-    stats.commands.incrementAndGet();
+    // A QUERY, LIKE THE OTHER TWO OVERLOADS AND THE EMBEDDED ENGINE'S THREE: THIS ONE USED TO COUNT INTO commands, AND THE
+    // TWO-ARGUMENT FORM DELEGATES HERE (ISSUE #11056)
+    stats.queries.incrementAndGet();
+    return queryUncounted(language, query, params);
+  }
 
+  /**
+   * Runs a query without moving any statistic. For the driver's own helpers that are not a {@code query()} call of the
+   * application ({@link #lookupByRID}, {@link #iterateType}, the edge and vertex walks of {@link RemoteVertex}): each of them
+   * counts its own statistic, the one the embedded engine counts for the same call, so routing them through the public
+   * {@code query()} also filed every one of them as a query (issue #11056).
+   */
+  protected ResultSet queryUncounted(final String language, final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
     return (ResultSet) databaseCommand("query", language, query, params, false,
         (connection, response) -> createResultSet(response));
+  }
+
+  /**
+   * Reads one record by RID for the remote records that need an empty answer rather than a {@link RecordNotFoundException}
+   * (the endpoint vertices of an edge). Counted as one {@code readRecord}, as the embedded edge counts its
+   * {@code lookupByRID}, and not as a query (issue #11056).
+   */
+  ResultSet readRecordOrEmpty(final RID rid) {
+    stats.readRecord.incrementAndGet();
+    return queryUncounted("sql", "select from " + rid, null);
   }
 
   /**

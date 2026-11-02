@@ -82,7 +82,7 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
   }
 
   private Vertex loadVertex(final RID rid) {
-    final ResultSet result = remoteDatabase.query("sql", "select from " + rid);
+    final ResultSet result = remoteDatabase.readRecordOrEmpty(rid);
     if (result.hasNext())
       return result.next().getVertex().get();
 

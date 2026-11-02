@@ -108,7 +108,7 @@ public class RemoteSchema implements Schema {
    */
   @Override
   public boolean existsBucket(final String bucketName) {
-    return remoteDatabase.command("sql", "select from schema:buckets where name = :name", Map.of("name", bucketName)).hasNext();
+    return remoteDatabase.commandUncounted("sql", "select from schema:buckets where name = :name", Map.of("name", bucketName)).hasNext();
   }
 
   @Override
@@ -116,7 +116,7 @@ public class RemoteSchema implements Schema {
     // The name must be compared against a string parameter: quoting it as an identifier resolved it as a (missing) property of the
     // record, so this always answered false. Index names routinely carry characters - the comma of the auto-derived
     // `Type[propA,propB]` form - that cannot be inlined unescaped either.
-    return remoteDatabase.command("sql", "select from schema:indexes where name = :name", Map.of("name", indexName)).hasNext();
+    return remoteDatabase.commandUncounted("sql", "select from schema:indexes where name = :name", Map.of("name", indexName)).hasNext();
   }
 
   @Override
@@ -140,7 +140,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public boolean existsTrigger(final String triggerName) {
-    final ResultSet result = remoteDatabase.command("sql", "select from schema:triggers where name = :name",
+    final ResultSet result = remoteDatabase.commandUncounted("sql", "select from schema:triggers where name = :name",
         Map.of("name", triggerName));
     return result.hasNext();
   }
@@ -172,14 +172,14 @@ public class RemoteSchema implements Schema {
 
   @Override
   public boolean existsMaterializedView(final String viewName) {
-    final ResultSet result = remoteDatabase.command("sql",
+    final ResultSet result = remoteDatabase.commandUncounted("sql",
         "SELECT FROM schema:materializedViews WHERE name = :name", Map.of("name", viewName));
     return result.hasNext();
   }
 
   @Override
   public MaterializedView getMaterializedView(final String viewName) {
-    final ResultSet result = remoteDatabase.command("sql",
+    final ResultSet result = remoteDatabase.commandUncounted("sql",
         "SELECT FROM schema:materializedViews WHERE name = :name", Map.of("name", viewName));
     if (result.hasNext())
       return new RemoteMaterializedView(result.next());
@@ -188,7 +188,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public MaterializedView[] getMaterializedViews() {
-    final ResultSet result = remoteDatabase.command("sql", "SELECT FROM schema:materializedViews");
+    final ResultSet result = remoteDatabase.commandUncounted("sql", "SELECT FROM schema:materializedViews", null);
     final List<MaterializedView> views = new ArrayList<>();
     while (result.hasNext())
       views.add(new RemoteMaterializedView(result.next()));
@@ -227,7 +227,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public boolean existsContinuousAggregate(final String name) {
-    final ResultSet result = remoteDatabase.command("sql",
+    final ResultSet result = remoteDatabase.commandUncounted("sql",
         "SELECT FROM schema:continuousaggregates WHERE name = :name", Map.of("name", name));
     return result.hasNext();
   }
@@ -238,7 +238,7 @@ public class RemoteSchema implements Schema {
    */
   @Override
   public ContinuousAggregate getContinuousAggregate(final String name) {
-    final ResultSet result = remoteDatabase.command("sql",
+    final ResultSet result = remoteDatabase.commandUncounted("sql",
         "SELECT FROM schema:continuousaggregates WHERE name = :name", Map.of("name", name));
     if (result.hasNext())
       return new RemoteContinuousAggregate(result.next());
@@ -247,7 +247,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public ContinuousAggregate[] getContinuousAggregates() {
-    final ResultSet result = remoteDatabase.command("sql", "SELECT FROM schema:continuousaggregates");
+    final ResultSet result = remoteDatabase.commandUncounted("sql", "SELECT FROM schema:continuousaggregates", null);
     final List<ContinuousAggregate> aggregates = new ArrayList<>();
     while (result.hasNext())
       aggregates.add(new RemoteContinuousAggregate(result.next()));
@@ -840,7 +840,7 @@ public class RemoteSchema implements Schema {
     // Bound rather than interpolated into the string literal, like every other exists*/getBy* in this class: a
     // bucket name carrying a quote used to end the literal early and have its remainder parsed as more SQL. The
     // same defect as the back-tick sites #7914 fixed, with the other quote character (PR #7942 review).
-    final ResultSet resultSet = remoteDatabase.command("sql",
+    final ResultSet resultSet = remoteDatabase.commandUncounted("sql",
         "select from schema:types where buckets contains :bucketName", Map.of("bucketName", bucketName));
 
     final Result result = resultSet.nextIfAvailable();
@@ -871,7 +871,7 @@ public class RemoteSchema implements Schema {
    * either the previous snapshot or the new one, never a partially populated map.
    */
   public synchronized RemoteSchema reload() {
-    final ResultSet result = remoteDatabase.command("sql", "select from schema:types");
+    final ResultSet result = remoteDatabase.commandUncounted("sql", "select from schema:types", null);
 
     final List<Result> cached = new ArrayList<>();
     while (result.hasNext())
@@ -886,7 +886,7 @@ public class RemoteSchema implements Schema {
     // rather than the type list (issue #7031) - but this cache fed getBucketByName()/getBuckets() from the type
     // walk alone, so a standalone bucket was never visible through either, no matter how fresh the reload
     // (issue #7797 follow-up).
-    try (final ResultSet bucketsResult = remoteDatabase.command("sql", "select from schema:buckets")) {
+    try (final ResultSet bucketsResult = remoteDatabase.commandUncounted("sql", "select from schema:buckets", null)) {
       while (bucketsResult.hasNext()) {
         final String bucketName = bucketsResult.next().getProperty("name");
         newBuckets.computeIfAbsent(bucketName, RemoteBucket::new);

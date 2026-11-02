@@ -175,9 +175,15 @@ class Issue11041UnterminatedArchiveRestoreTest {
 
       for (final String key : new String[] { null, ENCRYPTION_KEY }) {
         served[0] = partialArchive(half, key);
+        // THE SECOND PASS RESTORES WITH -o OVER THE DATABASE THE FIRST ONE RESTORED
+        final boolean replacing = new File(RESTORED_PATH).exists();
         assertThatThrownBy(() -> restoreFromUrl(url, key)).as("key=%s", key).isInstanceOf(RestoreException.class)
             .rootCause().hasMessageContaining("is incomplete");
-        assertThat(new File(RESTORED_PATH)).as("nothing a refused restore extracted is left behind").doesNotExist();
+        if (replacing)
+          assertThat(countRestored()).as("a refused -o restore keeps the database it would have replaced (issue #11058)")
+              .isEqualTo(RECORDS);
+        else
+          assertThat(new File(RESTORED_PATH)).as("nothing a refused restore extracted is left behind").doesNotExist();
 
         served[0] = partialArchive(entryNames.size(), key);
         restoreFromUrl(url, key);
