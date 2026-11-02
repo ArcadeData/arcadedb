@@ -51,6 +51,16 @@ public class DatabaseStats {
   public final AtomicLong countType     = new AtomicLong();
   public final AtomicLong countBucket   = new AtomicLong();
 
+  /**
+   * The sum of every counter: it moves whenever the database is used, by any client, so two equal samples taken apart mean
+   * nothing used it in between (issue #11068). Read without allocating, for a server that samples thousands of databases.
+   */
+  public long total() {
+    return writeTx.get() + readTx.get() + txRollbacks.get() + createRecord.get() + readRecord.get() + updateRecord.get()
+        + deleteRecord.get() + existsRecord.get() + queries.get() + commands.get() + scanType.get() + scanBucket.get()
+        + iterateType.get() + iterateBucket.get() + countType.get() + countBucket.get();
+  }
+
   public Map<String, Object> toMap() {
     final Map<String, Object> map = new HashMap<>();
     map.put("writeTx", writeTx.get());

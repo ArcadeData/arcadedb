@@ -469,7 +469,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     Metrics.counter("http.list-databases").increment();
 
-    final Set<String> installedDatabases = filterAuthorizedDatabases(user, server.getDatabaseNames());
+    // Open or not (issue #11068): the next request opens one closed for idleness or not opened at startup
+    final Set<String> installedDatabases = filterAuthorizedDatabases(user, server.getAvailableDatabaseNames());
 
     final JSONObject response = new JSONObject().put("result", new JSONArray(installedDatabases));
 

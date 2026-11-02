@@ -273,8 +273,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       final String name = req.getName(); // proto should define 'name' for the DB
       // Exact name, like createDatabase / dropDatabase (issue #7413): what this reports as existing is what a
-      // create of the same name would refuse.
-      final boolean exists = server.existsDatabase(name) && (user == null || user.canAccessToDatabase(name));
+      // create of the same name would refuse. Open or not (issue #11068): one closed for idleness, or not opened at startup,
+      // exists, and its first request opens it.
+      final boolean exists = server.isDatabaseAvailable(name) && (user == null || user.canAccessToDatabase(name));
 
       return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
@@ -293,7 +294,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // this used to be let CreateDatabase("MyDb") answer OK for an existing "mydb" and then DropDatabase("MyDb")
       // fail inside the drop (issue #7413). An empty OK told a provisioning tool nothing either way; now the
       // strict default refuses a taken name as HTTP does, and the idempotent form says which happened.
-      if (server.existsDatabase(name)) {
+      if (server.isDatabaseAvailable(name)) {
         if (req.getIfNotExists())
           return CreateDatabaseResponse.newBuilder().setCreated(false).build();
         throw new ServerControlPlane.AlreadyExistsException("Database '" + name + "' already exists");
@@ -326,7 +327,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final String name = req.getName();
 
       // See createDatabase: exact name, strict by default, explicit outcome either way (issue #7413).
-      if (!server.existsDatabase(name)) {
+      if (!server.isDatabaseAvailable(name)) {
         if (req.getIfExists())
           return DropDatabaseResponse.newBuilder().setDropped(false).build();
         throw new ServerControlPlane.NotFoundException("Database '" + name + "' does not exist");
@@ -352,7 +353,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (user != null && !user.canAccessToDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      if (!server.existsDatabase(name))
+      if (!server.isDatabaseAvailable(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it

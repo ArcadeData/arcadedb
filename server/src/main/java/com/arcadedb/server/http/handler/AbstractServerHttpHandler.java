@@ -2167,7 +2167,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final String db = rawDatabaseParameter(exchange);
     if (db == null)
       return "none";
-    return server != null && server.existsDatabase(db) ? db : UNKNOWN_DB_TAG;
+    // Open or not (issue #11068): still bounded by the databases on disk, and a request that reopens one closed for idleness
+    // is tagged with its name like every other request of it
+    return server != null && server.isDatabaseAvailable(db) ? db : UNKNOWN_DB_TAG;
   }
 
   /**

@@ -195,6 +195,18 @@ public class GremlinServerPlugin implements ServerPlugin {
   }
 
   /**
+   * A database left the registry - closed for idleness (issue #11068), by {@code close database}, dropped: the graph manager lets
+   * go of its graph and traversal sources, so the next script opens the database again instead of running on the closed instance.
+   */
+  @Override
+  public void onDatabaseUnregistered(final String databaseName) {
+    final GremlinServer server = gremlinServer;
+    if (server != null && server.getServerGremlinExecutor() != null
+        && server.getServerGremlinExecutor().getGraphManager() instanceof ArcadeGraphManager arcadeGraphManager)
+      arcadeGraphManager.onDatabaseUnregistered(databaseName);
+  }
+
+  /**
    * The channelizer the Gremlin Server is built with. The default WebSocket channelizer (or none) becomes
    * {@link ConcealingWebSocketChannelizer}, which rewrites every server-failure answer in production mode. Any other
    * channelizer - TinkerPop's {@code WsAndHttpChannelizer}, {@code HttpChannelizer}, {@code UnifiedChannelizer}, or a
