@@ -806,8 +806,9 @@ public class TransactionContext implements Transaction {
   /**
    * Takes the failed statement back: the transaction holds again what it held when {@link #beginStatement} was called.
    *
-   * @return true when it did, false when the statement cannot be taken back exactly (see {@link StatementSavepoint}), in which case
-   * nothing was changed and the transaction has to be refused its commit, as it was before statement savepoints existed
+   * @return true when it did, and also when the undo failed halfway: the transaction is then rollback-only, so the half state can
+   * never be committed (issue #11033); false when the statement cannot be taken back exactly (see {@link StatementSavepoint}), in
+   * which case nothing was changed and the transaction has to be refused its commit, as it was before statement savepoints existed
    */
   public boolean rollbackStatement(final StatementSavepoint savepoint) {
     if (savepoint == null || statement != savepoint)

@@ -49,12 +49,18 @@ import java.util.logging.Level;
  * modify is simply dropped. One object per transaction context, reused by every statement: nothing is allocated for a statement
  * that writes nothing.
  * <p>
- * <b>What it does not do.</b> The events a statement already fired cannot be taken back, and neither can the schema changes it made.
- * A statement it cannot take back EXACTLY is not taken back at all: {@link #rollback()} answers {@code false} and the caller falls
- * back to refusing the commit of the transaction. That covers a statement that changed more than
- * {@link com.arcadedb.GlobalConfiguration#TX_STATEMENT_SAVEPOINT_MAX_ENTRIES} entries, one that changed again a record an earlier
- * statement had updated and not written yet (its only copy is the object the statement mutated), and one that dropped a file. Never a
- * partial undo.
+ * <b>What it does not do.</b> The events a statement already fired cannot be taken back, and neither can the schema changes it made,
+ * nor the work it registered beside the transaction ({@link TransactionContext#addAfterCompletionCallbackIfAbsent}, owed whichever
+ * way the transaction ends). A statement it cannot take back EXACTLY is not taken back at all: {@link #rollback()} answers
+ * {@code false} and the caller falls back to refusing the commit of the transaction. Among the reasons are a statement that changed
+ * more than {@link com.arcadedb.GlobalConfiguration#TX_STATEMENT_SAVEPOINT_MAX_ENTRIES} entries, one that changed again a record an
+ * earlier statement had updated and not written yet (its only copy is the object the statement mutated), and one that dropped a file;
+ * every reason is recorded where it is detected, and {@link #getUnrestorableReason()} is the one that applies.
+ * <p>
+ * <b>What a partial undo becomes.</b> The undo is not atomic: it puts back pages, maps and index lanes one after the other, and one
+ * that fails halfway leaves the transaction neither as the statement found it nor as it left it. {@link #rollback()} then marks the
+ * transaction rollback-only and still answers {@code true}, since the statement is out of the transaction's way: the half state can
+ * never be committed, and the only thing left to do with the transaction is to roll it back (issue #11033).
  * <p>
  * Not thread-safe: a transaction belongs to one thread.
  *
@@ -435,7 +441,8 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   /**
    * Puts the transaction back as it was when the statement began.
    *
-   * @return true when the statement was taken back, false when it cannot be, in which case nothing was changed
+   * @return true when the statement was taken back, or when the undo failed halfway and the transaction was marked rollback-only
+   * instead (it can then only be rolled back); false when it cannot be taken back, in which case nothing was changed
    */
   boolean rollback() {
     if (!active || rolledBack || unrestorable != null)
