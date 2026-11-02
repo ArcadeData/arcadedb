@@ -172,8 +172,12 @@ public class JsonSerializer {
           final Type propertyType = declaredType(type, entry.getKey());
           // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
           // non-finite needs a hint, or the client reads the marker string back as a String
-          if (projectionTypes != null && propertyType == null && entry.getValue() != null && carriesNonFinite(entry.getValue()))
-            appendTypeHint(projectionTypes, entry.getKey(), Type.getTypeByClass(entry.getValue().getClass()), entry.getValue());
+          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+            // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
+            final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
+            if (hintType != null)
+              appendTypeHint(projectionTypes, entry.getKey(), hintType, entry.getValue());
+          }
           projValue = formatTemporalForPrecision(projValue, propertyType, schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }

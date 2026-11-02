@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -58,6 +59,7 @@ class Issue11016RemoteCypherNonFiniteIT extends BaseGraphServerTest {
         .set("list", List.of(Float.NaN, 2.5D, 3))
         .set("map", Map.of("a", Double.NEGATIVE_INFINITY, "b", 1.5F))
         .set("text", "NaN")
+        .set("aSet", new LinkedHashSet<>(List.of(Double.NaN, 1.5D)))
         .save());
     remote = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -79,6 +81,7 @@ class Issue11016RemoteCypherNonFiniteIT extends BaseGraphServerTest {
       assertThat(doc.getList("list")).containsExactly((double) Float.NaN, 2.5D, 3.0D);
       assertThat(doc.getMap("map").get("a")).isInstanceOf(Double.class).isEqualTo(Double.NEGATIVE_INFINITY);
       assertThat(doc.get("text")).isEqualTo("NaN");
+      assertThat(doc.get("aSet")).isNotNull();
     }
   }
 
