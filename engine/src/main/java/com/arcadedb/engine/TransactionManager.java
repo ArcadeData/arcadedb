@@ -173,6 +173,19 @@ public class TransactionManager {
    */
   private volatile Thread                    ownWALReplayThread;
   /**
+   * The versions of every page the WAL files being replayed carry an entry for, keyed by file id and page number (see
+   * {@link #pageKey}). Only set while {@link #recoverWALFiles} runs, and read by {@link #applyChangesPages} on the replay
+   * thread to tell whether an entry older than the page on disk can be re-applied safely (#11151).
+   */
+  private volatile Map<Long, IntHashSet>    recoveryPageVersions;
+  /**
+   * The pages (see {@link #pageKey}) the running replay has already applied an entry to. Touched by the replay thread only.
+   * Once a page is in it, its version on disk is the replay's own work, and an entry older than that is not a torn-page
+   * repair candidate but a leftover of another timeline (the transaction ids of the WAL this instance wrote while opening
+   * restart at 1, so they interleave with the crashed run's), which must stay skipped.
+   */
+  private final Set<Long>                   recoveryAppliedPages = new HashSet<>();
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -974,6 +987,9 @@ public class TransactionManager {
         long lastTxId = -1;
         boolean walGapDetected = false;
 
+        recoveryPageVersions = collectWALPageVersions(recoveryFiles);
+        recoveryAppliedPages.clear();
+
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
         for (int i = 0; i < recoveryFiles.length; ++i) {
           final WALFile file = recoveryFiles[i];
@@ -1145,6 +1161,8 @@ public class TransactionManager {
         recoveryInputUnreplayed = true;
       throw e;
     } finally {
+      recoveryPageVersions = null;
+      recoveryAppliedPages.clear();
       // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
       // not deleted, so the next open replays it again.
       if (recoveryFiles != null && !inputReleased)
@@ -1165,6 +1183,56 @@ public class TransactionManager {
       else
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
+  }
+
+  private static long pageKey(final int fileId, final int pageNumber) {
+    return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
+  }
+
+  /**
+   * Reads every WAL file once, ahead of the replay, and records which versions of which pages they hold (#11151).
+   * A transaction that cannot be read ends that file's scan: the replay loop owns the handling of corrupt records.
+   */
+  private static Map<Long, IntHashSet> collectWALPageVersions(final WALFile[] files) {
+    final Map<Long, IntHashSet> versions = new HashMap<>();
+    for (final WALFile file : files) {
+      if (file == null)
+        continue;
+      WALFile.WALTransaction tx = file.getFirstTransaction();
+      while (tx != null) {
+        for (final WALFile.WALPage page : tx.pages)
+          versions.computeIfAbsent(pageKey(page.fileId, page.pageNumber), k -> new IntHashSet())
+              .add((int) page.currentPageVersion);
+        tx = file.getTransaction(tx.endPositionInLog);
+      }
+    }
+    return versions;
+  }
+
+  /**
+   * Whether a WAL entry of a page, older than the page found on disk during crash recovery, has to be re-applied as a repair
+   * (#11151). A page flush spans many disk sectors and the version header sits in the first, so a power loss can persist the
+   * version of the LAST flush while the sectors behind it keep older content. Async flush coalesces several committed versions
+   * into one write, so the bytes an intermediate version changed can be among the stale ones, and skipping every entry older
+   * than the disk version (what the replay did) left them stale for good. For the schema dictionary that is a name that no
+   * longer resolves, or resolves to another one.
+   * <br>
+   * It is safe only when the WAL holds EVERY version after this entry up to the one on disk: the replay then ends on the last
+   * writer of each byte, exactly as the commits did. An entry followed by a gap would overwrite bytes that a later version,
+   * whose WAL file was dropped after a successful fsync (so it is durable), had changed.
+   */
+  private boolean isRepairableOlderEntry(final int fileId, final int pageNumber, final long entryVersion,
+      final long diskVersion) {
+    final Map<Long, IntHashSet> versions = recoveryPageVersions;
+    if (versions == null || recoveryAppliedPages.contains(pageKey(fileId, pageNumber)))
+      return false;
+    final IntHashSet pageVersions = versions.get(pageKey(fileId, pageNumber));
+    if (pageVersions == null)
+      return false;
+    for (long v = entryVersion + 1; v <= diskVersion; ++v)
+      if (!pageVersions.contains((int) v))
+        return false;
+    return true;
   }
 
   /**
@@ -1592,19 +1660,36 @@ public class TransactionManager {
           // WAL delta carries absolute bytes for exactly this version) and repairs the torn state; skipping
           // a STRICTLY older entry remains required, because its delta would overwrite newer content.
           //
-          // KNOWN LIMITATION (multi-version accumulation): async flush coalesces several committed versions
-          // into a single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the
-          // v4 flush hitting the platter. If THAT flush tears, only v4's delta region is repaired here; the
-          // regions changed by v2/v3 (skipped as strictly-older) can stay torn. The version header alone
-          // cannot tell a torn page from an intact one, so detecting which pages need the older deltas
-          // re-applied needs a per-page checksum (the longer-term fix noted in #4926, tracked in #5054); an
-          // unconditional
-          // in-order replay of every entry <= disk version would repair it but changes the recovery
-          // semantics that also govern the version-gap/forceApply paths, out of scope here. This fix still
-          // strictly improves on `<=` (which repaired nothing) and fully covers the single-flush case.
+          // MULTI-VERSION ACCUMULATION (#11151): async flush coalesces several committed versions into a single physical page
+          // write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the v4 flush hitting the platter. If THAT flush
+          // tears, the regions changed by v2/v3 can stay stale while the header already says v4 (the schema dictionary then
+          // loses names that records already reference). During crash recovery the older entries are therefore re-applied as a
+          // repair below, when the WAL holds every version up to the one on disk (see isRepairableOlderEntry). Where it does
+          // not (a gap in the chain, a page the replay already touched, a replicated apply) the entry is still skipped, and
+          // a torn page stays torn: detecting that without a WAL needs a per-page checksum (#5054).
           LogManager.instance().log(this, Level.FINE,
               "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
+
+          if (recovery && isRepairableOlderEntry(txPage.fileId, txPage.pageNumber, txPage.currentPageVersion, page.getVersion())) {
+            // #11151: THE PAGE MAY BE TORN, SO RE-APPLY THE BYTES THIS VERSION CHANGED. NEITHER THE VERSION NOR THE CONTENT SIZE
+            // MOVES: THEY BELONG TO THE LAST ENTRY OF THE CHAIN, WHICH THIS REPLAY REACHES RIGHT AFTER AND APPLIES AT EQUAL VERSION
+            final MutablePage repaired = page.modify();
+            for (int k = firstSegment; k < lastSegment; ++k) {
+              final WALFile.WALPage segment = tx.pages[k];
+              segment.currentContent.rewind();
+              repaired.writeByteArray(segment.changesFrom - BasePage.PAGE_HEADER_SIZE, segment.currentContent.getContent());
+            }
+            repaired.setContentSize(page.getContentSize());
+            repaired.updateMetadata();
+
+            database.getPageManager().writePageWithLock(file, repaired);
+            database.getPageManager().putPageInReadCache(new CachedPage(repaired, true));
+
+            if (file.getFileId() == dictionaryId)
+              involveDictionary = true;
+            changed = true;
+          }
           continue;
         }
 
@@ -1706,6 +1791,9 @@ public class TransactionManager {
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
+
+        if (recovery)
+          recoveryAppliedPages.add(pageKey(txPage.fileId, txPage.pageNumber));
 
         changed = true;
         if (txPage.currentPageVersion > page.getVersion())
