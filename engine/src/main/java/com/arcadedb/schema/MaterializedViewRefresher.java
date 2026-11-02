@@ -51,6 +51,8 @@ public class MaterializedViewRefresher {
 
     try {
       do {
+        // #11019: a pass that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
+        final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(view.getStatus());
         view.setStatus(MaterializedViewStatus.BUILDING);
         final long startNs = System.nanoTime();
 
@@ -59,6 +61,8 @@ public class MaterializedViewRefresher {
         view.recordRefreshSuccess((System.nanoTime() - startNs) / 1_000_000);
         view.updateLastRefreshTime();
         view.setStatus(MaterializedViewStatus.VALID);
+        if (persistedStatusIsStale)
+          persistStatus(database, view.getName(), view.getStatus());
       } while (view.finishRefreshPassAndCheckPending());
 
     } catch (final Throwable e) {
@@ -70,6 +74,7 @@ public class MaterializedViewRefresher {
       // reported as failed and the Error still propagates to the caller; what changes is that the next one can run.
       view.recordRefreshError();
       view.setStatus(MaterializedViewStatus.ERROR);
+      persistStatus(database, view.getName(), view.getStatus());
       // Ownership is released here rather than in a finally: the success path already released it,
       // atomically with the check for a pending request. This release is a CAS too, so a request
       // registered during the failing pass is discarded deliberately rather than clobbered - the
@@ -85,6 +90,21 @@ public class MaterializedViewRefresher {
             "A refresh requested during the failed refresh of materialized view '%s' was not run; the view is left non-VALID and stale",
             null, view.getName());
       throw e;
+    }
+  }
+
+  /**
+   * Writes the schema so the status just set survives a close and reopen (issue #11019). Only the transitions into and out of a
+   * non-VALID status call it: both are rare, a healthy view never takes either, so no schema write lands on the per-tick path.
+   * Best effort: the refresh outcome the caller is about to report matters more than the persistence of its label, and a failed
+   * save is logged, not thrown over the original failure.
+   */
+  static void persistStatus(final Database database, final String name, final String status) {
+    try {
+      ((LocalSchema) database.getSchema()).saveConfiguration();
+    } catch (final Exception e) {
+      LogManager.instance().log(MaterializedViewRefresher.class, Level.SEVERE,
+          "Could not persist the status %s of '%s': a reopen will report the status of the last schema save instead", e, status, name);
     }
   }
 

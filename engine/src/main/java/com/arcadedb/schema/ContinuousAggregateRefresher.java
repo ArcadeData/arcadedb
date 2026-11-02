@@ -123,6 +123,8 @@ public class ContinuousAggregateRefresher {
 
   /** One refresh, run by the caller that holds the aggregate (see {@link ContinuousAggregateImpl#tryBeginRefresh}). */
   private static void refreshOnce(final Database database, final ContinuousAggregateImpl ca) {
+    // #11019: a refresh that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
+    final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(ca.getStatus());
     ca.setStatus(MaterializedViewStatus.BUILDING);
     final long startNs = System.nanoTime();
     try {
@@ -250,7 +252,7 @@ public class ContinuousAggregateRefresher {
       // so the next refresh re-processes the same window (delete-first design makes it safe).
       // A clean rebuild must persist even if it found no rows to advance the watermark with, so the repair is not
       // repeated on every restart.
-      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null || adoptedWatermark) {
+      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null || adoptedWatermark || persistedStatusIsStale) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();
@@ -275,6 +277,7 @@ public class ContinuousAggregateRefresher {
     } catch (final Exception e) {
       ca.recordRefreshError();
       ca.setStatus(MaterializedViewStatus.ERROR);
+      MaterializedViewRefresher.persistStatus(database, ca.getName(), ca.getStatus());
       LogManager.instance().log(ContinuousAggregateRefresher.class, Level.SEVERE,
           "Error refreshing continuous aggregate '%s': %s", e, ca.getName(), e.getMessage());
       throw e;

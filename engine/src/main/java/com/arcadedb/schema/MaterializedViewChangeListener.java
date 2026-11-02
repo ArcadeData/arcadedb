@@ -69,6 +69,7 @@ public class MaterializedViewChangeListener
         MaterializedViewRefresher.fullRefresh(database, view);
       } catch (final Exception e) {
         view.setStatus(MaterializedViewStatus.STALE);
+        MaterializedViewRefresher.persistStatus(database, view.getName(), view.getStatus());
         LogManager.instance().log(this, Level.WARNING,
             "Error in incremental refresh for view '%s', marking as STALE: %s",
             e, view.getName(), e.getMessage());
