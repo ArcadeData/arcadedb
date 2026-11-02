@@ -211,6 +211,8 @@ final class FullTextFunctionSearch {
   private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter) {
     if (indexes.size() == 1)
       return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter);
+    // a record belongs to one type, so no two indexes match the same RID and putAll never overwrites; each index brings up to `limit`
+    // matches, so the plan's own limit trims the union (the best `limit` of it contain the global best)
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex index : indexes)
       merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter));

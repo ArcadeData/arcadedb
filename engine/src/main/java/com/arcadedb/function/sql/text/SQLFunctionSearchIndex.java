@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
 
 import java.util.List;
 
@@ -105,11 +106,13 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (indexName == null)
       return false;
 
-    // a logical index over several types (issue #11014) is searched through its members
-    if (MultiTypeIndexes.find(context.getDatabase().getSchema(), indexName) != null)
-      return true;
+    final Schema schema = context.getDatabase().getSchema();
+    // a logical index over several types (issue #11014) is searched through its members; a name that is an index is not a logical
+    // one, so the walk of the types is paid only by a name that is not
+    if (!schema.existsIndex(indexName))
+      return MultiTypeIndexes.find(schema, indexName) != null;
 
-    final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
+    final Index index = schema.getIndexByName(indexName);
     return index instanceof TypeIndex;
   }
 
