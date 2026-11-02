@@ -164,14 +164,25 @@ public class JsonSerializer {
       type = document.getType();
 
       if (result.getMetadata("_projectionName") != null) {
+        final StringBuilder projectionTypes = includeTypeHints ? new StringBuilder() : null;
         for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
           // Issue #4149: keep precision-aware formatting on the projection branch too.
           Object projValue = serializeObject(database, entry.getValue());
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
           final Type propertyType = declaredType(type, entry.getKey());
+          // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
+          // non-finite needs a hint, or the client reads the marker string back as a String
+          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+            // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
+            final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
+            if (hintType != null)
+              appendTypeHint(projectionTypes, entry.getKey(), hintType, entry.getValue());
+          }
           projValue = formatTemporalForPrecision(projValue, propertyType, schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }
+        if (projectionTypes != null && !projectionTypes.isEmpty())
+          object.put(Property.PROPERTY_TYPES_PROPERTY, projectionTypes.toString());
         return object;
       }
     }
@@ -217,32 +228,8 @@ public class JsonSerializer {
         final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
             hintElementRow);
-        if (hint) {
-          if (!propertyTypes.isEmpty())
-            propertyTypes.append(",");
-          propertyTypes.append(propertyName).append(":").append(propertyType.getId());
-
-          // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
-          // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
-          // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
-          // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
-          // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
-          // as the configured temporal implementation.
-          final Collection<?> elements;
-          if (propertyType == Type.LIST && value instanceof Collection<?> collection)
-            elements = collection;
-          else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
-            elements = map.values();
-          else
-            elements = null;
-          if (elements != null) {
-            Type elementType = detectHomogeneousTemporalElementType(elements);
-            if (elementType == null)
-              elementType = detectNonFiniteFloatingElementType(elements);
-            if (elementType != null)
-              propertyTypes.append('(').append(elementType.getId()).append(')');
-          }
-        }
+        if (hint)
+          appendTypeHint(propertyTypes, propertyName, propertyType, value);
       }
 
       value = serializeObject(database, value);
@@ -266,6 +253,34 @@ public class JsonSerializer {
       object.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes.toString());
 
     return object;
+  }
+
+  private static void appendTypeHint(final StringBuilder propertyTypes, final String propertyName, final Type propertyType,
+      final Object value) {
+    if (!propertyTypes.isEmpty())
+      propertyTypes.append(",");
+    propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+
+    // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
+    // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
+    // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
+    // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
+    // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
+    // as the configured temporal implementation.
+    final Collection<?> elements;
+    if (propertyType == Type.LIST && value instanceof Collection<?> collection)
+      elements = collection;
+    else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
+      elements = map.values();
+    else
+      elements = null;
+    if (elements != null) {
+      Type elementType = detectHomogeneousTemporalElementType(elements);
+      if (elementType == null)
+        elementType = detectNonFiniteFloatingElementType(elements);
+      if (elementType != null)
+        propertyTypes.append('(').append(elementType.getId()).append(')');
+    }
   }
 
   /**
