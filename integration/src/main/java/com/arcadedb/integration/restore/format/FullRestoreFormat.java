@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreException;
 import com.arcadedb.integration.restore.RestoreSettings;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
@@ -45,6 +46,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.security.spec.KeySpec;
 import java.util.Arrays;
+import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -141,6 +143,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
           "The database directory '%s' already exist and '-o' setting is false".formatted(settings.databaseDirectory));
 
     final File parentDirectory = databaseDirectory.getParentFile();
+    if (parentDirectory == null)
+      // A FILESYSTEM ROOT HAS NO SIBLING TO STAGE IN, AND IS NOT A DATABASE DIRECTORY ANYWAY
+      throw new RestoreException("Error on restoring database: '%s' is not a valid database directory".formatted(settings.databaseDirectory));
     final File stagingDirectory = new File(parentDirectory, "." + databaseDirectory.getName() + ".restore-" + System.nanoTime());
     try {
       Files.createDirectories(parentDirectory.toPath());
@@ -193,6 +198,11 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         throw e;
       }
       FileUtils.deleteRecursively(replaced);
+      if (replaced.exists())
+        // THE RESTORE SUCCEEDED: WHAT IS LEFT IS ONLY DISK, HIDDEN FROM A SERVER SCAN, BUT NOTHING ELSE WILL EVER REMOVE IT
+        LogManager.instance().log(this, Level.WARNING,
+            "Restore of '%s' completed, but the replaced database could not be removed from '%s': delete it by hand",
+            settings.databaseDirectory, replaced);
       return;
     }
 
