@@ -1643,8 +1643,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
       if (kind == CypherDDLStatement.IndexKind.VECTOR)
         requireSameVectorShape(schema, indexNames);
-      MultiTypeIndexes.register(schema,
-          new MultiTypeIndexes.Entry(indexName, kind == CypherDDLStatement.IndexKind.VECTOR ? MultiTypeIndexes.Kind.VECTOR : MultiTypeIndexes.Kind.FULLTEXT, ddl.isForRelationship(), labels, ddl.getPropertyNames(), indexNames, owned));
+      final MultiTypeIndexes.Kind logicalKind =
+          kind == CypherDDLStatement.IndexKind.VECTOR ? MultiTypeIndexes.Kind.VECTOR : MultiTypeIndexes.Kind.FULLTEXT;
+      MultiTypeIndexes.register(schema, new MultiTypeIndexes.Entry(indexName, logicalKind, ddl.isForRelationship(), labels,
+          ddl.getPropertyNames(), indexNames, owned));
     } catch (final RuntimeException e) {
       for (final String name : owned)
         try {
