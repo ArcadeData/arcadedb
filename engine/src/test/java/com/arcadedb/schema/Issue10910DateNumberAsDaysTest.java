@@ -65,22 +65,25 @@ class Issue10910DateNumberAsDaysTest extends TestHelper {
   }
 
   @Test
-  void javaUtilDateRefusesADayCountThatOverflowsMillis() {
+  void javaUtilDateReadsANumberPastTheLargestDayItCanHoldAsMillis() {
     serializer().setDateImplementation(Date.class);
     createType();
 
-    assertThatThrownBy(() -> written(200_000_000_000L)).isInstanceOf(IllegalArgumentException.class);
+    // no day count a java.util.Date can hold, so the milliseconds it is, as under every other implementation (issue #11025)
+    assertThat(((Date) written(200_000_000_000L)).getTime()).isEqualTo(200_000_000_000L);
   }
 
   @Test
-  void calendarAndListRefuseADayCountThatOverflowsMillis() {
+  void calendarAndListReadANumberPastTheLargestDayItCanHoldAsMillis() {
     serializer().setDateImplementation(Calendar.class);
     createType();
     database.transaction(() -> database.getSchema().getType("D").createProperty("ds", Type.LIST, "DATE"));
 
-    assertThatThrownBy(() -> written(200_000_000_000L)).isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> inTx(() -> database.newDocument("D").set("ds", List.of(200_000_000_000L)).get("ds"))).isInstanceOf(
-        IllegalArgumentException.class);
+    assertThat(((Calendar) written(200_000_000_000L)).getTimeInMillis()).isEqualTo(200_000_000_000L);
+    final Object list = inTx(() -> database.newDocument("D").set("ds", List.of(200_000_000_000L)).get("ds"));
+    assertThat(((Calendar) ((List<?>) list).get(0)).getTimeInMillis()).isEqualTo(200_000_000_000L);
+    // only milliseconds whose day no java.util.Date can hold are refused, under every implementation (issue #11025)
+    assertThatThrownBy(() -> written(Long.MIN_VALUE)).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

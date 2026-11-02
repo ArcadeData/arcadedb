@@ -137,6 +137,14 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return inEdges;
   }
 
+  /**
+   * Whether the head of an edge list was set on this instance since it was last loaded or queued for update: the graph engine's
+   * own edge-list write, the one kind of vertex update that changes no property (issue #11024).
+   */
+  public boolean areEdgeListHeadsAssigned() {
+    return outEdgesAssigned || inEdgesAssigned;
+  }
+
   @Override
   public void setOutEdgesHeadChunk(final RID outEdges) {
     dirty = true;
