@@ -108,7 +108,7 @@ public final class VectorSearch {
     // is deliberately not consulted: it is almost always larger than the window, which would pin the flag to true
     // and strip it of meaning, and reading it costs a full scan of the index locations on the dense path.
     return new JSONObject()
-        .put("indexName", leg.index().typeIndex().getName())
+        .put("indexName", leg.index().name())
         .put("sparse", leg.sparse())
         .put("scoring", leg.index().scoring())
         .put("candidateLimit", leg.candidateLimit())

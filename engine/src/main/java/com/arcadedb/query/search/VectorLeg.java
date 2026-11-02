@@ -28,6 +28,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -63,7 +64,16 @@ public final class VectorLeg {
   public static final int MAX_FILTER_CANDIDATES = 8_000;
   public static final int MAX_FILTER_EXPRESSION = 4_096;
 
-  public record ResolvedVectorIndex(TypeIndex typeIndex, int dimensions, String scoring) {
+  /**
+   * @param typeIndex  the index, or the first of the per-type indexes a logical index spans
+   * @param name       the name the search addresses and reports: the index's own, or the logical name of a vector index over several
+   *                   labels (issue #11137), which {@code vector.neighbors} resolves itself
+   * @param members    every per-type index the name designates, one for a plain index
+   */
+  public record ResolvedVectorIndex(TypeIndex typeIndex, int dimensions, String scoring, String name, List<TypeIndex> members) {
+    public ResolvedVectorIndex(final TypeIndex typeIndex, final int dimensions, final String scoring) {
+      this(typeIndex, dimensions, scoring, typeIndex.getName(), List.of(typeIndex));
+    }
   }
 
   public record VectorLegQuery(ResolvedVectorIndex index, boolean sparse, int candidateLimit, String sql,
@@ -123,7 +133,7 @@ public final class VectorLeg {
     final float[] queryVector = readFloatArray(args.getJSONArray("queryVector", null), "queryVector");
 
     final Map<String, Object> parameters = new LinkedHashMap<>();
-    parameters.put("indexName", resolved.typeIndex().getName());
+    parameters.put("indexName", resolved.name());
     parameters.put("legLimit", limit);
 
     final Map<String, Object> options = new LinkedHashMap<>();
@@ -188,6 +198,16 @@ public final class VectorLeg {
 
   private static ResolvedVectorIndex resolveIndex(final Database database, final String indexName,
       final boolean sparse) {
+    final Schema schema = database.getSchema();
+    // The name of a vector index over several labels (issue #11137) designates the per-type indexes it spans. An index name is unique
+    // across the database, so a name that is an index is not a logical one, and the walk of the types is paid only by a name that
+    // is not. Logical indexes are dense: Cypher DDL builds no sparse one
+    if (!sparse && !schema.existsIndex(indexName)) {
+      final MultiTypeIndexes.Entry entry = MultiTypeIndexes.find(schema, indexName);
+      if (entry != null && entry.kind() == MultiTypeIndexes.Kind.VECTOR)
+        return resolveLogical(schema, entry);
+    }
+
     final Index rawIndex;
     try {
       rawIndex = database.getSchema().getIndexByName(indexName);
@@ -216,6 +236,19 @@ public final class VectorLeg {
     if (resolved == null)
       throw new IllegalArgumentException("Vector index '" + indexName + "' has no searchable bucket indexes");
     return resolved;
+  }
+
+  private static ResolvedVectorIndex resolveLogical(final Schema schema, final MultiTypeIndexes.Entry entry) {
+    final List<TypeIndex> members = MultiTypeIndexes.resolve(schema, entry.name());
+    ResolvedVectorIndex first = null;
+    for (final TypeIndex member : members) {
+      final ResolvedVectorIndex described = describe(member);
+      if (described != null && first == null)
+        first = described;
+    }
+    if (first == null)
+      throw new IllegalArgumentException("Vector index '" + entry.name() + "' has no searchable bucket indexes");
+    return new ResolvedVectorIndex(first.typeIndex(), first.dimensions(), first.scoring(), entry.name(), members);
   }
 
   /**
