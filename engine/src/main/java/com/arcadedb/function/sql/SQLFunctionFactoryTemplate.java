@@ -62,7 +62,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
   }
 
   public void unregister(final String name) {
-    functions.remove(name);
+    functions.remove(name.toLowerCase(Locale.ENGLISH));
     // Note: Not unregistering from FunctionRegistry to maintain cross-engine availability
   }
 
@@ -121,7 +121,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 
   @Override
   public boolean hasFunction(final String name) {
-    return functions.containsKey(name);
+    return functions.containsKey(name.toLowerCase(Locale.ENGLISH));
   }
 
   /**
