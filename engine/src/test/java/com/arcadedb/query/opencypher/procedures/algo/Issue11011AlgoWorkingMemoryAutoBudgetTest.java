@@ -20,13 +20,13 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.utility.HeapUsage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #11011: the default working-memory budget of an algorithm call was a fixed eighth of the maximum heap, so on a
@@ -50,16 +50,45 @@ class Issue11011AlgoWorkingMemoryAutoBudgetTest extends TestHelper {
     assertThat(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getDefValue()).isEqualTo(0L);
   }
 
+  /**
+   * The oracle of the fix, driven with a fixed heap reading (issue #11030): it used to read the live heap behind an
+   * {@code assumeTrue}, which aborted - and so passed - on a small or crowded test JVM, with the fix reverted or not.
+   */
   @Test
   void theDefaultAdmitsAWorkingSetPastTheFixedBudgetWhenTheHeapHasRoom() {
     final long floor = AbstractAlgoProcedure.fixedBudgetFloor();
-    // The reading the budget sizes itself from
-    final long free = HeapUsage.conservativeAvailableHeapBytes();
-    assumeTrue(free > 4 * floor, "the test JVM's heap has less room than the reservation needs");
+    final long free = 8 * floor;
 
-    // Reserving allocates nothing: the budget only decides
-    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database);
+    // Reserving allocates nothing: the budget only decides. Half of the free heap is 4 floors, within reach without
+    // taking a page of the cache back, so the page cache this JVM holds does not enter the verdict either
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database, () -> free);
     budget.reserve(floor + 1024 * 1024, "the adjacency list", "test");
+    budget.reserve(2 * floor, "the degree buffer", "test");
+
+    // Past half of the free heap and the cache it is refused, and the message says what the limit was sized from
+    assertThatThrownBy(() -> budget.reserve(free + PageManager.INSTANCE.getReadCacheRAM(), "the visited vertices", "test"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("(half of the " + free + " bytes of heap free after the last collection");
+  }
+
+  @Test
+  void anUnknownHeapReadingKeepsTheFixedBudget() {
+    final long floor = AbstractAlgoProcedure.fixedBudgetFloor();
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database, () -> -1L);
+    budget.reserve(floor, "the adjacency list", "test");
+    assertThatThrownBy(() -> budget.reserve(1, "the degree buffer", "test"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("more than the " + floor + " bytes allowed.");
+  }
+
+  @Test
+  void aConfiguredValueIgnoresTheHeapReading() {
+    final long floor = AbstractAlgoProcedure.fixedBudgetFloor();
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, floor);
+    final AbstractAlgoProcedure.MemoryBudget budget = new AlgoWCC().newMemoryBudget(database, () -> 100 * floor);
+    assertThatThrownBy(() -> budget.reserve(floor + 1, "the adjacency list", "test"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("more than the " + floor + " bytes allowed.");
   }
 
   @Test

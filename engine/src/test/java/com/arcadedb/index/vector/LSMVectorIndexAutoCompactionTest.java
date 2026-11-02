@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
@@ -340,6 +342,23 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
   }
 
   /**
+   * Issue #11021: the index asks the raw instance the schema was loaded with ({@code getDatabase()}), which never sees the HA
+   * wrapper installed after it and answers "not replicated" forever. The gate resolves the wrapper the node is served through.
+   */
+  @Test
+  void theGateIsAskedOfTheRawInstanceAndStillSeesTheFollower() {
+    final LocalDatabase raw = (LocalDatabase) database;
+    try {
+      raw.setWrappedDatabaseInstance(nodeView(raw, false));
+      assertThat(LSMVectorIndex.isCompactionAllowedOnThisNode(raw)).as("a follower, seen through the wrapper").isFalse();
+      raw.setWrappedDatabaseInstance(nodeView(raw, true));
+      assertThat(LSMVectorIndex.isCompactionAllowedOnThisNode(raw)).as("the leader, seen through the wrapper").isTrue();
+    } finally {
+      raw.setWrappedDatabaseInstance(raw);
+    }
+  }
+
+  /**
    * The ratio compares the file against the pages its live vectors need, so both sides have to cover the same files.
    * They would not if a compacted companion were ever loaded: its vectors join the same resident location map (so the
    * live-set estimate counts them) while {@code getTotalPages()} reports the mutable alone, and the file would be
@@ -394,6 +413,13 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
             }
             case "isLeader" -> {
               return leader;
+            }
+            // Mirrors RaftReplicatedDatabase: the wrapper is its own wrapped instance
+            case "getWrappedDatabaseInstance" -> {
+              return proxy;
+            }
+            case "isFollower" -> {
+              return InvocationHandler.invokeDefault(proxy, method);
             }
             }
           try {
