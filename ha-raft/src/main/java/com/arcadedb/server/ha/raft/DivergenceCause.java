@@ -76,7 +76,15 @@ public enum DivergenceCause {
    * replaces it.
    */
   LOCAL_RECOVERY_INCOMPLETE("a crash recovery of this node's own copy that did not replay every transaction, so the "
-      + "copy may be missing committed data");
+      + "copy may be missing committed data"),
+
+  /**
+   * A UNIQUE index of this node's copy was left out when the database opened, for a file with no header page that a power
+   * loss emptied or a half-arrived compaction left (issue #11258). The index enforces nothing here, and nothing local can
+   * tell the two cases apart, so the node must not serve the database until a copy from the cluster replaces it.
+   */
+  UNAVAILABLE_UNIQUE_INDEX("a unique index of this node's own copy that could not be loaded for a missing header page, so "
+      + "its constraint is not enforced here");
 
   private final String description;
 

@@ -1687,6 +1687,34 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * The file names of the UNIQUE bucket indexes the last load could not serve for a missing header page (issue #11258) and
+   * that no index on the same properties has replaced since. A unique index in that state enforces nothing: the node that
+   * loaded it accepts duplicates a healthy peer would refuse, and no local step can tell a half-arrived compaction file
+   * from one a power loss emptied. An HA node reads this to re-install the database from its cluster.
+   */
+  public List<String> getUnavailableUniqueIndexNames() {
+    final Map<String, Map<String, JSONObject>> unavailable = unavailableIndexDefinitions;
+    if (unavailable.isEmpty())
+      return List.of();
+
+    final List<String> names = new ArrayList<>();
+    for (final Map.Entry<String, Map<String, JSONObject>> typeEntry : unavailable.entrySet()) {
+      final LocalDocumentType type = existsType(typeEntry.getKey()) ? getType(typeEntry.getKey()) : null;
+      for (final Map.Entry<String, JSONObject> entry : typeEntry.getValue().entrySet()) {
+        final JSONObject definition = entry.getValue();
+        if (!definition.getBoolean("unique", false))
+          continue;
+        final List<String> properties = definition.getJSONArray("properties", new JSONArray()).toListOfStrings();
+        // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again
+        if (type != null && !properties.isEmpty() && !type.getIndexesByProperties(properties).isEmpty())
+          continue;
+        names.add(entry.getKey());
+      }
+    }
+    return names;
+  }
+
+  /**
    * The compaction base names ({@link LSMTreeIndexAbstract#compactionBaseName}) of the mutable LSM index files the file
    * manager holds and this load did not turn into a component: the ones refused for a missing header (issue #10046).
    */

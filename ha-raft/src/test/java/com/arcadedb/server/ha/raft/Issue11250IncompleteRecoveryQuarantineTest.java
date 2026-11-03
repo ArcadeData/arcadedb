@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,6 +77,24 @@ class Issue11250IncompleteRecoveryQuarantineTest {
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
     assertThat(sm.isResyncInProgress()).isFalse();
     assertThat(raft.calls("handOffLeadershipToResync")).isEmpty();
+  }
+
+  /** #11258: a unique index lost for a missing header page is quarantined like an incomplete recovery. */
+  @Test
+  void anUnavailableUniqueIndexQuarantinesTheDatabase() {
+    assertThat(sm.quarantineAfterUnavailableUniqueIndex(DB_NAME, List.of("idx"))).isTrue();
+
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isTrue();
+    assertThat(sm.quarantineCause(DB_NAME)).isEqualTo(DivergenceCause.UNAVAILABLE_UNIQUE_INDEX);
+    assertThat(raft.calls("handOffLeadershipToResync")).hasSize(1);
+  }
+
+  @Test
+  void aSoleVoterIsNotQuarantinedForAnUnavailableUniqueIndex() {
+    soleVoter.set(true);
+
+    assertThat(sm.quarantineAfterUnavailableUniqueIndex(DB_NAME, List.of("idx"))).isFalse();
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
   }
 
   @Test
