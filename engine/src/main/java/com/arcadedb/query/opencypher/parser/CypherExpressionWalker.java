@@ -199,6 +199,16 @@ public final class CypherExpressionWalker {
     default Visitor forLocalBindings(final String... variables) {
       return this;
     }
+
+    /**
+     * Called before the walk descends into the inline {@code WHERE} of a relationship pattern. Inside the inline
+     * predicate of a variable-length relationship ({@code [r:R* WHERE r.w > 0]}) the variable names the ONE relationship
+     * being tested, where everywhere else it names the list of them (issue #11211), so a check reading variable kinds
+     * re-binds it here. Returning {@code this} is right for a check that does not tell the two apart.
+     */
+    default Visitor forInlinePredicate(final RelationshipPattern relationship) {
+      return this;
+    }
   }
 
   private CypherExpressionWalker() {
@@ -577,7 +587,8 @@ public final class CypherExpressionWalker {
         if (relationship == null)
           continue;
         walkPatternProperties(relationship.getProperties(), visitor);
-        walk(relationship.getWhereExpression(), visitor);
+        if (relationship.getWhereExpression() != null)
+          walk(relationship.getWhereExpression(), visitor.forInlinePredicate(relationship));
         // A quantified path pattern is ONE hop here, whose types, variables and WHERE are placeholders: what it repeats
         // is a pattern of its own, and without descending into it nothing inside a group is checked (issue #10525)
         if (relationship instanceof QuantifiedPathPattern group) {

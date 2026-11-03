@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -83,7 +85,7 @@ public class ListIndexExpression implements PropertyReadExpression {
         return PropertyAccessExpression.readLinkedProperty(rid, key);
       // List with string index is a type error in Cypher
       if (isListLike)
-        throw new IllegalArgumentException("List index must be a number, got: String");
+        throw new TypeMismatchException("TypeError: List index must be a number, got: STRING");
       return null;
     }
 
@@ -94,17 +96,17 @@ public class ListIndexExpression implements PropertyReadExpression {
     else if (indexValue instanceof Double || indexValue instanceof Float) {
       // Float indices are a type error for lists in Cypher
       if (isListLike)
-        throw new IllegalArgumentException("TypeError: list index must be an integer, got Float");
+        throw new TypeMismatchException("TypeError: list index must be an integer, got FLOAT");
       index = ((Number) indexValue).intValue();
     } else if (indexValue instanceof Boolean) {
       if (isListLike)
-        throw new IllegalArgumentException("TypeError: list index must be an integer, got Boolean");
+        throw new TypeMismatchException("TypeError: list index must be an integer, got BOOLEAN");
       return null;
     } else if (indexValue instanceof Number)
       index = ((Number) indexValue).intValue();
     else {
       if (isListLike)
-        throw new IllegalArgumentException("TypeError: list index must be an integer, got " + indexValue.getClass().getSimpleName());
+        throw new TypeMismatchException("TypeError: list index must be an integer, got " + CypherFunctionHelper.cypherTypeName(indexValue));
       return null;
     }
 
@@ -120,8 +122,8 @@ public class ListIndexExpression implements PropertyReadExpression {
     }
 
     // In Cypher, numeric indexing is only valid for lists, not for strings or other types
-    throw new IllegalArgumentException(
-        "TypeError: InvalidArgumentType - Cannot index into type: " + listValue.getClass().getSimpleName());
+    throw new TypeMismatchException(
+        "TypeError: InvalidArgumentType - Cannot index into type: " + CypherFunctionHelper.cypherTypeName(listValue));
   }
 
   /** {@code n['v']} and {@code properties(n)['v']} read the property {@code v} of the record {@code n}. */

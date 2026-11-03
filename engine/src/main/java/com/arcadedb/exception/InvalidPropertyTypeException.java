@@ -36,10 +36,13 @@ package com.arcadedb.exception;
  * {@link ErrorCategory#VALIDATION} arm and the {@code IllegalArgumentException} the HTTP handler answers 400 for
  * both name this type explicitly so the classification it used to get by being an
  * {@link IllegalArgumentException} is preserved rather than silently downgraded to a server fault.
+ * <p>
+ * Since issue #11211 it is the storage case of {@link TypeMismatchException}, which the wire layers name in its place:
+ * every runtime type error is the caller's, not only the one a write raises.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class InvalidPropertyTypeException extends CommandExecutionException {
+public class InvalidPropertyTypeException extends TypeMismatchException {
   public InvalidPropertyTypeException(final String message) {
     super(message);
   }
