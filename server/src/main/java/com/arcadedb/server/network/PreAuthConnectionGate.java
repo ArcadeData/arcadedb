@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 
 import java.io.IOException;
@@ -92,6 +93,8 @@ public class PreAuthConnectionGate {
   private final int        maxConnections;
   private final long       preAuthTimeoutMs;
   private final Semaphore  permits;
+  private final Counter    refusedCounter;
+  private final Counter    expiredCounter;
   private final AtomicLong refused             = new AtomicLong();
   private final AtomicLong lastLogTime         = new AtomicLong();
   private final AtomicLong expired             = new AtomicLong();
@@ -152,13 +155,17 @@ public class PreAuthConnectionGate {
       if (gate.permits != null)
         gate.permits.release();
 
-      gate.expired.incrementAndGet();
-      Metrics.counter(gate.protocol.toLowerCase(Locale.ROOT) + ".connection.preauth.expired").increment();
-      gate.logExpiry(socket.getRemoteSocketAddress());
       try {
-        socket.close();
-      } catch (final IOException e) {
-        // already gone
+        gate.expired.incrementAndGet();
+        gate.expiredCounter.increment();
+        gate.logExpiry(socket.getRemoteSocketAddress());
+      } finally {
+        // the close is what the deadline is: nothing above may leave the socket open with its permit already returned
+        try {
+          socket.close();
+        } catch (final IOException e) {
+          // already gone
+        }
       }
     }
   }
@@ -185,7 +192,7 @@ public class PreAuthConnectionGate {
             ticket.expire();
           } catch (final RuntimeException e) {
             // never let one ticket end the periodic task, which would silently stop every deadline of the JVM
-            LogManager.instance().log(PreAuthConnectionGate.class, Level.FINE, "Error on closing an expired connection", e);
+            LogManager.instance().log(PreAuthConnectionGate.class, Level.WARNING, "Error on closing an expired connection", e);
           }
     }
 
@@ -216,6 +223,9 @@ public class PreAuthConnectionGate {
     this.maxConnections = maxConnections;
     this.preAuthTimeoutMs = Math.max(preAuthTimeoutMs, 0L);
     this.permits = maxConnections > 0 ? new Semaphore(maxConnections) : null;
+    final String metricPrefix = protocol.toLowerCase(Locale.ROOT);
+    this.refusedCounter = Metrics.counter(metricPrefix + ".connection.refused");
+    this.expiredCounter = Metrics.counter(metricPrefix + ".connection.preauth.expired");
   }
 
   /**
@@ -234,7 +244,7 @@ public class PreAuthConnectionGate {
   public Ticket accept(final Socket socket) {
     if (permits != null && !permits.tryAcquire()) {
       refused.incrementAndGet();
-      Metrics.counter(protocol.toLowerCase(Locale.ROOT) + ".connection.refused").increment();
+      refusedCounter.increment();
       return null;
     }
 
