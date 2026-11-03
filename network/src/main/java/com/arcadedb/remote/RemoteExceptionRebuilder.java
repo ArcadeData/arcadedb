@@ -67,6 +67,7 @@ import com.arcadedb.utility.LockException;
 
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -159,6 +160,14 @@ public final class RemoteExceptionRebuilder {
       Map.entry(ArcadeDBException.class.getName(), ArcadeDBException::new));
 
   private RemoteExceptionRebuilder() {
+  }
+
+  /**
+   * The class names this table rebuilds. It is the authority a census of the drivers' exception mapping has to enumerate
+   * from (issue #11199): a scan of a package sees only the classes that happen to live there.
+   */
+  public static Set<String> rebuildableNames() {
+    return FACTORIES.keySet();
   }
 
   /**

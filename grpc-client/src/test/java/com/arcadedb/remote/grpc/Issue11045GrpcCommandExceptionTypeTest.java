@@ -28,7 +28,14 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.utility.LockException;
+import com.arcadedb.schema.trigger.TriggerExecutionException;
+import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
+import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.remote.RemoteException;
+import com.arcadedb.remote.RemoteExceptionRebuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -41,6 +48,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
@@ -102,6 +110,32 @@ class Issue11045GrpcCommandExceptionTypeTest {
       final Class<?> expected = rebuiltAs.getOrDefault(type.getName(), type);
       if (result.getClass() != expected)
         wrong.add(type.getName() + " came back as " + result.getClass().getName());
+    }
+    assertThat(wrong).isEmpty();
+  }
+
+  /**
+   * The census enumerates from the authority, not from a package (issue #11199): every name {@link RemoteExceptionRebuilder}
+   * lists comes back as itself, wherever its class lives, and the table is asserted to still hold the names no package scan
+   * reaches, so deleting one of those entries is a red build.
+   */
+  @Test
+  void everyNameOfTheRebuilderTableComesBackAsItself() throws Exception {
+    final Set<String> names = RemoteExceptionRebuilder.rebuildableNames();
+    assertThat(names).as("the census must still reach the RemoteExceptionRebuilder table, including the exceptions that live "
+        + "outside com.arcadedb.exception").contains(LockException.class.getName(), IndexException.class.getName(),
+        QuorumNotReachedException.class.getName(), FeatureNotImplementedException.class.getName(),
+        TriggerExecutionException.class.getName(), FunctionExecutionException.class.getName(),
+        IllegalArgumentException.class.getName(), ArcadeDBException.class.getName());
+
+    final Map<String, Class<?>> rebuiltAs = Map.of(CommandParameterMissingException.class.getName(),
+        CommandSemanticException.class);
+    final List<String> wrong = new ArrayList<>();
+    for (final String name : names) {
+      final Class<?> expected = rebuiltAs.getOrDefault(name, Class.forName(name));
+      final Class<?> actual = GrpcClientErrorMapper.toException(withClass(Status.INTERNAL.withDescription("boom"), name)).getClass();
+      if (actual != expected)
+        wrong.add(name + " came back as " + actual.getName());
     }
     assertThat(wrong).isEmpty();
   }

@@ -70,6 +70,15 @@ General design principles:
     makes those more true
   - `@Timeout` is plain wall clock and cannot be discounted, so size it as a hang detector, not as a latency bound
 - don't add Claude as author of any source code
+- **Census tests enumerate from the authority they protect** (#11199). A test shipped as "the next offender is a red
+  build" must range over the thing that defines an offender, and must assert that it reached it:
+  - if the authority is a method, scan the compiled call sites of that method (see
+    `Issue10850NoNarrowingReadsInFunctionsTest`, `SchemaPresentationReadableWalkCensusTest`); if it is a table or
+    registry, read its key set (see `Issue11170MCPToolAnnotationsTest`, `RemoteExceptionRebuilder.rebuildableNames()`)
+  - a census rooted in a directory, a module list, a package or a source spelling can be left by writing the offender
+    somewhere else, and a reviewer reading it cannot tell
+  - every census carries at least one assertion of the form "the scan still reaches X", where X names the authority and
+    the failure message names it too
 - **Test server ports** - never address or bind a hand-picked port in a test. Parallel builds (other worktrees,
   other agents, an IDE's server) share the machine, and a collision reads as `403` / "Too many failed authentication
   attempts" or "Address already in use" in some other test, never as a port conflict:
