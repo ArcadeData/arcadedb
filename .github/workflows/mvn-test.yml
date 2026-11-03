@@ -353,18 +353,8 @@ jobs:
     # the PR under test until someone pulls the logs (issue #6323). This cap is a hang detector, so it is
     # sized above the slowest honest run rather than around the median.
     timeout-minutes: 90
-    # LSMVectorIndexTest is ~20 of this lane's ~44 minutes on its own, so it gets a shard of its own and
-    # the rest of the slow group runs beside it. Same selection as before, split in two.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: lsm-vector
-            tests: LSMVectorIndexTest
-          - shard: rest
-            # A -Dtest made only of exclusions drops surefire's default includes and picks up classes like
-            # OpenCypherTCKSuite, so spell the default patterns out next to the exclusion.
-            tests: '**/Test*.java,**/*Test.java,**/*Tests.java,**/*TestCase.java,!**/LSMVectorIndexTest.java'
+    # One job again: LSMVectorIndexTest had a shard of its own (#10887) while it took ~20 minutes, which was the
+    # coverage agent instrumenting JVector (#11175). It now takes about a minute and a half.
     permissions:
       contents: read
       checks: write
@@ -395,7 +385,7 @@ jobs:
       # -Dmaven.test.failure.ignore=true: see the unit-tests lane. Without it a failing test halts the module
       # at `test`, JaCoCo's report goal never runs at `prepare-package`, and this lane uploads no coverage.
       - name: Run Slow Unit Tests with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dgroups=slow -DexcludedGroups=vector -Dtest='${{ matrix.tests }}' -Dsurefire.failIfNoSpecifiedTests=false
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dgroups=slow -DexcludedGroups=vector
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -413,7 +403,7 @@ jobs:
         continue-on-error: true
         if: success() || failure()
         with:
-          name: Slow Unit Tests Report (${{ matrix.shard }})
+          name: Slow Unit Tests Report
           path: "**/surefire-reports/TEST*.xml"
           list-tests: "failed"
           list-suites: "failed"
@@ -432,7 +422,7 @@ jobs:
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: slow-unit-test-reports-${{ matrix.shard }}
+          name: slow-unit-test-reports
           path: |
             **/surefire-reports/TEST*.xml
           # A step that failed before Maven wrote any report has nothing to keep, and the red already
@@ -444,7 +434,7 @@ jobs:
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: slow-unit-coverage-reports-${{ matrix.shard }}
+          name: slow-unit-coverage-reports
           path: |
             **/jacoco*.xml
           if-no-files-found: error
@@ -1319,9 +1309,8 @@ jobs:
 
       # continue-on-error keeps a missing artifact from failing the step with a bare "Artifact not
       # found", so the collector below can report which suite is missing and why it matters.
-      # unit-tests and slow-unit-tests run as two shards each. Every shard is downloaded into its own
-      # directory and named to the collector as a suite of its own: a missing shard then fails the
-      # collector, and the two slow shards (both -pl engine) cannot overwrite each other's jacoco.xml.
+      # unit-tests runs as two shards. Every shard is downloaded into its own directory and named to the
+      # collector as a suite of its own: a missing shard then fails the collector.
       - name: Download unit test (engine shard) coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
@@ -1343,19 +1332,12 @@ jobs:
           name: unit-coverage-reports-modules
           path: unit-coverage-modules
 
-      - name: Download slow unit test (lsm-vector shard) coverage reports
+      - name: Download slow unit test coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          name: slow-unit-coverage-reports-lsm-vector
-          path: slow-unit-coverage-lsm-vector
-
-      - name: Download slow unit test (rest shard) coverage reports
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        continue-on-error: true
-        with:
-          name: slow-unit-coverage-reports-rest
-          path: slow-unit-coverage-rest
+          name: slow-unit-coverage-reports
+          path: slow-unit-coverage
 
       - name: Download vector unit test coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1396,8 +1378,7 @@ jobs:
             unit-tests-engine=unit-coverage-engine \
             unit-tests-ha-raft=unit-coverage-ha-raft \
             unit-tests-modules=unit-coverage-modules \
-            slow-unit-tests-lsm-vector=slow-unit-coverage-lsm-vector \
-            slow-unit-tests-rest=slow-unit-coverage-rest \
+            slow-unit-tests=slow-unit-coverage \
             vector-unit-tests=vector-unit-coverage \
             opencypher-tck-tests=opencypher-tck-coverage \
             integration-tests-protocols=integration-coverage-protocols \
