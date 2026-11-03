@@ -650,6 +650,9 @@ class ServerProfilingIT {
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY.setValue(100);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on localhost,
+    // which then answers this test's localhost clients
+    GlobalConfiguration.SERVER_HTTP_INCOMING_HOST.setValue("localhost");
 
     SERVER = new ArcadeDBServer();
     SERVER.start();
@@ -662,6 +665,7 @@ class ServerProfilingIT {
   static void afterAll() {
     SERVER.stop();
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+    GlobalConfiguration.SERVER_HTTP_INCOMING_HOST.reset();
 
     FileUtils.deleteRecursively(new File("./target/config"));
     TestServerHelper.deleteDatabaseFolders(1);

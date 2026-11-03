@@ -60,6 +60,9 @@ class RemoteDateIT {
 
     // Set server configuration BEFORE creating the server
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     // Start the server first so security is properly initialized
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
@@ -127,6 +130,9 @@ class RemoteDateIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     final ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
@@ -177,6 +183,9 @@ class RemoteDateIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     final ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();

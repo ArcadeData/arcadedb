@@ -51,6 +51,9 @@ class RemoteCollectionTemporalIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     // The remote client reads the temporal Java implementation from the JVM-global configuration.
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
@@ -100,6 +103,9 @@ class RemoteCollectionTemporalIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     // The remote client reads the temporal Java implementation from the JVM-global configuration.
     GlobalConfiguration.DATE_TIME_IMPLEMENTATION.setValue(LocalDateTime.class);
