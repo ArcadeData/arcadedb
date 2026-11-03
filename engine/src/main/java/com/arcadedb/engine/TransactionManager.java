@@ -2474,11 +2474,19 @@ public class TransactionManager {
 
   /**
    * Package-private test hook: runs one runtime WAL-rotation pass exactly as the background timer
-   * does - retires every active WAL file (ignoring the size threshold) and drops the inactive ones,
-   * fsyncing data first. Lets tests exercise the rotation persistence (issue #5277) without writing
-   * 64MB of log to cross {@link #MAX_LOG_FILE_SIZE}.
+   * does - retires every active WAL file (ignoring the size threshold) and drops the inactive ones
+   * whose pages all reached the disk, fsyncing data first. Lets tests exercise the rotation persistence
+   * (issue #5277) without writing 64MB of log to cross {@link #MAX_LOG_FILE_SIZE}.
+   * <p>
+   * Like the timer it never forces the drop: a retired file still protecting a page the flush thread has
+   * not written yet stays in the inactive pool for a later pass. This hook used to force it, which deleted
+   * the only durable copy of a committed transaction whenever the asynchronous page flush lagged behind the
+   * commit, so a crash right after lost it. A caller that needs the drop to happen waits for the pages
+   * first ({@link PageManager#waitAllPagesOfDatabaseAreFlushed}).
+   *
+   * @return true when every inactive WAL file was dropped
    */
-  void rotateAndDropWALForTesting() throws IOException {
+  boolean rotateAndDropWALForTesting() throws IOException {
     if (activeWALFilePool != null)
       for (int i = 0; i < activeWALFilePool.length; ++i) {
         final WALFile file = activeWALFilePool[i];
@@ -2489,7 +2497,7 @@ public class TransactionManager {
           inactiveWALFilePool.add(file);
         }
       }
-    cleanWALFiles(true, true, true);
+    return cleanWALFiles(true, false, true);
   }
 
   @Override
