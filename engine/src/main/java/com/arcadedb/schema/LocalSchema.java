@@ -676,12 +676,14 @@ public class LocalSchema implements Schema {
         initComponents();
 
       indexEntriesReadAtLoad.clear();
-      if (!readConfiguration() && mustKeepPreviousGeneration())
+      final boolean schemaRead = readConfiguration();
+      if (!schemaRead && mustKeepPreviousGeneration())
         throw new SchemaException("Cannot load the schema from '" + SCHEMA_FILE_NAME
             + "': it could not be read. The previous schema stays in place, see the log for the cause");
 
-      // Not over a schema read from schema.prev.json: it can predate the last indexes created, whose files are no leftovers
-      if (mode == ComponentFile.MODE.READ_WRITE && !openLoadDone && !schemaReadFromPreviousCopy)
+      // Only over a schema read whole: not one read from schema.prev.json (it can predate the last indexes created, whose files
+      // are no leftovers), and not one whose read failed part-way, which leaves only the index entries parsed before the error
+      if (schemaRead && mode == ComponentFile.MODE.READ_WRITE && !openLoadDone && !schemaReadFromPreviousCopy)
         sweepOrphanBucketIndexFiles();
       indexEntriesReadAtLoad.clear();
 

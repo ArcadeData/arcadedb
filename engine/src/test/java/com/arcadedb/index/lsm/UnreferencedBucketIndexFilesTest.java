@@ -29,11 +29,13 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Handler;
@@ -163,6 +165,40 @@ class UnreferencedBucketIndexFilesTest extends TestHelper {
 
     reopenDatabase();
     assertThat(Files.exists(indexFile)).as("the bucket index file a newer schema referenced is kept").isTrue();
+  }
+
+  /**
+   * A schema.json that parses at its root but fails inside the index definitions leaves the load with only the entries read before
+   * the failure: no published generation exists yet on a first open, so the load goes on, and the sweep must not judge files
+   * against that partial list.
+   */
+  @Test
+  void anOpenWhoseSchemaFailsInsideTheIndexDefinitionsDropsNothing() throws IOException {
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE).withTotalBuckets(2).create();
+    type.createProperty("uid", Type.STRING);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument(TYPE).set("uid", "key-" + i).save();
+    });
+    database.getSchema().buildTypeIndex(TYPE, new String[] { "uid" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
+    final List<Path> indexFiles = new ArrayList<>();
+    for (final IndexInternal bucketIndex : ((TypeIndex) database.getSchema().getIndexByName(INDEX)).getIndexesOnBuckets())
+      indexFiles.add(Path.of(((DatabaseInternal) database).getFileManager().getFile(bucketIndex.getFileId()).getFilePath()));
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+
+    // no previous copy to fall back to, and every bucket index definition of the type unreadable
+    Files.deleteIfExists(databasePath.resolve(LocalSchema.SCHEMA_PREV_FILE_NAME));
+    final Path schemaFile = databasePath.resolve(LocalSchema.SCHEMA_FILE_NAME);
+    final JSONObject root = new JSONObject(Files.readString(schemaFile));
+    final JSONObject indexes = root.getJSONObject("types").getJSONObject(TYPE).getJSONObject("indexes");
+    for (final String indexName : indexes.keySet())
+      indexes.getJSONObject(indexName).put("properties", 42);
+    Files.writeString(schemaFile, root.toString());
+
+    reopenDatabase();
+    for (final Path indexFile : indexFiles)
+      assertThat(Files.exists(indexFile)).as("bucket index file %s is kept", indexFile.getFileName()).isTrue();
   }
 
   private static final class CapturingHandler extends Handler {
