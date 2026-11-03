@@ -106,7 +106,16 @@ public enum PostgresType {
   ARRAY_VARCHAR(1015, "_varchar", 1043, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
   ARRAY_DATE(1182, "_date", 1082, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseDateText)),
   ARRAY_TIMESTAMP(1115, "_timestamp", 1114, 0, Collection.class, -1,
-      value -> parseArrayFromString(value, PostgresType::parseTimestampText));
+      value -> parseArrayFromString(value, PostgresType::parseTimestampText)),
+  // The types a client looks up in pg_type by name while it sets up a connection or reads metadata, though this protocol never announces
+  // a column under them (issue #11027): every identifier column of the real catalog is name, and pgjdbc answers getMax*NameLength()
+  // and getClientInfoProperties() from the typlen of the row called "name". Each is a scalar here (typelem 0) whatever PostgreSQL says
+  // of name and int2vector, so that none of them is taken for an array; the announced OID of an identifier column stays varchar.
+  // typarray is 0 for all three, where PostgreSQL has 1003, 1028 and 1006: this protocol reads no array of them, and a typarray must
+  // name a row pg_type has (issue #10592).
+  NAME(19, "name", 0, 0, String.class, 64, value -> value),
+  OID(26, "oid", 0, 0, Long.class, 4, value -> Long.parseLong(value)),
+  INT2VECTOR(22, "int2vector", 0, 0, String.class, -1, value -> value);
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -1430,6 +1439,9 @@ public enum PostgresType {
       }
       case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC,
            ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> deserializeBinaryArray(buffer);
+      // catalog-only types (issue #11027): listed in pg_type for clients to look up, never bound as a parameter, as before they existed
+      case NAME, OID, INT2VECTOR ->
+          throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
     };
   }
 
