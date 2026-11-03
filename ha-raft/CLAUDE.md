@@ -234,7 +234,8 @@ Two things that are specific to a refusal and do not apply to a withheld section
   `ALTER TYPE ... NAME` (#9762) deliberately has none (#9891). A rename is not urgent the way a revocation is, so a
   down peer refusing it costs a wait rather than an incident, and the refusal says there is no override. Decide per
   refusal whether its operation can wait for the peer; do not reuse `securityEntryCapabilityGate` for a non-security
-  entry.
+  entry. `SecurityEntryCapabilityGate.isOverridable` enforces it: only the two security entry types honour the
+  setting, and `DATABASE_CONFIGURATION_ENTRY` (ALTER DATABASE) is refused whatever it says (#11195).
 
 ### Negotiation governs what is written next, never what is already committed
 

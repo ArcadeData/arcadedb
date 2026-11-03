@@ -47,7 +47,7 @@ import java.util.logging.Level;
  * <h2>Which types need a token</h2>
  *
  * {@link #capabilityFor} is an exhaustive {@code switch} over {@link RaftLogEntryType} with no {@code default},
- * on purpose: adding a ninth constant does not compile until whoever adds it has decided whether a peer has to
+ * on purpose: adding a tenth constant does not compile until whoever adds it has decided whether a peer has to
  * advertise something before the leader may write one. That is the half of #7511 that outlives #7373 - the issue
  * asked for a mechanism that "would cover the next entry type too", and a switch that fails the build is a
  * stronger guarantee than a sentence in a document.
@@ -56,15 +56,18 @@ import java.util.logging.Level;
  *
  * {@link RaftHAServer#peersMissingCapabilityNow} treats unreachable, never-probed, stale and explicitly-incapable
  * as one answer, because at the transport an old build and an unreachable node ARE one answer: a 404 or a
- * timeout. That is what makes the gate safe, and it is also what makes it strict - a group change or a token
- * revocation is refused while any node is DOWN, not only while any node is OLD.
+ * timeout. That is what makes the gate safe, and it is also what makes it strict - a group change, a token
+ * revocation or an ALTER DATABASE is refused while any node is DOWN, not only while any node is OLD.
  * {@code arcadedb.ha.securityEntryCapabilityGate} is the escape hatch for an operator who knows, from outside the
- * cluster, that the node that cannot be probed does understand the entry; the refusal names it.
+ * cluster, that the node that cannot be probed does understand the entry; the refusal names it. It is the escape
+ * hatch of the SECURITY entries only ({@link #isOverridable}): a {@code DATABASE_CONFIGURATION_ENTRY} can wait for
+ * the peer the way a revocation cannot, so it is refused whatever the setting says (issue #11195).
  * <p>
- * The second cost is latency, and it is wider than the gated operations. Every caller of this gate holds the
- * {@code ServerSecurity} monitor across it, and that monitor is shared with USER administration - so an
+ * The second cost is latency, and it is wider than the gated operations. The security callers of this gate hold
+ * the {@code ServerSecurity} monitor across it, and that monitor is shared with USER administration - so an
  * unreachable peer makes the probe round delay the next {@code createUser} as much as the next group change (PR
- * #7555 review). Bounded by {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per peer, paid only when the cached
+ * #7555 review). The ALTER DATABASE caller holds no such monitor and calls the gate before taking its own
+ * configuration lock, but its statement thread pays the same bounded probe round. Bounded by {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per peer, paid only when the cached
  * answer is not already a full "yes", and logged at FINE by {@link RaftHAServer#peersMissingCapabilityNow} so the
  * stall is attributable rather than mysterious.
  *
@@ -120,6 +123,16 @@ final class SecurityEntryCapabilityGate {
   }
 
   /**
+   * Whether {@code arcadedb.ha.securityEntryCapabilityGate} may switch the gate off for {@code type}. Only the
+   * security entries: a token revocation can be urgent in the middle of an incident, whereas every other gated
+   * entry (a database configuration change) can wait for the peer, so it has no override (issues #9891, #11195).
+   */
+  // @VisibleForTesting
+  static boolean isOverridable(final RaftLogEntryType type) {
+    return type == RaftLogEntryType.SECURITY_GROUPS_ENTRY || type == RaftLogEntryType.SECURITY_API_TOKENS_ENTRY;
+  }
+
+  /**
    * Throws unless every peer of the current Raft configuration has proved it can decode {@code type}.
    *
    * @param server the local server, read for {@code arcadedb.ha.securityEntryCapabilityGate}. A {@code null}
@@ -139,7 +152,7 @@ final class SecurityEntryCapabilityGate {
     if (capability == null)
       return;
 
-    if (!gateEnabled(server)) {
+    if (isOverridable(type) && !gateEnabled(server)) {
       // Throttling would be wrong here: this is not a periodic condition, it is one line per admin operation
       // deliberately performed with the interlock off, and each one is a change that may halt a node.
       LogManager.instance().log(SecurityEntryCapabilityGate.class, Level.WARNING,
@@ -191,9 +204,13 @@ final class SecurityEntryCapabilityGate {
     }
 
     message.append(" Finish the rolling upgrade - or restore contact with those peers - and reissue this request; "
-            + "it succeeds unchanged once every node advertises the capability, with no sequencing by hand. "
-            + "Set ").append(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE.getKey())
-        .append("=false only to submit it anyway, knowing that a peer which genuinely cannot decode it will halt.");
+        + "it succeeds unchanged once every node advertises the capability, with no sequencing by hand. ");
+    if (isOverridable(type))
+      message.append("Set ").append(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE.getKey())
+          .append("=false only to submit it anyway, knowing that a peer which genuinely cannot decode it will halt.");
+    else
+      message.append("There is no setting that overrides this refusal (issue #11195): to proceed while a peer is gone "
+          + "for good, remove it from the Raft configuration first.");
 
     return message.toString();
   }

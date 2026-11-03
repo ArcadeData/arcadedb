@@ -2785,9 +2785,10 @@ public enum GlobalConfiguration {
       already-upgraded node halt every node still on the old build: a routine admin action turning a routine \
       upgrade into a partial outage. With this on, the operation is refused instead, with HTTP 409 / gRPC \
       FAILED_PRECONDITION naming the peer that is holding the cluster back. Nothing is submitted, so nothing \
-      halts, and the change succeeds unchanged once the last node is up - no sequencing by hand. The same \
-      interlock covers a database setting changed with ALTER DATABASE or 'set database setting', replicated as a \
-      DATABASE_CONFIGURATION_ENTRY since issue #9763. \
+      halts, and the change succeeds unchanged once the last node is up - no sequencing by hand. A database \
+      setting changed with ALTER DATABASE or 'set database setting' is replicated as a DATABASE_CONFIGURATION_ENTRY \
+      (issue #9763) and is refused by the same interlock, but this setting does NOT switch that refusal off \
+      (issue #11195): it can wait for the peer. \
       \
       The peer is asked over POST /api/v1/cluster/capabilities, the #7219 handshake. Every unknown counts as a \
       no: a peer that is unreachable, whose address identifies no single node, or that runs a build without that \
