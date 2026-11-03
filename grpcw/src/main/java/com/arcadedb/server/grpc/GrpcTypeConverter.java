@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -31,15 +32,23 @@ import java.math.BigInteger;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.logging.Level;
 
 /**
  * Utility class for converting between gRPC protobuf types and Java/ArcadeDB types.
  * This class is stateless and all methods are static.
  */
 class GrpcTypeConverter {
+  // The classes toGrpcString() has reported, so each is logged once per process rather than once per value
+  private static final Set<Class<?>> REPORTED_STRING_FALLBACKS = ConcurrentHashMap.newKeySet();
 
   private GrpcTypeConverter() {
     // Utility class - prevent instantiation
@@ -132,64 +141,15 @@ class GrpcTypeConverter {
   }
 
   /**
-   * Convert a Java Object to a GrpcValue.
+   * Convert a Java Object to a GrpcValue: the encoder of the RPCs that answer values rather than records (the search hits,
+   * the time series rows). It shares its scalar and container arms with the record-aware encoder of
+   * {@code ArcadeDbGrpcService} ({@link #toGrpcScalar}, {@link #toGrpcContainer}, {@link #toGrpcString}), so a value of a
+   * given Java type is encoded the same way whichever RPC returned it (issue #11207).
    */
   static GrpcValue toGrpcValue(final Object o) {
-    final GrpcValue.Builder b = GrpcValue.newBuilder();
-
-    if (o == null)
-      return b.build();
-
-    if (o instanceof Boolean v)
-      return b.setBoolValue(v).build();
-    if (o instanceof Integer v)
-      return b.setInt32Value(v).build();
-    if (o instanceof Short v)
-      return b.setInt32Value(v).build();
-    if (o instanceof Byte v)
-      return b.setInt32Value(v).build();
-    if (o instanceof Long v)
-      return b.setInt64Value(v).build();
-    if (o instanceof Float v)
-      return b.setFloatValue(v).build();
-    if (o instanceof Double v)
-      return b.setDoubleValue(v).build();
-    if (o instanceof CharSequence v)
-      return b.setStringValue(v.toString()).build();
-    if (o instanceof byte[] v)
-      return b.setBytesValue(ByteString.copyFrom(v)).build();
-
-    // Issue #9969: every java.time value goes through the one encoder the client shares, so a ZonedDateTime keeps its zone
-    // and an OffsetTime/LocalTime arrives typed instead of as an untyped string.
-    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
-    if (temporal != null)
-      return temporal;
-
-    if (o instanceof RID rid)
-      return b.setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
-
-    if (o instanceof BigDecimal v) {
-      return b.setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build();
-    }
-
-    // Collections
-    if (o instanceof List<?> list) {
-      final GrpcList.Builder lb = GrpcList.newBuilder();
-      for (final Object item : list)
-        lb.addValues(toGrpcValue(item));
-      return b.setListValue(lb.build()).build();
-    }
-
-    // Java arrays (e.g. float[]/double[] vectors, int[], long[], Object[]) are not Lists, so without
-    // this branch they would fall through to the String.valueOf(...) fallback below and corrupt the
-    // value (e.g. "[F@6d03e736"). byte[] keeps its dedicated BYTES branch above.
-    if (o.getClass().isArray()) {
-      final GrpcList.Builder lb = GrpcList.newBuilder();
-      final int len = Array.getLength(o);
-      for (int i = 0; i < len; i++)
-        lb.addValues(toGrpcValue(Array.get(o, i)));
-      return b.setListValue(lb.build()).build();
-    }
+    final GrpcValue scalar = toGrpcScalar(o);
+    if (scalar != null)
+      return scalar;
 
     // a path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913). Its nodes and
     // relationships travel as RID links: this converter has no record encoding, and a record would fall to its toString()
@@ -206,14 +166,108 @@ class GrpcTypeConverter {
       return toGrpcValue(map);
     }
 
+    final GrpcValue container = toGrpcContainer(o, GrpcTypeConverter::toGrpcValue);
+    if (container != null)
+      return container;
+
+    return toGrpcString(o);
+  }
+
+  /**
+   * The scalar arms both encoders share: {@code null}, booleans, numbers, text, bytes, temporals, RIDs and decimals. Answers
+   * {@code null} when {@code o} is none of them (a {@code null} {@code o} is a value with no kind set, not "none").
+   */
+  static GrpcValue toGrpcScalar(final Object o) {
+    if (o == null)
+      return GrpcValue.getDefaultInstance();
+
+    if (o instanceof Boolean v)
+      return GrpcValue.newBuilder().setBoolValue(v).build();
+    if (o instanceof Integer v)
+      return GrpcValue.newBuilder().setInt32Value(v).build();
+    if (o instanceof Short v)
+      return GrpcValue.newBuilder().setInt32Value(v).build();
+    if (o instanceof Byte v)
+      return GrpcValue.newBuilder().setInt32Value(v).build();
+    if (o instanceof Long v)
+      return GrpcValue.newBuilder().setInt64Value(v).build();
+    if (o instanceof Float v)
+      return GrpcValue.newBuilder().setFloatValue(v).build();
+    if (o instanceof Double v)
+      return GrpcValue.newBuilder().setDoubleValue(v).build();
+    if (o instanceof CharSequence v)
+      return GrpcValue.newBuilder().setStringValue(v.toString()).build();
+    if (o instanceof byte[] v)
+      return GrpcValue.newBuilder().setBytesValue(ByteString.copyFrom(v)).build();
+
+    // Issue #9969: every java.time value goes through the one encoder the client shares, so a ZonedDateTime keeps its zone
+    // and an OffsetTime/LocalTime arrives typed instead of as an untyped string.
+    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
+    if (temporal != null)
+      return temporal;
+
+    if (o instanceof RID rid)
+      return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid")
+          .build();
+
+    if (o instanceof BigDecimal v)
+      return GrpcValue.newBuilder().setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build();
+
+    return null;
+  }
+
+  /**
+   * The container arms both encoders share, each element encoded by {@code element}, through which the service recurses with
+   * its projection settings: a {@link Map} as a map, and as a list any {@link Iterable} (a {@link List}, a {@code Set}, the
+   * {@code JSONArray} a search hit's array property is, the lazy result of {@code out()}/{@code in()}), any {@link Iterator}
+   * (a nested result set) and any Java array ({@code float[]} vectors included; {@code byte[]} is a scalar). Answers
+   * {@code null} when {@code o} is none of them. The {@code Iterable} arm is what this converter lacked (issue #11207): a
+   * {@code JSONArray} is not a {@code List}, so an array property of a search hit reached the client as its JSON text while
+   * the query path sent the same property as a list.
+   */
+  static GrpcValue toGrpcContainer(final Object o, final Function<Object, GrpcValue> element) {
     if (o instanceof Map<?, ?> map) {
       final GrpcMap.Builder mb = GrpcMap.newBuilder();
-      map.forEach((k, v) -> mb.putEntries(String.valueOf(k), toGrpcValue(v)));
-      return b.setMapValue(mb.build()).build();
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        mb.putEntries(String.valueOf(entry.getKey()), element.apply(entry.getValue()));
+      return GrpcValue.newBuilder().setMapValue(mb.build()).build();
     }
 
-    // Fallback: convert to string
-    return b.setStringValue(String.valueOf(o)).build();
+    if (o instanceof Iterable<?> iterable)
+      return toGrpcList(iterable.iterator(), element);
+    if (o instanceof Iterator<?> iterator)
+      return toGrpcList(iterator, element);
+
+    if (o.getClass().isArray()) {
+      final GrpcList.Builder lb = GrpcList.newBuilder();
+      final int len = Array.getLength(o);
+      for (int i = 0; i < len; i++)
+        lb.addValues(element.apply(Array.get(o, i)));
+      return GrpcValue.newBuilder().setListValue(lb.build()).build();
+    }
+
+    return null;
+  }
+
+  private static GrpcValue toGrpcList(final Iterator<?> iterator, final Function<Object, GrpcValue> element) {
+    final GrpcList.Builder lb = GrpcList.newBuilder();
+    while (iterator.hasNext())
+      lb.addValues(element.apply(iterator.next()));
+    return GrpcValue.newBuilder().setListValue(lb.build()).build();
+  }
+
+  /**
+   * The last arm of both encoders: the value as its text. A character, an enum, a UUID or a number of a kind the wire has no
+   * field for are text by design. Any other type reaching here has no encoding of its own and is reported once per class at
+   * WARNING (issue #11207): its {@code toString()} may be an identity hash rather than its content, which is how a lazy
+   * {@code Iterable} once reached the client as {@code "com.arcadedb.graph.GraphEngine$10@63e44da5"} (#11044).
+   */
+  static GrpcValue toGrpcString(final Object o) {
+    if (!(o instanceof Character || o instanceof Enum<?> || o instanceof UUID || o instanceof Number)
+        && REPORTED_STRING_FALLBACKS.add(o.getClass()))
+      LogManager.instance().log(GrpcTypeConverter.class, Level.WARNING,
+          "gRPC encoding: a value of class %s has no encoding of its own and is sent as its text", o.getClass().getName());
+    return GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build();
   }
 
   /**

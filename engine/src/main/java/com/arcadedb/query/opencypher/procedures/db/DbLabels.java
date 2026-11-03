@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -73,9 +72,8 @@ public class DbLabels implements CypherProcedure {
     final List<Result> results = new ArrayList<>();
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     // Types the current user cannot read are hidden, as schema:types hides them in SQL
-    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
-    for (final DocumentType type : database.getSchema().getTypes()) {
-      if (type instanceof VertexType && !type.getName().contains("~") && SecurityHelper.canAccessType(user, type, SecurityDatabaseUser.ACCESS.READ_RECORD)) {
+    for (final DocumentType type : SecurityHelper.readableTypes(database)) {
+      if (type instanceof VertexType && !type.getName().contains("~")) {
         final ResultInternal result = new ResultInternal();
         result.setProperty("label", type.getName());
         results.add(result);

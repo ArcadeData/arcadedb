@@ -287,6 +287,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void fireAfterCreate(final Record record) {
+    checkOwnsBucketOf(record);
     events.onAfterCreate(record);
     if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
@@ -294,6 +295,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public boolean fireBeforeUpdate(final Record record) {
+    checkOwnsBucketOf(record);
     if (!events.onBeforeUpdate(record))
       return false;
     if (hasTriggers())
@@ -304,6 +306,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void fireAfterUpdate(final Record record) {
+    checkOwnsBucketOf(record);
     events.onAfterUpdate(record);
     if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
@@ -311,6 +314,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public boolean fireBeforeDelete(final Record record) {
+    checkOwnsBucketOf(record);
     if (!events.onBeforeDelete(record))
       return false;
     if (hasTriggers())
@@ -321,10 +325,42 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void fireAfterDelete(final Record record) {
+    checkOwnsBucketOf(record);
     events.onAfterDelete(record);
     if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterDelete(record);
+  }
+
+  /**
+   * A record reaches this type's write listeners only when this type owns the record's bucket (issue #11206). The type a
+   * record carries is whatever the code that built the record gave it, and a walk that hoisted one type over the buckets
+   * of a whole hierarchy built subtype records as the supertype (#11043): their delete then consulted the supertype's
+   * listeners and skipped the subtype's veto, silently. The dispatch sites read the type off the record, so this is the
+   * one place the answer can be checked for every walk, present or future, rather than for the walks someone checked.
+   * <p>
+   * The owner is compared by name as well as by instance, because a record loaded before a schema reload holds the
+   * previous instance of the same type. A bucket no type owns says nothing about the record and is let through. A record
+   * with no identity yet (a BEFORE CREATE) has no bucket to check.
+   * <p>
+   * On every write dispatch, so the answer of the common case - the record is in one of this type's own buckets - is read
+   * off this type's bucket ids by index, with no allocation and no lock: the schema's bucket-to-type map, keyed by a boxed
+   * id, is asked only when the bucket is not one of them.
+   */
+  private void checkOwnsBucketOf(final Record record) {
+    final RID rid = record.getIdentity();
+    if (rid == null)
+      return;
+    final int bucketId = rid.getBucketId();
+    final List<Integer> ownBucketIds = bucketIds;
+    for (int i = 0; i < ownBucketIds.size(); i++)
+      if (ownBucketIds.get(i) == bucketId)
+        return;
+    final DocumentType owner = schema.getTypeByBucketId(bucketId);
+    if (owner != null && owner != this && !owner.getName().equals(name))
+      throw new IllegalStateException(
+          "Record " + rid + " was built as a '" + name + "' but its bucket belongs to type '" + owner.getName()
+              + "': refusing to dispatch it to the listeners of the wrong type");
   }
 
   public boolean hasBeforeReadListeners() {
@@ -3182,6 +3218,9 @@ public class LocalDocumentType implements DocumentType {
     // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
     // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Skipped for a linkage that already holds.
     if (newLinkage) {
+      // Every row of this type would be answered by the view whose backing type it extends (issue #11204)
+      schema.checkCanExtend(name, superType);
+
       final Property constraint = superType.findPropertyAppliedToEmptyRecord();
       if (constraint != null) {
         final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
@@ -3194,7 +3233,8 @@ public class LocalDocumentType implements DocumentType {
   /**
    * The refusals of {@link #checkCanAddSuperType} that a type NOT CREATED YET can already be told, so that {@link TypeBuilder} asks
    * them before it registers anything: a new type has no sub types and is no time series, so what is left is the super type being a
-   * time series, and the new type being a LIGHTWEIGHT edge type that would inherit a property it cannot honour (issue #10394).
+   * time series or a backing type (issue #11204), and the new type being a LIGHTWEIGHT edge type that would inherit a property it
+   * cannot honour (issue #10394).
    * <p>
    * Public only because the {@code CREATE ... TYPE} statements, in another package, ask the same questions before they create the type;
    * internal to the schema and the statements that build types, not an API for applications.
@@ -3202,6 +3242,7 @@ public class LocalDocumentType implements DocumentType {
   public static void checkSuperTypeOfNewType(final String typeName, final LocalDocumentType superType, final boolean lightweightEdge) {
     if (superType instanceof LocalTimeSeriesType)
       throw timeSeriesHierarchyRefusal(typeName, superType.getName(), superType.getName());
+    superType.schema.checkCanExtend(typeName, superType);
     if (lightweightEdge)
       LocalEdgeType.checkCanBeLightweight(typeName, superType);
   }

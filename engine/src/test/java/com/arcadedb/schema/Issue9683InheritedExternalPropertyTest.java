@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #9683: the serializer resolved an EXTERNAL property with {@link DocumentType#getPropertyIfExists(String)}, which
@@ -165,34 +166,39 @@ class Issue9683InheritedExternalPropertyTest extends TestHelper {
   }
 
   /**
-   * A polymorphic scan of the parent tags a subtype record with the PARENT type. The subtype's own EXTERNAL property must
-   * still be resolved from the type that owns the record's bucket: the update must stay external and reuse the old record.
+   * A subtype record tagged with the PARENT type - what a polymorphic scan of the parent built before #11066 - used to be
+   * updated and deleted with its EXTERNAL property resolved from the type that owns its bucket. Since #11206 such a record
+   * is refused before anything is written, whatever the property: it would also reach the parent's listeners and skip the
+   * subtype's, which no resolution of the external bucket could repair. The external value is left exactly as it was.
    */
   @Test
-  void updateOfARecordTaggedWithTheParentTypeKeepsTheSubtypeExternalProperty() {
+  void updateOfARecordTaggedWithTheParentTypeIsRefusedAndKeepsTheSubtypeExternalValue() {
     createParentAndChildWithOwnExternal();
     final RID child = saveDocument("Child", BIG);
 
-    final Document scanned = scanParentPolymorphically();
-    assertThat(scanned.getTypeName()).as("precondition: the scan tags the record with the parent type").isEqualTo("Parent");
+    final Document tagged = taggedWithTheParentType(child);
+    assertThat(tagged.getTypeName()).as("precondition: the record is tagged with the parent type").isEqualTo("Parent");
 
-    database.transaction(() -> scanned.modify().set("blob", BIG2).save());
+    assertThatThrownBy(() -> database.transaction(() -> tagged.modify().set("blob", BIG2).save()))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("'Child'");
 
-    assertExternal(child, BIG2);
-    assertThat(externalCount("Child")).as("the old external record was reused, not leaked").isEqualTo(1L);
+    assertExternal(child, BIG);
+    assertThat(externalCount("Child")).isEqualTo(1L);
   }
 
   @Test
-  void deleteOfARecordTaggedWithTheParentTypeRemovesTheSubtypeExternalValue() {
+  void deleteOfARecordTaggedWithTheParentTypeIsRefusedAndKeepsTheSubtypeExternalValue() {
     createParentAndChildWithOwnExternal();
-    saveDocument("Child", BIG);
+    final RID child = saveDocument("Child", BIG);
 
-    final Document scanned = scanParentPolymorphically();
-    assertThat(scanned.getTypeName()).as("precondition: the scan tags the record with the parent type").isEqualTo("Parent");
+    final Document tagged = taggedWithTheParentType(child);
+    assertThat(tagged.getTypeName()).as("precondition: the record is tagged with the parent type").isEqualTo("Parent");
 
-    database.transaction(() -> scanned.delete());
+    assertThatThrownBy(() -> database.transaction(() -> tagged.delete()))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("'Child'");
 
-    assertThat(externalCount("Child")).isZero();
+    assertExternal(child, BIG);
+    assertThat(externalCount("Child")).isEqualTo(1L);
   }
 
   /**
@@ -351,14 +357,8 @@ class Issue9683InheritedExternalPropertyTest extends TestHelper {
    * A record of a subtype handed out tagged with its PARENT type. A polymorphic scan no longer does that (#11066), but any
    * caller holding a record of the wrong type must still get the subtype's own EXTERNAL property resolved from the bucket.
    */
-  private Document scanParentPolymorphically() {
-    final Document[] found = new Document[1];
-    database.transaction(() -> database.scanType("Parent", true, record -> {
-      found[0] = record;
-      return false;
-    }));
-    assertThat(found[0]).isNotNull();
-    final RID rid = found[0].getIdentity();
+  /** The record, built with the parent type rather than the type that owns its bucket. */
+  private Document taggedWithTheParentType(final RID rid) {
     final DatabaseInternal db = (DatabaseInternal) database;
     final Binary content = ((LocalBucket) db.getSchema().getBucketById(rid.getBucketId())).getRecord(rid);
     return (Document) db.getRecordFactory().newImmutableRecord(db, db.getSchema().getType("Parent"), rid, content, null);

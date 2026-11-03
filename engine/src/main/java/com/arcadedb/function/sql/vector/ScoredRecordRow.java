@@ -18,8 +18,11 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.vector.LSMVectorIndex;
 
 import java.util.AbstractMap;
 import java.util.Collection;
@@ -53,7 +56,7 @@ import java.util.Set;
  * The record itself can be one whose content is not read yet (issue #10973, see {@code SQLFunctionVectorNeighbors}): its
  * {@code @rid} and {@code @type} are answered without reading it, and the first property asked of the row reads it. A record
  * found gone by that read (removed from its bucket behind the index's back) answers no property, rather than failing the
- * query that asked.
+ * query that asked, and is reported by {@link StaleVectorEntryReporter} (issue #11202).
  */
 final class ScoredRecordRow extends AbstractMap<String, Object> {
   static final         String RECORD = "record";
@@ -63,14 +66,26 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
   private final Document                      record;
   private final String                        scoreKey;
   private final Object                        score;
+  private final LSMVectorIndex                deferredBy;
   private       LinkedHashMap<String, Object> materialized;
   // set once the `record` key was removed from the row: it no longer answers the record
   private       boolean                       recordKeyRemoved;
+  // set once a read found the record gone (issue #11202)
+  private       boolean                       recordGone;
 
   ScoredRecordRow(final Document record, final String scoreKey, final float score) {
+    this(record, scoreKey, score, null);
+  }
+
+  /**
+   * @param deferredBy the vector index that made this row without reading its record (issue #10973), asked whether it still holds
+   *                   the vector when the record turns out to be gone; null for a row whose record was read when it was made
+   */
+  ScoredRecordRow(final Document record, final String scoreKey, final float score, final LSMVectorIndex deferredBy) {
     this.record = record;
     this.scoreKey = scoreKey;
     this.score = score;
+    this.deferredBy = deferredBy;
   }
 
   /**
@@ -171,29 +186,58 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
 
   /** A property of the record, or null when the record is gone (see the class javadoc). */
   private Object property(final String name) {
+    if (recordGone)
+      return null;
     try {
       return record.get(name);
     } catch (final RecordNotFoundException e) {
+      recordFoundGone();
       return null;
     }
   }
 
   private boolean has(final String name) {
+    if (recordGone)
+      return false;
     try {
       return record.has(name);
     } catch (final RecordNotFoundException e) {
+      recordFoundGone();
       return false;
     }
   }
 
+  /**
+   * Never looked up again: each lookup of a record that is gone is a page read for nothing. Reported once per row, and only when the
+   * index that deferred the read still holds the vector: a delete committed since the search took it out of the index as well, which
+   * is no damage to report.
+   */
+  private void recordFoundGone() {
+    // Deleted by the open transaction, not gone: the committed index still holds the vector until the commit, and a rollback
+    // brings the record back, so the row neither reports nor stops reading it
+    if (deletedInOpenTransaction())
+      return;
+    recordGone = true;
+    if (deferredBy != null && deferredBy.hasLiveVector(record.getIdentity()))
+      StaleVectorEntryReporter.reportMissingRecord(record);
+  }
+
+  private boolean deletedInOpenTransaction() {
+    if (!(record.getDatabase() instanceof DatabaseInternal database))
+      return false;
+    final TransactionContext transaction = database.getTransactionIfExists();
+    return transaction != null && transaction.isActive() && transaction.isDeletedInTransaction(record.getIdentity());
+  }
+
   private LinkedHashMap<String, Object> materialize() {
     if (materialized == null) {
-      Set<String> names;
-      try {
-        names = record.getPropertyNames();
-      } catch (final RecordNotFoundException e) {
-        names = Set.of();
-      }
+      Set<String> names = Set.of();
+      if (!recordGone)
+        try {
+          names = record.getPropertyNames();
+        } catch (final RecordNotFoundException e) {
+          recordFoundGone();
+        }
       final LinkedHashMap<String, Object> copy = new LinkedHashMap<>(names.size() + 5);
       for (final String prop : names)
         copy.put(prop, property(prop));

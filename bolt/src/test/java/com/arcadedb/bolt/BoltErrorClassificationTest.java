@@ -30,6 +30,7 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
 
 import org.junit.jupiter.api.Test;
 
@@ -75,6 +76,16 @@ class BoltErrorClassificationTest {
     final Throwable e = new InvalidPropertyTypeException(
         "TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof.");
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TYPE_ERROR);
+  }
+
+  /** Every runtime type error is Neo4j's TypeError, not only the storage one (issue #11211). */
+  @Test
+  void aRuntimeTypeMismatchClassifiesAsAClientTypeError() {
+    final Throwable e = new TypeMismatchException("TypeError: Cannot access property 'x' on a LIST<ANY> value");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TYPE_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new RuntimeException("wrapped", e), BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.TYPE_ERROR);
   }
 

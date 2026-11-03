@@ -664,12 +664,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // #7667: never leave a snapshot behind for the NEXT task - or for closeTransactionBoundaryIfDurabilityPolicyChanged(),
         // which runs before the next one takes its own.
         taskBatchTx = null;
-        try {
-          message.completed();
-        } finally {
-          completedTaskCount++;
-          executingTask.set(nested);
-        }
+        // #11212: the task stops counting as running BEFORE anybody is told it finished. completed() is what releases a
+        // waiter - the waitCompletion() marker's latch, a scanType() or browse latch - and a waiter released first could
+        // ask isProcessing() and find this worker still flagged, with nothing left to run.
+        completedTaskCount++;
+        executingTask.set(nested);
+        message.completed();
       }
     }
 
@@ -1722,8 +1722,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * waits for the commands submitted before it, which can all land while later ones are still running.
    */
   private void commandCompleted(final long sequence) {
-    commandsInFlightSequences.remove(sequence);
+    // The reverse of submitCommand's order (#11212): the count goes down BEFORE the sequence leaves the set, so a barrier
+    // released by the set finds isProcessing(), which reads the count, already answering about this command as done
     commandsInFlight.decrementAndGet();
+    commandsInFlightSequences.remove(sequence);
     synchronized (commandsLock) {
       commandsLock.notifyAll();
     }

@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -460,7 +461,7 @@ public final class HybridSearch {
    * and raises no error: an unvalidated typo would silently downgrade the search with no way for the
    * caller to notice.
    */
-  private static List<String> validatedEdgeTypes(final Database database, final JSONArray requested) {
+  static List<String> validatedEdgeTypes(final Database database, final JSONArray requested) {
     if (requested == null || requested.length() == 0)
       return List.of();
 
@@ -472,7 +473,8 @@ public final class HybridSearch {
       if (name.indexOf('\'') >= 0 || name.indexOf('`') >= 0 || name.indexOf('\\') >= 0)
         throw new IllegalArgumentException(
             "expand.edgeTypes entry '" + name + "' contains a quote or backslash, which is not supported");
-      if (!(database.getSchema().getTypeOrNull(name) instanceof EdgeType))
+      // a type the caller may not read is answered as one that does not exist (issue #11197)
+      if (!(database.getSchema().getTypeOrNull(name) instanceof final EdgeType edgeType) || !SecurityHelper.isReadable(database, edgeType))
         throw new IllegalArgumentException("Edge type '" + name + "' does not exist. "
             + describeAvailableEdgeTypes(database));
       names.add(name);
@@ -482,7 +484,8 @@ public final class HybridSearch {
 
   private static String describeAvailableEdgeTypes(final Database database) {
     final Set<String> names = new TreeSet<>();
-    for (final DocumentType type : database.getSchema().getTypes())
+    // only the edge types the caller may read (issue #11197)
+    for (final DocumentType type : SecurityHelper.readableTypes(database))
       if (type instanceof EdgeType)
         names.add(type.getName());
     return "Available edge types: " + names;

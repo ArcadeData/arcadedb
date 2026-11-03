@@ -27,6 +27,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.CompressedRID2RIDIndex;
@@ -598,8 +599,11 @@ public class OrientDBImporter {
       // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
       // can never pop a transaction this method has already committed away (issue #7272). Initialised to
       // pushedTransaction rather than ownsTransaction, so a caller-owned transaction is never the one this
-      // method's commit/rollback resolves, while a transaction this call pushed always is (issue #8073).
-      boolean txOpen = pushedTransaction;
+      // method's commit/rollback resolves, while a transaction this call pushed always is (issue #8073). Resolved
+      // through ImporterTransactions, the protocol every importer row loop shares (issue #11208).
+      final boolean[] txOpen = { pushedTransaction };
+      // The transaction this call pushed, which tells a refused commit from one that popped it
+      final TransactionContext[] ownTx = { ImporterTransactions.currentTransaction(database) };
 
       // Documents an intermediate commit already made durable. context.updatedDocuments counts every document
       // touched, the ones still inside the transaction a failure rolls back included.
@@ -628,36 +632,24 @@ public class OrientDBImporter {
           if (pushedTransaction && context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
             // Restored on failure: DatabaseContext#popIfNotLastTransaction() does not pop the outermost
             // transaction, so a commit() that fails here can leave it still active rather than popped, and the
-            // finally block below needs txOpen true again to roll it back instead of leaking it (issue #8116
-            // review: the same class of bug RDFImporterFormat.load()'s periodic/trailing commits were fixed for).
-            txOpen = false;
-            try {
-              database.commit();
-            } catch (final RuntimeException | Error commitFailure) {
-              txOpen = database.isTransactionActive();
-              throw commitFailure;
-            }
+            // finally block below needs txOpen true again to roll it back instead of leaking it (issue #8116)
+            ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
             committedDocuments = context.updatedDocuments.get();
             database.begin();
-            txOpen = true;
+            txOpen[0] = true;
+            ownTx[0] = ImporterTransactions.currentTransaction(database);
           }
         }
-        if (pushedTransaction) {
-          // Same restore-on-failure as the periodic commit above.
-          txOpen = false;
-          try {
-            database.commit();
-          } catch (final RuntimeException | Error commitFailure) {
-            txOpen = database.isTransactionActive();
-            throw commitFailure;
-          }
-        }
+        // Same protocol as the periodic commit above
+        if (pushedTransaction)
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
         completed = true;
         logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
       } finally {
         // In the finally rather than in a catch so that an Error - an OutOfMemoryError is the one a large import
         // can realistically raise - resolves the transaction too.
-        if (txOpen && database.isTransactionActive()) {
+        if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
+          txOpen[0] = false;
           try {
             database.rollback();
           } catch (final Exception rollbackFailure) {

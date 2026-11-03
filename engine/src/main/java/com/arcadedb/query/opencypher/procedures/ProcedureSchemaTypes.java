@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.opencypher.procedures;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 
 /**
  * Checks the type names a procedure receives as filters against the schema, so a name that is not a type of the expected
@@ -51,13 +53,15 @@ public final class ProcedureSchemaTypes {
 
   private static void requireTypes(final String procedureName, final Schema schema, final String[] names, final boolean edges) {
     final String expected = edges ? "relationship type" : "node label";
+    final Database database = schema.getEmbedded().getDatabase();
     for (final String name : names) {
       if (name == null || name.isEmpty())
         continue;
       final DocumentType type = schema.getTypeOrNull(name);
-      if (type == null)
+      // a type the caller may not read is answered as one that does not exist, or the difference tells it exists (#11197)
+      if (type == null || !SecurityHelper.isReadable(database, type))
         throw new IllegalArgumentException(
-            procedureName + "(): " + expected + " '" + name + "' does not exist" + (edges ? edgePropertyHint(schema, name) : ""));
+            procedureName + "(): " + expected + " '" + name + "' does not exist" + (edges ? edgePropertyHint(database, name) : ""));
       if (edges ? !(type instanceof EdgeType) : !(type instanceof VertexType))
         throw new IllegalArgumentException(procedureName + "(): '" + name + "' is not a " + expected + ", it is " + describeKind(type));
     }
@@ -75,8 +79,9 @@ public final class ProcedureSchemaTypes {
    * When the name that is not an edge type is a property declared on one, the caller has most likely passed the weight
    * property where the relationship types go, the order {@code algo.mst} and {@code algo.apsp} took before #9769.
    */
-  private static String edgePropertyHint(final Schema schema, final String name) {
-    for (final DocumentType type : schema.getTypes())
+  private static String edgePropertyHint(final Database database, final String name) {
+    // only an edge type the caller may read can be named back to it (issue #11197)
+    for (final DocumentType type : SecurityHelper.readableTypes(database))
       if (type instanceof EdgeType && type.existsProperty(name))
         return " ('" + name + "' is a property of the edge type '" + type.getName()
             + "': the relationship types come first, then the weight property)";

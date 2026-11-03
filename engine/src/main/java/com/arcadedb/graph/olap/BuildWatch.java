@@ -49,12 +49,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * A vertex the scan found unwatched was read before the registration, so before the change committed: none of
  * its buffered changes are in the CSR. A watched one carries the edge identities the scan saw, which says which of
  * its buffered additions were captured and which of its buffered deletions were already missing. The answer is
- * handed to {@link DeltaOverlay#merge} edge by edge ({@link DeltaOverlay.ExactScanAnswer}), where the compaction path
- * can only compare pair multiplicities against its pre-compaction snapshot (issues #7042, #7884).
+ * handed to {@link DeltaOverlay#merge} edge by edge ({@link DeltaOverlay.ExactScanAnswer}), which a comparison of pair
+ * multiplicities cannot give (issues #7042, #7884).
  * <p>
  * The same answer applies to a delta whose commit callback arrives after the build published (its transaction
  * committed during the scan, but was delivered late), so the view keeps it for as long as the CSR it describes
  * stays the base.
+ * <p>
+ * A compaction rescans the graph while the view keeps serving, and watches its scan with one of these too: it buffers the
+ * deltas itself, so only the registrations, the scan's observations and the answers of this watch are used.
  * <p>
  * A build that supersedes another takes over its registrations and its buffered deltas ({@link #handOverTo}).
  * <p>
