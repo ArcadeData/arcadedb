@@ -24,6 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -40,9 +42,17 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntFunction;
+import java.util.logging.Level;
 
 public class Statement extends SimpleNode {
   // Only for internal use!!! (caching)
+  /**
+   * How many attempts in all a query gets when the index its plan reads is gone by the time it starts (issue #9331). The last
+   * of them plans without the key indexes of the types it reads (issue #9615), see {@link #openResultSetPlanningAgainOnStaleIndex}.
+   */
+  protected static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
+
   public Statement originalStatement;
   public String    originalStatementAsString;
   public Limit     limit   = null;
@@ -252,6 +262,49 @@ public class Statement extends SimpleNode {
 
   public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context) {
     return createExecutionPlan(context);
+  }
+
+  /**
+   * Plans the statement and runs the first batch of its plan; when an index the planner or a step reads has been dropped or
+   * rebuilt meanwhile (issue #9331) it plans the statement again. The planner validates an index, picks it, and reads it again
+   * a few calls later; the steps read it once more when they start. A concurrent {@code DROP INDEX} in any of those gaps left
+   * a plan that no longer matches the schema, and the {@link IndexException} reached the caller of a read-only query.
+   * <p>
+   * Only the planning and the first batch are covered: an index dropped after the first rows were returned surfaces as the
+   * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Before the first row nothing has
+   * been returned, so running the statement again is safe (a function with side effects, such as {@code sequence.next()},
+   * would run twice, but the exception comes from the index, before the first row). {@link LocalResultSet} computes the first
+   * row when it is created, so that row is inside the loop.
+   * <p>
+   * {@code planner} answers the plan of each attempt, from 1 to {@link #STALE_INDEX_PLAN_MAX_ATTEMPTS}. Every attempt after the
+   * first plans without the cache, which may still hold the stale plan. Planning again picks the index of the same name when a
+   * concurrent DDL recreated it, and a DDL that keeps dropping and recreating it can take that one away too, attempt after
+   * attempt (issue #9615). The last attempt therefore plans without the key indexes of the types it reads, which no DDL can take
+   * away under it: a scan answers what such an index would have, slower.
+   */
+  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner) {
+    for (int attempt = 1; ; attempt++) {
+      InternalExecutionPlan plan = null;
+      try {
+        plan = planner.apply(attempt);
+        return new LocalResultSet(plan);
+      } catch (final IndexException e) {
+        if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
+          throw e;
+        // The last attempt reads the types without their key indexes: a full scan, worth a warning to an operator
+        final boolean lastAttemptNext = attempt + 1 >= STALE_INDEX_PLAN_MAX_ATTEMPTS;
+        LogManager.instance().log(this, lastAttemptNext ? Level.WARNING : Level.INFO,
+            "Planning the statement again after attempt %d%s, its index was dropped or rebuilt: %s", null, attempt,
+            lastAttemptNext ? " without the key indexes of its types (a scan)" : "", e.getMessage());
+        if (plan != null)
+          try {
+            plan.close();
+          } catch (final RuntimeException closeFailure) {
+            // The stale index is the reason for the retry, not the close of the plan it spoiled
+            e.addSuppressed(closeFailure);
+          }
+      }
+    }
   }
 
   public Statement copy() {
