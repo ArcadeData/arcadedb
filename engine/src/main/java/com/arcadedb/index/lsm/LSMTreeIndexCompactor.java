@@ -388,8 +388,11 @@ public class LSMTreeIndexCompactor {
     // the swap is published: no new cursor can reach the old file, but live ones may still read it
     // lazily - defer the physical drop until they are gone, and on an HA leader until the compaction is published too
     // (issue #11240)
-    database.getWrappedDatabaseInstance()
-        .runOnceCompactionIsPublished(oldCompacted.getFileId(), () -> mainIndex.retireCompactedIndex(oldCompacted));
+    // A swap whose schema could not be saved keeps the old file: the schema on disk still reaches it through the old mutable
+    database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(oldCompacted.getFileId(), () -> {
+      if (!mainIndex.isSwapNotPersisted())
+        mainIndex.retireCompactedIndex(oldCompacted);
+    });
 
     LogManager.instance().log(mainIndex, Level.INFO,
         "Index '%s' fully compacted in %dms (keys=%d values=%d droppedKeys=%d droppedValues=%d mergedSeries=%d newFile=%s(%d) threadId=%d)".formatted(

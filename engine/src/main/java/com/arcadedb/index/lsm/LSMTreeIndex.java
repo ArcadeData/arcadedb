@@ -93,6 +93,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
   // old mutable files a published compaction could not drop at once, because a commit still held their lock (#11240)
   private final        List<LSMTreeIndexMutable>     retiredMutables         = new CopyOnWriteArrayList<>();
+  // Set when the schema save of the last swap failed (issue #11240): the schema on disk still names the files the swap
+  // replaced, so they are kept. Read only by what the same compaction runs after the save; compactions of one index are
+  // serial
+  private volatile     boolean                       swapNotPersisted;
   /** Cumulative dead (tombstone-resolved) keys skipped by scans since this index was loaded. */
   private final        AtomicLong                    statsDeadEntriesSkipped = new AtomicLong();
   /**
@@ -236,6 +240,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * the migrated-file mapping. Synchronized so concurrent callers (a compaction round and a close) cannot
    * double-drop the same file.
    */
+  /** Whether the schema save of the last swap failed, so the files it replaced must stay (issue #11240). */
+  boolean isSwapNotPersisted() {
+    return swapNotPersisted;
+  }
+
   synchronized void dropRetiredCompactedIndexes() {
     for (final LSMTreeIndexCompacted retired : retiredCompactedIndexes) {
       if (retired.countActiveCursors() != 0)
@@ -975,6 +984,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
     final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
+    swapNotPersisted = false;
 
     try {
       final LSMTreeIndexMutable prevMutable = mutable;
@@ -1044,15 +1054,28 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), false);
         if (saveSchema)
-          // Persisted only once an HA compaction is published (issue #11240), at once otherwise
-          database.getWrappedDatabaseInstance()
-              .runOnceCompactionIsPublished(-1, () -> database.getSchema().getEmbedded().saveConfiguration());
+          // Persisted only once an HA compaction is published (issue #11240), at once otherwise. A failure is reported, not
+          // logged and passed over: the old file is dropped only once the schema on disk no longer names it
+          database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(-1, () -> {
+            try {
+              database.getSchema().getEmbedded().saveConfigurationOrThrow();
+            } catch (final IOException e) {
+              swapNotPersisted = true;
+              throw e;
+            }
+          });
         return newMutableIndex;
       });
 
       if (prevMutable != null)
         // Kept until an HA compaction is published (issue #11240), so a leader that loses the entry still has it
         database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(prevMutable.getFileId(), () -> {
+          if (swapNotPersisted) {
+            // The schema on disk still names the old file: a restart reopens the index on it, so it stays
+            LogManager.instance().log(this, Level.WARNING,
+                "Keeping the old copy of mutable index file %s: the schema that replaces it could not be saved", null, prevMutable);
+            return;
+          }
           // Under the old file's lock, as the swap above: deferred, the drop no longer runs inside it, and a commit still
           // holding that lock must not have the file dropped underneath it. Standalone the lock is still held here (the
           // same thread, ALREADY_LOCKED) and is not released early

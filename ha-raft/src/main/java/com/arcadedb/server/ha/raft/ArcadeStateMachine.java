@@ -2526,7 +2526,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The lowest index of an entry held for the replay, {@link Long#MAX_VALUE} when none is. A hold at or below the boundary
    * a Raft install covered is dropped on the way: the installed copy carries what the entry did (issue #10086).
    */
-  private long lowestHeldEntry() {
+  // @VisibleForTesting
+  long lowestHeldEntry() {
     if (heldEntryFloors.isEmpty() && heldConfigurations.isEmpty())
       return Long.MAX_VALUE;
     final long boundary = installedRaftBoundary.get();
@@ -7839,6 +7840,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     releaseHeldConfiguration(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
     clearCompactionHoldOff(databaseName);
+    // Nor a compaction whose swap could not be persisted (issue #11240): there is nothing left to replay it into
+    releaseHeldEntry(unpersistedPublicationKey(databaseName));
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
@@ -9879,19 +9882,43 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The lowest log index of an applied publication whose proposer has not persisted it yet, or {@link Long#MAX_VALUE}
    * (issue #11240). An HA compaction saves its schema and drops the files it replaced only after its entry is applied here,
    * and on the proposer the apply skips the entry: until the proposer has persisted the swap, only a replay of the entry
-   * could restore it after a crash, so the log must not be purged through it. A proposer whose persistence failed never
-   * forgets its publication, which keeps the entry replayable until the restart replays it.
+   * could restore it after a crash, so the log must not be purged through it. This covers the short window while the
+   * proposer persists; one whose persistence failed hands the entry to the holds of {@link #lowestHeldEntry()} instead
+   * ({@link #holdUnpersistedPublication}). A Raft install past the entry carries what it published, so it no longer holds.
    */
   long lowestUnpersistedPublication() {
     if (pendingPublications.isEmpty())
       return Long.MAX_VALUE;
+    final long boundary = installedRaftBoundary.get();
     long lowest = Long.MAX_VALUE;
     for (final PendingPublication pending : pendingPublications) {
       final long index = pending.appliedAtIndex;
-      if (index > -1 && index < lowest)
+      if (index > boundary && index < lowest)
         lowest = index;
     }
     return lowest;
+  }
+
+  /**
+   * Keeps the entry of a publication its proposer could not persist replayable until a restart replays it, a Raft install
+   * covers it or the database is dropped (issue #11240): one of the holds of {@link #lowestHeldEntry()}, which drops it past
+   * an install and reminds the operator while it stands. Raised before the publication is forgotten, so the entry is never
+   * left uncovered in between.
+   */
+  void holdUnpersistedPublication(final PendingPublication pending) {
+    final long index = pending.appliedAtIndex;
+    if (index > -1) {
+      final String key = unpersistedPublicationKey(pending.databaseName);
+      final long lowest = heldEntryFloors.merge(key, index, Math::min);
+      LogManager.instance().log(this, lowest == index ? Level.SEVERE : Level.FINE,
+          "Raft entry at index %d of database '%s' publishes a compaction this node could not persist: no snapshot checkpoint "
+              + "will cover it, so a restart replays it (issue #11240)", index, pending.databaseName);
+    }
+    forgetPublication(pending);
+  }
+
+  private static String unpersistedPublicationKey(final String databaseName) {
+    return "compaction:" + databaseName;
   }
 
   boolean quarantineUnpublishedSchemaChange(final String dbName, final String session, final Throwable refusal) {

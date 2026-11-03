@@ -55,6 +55,7 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #11240: an LSM compaction on an HA leader persists its swap - the schema naming the new files, the drop of the files
@@ -210,13 +211,7 @@ class CompactionPersistedOnlyOncePublishedTest {
     final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
     broker.on("replicateSchema", args -> {
       // the entry is committed and applied on this node (its own, so the apply skips it) before the wait gives up
-      @SuppressWarnings("unchecked")
-      final ByteString payload = RaftLogEntryCodec.encodeSchemaEntry(DB, (String) args[1], (Map<Integer, String>) args[2],
-          (Map<Integer, String>) args[3], List.of(), List.of());
-      final LogEntryProto logEntry = LogEntryProto.newBuilder().setTerm(TERM).setIndex(100L)
-          .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build()).build();
-      leaderStateMachine[0].applyTransaction(TransactionContext.newBuilder().setStateMachine(leaderStateMachine[0])
-          .setLogEntry(logEntry).setStateMachineContext(Boolean.TRUE).build());
+      applyOwnSchemaEntry(leaderStateMachine[0], args, 100L);
       throw new ReplicationDispatchedTimeoutException("dispatched, outcome unknown");
     });
     leaderStateMachine[0] = leaderOver(broker);
@@ -275,8 +270,52 @@ class CompactionPersistedOnlyOncePublishedTest {
       return true;
     })).isTrue();
 
-    assertThat(leaderStateMachine[0].lowestUnpersistedPublication()).as("held for the restart").isEqualTo(100L);
+    assertThat(leaderStateMachine[0].lowestHeldEntry()).as("held for the restart").isEqualTo(100L);
+    assertThat(leaderStateMachine[0].lowestUnpersistedPublication()).as("no longer in flight").isEqualTo(Long.MAX_VALUE);
     assertThat(leaderStateMachine[0].isDatabaseDiverged(DB)).isFalse();
+
+    // A Raft install past the entry carries what it published: the hold no longer pins the checkpoint
+    leaderStateMachine[0].recordInstalledRaftBoundary(100L);
+    assertThat(leaderStateMachine[0].lowestHeldEntry()).as("covered by the install").isEqualTo(Long.MAX_VALUE);
+  }
+
+  /**
+   * The schema save is the step every drop depends on: when it cannot write the file, the files the schema on disk still
+   * names stay, and the entry stays replayable.
+   */
+  @Test
+  void aSchemaSaveThatFailsKeepsTheReplacedFilesAndTheEntryReplayable() throws IOException, InterruptedException {
+    final Set<Integer> filesBefore = indexFileIds(leaderDb);
+    final String schemaBefore = schemaOnDisk();
+    final File directory = leaderPath.toFile();
+    // A process that ignores the permission bits (root) cannot stage the failure
+    assertThat(directory.setWritable(false)).isTrue();
+    final boolean enforced = !Files.isWritable(leaderPath);
+    directory.setWritable(true);
+    assumeTrue(enforced, "directory permissions are not enforced for this user");
+
+    final ArcadeStateMachine[] leaderStateMachine = new ArcadeStateMachine[1];
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    broker.on("replicateSchema", args -> {
+      applyOwnSchemaEntry(leaderStateMachine[0], args, 100L);
+      // The schema is written as a new file renamed over the old one: a directory that refuses new files fails the save
+      assertThat(directory.setWritable(false)).isTrue();
+      return null;
+    });
+    leaderStateMachine[0] = leaderOver(broker);
+
+    try {
+      final TypeIndex leaderIndex = (TypeIndex) leaderDb.getSchema().getIndexByName(INDEX_NAME);
+      leaderIndex.scheduleCompaction();
+      assertThat(leaderIndex.compact()).isTrue();
+      assertThat(schemaOnDisk()).as("the schema on disk was not replaced").isEqualTo(schemaBefore);
+    } finally {
+      directory.setWritable(true);
+    }
+
+    for (final int fileId : filesBefore)
+      assertThat(leaderDb.getFileManager().existsFile(fileId)).as("replaced file %d the schema on disk names", fileId).isTrue();
+    assertThat(leaderStateMachine[0].lowestHeldEntry()).as("held for the restart").isEqualTo(100L);
   }
 
   /** Applies the entry the broker was handed, as this node's own (the apply skips it), at {@code index}. */
@@ -286,8 +325,10 @@ class CompactionPersistedOnlyOncePublishedTest {
         (Map<Integer, String>) args[3], List.of(), List.of());
     final LogEntryProto logEntry = LogEntryProto.newBuilder().setTerm(TERM).setIndex(index)
         .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build()).build();
-    stateMachine.applyTransaction(TransactionContext.newBuilder().setStateMachine(stateMachine).setLogEntry(logEntry)
-        .setStateMachineContext(Boolean.TRUE).build());
+    // On the built context: the builder drops a context it is given together with a log entry
+    final TransactionContext trx = TransactionContext.newBuilder().setStateMachine(stateMachine).setLogEntry(logEntry).build();
+    trx.setStateMachineContext(Boolean.TRUE);
+    stateMachine.applyTransaction(trx);
   }
 
   private ArcadeStateMachine leaderOver(final FakeRaftTransactionBroker broker) {

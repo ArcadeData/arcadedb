@@ -4087,8 +4087,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // means that entry was never sent at all: unpublished, like a definite failure.
       final boolean[] published = { false };
       final boolean[] dispatched = { false };
-      // Set when what the entry publishes could not be persisted here: the publication is then never forgotten, so the
-      // state machine keeps the entry replayable for the restart (see ArcadeStateMachine.lowestUnpersistedPublication)
+      // Set when what the entry publishes could not be persisted here: the publication is then handed to the held entries, so
+      // the state machine keeps the entry replayable for the restart (see ArcadeStateMachine.holdUnpersistedPublication)
       final boolean[] unpersisted = { false };
       final ArcadeStateMachine stateMachine = stateMachineOrNull();
       final ArcadeStateMachine.PendingPublication pending =
@@ -4120,8 +4120,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
       } finally {
-        if (pending != null && !unpersisted[0])
-          stateMachine.forgetPublication(pending);
+        if (pending != null) {
+          if (unpersisted[0])
+            stateMachine.holdUnpersistedPublication(pending);
+          else
+            stateMachine.forgetPublication(pending);
+        }
       }
     } finally {
       compactionPersistence.remove();
@@ -4302,25 +4306,26 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Runs, in order, what a compaction whose entry the log holds deferred of its swap (issue #11240). A failure is logged
-   * and the next step still runs: the change is the committed one and this node already serves it from memory, and what it
-   * did not persist comes back from the entry the next restart replays, which the caller keeps replayable for it.
+   * Runs, in order, what a compaction whose entry the log holds deferred of its swap (issue #11240). The first failure ends
+   * the run: the schema save comes first, and the drops after it must not remove files the schema on disk still names. The
+   * change is the committed one and this node already serves it from memory; what it did not persist comes back from the
+   * entry the next restart replays, which the caller keeps replayable for it.
    *
    * @return {@code true} when every step succeeded
    */
   private boolean persistPublishedCompaction(final List<CallableNoReturn> persistence) {
-    boolean persisted = true;
-    for (final CallableNoReturn action : persistence)
-      try {
+    try {
+      for (final CallableNoReturn action : persistence)
         action.call();
-      } catch (final Throwable e) {
-        persisted = false;
-        LogManager.instance().log(this, Level.SEVERE,
-            "Error on persisting the published compaction of database '%s': the log keeps the entry replayable and the next "
-                + "restart replays it (issue #11240)", e, getName());
-      }
-    persistence.clear();
-    return persisted;
+      return true;
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error on persisting the published compaction of database '%s': the files it replaced stay, the log keeps the entry "
+              + "replayable and the next restart replays it (issue #11240)", e, getName());
+      return false;
+    } finally {
+      persistence.clear();
+    }
   }
 
   /**

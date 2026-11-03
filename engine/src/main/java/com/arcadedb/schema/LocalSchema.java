@@ -5398,6 +5398,34 @@ public class LocalSchema implements Schema {
    *                              commit of the outermost transaction, right before its durable phase
    */
   private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
+    try {
+      writeConfiguration(ignoreOpenTransaction);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
+          databasePath + File.separator + SCHEMA_FILE_NAME);
+    }
+  }
+
+  /**
+   * As {@link #saveConfiguration()}, for a caller that acts on the file holding the schema afterwards (issue #11240): an HA
+   * compaction drops the files the previous schema names only once the new one is on disk, and releases the replay of its
+   * entry then. Fails instead of logging.
+   *
+   * @throws IOException when the file could not be written, or the save was postponed (a load, a multiple update or an open
+   *                     transaction in progress)
+   */
+  public synchronized void saveConfigurationOrThrow() throws IOException {
+    if (!writeConfiguration(false))
+      throw new IOException("The schema of database '" + database.getName()
+          + "' cannot be saved now: a load, a multiple update or a transaction is in progress");
+  }
+
+  /**
+   * @return {@code false} when the save is postponed, {@code true} when the file was written
+   *
+   * @throws IOException when the file could not be written
+   */
+  private synchronized boolean writeConfiguration(final boolean ignoreOpenTransaction) throws IOException {
     refreshBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
@@ -5408,7 +5436,7 @@ public class LocalSchema implements Schema {
     if (readingFromFile || !loadInRamCompleted || multipleUpdate || (!ignoreOpenTransaction && database.isTransactionActive())) {
       // POSTPONE THE SAVING - ensure at least one generation is marked dirty
       dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
-      return;
+      return false;
     }
 
     // Capture the generation BEFORE serializing. Any concurrent modification that increments
@@ -5421,15 +5449,14 @@ public class LocalSchema implements Schema {
 
       savedGeneration = capturedGeneration;
 
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
-          databasePath + File.separator + SCHEMA_FILE_NAME);
+    } finally {
+      // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
+      // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
+      // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
+      // Refreshed whether or not the write succeeded, as before it could report the failure.
+      updateSecurity();
     }
-
-    // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
-    // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
-    // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
-    updateSecurity();
+    return true;
   }
 
   /**
