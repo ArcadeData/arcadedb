@@ -21,7 +21,9 @@ package com.arcadedb.utility;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
+import java.util.Collection;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -299,6 +301,35 @@ public abstract class DedicatedThreadPool {
     reclaimedTaskCount.incrementAndGet();
     runRejectedTask(task);
     return true;
+  }
+
+  /**
+   * Takes the tasks of {@code tasks} this pool has ACCEPTED BUT NOT STARTED back out of its queue, and cancels them
+   * without running them, for a submitter that knows they have nothing left to do. Skips, untouched, the tasks a worker
+   * already took.
+   * <p>
+   * <b>Why not just let them run and return.</b> A queued task holds whatever its body captured - for a parallel scan
+   * the scan itself and a copy of the query's context - until a worker dequeues it, and under a pool saturated by other
+   * work that can be minutes. A query its caller abandoned without closing it stays strongly reachable through its own
+   * queued tasks for all that time, and so do the heap it holds and its reservation from the query heap budget, which
+   * the garbage collector would otherwise have given back (#8591). A {@link Future#cancel(boolean)}
+   * alone is not enough: a cancelled task stays in the queue, with what it captured, until a worker dequeues it.
+   * <p>
+   * Cheap when there is nothing to drop: the queue-empty check is one {@code AtomicInteger} read, and only a non-empty
+   * queue pays for {@code remove}'s scan, once per task.
+   *
+   * @param tasks the futures {@code submit()} returned; null is a no-op
+   */
+  public final void dropQueuedTasks(final Collection<? extends Future<?>> tasks) {
+    if (tasks == null)
+      return;
+    for (final Future<?> task : tasks) {
+      if (executor.getQueue().isEmpty())
+        return;
+      // A FUTURE THE QUEUE DID NOT HAVE IS LEFT ALONE: IT RUNS, OR RAN, ON A WORKER, AND ITS SUBMITTER STOPS OR AWAITS IT
+      if (task instanceof RunnableFuture<?> queued && executor.remove(queued))
+        queued.cancel(false);
+    }
   }
 
   /** " Raise 'a' or 'b' if this persists.", or nothing when the pool has no sizing settings to name. */

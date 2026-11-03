@@ -28,6 +28,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CallableNoReturn;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -37,6 +38,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -170,6 +172,10 @@ class WALGroupCommitTest extends TestHelper {
    * A flush that fails after the pages were published: the commit must not report success, and the database is fenced so that
    * nothing commits on top of a transaction that may not be durable. The close keeps the WAL (the fenced database's pages
    * were discarded, not written) and the reopen's recovery replays it.
+   * <p>
+   * The page flush is suspended so that the commit is the one that runs the failing flush (see
+   * {@link #withPageFlushSuspended}): when the flush thread runs it first, the fence lands while the commit is still
+   * publishing, and the commit fails on the fence instead of on its own flush.
    */
   @Test
   void aFailedFlushFailsTheCommitAndFencesTheDatabase() throws Exception {
@@ -179,15 +185,17 @@ class WALGroupCommitTest extends TestHelper {
       throw new IOException("injected WAL flush failure");
     };
     try {
-      final Thread worker = new Thread(() -> {
-        try {
-          database.transaction(() -> database.newDocument(TYPE).set("id", "flush-failure").save());
-        } catch (final Throwable e) {
-          failure.set(e);
-        }
+      withPageFlushSuspended(() -> {
+        final Thread worker = new Thread(() -> {
+          try {
+            database.transaction(() -> database.newDocument(TYPE).set("id", "flush-failure").save());
+          } catch (final Throwable e) {
+            failure.set(e);
+          }
+        });
+        worker.start();
+        worker.join();
       });
-      worker.start();
-      worker.join();
     } finally {
       transactionManager.walSyncFaultInjector = null;
     }
@@ -311,6 +319,9 @@ class WALGroupCommitTest extends TestHelper {
    * Issue #10509: the WAL write of a group commit happens after the commit released its file locks, so the next commit on the
    * same type does not queue behind a write that the shared flush can slow down. Every WAL write of this commit must find no
    * file locked. Writing under the locks, as before, makes it fail.
+   * <p>
+   * The page flush is suspended (see {@link #withPageFlushSuspended}): the flush thread may run the shared flush, and so write
+   * the record, while the commit still holds the locks it is about to release, which says nothing about the commit.
    */
   @Test
   void aGroupCommitWritesItsWALOutsideTheFileLocks() throws Exception {
@@ -322,7 +333,7 @@ class WALGroupCommitTest extends TestHelper {
     };
     ((DatabaseInternal) database).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, probe);
     try {
-      runInThreads(1, 5);
+      withPageFlushSuspended(() -> runInThreads(1, 5));
     } finally {
       ((DatabaseInternal) database).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, probe);
     }
@@ -498,6 +509,32 @@ class WALGroupCommitTest extends TestHelper {
     for (final Thread worker : workers)
       worker.join();
     assertThat(failure.get()).isNull();
+  }
+
+  /**
+   * Runs {@code body} with the page flush of this database suspended. A published page of a group commit carries its WAL
+   * ticket, and the flush thread that reaches it before the WAL is durable runs the shared flush itself (the WAL rule in
+   * {@code PageManager.flushPage}): that can happen between the commit publishing its pages and releasing its file locks, so
+   * which of the two writes and flushes the record is a matter of scheduling. Suspended, the flush thread defers the pages
+   * instead of flushing them, and every flush is run by a commit waiting for its own. {@code suspendFlushAndExecute} logs and
+   * swallows what its callback throws, so a failure is carried out and rethrown here.
+   */
+  private void withPageFlushSuspended(final CallableNoReturn body) throws Exception {
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicBoolean ran = new AtomicBoolean();
+    ((DatabaseInternal) database).getPageManager().suspendFlushAndExecute(database, () -> {
+      try {
+        body.call();
+        ran.set(true);
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    });
+    if (failure.get() instanceof Error error)
+      throw error;
+    if (failure.get() instanceof Exception exception)
+      throw exception;
+    assertThat(ran.get()).as("the body run with the page flush suspended must have completed").isTrue();
   }
 
   private long stat(final String name) {

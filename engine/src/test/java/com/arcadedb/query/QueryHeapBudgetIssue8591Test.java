@@ -32,8 +32,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -238,6 +241,48 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       System.gc();
       return QueryHeapBudget.getReservedBytes() <= baseline;
     });
+  }
+
+  /**
+   * The same cursor, abandoned while every producer thread is busy with other work - in a shared JVM, the producers an
+   * open result set of another query parks for up to {@code arcadedb.parallelScanAbandonedTimeout}. The consumer scans
+   * every unit itself then (#8594), and the producers it submitted stay queued. They used to stay queued after the scan
+   * was over, and to keep the scan, its context and through it the query's reservation reachable until the pool got to
+   * them: the garbage collector found nothing to collect, and the budget stayed shrunk.
+   */
+  @Test
+  void anAbandonedCursorGivesItsHeapBackWhileTheProducerPoolIsBusy() throws Exception {
+    final String query = "SELECT FROM Doc ORDER BY name";
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + query)) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("FETCH FROM TYPE Doc (parallel)");
+    }
+
+    final ParallelScanProducerPool pool = ParallelScanProducerPool.getInstance();
+    final int threads = pool.getMaxParallelism();
+    final CountDownLatch release = new CountDownLatch(1);
+    final List<Future<?>> blockers = new ArrayList<>(threads);
+    try {
+      for (int i = 0; i < threads; i++)
+        blockers.add(pool.getExecutorService().submit(() -> {
+          release.await();
+          return null;
+        }));
+      // EVERY THREAD RUNS A TASK: OURS, OR ANOTHER TEST'S, WHICH LEAVES THE POOL JUST AS BUSY
+      await().atMost(Duration.ofSeconds(30)).until(() -> pool.getPoolStats().activeThreads() >= threads);
+
+      readOneRowAndAbandon("sql", query);
+      assertThat(QueryHeapBudget.getReservedBytes()).isGreaterThan(baseline);
+
+      // A HANG DETECTOR, NOT A LATENCY BOUND: THE FIRST COLLECTION THAT FINDS THE CURSOR GIVES THE RESERVATION BACK
+      await().atMost(Duration.ofSeconds(30)).until(() -> {
+        System.gc();
+        return QueryHeapBudget.getReservedBytes() <= baseline;
+      });
+    } finally {
+      release.countDown();
+      for (final Future<?> blocker : blockers)
+        blocker.cancel(true);
+    }
   }
 
   @Test

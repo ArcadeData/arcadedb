@@ -588,6 +588,25 @@ class ParallelRangeTopKTest extends TestHelper {
         // task then runs somewhere that already has a database context.
         final SparseVectorScoringPool pool = SparseVectorScoringPool.getInstance();
         final ExecutorService executor = pool.getExecutorService();
+        // Every worker first, and waited for: a full queue is not enough. The topK above hands its result back
+        // before its worker thread returns to the queue, so that worker can still be finishing it while the loop
+        // below fills the queue - and then takes one of the queued blockers, frees a slot, and the range the query
+        // submits next is ACCEPTED behind the blockers instead of rejected. It never runs before the release, and the
+        // query fails on its deadline, which is what aRangeThatNeverGetsAWorkerFailsTheQueryOnTheDeadline pins, not
+        // what this test is about. With every worker parked here nothing can take from the queue once it is full.
+        final int workers = pool.getMaxParallelism();
+        final CountDownLatch parked = new CountDownLatch(workers);
+        for (int i = 0; i < workers; i++)
+          executor.submit(() -> {
+            if (SparseVectorScoringPool.isPoolThread()) {
+              parked.countDown();
+              release.await(SATURATION_RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            }
+            return null;
+          });
+        assertThat(parked.await(SATURATION_RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS)).as("every worker must be parked")
+            .isTrue();
+
         // Submit until the queue reports itself full rather than computing a count up front: the
         // count is read from a racing snapshot, and overshooting it by even one is not a slow test
         // but a permanently stuck one. An over-submitted task is rejected and the caller-runs policy

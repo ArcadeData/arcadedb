@@ -2743,6 +2743,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return fileManager;
   }
 
+  /**
+   * The file manager also while the database is fenced for recovery, which {@link #getFileManager()} refuses: the page flush
+   * still writes the pages no WAL record describes, because the reopen could not replay them (see {@code PageManager.flushPage}).
+   */
+  public FileManager getFileManagerWhileFenced() {
+    return fileManager;
+  }
+
   @Override
   public String getName() {
     return name;

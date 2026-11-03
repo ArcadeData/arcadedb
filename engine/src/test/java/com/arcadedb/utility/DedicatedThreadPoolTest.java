@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -206,6 +207,45 @@ class DedicatedThreadPoolTest {
 
       assertThat(pool.runQueuedTaskOnCaller(null)).as("nothing to reclaim, and no NPE either").isFalse();
       assertThat(pool.getPoolStats().reclaimedTasks()).isZero();
+    } finally {
+      releaseRunning.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * A queued task its submitter no longer needs is taken out of the queue without running, and its future cancelled, so
+   * it stops holding what it captured until a worker gets to it (#8591). A task a worker already runs is left alone.
+   */
+  @Test
+  @Timeout(HANG_DETECTOR_SECONDS)
+  void aQueuedTaskIsDroppedWithoutRunningAndARunningOneIsLeftAlone() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch releaseRunning = new CountDownLatch(1);
+    final CountDownLatch running = new CountDownLatch(1);
+    try {
+      final Future<?> started = pool.getExecutorService().submit(() -> {
+        running.countDown();
+        releaseRunning.await();
+        return null;
+      });
+      assertThat(awaited(running)).as("the pool's single worker must be pinned before anything can be queued").isTrue();
+
+      final AtomicReference<Boolean> ran = new AtomicReference<>(false);
+      final Future<?> queued = pool.getExecutorService().submit(() -> ran.set(true));
+      assertThat(pool.getPoolStats().queueDepth()).isEqualTo(1);
+
+      pool.dropQueuedTasks(List.of(started, queued));
+      pool.dropQueuedTasks(null);
+
+      assertThat(pool.getPoolStats().queueDepth()).as("the queued task is out of the queue").isZero();
+      assertThat(queued.isCancelled()).as("...and its future cancelled, so nobody waits for it for ever").isTrue();
+      assertThat(started.isDone()).as("a task a worker already runs is not this call's to stop").isFalse();
+
+      releaseRunning.countDown();
+      started.get(HANG_DETECTOR_SECONDS, TimeUnit.SECONDS);
+      assertThat(ran.get()).as("a dropped task never runs").isFalse();
+      assertThat(pool.getPoolStats().reclaimedTasks()).as("a drop runs nothing, it is not a reclaim").isZero();
     } finally {
       releaseRunning.countDown();
       pool.close();

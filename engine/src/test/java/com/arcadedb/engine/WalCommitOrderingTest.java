@@ -27,6 +27,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,8 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.lang.reflect.Field;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -247,6 +250,78 @@ class WalCommitOrderingTest {
     }
   }
 
+  /**
+   * The test above, with the order that made it flaky pinned: the fence lands before the flush thread reaches the pages of the
+   * failed publication. The flush dropped every page of a fenced database, on the grounds that recovery replays it from the WAL,
+   * and with txWAL=false there is nothing to replay: the record whose identity the caller kept was gone after the reopen,
+   * or not, depending on which of the two threads came first.
+   */
+  @Test
+  void publishFailureWithWalDisabledKeepsItsPagesWhenTheFenceComesBeforeTheirFlush() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      db.getSchema().createDocumentType("Doc");
+
+      db.begin();
+      db.getTransaction().setUseWAL(false);
+      db.newDocument("Doc").set("v", 1).save();
+      final TransactionContext tx = (TransactionContext) db.getTransaction();
+      final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+      injectPostPublishFailure(tx);
+
+      // suspended, the flush thread defers the published pages instead of writing them, so they are still queued when the
+      // failure fences the database
+      runWithPageFlushSuspended(db, () -> assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(TransactionException.class));
+      assertThat(((LocalDatabase) db).isFencedForRecovery()).isTrue();
+
+      db.close();
+      db = (DatabaseInternal) factory.open();
+      assertThat(countByScan(db)).as("the published record of a txWAL=false commit must reach its file on a fenced database")
+          .isEqualTo(1);
+    } finally {
+      db.close();
+      factory.close();
+    }
+  }
+
+  /**
+   * The same drop with a transaction that SUCCEEDED: a txWAL=false commit whose pages were still waiting for their flush when an
+   * unrelated failure fenced the database lost them at the close, although the commit had returned.
+   */
+  @Test
+  void committedPagesWithWalDisabledSurviveAFenceThatLandsBeforeTheirFlush() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      db.getSchema().createDocumentType("Doc");
+
+      final DatabaseInternal database = db;
+      runWithPageFlushSuspended(db, () -> {
+        database.begin();
+        database.getTransaction().setUseWAL(false);
+        for (int i = 0; i < 10; i++)
+          database.newDocument("Doc").set("v", i).save();
+        database.commit();
+        ((LocalDatabase) database).fenceForRecovery("test: fenced while the pages of a txWAL=false commit wait for their flush");
+      });
+
+      db.close();
+      db = (DatabaseInternal) factory.open();
+      assertThat(countByScan(db)).as("a committed txWAL=false transaction must survive the close of a fenced database")
+          .isEqualTo(10);
+    } finally {
+      db.close();
+      factory.close();
+    }
+  }
+
   @Test
   void publishFailureAfterRealWalAppendFencesThroughTheFinallyTrigger() throws Exception {
     // The counterpart, and the wiring test for the finally trigger itself: the same post-publish failure
@@ -366,6 +441,36 @@ class WalCommitOrderingTest {
       db.close();
       factory.close();
     }
+  }
+
+  /** Counted by a scan, not by countType(): the cached record count is persisted at close and would count a lost record. */
+  private static long countByScan(final DatabaseInternal db) {
+    final long[] count = { 0 };
+    db.iterateType("Doc", false).forEachRemaining(r -> count[0]++);
+    return count[0];
+  }
+
+  /**
+   * Runs {@code body} with the page flush of the database suspended: the flush thread defers what is published meanwhile instead
+   * of writing it. {@code suspendFlushAndExecute} logs and swallows what its callback throws, so a failure is carried out and
+   * rethrown here.
+   */
+  private static void runWithPageFlushSuspended(final DatabaseInternal db, final CallableNoReturn body) throws Exception {
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicBoolean ran = new AtomicBoolean();
+    db.getPageManager().suspendFlushAndExecute(db, () -> {
+      try {
+        body.call();
+        ran.set(true);
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    });
+    if (failure.get() instanceof Error error)
+      throw error;
+    if (failure.get() instanceof Exception exception)
+      throw exception;
+    assertThat(ran.get()).as("the body run with the page flush suspended must have completed").isTrue();
   }
 
   private static long totalWalBytes() {
