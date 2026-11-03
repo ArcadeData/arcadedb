@@ -6,10 +6,11 @@
 # of 0 against a minimum of 90, driven by real advisories in the transitive graph - CVE-2026-33186 (critical) in
 # google.golang.org/grpc pulled in by e2e-go, plus ~40 npm and Java findings.
 #
-# The score is a property of the whole transitive graph and no individual pull request can move it, so gating every
-# push on it produced a permanent red X that taught reviewers to ignore red - the actual cost. The security findings
-# themselves are not dropped: the SARIF upload below keeps every one of them as a triageable GitHub code-scanning
-# alert, which is where they are worked, and the scan still runs on main and nightly.
+# The scan ran with continue-on-error while that score could not pass: a permanent red X teaches reviewers to ignore
+# red. PR #11237 cleaned the graph (security 0 -> 98 on 2026-11-03), so the scan blocks again, on security and
+# licensing only (see the scanner step). A pull request that brings in a vulnerable dependency now fails here, and
+# the daily run on main fails when a new advisory hits a dependency already in use. The findings are also uploaded
+# as GitHub code-scanning alerts (SARIF, below), which is where they are triaged.
 #
 # What the upload does NOT carry is Meterian's stability dimension. Those findings report only that a newer release
 # of a dependency exists - Dependabot's job, and it is configured for every ecosystem in this repo - so they are
@@ -21,9 +22,7 @@ name: Meterian Scanner workflow
 on:
   push:
     branches: [main]
-  # PRs are still scanned. What changed is that the result cannot fail the check (continue-on-error below), so a
-  # newly introduced vulnerable dependency still surfaces its SARIF diff at PR time instead of only after it lands
-  # on main - the signal is kept, only the blocking red X is dropped.
+  # A pull request is scanned merged into main, so it fails only on a vulnerable dependency it brings in itself.
   pull_request:
   schedule:
     # Daily, so the alert set stays current between main commits.
@@ -50,10 +49,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Meterian Scanner
-        # continue-on-error, NOT a lowered threshold: the job must still produce and upload the report, and the
-        # findings must still be visible, but a score this workflow cannot turn green must not present itself as a
-        # failing check. Raising it back to blocking is a deliberate act once the transitive graph is clean.
-        continue-on-error: true
+        # Blocking. The client's exit code adds 1 for a failed security score, 2 for stability and 4 for licensing.
+        # --min-stability=0 keeps stability out of it: that score only says newer releases exist (Dependabot's job)
+        # and drops as upstream ships, with nothing in the pull request causing it. --fail-gracefully turns
+        # Meterian's own failures ("We were not able to successfully analyse this project", seen on a PR scan on
+        # 2026-11-03) into exit 0, so an outage there is not a red X here. Security keeps the default minimum of 90
+        # and licensing 95.
         uses: MeterianHQ/meterian-github-action@9603528ad7eb3e76e7181d8d721bba25665a403d # v1.0.18
         with:
           # The e2e-go, e2e-js and e2e-python harnesses are excluded: they drive a server under test from CI and ship in
@@ -62,6 +63,8 @@ jobs:
           # dependencies stay under Dependabot, and e2e-js under the blocking runtime audit of e2e-dependency-audit.yml.
           cli_args: >-
             --exclude-folders=**/e2e-go,**/e2e-js,**/e2e-python
+            --min-stability=0
+            --fail-gracefully
             --report-console=nocolor
             --report-sarif=report.sarif
           oss: true
@@ -74,15 +77,15 @@ jobs:
         #
         # This is done here, not in the scanner, because Meterian has no flag for it:
         # --report-console takes a security|stability|licensing filter but --report-sarif takes a
-        # filename only, and the .meterian exclusions file is documented as acting on the scores -
-        # which gate nothing here, the scan already being continue-on-error. See the script header.
+        # filename only, and the .meterian exclusions file is documented as acting on the scores, not
+        # on the report contents. See the script header.
         continue-on-error: true
         if: success() || failure()
         run: .github/scripts/filter-meterian-sarif.py report.sarif
       - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        # continue-on-error here too, or the fix above only half works: a pull request from a FORK gets a read-only
-        # token no matter what `security-events: write` says, so this upload cannot succeed there - and it, not the
-        # scan, would then turn the job red on exactly the PRs external contributors and Dependabot open. Uploading
+        # continue-on-error: a pull request from a FORK gets a read-only token no matter what
+        # `security-events: write` says, so this upload cannot succeed there - and it, not the scan, would then turn
+        # the job red on exactly the PRs external contributors and Dependabot open. Uploading
         # is best-effort; on same-repo runs (every push to main, the nightly, and internal PRs) it still populates
         # code scanning, which is where these findings are triaged.
         continue-on-error: true

@@ -29,9 +29,9 @@
 #
 # Meterian has no flag for this. --report-console takes a security|stability|licensing filter but
 # --report-sarif takes a filename only, and the .meterian exclusions file is documented as acting
-# on the scores rather than on report contents - which would be a no-op here, since the workflow
-# already runs the scan with continue-on-error and gates nothing on the score. Filtering the
-# report between the scan and the upload is the part that is ours to control.
+# on the scores rather than on report contents (the workflow already keeps stability out of the
+# gate with --min-stability=0). Filtering the report between the scan and the upload is the part
+# that is ours to control.
 #
 # The findings are not lost: they stay in the Meterian report linked from every alert, and the
 # dependencies themselves stay under Dependabot. What changes is that the GitHub security tab
