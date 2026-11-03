@@ -1583,6 +1583,8 @@ public class LocalSchema implements Schema {
   private static final String UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX = "unenforced-lightweight-constraint:";
   // KEY PREFIX IN reportedUpgradeWarnings: A CONTINUOUS AGGREGATE CREATED BEFORE #10804, WITH NO INDEX ON ITS BUCKET COLUMN
   private static final String UNINDEXED_AGGREGATE_WARNING_PREFIX = "unindexed-continuous-aggregate:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LINKED BELOW A BACKING TYPE BEFORE #11204
+  private static final String BACKING_SUBTYPE_WARNING_PREFIX     = "subtype-of-backing-type:";
 
   /**
    * Issue #10804: names, once per aggregate for the life of this schema, a continuous aggregate whose refresh scans its whole backing
@@ -3572,6 +3574,62 @@ public class LocalSchema implements Schema {
           + "source data and run: " + owner.refreshStatement() + ", or remove the " + owner.kind() + " with: " + owner.dropStatement());
   }
 
+  /**
+   * Refuses to link {@code superType} above the type {@code typeName} when {@code superType} is the backing type of a materialized
+   * view or a continuous aggregate, or a type below one (issue #11204). {@code SELECT FROM} a type is polymorphic, so every row of a
+   * subtype is answered by the view, counted in its {@code count(*)} and sorted into its {@code ORDER BY} while the view reports
+   * VALID, and no refresh takes it out: a refresh rewrites the backing type's own buckets only. The write guard of
+   * {@link #checkBackingTypeWrite} cannot stand in for this refusal, because a type linked with its rows already in it brings all of
+   * them into the view without writing one. Asked of a NEW linkage only: a database whose schema already holds such a link still
+   * opens, and the link can be taken out with {@code ALTER TYPE ... SUPERTYPE -}.
+   */
+  public void checkCanExtend(final String typeName, final DocumentType superType) {
+    if (backingTypeOwners.isEmpty())
+      return;
+    final DocumentType backingType = backingTypeAtOrAbove(superType, new HashSet<>());
+    if (backingType == null)
+      return;
+    final BackingTypeOwner owner = backingTypeOwners.get(backingType.getName());
+    final String what = backingType == superType ?
+        "'" + superType.getName() + "' is the backing type for " :
+        "'" + superType.getName() + "' extends '" + backingType.getName() + "', the backing type for ";
+    throw new SchemaException("Cannot make type '" + typeName + "' a subtype of '" + superType.getName() + "' because " + what
+        + owner.kind() + " '" + owner.getName() + "': every row of a subtype is answered by SELECT FROM '" + backingType.getName()
+        + "', while only its refresh writes the rows of the " + owner.kind() + ". Store the rows in a type of their own");
+  }
+
+  /** {@code type} or the first of its super types that is a backing type, or null when none is. */
+  private DocumentType backingTypeAtOrAbove(final DocumentType type, final Set<String> visited) {
+    if (!visited.add(type.getName()))
+      return null;
+    if (backingTypeOwners.containsKey(type.getName()))
+      return type;
+    for (final DocumentType superType : type.getSuperTypes()) {
+      final DocumentType found = backingTypeAtOrAbove(superType, visited);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Names, once per type for the life of this schema, every type a database written before issue #11204 linked below a backing
+   * type: its rows are answered by the view, and the link is what to take out.
+   */
+  private void warnAboutSubtypesOfBackingTypes(final Collection<? extends BackingTypeOwner> owners) {
+    for (final BackingTypeOwner owner : owners) {
+      final String backingTypeName = owner.getBackingTypeName();
+      if (!existsType(backingTypeName))
+        continue;
+      for (final DocumentType subType : getType(backingTypeName).getSubTypes())
+        if (reportedUpgradeWarnings.add(BACKING_SUBTYPE_WARNING_PREFIX + subType.getName()))
+          LogManager.instance().log(this, Level.WARNING,
+              "Type '%s' in database '%s' is a subtype of '%s', the backing type for %s '%s': every row of it is answered by the %s "
+                  + "as if its refresh had computed it. Take the link out with ALTER TYPE `%s` SUPERTYPE -`%s`", null, subType.getName(),
+              database.getName(), backingTypeName, owner.kind(), owner.getName(), owner.kind(), subType.getName(), backingTypeName);
+    }
+  }
+
   /** As {@link #checkBackingTypeWrite(String, String)}, for a record known by its bucket. */
   public void checkBackingTypeWrite(final int bucketId, final String operation) {
     if (backingTypeOwners.isEmpty())
@@ -3600,7 +3658,9 @@ public class LocalSchema implements Schema {
    * A registry of backing type owners that keeps {@link #backingTypeOwners} in step with itself on every change, so that no code
    * path that registers or removes a view or an aggregate (creation, drop, schema load, the restore of a staged schema) can leave
    * the write guard of issue #11020 behind. Every mutator of the map refreshes the snapshot, and the key, value and entry views
-   * are read-only, so a removal through one of them fails instead of leaving the guard stale.
+   * are read-only, so a removal through one of them fails instead of leaving the guard stale. So are the entries they hand out
+   * (issue #11203): {@code Collections.unmodifiableSet} over the entry set hands out the live entries, whose {@code setValue}
+   * replaced an owner behind the snapshot.
    */
   private final class BackingTypeRegistry<V extends BackingTypeOwner> extends LinkedHashMap<String, V> {
     @Override
@@ -3679,7 +3739,7 @@ public class LocalSchema implements Schema {
 
     @Override
     public Set<Map.Entry<String, V>> entrySet() {
-      return Collections.unmodifiableSet(super.entrySet());
+      return new ReadOnlyEntries<>(super.sequencedEntrySet());
     }
 
     // THE SequencedMap MUTATORS AND VIEWS OF LinkedHashMap (JAVA 21) GO AROUND put/remove, SO THEY ARE COVERED TOO
@@ -3725,7 +3785,7 @@ public class LocalSchema implements Schema {
 
     @Override
     public SequencedSet<Map.Entry<String, V>> sequencedEntrySet() {
-      return Collections.unmodifiableSequencedSet(super.sequencedEntrySet());
+      return new ReadOnlyEntries<>(super.sequencedEntrySet());
     }
 
     @Override
@@ -3757,6 +3817,51 @@ public class LocalSchema implements Schema {
     public void clear() {
       super.clear();
       backingTypeOwnersChanged();
+    }
+  }
+
+  /**
+   * The entries of a {@link BackingTypeRegistry}, read-only down to each entry (issue #11203). Not a JDK wrapper over the registry:
+   * {@code Collections.unmodifiableMap(registry).entrySet()} asks the registry for its entry set, which is this view, and the
+   * sequenced wrappers route back the same way. It wraps the map's own entry set instead, whose iterator walks the map's nodes.
+   */
+  private static final class ReadOnlyEntries<V> extends AbstractSet<Map.Entry<String, V>> implements SequencedSet<Map.Entry<String, V>> {
+    private final SequencedSet<Map.Entry<String, V>> entries;
+
+    private ReadOnlyEntries(final SequencedSet<Map.Entry<String, V>> entries) {
+      this.entries = entries;
+    }
+
+    @Override
+    public Iterator<Map.Entry<String, V>> iterator() {
+      final Iterator<Map.Entry<String, V>> iterator = entries.iterator();
+      // no remove(): the default refuses it
+      return new Iterator<>() {
+        @Override
+        public boolean hasNext() {
+          return iterator.hasNext();
+        }
+
+        @Override
+        public Map.Entry<String, V> next() {
+          return new AbstractMap.SimpleImmutableEntry<>(iterator.next());
+        }
+      };
+    }
+
+    @Override
+    public int size() {
+      return entries.size();
+    }
+
+    @Override
+    public boolean contains(final Object o) {
+      return entries.contains(o);
+    }
+
+    @Override
+    public SequencedSet<Map.Entry<String, V>> reversed() {
+      return new ReadOnlyEntries<>(entries.reversed());
     }
   }
 
@@ -4981,6 +5086,9 @@ public class LocalSchema implements Schema {
         }
       }
     }
+
+    warnAboutSubtypesOfBackingTypes(viewTarget.values());
+    warnAboutSubtypesOfBackingTypes(aggregateTarget.values());
 
     // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
     // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
