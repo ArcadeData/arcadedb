@@ -119,9 +119,7 @@ class Issue7096VertexUpdateAutocommitIT extends PostgresWireProtocolTestBase {
       try (final PreparedStatement ps = conn.prepareStatement("UPDATE Character7096 SET name = ? WHERE name = ?")) {
         ps.setString(1, "Bonaparte");
         ps.setString(2, "Napoleon");
-        // execute(), not executeUpdate(): ArcadeDB answers a DML statement with its count row, which pgJDBC's
-        // executeUpdate() refuses as "a result was returned when none was expected" on every wire path, not just this one.
-        ps.execute();
+        assertThat(ps.executeUpdate()).isEqualTo(1);
       }
 
       try (final ResultSet rs = st.executeQuery("SELECT name FROM Character7096")) {
