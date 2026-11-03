@@ -59,6 +59,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -69,6 +70,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedOutputStream;
 import java.util.zip.ZipEntry;
@@ -621,6 +623,11 @@ public final class SnapshotInstaller {
     // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
     writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
 
+    // The staging has just been verified against the leader's manifest, which is dropped after the download. Keep
+    // its account (name and size of every file) for the length of the install, so the files that end up live can be
+    // compared with it before the retained backup is deleted (issue #11200).
+    final Map<String, Long> expectedFiles = expectedInstalledFiles(snapshotNew);
+
     final Consumer<String> staged = snapshotStagedForTesting;
     if (staged != null)
       staged.accept(databaseName);
@@ -629,7 +636,7 @@ public final class SnapshotInstaller {
     // while the files are being moved.
     server.setSnapshotInstallInProgress(true);
     try {
-      swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server);
+      swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server, expectedFiles);
     } finally {
       server.setSnapshotInstallInProgress(false);
     }
@@ -660,6 +667,18 @@ public final class SnapshotInstaller {
    */
   static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
       final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
+    swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server, null);
+  }
+
+  /**
+   * Same as above, and when {@code expectedFiles} is not null (see {@link #expectedInstalledFiles}) the installed
+   * files are compared with it right after the swap. A reopen that does not throw proves nothing about whether the
+   * files are the leader's: zero-length page files read as empty buckets and an unreadable {@code schema.json} falls
+   * back to {@code schema.prev.json}, and both open (issue #11200). A mismatch is treated like a failed reopen.
+   */
+  static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
+      final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server,
+      final Map<String, Long> expectedFiles) throws IOException {
     // Prepared while nothing has moved, so a failed validation can record its verdict without free space (#8942).
     // Outside the registry lock: the install's maintenance slot already excludes every other writer of this directory.
     try {
@@ -698,6 +717,19 @@ public final class SnapshotInstaller {
       // Remove the completion marker from the now-live directory
       Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
 
+      // Checked BEFORE the reopen: opening may legitimately rewrite files (the engine rewrites schema.json when it
+      // had to fall back to schema.prev.json), and what must be compared is what the swap installed.
+      final String mismatch = expectedFiles != null ? firstInstalledFileMismatch(expectedFiles, dbPath) : null;
+      if (mismatch != null) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Installed snapshot for '%s' does not match what the leader sent (%s); rolling back to the previous local copy",
+            null, databaseName, mismatch);
+        rollbackAfterFailedValidation(dbPath, snapshotBackup);
+        reopenQuietly(server, databaseName);
+        throw new IOException("Snapshot for '" + databaseName + "' downloaded but the installed files do not match what the leader sent ("
+            + mismatch + "); rolled back to the previous local copy");
+      }
+
       try {
         // Re-open the database so the server registers it (also validates the snapshot is loadable). The pending
         // marker is still on disk at this point - it is cleared only once this open succeeds - and it is what
@@ -730,6 +762,43 @@ public final class SnapshotInstaller {
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
     }
+  }
+
+  /**
+   * The account of what a verified staging directory holds: relative path (with {@code /}) to size, for every file
+   * except the install's own completion marker. Taken once the staging was verified against the leader's manifest.
+   */
+  static Map<String, Long> expectedInstalledFiles(final Path snapshotNew) throws IOException {
+    final Map<String, Long> expected = new HashMap<>();
+    try (final Stream<Path> files = Files.walk(snapshotNew)) {
+      final Iterator<Path> it = files.iterator();
+      while (it.hasNext()) {
+        final Path file = it.next();
+        if (!Files.isRegularFile(file))
+          continue;
+        final String name = snapshotNew.relativize(file).toString().replace('\\', '/');
+        if (SNAPSHOT_COMPLETE_FILE.equals(name))
+          continue;
+        expected.put(name, Files.size(file));
+      }
+    }
+    return expected;
+  }
+
+  /** The first file of {@code expected} that is missing from {@code dbPath} or has another size, described; null when all match. */
+  static String firstInstalledFileMismatch(final Map<String, Long> expected, final Path dbPath) {
+    for (final Map.Entry<String, Long> entry : expected.entrySet()) {
+      final Path file = dbPath.resolve(entry.getKey());
+      final long size;
+      try {
+        size = Files.size(file);
+      } catch (final IOException e) {
+        return "'" + entry.getKey() + "' is missing";
+      }
+      if (size != entry.getValue())
+        return "'" + entry.getKey() + "' is " + size + " bytes instead of " + entry.getValue();
+    }
+    return null;
   }
 
   /**
