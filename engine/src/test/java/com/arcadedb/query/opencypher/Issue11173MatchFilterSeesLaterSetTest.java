@@ -93,6 +93,8 @@ class Issue11173MatchFilterSeesLaterSetTest extends TestHelper {
     assertThat(explain("MATCH (a)-[:R]->(b {k: 1}) REMOVE b.k")).contains(EAGER);
     assertThat(explain("MATCH (a)-[:R]->(b) WHERE b.k = 1 SET b += {k: 2}")).contains(EAGER);
     assertThat(explain("MATCH (a)-[:R]->(b) WHERE b.k = 1 FOREACH (x IN [1] | SET b.k = 2)")).contains(EAGER);
+    assertThat(explain("MATCH (a)-[:R]->(b) WHERE b.k = 1 CALL (b) { SET b.k = 2 }")).contains(EAGER);
+    assertThat(explain("MATCH (a)-[:R]->(b) WHERE b.k = 1 CALL (b) { SET b.other = 2 }")).doesNotContain(EAGER);
   }
 
   @Test
