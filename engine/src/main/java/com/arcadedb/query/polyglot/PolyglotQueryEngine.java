@@ -127,6 +127,12 @@ public class PolyglotQueryEngine implements QueryEngine {
     return language;
   }
 
+  @Override
+  public boolean analysisEvaluatesQuery() {
+    // analyze() runs the script to learn what it does
+    return true;
+  }
+
   /**
    * Executing a polyglot script grants the caller arbitrary in-JVM capabilities (host method access and file I/O reachable
    * through the bound {@code database} object), so it must be gated behind database-administrator privileges. Without this

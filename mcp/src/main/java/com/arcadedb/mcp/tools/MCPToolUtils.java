@@ -27,7 +27,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.polyglot.PolyglotQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -71,14 +70,15 @@ public class MCPToolUtils {
   }
 
   /**
-   * The query engine of a tool that runs the caller's query or command text. A scripting engine evaluates the script
-   * already in {@code analyze()}, which is where the tool decides whether the text is read-only or allowed by the MCP
-   * configuration, so the script would run before either check could refuse it: it is refused here, before analysis.
+   * The query engine of a tool that runs the caller's query or command text. {@code analyze()} is where the tool decides
+   * whether the text is read-only or allowed by the MCP configuration, so an engine whose analysis evaluates the text
+   * (a scripting language, Gremlin) would run it before either check could refuse it: it is refused here, before analysis.
    */
   public static QueryEngine analyzableQueryEngine(final Database database, final String language) {
     final QueryEngine engine = database.getQueryEngine(language);
-    if (engine instanceof PolyglotQueryEngine)
-      throw new SecurityException("Scripting language '" + language + "' is not available through MCP");
+    if (engine.analysisEvaluatesQuery())
+      throw new SecurityException("Language '" + language
+          + "' is not available through MCP: it cannot be checked without running it. Use sql, cypher, graphql or mongo");
     return engine;
   }
 

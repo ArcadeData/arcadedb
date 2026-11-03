@@ -44,6 +44,12 @@ public class GremlinQueryEngine implements QueryEngine {
   }
 
   @Override
+  public boolean analysisEvaluatesQuery() {
+    // analyze() builds the traversal by evaluating the text, with the Groovy engine as with the gremlin-lang one
+    return true;
+  }
+
+  @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query);
     arcadeGremlin.setParameters(parameters);

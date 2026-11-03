@@ -61,7 +61,7 @@ public class QueryTool {
                     .put("description", "The name of the database to query"))
                 .put("language", new JSONObject()
                     .put("type", "string")
-                    .put("description", "Query language: 'sql', 'cypher', 'gremlin', 'graphql', 'mongo'")
+                    .put("description", "Query language: 'sql', 'cypher', 'graphql', 'mongo'")
                     .put("default", "cypher"))
                 .put("query", new JSONObject()
                     .put("type", "string")

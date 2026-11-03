@@ -2,7 +2,7 @@
   "name": "arcadedb",
   "displayName": "ArcadeDB",
   "version": "1.0.0",
-  "description": "Connect to your own ArcadeDB server through its built-in MCP endpoint: explore the schema, run Cypher/SQL/Gremlin queries, search vectors and full text, and update records within the permissions the server grants.",
+  "description": "Connect to your own ArcadeDB server through its built-in MCP endpoint: explore the schema, run Cypher/SQL queries, search vectors and full text, and update records within the permissions the server grants.",
   "author": {
     "name": "Arcade Data Ltd",
     "email": "info@arcadedata.com",
@@ -16,7 +16,7 @@
   "supportUrl": "https://github.com/ArcadeData/arcadedb/issues",
   "privacyPolicyUrl": "https://arcadedb.com/privacy.html",
   "termsOfServiceUrl": "https://arcadedb.com/terms.html",
-  "keywords": ["arcadedb", "database", "graph", "cypher", "sql", "gremlin", "vector", "mcp"],
+  "keywords": ["arcadedb", "database", "graph", "cypher", "sql", "vector", "mcp"],
   "userConfig": {
     "server_url": {
       "type": "string",

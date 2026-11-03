@@ -128,6 +128,15 @@ public interface QueryEngine {
     return false;
   }
 
+  /**
+   * Whether {@link #analyze(String)} evaluates the text it is given instead of only parsing it, so that a caller cannot use the
+   * analysis as a check that runs before the text does anything (issue #11170): a scripting engine runs the script, and a Gremlin
+   * traversal is built by evaluating it. By default an engine only parses.
+   */
+  default boolean analysisEvaluatesQuery() {
+    return false;
+  }
+
   ResultSet query(String query, ContextConfiguration configuration, Map<String, Object> parameters);
 
   /**

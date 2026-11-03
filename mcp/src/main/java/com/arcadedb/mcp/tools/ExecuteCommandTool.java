@@ -61,7 +61,7 @@ public class ExecuteCommandTool {
                     .put("description", "The name of the database"))
                 .put("language", new JSONObject()
                     .put("type", "string")
-                    .put("description", "Command language: 'sql', 'cypher', 'gremlin', 'graphql', 'mongo'")
+                    .put("description", "Command language: 'sql', 'cypher', 'graphql', 'mongo'")
                     .put("default", "cypher"))
                 .put("command", new JSONObject()
                     .put("type", "string")

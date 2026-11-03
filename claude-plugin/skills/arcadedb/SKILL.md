@@ -22,8 +22,9 @@ queryable with several languages.
 
 ## Choosing a query language
 
-The `language` argument accepts `cypher` (the default), `sql`, `gremlin`, `graphql` and `mongo`. Scripting languages
-(`js`, `python`, ...) are refused: they would run before the server could check what they do.
+The `language` argument accepts `cypher` (the default), `sql`, `graphql` and `mongo`. Gremlin and the scripting
+languages (`js`, `python`, ...) are refused: the server cannot check what they do without running them. Translate a
+Gremlin traversal the user pastes into Cypher, and say so.
 
 - **Cypher** for graph patterns and traversals: `MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN c.name, count(p) AS staff`.
 - **ArcadeDB SQL** when the user asks for SQL, for schema changes, and for document-style work. It is not ANSI SQL:
