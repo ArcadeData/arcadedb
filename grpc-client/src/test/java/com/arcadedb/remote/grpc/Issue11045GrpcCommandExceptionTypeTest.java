@@ -49,7 +49,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue11045GrpcCommandExceptionTypeTest {
-  /** The few that cannot come back as themselves, with what they come back as. */
+  /**
+   * The few that cannot come back as themselves, with what they come back as. Unlike the HTTP test's map this one has no
+   * DuplicatedKeyException entry: this client rebuilds it from the ALREADY_EXISTS status and its trailers (GrpcClientErrorMapper),
+   * not from the authority's table.
+   */
   private static final Map<String, Class<?>> REBUILT_AS = Map.of(
       // its (String) constructor takes a type name: rebuilt as the AlreadyExistsException it extends (issue #10153)
       TypeAlreadyExistsException.class.getName(), AlreadyExistsException.class,
