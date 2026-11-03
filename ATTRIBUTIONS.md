@@ -198,7 +198,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| com.google.guava | guava | 33.5.0-android | Apache 2.0 | https://github.com/google/guava |
+| com.google.guava | guava | 33.7.2-android | Apache 2.0 | https://github.com/google/guava |
 | com.google.code.findbugs | jsr305 | 3.0.2 | Apache 2.0 | https://code.google.com/archive/p/jsr-305/ |
 | com.google.errorprone | error_prone_annotations | 2.45.0 | Apache 2.0 | https://errorprone.info/ |
 
@@ -286,7 +286,7 @@ The live force layout of the graph view (node repulsion, link springs, centre gr
 | d3-quadtree | 3.0.1 | ISC | https://github.com/d3/d3-quadtree |
 | d3-timer | 3.0.1 | ISC | https://github.com/d3/d3-timer |
 
-### Studio (Web UI) Icons, Fonts and Export Libraries
+### Studio (Web UI) Icons and Fonts
 
 Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-list since issue #10626; the
 `studio/test/dependency-licenses.test.js` unit test checks every package Studio ships against that list.
@@ -294,9 +294,6 @@ Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-
 | npm package | Version | License | Pulled in via | Homepage |
 |-------------|---------|---------|---------------|----------|
 | @fortawesome/fontawesome-free | 7.3.1 | Icons CC-BY-4.0, fonts OFL-1.1, code MIT | direct dependency | https://fontawesome.com/ |
-| pako | 1.0.11 | MIT AND Zlib | jszip | https://github.com/nodeca/pako |
-| sax | 1.6.1 | BlueOak-1.0.0 | pdfmake (xmldoc) | https://github.com/isaacs/sax-js |
-| png-js | 2.0.0 | MIT (LICENSE file; no `license` field in its package.json) | pdfmake | https://github.com/devongovett/png.js |
 
 **Font Awesome attribution (required by CC-BY-4.0):** Studio's icons are Font Awesome Free by Fonticons, Inc.
 (https://fontawesome.com), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). The webfonts are

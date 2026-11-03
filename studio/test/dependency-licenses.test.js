@@ -50,10 +50,8 @@ const ASSET_PACKAGES = new Set([
 
 // Shipped packages whose recorded licence the expression check above cannot read, each pinned to the EXACT text npm
 // recorded: a new version that changes it fails again and has to be looked at.
-const REVIEWED = {
-  // png-js (a pdfmake dependency) declares no licence field; the LICENSE file in its tarball is MIT
-  "png-js": undefined
-};
+// Empty since pdfmake left Studio: png-js, its dependency with no licence field (an MIT LICENSE file), was the only entry.
+const REVIEWED = {};
 
 /** True when an SPDX expression is satisfied by the allow-list: every AND term allowed, any one OR alternative allowed. */
 function allowed(expression, assets = false) {
