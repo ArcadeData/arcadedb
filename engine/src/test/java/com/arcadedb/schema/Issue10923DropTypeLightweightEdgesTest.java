@@ -36,6 +36,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue10923DropTypeLightweightEdgesTest extends TestHelper {
 
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    // unsafeStillDropsAnEdgeTypeWithLightEdges strands entries on purpose, and CHECK DATABASE now reports them (#11142)
+    return false;
+  }
+
   private MutableVertex[] createVerticesAndSchema(final String edgeDdl) {
     database.command("sql", "CREATE VERTEX TYPE V");
     database.command("sql", edgeDdl);
