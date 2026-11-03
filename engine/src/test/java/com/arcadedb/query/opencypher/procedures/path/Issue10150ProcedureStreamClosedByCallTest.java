@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.path;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -96,7 +97,7 @@ class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
 
   @Override
   protected void endTest() {
-    CypherProcedureRegistry.unregister(TrackedExpandConfig.NAME);
+    unregister(TrackedExpandConfig.NAME);
   }
 
   @Test
@@ -231,7 +232,13 @@ class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
 
   private static void unregister(final List<CypherProcedure> procedures) {
     for (final CypherProcedure procedure : procedures)
-      CypherProcedureRegistry.unregister(procedure.getName());
+      unregister(procedure.getName());
+  }
+
+  /** From both registries: registering a Cypher procedure also registers it in the unified one, which would keep it. */
+  private static void unregister(final String name) {
+    CypherProcedureRegistry.unregister(name);
+    ProcedureRegistry.unregister(name);
   }
 
   private static Result row(final int n) {
