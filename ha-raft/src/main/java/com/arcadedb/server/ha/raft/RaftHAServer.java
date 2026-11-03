@@ -2138,8 +2138,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.tokenProvider = new ClusterTokenProvider(configuration);
     this.tokenProvider.initClusterToken();
-    // A token derived from a root password file is held to the one this node last ran with (issue #10601): a file
-    // rewritten in place would otherwise move this node to a token its peers do not hold, silently, at this restart.
+    // A token derived from the root password, inline or from a file, is held to the one this node last ran with (issues
+    // #10601, #10924): a password rotated in place would otherwise move this node to a token its peers do not hold,
+    // silently, at this restart.
     if (persistStorage)
       this.tokenProvider.verifyDerivedTokenFingerprint(clusterTokenFingerprintFile(storageDir),
           configuration.getValueAsBoolean(GlobalConfiguration.HA_CLUSTER_TOKEN_ALLOW_ROTATION));
