@@ -52,7 +52,8 @@ class Issue10925CreateRefusesStraySealedFileTest extends TestHelper {
   void createSucceedsOnceTheStrayFileIsGone() throws Exception {
     final File sealed = new File(getDatabasePath(), TimeSeriesSealedStore.sealedFileNameFor("Ticker", 0));
     Files.write(sealed.toPath(), new byte[] { 1, 2, 3 });
-    assertThatThrownBy(() -> database.command("sql", CREATE)).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> database.command("sql", CREATE)).isInstanceOf(SchemaException.class)
+        .hasMessageContaining(sealed.getName());
 
     assertThat(sealed.delete()).isTrue();
     database.command("sql", CREATE);
