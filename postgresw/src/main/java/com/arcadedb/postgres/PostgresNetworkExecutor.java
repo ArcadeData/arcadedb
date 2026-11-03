@@ -1071,6 +1071,7 @@ public class PostgresNetworkExecutor extends Thread {
           // prepared statement saw at Parse, in both directions (a type created or dropped since). The columns are those
           // of the emulated relation whatever the rows are, so the ones Parse (or a Describe) fixed stay (issue #10922)
           final CatalogAnswer fresh = handleCatalogQuery(portal.query);
+          // A query that is no longer recognised keeps the answer Parse gave it, as before this refresh existed
           if (fresh != null)
             portal.fullResultSet = fresh.rows();
         }

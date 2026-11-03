@@ -86,6 +86,46 @@ class Issue10922PreparedCatalogQueryIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  @Test
+  @DisplayName("[#10922] a partially fetched catalog portal keeps slicing its own answer across a schema change")
+  void partiallyFetchedPortalKeepsItsAnswer() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in);
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z');
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
+        sendParse(out, "S2", QUERY);
+        sendBind(out, "P1", "S2");
+        sendExecute(out, "P1", 2);
+        sendSync(out);
+        final List<WireMessage> first = readUntilReadyForQuery(in);
+        assertThat(first.stream().filter(m -> m.type() == 'D').count()).isEqualTo(2);
+
+        sendSimpleQuery(out, "CREATE VERTEX TYPE " + TYPE + "B");
+        readUntilReadyForQuery(in);
+
+        // The resumed cursor continues the answer it started on: it neither restarts nor re-reads
+        sendExecute(out, "P1", 0);
+        sendSync(out);
+        final List<WireMessage> rest = readUntilReadyForQuery(in);
+        assertThat(rest.stream().filter(m -> m.type() == 'D').count()).isGreaterThan(0);
+        assertThat(listsType(rest)).isFalse();
+
+        sendSimpleQuery(out, "ROLLBACK");
+        readUntilReadyForQuery(in);
+        sendSimpleQuery(out, "DROP TYPE " + TYPE + "B");
+        readUntilReadyForQuery(in);
+      });
+    }
+  }
+
   private static boolean listsType(final List<WireMessage> messages) {
     for (final WireMessage message : messages)
       if (message.type() == 'D' && new String(message.body(), StandardCharsets.UTF_8).contains(TYPE))
