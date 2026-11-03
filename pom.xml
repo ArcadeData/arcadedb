@@ -921,10 +921,12 @@
         <profile>
             <!-- One working directory per test JVM, so -Dsurefire.forkCount / -Dfailsafe.forkCount above 1 is safe for
                  the modules that run servers: every relative path a test or the server writes (./target, ./databases,
-                 ./exports, ./config) lands in target/test-fork-N/ of its own JVM -->
+                 ./exports, ./config) lands in target/test-fork-N/work/ of its own JVM. One level below test-fork-N, so
+                 that ../ stays private to the JVM too: the server picks ".." as root when ../config exists
+                 (ServerPathUtils.setRootPath), which from target/test-fork-N would be the target/ both JVMs share -->
             <id>fork-isolation</id>
             <properties>
-                <test.workingDirectory>${project.build.directory}/test-fork-${surefire.forkNumber}</test.workingDirectory>
+                <test.workingDirectory>${project.build.directory}/test-fork-${surefire.forkNumber}/work</test.workingDirectory>
             </properties>
         </profile>
         <profile>
