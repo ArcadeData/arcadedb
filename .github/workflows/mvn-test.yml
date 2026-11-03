@@ -188,22 +188,26 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
-    # Two shards of the same selection: the engine module (~24 min) and every other module (~31 min:
-    # HA Raft 13, Server 7, the rest small). They share no reactor state - the artifacts come pre-built
-    # from build-and-package - so running them side by side takes the lane off the critical path.
+    # Three shards of the same selection: the engine module (~16 min), HA Raft (~13 min of tests) and every
+    # other module (~18 min: Server 10, the rest small). They share no reactor state - the artifacts come
+    # pre-built from build-and-package - so running them side by side takes the lane off the critical path.
+    # HA Raft ran inside the modules shard until #11183, which made that shard the longest job of the run.
     strategy:
       fail-fast: false
       matrix:
         # fork-count: Surefire JVMs running test classes side by side. One test JVM already keeps about 2 of the
         # runner's 4 vCPUs busy, so 2 forks fill it: measured on the engine lane in a 4-CPU/16 GB container, 1 fork
         # 970 s, 2 forks 618 s, 3 forks 660 s, 4 forks 666 s (and +2.5 GB of memory per fork). The modules shard
-        # stays at 1 until its test isolation has been checked the way the engine's was
+        # and HA Raft shards stay at 1 until their test isolation has been checked the way the engine's was
         include:
           - shard: engine
             modules: engine
             fork-count: 2
+          - shard: ha-raft
+            modules: ha-raft
+            fork-count: 1
           - shard: modules
-            modules: '!engine,!e2e,!load-tests'
+            modules: '!engine,!ha-raft,!e2e,!load-tests'
             fork-count: 1
     # A hung test used to burn the workflow's whole budget in silence (run 29645471373 sat for
     # 2h15m on a deadlocked shared thread pool). Cap the job so a hang costs minutes, not hours.
@@ -675,6 +679,17 @@ jobs:
   integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    # Two shards (#11183): the reactor ran its IT modules one after another for ~29 min of tests, PostgresW 9,
+    # gRpcW 6, Server 5, Gremlin IT 3, Bolt 2.5, Integration 1.3. A module left out of a shard's reactor is
+    # resolved from the artifacts build-and-package installed, its shaded and test jars included.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: protocols
+            modules: 'integration,postgresw,bolt'
+          - shard: rest
+            modules: '!e2e,!load-tests,!e2e-ha,!ha-raft,!integration,!postgresw,!bolt'
     permissions:
       contents: read
       checks: write
@@ -700,7 +715,7 @@ jobs:
           tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl !e2e,!load-tests,!e2e-ha,!ha-raft
+        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl '${{ matrix.modules }}'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -715,7 +730,7 @@ jobs:
         continue-on-error: true
         if: success() || failure()
         with:
-          name: IT Tests Report
+          name: IT Tests Report (${{ matrix.shard }})
           path: "**/failsafe-reports/TEST*.xml"
           list-tests: "failed"
           list-suites: "failed"
@@ -734,7 +749,7 @@ jobs:
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: integration-test-reports
+          name: integration-test-reports-${{ matrix.shard }}
           path: |
             **/surefire-reports/TEST*.xml
             **/failsafe-reports/TEST*.xml
@@ -747,7 +762,7 @@ jobs:
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: integration-coverage-reports
+          name: integration-coverage-reports-${{ matrix.shard }}
           path: |
             **/jacoco*.xml
           if-no-files-found: error
@@ -1314,6 +1329,13 @@ jobs:
           name: unit-coverage-reports-engine
           path: unit-coverage-engine
 
+      - name: Download unit test (HA Raft shard) coverage reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: unit-coverage-reports-ha-raft
+          path: unit-coverage-ha-raft
+
       - name: Download unit test (other-modules shard) coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
@@ -1350,12 +1372,19 @@ jobs:
           path: opencypher-tck-coverage
 
 
-      - name: Download integration test coverage reports
+      - name: Download integration test (protocols shard) coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          name: integration-coverage-reports
-          path: integration-coverage
+          name: integration-coverage-reports-protocols
+          path: integration-coverage-protocols
+
+      - name: Download integration test (rest shard) coverage reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: integration-coverage-reports-rest
+          path: integration-coverage-rest
 
 
       # Fails when a suite contributed no report, so nothing downstream publishes a merge that is
@@ -1365,12 +1394,14 @@ jobs:
         run: |
           ./.github/scripts/collect-coverage-reports.sh \
             unit-tests-engine=unit-coverage-engine \
+            unit-tests-ha-raft=unit-coverage-ha-raft \
             unit-tests-modules=unit-coverage-modules \
             slow-unit-tests-lsm-vector=slow-unit-coverage-lsm-vector \
             slow-unit-tests-rest=slow-unit-coverage-rest \
             vector-unit-tests=vector-unit-coverage \
             opencypher-tck-tests=opencypher-tck-coverage \
-            integration-tests=integration-coverage
+            integration-tests-protocols=integration-coverage-protocols \
+            integration-tests-rest=integration-coverage-rest
 
       - name: Codacy coverage reporter
         uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
