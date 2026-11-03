@@ -1433,7 +1433,8 @@ public class CypherExecutionPlan {
     final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
-        // The physical plan runs every MATCH ahead of the clauses below: only one that starts the statement binds a row each
+        // The physical plan runs every MATCH ahead of the clauses below: only one that starts the statement binds a row each.
+        // An identity check on purpose: the loop walks the statement's own list, not a copy
         final boolean startsStatement = entry == clausesInOrder.getFirst();
         switch (entry.getType()) {
         case MATCH: {
@@ -1458,6 +1459,9 @@ public class CypherExecutionPlan {
             currentStep = createStep;
             eagerness.observeWriteClause();
             eagerness.observeClause(entry, false, optimizerBoundVariables);
+            // What the CREATE binds is bound from here on, as in buildExecutionStepsWithOrder(): a later CREATE that names one
+            // of them refers to that entity rather than creating a new one each row
+            collectPatternVariables(createClause.getPathPatterns(), optimizerBoundVariables);
           }
           break;
         }
@@ -1519,6 +1523,7 @@ public class CypherExecutionPlan {
           eagerness.observeWriteClause();
           eagerness.observeMergeRead(mergeClause);
           eagerness.observeClause(entry, false, optimizerBoundVariables);
+          collectPatternVariables(List.of(mergeClause.getPathPattern()), optimizerBoundVariables);
           break;
         }
 

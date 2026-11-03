@@ -169,6 +169,18 @@ class Issue11004And11005StaleProjectionTest extends TestHelper {
   }
 
   @Test
+  void createNamingAMergedNodeDoesNotMakeItOnePerRow() {
+    database.command("opencypher", "UNWIND range(1, 150) AS i CREATE (:X {i: i})");
+    database.command("opencypher", "CREATE (:Q {id: 1, k: 0})");
+    column("MATCH (x:X) MERGE (m:Q {id: 1}) CREATE (m)-[:R]->(:Z {v: m.k}) SET m.k = m.k + 1", "m");
+    assertThat(column("MATCH (z:Z) RETURN z.v AS v", "v")).hasSize(150).containsOnly(0L);
+    assertThat(column("MATCH (m:Q) RETURN m.k AS k", "k")).containsExactly(150L);
+    // the merged node is the same on every row, so the SET waits for the CREATE of every row to read m.k first
+    final String plan = explain("MATCH (x:X) MERGE (m:Q {id: 1}) CREATE (m)-[:R]->(:Z {v: m.k}) SET m.k = m.k + 1");
+    assertThat(plan.substring(plan.indexOf("+ CREATE"))).contains(EAGER);
+  }
+
+  @Test
   void barrierIsPlannedWhereTheProjectionCanSeeAnotherRowsWrite() {
     assertThat(explain("MATCH (a)-[:R]->(b) WITH b, b.k AS s SET b.k = 0 RETURN s")).contains(EAGER);
     assertThat(explain("MATCH (a)-[:R]->(b) WITH b, b.k AS s REMOVE b.k RETURN s")).contains(EAGER);
@@ -177,6 +189,22 @@ class Issue11004And11005StaleProjectionTest extends TestHelper {
     assertThat(explain("MATCH (n:P) WITH n, n.k AS s, n AS m SET m.k = 0 RETURN s")).contains(EAGER);
     assertThat(explain("MATCH (a)-[:R]->(b) WITH b, b.k AS s SET b += $props RETURN s")).contains(EAGER);
     assertThat(explain("MATCH (a)-[:R]->(b) WITH b, properties(b) AS p SET b.k = 0 RETURN p")).contains(EAGER);
+  }
+
+  @Test
+  void barrierIsPlannedForEveryKindOfWrite() {
+    // a MERGE action, and a write procedure, which can write any key
+    assertThat(explain("MATCH (a)-[:R]->(b) WITH b, b.k AS s MERGE (m:Q {id: 1}) ON CREATE SET m.k = s RETURN s")).contains(EAGER);
+    assertThat(explain("UNWIND range(1, 2) AS i CREATE (n:P {k: i}) WITH n, n.k AS s CALL merge.node(['Q'], {k: s}) YIELD node RETURN s"))
+        .contains(EAGER);
+    assertThat(explain("UNWIND range(1, 2) AS i CREATE (n:P {k: i}) WITH n CALL merge.node(['Q'], {k: 1}) YIELD node RETURN n"))
+        .doesNotContain(EAGER);
+    // the plan the optimizer builds: no WITH, the read is the right-hand side of an earlier SET
+    assertThat(explain("MATCH (a)-[:R]->(b) SET a.x = b.k SET b.k = 0")).contains(EAGER);
+    assertThat(explain("MATCH (n:P) SET n.x = n.k SET n.k = 0")).doesNotContain(EAGER);
+    // a subquery that returns can hand on the same row several times
+    assertThat(explain("MATCH (n:P) CALL (n) { RETURN 1 AS x UNION RETURN 2 AS x } WITH n, n.k AS s SET n.k = 0 RETURN s"))
+        .contains(EAGER);
   }
 
   @Test

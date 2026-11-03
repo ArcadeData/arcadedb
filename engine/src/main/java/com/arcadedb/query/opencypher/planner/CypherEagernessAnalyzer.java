@@ -628,7 +628,9 @@ public final class CypherEagernessAnalyzer {
     case MERGE, CALL -> rowUniqueVariables.clear(); // a MERGE can match, and a procedure yield, several rows per row
     case SUBQUERY -> {
       // a unit subquery hands on each row once, one that returns can hand it on several times
-      if (((SubqueryClause) entry.getClause()).getInnerStatement().getReturnClause() != null)
+      // (a UNION answers the RETURN of its first branch only, so it counts as returning)
+      final CypherStatement body = ((SubqueryClause) entry.getClause()).getInnerStatement();
+      if (body instanceof UnionStatement || body.getReturnClause() != null)
         rowUniqueVariables.clear();
     }
     default -> {
