@@ -1760,12 +1760,17 @@ public class PostgresNetworkExecutor extends Thread {
     if (expected == null)
       return;
 
+    // an aliased bare property (SELECT n AS x) is typed from the property it reads, as Describe('S') does (issue #11164)
+    final Map<String, String> aliasToSourceProperty = resolveAliasToSourceProperty(parsed);
+    final Set<String> computed = computedOutputNames(select.getProjection());
+
     boolean added = false;
     for (final Map.Entry<String, PostgresType> entry : expected.entrySet()) {
       final String name = entry.getKey();
-      final PostgresType declaredType = declared.get(name);
-      // an alias or a computed item is not a declared property: its type is the sampled one
-      if (declaredType == null || declaredType != entry.getValue())
+      final String sourceProperty = aliasToSourceProperty.get(name);
+      final PostgresType declaredType = declared.get(sourceProperty != null ? sourceProperty : name);
+      // a computed item is not a declared property, even when its output name repeats one: its type is the sampled one
+      if (declaredType == null || declaredType != entry.getValue() || computed.contains(name))
         continue;
 
       final PostgresType sampled = columns.get(name);
@@ -1778,6 +1783,24 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (added)
       moveSystemColumnsLast(columns);
+  }
+
+  /**
+   * The output names of the projection items that are neither {@code *} nor a bare property reference: their type does
+   * not come from the schema, whatever declared property their name happens to repeat.
+   */
+  private static Set<String> computedOutputNames(final Projection projection) {
+    if (projection == null || projection.getItems() == null)
+      return Set.of();
+
+    final Set<String> names = new HashSet<>();
+    for (final ProjectionItem item : projection.getItems())
+      if (!item.isAll() && !item.exclude && item.getExpression() != null && !item.getExpression().isBaseIdentifier()) {
+        final String alias = item.getProjectionAliasAsString();
+        if (alias != null)
+          names.add(alias);
+      }
+    return names;
   }
 
   private static boolean isNullOnEveryRow(final List<Result> rows, final String property) {
@@ -2443,7 +2466,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (type == null)
         type = inferComputedColumnType(itemExpression, columns);
       if (type == null)
-        type = columns.getOrDefault(alias, PostgresType.VARCHAR);
+        // a computed item is not the declared property its output name happens to repeat (issue #11164)
+        type = itemExpression != null && !itemExpression.isBaseIdentifier() ? PostgresType.VARCHAR : columns.getOrDefault(alias, PostgresType.VARCHAR);
 
       projected.put(alias, type);
     }
