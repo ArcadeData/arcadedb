@@ -96,6 +96,12 @@ public class PostgresPortal {
    */
   public boolean                   catalogQuery         = false;
   /**
+   * True when the query is about the emulated system catalog, has no bound parameters and was therefore answered at
+   * Parse. The schema can change between that Parse and an Execute of the same prepared statement, so Execute
+   * recomputes the answer before the first row goes out, the way SHOW does (issue #10922).
+   */
+  public boolean                   catalogAnsweredAtParse = false;
+  /**
    * Which transaction-control statement this portal carries, or null for everything else. Parse only RECORDS it here
    * (the keyword is recognized there because it must never reach the SQL grammar, issue #6543); the session flag and
    * the engine transaction are moved by {@code executeCommand()}, which is where PostgreSQL applies a transaction
@@ -214,6 +220,7 @@ public class PostgresPortal {
     portal.emptyQuery = template.emptyQuery;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
+    portal.catalogAnsweredAtParse = template.catalogAnsweredAtParse;
     portal.transactionControl = template.transactionControl;
     portal.isolationLevel = template.isolationLevel;
     portal.setting = template.setting;
