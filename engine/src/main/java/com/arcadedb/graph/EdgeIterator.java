@@ -87,6 +87,12 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         // OTHERWISE next() WOULD SKIP THE RECORD AND THROW NoSuchElementException WHEN THE SEGMENT ENDS - WHICH
         // ONLY SURFACES WHEN THE CONTENT IS ACTUALLY LOADED, e.g. UNDER REPEATABLE_READ ISOLATION.
         if (nextEdgeRID.getPosition() > -1) {
+          if (deletedByTransaction(nextEdgeRID)) {
+            // AN EDGE THIS TRANSACTION DELETED AFTER THE WALK READ ITS SEGMENT: GONE, NOT A GHOST (#11234)
+            nextEdgeRID = null;
+            nextVertexRID = null;
+            continue;
+          }
           try {
             nextEdgeRecord = currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
           } catch (final RecordNotFoundException e) {

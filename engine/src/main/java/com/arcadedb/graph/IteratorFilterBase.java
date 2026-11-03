@@ -93,6 +93,13 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
         }
 
         if (edge) {
+          if (nextEdge.getPosition() > -1 && deletedByTransaction(nextEdge)) {
+            // AN EDGE THIS TRANSACTION DELETED AFTER THE WALK READ ITS SEGMENT: GONE, NOT A GHOST (#11234)
+            nextEdge = null;
+            nextVertex = null;
+            continue;
+          }
+
           next = nextEdge;
 
           // VALIDATE RID
