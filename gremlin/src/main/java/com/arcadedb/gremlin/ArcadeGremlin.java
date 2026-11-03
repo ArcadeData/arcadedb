@@ -28,7 +28,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -39,21 +38,13 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.utility.CollectionUtils;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
+import org.apache.tinkerpop.gremlin.language.grammar.GremlinParserException;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
-import org.apache.tinkerpop.gremlin.process.traversal.Step;
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
+import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
-import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
-import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
-import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DropStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStepContract;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStepContract;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.MergeStepContract;
-import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
-import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IoStep;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.BulkSet;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.MutablePath;
-import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.apache.tinkerpop.gremlin.structure.T;
 
 import javax.script.ScriptException;
@@ -398,81 +389,50 @@ public class ArcadeGremlin extends ArcadeQuery {
     return result;
   }
 
+  /**
+   * What the script does, read without running it (issue #11182, see {@link GremlinStatementAnalyzer}): the HA follower forwards a
+   * command by this verdict, and the read-only paths refuse a write by it, so a write applied here was applied before either could
+   * act. A script the gremlin-lang grammar cannot read is a parsing error for the {@code java} engine, which would refuse it too, and
+   * Groovy for the engines that fall back to it, see {@link #parseGroovy()}.
+   */
   public QueryEngine.AnalyzedQuery parse() {
     try {
-      // ANALYSIS-ONLY: THE ANALYZE() PATH (e.g. HA FOLLOWER IDEMPOTENCY CHECK) DOES NOT RECEIVE THE PARAMETER
-      // BINDINGS, SO USE THE NULL-TOLERANT JAVA ENGINE TO BUILD THE TRAVERSAL SHAPE WITHOUT REQUIRING THEM. #5187
-      final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement(true);
-
-      // RECURSIVE: A WRITE NESTED IN A CHILD TRAVERSAL (coalesce(), union(), sideEffect(), choose(), local()...) IS STILL
-      // A WRITE, AND NO TraversalParent IS ITSELF Mutating. A FLAT SCAN OF THE ROOT STEPS CALLED THE CANONICAL UPSERT
-      // fold().coalesce(unfold(), addV(...)) READ-ONLY, AND THE HA FOLLOWER THEN RAN IT LOCALLY INSTEAD OF FORWARDING
-      // IT TO THE LEADER (#8296)
-      boolean idempotent = true;
-      final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
-      for (final Step<?, ?> step : TraversalHelper.getStepsOfAssignableClassRecursively(resultSet, Mutating.class, IoStep.class)) {
-        if (step instanceof IoStep<?> ioStep) {
-          // io().read() LOADS A FILE INTO THE GRAPH WITHOUT BEING A Mutating STEP; io().write() ONLY READS THE GRAPH
-          if (ioStep.getMode() != ReadWriting.Mode.WRITING) {
-            idempotent = false;
-            ops.add(OperationType.CREATE);
-          }
-        } else {
-          idempotent = false;
-          // TinkerPop 3.8.1's gremlin-lang parser hands parse() GValue-based placeholder step types for
-          // addV/addE/property (e.g. AddVertexStartStepPlaceholder) instead of the concrete step classes
-          // (AddVertexStep, AddEdgeStep, AddPropertyStep) - those are only resolved by GValueReductionStrategy,
-          // which parse() never runs. Both the placeholder and the concrete step implement the *StepContract
-          // interface TinkerPop introduced for exactly this purpose, so check against the contract rather than
-          // the concrete class. See #5838. DropStep has no placeholder variant in 3.8.1, so it stays a direct check.
-          if (step instanceof AddVertexStepContract || step instanceof AddEdgeStepContract)
-            ops.add(OperationType.CREATE);
-          else if (step instanceof MergeStepContract) {
-            // mergeV()/mergeE() CREATE OR UPDATE DEPENDING ON WHAT THEY FIND
-            ops.add(OperationType.CREATE);
-            ops.add(OperationType.UPDATE);
-          } else if (step instanceof DropStep)
-            ops.add(OperationType.DELETE);
-          else if (step instanceof AddPropertyStepContract)
-            ops.add(OperationType.UPDATE);
-          else {
-            // Unknown mutating step: assume all write types
-            ops.add(OperationType.CREATE);
-            ops.add(OperationType.UPDATE);
-            ops.add(OperationType.DELETE);
-          }
-        }
+      try {
+        return GremlinStatementAnalyzer.analyze(graph.traversal(), query, parameters);
+      } catch (final GremlinParserException e) {
+        if ("java".equals(getEffectiveEngine()))
+          throw new CommandParsingException("Error on parsing gremlin query: " + e.getMessage(), e);
+        return parseGroovy();
       }
-
-      if (idempotent)
-        ops.add(OperationType.READ);
-
-      final boolean isIdempotent = idempotent;
-      final Set<OperationType> operationTypes = Set.copyOf(ops);
-
-      return new QueryEngine.AnalyzedQuery() {
-        @Override
-        public boolean isIdempotent() {
-          return isIdempotent;
-        }
-
-        @Override
-        public boolean isDDL() {
-          return false;
-        }
-
-        @Override
-        public Set<OperationType> getOperationTypes() {
-          return operationTypes;
-        }
-      };
+    } catch (final LinkageError error) {
+      // THE SAME ANTLR ATN MISMATCH THE EXECUTION REPORTS, SEE evaluate() (#5937)
+      throw translateAntlrAtnMismatch(error);
     } catch (final CommandParsingException | CommandExecutionException e) {
-      // Already classified by translateAntlrAtnMismatch() (or a nested call): rethrow as-is rather than
-      // relabeling a deployment/execution error (e.g. the ATN-mismatch message) as a parsing error.
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandParsingException("Error on parsing command", e);
     }
+  }
+
+  /**
+   * A Groovy script is code, so only evaluating it tells which traversal it builds. It is evaluated with a traversal source that
+   * refuses to run a traversal that writes ({@link GremlinStatementAnalyzer#guarded}): one the script runs while it is evaluated
+   * ({@code iterate()}, {@code next()}...) runs only when it reads, and a script that tries to run a write is one that may write
+   * anything. Groovy is evaluated for the server administrator only, see {@link #evaluate}.
+   */
+  private QueryEngine.AnalyzedQuery parseGroovy() throws ScriptException {
+    final Object result;
+    try {
+      result = evaluate("groovy", GremlinStatementAnalyzer.guarded(graph.traversal()));
+    } catch (final ScriptException | RuntimeException e) {
+      if (GremlinStatementAnalyzer.isWriteRefused(e))
+        return GremlinStatementAnalyzer.anyWrite();
+      throw e;
+    }
+    // A VALUE IS WHAT A TERMINAL STEP ANSWERED, AFTER THE GUARD LET ITS TRAVERSAL RUN AS ONE THAT ONLY READS
+    return result instanceof Traversal<?, ?> traversal ?
+        GremlinStatementAnalyzer.analyze(List.of(traversal.asAdmin())) :
+        GremlinStatementAnalyzer.read();
   }
 
   protected String getEffectiveEngine() {
@@ -483,10 +443,6 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   private Iterator<?> executeStatement() throws ScriptException {
-    return executeStatement(false);
-  }
-
-  private Iterator<?> executeStatement(final boolean analysis) throws ScriptException {
     String gremlinEngine = getEffectiveEngine();
 
     if ("auto".equals(gremlinEngine) || "java".equals(gremlinEngine)) {
@@ -498,7 +454,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       // Java engine merely can't parse, and papering over it with Groovy would undermine the point of failing
       // clearly in the first place.
       try {
-        return executeStatement("java", analysis);
+        return executeStatement("java");
       } catch (ScriptException e) {
         if ("java".equals(gremlinEngine))
           // STRICT JAVA MODE (THE SECURE DEFAULT): NEVER FALL BACK TO THE INSECURE GROOVY ENGINE, REGARDLESS OF
@@ -516,19 +472,34 @@ public class ArcadeGremlin extends ArcadeQuery {
       gremlinEngine = "groovy";
     }
 
-    return executeStatement(gremlinEngine, analysis);
+    return executeStatement(gremlinEngine);
   }
 
-  private Iterator<?> executeStatement(final String gremlinEngine, final boolean analysis) throws ScriptException {
+  private Iterator<?> executeStatement(final String gremlinEngine) throws ScriptException {
+    final Object result = evaluate(gremlinEngine, graph.traversal());
+    if (result instanceof GraphTraversal<?,?> traversal)
+      return traversal;
+
+    // THE VALUE OF AN EAGER TERMINAL STEP (next(), toList(), ...) IS ONE ROW, AS IT IS WITHOUT THE STEP, AND NULL IS A VALUE A ROW
+    // CARRIES THERE: Set.of() REFUSED IT, SO A TRAVERSAL ENDING IN A NULL WAS ANSWERED AS A SERVER FAULT (#10770). tryNext() ANSWERS
+    // AN Optional, WHICH IS THE ROW IT HOLDS OR NO ROW, AS THE SAME TRAVERSAL LIMITED TO ONE ELEMENT WOULD
+    if (result instanceof Optional<?> optional)
+      return optional.isPresent() ? Collections.singletonList(optional.get()).iterator() : Collections.emptyIterator();
+    return Collections.singletonList(result).iterator();
+  }
+
+  /**
+   * Evaluates the script with {@code g} bound to {@code source}: the traversal it builds, or the value of the terminal step it ends
+   * with, which evaluating has run.
+   */
+  private Object evaluate(final String gremlinEngine, final GraphTraversalSource source) throws ScriptException {
     final Object result;
     if ("java".equals(gremlinEngine)) {
-      // USE THE NATIVE GREMLIN PARSER. THE ANALYSIS ENGINE TOLERATES UNBOUND PARAMETERS (#5187).
-      final GremlinLangScriptEngine gremlinEngineImpl = analysis ?
-          graph.getGremlinJavaAnalysisEngine() :
-          graph.getGremlinJavaEngine();
+      // USE THE NATIVE GREMLIN PARSER
+      final GremlinLangScriptEngine gremlinEngineImpl = graph.getGremlinJavaEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
-      bindings.put("g", graph.traversal());
+      bindings.put("g", source);
       if (parameters != null)
         bindings.putAll(parameters);
 
@@ -547,7 +518,7 @@ public class ArcadeGremlin extends ArcadeQuery {
 
     } else if ("groovy".equals(gremlinEngine)) {
       // GROOVY IS ARBITRARY JVM CODE: ONLY THE SERVER ADMINISTRATOR MAY EVALUATE IT, WHETHER THE ENGINE IS CONFIGURED
-      // AS 'groovy' OR REACHED THROUGH THE 'auto' FALLBACK, AND FOR ANALYSIS TOO (parse() EVALUATES THE SCRIPT)
+      // AS 'groovy' OR REACHED THROUGH THE 'auto' FALLBACK, AND FOR ANALYSIS TOO (parseGroovy() EVALUATES THE SCRIPT)
       GremlinHostAccessGuard.checkServerAdministrator(graph.getDatabase(), "evaluate Groovy");
 
       // GROOVY ENGINE - INSECURE, LOG WARNING
@@ -560,7 +531,7 @@ public class ArcadeGremlin extends ArcadeQuery {
       final GremlinGroovyScriptEngine gremlinEngineImpl = graph.getGremlinGroovyEngine();
 
       final SimpleBindings bindings = new SimpleBindings();
-      bindings.put("g", graph.traversal());
+      bindings.put("g", source);
       if (parameters != null)
         bindings.putAll(parameters);
       result = gremlinEngineImpl.eval(query, bindings);
@@ -568,14 +539,6 @@ public class ArcadeGremlin extends ArcadeQuery {
     } else
       throw new IllegalArgumentException("Gremlin engine '" + gremlinEngine + "' not supported");
 
-    if (result instanceof GraphTraversal<?,?> traversal)
-      return traversal;
-
-    // THE VALUE OF AN EAGER TERMINAL STEP (next(), toList(), ...) IS ONE ROW, AS IT IS WITHOUT THE STEP, AND NULL IS A VALUE A ROW
-    // CARRIES THERE: Set.of() REFUSED IT, SO A TRAVERSAL ENDING IN A NULL WAS ANSWERED AS A SERVER FAULT (#10770). tryNext() ANSWERS
-    // AN Optional, WHICH IS THE ROW IT HOLDS OR NO ROW, AS THE SAME TRAVERSAL LIMITED TO ONE ELEMENT WOULD
-    if (result instanceof Optional<?> optional)
-      return optional.isPresent() ? Collections.singletonList(optional.get()).iterator() : Collections.emptyIterator();
-    return Collections.singletonList(result).iterator();
+    return result;
   }
 }
