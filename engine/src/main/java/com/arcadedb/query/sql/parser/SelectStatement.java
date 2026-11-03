@@ -199,7 +199,7 @@ public class SelectStatement extends Statement {
 
     context.setInputParameters(params);
 
-    final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db);
+    final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db, context.getInputParameters());
     return statement.openResultSet(context, statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache);
   }
 
@@ -216,7 +216,7 @@ public class SelectStatement extends Statement {
 
     context.setInputParameters(params);
 
-    final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db);
+    final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db, context.getInputParameters());
     return statement.openResultSet(context,
         usePlanCache && statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache);
   }
@@ -370,9 +370,11 @@ public class SelectStatement extends Statement {
    * shares between every user of the same text, and the quotas written into it used to cap and time out every user after the
    * one they belong to. The copy is planned without the plan cache, whose key is the text: it does not say whose quotas a plan
    * was built with, so an uncapped user's cached plan answered a capped one too.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} is compared by
    */
-  private SelectStatement withProfilingConstraints(final DatabaseInternal db) {
-    final long profiledLimit = tighterProfiledLimit(db);
+  private SelectStatement withProfilingConstraints(final DatabaseInternal db, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(db, params);
     final long profiledTimeout = tighterProfiledTimeout(db);
     if (profiledLimit < 0 && profiledTimeout < 0)
       return this;

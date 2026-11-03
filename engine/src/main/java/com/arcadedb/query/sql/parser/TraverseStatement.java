@@ -164,8 +164,8 @@ public class TraverseStatement extends Statement {
 
   /** Its plan reads the LIMIT, and it is planned on every execution, so the copy reaches no plan cache. */
   @Override
-  public Statement withProfiledResultSetLimit(final DatabaseInternal database) {
-    return copyWithTighterProfiledLimit(database);
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    return copyWithTighterProfiledLimit(database, params);
   }
 
   @Override

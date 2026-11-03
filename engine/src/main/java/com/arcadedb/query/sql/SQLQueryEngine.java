@@ -206,7 +206,7 @@ public class SQLQueryEngine implements QueryEngine {
 
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
     statement.checkParametersBound(bound);
-    final Statement executed = statement.withProfiledResultSetLimit(database);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
     return executeGuarded(executed, database, bound);
   }
 
@@ -218,10 +218,11 @@ public class SQLQueryEngine implements QueryEngine {
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
-    final Statement executed = statement.withProfiledResultSetLimit(database);
-    if (lookup.parameters() != null)
-      return executeGuarded(executed, database, lookup.mergeParameters(positionalParameters(parameters)));
-    return executeGuarded(executed, database, parameters);
+    if (lookup.parameters() != null) {
+      final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), database, bound);
+    }
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), database, parameters);
   }
 
   @Override
@@ -230,7 +231,7 @@ public class SQLQueryEngine implements QueryEngine {
     final Statement statement = lookup.statement();
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
     statement.checkParametersBound(bound);
-    final Statement executed = statement.withProfiledResultSetLimit(database);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
 
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
@@ -254,7 +255,7 @@ public class SQLQueryEngine implements QueryEngine {
     final Statement statement = lookup.statement();
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
     statement.checkParametersBound(bound);
-    final Statement executed = statement.withProfiledResultSetLimit(database);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
 
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
@@ -271,15 +272,14 @@ public class SQLQueryEngine implements QueryEngine {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
     statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
-    final Statement executed = statement.withProfiledResultSetLimit(database);
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
     if (lookup.parameters() != null) {
       final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
       context.setInputParameters(bound);
-      return executeGuarded(executed, executionDatabase(), bound, context);
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), executionDatabase(), bound, context);
     }
-    return executeGuarded(executed, executionDatabase(), parameters, context);
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), executionDatabase(), parameters, context);
   }
 
   /**
@@ -354,7 +354,6 @@ public class SQLQueryEngine implements QueryEngine {
 
       @Override
       public ResultSet execute(final Map<String, Object> parameters) {
-        final Statement executed = statement.withProfiledResultSetLimit(database);
         // Same resolution as command(): this is a third execution entry point, not an analysis-only one.
         // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
         // database.command() fallback is only reached by engines whose execute() returns null), so leaving
@@ -371,6 +370,7 @@ public class SQLQueryEngine implements QueryEngine {
         final String databaseName = database.getName();
         final Map<String, Object> bound = lookup.mergeParameters(parameters);
         statement.checkParametersBound(bound);
+        final Statement executed = statement.withProfiledResultSetLimit(database, bound);
         final long start = QueryMetricsRecorder.Holder.startNanos();
         try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
           return executeGuarded(executed, executionDatabase(), bound);

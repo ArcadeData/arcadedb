@@ -36,6 +36,7 @@ import com.arcadedb.utility.CollectionUtils;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -556,19 +557,34 @@ public class Statement extends SimpleNode {
   }
 
   /**
-   * The {@code resultSetLimit} of the current user's security groups when it is tighter than this statement's own LIMIT (or the
-   * statement has none, or one that is not a literal), else -1: the quota is a ceiling, and a LIMIT below it stays in force.
+   * The {@code resultSetLimit} of the current user's security groups when it is tighter than this statement's own LIMIT, else -1:
+   * the quota is a ceiling, and a LIMIT below it stays in force. A LIMIT given as a parameter ({@code LIMIT :n}, {@code LIMIT ?})
+   * is compared by the value {@code params} binds to it, like a literal; only a LIMIT whose value cannot be known here (no value
+   * bound, a value that is not a number, an expression) is taken as no limit, and the quota applies.
    * <p>
    * Read only, on purpose. A statement is shared: the database's statement cache hands the same instance to every user and
    * thread that runs the same text, so a quota written into it caps everybody after the user it belongs to. A caller that
    * gets a value here applies it to a {@link #copy()}.
+   *
+   * @param params the parameters bound to this execution, keyed as {@link InputParameter#getValue(Map)} reads them; may be null
    */
-  protected long tighterProfiledLimit(final DatabaseInternal database) {
+  protected long tighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
     final long profiled = database.getResultSetLimit();
     if (profiled < 0)
       return -1L;
-    final Number own = limit != null && limit.num != null ? limit.num.getValue() : null;
+    final Number own = ownLimit(params);
     return own == null || own.longValue() < 0 || own.longValue() > profiled ? profiled : -1L;
+  }
+
+  /** The value of this statement's LIMIT for an execution bound to {@code params}, or null when it has none or it is unknown. */
+  private Number ownLimit(final Map<String, Object> params) {
+    if (limit == null)
+      return null;
+    if (limit.num != null)
+      return limit.num.getValue();
+    if (limit.inputParam != null && limit.inputParam.getValue(params) instanceof Number bound)
+      return bound;
+    return null;
   }
 
   /**
@@ -581,14 +597,33 @@ public class Statement extends SimpleNode {
    * {@link #copyWithTighterProfiledLimit}. A SELECT and a MATCH do not: they apply the limit, together with the
    * {@code readTimeout}, to a copy of their own when they execute, which also covers the paths that execute them without the query
    * engine.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} reads; may be null
    */
-  public Statement withProfiledResultSetLimit(final DatabaseInternal database) {
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database, final Map<String, Object> params) {
     return this;
   }
 
+  /**
+   * {@link #withProfiledResultSetLimit(DatabaseInternal, Map)} for positional parameters. They are keyed by position, the way
+   * every statement keys them, only when the user has a quota: a user without one pays nothing.
+   */
+  public final Statement withProfiledResultSetLimit(final DatabaseInternal database, final Object[] positionalParams) {
+    if (database.getResultSetLimit() < 0)
+      return this;
+
+    Map<String, Object> params = null;
+    if (positionalParams != null && positionalParams.length > 0) {
+      params = new HashMap<>(positionalParams.length * 2);
+      for (int i = 0; i < positionalParams.length; i++)
+        params.put(String.valueOf(i), positionalParams[i]);
+    }
+    return withProfiledResultSetLimit(database, params);
+  }
+
   /** {@link #withProfiledResultSetLimit} for a statement whose plan reads its LIMIT and that is planned on every execution. */
-  protected final Statement copyWithTighterProfiledLimit(final DatabaseInternal database) {
-    final long profiledLimit = tighterProfiledLimit(database);
+  protected final Statement copyWithTighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(database, params);
     if (profiledLimit < 0)
       return this;
 
@@ -597,7 +632,10 @@ public class Statement extends SimpleNode {
     return statement;
   }
 
-  /** {@link #tighterProfiledLimit} for the {@code readTimeout} of the current user's groups and this statement's TIMEOUT. */
+  /**
+   * {@link #tighterProfiledLimit} for the {@code readTimeout} of the current user's groups and this statement's TIMEOUT, which the
+   * grammar takes as a literal only.
+   */
   protected long tighterProfiledTimeout(final DatabaseInternal database) {
     final long profiled = database.getReadTimeout();
     if (profiled < 0)

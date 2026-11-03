@@ -78,8 +78,8 @@ public class DeleteStatement extends Statement {
    * above it and is not part of it, so the copy shares that plan with every user safely.
    */
   @Override
-  public Statement withProfiledResultSetLimit(final DatabaseInternal database) {
-    return copyWithTighterProfiledLimit(database);
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    return copyWithTighterProfiledLimit(database, params);
   }
 
   @Override

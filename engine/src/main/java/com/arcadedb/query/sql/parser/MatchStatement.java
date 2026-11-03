@@ -112,7 +112,8 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
     context.setInputParameters(args);
 
-    final InternalExecutionPlan executionPlan = withProfilingConstraints((DatabaseInternal) database).createExecutionPlan(context);
+    final InternalExecutionPlan executionPlan = withProfilingConstraints((DatabaseInternal) database,
+        context.getInputParameters()).createExecutionPlan(context);
 
     return new LocalResultSet(executionPlan);
   }
@@ -129,7 +130,8 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
 
     context.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = withProfilingConstraints((DatabaseInternal) database).createExecutionPlan(context);
+    final InternalExecutionPlan executionPlan = withProfilingConstraints((DatabaseInternal) database,
+        context.getInputParameters()).createExecutionPlan(context);
 
     return new LocalResultSet(executionPlan);
   }
@@ -411,9 +413,11 @@ public class MatchStatement extends Statement {
    * where they are tighter than its own LIMIT and TIMEOUT. Never this statement modified: it is the instance the statement cache
    * shares between every user of the same text, and the quotas written into it used to cap and time out every user after the
    * one they belong to.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} is compared by
    */
-  private MatchStatement withProfilingConstraints(final DatabaseInternal db) {
-    final long profiledLimit = tighterProfiledLimit(db);
+  private MatchStatement withProfilingConstraints(final DatabaseInternal db, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(db, params);
     final long profiledTimeout = tighterProfiledTimeout(db);
     if (profiledLimit < 0 && profiledTimeout < 0)
       return this;

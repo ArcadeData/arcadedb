@@ -28,6 +28,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -98,6 +100,62 @@ class ProfiledQuotasSharedStatementTest {
 
     bindUser(quotas(CAP, -1L));
     assertThat(count("SELECT FROM Doc")).as("the plan an uncapped user cached must not answer a capped one").isEqualTo(CAP);
+
+    bindUser(null);
+    assertThat(count("SELECT FROM Doc")).isEqualTo(RECORDS);
+  }
+
+  /** Root first, so the plan of the UPDATE's source (its target and WHERE) is cached before the capped user runs the text. */
+  @Test
+  void aCachedSourcePlanDoesNotLiftTheCapOfTheNextUpdate() {
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true WHERE id >= 0")).isEqualTo(RECORDS);
+
+    bindUser(quotas(CAP, -1L));
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true WHERE id >= 0"))
+        .as("the source plan an uncapped user cached must not answer a capped one").isEqualTo(CAP);
+
+    bindUser(null);
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true WHERE id >= 0")).isEqualTo(RECORDS);
+  }
+
+  /** {@link #aCachedSourcePlanDoesNotLiftTheCapOfTheNextUpdate} for a DELETE. */
+  @Test
+  void aCachedSourcePlanDoesNotLiftTheCapOfTheNextDelete() {
+    assertThat(affectedAndRolledBack("DELETE FROM Doc WHERE id >= 0")).isEqualTo(RECORDS);
+
+    bindUser(quotas(CAP, -1L));
+    assertThat(affectedAndRolledBack("DELETE FROM Doc WHERE id >= 0"))
+        .as("the source plan an uncapped user cached must not answer a capped one").isEqualTo(CAP);
+
+    bindUser(null);
+    assertThat(affectedAndRolledBack("DELETE FROM Doc WHERE id >= 0")).isEqualTo(RECORDS);
+  }
+
+  /**
+   * A LIMIT given as a parameter is compared with the cap by the value bound to it, like a literal: one below the cap stays in
+   * force, one above it is capped. It used to count as no LIMIT at all, and the cap replaced a smaller one.
+   */
+  @Test
+  void aParameterLimitIsComparedWithTheCapByItsValue() {
+    bindUser(quotas(CAP, -1L));
+
+    assertThat(count("SELECT FROM Doc LIMIT :n", Map.<String, Object>of("n", 3))).isEqualTo(3);
+    assertThat(count("SELECT FROM Doc LIMIT :n", Map.<String, Object>of("n", 10))).isEqualTo(CAP);
+    assertThat(count("SELECT FROM Doc LIMIT ?", 3)).isEqualTo(3);
+    assertThat(count("SELECT FROM Doc LIMIT ?", 10)).isEqualTo(CAP);
+
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true LIMIT :n", Map.<String, Object>of("n", 3))).isEqualTo(3);
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true LIMIT :n", Map.<String, Object>of("n", 10))).isEqualTo(CAP);
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true LIMIT ?", 3)).isEqualTo(3);
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true LIMIT ?", 10)).isEqualTo(CAP);
+
+    assertThat(affectedAndRolledBack("DELETE FROM Doc LIMIT ?", 3)).isEqualTo(3);
+    assertThat(affectedAndRolledBack("DELETE FROM Doc LIMIT ?", 10)).isEqualTo(CAP);
+
+    // AND THE SAME TEXTS, UNCAPPED, ANSWER WHAT THEIR PARAMETER SAYS
+    bindUser(null);
+    assertThat(count("SELECT FROM Doc LIMIT :n", Map.<String, Object>of("n", 10))).isEqualTo(10);
+    assertThat(affectedAndRolledBack("UPDATE Doc SET touched = true LIMIT ?", 10)).isEqualTo(10);
   }
 
   @Test
@@ -173,6 +231,44 @@ class ProfiledQuotasSharedStatementTest {
       }
     });
     return affected[0];
+  }
+
+  /** {@link #affected} in a transaction that is rolled back, so the next statement finds every record again. */
+  private long affectedAndRolledBack(final String sql, final Object... params) {
+    database.begin();
+    try (final ResultSet rs = database.command("sql", sql, params)) {
+      return rs.next().<Number>getProperty("count").longValue();
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private long affectedAndRolledBack(final String sql, final Map<String, Object> params) {
+    database.begin();
+    try (final ResultSet rs = database.command("sql", sql, params)) {
+      return rs.next().<Number>getProperty("count").longValue();
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private int count(final String sql, final Object... params) {
+    return count(database.query("sql", sql, params));
+  }
+
+  private int count(final String sql, final Map<String, Object> params) {
+    return count(database.query("sql", sql, params));
+  }
+
+  private static int count(final ResultSet resultSet) {
+    int count = 0;
+    try (final ResultSet rs = resultSet) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++count;
+      }
+    }
+    return count;
   }
 
   private int count(final String sql) {
