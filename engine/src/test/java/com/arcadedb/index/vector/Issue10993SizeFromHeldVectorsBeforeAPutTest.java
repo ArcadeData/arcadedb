@@ -19,9 +19,12 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,6 +56,29 @@ class Issue10993SizeFromHeldVectorsBeforeAPutTest extends TestHelper {
 
     database.transaction(() -> database.newVertex("Doc").set("id", 101, "embedding", new float[] { 1, 2, 3, 5 }).save());
     assertThat(index.getDimensions()).isEqualTo(4);
+  }
+
+  /**
+   * Issue #11141: the batch entry point (commit replay, an index built over existing records) decides the size too, and must
+   * derive it from the vectors the node holds before it lets the first vector of the batch decide.
+   */
+  @Test
+  void aBatchOfAnotherLengthIsRefusedByANodeThatDidNotSeeTheSizeDecided() {
+    database.command("opencypher", "CREATE VECTOR INDEX emb FOR (n:Doc) ON n.embedding");
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newVertex("Doc").set("id", i, "embedding", new float[] { i + 1, 2, 3, 4 }).save();
+    });
+
+    final LSMVectorIndex index = indexOf();
+    final long before = index.countEntries();
+    index.getMetadata().dimensions = 0;
+    index.getMetadata().sizeOnFirstVector = true;
+
+    index.putBatch(List.<Object[]>of(new Object[] { new float[] { 1, 2 } }), List.of(new RID(0, 999)));
+
+    assertThat(index.getDimensions()).isEqualTo(4);
+    assertThat(index.countEntries()).isEqualTo(before);
   }
 
   @Test
