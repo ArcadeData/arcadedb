@@ -130,7 +130,7 @@ class ChaosConfigTest {
   @Test
   void logConfigMustNameAnExistingFile() {
     assertThat(ChaosConfig.fromProperties(props()).logConfig()).isEmpty();
-    final String file = "src/test/resources/chaos/ratis-debug-log.properties";
+    final String file = System.getProperty("basedir", ".") + "/src/test/resources/chaos/ratis-debug-log.properties";
     final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.logConfig", " " + file + " "));
     assertThat(config.logConfig()).isEqualTo(file);
     assertThat(config.replayCommand()).contains("'-Dchaos.logConfig=" + file + "'");
