@@ -129,7 +129,7 @@ test.describe('DataTables Compatibility Suite', () => {
       await exportDropdown.locator('.dt-export-btn').click();
       await expect(exportDropdown.locator('.dt-export-menu.open')).toBeVisible();
 
-      // Verify export menu items are present (Copy, Excel, CSV, PDF, Print)
+      // Verify export menu items are present (Copy, Excel, CSV, Print)
       const menuItems = exportDropdown.locator('.dt-export-menu-item');
       expect(await menuItems.count()).toBeGreaterThanOrEqual(3);
 
