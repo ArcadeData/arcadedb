@@ -342,12 +342,21 @@ public class LocalDocumentType implements DocumentType {
    * The owner is compared by name as well as by instance, because a record loaded before a schema reload holds the
    * previous instance of the same type. A bucket no type owns says nothing about the record and is let through. A record
    * with no identity yet (a BEFORE CREATE) has no bucket to check.
+   * <p>
+   * On every write dispatch, so the answer of the common case - the record is in one of this type's own buckets - is read
+   * off this type's bucket ids by index, with no allocation and no lock: the schema's bucket-to-type map, keyed by a boxed
+   * id, is asked only when the bucket is not one of them.
    */
   private void checkOwnsBucketOf(final Record record) {
     final RID rid = record.getIdentity();
     if (rid == null)
       return;
-    final DocumentType owner = schema.getTypeByBucketId(rid.getBucketId());
+    final int bucketId = rid.getBucketId();
+    final List<Integer> ownBucketIds = bucketIds;
+    for (int i = 0; i < ownBucketIds.size(); i++)
+      if (ownBucketIds.get(i) == bucketId)
+        return;
+    final DocumentType owner = schema.getTypeByBucketId(bucketId);
     if (owner != null && owner != this && !owner.getName().equals(name))
       throw new IllegalStateException(
           "Record " + rid + " was built as a '" + name + "' but its bucket belongs to type '" + owner.getName()
