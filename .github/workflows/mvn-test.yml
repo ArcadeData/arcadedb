@@ -384,8 +384,10 @@ jobs:
       # without this that one method would be selected here as well and run twice per push.
       # -Dmaven.test.failure.ignore=true: see the unit-tests lane. Without it a failing test halts the module
       # at `test`, JaCoCo's report goal never runs at `prepare-package`, and this lane uploads no coverage.
+      # -Dsurefire.forkCount=2: the same engine classes, isolated the same way, as the engine shard of unit-tests,
+      # which runs 2 forks; one fork ran ~22 min of tests spread over ~110 classes, none above 10% of them.
       - name: Run Slow Unit Tests with Coverage
-        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dgroups=slow -DexcludedGroups=vector
+        run: ./mvnw package -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl engine -Dgroups=slow -DexcludedGroups=vector -Dsurefire.forkCount=2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
