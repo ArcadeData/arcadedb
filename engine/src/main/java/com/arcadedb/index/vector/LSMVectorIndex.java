@@ -11761,6 +11761,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // what makes every allocateVectorId() below a plain volatile read.
     checkIdAllocatorIsComplete();
 
+    // A node that did not see the size decided (a follower promoted by a failover) holds vectors that already fix it, and a batch
+    // of another length must be refused as by any sized index, not size the index a second time (issue #11141). Derived here,
+    // before the index lock: it reads records through the location index and the database, which a thread holding that lock may
+    // be waiting on while it waits for the decision. Free once sized, and cached while the index holds no vector
+    if (metadata.dimensions < 1)
+      deriveDimensionsFromData();
+
     lock.writeLock().lock();
     try {
       // See put(): opened before the first page write so the insert cursor is captured (issue #7931).
