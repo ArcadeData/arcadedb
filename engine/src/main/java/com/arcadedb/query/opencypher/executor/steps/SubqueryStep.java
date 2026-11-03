@@ -297,6 +297,7 @@ public class SubqueryStep extends AbstractExecutionStep {
 
             // Execute the inner query seeded with the outer row
             final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
+            refreshOuterBindings(currentOuterRow, context);
 
             if (innerResults.isEmpty()) {
               if (subqueryClause.isOptional()) {
@@ -399,6 +400,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         }
 
         // Execute the batch in its own transaction
+        final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         database.begin();
         try {
           for (final Result outerRow : batch) {
@@ -407,15 +409,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
-              final List<Result> innerResults = executeInnerQuery(outerRow, context);
-
-              if (innerResults.isEmpty()) {
-                if (subqueryClause.isOptional())
-                  buffer.add(outerRow);
-              } else {
-                for (final Result innerRow : innerResults)
-                  buffer.add(mergeResults(outerRow, innerRow));
-              }
+              innerResultsPerRow.add(executeInnerQuery(outerRow, context));
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - begin;
@@ -425,6 +419,23 @@ public class SubqueryStep extends AbstractExecutionStep {
         } catch (final Exception e) {
           database.rollbackAllNested();
           throw e;
+        }
+
+        // The outer bindings are refreshed only now, back in the transaction the outer rows belong to: the batch's own
+        // transaction does not see what the outer one wrote and has not committed, so a refresh from inside it replaced
+        // the record a SET before the CALL had written with the committed one, and RETURN n.k answered the old value
+        // (issue #11004)
+        for (int i = 0; i < batch.size(); i++) {
+          final Result outerRow = batch.get(i);
+          refreshOuterBindings(outerRow, context);
+          final List<Result> innerResults = innerResultsPerRow.get(i);
+          if (innerResults.isEmpty()) {
+            if (subqueryClause.isOptional())
+              buffer.add(outerRow);
+          } else {
+            for (final Result innerRow : innerResults)
+              buffer.add(mergeResults(outerRow, innerRow));
+          }
         }
 
         // If no more input, mark finished
@@ -459,11 +470,8 @@ public class SubqueryStep extends AbstractExecutionStep {
    * for side effects (e.g. CREATE, DELETE) and a single empty result is returned
    * so the outer row count is preserved exactly once per input row.
    * <p>
-   * After the inner query has fully executed, any {@link Document} bindings in the
-   * outer row are refreshed against the transaction cache so that mutations applied
-   * inside the subquery (e.g. {@code SET n.score = 2}) are visible through the outer
-   * variable. This matches Neo4j semantics where node references expose the current
-   * record state rather than the snapshot captured at MATCH time. See issue #4182.
+   * The caller then refreshes the outer row's bindings with {@link #refreshOuterBindings}, in the transaction the outer
+   * row belongs to.
    */
   private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context) {
     final CypherStatement innerStatement = subqueryClause.getInnerStatement();
@@ -483,22 +491,30 @@ public class SubqueryStep extends AbstractExecutionStep {
         results.add(resultSet.next());
 
       return results;
-    } finally {
-      // Only a subquery that can write has anything to refresh. A read-only one cannot have invalidated a binding,
-      // and re-reading it is not free of consequence: lookupByRID answers from the transaction cache, so the
-      // snapshot the outer row was carrying is replaced by the live, shared record instance - and a write performed
-      // for a LATER row then shows through the binding of an EARLIER one. That is issue #6362: inserting the
-      // identity subquery CALL (*) { RETURN 0 AS barrier } after MERGE ... ON MATCH SET turned [10, 99] into
-      // [99, 99]. The refresh itself is still required for the writing case it was added for (issue #4182).
-      if (innerMayWrite) {
-        // A label write inside the body rewrote the node under a new type, which means a new record and a new RID:
-        // the outer row is still holding the one the body deleted, and refreshing it by RID can only fail. Point it
-        // at the replacement first, so the merged output row - and every clause reading through it - answers with a
-        // live record instead of a gone one (issue #6977).
-        LabelReplacements.of(context).redirect(outerRow);
-        refreshDocumentBindings(outerRow);
-      }
     }
+  }
+
+  /**
+   * After the body ran for the outer row, its {@link Document} bindings are refreshed against the transaction cache so
+   * that mutations applied inside the subquery (e.g. {@code SET n.score = 2}) are visible through the outer variable.
+   * This matches Neo4j semantics where node references expose the current record state rather than the snapshot captured
+   * at MATCH time. See issue #4182.
+   * <p>
+   * Only a subquery that can write has anything to refresh. A read-only one cannot have invalidated a binding, and
+   * re-reading it is not free of consequence: lookupByRID answers from the transaction cache, so the snapshot the outer
+   * row was carrying is replaced by the live, shared record instance - and a write performed for a LATER row then shows
+   * through the binding of an EARLIER one. That is issue #6362: inserting the identity subquery
+   * {@code CALL (*) { RETURN 0 AS barrier }} after {@code MERGE ... ON MATCH SET} turned [10, 99] into [99, 99].
+   */
+  private void refreshOuterBindings(final Result outerRow, final CommandContext context) {
+    if (!innerMayWrite)
+      return;
+    // A label write inside the body rewrote the node under a new type, which means a new record and a new RID: the outer
+    // row is still holding the one the body deleted, and refreshing it by RID can only fail. Point it at the replacement
+    // first, so the merged output row - and every clause reading through it - answers with a live record instead of a
+    // gone one (issue #6977).
+    LabelReplacements.of(context).redirect(outerRow);
+    refreshDocumentBindings(outerRow);
   }
 
   /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */

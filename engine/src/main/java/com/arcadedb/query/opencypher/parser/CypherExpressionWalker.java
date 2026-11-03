@@ -270,6 +270,15 @@ public final class CypherExpressionWalker {
   }
 
   /**
+   * Visits every expression of one clause, the bodies of the subqueries it holds included, with the same visitor for
+   * what is evaluated before the clause's own binding takes effect and for what is evaluated after it.
+   */
+  public static void walk(final ClauseEntry entry, final Visitor visitor) {
+    if (entry != null)
+      walkClause(entry, visitor, visitor);
+  }
+
+  /**
    * Visits every expression of one clause. {@code before} is the visitor from before this clause declared
    * anything of its own, {@code after} is the one {@link Visitor#forClauseEntry} returned for it.
    * <p>

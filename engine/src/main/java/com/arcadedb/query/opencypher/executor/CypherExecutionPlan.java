@@ -1433,6 +1433,9 @@ public class CypherExecutionPlan {
     final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
+        // The physical plan runs every MATCH ahead of the clauses below: only one that starts the statement binds a row each.
+        // An identity check on purpose: the loop walks the statement's own list, not a copy
+        final boolean startsStatement = entry == clausesInOrder.getFirst();
         switch (entry.getType()) {
         case MATCH: {
           // MATCH pattern AND its WHERE are handled by the optimizer above: the physical plan applies every MATCH-level
@@ -1441,6 +1444,7 @@ public class CypherExecutionPlan {
           final MatchClause matchClause = entry.getTypedClause();
           currentSegmentMatchClauses.add(matchClause);
           eagerness.observeRead(matchClause);
+          eagerness.observeClause(entry, startsStatement, optimizerBoundVariables);
           collectPatternVariables(matchClause, optimizerBoundVariables);
           break;
         }
@@ -1454,23 +1458,30 @@ public class CypherExecutionPlan {
             createStep.setPrevious(currentStep);
             currentStep = createStep;
             eagerness.observeWriteClause();
+            eagerness.observeClause(entry, false, optimizerBoundVariables);
+            // What the CREATE binds is bound from here on, as in buildExecutionStepsWithOrder(): a later CREATE that names one
+            // of them refers to that entity rather than creating a new one each row
+            collectPatternVariables(createClause.getPathPatterns(), optimizerBoundVariables);
           }
           break;
         }
 
         case SET: {
           final SetClause setClause = entry.getTypedClause();
-          // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889): it gets the barrier,
-          // so the MERGE step must not absorb it
-          final boolean afterMerge = !setClause.isEmpty() && eagerness.needsBarrierAfterMerge(setClause);
-          if (!setClause.isEmpty() && (afterMerge || !absorbsSet(currentStep, setClause))) {
-            if (currentStep != null && (afterMerge || eagerness.needsBarrier(setClause)))
+          // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889), and one of a key a
+          // clause before it read for another row after that read of every row (issue #11005): it gets the barrier, so the
+          // MERGE step must not absorb it
+          final boolean barrierFirst = !setClause.isEmpty()
+              && (eagerness.needsBarrierAfterMerge(setClause) || eagerness.needsBarrierForPropertyWrites(setClause));
+          if (!setClause.isEmpty() && (barrierFirst || !absorbsSet(currentStep, setClause))) {
+            if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
             eagerness.observeWriteClause();
           }
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           break;
         }
 
@@ -1482,6 +1493,7 @@ public class CypherExecutionPlan {
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
             eagerness.observeWriteClause();
+            eagerness.observeClause(entry, false, optimizerBoundVariables);
           }
           break;
         }
@@ -1489,7 +1501,8 @@ public class CypherExecutionPlan {
         case REMOVE: {
           final RemoveClause removeClause = entry.getTypedClause();
           if (!removeClause.isEmpty()) {
-            if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)))
+            if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
+                || eagerness.needsBarrierForPropertyWrites(removeClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
             removeStep.setPrevious(currentStep);
@@ -1501,13 +1514,16 @@ public class CypherExecutionPlan {
 
         case MERGE: {
           final MergeClause mergeClause = entry.getTypedClause();
-          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables) || eagerness.needsBarrierAfterMerge(mergeClause))
+          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables) || eagerness.needsBarrierAfterMerge(mergeClause)
+              || eagerness.needsBarrierForPropertyWrites(mergeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
           eagerness.observeWriteClause();
           eagerness.observeMergeRead(mergeClause);
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
+          collectPatternVariables(List.of(mergeClause.getPathPattern()), optimizerBoundVariables);
           break;
         }
 
@@ -1516,6 +1532,7 @@ public class CypherExecutionPlan {
           final UnwindStep unwindStep = new UnwindStep(unwindClause, context, functionFactory);
           unwindStep.setPrevious(currentStep);
           currentStep = unwindStep;
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           optimizerBoundVariables.add(unwindClause.getVariable());
           break;
         }
@@ -1525,6 +1542,7 @@ public class CypherExecutionPlan {
           currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
           markDrainOnZeroLimit(currentStep, withClause, eagerness);
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           if (withClause.hasAggregations())
             eagerness.observeAggregationBoundary();
           applyProjectionToScope(withClause.getItems(), optimizerBoundVariables);
@@ -1543,6 +1561,7 @@ public class CypherExecutionPlan {
           final LoadCSVStep loadCSVStep = new LoadCSVStep(loadCSVClause, context, functionFactory);
           loadCSVStep.setPrevious(currentStep);
           currentStep = loadCSVStep;
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           break;
         }
 
@@ -1836,6 +1855,7 @@ public class CypherExecutionPlan {
           unwindStep.setPrevious(currentStep);
         }
         currentStep = unwindStep;
+        eagerness.observeClause(entry, false, boundVariables);
         // Track the UNWIND variable as bound so subsequent MATCH clauses can
         // push down WHERE predicates referencing it (e.g., WHERE a.uid = e.src)
         boundVariables.add(unwindClause.getVariable());
@@ -1849,6 +1869,7 @@ public class CypherExecutionPlan {
           loadCSVStep.setPrevious(currentStep);
         }
         currentStep = loadCSVStep;
+        eagerness.observeClause(entry, false, boundVariables);
         boundVariables.add(loadCSVClause.getVariable());
         break;
 
@@ -1859,6 +1880,7 @@ public class CypherExecutionPlan {
         if (currentStep != null && eagerness.needsBarrier(matchClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         eagerness.observeRead(matchClause);
+        eagerness.observeClause(entry, currentStep == singleRowSource, boundVariables);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
           final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
@@ -1870,6 +1892,8 @@ public class CypherExecutionPlan {
             if (clausesInOrder.get(entryIndex + 1).getType() == ClauseEntry.ClauseType.MATCH)
               eagerness.observeRead(clausesInOrder.get(entryIndex + 1).getTypedClause());
             entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
+            eagerness.observeClause(clausesInOrder.get(entryIndex - 1), false, boundVariables);
+            eagerness.observeClause(clausesInOrder.get(entryIndex), false, boundVariables);
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
@@ -1885,6 +1909,7 @@ public class CypherExecutionPlan {
           if (optimized != null) {
             currentStep = optimized;
             entryIndex++; // skip the WITH clause (already handled)
+            eagerness.observeClause(clausesInOrder.get(entryIndex), false, boundVariables);
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
@@ -1902,6 +1927,8 @@ public class CypherExecutionPlan {
         currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         markDrainOnZeroLimit(currentStep, withClause, eagerness);
+        // What the projection reads per row, before an aggregation drains it (issue #11005)
+        eagerness.observeClause(entry, false, boundVariables);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
         // A WITH boundary starts a new segment (issue #6631) - but a WITH that plainly forwards a
@@ -1921,7 +1948,7 @@ public class CypherExecutionPlan {
       case MERGE:
         final MergeClause mergeClause = entry.getTypedClause();
         if (currentStep != null && (eagerness.needsBarrier(mergeClause, boundVariables)
-            || eagerness.needsBarrierAfterMerge(mergeClause)))
+            || eagerness.needsBarrierAfterMerge(mergeClause) || eagerness.needsBarrierForPropertyWrites(mergeClause)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         // A MERGE that starts the statement runs its lookup once: no later write can change what it finds (issue #10889)
         final boolean mergeRunsPerRow = currentStep != null && currentStep != singleRowSource;
@@ -1934,6 +1961,7 @@ public class CypherExecutionPlan {
         eagerness.observeWrite(mergeClause);
         if (mergeRunsPerRow)
           eagerness.observeMergeRead(mergeClause);
+        eagerness.observeClause(entry, false, boundVariables);
         // What the MERGE binds is as much a bound name as what a MATCH binds: a MATCH after it that ends at one of them
         // starts from that entity instead of scanning the side it leaves open (issue #10515)
         collectPatternVariables(List.of(mergeClause.getPathPattern()), boundVariables);
@@ -1950,6 +1978,7 @@ public class CypherExecutionPlan {
           }
           currentStep = createStep;
           eagerness.observeWriteClause();
+          eagerness.observeClause(entry, false, boundVariables);
           collectPatternVariables(createClause.getPathPatterns(), boundVariables);
         }
         break;
@@ -1961,9 +1990,11 @@ public class CypherExecutionPlan {
           // clause already taken, answers false and plans the SET a second time as a step of its own (issue #8809).
           // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889): it gets the
           // barrier, so the MERGE step must not absorb it.
-          final boolean afterMerge = eagerness.needsBarrierAfterMerge(setClause);
-          if (afterMerge || !absorbsSet(currentStep, setClause)) {
-            if (afterMerge || eagerness.needsBarrier(setClause))
+          // A SET of a key a clause before it read for another row runs after that read of every row (issue #11005): the same
+          // barrier, so the step before it must not absorb it either.
+          final boolean barrierFirst = eagerness.needsBarrierAfterMerge(setClause) || eagerness.needsBarrierForPropertyWrites(setClause);
+          if (barrierFirst || !absorbsSet(currentStep, setClause)) {
+            if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
                 new SetStep(setClause, context, functionFactory);
@@ -1972,13 +2003,15 @@ public class CypherExecutionPlan {
           }
           // A SET a MERGE/CREATE absorbs still writes, so it is observed either way
           eagerness.observeWrite(setClause);
+          eagerness.observeClause(entry, false, boundVariables);
         }
         break;
 
       case REMOVE:
         final RemoveClause removeClause = entry.getTypedClause();
         if (!removeClause.isEmpty() && currentStep != null) {
-          if (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause))
+          if (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
+              || eagerness.needsBarrierForPropertyWrites(removeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
               new RemoveStep(removeClause, context, functionFactory);
@@ -1997,6 +2030,7 @@ public class CypherExecutionPlan {
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
           eagerness.observeWriteClause();
+          eagerness.observeClause(entry, false, boundVariables);
         }
         break;
 
@@ -2024,6 +2058,7 @@ public class CypherExecutionPlan {
           callStep.setCountOnlyOptimization(true);
         }
         currentStep = callStep;
+        eagerness.observeClause(entry, false, boundVariables);
         // A CALL binds the names it yields the way UNWIND binds its variable: they belong to the scope a
         // following MATCH starts from, not to that MATCH's own clause. Registering them is what lets the
         // MATCH push a predicate that reads one of them down into its scan, and what keeps a yielded
@@ -2040,7 +2075,7 @@ public class CypherExecutionPlan {
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && graphReadFollows(clausesInOrder, entryIndex);
         if (currentStep != null && (eagerness.needsBarrier(foreachClause, boundVariables)
-            || eagerness.needsBarrierAfterMerge(foreachClause)))
+            || eagerness.needsBarrierAfterMerge(foreachClause) || eagerness.needsBarrierForPropertyWrites(foreachClause)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
@@ -2049,6 +2084,7 @@ public class CypherExecutionPlan {
         }
         currentStep = foreachStep;
         eagerness.observeWriteClause();
+        eagerness.observeClause(entry, false, boundVariables);
         break;
 
       case SUBQUERY:
@@ -2057,8 +2093,9 @@ public class CypherExecutionPlan {
         // The body runs once per row the enumeration behind it hands over, so a node it deletes is unlinked while that
         // enumeration is still walking it (issue #10512). The rows are read ahead of the first run on the same terms as for
         // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided
-        if (currentStep != null && subqueryBodyDeletes(subqueryBody)
+        if (currentStep != null && ((subqueryBodyDeletes(subqueryBody)
             && (matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()))
+            || eagerness.needsBarrierForPropertyWrites(subqueryBody)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
@@ -2071,6 +2108,7 @@ public class CypherExecutionPlan {
         currentStep = subqueryStep;
         if (!subqueryClause.getInnerStatement().isReadOnly())
           eagerness.observeWriteClause();
+        eagerness.observeClause(entry, false, boundVariables);
         // What the subquery returns joins the outer scope, exactly as a CALL's YIELD names do, so a following
         // MATCH can push a predicate that reads one of them into its scan instead of filtering behind it.
         collectSubqueryOutputVariables(subqueryClause, boundVariables);
