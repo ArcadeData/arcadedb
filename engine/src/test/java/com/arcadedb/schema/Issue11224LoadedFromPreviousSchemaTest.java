@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * needs the intended files (snapshot install) can refuse instead of going on with a database that looks fine.
  */
 class Issue11224LoadedFromPreviousSchemaTest extends TestHelper {
+  private static final String TRUNCATED_SCHEMA = "{\"schemaVersion\":42,\"settings\":{\"dateForm";
 
   @Test
   void cleanLoadDoesNotReportFallback() {
@@ -45,7 +46,7 @@ class Issue11224LoadedFromPreviousSchemaTest extends TestHelper {
   void corruptPrimaryReportsFallback() throws Exception {
     prepare();
     final File schemaFile = schemaFile();
-    Files.writeString(schemaFile.toPath(), "{\"schemaVersion\":42,\"settings\":{\"dateForm");
+    Files.writeString(schemaFile.toPath(), TRUNCATED_SCHEMA);
     database = factory.open();
     assertThat(database.getSchema().existsType("A")).isTrue();
     assertThat(schema().isLoadedFromPreviousSchema()).isTrue();
@@ -72,7 +73,7 @@ class Issue11224LoadedFromPreviousSchemaTest extends TestHelper {
   @Test
   void flagClearsOnNextCleanLoad() throws Exception {
     prepare();
-    Files.writeString(schemaFile().toPath(), "{\"schemaVersion\":42,\"settings\":{\"dateForm");
+    Files.writeString(schemaFile().toPath(), TRUNCATED_SCHEMA);
     database = factory.open();
     assertThat(schema().isLoadedFromPreviousSchema()).isTrue();
     // the open healed schema.json, so the next open reads the primary

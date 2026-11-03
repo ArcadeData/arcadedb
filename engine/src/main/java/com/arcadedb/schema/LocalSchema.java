@@ -6439,7 +6439,8 @@ public class LocalSchema implements Schema {
    * Tells whether the last schema load fell back to {@code schema.prev.json} because {@code schema.json} was missing, empty or
    * unparseable (issue #11224). The engine logs a WARNING and opens the database anyway; a caller that needs the schema files to
    * be the intended ones, such as a snapshot install, uses this to refuse instead. It describes the most recent load of this
-   * instance: the self-healing rewrite that follows does not clear it.
+   * instance: the self-healing rewrite that follows does not clear it, and a load that fails or is aborted after
+   * the fallback can leave it set.
    */
   public boolean isLoadedFromPreviousSchema() {
     return loadedFromPreviousSchema;
