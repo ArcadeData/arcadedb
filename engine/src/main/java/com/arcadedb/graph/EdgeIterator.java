@@ -54,8 +54,15 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
   @Override
   public boolean hasNext() {
     checkNotInvalidated();
-    if (pending)
-      return true;
+    if (pending) {
+      if (nextEdgeRID.getPosition() < 0 || !deletedByTransaction(nextEdgeRID))
+        return true;
+      // THE TRANSACTION DELETED THE EDGE THIS CALL PEEKED BEFORE: THE CURSOR IS PAST IT ALREADY, GO ON FROM THERE (#11234)
+      pending = false;
+      nextEdgeRecord = null;
+      nextEdgeRID = null;
+      nextVertexRID = null;
+    }
 
     if (currentContainer == null)
       return false;

@@ -59,8 +59,15 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
   protected boolean hasNext(final boolean edge) {
     checkNotInvalidated();
-    if (next != null)
-      return true;
+    if (next != null) {
+      if (!edge || nextEdge.getPosition() < 0 || !deletedByTransaction(nextEdge))
+        return true;
+      // THE TRANSACTION DELETED THE EDGE THIS CALL PEEKED BEFORE: THE CURSOR IS PAST IT ALREADY, GO ON FROM THERE (#11234)
+      next = null;
+      nextEdge = null;
+      nextVertex = null;
+      validatedRecord = null;
+    }
 
     if (currentContainer == null || validBuckets == null)
       return false;

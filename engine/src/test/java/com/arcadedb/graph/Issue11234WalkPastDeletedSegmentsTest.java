@@ -138,6 +138,39 @@ class Issue11234WalkPastDeletedSegmentsTest extends TestHelper {
   }
 
   @Test
+  void aFilteredWalkDoesNotHandOutTheEdgeItPeekedOnceItsTransactionDeletedIt() {
+    peekThenDelete(true);
+  }
+
+  @Test
+  void anUnfilteredWalkDoesNotHandOutTheEdgeItPeekedOnceItsTransactionDeletedIt() {
+    peekThenDelete(false);
+  }
+
+  /** hasNext() has already read the next entry when the transaction deletes its edge: next() goes on to the one after it. */
+  private void peekThenDelete(final boolean filtered) {
+    database.transaction(() -> {
+      final Vertex h = hub.asVertex();
+      final List<Edge> order = new ArrayList<>();
+      walkOf(h, filtered).forEachRemaining(order::add);
+
+      final Iterator<Edge> walk = walkOf(h, filtered);
+      assertThat(walk.next().getIdentity()).isEqualTo(order.get(0).getIdentity());
+      assertThat(walk.hasNext()).isTrue();
+
+      order.get(1).delete();
+
+      assertThat(walk.hasNext()).isTrue();
+      assertThat(walk.next().getIdentity()).isEqualTo(order.get(2).getIdentity());
+    });
+    assertThat(hub.asVertex().countEdges(Vertex.DIRECTION.OUT, "RELATES_TO")).isEqualTo(EDGES - 1);
+  }
+
+  private static Iterator<Edge> walkOf(final Vertex vertex, final boolean filtered) {
+    return (filtered ? vertex.getEdges(Vertex.DIRECTION.OUT, "RELATES_TO") : vertex.getEdges(Vertex.DIRECTION.OUT)).iterator();
+  }
+
+  @Test
   void aWalkOfAListWhoseVertexItsTransactionDeletedEnds() {
     database.transaction(() -> {
       final Iterator<Edge> walk = hub.asVertex().getEdges(Vertex.DIRECTION.OUT, "RELATES_TO").iterator();

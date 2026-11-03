@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11234: one {@code MATCH (a)-[e]->(b) ... DELETE e} statement that deletes many of the OLDEST edges of a vertex failed with
@@ -98,6 +99,28 @@ class Issue11234DeleteOldestEdgesWhileWalkingTest extends TestHelper {
     assertThat(hubDegree()).isEqualTo(2000);
     assertThat(deleteRange(1000, 2999)).isEqualTo(2000);
     assertThat(hubDegree()).isZero();
+    assertThat(checkDatabaseErrors()).isZero();
+  }
+
+  @Test
+  void aStatementTakenBackLeavesNoStaleRelinkForTheNextOne() {
+    buildHub(3000);
+
+    database.transaction(() -> {
+      // THE FIRST STATEMENT EMPTIES AND DELETES THE OLD SEGMENTS, THEN FAILS: ONLY IT IS TAKEN BACK, THE TRANSACTION GOES ON
+      assertThatThrownBy(() -> database.command("opencypher", """
+          UNWIND range(0, 999) AS i
+          MATCH (a:Entity {external_id: 'HUB'})-[e:RELATES_TO]->(b:Entity {external_id: 'E' + i})
+          DELETE e WITH count(*) AS n RETURN 1 / (n - n) AS boom""").stream().count()).hasMessageContaining("/ by zero");
+      assertThat(hubDegree()).isEqualTo(3000);
+
+      // THE SAME SEGMENTS ARE EMPTIED AND DELETED AGAIN, BY A STATEMENT THAT STREAMS ITS MATCH INTO ITS DELETE
+      assertThat(deleteRange(0, 999)).isEqualTo(1000);
+      assertThat(hubDegree()).isEqualTo(2000);
+      assertThat(deleteRange(1000, 1999)).isEqualTo(1000);
+      assertThat(hubDegree()).isEqualTo(1000);
+    });
+    assertThat(hubDegree()).isEqualTo(1000);
     assertThat(checkDatabaseErrors()).isZero();
   }
 
