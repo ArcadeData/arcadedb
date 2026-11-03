@@ -196,12 +196,45 @@ public class PostgresCatalog {
    * The relations of {@link #JOINED_RELATIONS} that hold no row in this catalog, whatever the schema: the honest answer to a
    * question about them is "there are none", and a refusal would turn it into a driver exception (issue #10591). A relation
    * PostgreSQL has that is NOT in this set and not modelled is still refused (issue #10371), because its absence would be a lie.
+   * <p>
+   * Each one carries WHY no row is the truth: what PostgreSQL's rows there describe, and why none of it exists in ArcadeDB (issue
+   * #11023). "Does a PostgreSQL hold rows here" is the judgement the policy turns on and it cannot be derived from this
+   * repository, so it is written down where the relation enters the set, and a relation cannot enter it without one. The test of
+   * the policy holds the set to what a stock PostgreSQL holds: one of these that every PostgreSQL holds rows in is a decision it
+   * names, not a default.
    */
-  private static final Set<String> NEVER_HAVE_ROWS = Set.of("pg_policy", "pg_statistic_ext", "pg_publication",
-      "pg_publication_rel", "pg_publication_namespace", "pg_range", "pg_enum", "pg_proc", "pg_trigger", "pg_auth_members",
-      "pg_sequence", "pg_shdescription", "pg_default_acl", "pg_foreign_table", "pg_event_trigger", "pg_foreign_data_wrapper",
-      "pg_foreign_server", "pg_user_mappings", "pg_subscription", "pg_db_role_setting", "pg_largeobject_metadata",
-      "pg_parameter_acl");
+  private static final Map<String, String> NEVER_HAVE_ROWS = Map.ofEntries(//
+      Map.entry("pg_policy", "row-level security policies (CREATE POLICY): ArcadeDB has none, and a stock PostgreSQL holds none"),
+      Map.entry("pg_statistic_ext", "extended planner statistics (CREATE STATISTICS): ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_publication", "logical-replication publications: ArcadeDB replicates through its own HA protocol, with no "
+          + "publication object, and a stock PostgreSQL holds none"),
+      Map.entry("pg_publication_rel", "the tables of a publication: there is no publication"),
+      Map.entry("pg_publication_namespace", "the schemas of a publication: there is no publication"),
+      Map.entry("pg_range", "the range types: PostgreSQL's built-in ones (int4range, tsrange, ...) are rows of its pg_type, and the "
+          + "pg_type of this catalog models no range type, so no row here could name one"),
+      Map.entry("pg_enum", "the labels of the enum types (CREATE TYPE ... AS ENUM): ArcadeDB has no enum type, and none is built in"),
+      Map.entry("pg_proc", "the functions: PostgreSQL's rows are its built-in functions, all in pg_catalog, which psql's \\df "
+          + "leaves out, and the pg_type of this catalog names its I/O functions by name only (typinput 'int4in'), never by an oid a "
+          + "join could miss; the functions a user defines in ArcadeDB are not PostgreSQL routines (issue #10591)"),
+      Map.entry("pg_trigger", "the triggers of tables: a stock PostgreSQL holds none, and an ArcadeDB trigger runs SQL or a script, "
+          + "with no trigger function in pg_proc for tgfoid to name (issue #10591)"),
+      Map.entry("pg_auth_members", "role memberships: PostgreSQL's built-in rows join its predefined roles (pg_monitor and the "
+          + "pg_read_all_* it includes), which the pg_roles of this catalog does not list, and ArcadeDB has no role in a role"),
+      Map.entry("pg_sequence", "sequences: ArcadeDB has none (a record id is allocated by its bucket), and a stock PostgreSQL holds none"),
+      Map.entry("pg_shdescription", "comments on shared objects: PostgreSQL's built-in rows describe its template databases, which "
+          + "the pg_database of this catalog does not list, and nothing in ArcadeDB carries a comment"),
+      Map.entry("pg_default_acl", "default privileges (ALTER DEFAULT PRIVILEGES): ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_foreign_table", "foreign tables: ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_event_trigger", "event triggers (CREATE EVENT TRIGGER): ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_foreign_data_wrapper", "foreign-data wrappers: ArcadeDB has none, and a stock PostgreSQL installs none"),
+      Map.entry("pg_foreign_server", "foreign servers: ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_user_mappings", "the user mappings of foreign servers: there is no foreign server"),
+      Map.entry("pg_subscription", "logical-replication subscriptions: ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_db_role_setting", "per-role and per-database settings (ALTER ROLE ... SET): ArcadeDB has none, nor a stock "
+          + "PostgreSQL"),
+      Map.entry("pg_largeobject_metadata", "large objects (lo_create): ArcadeDB has none, nor a stock PostgreSQL"),
+      Map.entry("pg_parameter_acl", "privileges granted on configuration parameters (GRANT SET ON PARAMETER): ArcadeDB has none, nor "
+          + "a stock PostgreSQL"));
 
   /** The OID of {@code pg_class} itself, which {@code pg_depend.classid} names for a dependency of an index (issue #10842). */
   private static final int PG_CLASS_RELATION_OID      = 1259;
@@ -561,7 +594,7 @@ public class PostgresCatalog {
     for (final String relation : JOINED_RELATIONS)
       if (!RELATIONS.containsKey(relation))
         throw new IllegalStateException("Joined catalog relation '" + relation + "' has no columns");
-    for (final String relation : NEVER_HAVE_ROWS)
+    for (final String relation : NEVER_HAVE_ROWS.keySet())
       if (!JOINED_RELATIONS.contains(relation))
         throw new IllegalStateException("Catalog relation '" + relation + "' with no rows is not read by the join path");
   }
@@ -594,6 +627,11 @@ public class PostgresCatalog {
   /** The names of the relations this catalog models, for a test that holds every one of them to the same contract. */
   static Set<String> modelledRelations() {
     return Collections.unmodifiableSet(RELATIONS.keySet());
+  }
+
+  /** The modelled relations that hold no row whatever the schema, each with why no row is the truth (issue #11023). */
+  static Map<String, String> noRowRelations() {
+    return NEVER_HAVE_ROWS;
   }
 
   /**
@@ -1251,7 +1289,7 @@ public class PostgresCatalog {
       columnsByRelation.put(entry.relation, entries[i].columns());
       if (entry.derived == null && entry.function == null) {
         tolerant &= FAMILIES.get(entry.relation) != Family.TYPES;
-        neverHasRows |= NEVER_HAVE_ROWS.contains(entry.relation) && entry.join != Join.LEFT;
+        neverHasRows |= NEVER_HAVE_ROWS.containsKey(entry.relation) && entry.join != Join.LEFT;
       }
     }
 

@@ -85,6 +85,10 @@ public class TruncateBucketStatement extends DDLStatement {
 
     // Check if the bucket is associated with a vertex or edge type
     final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());
+    // refused whole, UNSAFE or not: only the refresh of a materialized view or a continuous aggregate writes its backing type
+    // (issue #11020), and the per-record refusal would leave the records deleted before it
+    if (type != null)
+      schema.getEmbedded().checkBackingTypeWrite(type.getName(), "truncate a bucket of");
     if (type != null && !unsafe) {
       final long recordCount = db.countBucket(resolvedBucketName);
       if (recordCount > 0) {

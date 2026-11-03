@@ -110,6 +110,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -428,8 +430,13 @@ public class LocalSchema implements Schema {
    */
   private final       AtomicReference<Thread>                stagingThread                 = new AtomicReference<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
-  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
-  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
+  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new BackingTypeRegistry<>();
+  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new BackingTypeRegistry<>();
+  /**
+   * The owner of every backing type by the type's name, rebuilt by the two registries above on every change (issue #11020). Read on
+   * every record write: empty, the common case, it costs one volatile read.
+   */
+  private volatile    Map<String, BackingTypeOwner>         backingTypeOwners             = Map.of();
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   // Concurrent: its emptiness is read on every record write, to skip the trigger walk on a database without triggers
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new ConcurrentHashMap<>();
@@ -495,6 +502,11 @@ public class LocalSchema implements Schema {
    */
   boolean isTypeBeingDropped() {
     return typeBeingDropped != null;
+  }
+
+  /** Whether the drop in progress is the one of {@code typeName} itself. Read under the database write lock, as it is written. */
+  boolean isTypeBeingDropped(final String typeName) {
+    return typeName.equals(typeBeingDropped);
   }
   /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
   private             int                                    recordingDepth                = 0;
@@ -3535,6 +3547,216 @@ public class LocalSchema implements Schema {
           dependants.add(impl);
       dependants.addAll(GraphAnalyticalViewPersistence.getTypeNameDependants(database));
       return dependants;
+    }
+  }
+
+  /**
+   * Refuses the write {@code operation} ("insert into", "truncate", ...) on the type {@code typeName} when it is the backing type of a
+   * materialized view or a continuous aggregate and the current thread is not running that owner's refresh (issue #11020). The rows
+   * of a backing type are derived, and its owner's state accounts for exactly the rows its refresh wrote: a materialized view kept
+   * answering a row written beside its query, or emptied by a {@code TRUNCATE}, until its next refresh while reporting VALID, and a
+   * continuous aggregate never recomputed a bucket deleted behind its watermark, so the loss was permanent. PostgreSQL refuses the
+   * same writes on a materialized view.
+   * <p>
+   * The rule is asked by every record create, update and delete ({@code LocalDatabase}) and, before anything is changed, by the
+   * statements that empty a type or a bucket, so that one of them is refused whole and not half-way.
+   */
+  public void checkBackingTypeWrite(final String typeName, final String operation) {
+    final Map<String, BackingTypeOwner> owners = backingTypeOwners;
+    if (owners.isEmpty())
+      return;
+    final BackingTypeOwner owner = owners.get(typeName);
+    if (owner != null && !BackingTypeWriteScope.isRefreshing(owner))
+      throw new SchemaException("Cannot " + operation + " type '" + typeName + "' because it is the backing type for " + owner.kind()
+          + " '" + owner.getName() + "': its rows are computed from its source types and only its refresh writes them. Change the "
+          + "source data and run: " + owner.refreshStatement() + ", or remove the " + owner.kind() + " with: " + owner.dropStatement());
+  }
+
+  /** As {@link #checkBackingTypeWrite(String, String)}, for a record known by its bucket. */
+  public void checkBackingTypeWrite(final int bucketId, final String operation) {
+    if (backingTypeOwners.isEmpty())
+      return;
+    final DocumentType type = getTypeByBucketId(bucketId);
+    if (type != null)
+      checkBackingTypeWrite(type.getName(), operation);
+  }
+
+  /**
+   * Rebuilds the snapshot from both registries. Not synchronized on purpose: it runs inside the mutation of a registry, which is
+   * serialized already (under the schema's monitor or the database write lock, as every other access to the registries is), and
+   * taking the monitor here from a thread that holds only the write lock is the order #7457 forbids. Readers never see a partial
+   * map: the snapshot is built aside and published with one volatile write.
+   */
+  private void backingTypeOwnersChanged() {
+    final Map<String, BackingTypeOwner> owners = new HashMap<>();
+    for (final MaterializedViewImpl view : materializedViews.values())
+      owners.put(view.getBackingTypeName(), view);
+    for (final ContinuousAggregateImpl aggregate : continuousAggregates.values())
+      owners.put(aggregate.getBackingTypeName(), aggregate);
+    backingTypeOwners = owners.isEmpty() ? Map.of() : owners;
+  }
+
+  /**
+   * A registry of backing type owners that keeps {@link #backingTypeOwners} in step with itself on every change, so that no code
+   * path that registers or removes a view or an aggregate (creation, drop, schema load, the restore of a staged schema) can leave
+   * the write guard of issue #11020 behind. Every mutator of the map refreshes the snapshot, and the key, value and entry views
+   * are read-only, so a removal through one of them fails instead of leaving the guard stale.
+   */
+  private final class BackingTypeRegistry<V extends BackingTypeOwner> extends LinkedHashMap<String, V> {
+    @Override
+    public V putIfAbsent(final String key, final V value) {
+      final V previous = super.putIfAbsent(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public V computeIfAbsent(final String key, final Function<? super String, ? extends V> function) {
+      final V result = super.computeIfAbsent(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V computeIfPresent(final String key,
+        final BiFunction<? super String, ? super V, ? extends V> function) {
+      final V result = super.computeIfPresent(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V compute(final String key, final BiFunction<? super String, ? super V, ? extends V> function) {
+      final V result = super.compute(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V merge(final String key, final V value,
+        final BiFunction<? super V, ? super V, ? extends V> function) {
+      final V result = super.merge(key, value, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V replace(final String key, final V value) {
+      final V previous = super.replace(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public boolean replace(final String key, final V oldValue, final V newValue) {
+      final boolean replaced = super.replace(key, oldValue, newValue);
+      backingTypeOwnersChanged();
+      return replaced;
+    }
+
+    @Override
+    public void replaceAll(final BiFunction<? super String, ? super V, ? extends V> function) {
+      super.replaceAll(function);
+      backingTypeOwnersChanged();
+    }
+
+    @Override
+    public boolean remove(final Object key, final Object value) {
+      final boolean removed = super.remove(key, value);
+      backingTypeOwnersChanged();
+      return removed;
+    }
+
+    @Override
+    public Set<String> keySet() {
+      return Collections.unmodifiableSet(super.keySet());
+    }
+
+    @Override
+    public Collection<V> values() {
+      return Collections.unmodifiableCollection(super.values());
+    }
+
+    @Override
+    public Set<Map.Entry<String, V>> entrySet() {
+      return Collections.unmodifiableSet(super.entrySet());
+    }
+
+    // THE SequencedMap MUTATORS AND VIEWS OF LinkedHashMap (JAVA 21) GO AROUND put/remove, SO THEY ARE COVERED TOO
+    @Override
+    public V putFirst(final String key, final V value) {
+      final V previous = super.putFirst(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public V putLast(final String key, final V value) {
+      final V previous = super.putLast(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    // the default ones remove through the entry view, which is read-only here: through remove(key), which refreshes the snapshot
+    @Override
+    public Map.Entry<String, V> pollFirstEntry() {
+      return isEmpty() ? null : poll(super.firstEntry());
+    }
+
+    @Override
+    public Map.Entry<String, V> pollLastEntry() {
+      return isEmpty() ? null : poll(super.lastEntry());
+    }
+
+    private Map.Entry<String, V> poll(final Map.Entry<String, V> entry) {
+      remove(entry.getKey());
+      return entry;
+    }
+
+    @Override
+    public SequencedSet<String> sequencedKeySet() {
+      return Collections.unmodifiableSequencedSet(super.sequencedKeySet());
+    }
+
+    @Override
+    public SequencedCollection<V> sequencedValues() {
+      return Collections.unmodifiableSequencedCollection(super.sequencedValues());
+    }
+
+    @Override
+    public SequencedSet<Map.Entry<String, V>> sequencedEntrySet() {
+      return Collections.unmodifiableSequencedSet(super.sequencedEntrySet());
+    }
+
+    @Override
+    public SequencedMap<String, V> reversed() {
+      return Collections.unmodifiableSequencedMap(super.reversed());
+    }
+
+    @Override
+    public V put(final String key, final V value) {
+      final V previous = super.put(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public void putAll(final Map<? extends String, ? extends V> map) {
+      super.putAll(map);
+      backingTypeOwnersChanged();
+    }
+
+    @Override
+    public V remove(final Object key) {
+      final V previous = super.remove(key);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public void clear() {
+      super.clear();
+      backingTypeOwnersChanged();
     }
   }
 

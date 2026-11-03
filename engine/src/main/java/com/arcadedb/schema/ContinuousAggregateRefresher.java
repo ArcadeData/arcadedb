@@ -125,7 +125,8 @@ public class ContinuousAggregateRefresher {
   private static void refreshOnce(final Database database, final ContinuousAggregateImpl ca) {
     ca.setStatus(MaterializedViewStatus.BUILDING);
     final long startNs = System.nanoTime();
-    try {
+    // the scope is what lets the writes below through: nothing else writes a backing type (issue #11020)
+    try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(ca)) {
       final String backingTypeName = ca.getBackingTypeName();
       final String bucketColumn = ca.getBucketColumn();
       // #10428: the range samples were removed from since the buckets behind the watermark were computed. Read once: a delete
