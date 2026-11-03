@@ -2519,6 +2519,19 @@ else
     fail "the review flags a hazardous PR with the repository's 'do not merge' label"
 fi
 
+# The linux/amd64 -march=compatibility leg (#11253) shares os_name and arch with the default
+# linux/amd64 leg, so it must carry a `suffix` that keeps its workflow artifact and its release
+# archive apart: without it both upload `arcadedb-native-linux-amd64` and the `docker` job would
+# take whichever finished last, publishing the slow compat binary as the default image.
+NATIVEWF=".github/workflows/native-image.yml"
+if grep -qF '"suffix":"-compat","march":"compatibility"' "$NATIVEWF" \
+    && grep -qF 'name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}${{ matrix.suffix }}' "$NATIVEWF" \
+    && grep -qF 'ARCHIVE="$BIN${{ matrix.suffix }}.tar.gz"' "$NATIVEWF"; then
+    pass "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
+else
+    fail "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
+fi
+
 echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"
