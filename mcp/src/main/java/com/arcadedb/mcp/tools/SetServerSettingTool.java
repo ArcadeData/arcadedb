@@ -35,6 +35,7 @@ public class SetServerSettingTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "set_server_setting")
+        .put("annotations", MCPToolUtils.annotations("Change a server setting", false, true, false, false))
         .put("description",
             """
             Update a server configuration setting at runtime. \

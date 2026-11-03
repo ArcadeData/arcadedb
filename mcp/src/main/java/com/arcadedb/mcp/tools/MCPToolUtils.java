@@ -53,6 +53,35 @@ public class MCPToolUtils {
   }
 
   /**
+   * The MCP {@code annotations} of a tool definition (issue #11170): hints a client reads to decide when to ask the
+   * user before a call. They never authorize anything: the MCP configuration and the user's permissions still do.
+   *
+   * @param openWorld whether the tool can reach hosts other than this server, as a query language that fetches a URL
+   *                  ({@code LOAD CSV}, {@code IMPORT DATABASE}) does
+   */
+  public static JSONObject annotations(final String title, final boolean readOnly, final boolean destructive,
+      final boolean idempotent, final boolean openWorld) {
+    return new JSONObject()
+        .put("title", title)
+        .put("readOnlyHint", readOnly)
+        .put("destructiveHint", destructive)
+        .put("idempotentHint", idempotent)
+        .put("openWorldHint", openWorld);
+  }
+
+  /**
+   * The query engine of a tool that runs the caller's query or command text. {@code analyze()} is where the tool decides
+   * whether the text is read-only or allowed by the MCP configuration, so an engine whose analysis evaluates the text
+   * (a scripting language) would run it before either check could refuse it: it is refused here, before analysis.
+   */
+  public static QueryEngine analyzableQueryEngine(final Database database, final String language) {
+    final QueryEngine engine = database.getQueryEngine(language);
+    if (engine.analysisEvaluatesQuery())
+      throw new SecurityException("Language '" + language + "' is not available through MCP: it cannot be checked without running it");
+    return engine;
+  }
+
+  /**
    * Resolves a database by name, throwing an {@link IllegalArgumentException} with the list of databases
    * accessible to the user when the requested database does not exist, so the LLM can self-correct
    * without a separate list_databases round-trip.

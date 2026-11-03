@@ -128,6 +128,16 @@ public interface QueryEngine {
     return false;
   }
 
+  /**
+   * Whether {@link #analyze(String)} evaluates the text it is given instead of only parsing it, so that a caller cannot use the
+   * analysis as a check that runs before the text does anything (issue #11170): a scripting engine runs the script to learn what
+   * it does. By default an engine only parses: an engine whose {@code analyze()} evaluates the text MUST override this, or such a
+   * caller runs the text before it could refuse it.
+   */
+  default boolean analysisEvaluatesQuery() {
+    return false;
+  }
+
   ResultSet query(String query, ContextConfiguration configuration, Map<String, Object> parameters);
 
   /**

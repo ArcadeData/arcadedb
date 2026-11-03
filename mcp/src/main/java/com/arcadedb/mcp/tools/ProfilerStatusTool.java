@@ -30,6 +30,7 @@ public class ProfilerStatusTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "profiler_status")
+        .put("annotations", MCPToolUtils.annotations("Query profiler status", true, false, true, false))
         .put("description",
             """
             Get the current status of the query profiler. \
