@@ -117,6 +117,10 @@ public final class CypherEagernessAnalyzer {
   // the right-hand side of a SET, ...): a later write of one of those keys runs for one row before the read of the next row
   // (issue #11005). A MATCH's own pattern and WHERE are not among them, see observeClause()
   private final Set<PropertyReadSite> pendingPropertyReads = new HashSet<>();
+  // The property reads of the patterns and WHERE of the MATCH clauses planned since the last barrier: they select which entities a
+  // row binds, so only a write that NAMES their key conflicts (an opaque map write is left streaming, see observeClause(), and
+  // issue #11173)
+  private final Set<PropertyReadSite> pendingMatchReads = new HashSet<>();
   // The variables bound to a different entity on every row: a write through one of them cannot reach a read of another row
   private final Set<String> rowUniqueVariables     = new HashSet<>();
   // The variables known never to hold a record (a LOAD CSV row, an UNWIND of a literal list): no record
@@ -187,6 +191,7 @@ public final class CypherEagernessAnalyzer {
     mergeReadsAnyKey = false;
     mergeReadsAnyLabel = false;
     pendingPropertyReads.clear();
+    pendingMatchReads.clear();
   }
 
   /**
@@ -569,9 +574,12 @@ public final class CypherEagernessAnalyzer {
    * entity on every row: then the write of a row cannot reach the read of another one, and
    * {@code MATCH (n:P) WITH n, n.k AS old SET n.k = old + 1} keeps streaming.
    * <p>
-   * The reads of a MATCH's own pattern and WHERE are left out on purpose: they select which entities a row binds rather
-   * than project a value into it, and counting them would plant the barrier on {@code LOAD CSV ... MATCH (n {id: row.id})
-   * SET n += row}, holding the whole file in memory, to protect only the rows that rewrite the key they were found by.
+   * The reads of a MATCH's own pattern and WHERE are kept apart: they select which entities a row binds rather than project a
+   * value into it. A write that names their key ({@code SET n.k}, {@code REMOVE n.k}, {@code SET n += {k: ..}}) conflicts with
+   * them, so {@code MATCH (a)-[:R]->(c) WHERE c.k = 1 SET c.k = 2} matches every row before the first SET runs (issue #11173).
+   * An opaque write ({@code SET n += row}, {@code SET n = map}, a computed key) does not: counting it would plant the barrier on
+   * {@code LOAD CSV ... MATCH (n {id: row.id}) SET n += row}, holding the whole file in memory, to protect only the rows that
+   * rewrite the key they were found by.
    *
    * @param startsStatement whether the clause is the first one of the statement or of a subquery body, i.e. receives a
    *                        single row
@@ -580,7 +588,9 @@ public final class CypherEagernessAnalyzer {
   public void observeClause(final ClauseEntry entry, final boolean startsStatement, final Set<String> boundVariables) {
     if (entry == null)
       return;
-    if (entry.getType() != ClauseEntry.ClauseType.MATCH) {
+    if (entry.getType() == ClauseEntry.ClauseType.MATCH)
+      CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingMatchReads, false, Set.of(), List.of()));
+    else {
       final List<PathPattern> ownPatterns = switch (entry.getType()) {
         case CREATE -> ((CreateClause) entry.getClause()).getPathPatterns();
         case MERGE -> {
@@ -593,7 +603,7 @@ public final class CypherEagernessAnalyzer {
       final Set<String> shadowed = entry.getType() == ClauseEntry.ClauseType.FOREACH ?
           Set.of(((ForeachClause) entry.getClause()).getVariable()) :
           Set.of();
-      CypherExpressionWalker.walk(entry, new PropertyReadCollector(false, shadowed, ownPatterns));
+      CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingPropertyReads, false, shadowed, ownPatterns));
     }
 
     switch (entry.getType()) {
@@ -641,22 +651,22 @@ public final class CypherEagernessAnalyzer {
 
   /** True when a SET writes a key a clause ahead of it read for another row, see {@link #observeClause}. */
   public boolean needsBarrierForPropertyWrites(final SetClause setClause) {
-    return setClause != null && !pendingPropertyReads.isEmpty() && setWritesConflict(setClause, Set.of());
+    return setClause != null && hasPropertyReads() && setWritesConflict(setClause, Set.of());
   }
 
   /** The REMOVE counterpart of {@link #needsBarrierForPropertyWrites(SetClause)}. */
   public boolean needsBarrierForPropertyWrites(final RemoveClause removeClause) {
-    return removeClause != null && !pendingPropertyReads.isEmpty() && removeWritesConflict(removeClause, Set.of());
+    return removeClause != null && hasPropertyReads() && removeWritesConflict(removeClause, Set.of());
   }
 
   /** The {@code ON CREATE SET} / {@code ON MATCH SET} counterpart of {@link #needsBarrierForPropertyWrites(SetClause)}. */
   public boolean needsBarrierForPropertyWrites(final MergeClause mergeClause) {
-    return mergeClause != null && !pendingPropertyReads.isEmpty() && mergeWritesConflict(mergeClause, Set.of());
+    return mergeClause != null && hasPropertyReads() && mergeWritesConflict(mergeClause, Set.of());
   }
 
   /** A FOREACH whose body, at any nesting depth, writes a key a clause ahead of it read for another row. */
   public boolean needsBarrierForPropertyWrites(final ForeachClause foreachClause) {
-    return foreachClause != null && !pendingPropertyReads.isEmpty() && foreachWritesConflict(foreachClause, Set.of());
+    return foreachClause != null && hasPropertyReads() && foreachWritesConflict(foreachClause, Set.of());
   }
 
   /**
@@ -664,7 +674,7 @@ public final class CypherEagernessAnalyzer {
    * weighed by key alone.
    */
   public boolean needsBarrierForPropertyWrites(final CypherStatement body) {
-    if (body == null || pendingPropertyReads.isEmpty() || body.isReadOnly())
+    if (body == null || !hasPropertyReads() || body.isReadOnly())
       return false;
     if (body instanceof UnionStatement || body.getClausesInOrder() == null)
       return true;
@@ -675,7 +685,14 @@ public final class CypherEagernessAnalyzer {
       if (read.key() == null ? !writes.writtenPropertyKeys.isEmpty() : writes.writtenPropertyKeys.contains(read.key()))
         return true;
     }
+    for (final PropertyReadSite read : pendingMatchReads)
+      if (read.key() == null ? !writes.writtenPropertyKeys.isEmpty() : writes.writtenPropertyKeys.contains(read.key()))
+        return true;
     return false;
+  }
+
+  private boolean hasPropertyReads() {
+    return !pendingPropertyReads.isEmpty() || !pendingMatchReads.isEmpty();
   }
 
   private boolean setWritesConflict(final SetClause setClause, final Set<String> shadowed) {
@@ -752,6 +769,14 @@ public final class CypherEagernessAnalyzer {
         continue;
       return true;
     }
+    if (key != null)
+      for (final PropertyReadSite read : pendingMatchReads) {
+        if (read.key() != null && !key.equals(read.key()))
+          continue;
+        if (ownRowOnly && variable.equals(read.variable()))
+          continue;
+        return true;
+      }
     return false;
   }
 
@@ -823,15 +848,21 @@ public final class CypherEagernessAnalyzer {
     nonRecordVariables.clear();
     nonRecordVariables.addAll(nonRecord);
 
+    forgetRenamedVariables(pendingPropertyReads, star, forwarded, rebound);
+    forgetRenamedVariables(pendingMatchReads, star, forwarded, rebound);
+  }
+
+  private static void forgetRenamedVariables(final Set<PropertyReadSite> reads, final boolean star, final Set<String> forwarded,
+      final Set<String> rebound) {
     final List<PropertyReadSite> renamed = new ArrayList<>();
-    for (final Iterator<PropertyReadSite> it = pendingPropertyReads.iterator(); it.hasNext(); ) {
+    for (final Iterator<PropertyReadSite> it = reads.iterator(); it.hasNext(); ) {
       final PropertyReadSite read = it.next();
       if (read.variable() != null && (rebound.contains(read.variable()) || (!star && !forwarded.contains(read.variable())))) {
         it.remove();
         renamed.add(new PropertyReadSite(null, read.key()));
       }
     }
-    pendingPropertyReads.addAll(renamed);
+    reads.addAll(renamed);
   }
 
   /** The variable of a MATCH that binds one node and nothing else, or null. */
@@ -868,10 +899,10 @@ public final class CypherEagernessAnalyzer {
     return !reachesRecord[0];
   }
 
-  private void observePropertyRead(final String variable, final String key) {
+  private void observePropertyRead(final Set<PropertyReadSite> sink, final String variable, final String key) {
     if (variable != null && nonRecordVariables.contains(variable))
       return;
-    pendingPropertyReads.add(new PropertyReadSite(variable, key));
+    sink.add(new PropertyReadSite(variable, key));
   }
 
   /**
@@ -880,12 +911,15 @@ public final class CypherEagernessAnalyzer {
    * unknown.
    */
   private final class PropertyReadCollector implements CypherExpressionWalker.Visitor {
+    private final Set<PropertyReadSite> sink;
     private final boolean           nested;
     private final Set<String>       shadowed;
     // the patterns the clause itself creates or merges: their inline maps are values written, not keys read
     private final List<PathPattern> ownPatterns;
 
-    private PropertyReadCollector(final boolean nested, final Set<String> shadowed, final List<PathPattern> ownPatterns) {
+    private PropertyReadCollector(final Set<PropertyReadSite> sink, final boolean nested, final Set<String> shadowed,
+        final List<PathPattern> ownPatterns) {
+      this.sink = sink;
       this.nested = nested;
       this.shadowed = shadowed;
       this.ownPatterns = ownPatterns;
@@ -935,14 +969,14 @@ public final class CypherEagernessAnalyzer {
 
     @Override
     public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
-      return new PropertyReadCollector(true, shadowed, List.of());
+      return new PropertyReadCollector(sink, true, shadowed, List.of());
     }
 
     @Override
     public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
       final Set<String> local = new HashSet<>(shadowed);
       local.addAll(Arrays.asList(variables));
-      return new PropertyReadCollector(nested, local, ownPatterns);
+      return new PropertyReadCollector(sink, nested, local, ownPatterns);
     }
 
     @Override
@@ -950,7 +984,7 @@ public final class CypherEagernessAnalyzer {
       if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
         final Set<String> local = new HashSet<>(shadowed);
         local.add(((ForeachClause) entry.getClause()).getVariable());
-        return new PropertyReadCollector(nested, local, ownPatterns);
+        return new PropertyReadCollector(sink, nested, local, ownPatterns);
       }
       return this;
     }
@@ -964,7 +998,7 @@ public final class CypherEagernessAnalyzer {
     }
 
     private void read(final String variable, final String key) {
-      observePropertyRead(nested || variable == null || shadowed.contains(variable) ? null : variable, key);
+      observePropertyRead(sink, nested || variable == null || shadowed.contains(variable) ? null : variable, key);
     }
   }
 

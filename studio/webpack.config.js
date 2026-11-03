@@ -124,19 +124,6 @@ module.exports = {
           from: 'node_modules/datatables.net-buttons/js/buttons.print.min.js',
           to: 'js/buttons.print.min.js',
         },
-        // Excel/PDF Export Dependencies for DataTables
-        {
-          from: 'node_modules/jszip/dist/jszip.min.js',
-          to: 'js/jszip.min.js',
-        },
-        {
-          from: 'node_modules/pdfmake/build/pdfmake.min.js',
-          to: 'js/pdfmake.min.js',
-        },
-        {
-          from: 'node_modules/pdfmake/build/vfs_fonts.js',
-          to: 'js/vfs_fonts.js',
-        },
         {
           from: 'node_modules/sweetalert2/dist/sweetalert2.all.min.js',
           to: 'js/sweetalert2.all.min.js',
@@ -224,10 +211,6 @@ module.exports = {
         {
           from: 'node_modules/d3-force/dist/d3-force.min.js',
           to: 'js/d3-force.min.js',
-        },
-        {
-          from: 'node_modules/cytoscape-graphml/cytoscape-graphml.js',
-          to: 'js/cytoscape-graphml.js',
         },
         {
           from: 'node_modules/cytoscape-node-html-label/dist/cytoscape-node-html-label.js',

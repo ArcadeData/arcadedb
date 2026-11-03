@@ -627,15 +627,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // queues are drained and whose workers are parked can still be holding thousands of uncommitted records.
     // waitCompletion() is the only operation that closes that batch - it enqueues a marker BEHIND everything already
     // submitted on every worker and that marker commits - so it has to run even when the executor looks idle.
-    // The loop then covers what a single pass cannot: tasks submitted by OTHER threads while this one was waiting.
-    do {
-      executor.waitCompletion();
-      // waitCompletion() answers an interrupt by restoring the flag and returning, so without this the loop would
-      // spin: every further pass would be interrupted at its first queue offer and come straight back. The caller's
-      // cancellation is left on the thread for it to observe.
-      if (Thread.currentThread().isInterrupted())
-        return;
-    } while (isAsyncProcessing());
+    //
+    // ONE call, not a loop while isAsyncProcessing() (issue #11155). waitCompletion() already goes around again for
+    // what a single pass can miss, the cascades a worker schedules (#6462). What the loop added on top was waiting for
+    // the tasks OTHER threads submit after this call began, which a steady async producer never stops doing, so the
+    // build waited for ever. Those tasks race the build whether it waits for them or not: quiesceAsync() is what keeps
+    // them out of a scan. An interrupt makes waitCompletion() restore the flag and return, left for the caller.
+    executor.waitCompletion();
   }
 
   @Override
@@ -1455,8 +1453,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (bucketName != null) {
       // and the bucket named explicitly, which can belong to another type than the document's (INSERT INTO BUCKET:...)
       final Bucket target = schema.getBucketByNameIfExists(bucketName);
-      if (target != null)
+      if (target != null) {
         schema.checkBackingTypeWrite(target.getFileId(), "insert into");
+        // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
+        // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
+        // record by the bucket's owner; this is the same rule for the API.
+        if (record instanceof Document doc) {
+          final DocumentType owner = schema.getTypeByBucketId(target.getFileId());
+          if (owner != null && !owner.getName().equals(doc.getTypeName()))
+            throw new IllegalArgumentException(
+                "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName + "', which belongs to type '"
+                    + owner.getName() + "'");
+        }
+      }
     }
 
     setDefaultValues(record);

@@ -40,11 +40,6 @@
     <script src="dist/js/show-hint.js"></script>
     <script src="dist/js/sql-hint.js"></script>
 
-    <!-- DataTables Export Dependencies -->
-    <script src="dist/js/jszip.min.js"></script>
-    <script src="dist/js/pdfmake.min.js"></script>
-    <script src="dist/js/vfs_fonts.js"></script>
-
     <!-- Data Tables -->
     <script src="dist/js/dataTables.min.js"></script>
     <script src="dist/js/dataTables.bootstrap5.min.js"></script>
@@ -64,7 +59,6 @@
     <script src="dist/js/cose-base.js"></script>
     <script src="dist/js/cytoscape-fcose.js"></script>
     <script src="dist/js/cytoscape-cxtmenu.js"></script>
-    <script src="dist/js/cytoscape-graphml.js"></script>
     <script src="dist/js/cytoscape-node-html-label.min.js"></script>
     <!-- d3-force (ISC) live physics layout; its helpers register on the shared `d3` global, so they load first -->
     <script src="dist/js/d3-dispatch.min.js"></script>
@@ -77,6 +71,8 @@
     <!-- Delegated data-on-* handlers: the Content-Security-Policy refuses inline on*="..." attributes (issue #9681) -->
     <script src="js/studio-actions.js"></script>
     <script src="js/studio-charts.js"></script>
+    <!-- ZIP writer of the result table's Excel export, registered with the DataTables Buttons extension -->
+    <script src="js/studio-zip.js"></script>
 
     <!-- COMPATIBILITY LAYER -->
     <script src="js/studio-notify.js"></script>

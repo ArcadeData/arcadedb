@@ -25,8 +25,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 
@@ -54,6 +56,11 @@ import java.util.logging.Level;
  * indexes stay ordinary indexes, searchable by their own names, and what SQL writes is in the index the logical name resolves
  * to. {@code DROP INDEX} of the logical name drops what the statement built, as in Cypher, and {@code DROP INDEX} of a member
  * is refused ({@link #requireNotMember}) rather than leaving the logical index covering fewer types.
+ * <p>
+ * <b>Search tools and introspection (issue #11137).</b> {@code SEARCH_INDEX_MORE}, the HTTP/gRPC/MCP full-text, vector and hybrid
+ * search tools resolve the name too, and {@code SELECT FROM schema:indexes} tags the rows of the member indexes with the logical
+ * name ({@code multiTypeIndex}). {@code SEARCH_INDEX_MORE} reads the terms of a source document through each member, which all index
+ * the same properties, so a source of any of the spanned types works whichever member is searched.
  */
 public final class MultiTypeIndexes {
   static final String KEY_PREFIX = "cypher.multiindex.";
@@ -136,6 +143,15 @@ public final class MultiTypeIndexes {
       if (entry.indexes().contains(indexName))
         return entry;
     return null;
+  }
+
+  /** The name of the logical index each per-type index belongs to, by the member's name: one walk of the types for a whole listing. */
+  public static Map<String, String> logicalNamesByMember(final Schema schema) {
+    final Map<String, String> byMember = new HashMap<>();
+    for (final Entry entry : entries(schema))
+      for (final String member : entry.indexes())
+        byMember.putIfAbsent(member, entry.name());
+    return byMember;
   }
 
   /**

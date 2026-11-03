@@ -55,6 +55,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
@@ -111,6 +112,7 @@ public final class RemoteExceptionRebuilder {
       Map.entry(FunctionExecutionException.class.getName(), FunctionExecutionException::new),
       Map.entry(TriggerExecutionException.class.getName(), TriggerExecutionException::new),
       Map.entry(InvalidPropertyTypeException.class.getName(), InvalidPropertyTypeException::new),
+      Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
       Map.entry(IllegalArgumentException.class.getName(), IllegalArgumentException::new),
       // A QUERY REFUSED FOR WHAT IT WOULD COST
       Map.entry(HeapLimitExceededException.class.getName(), HeapLimitExceededException::new),

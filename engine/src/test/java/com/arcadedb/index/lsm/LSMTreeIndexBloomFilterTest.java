@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * keys per series that the filter spans MANY pages, which is where a key is routed to one block and everything depends
  * on the routing agreeing with itself between the write and the read.
  * <p>
- * The integration test ({@code Issue5517BloomFilterTest}) drives the same code through a compaction, but a 256 KB page
+ * The integration test ({@code BloomFilterTest}) drives the same code through a compaction, but a 256 KB page
  * holds ~500k bits and therefore the whole filter of any test-sized series - so it never exercises a second block.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

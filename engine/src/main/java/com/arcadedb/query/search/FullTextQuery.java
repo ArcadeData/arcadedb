@@ -96,15 +96,17 @@ public final class FullTextQuery {
     final String queryText = args.getString("queryText");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
-    final TypeIndex typeIndex = resolveIndex(database, args);
-    final String indexName = typeIndex.getName();
+    final List<TypeIndex> typeIndexes = resolveIndexes(database, args);
+    final TypeIndex typeIndex = typeIndexes.getFirst();
+    // the name the caller addressed: that of the logical index when it named one (issue #11137)
+    final String indexName = typeIndexes.size() == 1 ? typeIndex.getName() : args.getString("indexName", typeIndex.getName());
 
     // The limit is pushed down per bucket: each bucket keeps only its own top-'limit' matches by score (a bounded
     // min-heap on the BM25 path, a sort-and-truncate on CLASSIC), so this merges at most (bucket count * limit)
     // entries instead of every match in the index.
     final Map<RID, Float> hits;
     try {
-      hits = FullTextSearch.search(typeIndex, queryText, limit);
+      hits = FullTextSearch.search(typeIndexes, queryText, limit);
     } catch (final FullTextQueryParseException e) {
       // Lucene syntax the parser rejects is the caller's mistake and must be answered as one - HTTP 400, gRPC
       // INVALID_ARGUMENT - rather than as an internal error with a stack trace in the server log (issue #7393).
@@ -163,11 +165,11 @@ public final class FullTextQuery {
    * when both addressing forms are supplied. Resolution happens exactly once here; the returned TypeIndex is passed
    * directly to {@link FullTextSearch#search(TypeIndex, String, int)} rather than re-resolved by name.
    */
-  private static TypeIndex resolveIndex(final Database database, final JSONObject args) {
+  private static List<TypeIndex> resolveIndexes(final Database database, final JSONObject args) {
     final String indexName = args.getString("indexName", null);
 
     if (indexName != null && !indexName.isBlank())
-      return validateFullTextIndex(database, indexName);
+      return validateFullTextIndexes(database, indexName);
 
     final String typeName = args.getString("typeName", null);
     if (typeName == null || typeName.isBlank())
@@ -186,7 +188,7 @@ public final class FullTextQuery {
       // The schema derives an index name as typeName + Arrays.toString(propertyNames) with every space stripped from the
       // result, so strip spaces here too. Otherwise a property name containing a space would derive a name that can never
       // match the one the schema registered.
-      return validateFullTextIndex(database, derived.toString().replace(" ", ""));
+      return List.of(validateFullTextIndex(database, derived.toString().replace(" ", "")));
     }
 
     // 'typeName' alone is usable only when the type carries exactly one full-text index. An index declared on a
@@ -207,7 +209,7 @@ public final class FullTextQuery {
       throw new IllegalArgumentException("Type '" + typeName + "' has several full-text indexes: " + candidates
           + ". Pass 'indexName', or narrow with 'properties'.");
 
-    return validateFullTextIndex(database, candidates.get(0));
+    return List.of(validateFullTextIndex(database, candidates.get(0)));
   }
 
   /**
@@ -220,6 +222,22 @@ public final class FullTextQuery {
   private static TypeIndex validateFullTextIndex(final Database database, final String indexName) {
     try {
       return FullTextSearch.resolveFullTextIndex(database, indexName);
+    } catch (final SchemaException e) {
+      throw new IllegalArgumentException(
+          "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);
+    } catch (final CommandExecutionException e) {
+      throw new IllegalArgumentException(
+          "Index '" + indexName + "' is not a full-text index. " + describeAvailable(database), e);
+    }
+  }
+
+  /**
+   * Like {@link #validateFullTextIndex} for a name that may also be that of a full-text index over several types (issue #11137),
+   * which designates the per-type indexes it spans.
+   */
+  private static List<TypeIndex> validateFullTextIndexes(final Database database, final String indexName) {
+    try {
+      return FullTextSearch.resolveFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
       throw new IllegalArgumentException(
           "Full-text index '" + indexName + "' does not exist. " + describeAvailable(database), e);

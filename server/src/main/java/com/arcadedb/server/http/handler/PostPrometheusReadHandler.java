@@ -268,9 +268,8 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
       return selected;
     }
 
-    for (final DocumentType type : database.getSchema().getTypes())
+    for (final DocumentType type : SecurityHelper.readableTypes(database))
       if (type instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null
-          && SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD)
           && matcherEvaluator.matchesMetricName(matchers, type.getName()))
         selected.put(type.getName(), tsType);
     return selected;

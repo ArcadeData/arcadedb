@@ -19,15 +19,19 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -161,5 +165,53 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
         "k".repeat(8) + "-" + String.format("%08d", 42)).next().<Long>getProperty("c")).isEqualTo(1L);
     assertThat(database.query("sql", "SELECT count(*) as c FROM " + TYPE_NAME + " WHERE email = ?",
         "k".repeat(60) + "-" + String.format("%08d", 1500)).next().<Long>getProperty("c")).isEqualTo(1L);
+  }
+
+  // ===== Issue #4960 =====
+  /*
+   * Regression test for the {@link LSMTreeIndex#close()} finding in issue #4960: close() only CASed
+   * {@code AVAILABLE -> UNAVAILABLE}, so when a compaction was merely SCHEDULED (not yet running) the CAS
+   * failed and close() silently did nothing - the index files stayed open and the compactor could still
+   * kick in against a closing database. A scheduled-but-not-started compaction is now cancelled and the
+   * index closed; an actually running compaction is logged loudly instead of being ignored in silence.
+   */
+  @Test
+  @DisplayName("#4960 close cancels scheduled compaction")
+  void closeCancelsScheduledCompaction() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("CloseIdx").createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "CloseIdx", "id");
+      for (int i = 0; i < 10; i++)
+        database.newDocument("CloseIdx").set("id", i).save();
+    });
+
+    final LSMTreeIndex lsm = Arrays.stream(database.getSchema().getIndexes())
+        .filter(LSMTreeIndex.class::isInstance)
+        .map(LSMTreeIndex.class::cast)
+        .findFirst()
+        .orElseThrow();
+
+    assertThat(lsm.scheduleCompaction()).isTrue();
+
+    // Issue #5971: the insert above commits with the default asyncFlush=true (TransactionContext), which only
+    // QUEUES the dirty pages on PageManagerFlushThread - it does not guarantee they have reached disk yet.
+    // IndexInternal.close()'s contract (see its Javadoc) is that the caller must not call it until pending pages
+    // are flushed; the real LocalDatabase close path honors this by running PageManager.waitAllPagesOfDatabaseAreFlushed()
+    // before ever closing index files. This test calls the index's close() directly and in isolation, so it must
+    // uphold that same precondition itself - otherwise the flush thread later finds the file closed under it
+    // (PageManager.flushPage() throws DatabaseMetadataException), the page is left unflushed, and the WAL-preserving
+    // recovery path that follows produces a torn index page instead of a clean one.
+    assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database)).isTrue();
+
+    lsm.close();
+
+    assertThat(lsm.status.get())
+        .as("close() must cancel a scheduled-but-not-started compaction and mark the index unavailable")
+        .isEqualTo(IndexInternal.INDEX_STATUS.UNAVAILABLE);
+
+    // A cancelled schedule must not be compactable afterwards.
+    assertThat(lsm.compact()).isFalse();
+
+    reopenDatabase();
   }
 }

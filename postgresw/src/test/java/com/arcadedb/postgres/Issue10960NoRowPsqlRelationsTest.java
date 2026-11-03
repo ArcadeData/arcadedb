@@ -174,7 +174,7 @@ class Issue10960NoRowPsqlRelationsTest {
   void aRelationThatHoldsRowsInEveryPostgresIsStillRefused() {
     for (final String relation : Issue10842CatalogRelationPolicyTest.HOLDS_ROWS_IN_EVERY_POSTGRES.keySet())
       if (!PostgresCatalog.modelledRelations().contains(relation))
-        assertThat(PostgresCatalog.resolve("select * from pg_catalog." + relation, database, USER)).as(relation)
+        assertThat(PostgresCatalog.resolve("select * from " + Issue10842CatalogRelationPolicyTest.qualified(relation), database, USER)).as(relation)
             .isSameAs(PostgresCatalog.DECLINED);
     // and none of the relations of this issue is one of them
     assertThat(RELATIONS).doesNotContainAnyElementsOf(Issue10842CatalogRelationPolicyTest.HOLDS_ROWS_IN_EVERY_POSTGRES.keySet());

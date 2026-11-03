@@ -263,7 +263,8 @@ class ClusterTokenProvider {
   }
 
   /**
-   * Holds a node whose token is derived from the root password file to the token it last ran with (issue #10601).
+   * Holds a node whose token is derived from the root password, inline or from a file, to the token it last ran with
+   * (issues #10601, #10924).
    * <p>
    * The derived token is never stored, so a file rewritten in place (a rotated Kubernetes Secret) makes each node pick
    * up a new token at its next restart, one pod at a time, and a rolling restart leaves the two halves of the cluster
@@ -278,9 +279,13 @@ class ClusterTokenProvider {
    * @throws ConfigurationException when the recorded fingerprint differs and rotation is not allowed
    */
   void verifyDerivedTokenFingerprint(final File fingerprintFile, final boolean allowRotation) {
+    final String passwordSetting = getSource() == Source.DERIVED_FILE ?
+        "the root password file at arcadedb.server.rootPasswordPath ('" + rootPasswordPath + "')" :
+        "the root password set by arcadedb.server.rootPassword";
     final Path path = fingerprintFile.toPath();
     try {
-      if (getSource() != Source.DERIVED_FILE) {
+      final Source tokenSource = getSource();
+      if (tokenSource != Source.DERIVED_FILE && tokenSource != Source.DERIVED_INLINE) {
         Files.deleteIfExists(path);
         return;
       }
@@ -293,24 +298,24 @@ class ClusterTokenProvider {
           if (allowRotation)
             LogManager.instance().log(this, Level.WARNING,
                 "arcadedb.ha.clusterTokenAllowRotation is set and the derived cluster token has not changed: remove the "
-                    + "setting once every node runs on the rotated token, as it keeps the check against an in-place rewrite of "
-                    + "'%s' off for every start", rootPasswordPath);
+                    + "setting once every node runs on the rotated token, as it keeps the check against a change of "
+                    + "the root password (%s) off for every start", passwordSetting);
           return;
         }
         if (!allowRotation)
           throw new ConfigurationException("""
-              Refusing to start: the cluster token this node derives from arcadedb.ha.clusterName and the root password \
-              file at arcadedb.server.rootPasswordPath ('%s') differs from the one it last ran with (recorded in '%s'). \
-              The file has been rewritten since this node last started (e.g. a rotated Kubernetes Secret); a node starting \
+              Refusing to start: the cluster token this node derives from arcadedb.ha.clusterName and %s \
+              differs from the one it last ran with (recorded in '%s'). \
+              The password has changed since this node last started (e.g. a rotated Kubernetes Secret); a node starting \
               with the new token is refused with 401 'Invalid cluster token' by every peer still holding the old one. \
               Restore the previous password, or rotate deliberately: set arcadedb.ha.clusterTokenAllowRotation=true on \
               every node and restart all of them together, or decouple the token from the root password with an explicit \
-              arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath""".formatted(rootPasswordPath,
+              arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath""".formatted(passwordSetting,
               fingerprintFile.getAbsolutePath()));
         LogManager.instance().log(this, Level.WARNING,
-            "The cluster token derived from the root password file at '%s' changed since this node last started, and "
+            "The cluster token derived from %s changed since this node last started, and "
                 + "arcadedb.ha.clusterTokenAllowRotation is set: starting with the new token. Every node must restart with the "
-                + "new password, or the nodes still on the old token refuse this one", rootPasswordPath);
+                + "new password, or the nodes still on the old token refuse this one", passwordSetting);
       }
       // Recorded before the rest of the start runs: the token on disk is the one this node is about to use, so a start
       // that fails later still leaves the record describing the token it would come back with. Note that leaving

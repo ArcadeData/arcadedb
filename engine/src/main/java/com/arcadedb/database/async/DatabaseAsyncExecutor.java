@@ -41,12 +41,17 @@ import java.util.Map;
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseAsyncExecutor {
   /**
-   * Waits for the completion of all the pending tasks.
+   * Waits for the completion of all the pending tasks: the ones submitted before this call, and the ones those tasks
+   * schedule in turn. Tasks other threads submit while it waits are not guaranteed to be waited for, so a steady producer
+   * cannot keep it from returning.
+   * <p>
+   * When no other thread submits work, the executor is idle by the time this returns: {@link #isProcessing()} asked right
+   * after it answers {@code false}.
    */
   void waitCompletion();
 
   /**
-   * Waits for the completion of all the pending tasks.
+   * Waits for the completion of all the pending tasks, as {@link #waitCompletion()} does.
    *
    * @param timeout timeout in milliseconds
    *
@@ -535,6 +540,10 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Returns true if there is any asynchronous tasks executing or scheduled.
+   * <p>
+   * A point-in-time answer, while other threads may be submitting: a task a worker is taking off its queue at that very
+   * instant can be missed. It is {@code false} right after {@link #waitCompletion()} returns when nothing else submits work,
+   * and it says nothing about durability: {@code false} means the tasks have run, not that their batch has committed.
    */
   boolean isProcessing();
 

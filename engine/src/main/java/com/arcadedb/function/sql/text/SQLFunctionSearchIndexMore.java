@@ -33,6 +33,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -105,18 +107,39 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
       allResults = new HashMap<>();
 
       final Database database = iContext.getDatabase();
-      final Index index = database.getSchema().getIndexByName(indexName);
+      final Schema schema = database.getSchema();
+      // The name of a full-text index over several labels (issue #11137) designates the per-type indexes it spans. An index name is
+      // unique across the database, so a name that is an index is not a logical one, and the walk of the types is paid only by a
+      // name that is not
+      final List<TypeIndex> logical = schema.existsIndex(indexName) ? null : MultiTypeIndexes.resolve(schema, indexName);
+      final List<Index> bucketIndexes = new ArrayList<>();
+      if (logical != null) {
+        if (logical.isEmpty())
+          throw new CommandExecutionException("Index '" + indexName + "' has no full-text index left");
+        // The members share the indexed properties, so the terms of a source document are read the same way through each of them,
+        // whatever its type: every member is searched with every source, and a record belongs to one type, so no two members match
+        // the same RID. The scores are those of each member (see MultiTypeIndexes)
+        for (final TypeIndex member : logical) {
+          final Index[] memberBuckets = member.getIndexesOnBuckets();
+          if (memberBuckets.length == 0 || !(memberBuckets[0] instanceof LSMTreeFullTextIndex))
+            throw new CommandExecutionException("Index '" + member.getName() + "' is not a full-text index");
+          bucketIndexes.addAll(Arrays.asList(memberBuckets));
+        }
+      } else {
+        final Index index = schema.getIndexByName(indexName);
 
-      if (index == null)
-        throw new CommandExecutionException("Index '" + indexName + "' not found");
+        if (index == null)
+          throw new CommandExecutionException("Index '" + indexName + "' not found");
 
-      if (!(index instanceof final TypeIndex typeIndex))
-        throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
+        if (!(index instanceof final TypeIndex typeIndex))
+          throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
 
-      final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
+        final Index[] buckets = typeIndex.getIndexesOnBuckets();
 
-      if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
-        throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
+        if (buckets.length == 0 || !(buckets[0] instanceof LSMTreeFullTextIndex))
+          throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
+        bucketIndexes.addAll(Arrays.asList(buckets));
+      }
 
       // Validate source RIDs exist
       for (final RID rid : sourceRids) {

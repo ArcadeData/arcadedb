@@ -130,7 +130,6 @@ function renderTable() {
         { extend: "copy", text: "<i class='fas fa-copy'></i> Copy" },
         { extend: "excel", text: "<i class='fas fa-file-excel'></i> Excel" },
         { extend: "csv", text: "<i class='fas fa-file-csv'></i> CSV" },
-        { extend: "pdf", text: "<i class='fas fa-file-pdf'></i> PDF", orientation: "landscape" },
         { extend: "print", text: "<i class='fas fa-print'></i> Print", orientation: "landscape" },
       ],
       initComplete: function () {

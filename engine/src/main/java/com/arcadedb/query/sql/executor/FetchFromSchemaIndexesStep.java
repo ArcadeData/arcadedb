@@ -24,6 +24,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -34,6 +35,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -51,6 +53,8 @@ public class FetchFromSchemaIndexesStep extends AbstractFetchFromSchemaListStep 
   protected void fetchListing(final CommandContext context) {
     final Schema schema = context.getDatabase().getSchema();
     final SecurityDatabaseUser currentUser = currentUser(context);
+    // the per-type indexes of a vector or full-text index over several labels (issues #10914, #11137): one walk of the types
+    final Map<String, String> logicalNames = MultiTypeIndexes.logicalNamesByMember(schema);
 
     for (final Index index : schema.getIndexes()) {
       // Hide, rather than throw on, an index the current user cannot read the owning type of - matching how
@@ -68,6 +72,13 @@ public class FetchFromSchemaIndexesStep extends AbstractFetchFromSchemaListStep 
         r.setProperty("name", index.getName());
         r.setProperty("indexType", index.getType());
         r.setProperty("typeName", index.getTypeName());
+        if (!logicalNames.isEmpty()) {
+          // the name the index is queried and dropped by when it belongs to a multi-label index; absent on any other
+          final TypeIndex owner = index instanceof final TypeIndex typeIndex ? typeIndex : ((IndexInternal) index).getTypeIndex();
+          final String logicalName = logicalNames.get(owner != null ? owner.getName() : index.getName());
+          if (logicalName != null)
+            r.setProperty("multiTypeIndex", logicalName);
+        }
         // A manual index is bound to no type and no properties, and IndexMetadata coerces the missing list to an empty one, so
         // the key must be omitted on emptiness - a null check is never false (issue #6005).
         if (!index.getPropertyNames().isEmpty())
