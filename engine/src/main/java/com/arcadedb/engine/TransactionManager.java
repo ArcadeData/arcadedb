@@ -1764,6 +1764,12 @@ public class TransactionManager {
                     + txPage.currentPageVersion + ", db v." + page.getVersion()
                     + "): a full page is required to safely bypass the version gap, fileId=" + txPage.fileId);
           }
+          if (!tx.forceApply)
+            // EXPECTED AFTER A WAL-LESS WRITER SEALED ITS PAGES (#11238), BUT LOGGED: A WRITER SHIPPING A FULL IMAGE WITH A WRONG
+            // VERSION WOULD OTHERWISE BE ACCEPTED WITHOUT A TRACE
+            LogManager.instance().log(this, Level.INFO,
+                "Bridging the version gap of page %s with a full page image (WAL v.%d, db v.%d) fileId=%d txId=%d", null,
+                pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId, tx.txId);
         }
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
