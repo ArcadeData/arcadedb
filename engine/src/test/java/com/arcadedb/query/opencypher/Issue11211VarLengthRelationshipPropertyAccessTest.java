@@ -81,6 +81,11 @@ class Issue11211VarLengthRelationshipPropertyAccessTest extends TestHelper {
     assertThat(values("MATCH (n:N)<-[r:R*1..3]-(m:N) RETURN [rel IN r | rel.weight] AS v")).containsExactly(List.of(7));
     assertThat(values("MATCH (n:N)<-[r:R*1..3]-(m:N) RETURN r[0].weight AS v")).containsExactly(7);
     assertThat(values("MATCH (n:N)<-[r:R*1..3]-(m:N) UNWIND r AS rel RETURN rel.weight AS v")).containsExactly(7);
+    assertThat(values("MATCH (n:N)<-[r:R*1..3]-(m:N) RETURN last(r).weight AS v")).containsExactly(7);
+    assertThat(values("MATCH (n:N)<-[r:R*1..3]-(m:N) WHERE all(rel IN r WHERE rel.weight > 1) RETURN size(r) AS v"))
+        .containsExactly(1L);
+    // the pattern's own inline predicate tests one relationship at a time, so there r.weight is a property read
+    assertThat(values("MATCH (n:N)<-[r:R*1..3 WHERE r.weight > 1]-(m:N) RETURN size(r) AS v")).containsExactly(1L);
     // a fixed-length relationship is one relationship, and its property is read as before
     assertThat(values("MATCH (n:N)<-[r:R]-(m:N) RETURN r.weight AS v")).containsExactly(7);
     // a variable that names something else after a projection is not a list of relationships any more
