@@ -450,6 +450,15 @@ public final class PeerCapabilityRegistry {
     return missing.isEmpty() ? Collections.emptyList() : missing;
   }
 
+  /**
+   * Whether nothing at all is recorded about {@code peerId}: no answer, no failed probe and no refusal to dial, i.e. no round has
+   * completed for it yet (issue #11196). Not the same as unknown: a peer that was asked and could not be reached is unknown and has
+   * a reason, and asking it again on every call would only repeat a failure. Only this state is a cold registry.
+   */
+  public boolean neverAsked(final String peerId) {
+    return !advertisements.containsKey(peerId) && !unknownReasons.containsKey(peerId);
+  }
+
   /** Whether every peer of {@code peerIds} has proved it supports {@code capability}. */
   public boolean allPeersSupport(final Collection<String> peerIds, final String capability) {
     return peersMissing(peerIds, capability).isEmpty();
