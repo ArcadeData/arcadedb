@@ -185,6 +185,29 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
     assertThat(StaleVectorEntryReporter.getTotalReported()).isEqualTo(reportedBefore);
   }
 
+  /**
+   * Issue #11202 (found by CodeRabbit): a record the open transaction deleted is not gone yet. It is not reported (the committed index
+   * still holds the vector until the commit), and once the transaction rolls back the row reads the record again.
+   */
+  @Test
+  void aDeleteOfTheOpenTransactionIsNotReportedAndARollbackBringsTheRowBack() {
+    createDocs(30, "", 0);
+    indexOf().buildVectorGraphNow();
+
+    database.begin();
+    final List<ScoredRecordRow> rows = neighbours(new float[DIMENSIONS]);
+    final ScoredRecordRow first = rows.getFirst();
+    assertThat(isUnread(first)).isTrue();
+    first.getRecord().getIdentity().asDocument().delete();
+
+    final long reportedBefore = StaleVectorEntryReporter.getTotalReported();
+    assertThat(first.get("pid")).isNull();
+    assertThat(StaleVectorEntryReporter.getTotalReported()).isEqualTo(reportedBefore);
+    database.rollback();
+
+    assertThat(first.get("pid")).isInstanceOf(Integer.class);
+  }
+
   /** A delete through the API takes the vector out of the index in its own commit: the deferred row never sees it. */
   @Test
   void aCommittedDeleteCostsNoAnswerRow() {

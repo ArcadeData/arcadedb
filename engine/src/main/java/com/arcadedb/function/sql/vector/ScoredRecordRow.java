@@ -18,7 +18,9 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.vector.LSMVectorIndex;
 
@@ -211,9 +213,20 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
    * is no damage to report.
    */
   private void recordFoundGone() {
+    // Deleted by the open transaction, not gone: the committed index still holds the vector until the commit, and a rollback
+    // brings the record back, so the row neither reports nor stops reading it
+    if (deletedInOpenTransaction())
+      return;
     recordGone = true;
     if (deferredBy != null && deferredBy.hasLiveVector(record.getIdentity()))
       StaleVectorEntryReporter.reportMissingRecord(record);
+  }
+
+  private boolean deletedInOpenTransaction() {
+    if (!(record.getDatabase() instanceof DatabaseInternal database))
+      return false;
+    final TransactionContext transaction = database.getTransactionIfExists();
+    return transaction != null && transaction.isActive() && transaction.isDeletedInTransaction(record.getIdentity());
   }
 
   private LinkedHashMap<String, Object> materialize() {
