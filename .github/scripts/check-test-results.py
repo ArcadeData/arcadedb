@@ -35,6 +35,22 @@
 # a module that did not compile, a fork that died before writing anything - and reporting "no
 # failures found" for a run that produced no evidence is exactly the false green this guards.
 #
+# So is a test class whose every test ABORTED (issue #11209). Surefire records a failed assumption
+# (assumeTrue, Assumptions.abort, JUnit 4's AssumptionViolatedException) as a skipped test case,
+# not as a failure, so a class that aborted everything counted towards the tests and towards
+# nothing else: the lane reported clean over a class that asserted nothing, the same false green
+# reached through a different attribute. An aborted case is told from a disabled one (@Disabled,
+# @EnabledIf, a tag) by the exception type surefire writes on its <skipped> element; a disabled
+# test is a decision taken in the source, an abort is the runner's state deciding, so only the
+# second is evidence that went missing. A class that aborts only some of its tests still ran the
+# rest, and an assumption is often deliberate (a filesystem that reserves no blocks, a graph
+# feature TinkerPop's suite gates on), so those are not failures: every aborted case is listed in
+# the log instead, with its reason, so an assumption reading live state (#11030) is visible on the
+# run where it fired rather than only once someone thinks to look. A class that is meant to run on
+# some runners only (a filesystem, an OS, a tool on the PATH) says so with a condition annotation -
+# @EnabledIf, @EnabledOnOs, @DisabledIf - which surefire records as disabled, not as aborted: that
+# is the opt-out, and it keeps the decision in the source where a reviewer sees it.
+#
 # Usage:
 #   check-test-results.py surefire-reports            # unit tests
 #   check-test-results.py failsafe-reports            # integration tests
@@ -67,7 +83,11 @@ def report_files(root, reports_dir):
 
 
 def suite_counts(path):
-    """(tests, failures, errors) for one report, or None when the file cannot be read.
+    """(tests, failures, errors, skipped, cases, aborted) for one report, or None when the file cannot be read.
+
+    cases is the number of <testcase> elements and aborted the (name, reason) of every case whose
+    <skipped> element names an exception type: an assumption that failed, as opposed to a test
+    disabled in the source, whose <skipped> carries a message only.
 
     A report surefire could not finish writing - a forked JVM killed mid-flush - is not evidence
     of success, so an unreadable file is reported rather than skipped.
@@ -80,12 +100,27 @@ def suite_counts(path):
     # A testsuite may be wrapped in a testsuites element; sum whichever level carries the counts.
     suites = [root] if root.tag == "testsuite" else root.iter("testsuite")
 
-    tests = failures = errors = 0
+    tests = failures = errors = skipped = cases = 0
+    aborted = []
     for suite in suites:
         tests += int(suite.get("tests", 0))
         failures += int(suite.get("failures", 0))
         errors += int(suite.get("errors", 0))
-    return tests, failures, errors
+        skipped += int(suite.get("skipped", 0))
+        for case in suite.iter("testcase"):
+            cases += 1
+            skip = case.find("skipped")
+            if skip is not None and skip.get("type"):
+                aborted.append((case.get("name", "?"), abort_reason(skip)))
+    return tests, failures, errors, skipped, cases, aborted
+
+
+def abort_reason(skip):
+    """The first line of what an aborted case says about why, without the exception class surefire prefixes."""
+    text = (skip.get("message") or skip.text or "").strip()
+    line = text.splitlines()[0] if text else skip.get("type")
+    exception = skip.get("type") + ": "
+    return line[len(exception):] if line.startswith(exception) else line
 
 
 def main(arguments):
@@ -116,9 +151,11 @@ def main(arguments):
         )
         return 1
 
-    tests = failures = errors = 0
+    tests = failures = errors = skipped = aborted = 0
     broken = []
     failed = []
+    aborting = []
+    all_aborted = []
     for path in files:
         counts = suite_counts(path)
         if counts is None:
@@ -127,12 +164,31 @@ def main(arguments):
         tests += counts[0]
         failures += counts[1]
         errors += counts[2]
+        skipped += counts[3]
+        aborted += len(counts[5])
         if counts[1] or counts[2]:
             failed.append((path, counts[1], counts[2]))
+        if counts[5]:
+            aborting.append((path, counts[4], counts[5]))
+            # Every case of the class aborted: it ran, and asserted nothing
+            if len(counts[5]) == counts[4]:
+                all_aborted.append((path, counts[4], counts[5][0][1]))
 
-    print("check-test-results: %d test(s) in %d %s file(s), %d failure(s), %d error(s)" % (tests, len(files), reports_dir, failures, errors))
+    print(
+        "check-test-results: %d test(s) in %d %s file(s), %d failure(s), %d error(s), %d skipped (%d aborted by an assumption)"
+        % (tests, len(files), reports_dir, failures, errors, skipped, aborted)
+    )
 
-    if not failed and not broken:
+    # Listed on a green run too: an assumption that fires is a test that did not run its assertions here, and the log
+    # is the only place that says so
+    if aborting:
+        print("\nAborted by an assumption, so not asserted on this run:")
+        for path, cases, suite_aborted in aborting[:MAX_LISTED]:
+            print("  %s: %d of %d test(s) aborted, e.g. %s: %s" % (path.relative_to(root), len(suite_aborted), cases, suite_aborted[0][0], suite_aborted[0][1]))
+        if len(aborting) > MAX_LISTED:
+            print("  ... and %d more" % (len(aborting) - MAX_LISTED))
+
+    if not failed and not broken and not all_aborted:
         return 0
 
     print("", file=sys.stderr)
@@ -142,6 +198,10 @@ def main(arguments):
         print("  ... and %d more" % (len(failed) - MAX_LISTED), file=sys.stderr)
     for path in broken[:MAX_LISTED]:
         print("  %s: report is unreadable" % path.relative_to(root), file=sys.stderr)
+    for path, cases, reason in all_aborted[:MAX_LISTED]:
+        print("  %s: every one of its %d test(s) aborted, so the class asserted nothing (%s)" % (path.relative_to(root), cases, reason), file=sys.stderr)
+    if len(all_aborted) > MAX_LISTED:
+        print("  ... and %d more" % (len(all_aborted) - MAX_LISTED), file=sys.stderr)
     print(
         "\nMaven ran with --fail-never and exited 0 regardless. The test report is the verdict.",
         file=sys.stderr,

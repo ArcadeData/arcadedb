@@ -585,6 +585,60 @@ suite_report "$skipped/engine/target/surefire-reports/TEST-com.arcadedb.SkippedT
 expect "accepts a suite whose tests were all skipped" 0 "0 failure(s)" \
     "$RESULTS" surefire-reports --root "$skipped"
 
+# Writes a report with one test case per argument: "pass", "abort" (a failed assumption, which surefire
+# records as a skipped case naming the exception) or "disable" (a test disabled in the source, whose
+# skipped case carries a message only). The shapes are copied from real surefire 3 reports.
+case_report() {
+    local path="$1" name="$2"
+    shift 2
+    local tests=$# skipped_count=0 kind body=""
+    for kind in "$@"; do
+        case "$kind" in
+            pass) body+="  <testcase name=\"passes$tests\" classname=\"$name\" time=\"0.1\"/>"$'\n' ;;
+            abort)
+                skipped_count=$((skipped_count + 1))
+                body+="  <testcase name=\"aborts$skipped_count\" classname=\"$name\" time=\"0.1\"><skipped type=\"org.opentest4j.TestAbortedException\"><![CDATA[org.opentest4j.TestAbortedException: Assumption failed: the heap is too busy here"$'\n'"	at org.junit.jupiter.api.Assumptions.throwAssumptionFailed(Assumptions.java:328)]]></skipped></testcase>"$'\n' ;;
+            disable)
+                skipped_count=$((skipped_count + 1))
+                body+="  <testcase name=\"disabled$skipped_count\" classname=\"$name\" time=\"0\"><skipped message=\"void $name.disabled$skipped_count() is @Disabled\"/></testcase>"$'\n' ;;
+        esac
+    done
+    mkdir -p "$(dirname "$path")"
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="%s" time="0.5" tests="%d" errors="0" skipped="%d" failures="0">\n%s</testsuite>\n' \
+        "$name" "$tests" "$skipped_count" "$body" >"$path"
+}
+
+# #11209: an assumption that aborts SOME tests of a class is reported, with its reason, and is not a
+# failure - the rest of the class ran, and assumptions are often deliberate.
+partly="$work/results/partly-aborted"
+case_report "$partly/engine/target/surefire-reports/TEST-com.arcadedb.PartlyTest.xml" com.arcadedb.PartlyTest pass abort pass
+expect "accepts a suite in which only some tests aborted" 0 "1 skipped (1 aborted by an assumption)" \
+    "$RESULTS" surefire-reports --root "$partly"
+expect "names the aborted test and why it aborted" 0 "aborts1: Assumption failed: the heap is too busy here" \
+    "$RESULTS" surefire-reports --root "$partly"
+
+# The false green #11209 is about: every test of the class aborted, so it counted towards the tests and
+# towards nothing else, and the lane used to report clean over a class that asserted nothing.
+whole="$work/results/wholly-aborted"
+suite_report "$whole/engine/target/surefire-reports/TEST-com.arcadedb.GreenTest.xml" com.arcadedb.GreenTest 7 0 0
+case_report "$whole/engine/target/surefire-reports/TEST-com.arcadedb.Issue1Test.xml" com.arcadedb.Issue1Test abort abort
+expect "rejects a suite whose every test aborted" 1 "TEST-com.arcadedb.Issue1Test.xml: every one of its 2 test(s) aborted" \
+    "$RESULTS" surefire-reports --root "$whole"
+
+# A disabled test is a decision taken in the source, not evidence that went missing on this runner.
+disabled="$work/results/disabled"
+case_report "$disabled/engine/target/surefire-reports/TEST-com.arcadedb.DisabledTest.xml" com.arcadedb.DisabledTest disable disable
+expect "accepts a suite whose every test is disabled" 0 "2 skipped (0 aborted by an assumption)" \
+    "$RESULTS" surefire-reports --root "$disabled"
+
+# JUnit 4's assumption, which the TinkerPop suites gate on graph features with, is an abort too.
+junit4="$work/results/junit4-aborted"
+case_report "$junit4/gremlin-it/target/failsafe-reports/TEST-com.arcadedb.FeatureIT.xml" com.arcadedb.FeatureIT abort
+sed -i.bak 's/org.opentest4j.TestAbortedException/org.junit.AssumptionViolatedException/g' \
+    "$junit4/gremlin-it/target/failsafe-reports/TEST-com.arcadedb.FeatureIT.xml"
+expect "rejects a suite whose every test failed a JUnit 4 assumption" 1 "every one of its 1 test(s) aborted" \
+    "$RESULTS" failsafe-reports --root "$junit4"
+
 echo
 echo "check-test-reporter-guards.py"
 

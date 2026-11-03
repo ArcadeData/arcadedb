@@ -19,12 +19,14 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedProperty;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
@@ -153,10 +155,12 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // or, on failure, roll back, exactly as one this call pushed itself would be (issue #7272).
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
-    // Whether a transaction this call owns is still the current one. Cleared right before every commit -
-    // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the
-    // stack - which keeps the rollback below from popping the caller's instead (issue #7272).
-    boolean txOpen = false;
+    // Whether a transaction this call owns is still the current one, which keeps the rollback below from popping the
+    // caller's instead (issue #7272). Resolved through ImporterTransactions, the protocol every importer row loop shares
+    // (issue #11208): cleared before a commit, and restored when the commit is refused without popping the transaction.
+    final boolean[] txOpen = { false };
+    // The transaction this call resolves, which tells a refused commit from one that popped it
+    final TransactionContext[] ownTx = { null };
 
     // Whether THIS call is the one responsible for resolving (committing or rolling back) the transaction it is
     // about to use - true when the import owns it per the contract above, OR when this call had to push a
@@ -195,7 +199,8 @@ public class RDFImporterFormat extends CSVImporterFormat {
       if (pushedOwnTransaction)
         database.begin();
       resolvesTransaction = ownsTransaction || pushedOwnTransaction;
-      txOpen = resolvesTransaction;
+      txOpen[0] = resolvesTransaction;
+      ownTx[0] = ImporterTransactions.currentTransaction(database);
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -277,21 +282,15 @@ public class RDFImporterFormat extends CSVImporterFormat {
         // one more for every remaining row, all misreported as bad data. Left to escape, it reaches the finally
         // below instead, which corrects the counter and lets the real cause propagate.
         if (resolvesTransaction && txCount >= settings.commitEvery) {
-          // txOpen cleared before the call, matching CSVImporterFormat.loadEdges()'s own convention - but
           // DatabaseContext#popIfNotLastTransaction() does NOT pop the outermost transaction off the stack, only a
           // nested one, so a commit() that fails on THIS transaction (the common case: nothing predates it when
-          // resolvesTransaction is true) can leave it still active rather than popped. Restored from the live state
-          // on failure so the finally below still rolls it back instead of leaking it.
-          txOpen = false;
-          try {
-            database.commit();
-          } catch (final RuntimeException | Error commitFailure) {
-            txOpen = database.isTransactionActive();
-            throw commitFailure;
-          }
+          // resolvesTransaction is true) can leave it still active rather than popped: the shared protocol restores
+          // the flag then, so the finally below still rolls it back instead of leaking it
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
           committedEdges = context.createdEdges.get();
           database.begin();
-          txOpen = true;
+          txOpen[0] = true;
+          ownTx[0] = ImporterTransactions.currentTransaction(database);
           txCount = 0;
         }
 
@@ -307,18 +306,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
       // trailing commit: a transaction that predates the import stays the caller's to commit or discard, and this
       // one used to commit it as a side effect of the import succeeding. The edges are left staged in it instead
       // (issue #7288).
-      if (resolvesTransaction) {
-        // Same restore-on-failure as the periodic commit above, and for the same reason: a failing commit() does
-        // not always pop the outermost transaction, so txOpen cleared unconditionally before the call would leave
-        // a still-active transaction with nothing armed to roll it back.
-        txOpen = false;
-        try {
-          database.commit();
-        } catch (final RuntimeException | Error commitFailure) {
-          txOpen = database.isTransactionActive();
-          throw commitFailure;
-        }
-      }
+      // Same protocol as the periodic commit above, and for the same reason
+      if (resolvesTransaction)
+        ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       completed = true;
 
     } catch (final IOException e) {
@@ -329,7 +319,8 @@ public class RDFImporterFormat extends CSVImporterFormat {
       // In a finally rather than in a catch: a malformed row (csvParser.parseNext() itself throwing) or a
       // newEdgeByKeys() failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
       // and an Error - an OutOfMemoryError is the one a large import can realistically raise - would too.
-      if (txOpen && database.isTransactionActive()) {
+      if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
+        txOpen[0] = false;
         try {
           database.rollback();
         } catch (final Exception rollbackFailure) {
