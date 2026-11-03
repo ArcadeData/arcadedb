@@ -20,12 +20,11 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
+import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -65,23 +64,19 @@ class ArcadeGremlinAnalyzeTest {
   }
 
   /**
-   * Reflects into the private {@code ArcadeGremlin.executeStatement(boolean)} to inspect exactly what
-   * step types reach {@code parse()}'s instanceof checks, without triggering iteration (parse() itself
-   * never calls hasNext()/next() before reading getSteps(), so this mirrors it precisely). This directly
-   * confirms TinkerPop 3.8.1's gremlin-lang parser hands parse() placeholder step types (e.g.
-   * AddVertexStartStepPlaceholder, which does NOT extend AddVertexStep) rather than the concrete classes.
-   * The placeholders DO implement Mutating (via Writing/Deleting, javap-verified), so isIdempotent() is
+   * The step types that reach the classification of {@code parse()}: the traversal it builds, never run, exactly as
+   * {@link GremlinStatementAnalyzer} reads it. This directly confirms TinkerPop's gremlin-lang parser hands parse()
+   * placeholder step types (e.g. AddVertexStartStepPlaceholder, which does NOT extend AddVertexStep) rather than the
+   * concrete classes. The placeholders DO implement Mutating (via Writing/Deleting, javap-verified), so isIdempotent() is
    * correct and HA routing is unaffected; getOperationTypes() is fixed by checking against the
    * AddVertexStepContract/AddEdgeStepContract/AddPropertyStepContract interfaces the placeholders
    * implement (see addVertexOperationTypeIsExactlyCreate and siblings, and #5838).
    */
-  private List<String> analysisStepClassNames(final String query) throws Exception {
-    final ArcadeGremlin gremlin = graph.gremlin(query);
-    final Method method = ArcadeGremlin.class.getDeclaredMethod("executeStatement", boolean.class);
-    method.setAccessible(true);
-    final DefaultGraphTraversal<?, ?> traversal = (DefaultGraphTraversal<?, ?>) method.invoke(gremlin, true);
+  private List<String> analysisStepClassNames(final String query) {
+    final List<Traversal.Admin<?, ?>> traversals = GremlinStatementAnalyzer.traversalsOf(graph.traversal(), query, null);
+    assertThat(traversals).hasSize(1);
     final List<String> names = new ArrayList<>();
-    for (final Object step : traversal.getSteps())
+    for (final Object step : traversals.getFirst().getSteps())
       names.add(step.getClass().getSimpleName());
     return names;
   }
@@ -148,7 +143,7 @@ class ArcadeGremlinAnalyzeTest {
   }
 
   @Test
-  void mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps() throws Exception {
+  void mutatingStepsSeenByAnalysisArePlaceholdersNotResolvedSteps() {
     // TinkerPop 3.8.1's gremlin-lang parser builds GValue-based placeholder steps for addV/addE/property
     // (e.g. AddVertexStepPlaceholder, which does NOT extend AddVertexStep). They are only resolved into
     // the concrete step types ArcadeGremlin.parse() checks for (AddVertexStep, AddEdgeStep,
