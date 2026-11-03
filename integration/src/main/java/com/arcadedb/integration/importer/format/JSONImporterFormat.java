@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -33,6 +34,7 @@ import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
@@ -172,8 +174,12 @@ public class JSONImporterFormat implements FormatImporter {
     // that threw: LocalDatabase#commit() pops in a finally whether or not the commit succeeded, so the transaction
     // database.isTransactionActive() then reports is the CALLER's, and rolling it back silently discarded their
     // unrelated pending work (issue #7860, the mechanism #7732 fixed for the TimeSeries append and #7272 for the RDF
-    // loop). Cleared right before every commit, set right after every begin.
-    final AtomicBoolean txOpen = new AtomicBoolean();
+    // loop). Set right after every begin, and resolved only through ImporterTransactions, which clears it before a
+    // commit and restores it when the commit is refused without popping the transaction (issue #11208): the flag
+    // alone, cleared by hand, stranded a rollback-only transaction on the caller's thread.
+    final boolean[] txOpen = { false };
+    // The transaction the last begin() below pushed, which tells a refused commit from one that popped it
+    final TransactionContext[] ownTx = { null };
 
     // Whether the transaction the records land in belongs to the import, as opposed to the caller's, and so whether
     // the loop may commit it per record and at the end. A nested commit() is independently durable, so beginning and
@@ -183,27 +189,35 @@ public class JSONImporterFormat implements FormatImporter {
     // whether, to commit - exactly as JsonlImporterFormat, CSVImporterFormat and RDFImporterFormat do.
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
-    if (ownsTransaction) {
-      database.begin();
-      txOpen.set(true);
-    }
+    if (ownsTransaction)
+      beginOwnTransaction(database, txOpen, ownTx);
     try {
-      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen, ownsTransaction);
+      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen, ownTx, ownsTransaction);
     } catch (final IOException | RuntimeException e) {
-      // Gated on txOpen rather than on database.isTransactionActive() alone: a failure that left our own level on
-      // the stack still has to discard it, and one that did not - a throw out of commit() - must not reach past it
-      // for whatever is underneath.
-      if (txOpen.get() && database.isTransactionActive()) {
-        txOpen.set(false);
-        database.rollback();
-      }
+      // Gated on the loop's own transaction being the live one rather than on database.isTransactionActive() alone: a
+      // failure that left our own level on the stack still has to discard it, and one that did not - a commit() that
+      // popped it - must not reach past it for whatever is underneath.
+      rollbackOwnTransaction(database, txOpen, ownTx);
       throw e;
     }
   }
 
+  private static void beginOwnTransaction(final Database database, final boolean[] txOpen, final TransactionContext[] ownTx) {
+    database.begin();
+    txOpen[0] = true;
+    ownTx[0] = ImporterTransactions.currentTransaction(database);
+  }
+
+  private static void rollbackOwnTransaction(final Database database, final boolean[] txOpen, final TransactionContext[] ownTx) {
+    if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
+      txOpen[0] = false;
+      database.rollback();
+    }
+  }
+
   private void parseRecordsArray(final JsonReader reader, final Parser parser, final Database database, final ImporterSettings settings,
-      final ImporterContext context, final JSONArray mapping, boolean ignore, final AtomicBoolean txOpen,
-      final boolean ownsTransaction) throws IOException {
+      final ImporterContext context, final JSONArray mapping, boolean ignore, final boolean[] txOpen,
+      final TransactionContext[] ownTx, final boolean ownsTransaction) throws IOException {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
@@ -217,10 +231,7 @@ public class JSONImporterFormat implements FormatImporter {
         // else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the end of
         // the previous iteration), so rolling it back is right - txOpen says so and is true on every path that
         // reaches this line.
-        if (txOpen.get() && database.isTransactionActive()) {
-          txOpen.set(false);
-          database.rollback();
-        }
+        rollbackOwnTransaction(database, txOpen, ownTx);
         throw e;
       }
       if (next != BEGIN_OBJECT) {
@@ -263,18 +274,13 @@ public class JSONImporterFormat implements FormatImporter {
         if (record instanceof Map && mappingObject == null)
           saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
 
-        // Cleared BEFORE the call, not after it: commit() pops the transaction in a finally, so a commit that throws
-        // has already taken our level off the stack and whatever isTransactionActive() reports below belongs to
-        // somebody else (issue #7860).
-        if (ownsTransaction) {
-          txOpen.set(false);
-          database.commit();
-        }
+        // The flag is cleared BEFORE the call (a commit that pops our nested level leaves somebody else's transaction
+        // on top, issue #7860) and restored when the commit is refused without popping it, so the catch below still
+        // rolls it back (issue #11208)
+        if (ownsTransaction)
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       } catch (final RuntimeException e) {
-        if (txOpen.get() && database.isTransactionActive()) {
-          txOpen.set(false);
-          database.rollback();
-        }
+        rollbackOwnTransaction(database, txOpen, ownTx);
 
         context.createdDocuments.set(createdDocumentsBefore);
         context.createdVertices.set(createdVerticesBefore);
@@ -289,10 +295,8 @@ public class JSONImporterFormat implements FormatImporter {
         context.errors.incrementAndGet();
       }
 
-      if (ownsTransaction) {
-        database.begin();
-        txOpen.set(true);
-      }
+      if (ownsTransaction)
+        beginOwnTransaction(database, txOpen, ownTx);
 
       // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
       // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
@@ -312,10 +316,9 @@ public class JSONImporterFormat implements FormatImporter {
       }
     }
 
-    if (ownsTransaction) {
-      txOpen.set(false);
-      database.commit();
-    }
+    // Outside any try: a refusal here reaches parseRecords()'s catch, which finds the flag restored and rolls back
+    if (ownsTransaction)
+      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
 
     reader.endArray();
   }
