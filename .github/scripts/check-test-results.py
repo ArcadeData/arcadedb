@@ -46,7 +46,10 @@
 # rest, and an assumption is often deliberate (a filesystem that reserves no blocks, a graph
 # feature TinkerPop's suite gates on), so those are not failures: every aborted case is listed in
 # the log instead, with its reason, so an assumption reading live state (#11030) is visible on the
-# run where it fired rather than only once someone thinks to look.
+# run where it fired rather than only once someone thinks to look. A class that is meant to run on
+# some runners only (a filesystem, an OS, a tool on the PATH) says so with a condition annotation -
+# @EnabledIf, @EnabledOnOs, @DisabledIf - which surefire records as disabled, not as aborted: that
+# is the opt-out, and it keeps the decision in the source where a reviewer sees it.
 #
 # Usage:
 #   check-test-results.py surefire-reports            # unit tests

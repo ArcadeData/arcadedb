@@ -5653,7 +5653,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // the config it was sent as a bare link where HTTP answers the record, and soft_limit_bytes never saw its bytes.
     // Issue #11044: the Iterable arm covers what out(), in(), outE(), inE() and the other graph functions return, a lazy
     // Iterable that is not a Collection, and the Iterator arm a nested result set: both are lists on the wire, as the HTTP
-    // serializer sends them. The arms are GrpcTypeConverter's (issue #11207), so no container can be added to one encoder only
+    // serializer sends them. The arms are GrpcTypeConverter's (issue #11207), so no container can be added to one encoder only.
+    // Ahead of the Identifiable and Result arms below safely: every record (vertex, edge, document) took a Document arm above,
+    // and neither a RID nor a Result is a Map, an Iterable or an Iterator
     final GrpcValue container = GrpcTypeConverter.toGrpcContainer(o, e -> toGrpcValue(e, pc));
     if (container != null)
       return dbgEnc("toGrpcValue", o, container, null);
