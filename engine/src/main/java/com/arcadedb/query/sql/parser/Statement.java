@@ -46,13 +46,13 @@ import java.util.function.IntFunction;
 import java.util.logging.Level;
 
 public class Statement extends SimpleNode {
-  // Only for internal use!!! (caching)
   /**
    * How many attempts in all a query gets when the index its plan reads is gone by the time it starts (issue #9331). The last
    * of them plans without the key indexes of the types it reads (issue #9615), see {@link #openResultSetPlanningAgainOnStaleIndex}.
    */
   protected static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
 
+  // Only for internal use!!! (caching)
   public Statement originalStatement;
   public String    originalStatementAsString;
   public Limit     limit   = null;
