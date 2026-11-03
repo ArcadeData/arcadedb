@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "arcadedb": {
+      "type": "http",
+      "url": "${user_config.server_url}/api/v1/mcp",
+      "headers": {
+        "Authorization": "Bearer ${user_config.api_token}"
+      }
+    }
+  }
+}

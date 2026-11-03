@@ -139,7 +139,9 @@ ArcadeDB can be used as:
   implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are
   implemented)
-- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/#mcp-server) (Model Context Protocol)
+- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/arcadedb/reference/mcp/mcp) (Model Context Protocol). For
+  Claude Code there is a ready-made [plugin](claude-plugin/README.md):
+  `/plugin marketplace add ArcadeData/arcadedb` then `/plugin install arcadedb@arcadedb`
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 

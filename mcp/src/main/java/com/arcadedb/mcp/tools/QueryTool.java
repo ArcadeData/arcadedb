@@ -47,6 +47,8 @@ public class QueryTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "query")
+        // Open world: a read-only Cypher LOAD CSV fetches remote URLs unless the server disabled it
+        .put("annotations", MCPToolUtils.annotations("Run a read-only query", true, false, true, true))
         .put("description",
             """
             Execute a read-only (idempotent) query against an ArcadeDB database. Use this for SELECT, MATCH, and other read operations. \
@@ -88,7 +90,7 @@ public class QueryTool {
     final Database database = access.database();
 
     // Verify the query is actually read-only using semantic analysis
-    final QueryEngine engine = database.getQueryEngine(language);
+    final QueryEngine engine = MCPToolUtils.analyzableQueryEngine(database, language);
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(query);
     if (!analyzed.isIdempotent())
       throw new SecurityException(
