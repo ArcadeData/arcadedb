@@ -19,8 +19,12 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.async.DatabaseAsyncExecutor;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -30,9 +34,14 @@ import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -86,36 +95,101 @@ class Issue11066PolymorphicTypeTest extends TestHelper {
     }
   }
 
+  /**
+   * Every walk of a type agrees with the bucket owner on the type of each record it delivers. The walks are enumerated from
+   * the source of truth (issue #11206): every method of {@link Database} and {@link DatabaseAsyncExecutor} taking a type
+   * name and a polymorphic flag is either driven here or listed in {@link #NOT_A_WALK} with the reason it delivers no
+   * record, so a walk added beside these fails this test until it is wired in. A hand list of the walks passes both before
+   * a mis-typing and after a new walk arrives. SQL walks a type too, and is driven explicitly (the hierarchy is of document
+   * types, which openCypher does not match).
+   */
   @Test
-  void everyTypeWalkAgreesWithTheBucketOwner() {
+  void everyTypeWalkAgreesWithTheBucketOwner() throws Exception {
     createHierarchy();
 
-    final List<Document> viaScan = new ArrayList<>();
-    database.transaction(() -> database.scanType("Base", true, record -> {
-      viaScan.add(record);
-      return true;
-    }));
-    assertThat(viaScan).hasSize(12);
-    for (final Document d : viaScan)
-      assertThat(d.getTypeName()).isEqualTo(database.getSchema().getTypeNameByBucketId(d.getIdentity().getBucketId()));
+    final List<Method> walks = typeWalks();
+    assertThat(walks).as("the enumeration no longer finds the walks it is known to cover")
+        .extracting(Method::getName).contains("scanType", "iterateType");
+    assertThat(walks.stream().filter(m -> m.getDeclaringClass() == DatabaseAsyncExecutor.class)).as("the asynchronous walks")
+        .isNotEmpty();
 
-    final List<Document> viaAsync = new ArrayList<>();
-    database.async().scanType("Base", true, record -> {
-      synchronized (viaAsync) {
-        viaAsync.add(record);
+    for (final Method walk : walks)
+      assertDeliveredAsTheirBucketOwner(walk.getDeclaringClass().getSimpleName() + "." + walk.getName() + Arrays.toString(
+          walk.getParameterTypes()), drive(walk));
+
+    final List<Document> viaSql = new ArrayList<>();
+    database.query("sql", "SELECT FROM Base").stream().forEach(r -> viaSql.add(r.toElement()));
+    assertDeliveredAsTheirBucketOwner("SQL SELECT", viaSql);
+  }
+
+  /** The methods with a type name and a polymorphic flag that deliver no record, each with why. */
+  private static final Map<String, String> NOT_A_WALK = Map.of(//
+      "countType", "answers a number, delivers no record");
+
+  /** Every method of the two APIs that walks a type: {@code (String typeName, boolean polymorphic, ...)}. */
+  private static List<Method> typeWalks() {
+    final Map<String, Method> walks = new TreeMap<>();
+    for (final Class<?> api : List.of(Database.class, DatabaseAsyncExecutor.class))
+      for (final Method method : api.getMethods()) {
+        final Class<?>[] parameters = method.getParameterTypes();
+        if (parameters.length < 2 || parameters[0] != String.class || parameters[1] != boolean.class)
+          continue;
+        if (NOT_A_WALK.containsKey(method.getName()))
+          continue;
+        walks.putIfAbsent(api.getSimpleName() + "." + method.getName() + Arrays.toString(parameters), method);
       }
-      return true;
-    });
-    database.async().waitCompletion();
-    assertThat(viaAsync).hasSize(12);
-    for (final Document d : viaAsync)
-      assertThat(d.getTypeName()).isEqualTo(database.getSchema().getTypeNameByBucketId(d.getIdentity().getBucketId()));
+    return new ArrayList<>(walks.values());
+  }
 
-    final List<Document> viaIterate = new ArrayList<>();
-    database.iterateType("Base", true).forEachRemaining(r -> viaIterate.add((Document) r));
-    assertThat(viaIterate).hasSize(12);
-    for (final Document d : viaIterate)
-      assertThat(d.getTypeName()).isEqualTo(database.getSchema().getTypeNameByBucketId(d.getIdentity().getBucketId()));
+  /**
+   * Drives one walk over {@code Base} polymorphically and returns what it delivered. A parameter type it does not know is a
+   * walk this test cannot drive yet: wire it in here, or list the method in {@link #NOT_A_WALK}.
+   */
+  private List<Document> drive(final Method walk) throws Exception {
+    final boolean async = walk.getDeclaringClass() == DatabaseAsyncExecutor.class;
+    final List<Document> delivered = Collections.synchronizedList(new ArrayList<>());
+    final List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+
+    final Class<?>[] parameters = walk.getParameterTypes();
+    final Object[] arguments = new Object[parameters.length];
+    arguments[0] = "Base";
+    arguments[1] = true;
+    for (int i = 2; i < parameters.length; i++) {
+      if (parameters[i] == DocumentCallback.class)
+        arguments[i] = (DocumentCallback) record -> delivered.add(record);
+      else if (parameters[i] == ErrorRecordCallback.class)
+        arguments[i] = (ErrorRecordCallback) (rid, exception) -> errors.add(exception);
+      else
+        throw new AssertionError("walk " + walk + " takes a " + parameters[i].getName() + " this test cannot drive: wire it into "
+            + "drive(), or list the method in NOT_A_WALK with why it delivers no record");
+    }
+
+    if (async) {
+      final Object result = walk.invoke(database.async(), arguments);
+      database.async().waitCompletion();
+      assertThat(result).as(walk + " returns something this test does not read").isNull();
+    } else
+      database.transaction(() -> {
+        try {
+          final Object result = walk.invoke(database, arguments);
+          if (result instanceof Iterator<?> iterator)
+            iterator.forEachRemaining(r -> delivered.add((Document) r));
+          else
+            assertThat(result).as(walk + " returns something this test does not read").isNull();
+        } catch (final ReflectiveOperationException e) {
+          throw new AssertionError(e);
+        }
+      });
+
+    assertThat(errors).as(walk.toString()).isEmpty();
+    return delivered;
+  }
+
+  private void assertDeliveredAsTheirBucketOwner(final String walk, final List<Document> delivered) {
+    assertThat(delivered).as(walk).hasSize(12);
+    for (final Document d : delivered)
+      assertThat(d.getTypeName()).as(walk + " delivered " + d.getIdentity())
+          .isEqualTo(database.getSchema().getTypeNameByBucketId(d.getIdentity().getBucketId()));
   }
 
   @Test

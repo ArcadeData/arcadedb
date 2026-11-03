@@ -1447,15 +1447,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(400, "Cannot execute command", arithmetic, null, ErrorLogKind.USER);
     }
 
-    // A value a property cannot hold - openCypher refusing a map, or a list containing one. Like the arithmetic
-    // arm above it has to be decided before the generic CommandExecutionException arm further down, which it
-    // extends and which answers 500: the statement is fine and so is the server, the value the caller asked to
-    // store is not storable. It answered 400 as an IllegalArgumentException before #7729 gave it its own type, and
-    // this keeps that answer rather than silently downgrading it to a server fault. The whole chain is searched,
-    // for the same reason the arithmetic arm searches it: the wrapping depends on how the request arrived.
-    final InvalidPropertyTypeException invalidPropertyType = invalidPropertyType(e);
-    if (invalidPropertyType != null) {
-      return new ErrorClassification(400, "Cannot execute command", invalidPropertyType, null, ErrorLogKind.USER);
+    // A value of the wrong type for what the query did with it - a property read off a list (issue #11211), a map a
+    // property cannot hold (InvalidPropertyTypeException, issue #7729). Like the arithmetic arm above it has to be
+    // decided before the generic CommandExecutionException arm further down, which it extends and which answers
+    // 500: the statement is fine and so is the server, the value the caller made the operation meet is not one it
+    // is defined for. The whole chain is searched, for the same reason the arithmetic arm searches it: the wrapping
+    // depends on how the request arrived.
+    final TypeMismatchException typeMismatch = typeMismatch(e);
+    if (typeMismatch != null) {
+      return new ErrorClassification(400, "Cannot execute command", typeMismatch, null, ErrorLogKind.USER);
     }
 
     // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
@@ -2757,8 +2757,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return CauseChain.find(error, ArithmeticErrorException.class);
   }
 
-  private static InvalidPropertyTypeException invalidPropertyType(final Throwable error) {
-    return CauseChain.find(error, InvalidPropertyTypeException.class);
+  private static TypeMismatchException typeMismatch(final Throwable error) {
+    return CauseChain.find(error, TypeMismatchException.class);
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,

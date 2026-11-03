@@ -540,9 +540,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // the post-record pass would have restored triggers and views onto types this import never created.
     this.importedSchema = importedSchema;
 
-    // final report
-    databaseSchema.getTypes()
-        .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
+    // final report: the types this import created, not every type of the target database (issue #11197)
+    for (final String typeName : types.keySet())
+      logger.logLine(2, " - Created type %s: %s", typeName, databaseSchema.getType(typeName).toJSON());
   }
 
   /**

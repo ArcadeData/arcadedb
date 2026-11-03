@@ -40,7 +40,6 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.MultiTypeIndexes;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -528,10 +527,9 @@ public final class CypherSchemaCommands {
    * statement can name.
    */
   private static List<DocumentType> readableTypes(final DatabaseInternal database) {
-    final SecurityDatabaseUser reader = SecurityHelper.currentUser(database);
     final List<DocumentType> types = new ArrayList<>();
-    for (final DocumentType type : database.getSchema().getTypes())
-      if (!type.getName().contains("~") && SecurityHelper.canAccessType(reader, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+    for (final DocumentType type : SecurityHelper.readableTypes(database))
+      if (!type.getName().contains("~"))
         types.add(type);
     return types;
   }

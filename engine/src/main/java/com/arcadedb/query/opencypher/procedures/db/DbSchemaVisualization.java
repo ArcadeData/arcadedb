@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -79,9 +78,8 @@ public class DbSchemaVisualization implements CypherProcedure {
     final List<Result> results = new ArrayList<>();
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     // Types the current user cannot read are hidden, as schema:types hides them in SQL
-    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
-    for (final DocumentType type : database.getSchema().getTypes()) {
-      if (type.getName().contains("~") || !SecurityHelper.canAccessType(user, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+    for (final DocumentType type : SecurityHelper.readableTypes(database)) {
+      if (type.getName().contains("~"))
         continue;
 
       final ResultInternal result = new ResultInternal();
