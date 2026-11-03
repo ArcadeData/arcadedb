@@ -107,9 +107,14 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     createView("");
     final long sourceRows = count("Sale");
     final List<Integer> buckets = database.getSchema().getType("mv").getBucketIds(false);
+    // indexing a backing type writes no record and stays allowed; UPSERT needs the unique index
+    database.command("sql", "CREATE PROPERTY mv.region STRING");
+    database.command("sql", "CREATE INDEX ON mv (region) UNIQUE");
 
     for (final String statement : List.of("TRUNCATE TYPE mv", "TRUNCATE TYPE mv UNSAFE", "INSERT INTO mv SET region = 'NEVER IN THE QUERY'",
-        "UPDATE mv SET total = 0", "DELETE FROM mv", "DELETE FROM mv WHERE region = 'EU'",
+        "UPDATE mv SET total = 0", "UPDATE mv SET total = 1 UPSERT WHERE region = 'NOWHERE'",
+        "UPDATE mv SET total = 1 UPSERT WHERE region = 'EU'", "DELETE FROM mv", "DELETE FROM mv WHERE region = 'EU'",
+        "INSERT INTO BUCKET:" + database.getSchema().getBucketById(buckets.getFirst()).getName() + " SET region = 'X'",
         "TRUNCATE BUCKET " + database.getSchema().getBucketById(buckets.getFirst()).getName(),
         "ALTER TYPE mv BUCKET -" + database.getSchema().getBucketById(buckets.getFirst()).getName()))
       assertThatThrownBy(() -> database.command("sql", statement)).as(statement).isInstanceOf(SchemaException.class)
