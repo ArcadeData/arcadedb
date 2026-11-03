@@ -40,6 +40,10 @@ public final class QueryHeapBudgetTestSupport {
   /**
    * Waits until no query holds anything of the budget, collecting what the abandoned ones held: from then on the counter moves
    * only with what the calling test runs. A hang detector, not a latency bound.
+   * <p>
+   * Not a narrowing of the race but its end: only a reservation still held can be given back later, and the wait returns when
+   * none is, so nothing an earlier test left can move the counter afterwards. What it cannot cover is a query of another thread
+   * started meanwhile, which no test of a fork does.
    */
   public static void awaitNoReservationLeft() {
     await().alias("the queries other tests abandoned give their heap budget back").atMost(Duration.ofSeconds(30)).until(() -> {

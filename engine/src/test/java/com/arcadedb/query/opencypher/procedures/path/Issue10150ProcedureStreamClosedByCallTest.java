@@ -200,6 +200,7 @@ class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
   }
 
   private void assertWalkGaveItsFrontierBack() {
+    assertThat(trackers).as("every walk of a query charges the tracker of that query").hasSize(1);
     final QueryHeapTracker tracker = trackers.iterator().next();
     assertThat(tracker.getUsedBytes()).as("closing the ResultSet gave the frontier back").isZero();
     assertThat(tracker.getReservedBytes()).as("and its share of the shared budget with it").isZero();
