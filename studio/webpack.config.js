@@ -226,10 +226,6 @@ module.exports = {
           to: 'js/d3-force.min.js',
         },
         {
-          from: 'node_modules/cytoscape-graphml/cytoscape-graphml.js',
-          to: 'js/cytoscape-graphml.js',
-        },
-        {
           from: 'node_modules/cytoscape-node-html-label/dist/cytoscape-node-html-label.js',
           to: 'js/cytoscape-node-html-label.min.js',
         },
