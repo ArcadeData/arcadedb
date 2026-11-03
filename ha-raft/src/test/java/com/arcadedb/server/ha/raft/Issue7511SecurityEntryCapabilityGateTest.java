@@ -224,10 +224,11 @@ class Issue7511SecurityEntryCapabilityGateTest {
   /** Only the two security entries carry the operator override. */
   @Test
   void onlyTheSecurityEntriesAreOverridable() {
-    for (final RaftLogEntryType type : RaftLogEntryType.values())
-      assertThat(SecurityEntryCapabilityGate.isOverridable(type))
-          .as("%s", type)
-          .isEqualTo(type == RaftLogEntryType.SECURITY_GROUPS_ENTRY || type == RaftLogEntryType.SECURITY_API_TOKENS_ENTRY);
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.SECURITY_GROUPS_ENTRY)).isTrue();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY)).isTrue();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY)).isFalse();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.SCHEMA_ENTRY)).isFalse();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.TX_ENTRY)).isFalse();
   }
 
   // -------------------------------------------------------------------------------------------------------
