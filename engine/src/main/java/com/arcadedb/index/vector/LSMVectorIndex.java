@@ -4634,13 +4634,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // commit and never before: a manifest that outlived a persist which did not complete would be the one
           // thing able to certify a graph nobody built. And only once the pages are on the disk: they were committed
           // without the WAL, so a kill before the asynchronous flush wrote them would leave the manifest vouching for
-          // pages that are not there (issue #11238). Left uncertified, the graph is rebuilt on the next open.
+          // pages that are not there (issue #11238). Uncertified, the manifest refuses the pages, rather than leaving none
+          // (which the next open would read as "unverifiable" and judge by node count), and the graph is rebuilt.
           final boolean graphOnDisk = isOnDisk(gf);
           final Long certifiedFingerprint = graphOnDisk ? writeGraphManifest(gf, finalActiveVectorIds) : null;
+          if (!graphOnDisk)
+            gf.getManifest().markUnusable("graph pages not on the disk yet");
           graphCertified = graphOnDisk;
           // Identity, not a flag: if graphIndex was replaced since publish, admitByDemotingResidentGraph() compares
-          // this reference against the then-resident graph and finds no match.
-          persistedGraphSource = builtGraph;
+          // this reference against the then-resident graph and finds no match. Only a graph the disk holds can be demoted
+          // to it and read back later.
+          if (graphCertified)
+            persistedGraphSource = builtGraph;
 
           // The replacement is certified now, so the stale pre-compaction file it supersedes is safe to drop -
           // outside any lock, because a reader that already captured it must be able to finish (see
@@ -13213,6 +13218,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // local-capture sweep.
             if (!graphPersisted || !commitsItsOwnPages || isOnDisk(graphFile))
               writeGraphManifest(graphFile, ordinalToVectorId);
+            else
+              graphFile.getManifest().markUnusable("graph pages not on the disk yet");
 
             persistBuildState(BUILD_STATE.READY);
 
