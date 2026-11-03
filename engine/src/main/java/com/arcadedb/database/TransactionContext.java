@@ -207,6 +207,9 @@ public class TransactionContext implements Transaction {
   // check allocate nothing (no PageId objects).
   private       LongHashSet                          edgeAppendPoisonedPages;
   private       boolean                              edgeAppendMerge;
+  // #11234: the edge-list segments this transaction deleted, each with the segment the chain was relinked to around it (null
+  // when the whole list went), see edgeSegmentDeleted()
+  private       Map<RID, RID>                        deletedEdgeSegments;
   // TX_PAGE_SLOT_MERGE (#5381): the general form of the edge-append merge. Two transactions writing DIFFERENT record
   // slots on the same bucket page (logically-unrelated records that merely share a page) conflict at page
   // granularity even though their changes commute. On such a commit-time conflict we re-apply THIS transaction's
@@ -2144,6 +2147,41 @@ public class TransactionContext implements Transaction {
     edgeAppendPoisonedPages.add(packPageKey(fileId, pageNumber));
   }
 
+  /**
+   * Records that this transaction deleted the edge-list segment {@code segment}, and which segment the chain now goes on
+   * with in its place: the one the segment in front of it was relinked to, or {@code null} when the whole list was deleted
+   * (issue #11234).
+   * <p>
+   * The relink is written on the transaction's copy of the segment in front, and a walk of the list that is still going
+   * may hold an older one, read before the relink: an iterator reads a segment as it stood when it reached it, see
+   * {@code ResettableIteratorBase.walkable}. Its pointer then names a segment that is gone, and {@link
+   * #resolveDeletedEdgeSegment} takes the walk where the chain goes now.
+   */
+  public void edgeSegmentDeleted(final RID segment, final RID relinkedTo) {
+    if (deletedEdgeSegments == null)
+      deletedEdgeSegments = new HashMap<>();
+    deletedEdgeSegments.put(segment, relinkedTo);
+  }
+
+  /**
+   * The segment a walk of an edge list goes on with when its pointer names {@code segment}: {@code segment} itself, unless
+   * this transaction deleted it from its list (see {@link #edgeSegmentDeleted}), and then the segment the chain was
+   * relinked to in its place, following any it deleted after it too, or {@code null} when the list ends there. A segment
+   * deleted any other way is answered as it is, so the lookup that follows reports it.
+   */
+  public RID resolveDeletedEdgeSegment(final RID segment) {
+    if (deletedEdgeSegments == null)
+      return segment;
+    RID current = segment;
+    // BOUNDED BY THE SEGMENTS DELETED, SO A CORRUPTED CHAIN CANNOT LOOP HERE
+    for (int hops = deletedEdgeSegments.size(); current != null && hops >= 0 && deletedRecordsInTx.contains(current); --hops) {
+      if (!deletedEdgeSegments.containsKey(current))
+        break;
+      current = deletedEdgeSegments.get(current);
+    }
+    return current;
+  }
+
   /** Packs the (fileId, pageNumber) of the page holding {@code segmentRID} into a long key (no allocation). */
   private long edgeSegmentPageKey(final RID segmentRID) {
     // #5608: the null-tolerant two-arg lookup, deliberately. The single-arg getBucketById raises SchemaException for an
@@ -3034,6 +3072,7 @@ public class TransactionContext implements Transaction {
     newPages = null;
     edgeAppendsBySegment = null;
     edgeAppendPoisonedPages = null;
+    deletedEdgeSegments = null;
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
     slotRebaseTrackedBytes = 0;
@@ -4126,6 +4165,7 @@ public class TransactionContext implements Transaction {
     newPages = null;
     edgeAppendsBySegment = null;
     edgeAppendPoisonedPages = null;
+    deletedEdgeSegments = null;
     slotRebaseByPage = null;
     slotRebasePoisonedPages = null;
     slotRebaseTrackedBytes = 0;

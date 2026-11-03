@@ -553,10 +553,18 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     }
   }
 
+  /**
+   * The segment before this one in the chain as the open transaction has it NOW, which is not always the one the pointer of this
+   * instance names (issue #11234). A walk reads a segment as it stood when it reached it, and the transaction can then delete the
+   * segment it points at: a removal that empties a segment deletes it and relinks the one in front around it, on the transaction's
+   * copy of that one, not on the walk's. The pointer then names a segment that is gone, and the walk goes on with the one the chain
+   * was relinked to, or ends when the transaction deleted the whole list (see {@link TransactionContext#edgeSegmentDeleted}).
+   */
   @Override
   public EdgeSegment getPrevious() {
-    final RID nextRID = getPreviousRID();
-    return nextRID == null ? null : (EdgeSegment) database.lookupByRID(nextRID, true);
+    final TransactionContext tx = database.getTransactionIfExists();
+    final RID previousRID = tx != null ? tx.resolveDeletedEdgeSegment(getPreviousRID()) : getPreviousRID();
+    return previousRID == null ? null : (EdgeSegment) database.lookupByRID(previousRID, true);
   }
 
   @Override

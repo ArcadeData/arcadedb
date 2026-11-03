@@ -155,8 +155,14 @@ public class InterleavedIterator<T> implements ResettableIterator<T> {
 
   @Override
   public boolean hasNext() {
-    if (pending > -1)
-      return true;
+    if (pending > -1) {
+      // ASKED AGAIN, NOT TRUSTED: A SOURCE CAN WITHDRAW THE ENTRY IT PEEKED, AS AN EDGE-LIST WALK DOES ONCE ITS TRANSACTION DELETES
+      // THAT EDGE (#11234). A SOURCE THAT HAS ITS ENTRY IN HAND ANSWERS WITHOUT READING ANYTHING. THE SLOT OF ONE THAT WITHDREW
+      // IS THE TURN, SO THE LOOP BELOW GOES ON FROM IT
+      if (active[pending].hasNext())
+        return true;
+      pending = -1;
+    }
 
     // Each turn of this loop either finds the next entry or removes one exhausted source, so it terminates.
     while (activeCount > 0) {
