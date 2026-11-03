@@ -72,13 +72,12 @@ public class MCPToolUtils {
   /**
    * The query engine of a tool that runs the caller's query or command text. {@code analyze()} is where the tool decides
    * whether the text is read-only or allowed by the MCP configuration, so an engine whose analysis evaluates the text
-   * (a scripting language, Gremlin) would run it before either check could refuse it: it is refused here, before analysis.
+   * (a scripting language) would run it before either check could refuse it: it is refused here, before analysis.
    */
   public static QueryEngine analyzableQueryEngine(final Database database, final String language) {
     final QueryEngine engine = database.getQueryEngine(language);
     if (engine.analysisEvaluatesQuery())
-      throw new SecurityException("Language '" + language
-          + "' is not available through MCP: it cannot be checked without running it. Use sql, cypher, graphql or mongo");
+      throw new SecurityException("Language '" + language + "' is not available through MCP: it cannot be checked without running it");
     return engine;
   }
 
