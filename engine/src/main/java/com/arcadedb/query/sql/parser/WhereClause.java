@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -165,8 +164,11 @@ public class WhereClause extends SimpleNode {
               conditionEstimation = newCount;
             }
           }
-        } catch (final IndexException e) {
-          // Dropped or rebuilt while reading it: no source for an estimation
+        } catch (final RuntimeException e) {
+          // Dropped or rebuilt while reading it: no source for an estimation. A drop that starts after isReadyForQueries() deletes
+          // the sub-index files under the cursor, which reads as the page manager's "File with id n was not found"
+          if (!TypeIndex.isStaleRead(index, e))
+            throw e;
           LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while estimating: %s", index.getName(), e.getMessage());
         }
       }

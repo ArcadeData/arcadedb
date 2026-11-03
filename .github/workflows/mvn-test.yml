@@ -1309,8 +1309,8 @@ jobs:
 
       # continue-on-error keeps a missing artifact from failing the step with a bare "Artifact not
       # found", so the collector below can report which suite is missing and why it matters.
-      # unit-tests runs as two shards. Every shard is downloaded into its own directory and named to the
-      # collector as a suite of its own: a missing shard then fails the collector.
+      # unit-tests and integration-tests run as shards. Every shard is downloaded into its own directory and named
+      # to the collector as a suite of its own: a missing shard then fails the collector.
       - name: Download unit test (engine shard) coverage reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true

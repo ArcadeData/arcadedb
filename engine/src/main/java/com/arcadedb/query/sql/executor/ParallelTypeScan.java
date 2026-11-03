@@ -27,6 +27,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.ParallelScanProducerPool;
@@ -81,7 +82,7 @@ import java.util.logging.Level;
  * in its own copy of the context (#4949), and fetches its rows under the database read lock one batch at a time,
  * never across a blocking hand-off. A failed worker fails the query instead of shrinking its result (#4951), and a
  * result set nobody drains nor closes releases its workers after
- * {@link GlobalConfiguration#PARALLEL_SCAN_ABANDONED_TIMEOUT}.
+ * {@link GlobalConfiguration#PARALLEL_SCAN_ABANDONED_TIMEOUT}, or as soon as its database is closed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -473,8 +474,12 @@ final class ParallelTypeScan {
           }
           consumerBatch = null;
 
-          if (consumerUnit >= channels.length)
+          if (consumerUnit >= channels.length) {
+            // EVERY UNIT IS OVER: A PRODUCER STILL QUEUED HAS NOTHING LEFT TO SCAN, AND WOULD PIN THIS SCAN AND ITS
+            // CONTEXT UNTIL THE POOL GETS TO IT, ALSO FOR A RESULT SET ITS CALLER THEN ABANDONS (#8591)
+            dropQueuedProducers();
             return false;
+          }
 
           if (consumerStep != null) {
             // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
@@ -616,6 +621,17 @@ final class ParallelTypeScan {
           Thread.currentThread().interrupt();
           return false;
         }
+        if (!database.isOpen()) {
+          // THE DATABASE WAS CLOSED (OR DROPPED) UNDER A RESULT SET LEFT OPEN: NOBODY CAN CONSUME THIS SCAN ANY MORE, AND
+          // WAITING FOR THE ABANDONMENT TIMEOUT WOULD KEEP A THREAD OF THE JVM-WIDE POOL FROM EVERY OTHER DATABASE FOR IT.
+          // A CONSUMER THAT COMES BACK FAILS INSTEAD OF WAITING FOR THE ROWS OF A PRODUCER THAT IS GONE
+          if (failure == null)
+            failure = DatabaseIsClosedException.of(database.getName());
+          LogManager.instance()
+              .log(this, Level.FINE, "Parallel scan of type '%s' left open on a closed database: releasing the producer thread", null,
+                  typeName);
+          return false;
+        }
         if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - lastConsumed > abandonedTimeoutMs) {
           recordFailure(new CommandExecutionException(
               "Parallel scan abandoned: the result set was not consumed nor closed for more than " + abandonedTimeoutMs + " ms (see "
@@ -654,13 +670,21 @@ final class ParallelTypeScan {
         typeName);
   }
 
+  /** Takes the producers no pool thread has started out of the pool's queue, so they stop referencing this scan. */
+  private void dropQueuedProducers() {
+    ParallelScanProducerPool.getInstance().dropQueuedTasks(futures);
+  }
+
   /** Stops every worker still running and drops what the consumer holds. Idempotent. */
   void close() {
     // BEFORE THE INTERRUPTS: A PRODUCER THAT SEES ONE MUST ALREADY SEE THE FLAG
     closed = true;
-    if (futures != null)
+    if (futures != null) {
+      // A CANCELLED TASK STAYS QUEUED, WITH THIS SCAN AND ITS CONTEXT, UNTIL A WORKER DEQUEUES IT: TAKE IT OUT
+      dropQueuedProducers();
       for (final Future<?> f : futures)
         f.cancel(true);
+    }
 
     // A UNIT THE CONSUMER WAS SCANNING ITSELF: A COPY IS THIS SCAN'S TO CLOSE, A WHOLE TEMPLATE IS ITS OWNING STEP'S
     final AbstractExecutionStep step = consumerStep;
@@ -809,6 +833,8 @@ final class ParallelTypeScan {
         throw error;
       throw new CommandExecutionException("Parallel aggregation of type '" + typeName + "' failed", cause);
     } finally {
+      // A SKIPPED HELPER STILL QUEUED PINS THE BODY, AND THROUGH IT THE QUERY'S CONTEXT, UNTIL THE POOL GETS TO IT (#8591)
+      ParallelScanProducerPool.getInstance().dropQueuedTasks(futures);
       // A NO-OP ON SUCCESS; ON A FAILURE (OR A TIMEOUT onWait RAISED) IT STOPS THE HELPERS STILL RUNNING
       for (final Future<T> f : futures)
         f.cancel(true);

@@ -35,6 +35,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -266,6 +268,11 @@ class Issue5596MergeCoverageTest extends TestHelper {
    * The other half of the guard: the coverage proof must not be so tight that it refuses everything. The same
    * shared-page contention WITHOUT the undeclared writer must still be absorbed by the merge - the counter has to
    * move, and every edge has to survive.
+   * <p>
+   * The conflict is forced, not hoped for: two free-running writers of a few dozen tiny transactions each need not
+   * overlap at all (a writer can be done before the other is even scheduled, which a loaded CI runner did), and then
+   * nothing conflicts and nothing merges. Each round, the competitor commits its append to the shared page while this
+   * transaction holds its own append to the same page uncommitted, exactly the shape the tests above use.
    */
   @Test
   void aCleanAppendConflictIsStillMerged() throws Exception {
@@ -279,36 +286,33 @@ class Issue5596MergeCoverageTest extends TestHelper {
     final long declinedBefore = declinedByCoverage();
 
     final int rounds = 40;
-    final CountDownLatch start = new CountDownLatch(1);
-    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    try (final ExecutorService competitor = Executors.newSingleThreadExecutor()) {
+      for (int i = 0; i < rounds; i++) {
+        boolean committed = false;
+        for (int attempt = 0; attempt < 50 && !committed; attempt++) {
+          database.begin();
+          try {
+            final MutableVertex leaf = database.newVertex("LeafA").save();
+            hubA.asVertex(true).newEdge("LinkA", leaf);
 
-    final Thread other = new Thread(() -> {
-      try {
-        start.await();
-        for (int i = 0; i < rounds; i++)
-          database.transaction(() -> {
-            final MutableVertex leaf = database.newVertex("LeafC").save();
-            hubC.asVertex(true).newEdge("LinkC", leaf);
-          }, true, 50);
-      } catch (final Throwable e) {
-        errors.add(e);
+            if (attempt == 0)
+              // The competitor's append commits in full, on its own thread, while this one is still pending
+              competitor.submit(() -> database.transaction(() -> {
+                final MutableVertex other = database.newVertex("LeafC").save();
+                hubC.asVertex(true).newEdge("LinkC", other);
+              }, true, 50)).get();
+
+            database.commit();
+            committed = true;
+          } catch (final ConcurrentModificationException e) {
+            // A round whose append could not be replayed (a new chunk, not an in-chunk append) retries as a plain one
+            if (database.isTransactionActive())
+              database.rollback();
+          }
+        }
+        assertThat(committed).as("round " + i + " must eventually commit").isTrue();
       }
-    }, "other");
-    other.start();
-
-    try {
-      start.countDown();
-      for (int i = 0; i < rounds; i++)
-        database.transaction(() -> {
-          final MutableVertex leaf = database.newVertex("LeafA").save();
-          hubA.asVertex(true).newEdge("LinkA", leaf);
-        }, true, 50);
-    } finally {
-      other.join();
     }
-
-    if (!errors.isEmpty())
-      throw new AssertionError("second writer failed: " + errors.getFirst(), errors.getFirst());
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges - mergesBefore;
     assertThat(merges).as("the edge-append merge must still fire on a fully covered page").isGreaterThan(0);

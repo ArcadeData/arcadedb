@@ -77,8 +77,10 @@ public class TimeoutStepTest extends TestHelper {
         // This is acceptable as the query might complete very quickly
         assertThat(count).isGreaterThanOrEqualTo(0);
       } catch (final TimeoutException e) {
-        // Timeout occurred as expected
-        assertThat(e.getMessage()).contains("Timeout expired");
+        // Timeout occurred as expected. Which check sees the 1ms pass first is scheduling: the TIMEOUT step between two
+        // rows ("Timeout expired: ...") or the command deadline inside a step's own loop ("... exceeded the ..."). Both
+        // name the clause that fired
+        assertThat(e.getMessage()).contains("TIMEOUT clause of 1ms");
       }
     });
   }
@@ -100,8 +102,8 @@ public class TimeoutStepTest extends TestHelper {
         // Either completes quickly or times out
         assertThat(count).isGreaterThanOrEqualTo(0);
       } catch (final TimeoutException e) {
-        // Timeout is acceptable for this test
-        assertThat(e.getMessage()).contains("Timeout expired");
+        // Timeout is acceptable for this test, from either of the two checks that enforce the clause
+        assertThat(e.getMessage()).contains("TIMEOUT clause of 1ms");
       }
     });
   }

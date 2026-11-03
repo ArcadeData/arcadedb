@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.DefaultLogger;
@@ -65,17 +65,18 @@ class Issue10747CancelledParallelScanNotLoggedTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("id", i).save();
     });
 
-    // THE POSITION OF THE RECORD HALF WAY THROUGH THE BUCKET: EVERY RECORD PAST IT IS IN A LATER UNIT THAN THE FIRST
-    final long halfWay;
-    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM " + TYPE_NAME + " WHERE id = ?", RECORDS / 2)) {
-      halfWay = rs.next().<Identifiable>getProperty("rid").getIdentity().getPosition();
-    }
+    // THE FIRST POSITION PAST THE FIRST TWO PAGES. A UNIT IS AT LEAST TWO PAGES, SO THOSE ARE ALWAYS IN THE FIRST UNIT, AND
+    // EVERY OTHER UNIT STARTS PAST THEM. NOT A POSITION HALF WAY THROUGH THE BUCKET: A UNIT OF TWO FULL PAGES IS EXACTLY WHAT
+    // ITS CHANNEL HOLDS, SO EACH PRODUCER PARKS ON THE FIRST UNIT IT TAKES, AND ON A POOL OF 4 THREADS (A 4-CORE BOX) NONE
+    // EVER REACHED THE MIDDLE UNIT: THE STALL WAS LEFT TO THE LEFTOVER PRODUCERS OF A SCAN THAT FOUND THAT POSITION FIRST
+    final long firstPagesEnd = 2L * ((LocalBucket) database.getSchema().getType(TYPE_NAME).getBuckets(false).getFirst()).getMaxRecordsInPage();
 
     final CountDownLatch stalled = new CountDownLatch(1);
     final CountDownLatch thrown = new CountDownLatch(1);
     final AfterRecordReadListener stall = record -> {
-      // THE ROWS OF THE FIRST UNITS PASS, SO THE CONSUMER GETS A ROW; A PRODUCER ON A LATER UNIT STALLS UNTIL CANCELLED
-      if (record.getIdentity().getPosition() < halfWay || !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread))
+      // THE ROWS OF THE FIRST TWO PAGES PASS, SO THE CONSUMER GETS A ROW WHOEVER SCANS THE FIRST UNIT; A PRODUCER STALLS ON THE
+      // FIRST ROW PAST THEM, THE FIRST OF ANY LATER UNIT OR THE ONE AFTER THE FIRST UNIT'S CHANNEL IS FULL, UNTIL CANCELLED
+      if (record.getIdentity().getPosition() < firstPagesEnd || !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread))
         return record;
       stalled.countDown();
       try {
@@ -98,12 +99,16 @@ class Issue10747CancelledParallelScanNotLoggedTest extends TestHelper {
             .contains("(parallel)");
       }
 
+      // NO PARALLEL SCAN OF THIS DATABASE RUNS BEFORE THIS ONE, SO EVERY PRODUCER THE LISTENER STALLS IS ONE OF ITS OWN
       database.getEvents().registerListener(stall);
       final ResultSet rs = database.query("sql", query);
-      assertThat(rs.hasNext()).isTrue();
-      rs.next();
-      assertThat(stalled.await(30, TimeUnit.SECONDS)).as("a producer must be inside the stalled read before the close").isTrue();
-      rs.close();
+      try {
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+        assertThat(stalled.await(30, TimeUnit.SECONDS)).as("a producer must be inside the stalled read before the close").isTrue();
+      } finally {
+        rs.close();
+      }
       assertThat(thrown.await(30, TimeUnit.SECONDS)).as("the close must interrupt the stalled producer").isTrue();
 
       // THE PRODUCER'S CATCH RUNS RIGHT AFTER THE THROW: WAIT FOR THE POOL TO GIVE ITS THREAD BACK
