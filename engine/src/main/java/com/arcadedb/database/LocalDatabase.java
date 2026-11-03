@@ -627,15 +627,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // queues are drained and whose workers are parked can still be holding thousands of uncommitted records.
     // waitCompletion() is the only operation that closes that batch - it enqueues a marker BEHIND everything already
     // submitted on every worker and that marker commits - so it has to run even when the executor looks idle.
-    // The loop then covers what a single pass cannot: tasks submitted by OTHER threads while this one was waiting.
-    do {
-      executor.waitCompletion();
-      // waitCompletion() answers an interrupt by restoring the flag and returning, so without this the loop would
-      // spin: every further pass would be interrupted at its first queue offer and come straight back. The caller's
-      // cancellation is left on the thread for it to observe.
-      if (Thread.currentThread().isInterrupted())
-        return;
-    } while (isAsyncProcessing());
+    //
+    // ONE call, not a loop while isAsyncProcessing() (issue #11155). waitCompletion() already goes around again for
+    // what a single pass can miss, the cascades a worker schedules (#6462). What the loop added on top was waiting for
+    // the tasks OTHER threads submit after this call began, which a steady async producer never stops doing, so the
+    // build waited for ever. Those tasks race the build whether it waits for them or not: quiesceAsync() is what keeps
+    // them out of a scan. An interrupt makes waitCompletion() restore the flag and return, left for the caller.
+    executor.waitCompletion();
   }
 
   @Override

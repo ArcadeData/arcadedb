@@ -41,12 +41,14 @@ import java.util.Map;
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseAsyncExecutor {
   /**
-   * Waits for the completion of all the pending tasks.
+   * Waits for the completion of all the pending tasks: the ones submitted before this call, and the ones those tasks
+   * schedule in turn. Tasks other threads submit while it waits are not guaranteed to be waited for, so a steady producer
+   * cannot keep it from returning.
    */
   void waitCompletion();
 
   /**
-   * Waits for the completion of all the pending tasks.
+   * Waits for the completion of all the pending tasks, as {@link #waitCompletion()} does.
    *
    * @param timeout timeout in milliseconds
    *
