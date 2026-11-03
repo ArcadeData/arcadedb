@@ -54,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * broker; the captured payload is split with the production splitter and applied to a byte-identical copy of the database
  * through {@link ArcadeStateMachine#applySchemaEntry}, closing and reopening that copy between two chunks, which is what a
  * snapshot taken mid-sequence followed by a restart amounts to (Ratis replays only the entries after the marker).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CompactionChunksAcrossFollowerRestartTest {
   private static final String DB         = "compaction";

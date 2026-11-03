@@ -42,6 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * in-memory memtable and seals it into a page-backed segment only past ~1M postings or at a clean close, so a kill
  * below that threshold has nothing on disk for the postings: the records come back through WAL recovery, their
  * postings must come back too.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SparseVectorCommittedPostingsSurviveCrashTest {
   private static final int    DIMENSIONS = 1_000;
