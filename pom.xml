@@ -832,6 +832,13 @@
                         <artifactId>jacoco-maven-plugin</artifactId>
                         <version>${jacoco-maven-plugin.version}</version>
                         <configuration>
+                            <!-- Only ArcadeDB's own classes: the agent otherwise instruments every class the test JVM
+                                 loads, the libraries included, though no report ever shows them. In JVector's graph
+                                 search that made a 30,000-vector build in LSMVectorIndexTest take 17 minutes instead
+                                 of 40 seconds on a 4-CPU CI runner. -->
+                            <includes>
+                                <include>com/arcadedb/**</include>
+                            </includes>
                             <excludes>
                                 <exclude>com/arcadedb/graphql/parser/**/*</exclude>
                                 <exclude>com/arcadedb/query/sql/parser/*</exclude>
