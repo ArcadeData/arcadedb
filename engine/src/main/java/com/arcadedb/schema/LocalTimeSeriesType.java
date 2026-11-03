@@ -392,13 +392,34 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
             "Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the component '" + componentName
                 + "' its samples would move to already exists. Nothing was changed");
     }
+    final File sealed = findSealedFile(newName);
+    if (sealed != null)
+      throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the sealed file '"
+          + sealed.getName() + "' its samples would move to already exists. Nothing was changed");
+  }
+
+  /**
+   * Refuses the creation of this type when a sealed file is already sitting at a name its engine would open (issue #10925). No
+   * schema object holds a sealed file, so nothing else stops the engine from adopting it: a file restored by hand, copied with the
+   * directory, left by a delete that failed, or by a type dropped before, would answer the samples of that type as this one's, and
+   * keep answering them after a reopen. The same rule as the rename, which refuses it for the target name.
+   */
+  void checkNoSealedFileInTheWay() {
+    final File sealed = findSealedFile(name);
+    if (sealed != null)
+      throw new SchemaException("Cannot create the TIMESERIES type '" + name + "': the sealed file '" + sealed.getName()
+          + "' already exists and its samples would be adopted by the new type. Remove or move the file and retry");
+  }
+
+  /** The first sealed file of a type named {@code typeName} already on disk, or {@code null} when there is none. */
+  private File findSealedFile(final String typeName) {
     final String directory = schema.getDatabase().getDatabasePath() + File.separator;
     for (int i = 0; i < engineShardCount(); i++) {
-      final File sealed = new File(directory + TimeSeriesSealedStore.sealedFileNameFor(newName, i));
+      final File sealed = new File(directory + TimeSeriesSealedStore.sealedFileNameFor(typeName, i));
       if (sealed.exists())
-        throw new SchemaException("Cannot rename the TIMESERIES type '" + oldName + "' to '" + newName + "': the sealed file '"
-            + sealed.getName() + "' its samples would move to already exists. Nothing was changed");
+        return sealed;
     }
+    return null;
   }
 
   /**
