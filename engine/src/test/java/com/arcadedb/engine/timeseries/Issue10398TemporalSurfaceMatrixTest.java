@@ -140,13 +140,15 @@ class Issue10398TemporalSurfaceMatrixTest extends TestHelper {
     for (final String columnType : COLUMN_TYPES) {
       final boolean date = columnType.equals("DATE");
 
-      // a number: epoch millis on SQL (days for a DATE), the column's own unit on the wire
-      cells.add(cell(columnType, "number the size of epoch millis", MILLIS, date ? REFUSED : sqlCountOf(columnType, MILLIS), MILLIS));
+      // a number: epoch millis on SQL, the column's own unit on the wire. A DATE reads a number as days on SQL, but one no day
+      // count can be is the epoch millis it is, stored as its day (issue #11025)
+      cells.add(cell(columnType, "number the size of epoch millis", MILLIS, date ? DAYS : sqlCountOf(columnType, MILLIS), MILLIS));
       // a DATE reads the same number as days on both, so the two agree on it
       cells.add(cell(columnType, "number the size of epoch seconds", SECONDS, date ? SECONDS : sqlCountOf(columnType, SECONDS), SECONDS));
-      // text of digits: no date for SQL, a count for the wire
-      cells.add(cell(columnType, "text of digits the size of epoch millis", "" + MILLIS, REFUSED, MILLIS));
-      // ... except for a DATE, whose SQL reading of text of digits is a number of days, so '0' and '19675' agree with the wire
+      // text of digits: no date for SQL, a count for the wire. Except for a DATE, whose SQL reading of text of digits is the
+      // reading of the number, so digits the size of epoch millis are that day, as above
+      cells.add(cell(columnType, "text of digits the size of epoch millis", "" + MILLIS, date ? Long.valueOf(DAYS) : REFUSED, MILLIS));
+      // ... and '0' and '19675' agree with the wire
       cells.add(cell(columnType, "text of zero", "0", date ? Long.valueOf(0L) : REFUSED, 0L));
       if (date)
         cells.add(cell(columnType, "text of epoch days", "" + DAYS, DAYS, DAYS));
