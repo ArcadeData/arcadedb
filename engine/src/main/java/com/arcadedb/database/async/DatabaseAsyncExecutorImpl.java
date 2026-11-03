@@ -70,6 +70,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
@@ -254,6 +255,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private volatile OkCallback    onOkCallback;
   private volatile ErrorCallback onErrorCallback;
   private final    AtomicLong    counterScheduledTasks = new AtomicLong();
+  // #11155: tasks and commands scheduled by one of this executor's OWN workers - the cascades waitCompletion() has to go
+  // around again for. Only ever compared with an earlier reading of itself, and written from the workers alone, so an adder
+  private final    LongAdder     counterTasksScheduledByWorkers = new LongAdder();
 
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
@@ -1263,15 +1267,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // already fired - the source worker's own marker, still queued behind the still-running source
     // task, is the only thing left for a single pass to wait on, and once IT completes (the moment
     // the source task's execute() returns, having already scheduled the cascade) this method could
-    // return with the cascade merely scheduled, not executed. LocalDatabase#waitForAsyncCompletion()
-    // has always re-scanned with exactly this do-while for the same reason (issue #6281); this method
-    // promises the identical thing in its own javadoc ("waits for the completion of all pending
-    // operations") and needs the identical loop to keep that promise for a caller who reaches it
-    // directly instead of through LocalDatabase.
+    // return with the cascade merely scheduled, not executed. This method promises in its own javadoc
+    // to wait for the pending tasks and what they schedule, and LocalDatabase#waitForAsyncCompletion()
+    // (issue #6281) relies on this loop for the same promise since #11155.
+    //
+    // GOING AROUND AGAIN ONLY FOR A CASCADE, NEVER BECAUSE THE EXECUTOR IS BUSY (issue #11155). The loop used to run
+    // while isProcessing(), which also answers true for work OTHER threads keep submitting after this call began, and
+    // that work is not this call's to wait for. A steady producer that keeps every queue non-empty - a second user of
+    // database.async() on a machine with 3 workers - then made every pass end with "still processing", for ever: a
+    // GraphBatch parallel flush, which waits here for its own connect tasks, hung for 20+ minutes on a 4-CPU runner,
+    // every pass completing behind ~1000 unrelated tasks per worker. A cascade is the one thing a pass can miss, and a
+    // cascade is scheduled by a worker: one that a task queued before a marker schedules lands in the counter before
+    // that marker fires, so an unchanged counter across a pass proves nothing was left behind its markers.
+    long scheduledByWorkers;
     do {
+      scheduledByWorkers = counterTasksScheduledByWorkers.sum();
       if (!waitCompletionOnePass(beginTime, timeout))
         return false;
-    } while (isProcessing());
+    } while (counterTasksScheduledByWorkers.sum() != scheduledByWorkers);
 
     return true;
   }
@@ -1503,6 +1516,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // Counted at SUBMISSION, as scheduleTask counts a task the moment it reaches a queue, so the stat keeps meaning
     // "how many were accepted" rather than "how many have finished".
     counterScheduledTasks.incrementAndGet();
+    if (isCurrentThreadOneOfMyWorkers())
+      // A CASCADE, as in scheduleTask: the next pass of waitCompletion() awaits it in awaitCommands (#11155)
+      counterTasksScheduledByWorkers.increment();
 
     boolean handedOver = false;
     try {
@@ -2620,6 +2636,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           return scheduleTask(-1, task, waitIfQueueIsFull, applyBackPressureOnPercentage, attempt + 1);
         }
         counterScheduledTasks.incrementAndGet();
+        if (isCurrentThreadOneOfMyWorkers())
+          // A CASCADE: waitCompletion() has to go around again for it (#11155)
+          counterTasksScheduledByWorkers.increment();
       }
       return scheduled;
 
