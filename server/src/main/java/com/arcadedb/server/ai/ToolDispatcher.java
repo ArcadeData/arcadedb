@@ -145,8 +145,9 @@ public class ToolDispatcher {
     if (databaseName == null || databaseName.isEmpty())
       return errorJson("query_database requires a 'database' argument");
 
-    if (!user.canAccessToDatabase(databaseName))
-      return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+    // A database the user is not granted is answered as one that does not exist, as get_type and get_schema answer it
+    if (!user.canAccessToDatabase(databaseName) || !server.isDatabaseAvailable(databaseName))
+      return errorJson("Database '" + databaseName + "' does not exist");
 
     final DatabaseInternal database = server.getDatabaseForClient(databaseName);
 
