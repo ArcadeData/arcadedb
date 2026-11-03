@@ -223,7 +223,8 @@ class Issue11004And11005StaleProjectionTest extends TestHelper {
     assertThat(explain("UNWIND [{id: 1, v: 2}] AS row WITH row, row.id AS id MATCH (n:P {id: id}) SET n += row")).doesNotContain(EAGER);
     // a MATCH's own pattern and WHERE choose the rows, they project nothing into them
     assertThat(explain("UNWIND $rows AS row MATCH (n:P {id: row.id}) SET n += row")).doesNotContain(EAGER);
-    assertThat(explain("MATCH (a)-[:R]->(b) WHERE b.k = 1 SET b.k = 2")).doesNotContain(EAGER);
+    // ... but a write that names a key the filter reads waits for the MATCH of every row (issue #11173)
+    assertThat(explain("MATCH (a)-[:R]->(b) WHERE b.k = 1 SET b.k = 2")).contains(EAGER);
   }
 
   private String explain(final String query) {
