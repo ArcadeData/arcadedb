@@ -295,7 +295,7 @@ public final class InPlaceIndexRebuild {
           final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
           final List<Integer> locked = database.getTransactionManager().tryLockFiles(fileIds, timeout, Thread.currentThread());
           try {
-            scanAndSwap(database, schema, index, bucket, callback, indexed);
+            scanAndSwap(database, index, bucket, callback, indexed);
           } finally {
             database.getTransactionManager().unlockFilesInOrder(locked, Thread.currentThread());
           }
@@ -308,7 +308,7 @@ public final class InPlaceIndexRebuild {
     }
   }
 
-  private static void scanAndSwap(final DatabaseInternal database, final LocalSchema schema, final LSMTreeIndex index,
+  private static void scanAndSwap(final DatabaseInternal database, final LSMTreeIndex index,
       final Bucket bucket, final Index.BuildIndexCallback callback, final AtomicLong indexed) {
     final List<String> propertyNames = index.getPropertyNames();
     // Only the spill workspace is left to clean after a crash: see SortedIndexBuildRecoveryMarker.create(..., inPlace)

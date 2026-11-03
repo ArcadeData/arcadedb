@@ -4588,7 +4588,8 @@ public class LocalSchema implements Schema {
             final boolean awaitingFill = indexJSON.getBoolean(AWAITING_FILL, false);
             // FILE names only: the logical name of an index that never compacted is the name of its first file, which a rebuild
             // in place stopped before deleting it leaves behind once the entry names the new file
-            if (!awaitingFill)
+            // only the open load's sweep reads it: loadIncremental (every applied schema entry on an HA follower) must not grow it
+            if (!awaitingFill && !openLoadDone)
               indexEntriesReadAtLoad.add(indexName);
 
             final JSONArray schemaIndexProperties = indexJSON.getJSONArray("properties");
@@ -5968,7 +5969,8 @@ public class LocalSchema implements Schema {
       return;
     final JSONObject manual = root.getJSONObject(MANUAL_INDEXES);
     for (final String fileName : manual.keySet()) {
-      indexEntriesReadAtLoad.add(fileName);
+      if (!openLoadDone)
+        indexEntriesReadAtLoad.add(fileName);
       final IndexInternal index = lookupIndex(fileName);
       if (index != null)
         restoreLogicalIndexName(fileName, manual.getString(fileName), index);

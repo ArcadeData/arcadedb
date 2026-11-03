@@ -288,9 +288,14 @@ class RebuildIndexCrashTest {
         "java.management/sun.management=ALL-UNNAMED", "--add-opens", "java.base/java.util.concurrent.atomic=ALL-UNNAMED", "--add-opens",
         "java.base/java.nio.channels.spi=ALL-UNNAMED", "--add-modules", "jdk.incubator.vector", "--enable-native-access=ALL-UNNAMED",
         "-cp", classpath, RebuildIndexCrashTest.class.getName(), mode, databasePath.toString()));
-    final Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-    final String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    assertThat(process.waitFor(60, TimeUnit.SECONDS)).as(output).isTrue();
+    // to a file, not a pipe: reading a pipe blocks until the child closes it, so a hung child would never reach the timeout
+    final Path outputFile = Files.createTempFile(tempDirectory, "child-", ".log");
+    final Process process = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(outputFile.toFile()).start();
+    final boolean finished = process.waitFor(60, TimeUnit.SECONDS);
+    if (!finished)
+      process.destroyForcibly().waitFor();
+    final String output = Files.readString(outputFile, StandardCharsets.UTF_8);
+    assertThat(finished).as(output).isTrue();
     return new ChildResult(process.exitValue(), output);
   }
 

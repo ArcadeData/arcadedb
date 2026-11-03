@@ -70,6 +70,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   // DDL, which runs under the schema's write lock, so one writer at a time; the before/after comparison alone would still catch
   // overlapping writers, only the "odd means under way" shortcut relies on there being one
   private final AtomicLong          subIndexChanges  = new AtomicLong();
+  // moved by refreshCompleteness(): an awaitingFill flip does not move subIndexChanges, so a refresh racing a reader's store
+  // would otherwise be lost and the reader's stale answer cached
+  private final AtomicLong          completenessEpoch = new AtomicLong();
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
   // The last answer of isComplete(), with what it was computed on: the type's bucket list (replaced, never mutated, on every
@@ -967,14 +970,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return true;
     final List<Bucket> buckets = type.getBuckets(false);
     final long changes = subIndexChanges.get();
+    final long epoch = completenessEpoch.get();
     final Completeness cached = completeness;
+    // identity, not equals(): the type's bucket list is copy-on-write (CollectionUtils.addToUnmodifiableList/removeFrom...), so a
+    // different instance is exactly "the buckets changed", and comparing by identity keeps this planner hot path allocation-free
     if (cached != null && cached.buckets == buckets && cached.subIndexChanges == changes)
       return cached.complete;
 
     final boolean complete = findBucketsWithoutIndex(buckets, true, true).isEmpty();
     // odd: a change of the sub-indexes is under way, answered without being remembered
-    if ((changes & 1) == 0 && subIndexChanges.get() == changes)
+    if ((changes & 1) == 0 && subIndexChanges.get() == changes && completenessEpoch.get() == epoch) {
       completeness = new Completeness(buckets, changes, complete);
+      // a refresh that ran after the check above clears what was just stored
+      if (completenessEpoch.get() != epoch)
+        completeness = null;
+    }
     return complete;
   }
 
@@ -988,6 +998,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /** Forgets the cached answer of {@link #isComplete()}: a bucket index of this index was created or filled. */
   public void refreshCompleteness() {
+    completenessEpoch.incrementAndGet();
     completeness = null;
   }
 
