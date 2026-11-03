@@ -30,11 +30,11 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
-import com.arcadedb.schema.trigger.TriggerExecutionException;
-import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
-import com.arcadedb.network.binary.QuorumNotReachedException;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.function.FunctionExecutionException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
+import com.arcadedb.schema.trigger.TriggerExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockException;
 import org.junit.jupiter.api.AfterEach;
@@ -156,11 +156,18 @@ class Issue11045RemoteExceptionTypeTest {
         TriggerExecutionException.class.getName(), FunctionExecutionException.class.getName(),
         IllegalArgumentException.class.getName(), ArcadeDBException.class.getName());
 
+    // its constructor takes the names of the missing parameters, not a message: the table rebuilds it as the semantic error it is
     final Map<String, Class<?>> rebuiltAs = Map.of(CommandParameterMissingException.class.getName(),
         CommandSemanticException.class);
     final List<String> wrong = new ArrayList<>();
     for (final String name : names) {
-      final Class<?> expected = rebuiltAs.getOrDefault(name, Class.forName(name));
+      final Class<?> expected;
+      try {
+        expected = rebuiltAs.getOrDefault(name, Class.forName(name));
+      } catch (final ClassNotFoundException e) {
+        wrong.add(name + " is listed in the table but its class does not exist");
+        continue;
+      }
       final Class<?> actual = component.manageException(500, body(name, "boom"), "command").getClass();
       if (actual != expected)
         wrong.add(name + " came back as " + actual.getName());

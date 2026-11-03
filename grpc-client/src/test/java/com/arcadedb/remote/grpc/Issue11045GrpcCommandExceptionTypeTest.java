@@ -28,14 +28,14 @@ import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
-import com.arcadedb.utility.LockException;
-import com.arcadedb.schema.trigger.TriggerExecutionException;
-import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
-import com.arcadedb.network.binary.QuorumNotReachedException;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.function.FunctionExecutionException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.RemoteExceptionRebuilder;
+import com.arcadedb.schema.trigger.TriggerExecutionException;
+import com.arcadedb.utility.LockException;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -128,11 +128,18 @@ class Issue11045GrpcCommandExceptionTypeTest {
         TriggerExecutionException.class.getName(), FunctionExecutionException.class.getName(),
         IllegalArgumentException.class.getName(), ArcadeDBException.class.getName());
 
+    // its constructor takes the names of the missing parameters, not a message: the table rebuilds it as the semantic error it is
     final Map<String, Class<?>> rebuiltAs = Map.of(CommandParameterMissingException.class.getName(),
         CommandSemanticException.class);
     final List<String> wrong = new ArrayList<>();
     for (final String name : names) {
-      final Class<?> expected = rebuiltAs.getOrDefault(name, Class.forName(name));
+      final Class<?> expected;
+      try {
+        expected = rebuiltAs.getOrDefault(name, Class.forName(name));
+      } catch (final ClassNotFoundException e) {
+        wrong.add(name + " is listed in the table but its class does not exist");
+        continue;
+      }
       final Class<?> actual = GrpcClientErrorMapper.toException(withClass(Status.INTERNAL.withDescription("boom"), name)).getClass();
       if (actual != expected)
         wrong.add(name + " came back as " + actual.getName());
