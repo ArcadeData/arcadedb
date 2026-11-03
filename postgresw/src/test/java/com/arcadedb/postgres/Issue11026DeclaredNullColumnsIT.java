@@ -102,6 +102,41 @@ class Issue11026DeclaredNullColumnsIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /** Issue #11164: an aliased bare property is typed from the property it reads, like Describe('S') does. */
+  @Test
+  void simpleQueryTypesAnAliasedNullDeclaredColumnFromTheSchema() throws Exception {
+    final Properties simple = new Properties();
+    simple.setProperty("preferQueryMode", "simple");
+    assertThat(columnsOf(simple, "SELECT n AS x FROM NullCol26")).containsExactly("x:int4");
+    // the alias repeats the name of ANOTHER declared property: the type is the source's, not the namesake's
+    assertThat(columnsOf(simple, "SELECT n AS k FROM NullCol26")).containsExactly("k:int4");
+    assertThat(columnsOf(simple, "SELECT n AS k, k AS n FROM NullCol26")).containsExactly("k:int4", "n:varchar");
+  }
+
+  @Test
+  void aliasedSimpleQueryAgreesWithDescribeStatement() throws Exception {
+    final Properties simple = new Properties();
+    simple.setProperty("preferQueryMode", "simple");
+    final Properties prepared = new Properties();
+    prepared.setProperty("prepareThreshold", "-1");
+    for (final String sql : List.of("SELECT n AS x FROM NullCol26", "SELECT n AS k FROM NullCol26", "SELECT n AS x, k FROM NullCol26"))
+      assertThat(columnsOf(simple, sql)).as(sql).containsExactlyElementsOf(columnsOf(prepared, sql));
+  }
+
+  /** A computed item whose output name repeats a declared property is not that property: it keeps its own type. */
+  @Test
+  void computedItemNamedLikeADeclaredPropertyIsNotTypedFromIt() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.transaction(() -> database.newVertex("NullCol26").set("n", 1).save());
+    database.transaction(() -> database.command("sql", "UPDATE NullCol26 SET k = null"));
+    final Properties simple = new Properties();
+    simple.setProperty("preferQueryMode", "simple");
+    final Properties prepared = new Properties();
+    prepared.setProperty("prepareThreshold", "-1");
+    final String sql = "SELECT k.toUpperCase() AS n FROM NullCol26";
+    assertThat(columnsOf(simple, sql)).isEqualTo(columnsOf(prepared, sql)).containsExactly("n:varchar");
+  }
+
   /** A projection must not gain declared columns it does not name. */
   @Test
   void projectionDoesNotGainUnnamedColumns() throws Exception {
