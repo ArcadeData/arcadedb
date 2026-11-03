@@ -4503,9 +4503,13 @@ public class TransactionContext implements Transaction {
       final List<Integer> locked = database.getTransactionManager().tryLockFiles(filesToLock.toArray(), timeout, captureRequester());
 
       // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX.
+      // A file a compaction migrated counts as missing even while it is still on disk (issue #11240): an HA leader keeps the
+      // replaced file until the compaction is published, and a commit that resolved its id before the swap would otherwise
+      // hold the old file's lock only, and write the index entries into the new file without its lock. A migrated id is
+      // never handed out again, so the mapping alone says the file is retired
       int missingFile = -1;
       for (final Integer f : locked)
-        if (!database.getFileManager().existsFile(f)) {
+        if (!database.getFileManager().existsFile(f) || schema.getMigratedFileId(f) != null) {
           missingFile = f;
           break;
         }

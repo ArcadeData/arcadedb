@@ -2171,7 +2171,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       // After the apply, so the proposer persists its swap over a state the entry is already applied to (issue #11240)
       if (decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
-        confirmPublication(decoded, termIndex.getTerm());
+        confirmPublication(decoded, termIndex.getTerm(), index);
 
       final long previousApplied;
       synchronized (appliedPositionLock) {
@@ -2740,7 +2740,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // (issue #7752). The same ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall)
     // before lastAppliedIndex moves past it, so an applied index read first is never paired with a floor that does not
     // yet cover it.
-    final long floor = Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor());
+    // A compaction whose entry is applied here but whose swap its proposer has not persisted yet is held the same way
+    // (issue #11240), raised before the applied index moves past it as well
+    final long floor = Math.min(Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor()),
+        lowestUnpersistedPublication());
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
@@ -9797,6 +9800,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final         long                       term;
     private final CompletableFuture<Boolean> outcome = new CompletableFuture<>();
     private volatile String                  schemaJson;
+    // The log index this node applied the entry at, once it did: the checkpoint stays below it until the proposer has
+    // persisted what the entry publishes and forgets the publication (see takeSnapshot)
+    private volatile long                    appliedAtIndex = -1L;
 
     private PendingPublication(final String databaseName, final long term) {
       this.databaseName = databaseName;
@@ -9856,11 +9862,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "(issue #11240)", pending.databaseName, pending.term, entryTerm);
   }
 
-  /** Settles as committed the pending publication the applied {@code decoded} entry is (issue #11240). */
-  private void confirmPublication(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm) {
+  /**
+   * Settles as committed the pending publication the applied {@code decoded} entry is (issue #11240). Called before the
+   * applied position moves past {@code index}, so a checkpoint that reads the advanced position also reads the floor
+   * {@link #lowestUnpersistedPublication()} derives from it.
+   */
+  private void confirmPublication(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm, final long index) {
     for (final PendingPublication pending : pendingPublications)
-      if (pending.matches(decoded, entryTerm))
+      if (pending.matches(decoded, entryTerm)) {
+        pending.appliedAtIndex = index;
         pending.outcome.complete(Boolean.TRUE);
+      }
+  }
+
+  /**
+   * The lowest log index of an applied publication whose proposer has not persisted it yet, or {@link Long#MAX_VALUE}
+   * (issue #11240). An HA compaction saves its schema and drops the files it replaced only after its entry is applied here,
+   * and on the proposer the apply skips the entry: until the proposer has persisted the swap, only a replay of the entry
+   * could restore it after a crash, so the log must not be purged through it. A proposer whose persistence failed never
+   * forgets its publication, which keeps the entry replayable until the restart replays it.
+   */
+  long lowestUnpersistedPublication() {
+    if (pendingPublications.isEmpty())
+      return Long.MAX_VALUE;
+    long lowest = Long.MAX_VALUE;
+    for (final PendingPublication pending : pendingPublications) {
+      final long index = pending.appliedAtIndex;
+      if (index > -1 && index < lowest)
+        lowest = index;
+    }
+    return lowest;
   }
 
   boolean quarantineUnpublishedSchemaChange(final String dbName, final String session, final Throwable refusal) {

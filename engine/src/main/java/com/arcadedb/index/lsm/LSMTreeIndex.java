@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -1021,11 +1022,25 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       if (prevMutable != null)
         // Kept until an HA compaction is published (issue #11240), so a leader that loses the entry still has it
         database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(prevMutable.getFileId(), () -> {
+          // Under the old file's lock, as the swap above: deferred, the drop no longer runs inside it, and a commit still
+          // holding that lock must not have the file dropped underneath it. Standalone the lock is still held here (the
+          // same thread, ALREADY_LOCKED) and is not released early
+          final LockManager.LOCK_STATUS dropLocked = database.getTransactionManager().tryLockFile(fileId,
+              database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
+          if (dropLocked == LockManager.LOCK_STATUS.NO) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot lock the old copy of mutable index file %s to delete it: it stays on disk, unreferenced", null,
+                prevMutable);
+            return;
+          }
           try {
             prevMutable.drop();
           } catch (final IOException e) {
             LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
                 prevMutable);
+          } finally {
+            if (dropLocked == LockManager.LOCK_STATUS.YES)
+              database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
           }
         });
 

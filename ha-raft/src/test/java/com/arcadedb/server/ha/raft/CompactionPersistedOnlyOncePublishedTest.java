@@ -74,8 +74,9 @@ class CompactionPersistedOnlyOncePublishedTest {
   @TempDir
   Path tempDir;
 
-  private Path          leaderPath;
-  private LocalDatabase leaderDb;
+  private Path                   leaderPath;
+  private LocalDatabase          leaderDb;
+  private RaftReplicatedDatabase replicated;
   private LocalDatabase followerDb;
 
   @BeforeEach
@@ -231,12 +232,70 @@ class CompactionPersistedOnlyOncePublishedTest {
     assertThat(leaderDb.getSchema().getIndexByName(INDEX_NAME).countEntries()).isEqualTo(RECORDS);
   }
 
+  /**
+   * The proposer's apply skips its own entry, so between the apply and the deferred save only a replay of the entry could
+   * restore the swap after a crash: the checkpoint stays below the entry until the swap is persisted.
+   */
+  @Test
+  void theCheckpointStaysBelowThePublishingEntryUntilTheSwapIsPersisted() throws IOException, InterruptedException {
+    final ArcadeStateMachine[] leaderStateMachine = new ArcadeStateMachine[1];
+    final long[] floorInTheWindow = { -1L };
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    broker.on("replicateSchema", args -> {
+      applyOwnSchemaEntry(leaderStateMachine[0], args, 100L);
+      floorInTheWindow[0] = leaderStateMachine[0].lowestUnpersistedPublication();
+      return null;
+    });
+    leaderStateMachine[0] = leaderOver(broker);
+
+    final TypeIndex leaderIndex = (TypeIndex) leaderDb.getSchema().getIndexByName(INDEX_NAME);
+    leaderIndex.scheduleCompaction();
+    assertThat(leaderIndex.compact()).isTrue();
+
+    assertThat(floorInTheWindow[0]).as("applied, not persisted yet: held at the entry").isEqualTo(100L);
+    assertThat(leaderStateMachine[0].lowestUnpersistedPublication()).as("persisted: released").isEqualTo(Long.MAX_VALUE);
+  }
+
+  /** A swap the proposer could not persist keeps its entry replayable, so the restart replays it instead of losing it. */
+  @Test
+  void aSwapThatCannotBePersistedKeepsItsEntryReplayable() throws IOException, InterruptedException {
+    final ArcadeStateMachine[] leaderStateMachine = new ArcadeStateMachine[1];
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker();
+    broker.on("replicateSchema", args -> {
+      applyOwnSchemaEntry(leaderStateMachine[0], args, 100L);
+      return null;
+    });
+    leaderStateMachine[0] = leaderOver(broker);
+
+    assertThat(replicated.runWithCompactionReplication(() -> {
+      leaderDb.getSchema().createDocumentType("Compacted", 1);
+      replicated.runOnceCompactionIsPublished(-1, () -> {
+        throw new IOException("disk full");
+      });
+      return true;
+    })).isTrue();
+
+    assertThat(leaderStateMachine[0].lowestUnpersistedPublication()).as("held for the restart").isEqualTo(100L);
+    assertThat(leaderStateMachine[0].isDatabaseDiverged(DB)).isFalse();
+  }
+
+  /** Applies the entry the broker was handed, as this node's own (the apply skips it), at {@code index}. */
+  @SuppressWarnings("unchecked")
+  private static void applyOwnSchemaEntry(final ArcadeStateMachine stateMachine, final Object[] args, final long index) {
+    final ByteString payload = RaftLogEntryCodec.encodeSchemaEntry(DB, (String) args[1], (Map<Integer, String>) args[2],
+        (Map<Integer, String>) args[3], List.of(), List.of());
+    final LogEntryProto logEntry = LogEntryProto.newBuilder().setTerm(TERM).setIndex(index)
+        .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build()).build();
+    stateMachine.applyTransaction(TransactionContext.newBuilder().setStateMachine(stateMachine).setLogEntry(logEntry)
+        .setStateMachineContext(Boolean.TRUE).build());
+  }
+
   private ArcadeStateMachine leaderOver(final FakeRaftTransactionBroker broker) {
     final ArcadeStateMachine leaderStateMachine = stateMachineOver(() -> leaderDb);
     final FakeRaftHAServer raft = FakeRaftHAServer.detached().stateMachine(leaderStateMachine).leader(true).currentTerm(TERM)
         .transactionBroker(broker);
     leaderStateMachine.setRaftHAServer(raft);
-    new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), leaderDb, raft);
+    replicated = new RaftReplicatedDatabase(TestServerHelper.unstartedServer(), leaderDb, raft);
     return leaderStateMachine;
   }
 
