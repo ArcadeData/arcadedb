@@ -223,7 +223,9 @@ class QueryAdmissionGateTest {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(10);
     GlobalConfiguration.QUERY_ADMISSION_HEAP_WATERMARK.setValue(50);
     GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(60_000L);
-    // THE BUDGET IS JVM-WIDE: MEASURED FROM WHAT IT ALREADY HOLDS, SO A RESERVATION LEFT BY ANOTHER TEST CANNOT MATTER
+    // THE BUDGET IS JVM-WIDE: MEASURED FROM WHAT IT ALREADY HOLDS, ONCE A QUERY ANOTHER TEST LEFT IS GIVEN BACK. ONE GIVEN BACK
+    // WHILE THE QUERY WAITS WOULD TAKE THE BUDGET BELOW THE WATERMARK AND ADMIT IT
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(QueryHeapBudget.getReservedBytes() / MB + 16);
     final long limit = QueryHeapBudget.getLimitBytes();
 
@@ -267,6 +269,7 @@ class QueryAdmissionGateTest {
     GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(10);
     GlobalConfiguration.QUERY_ADMISSION_HEAP_WATERMARK.setValue(50);
     GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(QueryHeapBudget.getReservedBytes() / MB + 16);
     final long limit = QueryHeapBudget.getLimitBytes();
 

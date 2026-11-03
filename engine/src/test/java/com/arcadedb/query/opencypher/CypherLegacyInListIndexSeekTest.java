@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
@@ -313,6 +314,9 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     for (int i = 0; i < total; i++)
       keys.add(i);
 
+    // The counter is read while the seek is open: a query another test left, collected meanwhile, would move it by more than the
+    // seek holds
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     final long baseline = QueryHeapBudget.getReservedBytes();
     final String query = "MATCH (b:Big) WHERE b.k IN $keys OPTIONAL MATCH (b)-[:KNOWS]->(q) RETURN b.k AS id";
     assertThat(plan(query + " LIMIT 1", Map.of("keys", keys))).contains("[index: Big[k]]");
