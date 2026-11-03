@@ -149,6 +149,13 @@ public class MaterializedViewRefresher {
     // (e.g. HTTP API with awaitResponse=false), where a long-running batched transaction
     // would otherwise defer the commit indefinitely.
     // See: https://github.com/ArcadeData/arcadedb/issues/3941
+    // The scope is what lets these writes through: nothing else writes a backing type (issue #11020)
+    try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(view)) {
+      writeSnapshot(database, view, backingTypeName);
+    }
+  }
+
+  private static void writeSnapshot(final Database database, final MaterializedViewImpl view, final String backingTypeName) {
     database.transaction(() -> {
       final RecordIdentities previousSnapshot = collectIdentities(database, backingTypeName);
       int reused = 0;
