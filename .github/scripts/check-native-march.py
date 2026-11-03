@@ -26,7 +26,7 @@ features that are required by the image". The baseline is therefore the native i
 requirement. Until #10581 native/pom.xml passed no -march at all, so the published amd64 binary
 silently required x86-64-v3 (AVX2, BMI2, FMA) - GraalVM's default - and nothing said so.
 
-Three things are enforced:
+Four things are enforced:
 
   1. native/pom.xml passes exactly one -march build arg, in the base native-maven-plugin
      configuration (a profile's buildArgs are appended after it, and a second -march would win), and
@@ -36,7 +36,18 @@ Three things are enforced:
   2. No resolved baseline, and no workflow or build script, uses `native`. -march=native targets the
      CPU of the machine running the build, so a CI-built binary would require whatever the runner
      happened to have and refuse to start on a CPU with less.
-  3. The table in docs/native-image.md's "CPU requirements" section names every resolved baseline,
+  3. Each resolved baseline equals the baseline RECORDED for that architecture in the pom's
+     `native.march.expected.<arch>` property, next to the GraalVM pin. #10581 stated GraalVM's
+     defaults "so that stating them changes no published binary" and pinned armv8.1-a on aarch64
+     where GraalVM 25's default is armv8-a, dropping every ARMv8.0 core (Raspberry Pi 3/4, Graviton1)
+     with a lint that was green on it (#10715). The family patterns below cannot see a raised
+     baseline and the docs table is edited in the same change, so only a recorded value, which a
+     raise must edit in the same diff, makes raising a deliberate decision. This is a tripwire for
+     an accidental or unannounced change, NOT proof of what the builder's own default is: the record
+     is only as right as whoever wrote it, and nothing here runs `native-image -march=list`.
+     The recorded value is read from the pom's top-level <properties> only, so a profile cannot
+     override it to match a raised baseline.
+  4. The table in docs/native-image.md's "CPU requirements" section names every resolved baseline,
      so the documented CPU requirement cannot drift away from the one the binary is built for.
 
 Usage:
@@ -52,14 +63,16 @@ import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
 PROPERTY = "native.march"
+EXPECTED_PROPERTY = "native.march.expected"
 
 # The os.arch values a JVM reports on the platforms native-image.yml and the local scripts build on.
 # Linux and Windows report amd64, macOS reports x86_64, for the same architecture. An arch outside
 # this table falls back to the pom's native.march default and is not checked here.
 #
 # These patterns only reject a baseline of the wrong family; they deliberately accept a RAISED one
-# such as x86-64-v4 (AVX-512) or armv8.4-a. Raising the baseline drops CPUs, so it is the docs check
-# in main() that catches it: the new value is not in docs/native-image.md until someone says so.
+# such as x86-64-v4 (AVX-512) or armv8.4-a. Raising the baseline drops CPUs, so it is the recorded
+# native.march.expected.<arch> comparison in check_pom() that catches it, and the docs check in main()
+# that makes sure the new value is stated in docs/native-image.md.
 ARCHES = {
     "amd64": re.compile(r"^(compatibility|x86-64(-v[1-4])?)$"),
     "x86_64": re.compile(r"^(compatibility|x86-64(-v[1-4])?)$"),
@@ -151,6 +164,20 @@ def check_pom(pom, problems):
         if not valid.match(value):
             problems.append(f"{pom}: on {arch} -march resolves to '{value}', which is not a baseline for that architecture.")
             continue
+
+        expected = defaults.get(f"{EXPECTED_PROPERTY}.{arch}", "")
+        if not expected:
+            problems.append(
+                f"{pom}: the pom records no expected baseline for {arch} (<{EXPECTED_PROPERTY}.{arch}>), so "
+                f"nothing says what the published {arch} binary was built for and a raised baseline would pass (#10715)."
+            )
+        elif value != expected:
+            problems.append(
+                f"{pom}: on {arch} -march resolves to '{value}' but the recorded baseline "
+                f"({EXPECTED_PROPERTY}.{arch}) is '{expected}'. A baseline is the binary's minimum CPU, so changing "
+                f"it drops CPUs: if that is intended, change the recorded value in the same commit, with the "
+                f"measurement and a release note; if not, restore '{expected}' (#10715)."
+            )
         resolved[arch] = value
 
     return resolved
