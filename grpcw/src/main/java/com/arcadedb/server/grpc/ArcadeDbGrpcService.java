@@ -5445,48 +5445,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return gsonToGrpc(je);
     }
 
-    GrpcValue.Builder b = GrpcValue.newBuilder();
-
-    if (o == null)
-      return dbgEnc("toGrpcValue", o, b.build(), null);
-
-    if (o instanceof Boolean v)
-      return dbgEnc("toGrpcValue", o, b.setBoolValue(v).build(), null);
-    if (o instanceof Integer v)
-      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
-    if (o instanceof Short v)
-      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
-    if (o instanceof Byte v)
-      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
-    if (o instanceof Long v)
-      return dbgEnc("toGrpcValue", o, b.setInt64Value(v).build(), null);
-    if (o instanceof Float v)
-      return dbgEnc("toGrpcValue", o, b.setFloatValue(v).build(), null);
-    if (o instanceof Double v)
-      return dbgEnc("toGrpcValue", o, b.setDoubleValue(v).build(), null);
-    if (o instanceof CharSequence v)
-      return dbgEnc("toGrpcValue", o, b.setStringValue(v.toString()).build(), null);
-    if (o instanceof byte[] v)
-      return dbgEnc("toGrpcValue", o, b.setBytesValue(ByteString.copyFrom(v)).build(), null);
-
-    // Issue #9969: the encoder GrpcTypeConverter and the client's ProtoUtils share, so a ZonedDateTime keeps its zone and an
-    // OffsetTime/LocalTime arrives typed instead of as an untyped string.
-    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
-    if (temporal != null)
-      return dbgEnc("toGrpcValue", o, temporal, null);
-
-    if (o instanceof RID rid) {
-      return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType(
-              "rid").build(),
-          null);
-    }
-
-    if (o instanceof BigDecimal v) {
-      return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setDecimalValue(GrpcTypeConverter.toGrpcDecimal(v)).setLogicalType("decimal").build(),
-          null);
-    }
+    // Null, booleans, numbers, text, bytes, temporals (issue #9969), RIDs and decimals: the arms GrpcTypeConverter shares, so the
+    // search and time series RPCs encode a value exactly as this one does (issue #11207)
+    final GrpcValue scalar = GrpcTypeConverter.toGrpcScalar(o);
+    if (scalar != null)
+      return dbgEnc("toGrpcValue", o, scalar, null);
 
     if (o instanceof Document edoc && edoc.getIdentity() == null) {
       GrpcEmbedded.Builder eb = GrpcEmbedded.newBuilder();
@@ -5687,30 +5650,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Issue #11048: every container arm below recurses WITH the request's projection config, as the document arms above do. A
     // record reached through a list, a map or an array (SELECT both('E') AS n) is a projected value like a top-level one: without
-    // the config it was sent as a bare link where HTTP answers the record, and soft_limit_bytes never saw its bytes
-    if (o instanceof Map<?, ?> m) {
-      GrpcMap.Builder mb = GrpcMap.newBuilder();
-      for (var e : m.entrySet()) {
-        mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue(), pc));
-      }
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
-    }
-
-    if (o instanceof Collection<?> c) {
-      GrpcList.Builder lb = GrpcList.newBuilder();
-      for (Object e : c)
-        lb.addValues(toGrpcValue(e, pc));
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
-    }
-
-    if (o.getClass().isArray()) {
-      int len = java.lang.reflect.Array.getLength(o);
-      GrpcList.Builder lb = GrpcList.newBuilder();
-      for (int i = 0; i < len; i++) {
-        lb.addValues(toGrpcValue(java.lang.reflect.Array.get(o, i), pc));
-      }
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
-    }
+    // the config it was sent as a bare link where HTTP answers the record, and soft_limit_bytes never saw its bytes.
+    // Issue #11044: the Iterable arm covers what out(), in(), outE(), inE() and the other graph functions return, a lazy
+    // Iterable that is not a Collection, and the Iterator arm a nested result set: both are lists on the wire, as the HTTP
+    // serializer sends them. The arms are GrpcTypeConverter's (issue #11207), so no container can be added to one encoder only
+    final GrpcValue container = GrpcTypeConverter.toGrpcContainer(o, e -> toGrpcValue(e, pc));
+    if (container != null)
+      return dbgEnc("toGrpcValue", o, container, null);
 
     // RID/Identifiable string fallback
     if (o instanceof Identifiable id)
@@ -5743,14 +5689,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
     }
 
-    // Issue #11044: out(), in(), outE(), inE() and the other graph functions return a lazy Iterable that is not a Collection, and a
-    // nested result set is an Iterator. Both are lists on the wire, as the HTTP serializer sends them: they used to fall to the
-    // String.valueOf() below and reach the client as "com.arcadedb.graph.GraphEngine$10@63e44da5"
-    if (o instanceof Iterable<?> it)
-      return dbgEnc("toGrpcValue", o, toGrpcList(it.iterator(), pc), null);
-    if (o instanceof Iterator<?> it)
-      return dbgEnc("toGrpcValue", o, toGrpcList(it, pc), null);
-
     // Fallback
     if (debug)
       LogManager.instance()
@@ -5758,14 +5696,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               o.getClass().getName(),
               summarizeJava(o));
 
-    return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
-  }
-
-  private GrpcValue toGrpcList(final Iterator<?> iterator, final ProjectionConfig pc) {
-    final GrpcList.Builder lb = GrpcList.newBuilder();
-    while (iterator.hasNext())
-      lb.addValues(toGrpcValue(iterator.next(), pc));
-    return GrpcValue.newBuilder().setListValue(lb.build()).build();
+    return dbgEnc("toGrpcValue", o, GrpcTypeConverter.toGrpcString(o), null);
   }
 
   private InsertOptions defaults(InsertOptions in) {

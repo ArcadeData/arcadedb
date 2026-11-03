@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
@@ -31,6 +32,7 @@ import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
@@ -867,19 +869,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       String[] row;
       // No ownsTransaction guard needed here, unlike loadDocuments()/loadVertices(): database.begin() nests
       // rather than reusing an already-active transaction (see LocalDatabase#begin()), so a caller's own
-      // pre-existing transaction is never touched by this method's own commits below. Captured before begin()
-      // purely for the commit-failure restoration below (issue #8122 review): DatabaseContext
-      // #popIfNotLastTransaction() pops UNCONDITIONALLY - success or failure - whenever more than one
-      // transaction is on the stack, so a failed commit here already pops this method's own level when a
-      // caller transaction predates it, the same as a successful one would. Restoring txOpen from
-      // isTransactionActive() in that case would read the CALLER's surviving transaction as if it were this
-      // method's own still-open one, and roll it back out from under them.
-      final boolean callerTransactionActiveOnEntry = database.isTransactionActive();
+      // pre-existing transaction is never touched by this method's own commits below.
       database.begin();
       // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
-      // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
-      // can never pop a transaction this method has already committed away, let alone the caller's own (issue #7272).
-      boolean txOpen = true;
+      // one, so a rollback below can never pop a transaction this method has already committed away, let alone the
+      // caller's own (issue #7272). Resolved through ImporterTransactions, the protocol every importer row loop shares
+      // (issue #11208): cleared before a commit, restored when the commit is refused without popping the transaction
+      // (#8122), and restored only when identity proves the live one is still this method's own - a failed commit pops
+      // a nested level unconditionally, and the caller's transaction it uncovers must not be rolled back from under it.
+      final boolean[] txOpen = { true };
+      final TransactionContext[] ownTx = { ImporterTransactions.currentTransaction(database) };
       // Edges an intermediate commit already made durable. context.createdEdges counts every edge
       // createEdgeFromRow() creates, the ones still inside the transaction a failure rolls back included.
       long committedEdges = context.createdEdges.get();
@@ -948,26 +947,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
             // which corrects the counter and lets the real cause propagate.
             if (txCount >= settings.commitEvery) {
-              // txOpen cleared before the call, but DatabaseContext#popIfNotLastTransaction() does NOT pop the
-              // outermost transaction off the stack, only a nested one, so a commit() that fails on THIS
-              // transaction - the common case: no caller transaction predates it - can leave it still active
-              // rather than popped. Restored from the live state on failure so the finally below still rolls
-              // it back instead of leaking it (issue #8122). Gated on !callerTransactionActiveOnEntry: when a
-              // caller transaction DOES predate this one, popIfNotLastTransaction() pops this level
-              // unconditionally on failure just like it would on success, so isTransactionActive() here would
-              // read the caller's own surviving transaction, not a leaked one of this method's - restoring
-              // from it would roll back work that belongs to the caller to resolve.
-              txOpen = false;
-              try {
-                database.commit();
-              } catch (final RuntimeException | Error commitFailure) {
-                if (!callerTransactionActiveOnEntry)
-                  txOpen = database.isTransactionActive();
-                throw commitFailure;
-              }
+              ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
               committedEdges = context.createdEdges.get();
               database.begin();
-              txOpen = true;
+              txOpen[0] = true;
+              ownTx[0] = ImporterTransactions.currentTransaction(database);
               txCount = 0;
             }
           }
@@ -979,22 +963,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
             break;
         }
-        // Same restore-on-failure as the periodic commit above, gated the same way and for the same reason
-        // (issue #8122).
-        txOpen = false;
-        try {
-          database.commit();
-        } catch (final RuntimeException | Error commitFailure) {
-          if (!callerTransactionActiveOnEntry)
-            txOpen = database.isTransactionActive();
-          throw commitFailure;
-        }
+        // Same protocol as the periodic commit above (issues #8122, #11208)
+        ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
         completed = true;
       } finally {
         // A row-content failure is already caught and logged above without escaping; what reaches here is a
         // source-level failure - typically csvParser.parseNext() itself throwing on a malformed row - that the loop
-        // never had a chance to catch.
-        if (txOpen && database.isTransactionActive()) {
+        // never had a chance to catch - or a refused commit, whose transaction is still this method's own.
+        if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
+          txOpen[0] = false;
           try {
             database.rollback();
           } catch (final Exception rollbackFailure) {
