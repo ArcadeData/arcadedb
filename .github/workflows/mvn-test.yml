@@ -197,8 +197,11 @@ jobs:
       matrix:
         # fork-count: Surefire JVMs running test classes side by side. One test JVM already keeps about 2 of the
         # runner's 4 vCPUs busy, so 2 forks fill it: measured on the engine lane in a 4-CPU/16 GB container, 1 fork
-        # 970 s, 2 forks 618 s, 3 forks 660 s, 4 forks 666 s (and +2.5 GB of memory per fork). The modules shard
-        # and HA Raft shards stay at 1 until their test isolation has been checked the way the engine's was
+        # 970 s, 2 forks 618 s, 3 forks 660 s, 4 forks 666 s (and +2.5 GB of memory per fork). HA Raft stays at 1
+        # until its test isolation has been checked the way the engine's was.
+        # extra-args: -Pfork-isolation gives each test JVM a working directory of its own. The modules shard needs
+        # it for 2 forks: the server fixtures share ./target as server root, and a teardown in one JVM deletes the
+        # databases of the other
         include:
           - shard: engine
             modules: engine
@@ -208,7 +211,8 @@ jobs:
             fork-count: 1
           - shard: modules
             modules: '!engine,!ha-raft,!e2e,!load-tests'
-            fork-count: 1
+            fork-count: 2
+            extra-args: -Pfork-isolation
     # A hung test used to burn the workflow's whole budget in silence (run 29645471373 sat for
     # 2h15m on a deadlocked shared thread pool). Cap the job so a hang costs minutes, not hours.
     timeout-minutes: 60
@@ -276,7 +280,7 @@ jobs:
           ) &
           watchdog=$!
           set +e
-          ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '${{ matrix.modules }}' -DexcludedGroups=slow,benchmark,vector -Dsurefire.includes=**/*Test.java -Dsurefire.forkCount=${{ matrix.fork-count }}
+          ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '${{ matrix.modules }}' -DexcludedGroups=slow,benchmark,vector -Dsurefire.includes=**/*Test.java -Dsurefire.forkCount=${{ matrix.fork-count }} ${{ matrix.extra-args }}
           status=$?
           kill "$watchdog" 2>/dev/null || true
           exit $status
@@ -680,8 +684,11 @@ jobs:
         include:
           - shard: protocols
             modules: 'integration,postgresw,bolt'
+          # 2 Failsafe JVMs, each in a working directory of its own (see fork-count in the unit-tests job): gRpcW,
+          # Server and Gremlin IT hold ~15 of this shard's ~18 min of tests
           - shard: rest
             modules: '!e2e,!load-tests,!e2e-ha,!ha-raft,!integration,!postgresw,!bolt'
+            extra-args: -Pfork-isolation -Dfailsafe.forkCount=2
     permissions:
       contents: read
       checks: write
@@ -707,7 +714,7 @@ jobs:
           tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
 
       - name: Run Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl '${{ matrix.modules }}'
+        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl '${{ matrix.modules }}' ${{ matrix.extra-args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

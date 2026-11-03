@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue10068ServerPeerDialsGoThroughOneBuilderTest {
 
-  private static final Path   MAIN_SOURCES = Path.of("src", "main", "java");
+  private static final Path   MAIN_SOURCES = Path.of(System.getProperty("basedir", "."), "src", "main", "java");
   private static final String BUILDER      = "PeerRequest.java";
 
   /** Every shape a peer dial in this module could take to bypass the builder. */

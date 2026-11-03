@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SchemaPresentationReadableWalkCensusTest {
 
-  private static final Path REACTOR_ROOT = Path.of("..");
+  private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
 
   /** {@code getSchema().getTypes()} or {@code schema.getTypes()}: a walk of every type of a schema. */
   private static final Pattern TYPE_WALK = Pattern.compile("(?:getSchema\\(\\)|\\bschema)\\s*\\.\\s*getTypes\\(\\)");

@@ -121,7 +121,7 @@ class Issue10738FormerKeySupportSourceTest {
   /** The second half of the guarantee: the bundle asks the setting, and keeps no lookup of its own that a rename can leave behind. */
   @Test
   void theBundleReadsNoSystemPropertyOrEnvironmentVariableOfASettingByItself() throws IOException {
-    final Path source = Path.of("src/main/java/com/arcadedb/server/support/SupportDiagnostics.java");
+    final Path source = Path.of(System.getProperty("basedir", "."), "src/main/java/com/arcadedb/server/support/SupportDiagnostics.java");
     assertThat(source).as("the source, seen from the server module surefire runs in").isRegularFile();
 
     final List<String> offenders = new ArrayList<>();

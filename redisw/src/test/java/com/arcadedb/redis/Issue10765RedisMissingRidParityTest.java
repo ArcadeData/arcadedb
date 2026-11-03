@@ -110,7 +110,7 @@ public class Issue10765RedisMissingRidParityTest extends BaseRedisServerTest {
    */
   @Test
   void everyRidLookupGoesThroughTheSharedHelper() throws IOException {
-    final Path sources = Path.of("src/main/java/com/arcadedb/redis");
+    final Path sources = Path.of(System.getProperty("basedir", "."), "src/main/java/com/arcadedb/redis");
     assertThat(sources).isDirectory();
 
     final List<String> offenders = new ArrayList<>();

@@ -62,6 +62,13 @@
         <!-- Surefire JVMs running test classes side by side: a property, not a literal, so -Dsurefire.forkCount=N
              on the command line wins over it (a literal in the plugin configuration beats -D) -->
         <surefire.forkCount>1</surefire.forkCount>
+        <failsafe.forkCount>1</failsafe.forkCount>
+
+        <!-- Working directory of the test JVMs. The fork-isolation profile gives each JVM a directory of its own, which
+             is what makes more than one fork safe outside the engine: the server fixtures share ./target as server
+             root and ./target/databases0 as database directory, and a teardown in one JVM deletes another's. A test
+             that reads its module's sources resolves them against the basedir system property, never against "." -->
+        <test.workingDirectory>${project.basedir}</test.workingDirectory>
 
         <!-- Default surefire tag exclusion (issue #5697): keep this as a property, not a literal
              <excludedGroups> in the surefire <configuration> below. A literal there would win over
@@ -340,6 +347,13 @@
                                 <fileset>
                                     <directory>${project.build.directory}/databases</directory>
                                 </fileset>
+                                <fileset>
+                                    <!-- the per-JVM working directories of the fork-isolation profile -->
+                                    <directory>${project.build.directory}</directory>
+                                    <includes>
+                                        <include>test-fork-*/**</include>
+                                    </includes>
+                                </fileset>
                             </filesets>
                         </configuration>
                     </execution>
@@ -366,6 +380,7 @@
                     <!--                            cucumber.filter.name="not .*IT.*"-->
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <forkCount>${surefire.forkCount}</forkCount>
+                    <workingDirectory>${test.workingDirectory}</workingDirectory>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                         <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it. Cost: one
@@ -427,7 +442,8 @@
                     <argLine>${itCoverageAgent}</argLine>
                     <reuseForks>true</reuseForks>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
-                    <forkCount>1</forkCount>
+                    <forkCount>${failsafe.forkCount}</forkCount>
+                    <workingDirectory>${test.workingDirectory}</workingDirectory>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                         <!-- #10657: a close stuck behind a leaked snapshot window names the stack that opened it. Cost: one
@@ -900,6 +916,15 @@
             <id>integration</id>
             <properties>
                 <skipITs>false</skipITs>
+            </properties>
+        </profile>
+        <profile>
+            <!-- One working directory per test JVM, so -Dsurefire.forkCount / -Dfailsafe.forkCount above 1 is safe for
+                 the modules that run servers: every relative path a test or the server writes (./target, ./databases,
+                 ./exports, ./config) lands in target/test-fork-N/ of its own JVM -->
+            <id>fork-isolation</id>
+            <properties>
+                <test.workingDirectory>${project.build.directory}/test-fork-${surefire.forkNumber}</test.workingDirectory>
             </properties>
         </profile>
         <profile>

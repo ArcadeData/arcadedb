@@ -94,4 +94,20 @@
             <scope>runtime</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- One JVM in the module directory, whatever -Dsurefire.forkCount and the fork-isolation profile
+                         say: the console tests load scripts and import files by paths relative to the module
+                         (file://src/test/resources/...) and share ./target/databases. They run for about 20 s -->
+                    <forkCount>1</forkCount>
+                    <workingDirectory>${project.basedir}</workingDirectory>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

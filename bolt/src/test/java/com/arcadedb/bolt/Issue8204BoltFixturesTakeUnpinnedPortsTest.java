@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8204BoltFixturesTakeUnpinnedPortsTest {
 
-  private static final Path TEST_SOURCES = Path.of("src", "test", "java");
+  private static final Path TEST_SOURCES = Path.of(System.getProperty("basedir", "."), "src", "test", "java");
 
   /**
    * Every class that starts the Bolt plugin: about 25 when the guard was written, two of them Raft clusters. The floor
