@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,6 +46,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * A backing type is now written by its owner's refresh and by nothing else, as PostgreSQL refuses to change a materialized view:
  * every record insert, update and delete, {@code TRUNCATE TYPE} (of the type, or reaching it POLYMORPHIC), {@code TRUNCATE BUCKET}
  * and the removal of one of its buckets is refused, naming the statement that does the job.
+ * <p>
+ * Issue #11204: a row can be in the backing type's answer without being written to it, by a type linked below the backing type
+ * ({@code CREATE ... EXTENDS}, {@code ALTER TYPE ... SUPERTYPE +}): that link is refused.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -230,6 +234,25 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
     assertThatThrownBy(() -> sequenced.sequencedKeySet().removeFirst()).isInstanceOf(UnsupportedOperationException.class);
     assertThatThrownBy(() -> sequenced.reversed().pollFirstEntry()).isInstanceOf(UnsupportedOperationException.class);
+
+    // issue #11203: so are the entries the views hand out, whose setValue replaced an owner behind the guard
+    final MaterializedViewImpl other = new MaterializedViewImpl(database, "other", "SELECT FROM Sale", "other", List.of("Sale"),
+        MaterializedViewRefreshMode.MANUAL, true, 0);
+    final List<Runnable> entryWrites = List.of(//
+        () -> schema.materializedViews.entrySet().iterator().next().setValue(other),
+        () -> schema.materializedViews.entrySet().forEach(entry -> entry.setValue(other)),
+        () -> schema.materializedViews.entrySet().stream().findFirst().orElseThrow().setValue(other),
+        () -> schema.materializedViews.entrySet().removeIf(entry -> true),
+        () -> sequenced.sequencedEntrySet().getFirst().setValue(other),
+        () -> sequenced.sequencedEntrySet().reversed().iterator().next().setValue(other),
+        () -> sequenced.sequencedEntrySet().removeFirst(),
+        () -> sequenced.reversed().entrySet().iterator().next().setValue(other),
+        () -> sequenced.firstEntry().setValue(other));
+    for (final Runnable write : entryWrites)
+      assertThatThrownBy(write::run).isInstanceOf(UnsupportedOperationException.class);
+    assertThat(schema.materializedViews.entrySet()).extracting(Map.Entry::getKey).containsExactly("mv");
+    assertThat(schema.materializedViews.get("mv")).isSameAs(view);
+    assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
   }
 
   /** A document of another type written into a bucket of the backing type by name is refused too (found by CodeRabbit). */
@@ -270,6 +293,84 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     } finally {
       other.drop();
     }
+  }
+
+  // ---- issue #11204: a subtype of a backing type has every row answered by the view, so it is refused
+
+  /** {@code CREATE ... TYPE Sub EXTENDS <backingType>} is refused, whatever kind of type, and nothing is created. */
+  @Test
+  void aNewTypeCannotExtendABackingType() {
+    createView("");
+    createAggregate();
+
+    for (final String statement : List.of("CREATE DOCUMENT TYPE Sub EXTENDS mv", "CREATE DOCUMENT TYPE Sub IF NOT EXISTS EXTENDS mv",
+        "CREATE DOCUMENT TYPE Sub EXTENDS Sale, mv", "CREATE VERTEX TYPE Sub EXTENDS mv", "CREATE DOCUMENT TYPE Sub EXTENDS ca"))
+      assertThatThrownBy(() -> database.command("sql", statement)).as(statement).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("Cannot make type 'Sub' a subtype of").hasMessageContaining("only its refresh writes");
+    assertThat(database.getSchema().existsType("Sub")).isFalse();
+
+    // through the API too
+    assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("Sub").withSuperType("mv").create()).isInstanceOf(
+        SchemaException.class).hasMessageContaining("backing type for materialized view 'mv'");
+    assertThat(database.getSchema().existsType("Sub")).isFalse();
+
+    assertThat(viewRows()).containsExactly("EU=30", "US=5");
+    assertThat(aggregateRows()).containsExactly(1.0, 2.0, 3.0);
+  }
+
+  /** {@code ALTER TYPE Legacy SUPERTYPE +<backingType>} would put a populated type's whole population into the view at once. */
+  @Test
+  void anExistingTypeCannotBeMadeASubtypeOfABackingType() {
+    createView("");
+    createAggregate();
+    database.command("sql", "CREATE DOCUMENT TYPE Legacy");
+    database.transaction(() -> {
+      for (int i = 0; i < 3; i++)
+        database.newDocument("Legacy").set("region", "JUNK" + i).set("total", 100 + i).save();
+    });
+
+    for (final String target : List.of("mv", "ca"))
+      assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Legacy SUPERTYPE +" + target)).as(target)
+          .isInstanceOf(SchemaException.class).hasMessageContaining("Cannot make type 'Legacy' a subtype of '" + target + "'");
+    assertThatThrownBy(() -> database.getSchema().getType("Legacy").addSuperType("mv")).isInstanceOf(SchemaException.class);
+    assertThatThrownBy(() -> database.getSchema().getType("Legacy").setSuperTypes(List.of(database.getSchema().getType("ca"))))
+        .isInstanceOf(SchemaException.class);
+
+    assertThat(database.getSchema().getType("Legacy").getSuperTypes()).isEmpty();
+    assertThat(viewRows()).containsExactly("EU=30", "US=5");
+    assertThat(count("mv")).isEqualTo(2L);
+    assertThat(aggregateRows()).containsExactly(1.0, 2.0, 3.0);
+
+    // a backing type can still be given a super type of its own: its rows join the super type's answer, the view's stay its own
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "ALTER TYPE mv SUPERTYPE +Base");
+    database.command("sql", "CREATE DOCUMENT TYPE Sibling EXTENDS Base");
+    assertThat(viewRows()).containsExactly("EU=30", "US=5");
+  }
+
+  /**
+   * A database written before issue #11204 can already hold a subtype of a backing type: it still opens, the link can be taken out,
+   * and nothing new can be hung under that subtype either, since its rows are the view's rows too.
+   */
+  @Test
+  void aSubtypeLinkedBeforeTheCheckStillOpensAndCanBeUnlinked() {
+    createView("");
+    final LocalDocumentType mv = (LocalDocumentType) database.getSchema().getType("mv");
+    final LocalDocumentType legacy = (LocalDocumentType) database.getSchema().createDocumentType("Legacy");
+    // the re-establishing linkage of the schema load, which a database written before the check went through
+    legacy.addSuperType(mv, false);
+    database.transaction(() -> database.newDocument("Legacy").set("region", "JUNK").set("total", 1).save());
+    assertThat(count("mv")).isEqualTo(3L);
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Legacy").getSuperTypes()).extracting(DocumentType::getName).containsExactly("mv");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE Deeper EXTENDS Legacy")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("'Legacy' extends 'mv', the backing type for materialized view 'mv'");
+
+    database.command("sql", "ALTER TYPE Legacy SUPERTYPE -mv");
+    assertThat(viewRows()).containsExactly("EU=30", "US=5");
+    database.command("sql", "CREATE DOCUMENT TYPE Deeper EXTENDS Legacy");
   }
 
   // ---- helpers

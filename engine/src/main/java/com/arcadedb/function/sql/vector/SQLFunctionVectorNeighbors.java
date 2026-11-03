@@ -419,11 +419,13 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (!emitted.add(rid))
         continue;
 
-      final Document record = neighbourRecord(db, rid, deferring);
+      final LSMVectorIndex deferredBy = deferringIndexOf(rid, deferring);
+      final Document record = neighbourRecord(db, rid, deferredBy);
       if (record == null) {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,
-        // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
+        // e.g., after crash recovery, backup restore, or index/storage inconsistencies. A deferred row only lands here when the
+        // index itself no longer holds the vector: one the bucket lost behind its back is emitted (see deferredRecordReads).
         staleSkipped[0]++;
         if (staleRids != null)
           staleRids.add(rid);
@@ -448,7 +450,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
       // The row exposes the record's properties so they are accessible in outer queries after expand() (e.g., SELECT
       // name, distance FROM (SELECT expand(...))), reading them off the record on demand (issue #10129)
-      result.add(new ScoredRecordRow(record, "distance", distance));
+      result.add(new ScoredRecordRow(record, "distance", distance, deferredBy));
     }
 
     return result;
@@ -465,7 +467,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * ({@link LSMVectorIndex#hasLiveVector}), which a committed delete updates in the same commit, so a delete that overlaps
    * the search still costs a candidate and not an answer row (issue #9368). What only the read can see is a record removed
    * from its bucket behind the index's back (a crash, a restore): such a row is answered with no properties, as the Java API
-   * answers its RID, until {@code REBUILD INDEX} repairs the index.
+   * answers its RID, until {@code REBUILD INDEX} repairs the index. It is a row of the answer like any other, so it takes one
+   * of the {@code limit} places and the answer holds one real neighbour fewer for each such row (issue #11202): knowing the
+   * record is gone before the row is emitted means reading its page, which is the whole cost the deferral removes, so the
+   * index is repaired instead of probed, as a ghost edge is (#10463). The first property read that finds the record gone
+   * reports it ({@link StaleVectorEntryReporter}), naming the repair, when the index still holds the vector: a delete committed
+   * between the search and the read takes the vector out of the index too, and is no damage.
    * <p>
    * The record is read as before where reading it does more than load it: a read listener or trigger on the database or on the
    * type sees (and can veto) every record the search hands out, and an index the calling transaction wrote to answers its own
@@ -493,18 +500,20 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     return deferring;
   }
 
-  /**
-   * The record of a neighbour, read now unless its index defers the read (see {@link #deferredRecordReads}), or null when the
-   * record is gone.
-   */
-  private static Document neighbourRecord(final BasicDatabase db, final RID rid, final LSMVectorIndex[] deferring) {
-    LSMVectorIndex deferredBy = null;
+  /** The index of {@code deferring} that defers the read of {@code rid}'s record, or null when the record is read now. */
+  private static LSMVectorIndex deferringIndexOf(final RID rid, final LSMVectorIndex[] deferring) {
     if (deferring != null)
       for (final LSMVectorIndex index : deferring)
-        if (index != null && index.getAssociatedBucketId() == rid.getBucketId()) {
-          deferredBy = index;
-          break;
-        }
+        if (index != null && index.getAssociatedBucketId() == rid.getBucketId())
+          return index;
+    return null;
+  }
+
+  /**
+   * The record of a neighbour, read now unless {@code deferredBy} defers the read (see {@link #deferredRecordReads}), or null when
+   * the record is gone.
+   */
+  private static Document neighbourRecord(final BasicDatabase db, final RID rid, final LSMVectorIndex deferredBy) {
     try {
       if (deferredBy == null)
         return (Document) db.lookupByRID(rid, true);

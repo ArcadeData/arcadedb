@@ -79,9 +79,9 @@ class Issue10842CatalogRelationPolicyTest {
 
   /**
    * The relations those clients read that this catalog refuses on purpose, each with why. Every one holds rows in a stock
-   * PostgreSQL, or describes an object ArcadeDB could hold and does not model yet; answering it with no rows would claim the
-   * database has none, which is the #10371 failure. (What a stock PostgreSQL holds no row of, and ArcadeDB has no equivalent of,
-   * is modelled with no rows instead: issue #10960.)
+   * PostgreSQL, so every one is in {@link #HOLDS_ROWS_IN_EVERY_POSTGRES} as well (issue #11205): answering it with no rows would
+   * claim the database has none, which is the #10371 failure. (What a stock PostgreSQL holds no row of, and ArcadeDB has no
+   * equivalent of, is modelled with no rows instead: issue #10960.)
    */
   static final Map<String, String> REFUSED_ON_PURPOSE = Map.ofEntries(//
       Map.entry("pg_amop", "the operators of the built-in operator families (psql \\dAo)"),
@@ -114,6 +114,7 @@ class Issue10842CatalogRelationPolicyTest {
       Map.entry("pg_amop", "the operators of the built-in operator families (pg_amop.dat)"),
       Map.entry("pg_amproc", "the support functions of the built-in operator families (pg_amproc.dat)"),
       Map.entry("pg_attribute", "the columns of the system catalogs and views"),
+      Map.entry("pg_authid", "the bootstrap superuser and the predefined roles (pg_authid.dat)"),
       Map.entry("pg_auth_members", "the memberships of the predefined roles: pg_monitor in pg_read_all_settings, ..."),
       Map.entry("pg_cast", "the built-in casts (pg_cast.dat)"),
       Map.entry("pg_class", "the system catalogs, their indexes and the system views"),
@@ -126,6 +127,7 @@ class Issue10842CatalogRelationPolicyTest {
       Map.entry("pg_extension", "plpgsql, which initdb installs"),
       Map.entry("pg_group", "the predefined roles that cannot log in"),
       Map.entry("pg_index", "the indexes of the system catalogs"),
+      Map.entry("pg_init_privs", "the initial privileges of the system objects, which initdb records"),
       Map.entry("pg_language", "internal, c, sql (pg_language.dat) and plpgsql"),
       Map.entry("pg_namespace", "pg_catalog, pg_toast, public (pg_namespace.dat) and information_schema"),
       Map.entry("pg_opclass", "the built-in operator classes (pg_opclass.dat)"),
@@ -144,7 +146,35 @@ class Issue10842CatalogRelationPolicyTest {
       Map.entry("pg_ts_parser", "the built-in text-search parser (pg_ts_parser.dat)"),
       Map.entry("pg_ts_template", "the built-in text-search templates (pg_ts_template.dat)"),
       Map.entry("pg_type", "the built-in types (pg_type.dat) and the row types of the system catalogs"),
-      Map.entry("pg_user", "the bootstrap superuser"));
+      Map.entry("pg_user", "the bootstrap superuser"),
+      Map.entry("information_schema.column_privileges", "a row per column privilege on the system catalogs and views, which "
+          + "PUBLIC may SELECT and the bootstrap superuser owns"));
+
+  /**
+   * Issue #11205: the relations a fresh {@code initdb} of PostgreSQL 17 holds no row in, the other half of the same fact. A relation
+   * that enters the no-row set has to be in one of the two lists, so the judgement that PostgreSQL holds no row there is written
+   * down by name too, and cannot be skipped by keeping the relation out of {@link #HOLDS_ROWS_IN_EVERY_POSTGRES}: before, a
+   * relation in neither list entered the no-row set with every test green.
+   */
+  static final Map<String, String> HOLDS_NO_ROWS_IN_STOCK_POSTGRES = Map.ofEntries(//
+      Map.entry("pg_policy", "no table of a fresh database has a row-level security policy"),
+      Map.entry("pg_statistic_ext", "no CREATE STATISTICS has run"),
+      Map.entry("pg_publication", "no publication is created by initdb"),
+      Map.entry("pg_publication_rel", "there is no publication"),
+      Map.entry("pg_publication_namespace", "there is no publication"),
+      Map.entry("pg_enum", "no enum type is built in"),
+      Map.entry("pg_trigger", "no system catalog has a trigger"),
+      Map.entry("pg_sequence", "no system object is a sequence"),
+      Map.entry("pg_default_acl", "no ALTER DEFAULT PRIVILEGES has run"),
+      Map.entry("pg_foreign_table", "there is no foreign server"),
+      Map.entry("pg_event_trigger", "no event trigger is created by initdb"),
+      Map.entry("pg_foreign_data_wrapper", "no foreign-data wrapper is installed by initdb"),
+      Map.entry("pg_foreign_server", "no foreign server is created by initdb"),
+      Map.entry("pg_user_mappings", "there is no foreign server"),
+      Map.entry("pg_subscription", "no subscription is created by initdb"),
+      Map.entry("pg_db_role_setting", "no ALTER ROLE ... SET or ALTER DATABASE ... SET has run"),
+      Map.entry("pg_largeobject_metadata", "no large object is created by initdb"),
+      Map.entry("pg_parameter_acl", "no GRANT ... ON PARAMETER has run"));
 
   /**
    * Issue #11023: the relations answered with no rows although every PostgreSQL holds rows in them, each a decision of its own
@@ -256,13 +286,46 @@ class Issue10842CatalogRelationPolicyTest {
         .containsExactlyInAnyOrderElementsOf(NO_ROWS_ALTHOUGH_POSTGRES_HOLDS_ROWS);
   }
 
+  /**
+   * Issue #11205: the no-row set is closed against both halves of the fact, not against one. Every relation answered with no rows
+   * is in one of the two lists of what PostgreSQL holds, and in one only, so a relation that is in neither cannot enter the set
+   * unexamined: its classification is written down first, and if PostgreSQL holds rows there the test above asks for the decision.
+   */
+  @Test
+  void everyNoRowRelationIsClassifiedByWhatPostgresHolds() {
+    final Set<String> both = new TreeSet<>(HOLDS_ROWS_IN_EVERY_POSTGRES.keySet());
+    both.retainAll(HOLDS_NO_ROWS_IN_STOCK_POSTGRES.keySet());
+    assertThat(both).as("relations listed as holding rows in every PostgreSQL AND as holding none").isEmpty();
+
+    final Set<String> unclassified = new TreeSet<>(PostgresCatalog.noRowRelations().keySet());
+    unclassified.removeAll(HOLDS_ROWS_IN_EVERY_POSTGRES.keySet());
+    unclassified.removeAll(HOLDS_NO_ROWS_IN_STOCK_POSTGRES.keySet());
+    assertThat(unclassified).as("relations answered with no rows whose rows in a stock PostgreSQL nobody looked at: add each to "
+        + "HOLDS_ROWS_IN_EVERY_POSTGRES or to HOLDS_NO_ROWS_IN_STOCK_POSTGRES, by what a fresh initdb holds").isEmpty();
+
+    // and the no-row list of what PostgreSQL holds lists only relations answered with no rows, so it does not drift from the set
+    assertThat(PostgresCatalog.noRowRelations().keySet()).as("HOLDS_NO_ROWS_IN_STOCK_POSTGRES names a relation not answered with no rows")
+        .containsAll(HOLDS_NO_ROWS_IN_STOCK_POSTGRES.keySet());
+  }
+
+  /**
+   * Issue #11205: a relation is refused on purpose BECAUSE PostgreSQL holds rows in it, so the list of what PostgreSQL holds is the
+   * backstop of the refusal list. Deleting a relation from {@link #REFUSED_ON_PURPOSE} to move it to the no-row set (the deletion
+   * {@link #noRelationIsBothModelledAndRefusedOnPurpose} forces) then still leaves it here, and the no-row test fails on it.
+   */
+  @Test
+  void everyRelationRefusedOnPurposeHoldsRowsInEveryPostgres() {
+    assertThat(HOLDS_ROWS_IN_EVERY_POSTGRES.keySet()).as("relations refused on purpose that HOLDS_ROWS_IN_EVERY_POSTGRES does not list")
+        .containsAll(REFUSED_ON_PURPOSE.keySet());
+  }
+
   /** Every relation that holds rows in every PostgreSQL is modelled, or refused: never answered "none" by default. */
   @Test
   void aRelationThatHoldsRowsInEveryPostgresIsModelledOrRefused() {
     for (final String relation : HOLDS_ROWS_IN_EVERY_POSTGRES.keySet()) {
       if (PostgresCatalog.modelledRelations().contains(relation))
         continue; // its rows, or a decision the test above holds it to
-      assertThat(PostgresCatalog.resolve("select * from pg_catalog." + relation, database, USER)).as(relation)
+      assertThat(PostgresCatalog.resolve("select * from " + qualified(relation), database, USER)).as(relation)
           .isSameAs(PostgresCatalog.DECLINED);
       assertThat(PostgresCatalog.resolve("select count(*) from " + relation, database, USER)).as(relation + " count")
           .isSameAs(PostgresCatalog.DECLINED);
@@ -279,8 +342,8 @@ class Issue10842CatalogRelationPolicyTest {
         continue;
       }
       // a relation refused on purpose is refused, with the 0A000 that names it
-      assertThat(PostgresCatalog.resolve("select * from pg_catalog." + relation.replace("pg_catalog.", ""), database, USER))
-          .as(relation).isSameAs(PostgresCatalog.DECLINED);
+      assertThat(PostgresCatalog.resolve("select * from " + qualified(relation), database, USER)).as(relation)
+          .isSameAs(PostgresCatalog.DECLINED);
     }
     assertThat(unaccounted).as("relations %s reads that are neither modelled nor refused on purpose", client).isEmpty();
   }
@@ -419,6 +482,11 @@ class Issue10842CatalogRelationPolicyTest {
   }
 
   // ------------------------------------------------------------------------------------------------- helpers
+
+  /** The relation as a query names it: a {@code pg_*} relation in {@code pg_catalog}, an {@code information_schema} one as it is. */
+  static String qualified(final String relation) {
+    return relation.startsWith("information_schema.") ? relation : "pg_catalog." + relation;
+  }
 
   private static Set<Integer> of(final int catalog, final Set<Integer> classes, final Set<Integer> constraints,
       final Set<Integer> namespaces, final Set<Integer> types) {

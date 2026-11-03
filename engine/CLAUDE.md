@@ -87,7 +87,7 @@ Reproducing any tombstone-ordering bug requires the remove and the re-add to be 
 
 This is deliberate - it keeps `count(*)` O(1). But it means the two forms can disagree if the counter is ever wrong, and it makes `count(*)` the wrong tool when you are verifying correctness in a test. Use `count()` or `count(@rid)` when you need ground truth.
 
-The counter is recomputed only when it reads -1, which happens on a fresh open with no statistics entry and after an unclean shutdown. That recompute path takes the bucket file lock so it cannot interleave with a commit's delta fold.
+The counter is recomputed only when it reads -1, which happens on a fresh open with no statistics entry and after an unclean shutdown. That recompute path takes the bucket file lock WHEN IT CAN GET IT, so it cannot interleave with a commit's delta fold. On a lock-acquisition timeout (`COMMIT_LOCK_TIMEOUT`, `tryLockFile` answering `NO`) it scans lock-free, CAN interleave, and therefore refuses to publish: the counter stays at -1, the caller gets a best-effort count, and the next call recomputes (`LocalBucket.count()`). The #8640 apply stamp exists because the exclusion is only partial.
 
 ## Explicit locks must cover every index component file
 
