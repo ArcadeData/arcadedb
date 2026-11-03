@@ -19,11 +19,13 @@
 package com.arcadedb.mcp.tools;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.mcp.MCPToolArgumentException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -112,7 +114,8 @@ public class SampleRecordsTool {
 
   private static ResolvedTypes resolveTypeNames(final Database database, final String databaseName,
       final JSONObject args) {
-    final List<String> eligibleTypes = database.getSchema().getTypes().stream()
+    // the types the bound principal may read: one its per-type permissions deny is neither sampled nor named
+    final List<String> eligibleTypes = SecurityHelper.readableTypes((DatabaseInternal) database).stream()
         .filter(type -> !(type instanceof EdgeType))
         .map(DocumentType::getName)
         .sorted()
@@ -137,7 +140,8 @@ public class SampleRecordsTool {
       }
       if (typeName == null || typeName.isBlank())
         throw new MCPToolArgumentException("'types' must contain only non-blank type names");
-      if (!database.getSchema().existsType(typeName))
+      if (!database.getSchema().existsType(typeName) || !SecurityHelper.isReadable((DatabaseInternal) database,
+          database.getSchema().getType(typeName)))
         throw new MCPToolArgumentException(
             "Type '" + typeName + "' does not exist in database '" + databaseName + "'");
       typeNames.add(typeName);

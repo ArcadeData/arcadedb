@@ -33,6 +33,7 @@ import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.MaterializedViewStatus;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1846,6 +1847,8 @@ public class PostgresCatalog {
     private final String   userName;
     private final PostgresSessionSettings settings;
 
+    /** The types the session's principal may read, in name order: every relation of this catalog is built off it, once per statement. */
+    private List<DocumentType>        readableTypes;
     private Map<Integer, String>      namesByOid;
     private Map<Integer, String>      namesByRowTypeOid;
     private Map<String, DocumentType> typesByFoldedName;
@@ -2072,8 +2075,11 @@ public class PostgresCatalog {
     DocumentType typeNamed(final String name) {
       if (name.isEmpty())
         return null;
-      if (database.getSchema().existsType(name))
-        return database.getSchema().getType(name);
+      // a type the principal may not read is not a relation of this catalog, the answer for a name that does not exist
+      if (database.getSchema().existsType(name)) {
+        final DocumentType type = database.getSchema().getType(name);
+        return SecurityHelper.isReadable((DatabaseInternal) database, type) ? type : null;
+      }
 
       if (typesByFoldedName == null) {
         typesByFoldedName = new HashMap<>();
@@ -2712,6 +2718,9 @@ public class PostgresCatalog {
       final Set<Integer> read = new HashSet<>();
       for (final String source : view.sources()) {
         final DocumentType sourceType = source != null && schema.existsType(source) ? schema.getType(source) : null;
+        // a source the principal may not read is no relation of this catalog, so there is nothing to depend on
+        if (sourceType != null && !SecurityHelper.isReadable((DatabaseInternal) context.database(), sourceType))
+          continue;
         // a source read twice, or the view's own type, is one dependency or none, as PostgreSQL de-duplicates them
         if (sourceType != null && !sourceType.getName().equals(name) && read.add(oidOf(sourceType.getName())))
           rows.add(dependRow(PG_REWRITE_RELATION_OID, rule, PG_CLASS_RELATION_OID, oidOf(sourceType.getName()), 0, "n"));
@@ -2748,7 +2757,9 @@ public class PostgresCatalog {
     for (final DocumentType type : sortedTypes(context)) {
       int sequence = 0;
       for (final DocumentType parent : type.getSuperTypes())
-        rows.add(completeMap("pg_inherits", "inhrelid", oidOf(type.getName()), "inhparent", oidOf(parent.getName()), "inhseqno",
+        // a readable type may extend one the principal may not read, which is no relation of this catalog
+        if (SecurityHelper.isReadable((DatabaseInternal) context.database(), parent))
+          rows.add(completeMap("pg_inherits", "inhrelid", oidOf(type.getName()), "inhparent", oidOf(parent.getName()), "inhseqno",
             ++sequence, "inhdetachpending", Boolean.FALSE));
     }
     return rows;
@@ -2806,10 +2817,23 @@ public class PostgresCatalog {
     };
   }
 
+  /**
+   * The relations of the catalog: the types the principal bound to the session may read, in name order. A type it may not read is
+   * left out of every relation - pg_class, pg_attribute, pg_index, pg_inherits, pg_depend, information_schema, pg_matviews - as
+   * {@code SELECT FROM schema:types} leaves it out, so none of them hands its columns, indexes or a view's defining query to a user
+   * denied its records. Built once per statement: the relations of one statement describe one schema.
+   */
   private static List<DocumentType> sortedTypes(final Context context) {
-    final List<DocumentType> types = new ArrayList<>(context.database().getSchema().getTypes());
-    types.sort(Comparator.comparing(DocumentType::getName));
-    return types;
+    if (context.readableTypes == null) {
+      final List<DocumentType> types = new ArrayList<>(readableTypes(context.database()));
+      types.sort(Comparator.comparing(DocumentType::getName));
+      context.readableTypes = Collections.unmodifiableList(types);
+    }
+    return context.readableTypes;
+  }
+
+  private static Collection<? extends DocumentType> readableTypes(final Database database) {
+    return SecurityHelper.readableTypes((DatabaseInternal) database);
   }
 
   /** The columns of a table: its {@link #sortedProperties}, each typed and constrained as it is declared. */
@@ -2971,7 +2995,7 @@ public class PostgresCatalog {
     if (database == null)
       return List.of();
     final List<String> names = new ArrayList<>();
-    for (final DocumentType type : database.getSchema().getTypes())
+    for (final DocumentType type : readableTypes(database))
       names.add(type.getName());
     names.sort(null);
     final List<Map<String, Object>> rowTypes = new ArrayList<>(names.size());

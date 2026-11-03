@@ -45,7 +45,16 @@ public class DatabaseUserContext {
    * contexts afterwards; prefer {@link #runAs} where the scope of the binding is a single call.
    */
   public static void bind(final DatabaseInternal database, final ServerSecurityUser user) {
-    contextFor(database).setCurrentUser(user.getDatabaseUser(database));
+    bind(database, user.getDatabaseUser(database));
+  }
+
+  /**
+   * Binds a database principal the caller already resolved, typically the authenticated user's own narrowed by what the
+   * transport allows (an MCP configuration), with the same responsibility for clearing it as {@link #bind(DatabaseInternal,
+   * ServerSecurityUser)}.
+   */
+  public static void bind(final DatabaseInternal database, final SecurityDatabaseUser user) {
+    contextFor(database).setCurrentUser(user);
   }
 
   /**

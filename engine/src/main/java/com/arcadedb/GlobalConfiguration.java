@@ -1738,6 +1738,14 @@ public enum GlobalConfiguration {
       immediately and goes back to accepting. The cap is per listener, so a flood against one protocol cannot use
       up the budget that lets clients of another log in. 0 means unlimited.""", Integer.class, 500),
 
+  NETWORK_PREAUTH_TIMEOUT("arcadedb.network.preAuthTimeout", SCOPE.SERVER, """
+      Maximum time, in milliseconds, a binary wire-protocol connection (Postgres, Redis, BOLT) may stay in the phase
+      before authentication, counted from the moment it is accepted: past it the connection is closed whatever it is
+      doing. The handshake timeout (arcadedb.network.socketTimeout) closes a connection that sends NOTHING for that
+      long, so a client that keeps sending a few bytes, or a command it is refused for, would otherwise hold its
+      pre-authentication slot (arcadedb.network.maxPreAuthConnections) for ever, and enough of them lock every other
+      client out of the listener. 0 disables the limit.""", Long.class, 30_000L),
+
   NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
 
   NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),

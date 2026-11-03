@@ -932,7 +932,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
       final JSONObject result = response.getJSONObject("result");
       assertThat(result.getBoolean("isError")).isTrue();
       final String text = result.getJSONArray("content").getJSONObject(0).getString("text");
-      assertThat(text).contains("not authorized");
+      // answered as a database that does not exist, so the refusal does not tell the caller that "graph" exists
+      assertThat(text).contains("Database 'graph' does not exist").doesNotContain("not authorized");
     } finally {
       connection.disconnect();
     }
@@ -2893,6 +2894,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     final JSONObject args = new JSONObject()
@@ -2926,6 +2929,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     final JSONObject args = new JSONObject()
@@ -2963,6 +2968,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     final String malicious = "x'}) DETACH DELETE n //";
@@ -3029,6 +3036,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     final JSONObject args = new JSONObject()
@@ -3070,6 +3079,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     callTool("upsert_relationship", new JSONObject()
@@ -3156,6 +3167,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     final JSONObject args = new JSONObject()
@@ -3184,6 +3197,8 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("allowReads", true)
         .put("allowInsert", true)
         .put("allowUpdate", true)
+        // the type does not exist yet: creating it is a schema change
+        .put("allowSchemaChange", true)
         .put("allowedUsers", new JSONArray().put("root")));
 
     final String malicious = "'}) DETACH DELETE n //";

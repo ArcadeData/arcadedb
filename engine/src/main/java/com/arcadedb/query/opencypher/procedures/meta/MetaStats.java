@@ -19,13 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.meta;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.HashMap;
 import java.util.List;
@@ -78,7 +79,6 @@ public class MetaStats extends AbstractMetaProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Database database = context.getDatabase();
-    final Schema schema = database.getSchema();
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -87,7 +87,7 @@ public class MetaStats extends AbstractMetaProcedure {
     final Map<String, Long> labelCounts = new HashMap<>();
     final Map<String, Long> relTypeCounts = new HashMap<>();
 
-    for (final DocumentType type : schema.getTypes()) {
+    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
       final long count = database.countType(type.getName(), true);
 
       if (type instanceof VertexType) {

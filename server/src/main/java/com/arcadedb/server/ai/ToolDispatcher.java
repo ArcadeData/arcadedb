@@ -201,10 +201,9 @@ public class ToolDispatcher {
     final String name = args.getString("name", null);
     if (name == null || name.isBlank())
       return errorJson("get_type requires a 'name' argument");
-    if (!server.isDatabaseAvailable(databaseName))
+    // A database the user is not granted is answered as one that does not exist, so the answer cannot tell which names exist
+    if (!user.canAccessToDatabase(databaseName) || !server.isDatabaseAvailable(databaseName))
       return errorJson("Database '" + databaseName + "' does not exist");
-    if (!user.canAccessToDatabase(databaseName))
-      return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
     // The principal is bound while the type is read, so a type the user may not read is refused like an unknown one
     final DatabaseInternal database = server.getDatabaseForClient(databaseName);

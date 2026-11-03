@@ -96,7 +96,7 @@ public class BoltNetworkListener extends Thread {
           // the cap the socket is closed straight away rather than being given either (issue #6412). This is
           // narrower than the BOLT_MAX_CONNECTIONS cap above, which counts every connection including the
           // authenticated ones a healthy client pool holds open.
-          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept();
+          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept(socket);
           if (ticket == null) {
             preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
             try {

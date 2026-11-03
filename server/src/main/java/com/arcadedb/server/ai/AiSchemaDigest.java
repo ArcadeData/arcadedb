@@ -29,7 +29,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -107,7 +107,8 @@ public final class AiSchemaDigest {
   }
 
   /** One type as the summary sees it. */
-  private record Entry(DocumentType type, long rows) {
+  /** {@code parents}: the super types the bound user may read, the only ones the line names. */
+  private record Entry(DocumentType type, long rows, List<DocumentType> parents) {
   }
 
   // ---- the summary --------------------------------------------------------------------------------------------------------------
@@ -149,12 +150,13 @@ public final class AiSchemaDigest {
 
   /** Builds the summary. Performs no authorization of the database itself; {@link #forUser} does. */
   public static String build(final Database database, final String databaseName) {
-    final Schema schema = database.getSchema();
     final List<Entry> entries = new ArrayList<>();
-    for (final DocumentType type : schema.getTypes()) {
-      if (!readable(database, type))
-        continue;
-      entries.add(new Entry(type, ownRows(type)));
+    for (final DocumentType type : readableTypes(database)) {
+      final List<DocumentType> parents = new ArrayList<>(type.getSuperTypes().size());
+      for (final DocumentType parent : type.getSuperTypes())
+        if (readable(database, parent))
+          parents.add(parent);
+      entries.add(new Entry(type, ownRows(type), parents));
     }
     // Largest first (unknown last), then by name: deterministic
     entries.sort(Comparator.comparingLong(Entry::rows).reversed().thenComparing(e -> e.type().getName()));
@@ -205,7 +207,7 @@ public final class AiSchemaDigest {
     sb.append(kind(type)).append(' ').append(clean(type.getName(), MAX_NAME)).append(" ~").append(count(entry.rows())).append(" rows, ")
         .append(type.getBuckets(false).size()).append(" buckets");
 
-    final List<DocumentType> parents = type.getSuperTypes();
+    final List<DocumentType> parents = entry.parents();
     if (!parents.isEmpty()) {
       sb.append(", extends ");
       for (int i = 0; i < parents.size() && i < MAX_PARENTS; i++)
@@ -300,16 +302,14 @@ public final class AiSchemaDigest {
     return "doc";
   }
 
+  /** The types the bound user may read (every type when nobody is bound, as in an embedded or test run). */
+  private static Collection<? extends DocumentType> readableTypes(final Database database) {
+    return SecurityHelper.readableTypes(database);
+  }
+
   /** Whether the bound user may read the type (always true when nobody is bound, as in an embedded or test run). */
   private static boolean readable(final Database database, final DocumentType type) {
-    if (!(database instanceof DatabaseInternal internal))
-      return true;
-    try {
-      internal.checkPermissionsOnType(type.getName(), SecurityDatabaseUser.ACCESS.READ_RECORD);
-      return true;
-    } catch (final SecurityException e) {
-      return false;
-    }
+    return SecurityHelper.isReadable(database, type);
   }
 
   /**
@@ -408,14 +408,14 @@ public final class AiSchemaDigest {
     final Schema schema = database.getSchema();
     if (typeName == null || typeName.isBlank())
       throw new IllegalArgumentException("get_type requires a 'name' argument");
-    if (!schema.existsType(typeName))
+    // A type the user may not read is answered exactly as one that does not exist: a different refusal would tell the caller
+    // that the type exists
+    final DocumentType type = schema.existsType(typeName) ? schema.getType(typeName) : null;
+    if (type == null || !readable(database, type))
       throw new IllegalArgumentException(
           "Type '" + clean(typeName, MAX_NAME) + "' does not exist." + similar(database, typeName));
-    final DocumentType type = schema.getType(typeName);
-    if (!readable(database, type))
-      throw new IllegalArgumentException("Type '" + clean(typeName, MAX_NAME) + "' does not exist or is not readable by this user.");
 
-    final JSONObject json = SchemaInfo.typeToJSON(type);
+    final JSONObject json = SchemaInfo.typeToJSON(database, type);
     json.put("category", kind(type));
     final String description = description(type.getCustomValue("description"));
     if (!description.isEmpty())
@@ -488,10 +488,10 @@ public final class AiSchemaDigest {
   private static String similar(final Database database, final String typeName) {
     final String wanted = typeName.toLowerCase(Locale.ROOT);
     final Set<String> found = new TreeSet<>();
-    for (final DocumentType t : database.getSchema().getTypes()) {
+    for (final DocumentType t : readableTypes(database)) {
       final String name = t.getName();
       final String lower = name.toLowerCase(Locale.ROOT);
-      if ((lower.contains(wanted) || wanted.contains(lower)) && readable(database, t))
+      if (lower.contains(wanted) || wanted.contains(lower))
         found.add(clean(name, MAX_NAME));
       if (found.size() >= 5)
         break;
