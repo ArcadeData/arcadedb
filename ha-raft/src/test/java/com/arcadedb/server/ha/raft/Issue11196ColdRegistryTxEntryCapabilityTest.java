@@ -121,8 +121,10 @@ class Issue11196ColdRegistryTxEntryCapabilityTest {
       threads.add(thread);
     }
     go.countDown();
-    for (final Thread thread : threads)
+    for (final Thread thread : threads) {
       thread.join(30_000);
+      assertThat(thread.isAlive()).as("the committer finished").isFalse();
+    }
 
     assertThat(capable.get()).as("every committer got the answer of the one round").isEqualTo(committers);
     assertThat(probes.get()).as("single flight").isEqualTo(1);

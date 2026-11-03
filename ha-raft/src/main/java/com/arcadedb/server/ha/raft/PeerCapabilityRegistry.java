@@ -451,10 +451,11 @@ public final class PeerCapabilityRegistry {
   }
 
   /**
-   * Whether nothing at all is recorded about {@code peerId}: no answer, no failed probe and no refusal to dial, i.e. no round has
+   * Whether nothing at all is recorded about {@code peerId}: no answer and no failed probe or refusal to dial (both are recorded in {@code unknownReasons} by the round), i.e. no round has
    * completed for it yet (issue #11196). Not the same as unknown: a peer that was asked and could not be reached is unknown and has
    * a reason, and asking it again on every call would only repeat a failure. Only this state is a cold registry.
    */
+  // The two reads are not one atomic step; a write between them can only cost one extra round, never a wrong verdict.
   public boolean neverAsked(final String peerId) {
     return !advertisements.containsKey(peerId) && !unknownReasons.containsKey(peerId);
   }
