@@ -170,7 +170,8 @@ public enum ErrorCategory {
       new Rule(FullTextQueryParseException.class, PARSING),
       new Rule(ValidationException.class, VALIDATION),
       new Rule(QueryNotIdempotentException.class, VALIDATION),
-      new Rule(InvalidPropertyTypeException.class, VALIDATION),
+      // every runtime type error, InvalidPropertyTypeException among them (issue #11211)
+      new Rule(TypeMismatchException.class, VALIDATION),
       new Rule(IllegalArgumentException.class, VALIDATION),
       new Rule(TimeoutException.class, TIMEOUT) };
 
@@ -197,10 +198,11 @@ public enum ErrorCategory {
    * failures in cannot relabel an arithmetic error as invalid syntax, and before any test on
    * {@link CommandExecutionException} would be, since {@link ArithmeticErrorException} extends it.
    * <p>
-   * {@link InvalidPropertyTypeException} is named explicitly rather than left to the
+   * {@link TypeMismatchException} is named explicitly rather than left to the
    * {@link CommandExecutionException} fall-through, because it extends that type and would otherwise land in
-   * {@link #SERVER}. It used to be an {@link IllegalArgumentException} and so already answered {@link #VALIDATION};
-   * naming it keeps that verdict across the change (issue #7729).
+   * {@link #SERVER}. Its subtype {@link InvalidPropertyTypeException} used to be an {@link IllegalArgumentException}
+   * and so already answered {@link #VALIDATION}; naming the parent keeps that verdict (issue #7729) and gives it to
+   * every other runtime type error, such as a property read off a list (issue #11211).
    * <p>
    * {@link IllegalArgumentException} is the one entry that is not self-evidently the caller's fault: the engine
    * raises it both for bad input and for internal invariant violations, so classifying it as {@link #VALIDATION}

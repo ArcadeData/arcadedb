@@ -61,8 +61,13 @@ public class CypherSemanticValidator {
   public static final String NULL_MERGE_PROPERTY =
       "MergeReadOwnWrites: 'MERGE' cannot be used with a graph element property value that is null";
 
+  /**
+   * The kind of value a variable holds. {@link #RELATIONSHIP_LIST} is the variable of a variable-length relationship
+   * ({@code [r*1..3]}), which holds a {@code LIST<RELATIONSHIP>} rather than one relationship: Neo4j types it so, and
+   * refuses {@code r.weight} on it before the query runs (issue #11211).
+   */
   private enum VarType {
-    NODE, RELATIONSHIP, PATH, SCALAR
+    NODE, RELATIONSHIP, RELATIONSHIP_LIST, PATH, SCALAR
   }
 
   private final Map<String, VarType> varTypes = new HashMap<>();
@@ -379,7 +384,8 @@ public class CypherSemanticValidator {
         declareVar(node.getVariable(), VarType.NODE, scope, declaredHere);
     for (final RelationshipPattern rel : path.getRelationships()) {
       if (rel.getVariable() != null)
-        declareVar(rel.getVariable(), VarType.RELATIONSHIP, scope, declaredHere);
+        declareVar(rel.getVariable(), rel.isVariableLength() ? VarType.RELATIONSHIP_LIST : VarType.RELATIONSHIP, scope,
+            declaredHere);
       // A GQL quantified path pattern (issue #4531) also declares its inner variables, which bind
       // outside the group to one list element per repetition. They are declared as plain values, not
       // as NODE/RELATIONSHIP: the name holds a LIST<NODE> or LIST<RELATIONSHIP>, so the structural
@@ -2388,6 +2394,20 @@ public class CypherSemanticValidator {
       return new FunctionArgumentChecks(shadowed, declaringPatterns);
     }
 
+    /**
+     * The inline predicate of a variable-length relationship tests one relationship at a time, so there its variable is
+     * a relationship and {@code r.w} reads a property (issue #11211); outside it, the same name holds the list.
+     */
+    @Override
+    public CypherExpressionWalker.Visitor forInlinePredicate(final RelationshipPattern relationship) {
+      final String variable = relationship.getVariable();
+      if (variable == null || scope.get(variable) != VarType.RELATIONSHIP_LIST)
+        return this;
+      final Map<String, VarType> single = new HashMap<>(scope);
+      single.put(variable, VarType.RELATIONSHIP);
+      return new FunctionArgumentChecks(single, declaringPatterns);
+    }
+
     @Override
     public void visitPattern(final PathPattern path) {
       if (declaringPatterns.contains(path))
@@ -2414,7 +2434,8 @@ public class CypherSemanticValidator {
       if (name == null)
         return;
       final VarType declared = scope.get(name);
-      if (declared == VarType.NODE || declared == VarType.RELATIONSHIP || declared == VarType.PATH)
+      if (declared == VarType.NODE || declared == VarType.RELATIONSHIP || declared == VarType.RELATIONSHIP_LIST
+          || declared == VarType.PATH)
         throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
     }
 
@@ -2427,10 +2448,15 @@ public class CypherSemanticValidator {
       if (name == null)
         return;
       final VarType declared = scope.get(name);
-      if ((declared == VarType.NODE || declared == VarType.RELATIONSHIP) && declared != used)
+      // a variable-length relationship's variable is a relationship kind too: reusing it as a node is the same conflict
+      if (declared == VarType.NODE ? used != VarType.NODE : isRelationshipKind(declared) && !isRelationshipKind(used))
         throw new CommandParsingException(
             "VariableTypeConflict: Variable '" + name + "' already defined as " + declared + ", cannot redefine as "
                 + used);
+    }
+
+    private static boolean isRelationshipKind(final VarType type) {
+      return type == VarType.RELATIONSHIP || type == VarType.RELATIONSHIP_LIST;
     }
 
     /**
@@ -2693,6 +2719,9 @@ public class CypherSemanticValidator {
               throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
             if (argType == VarType.RELATIONSHIP)
               throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
+            if (argType == VarType.RELATIONSHIP_LIST)
+              throw new CommandParsingException(
+                  "InvalidArgumentType: length() cannot be applied to a list of relationships. Use size() to count them");
             break;
           case "type":
             // type() only works on relationships. Point at valueType(), which is what callers who
@@ -2830,12 +2859,23 @@ public class CypherSemanticValidator {
   }
 
   /**
-   * A path variable holds a whole path, so {@code p.name} names nothing. Called on every node of the traversal, which
-   * is why it inspects only the node handed to it rather than recursing.
+   * A path variable holds a whole path, so {@code p.name} names nothing; nor does {@code r.weight} on the variable of a
+   * variable-length relationship, which holds a list of relationships (issue #11211). Neo4j refuses both before the
+   * query runs, whatever it would match. Called on every node of the traversal, which is why it inspects only the node
+   * handed to it rather than recursing.
    */
   private void checkPropertyAccessOnPath(final Expression expr, final Map<String, VarType> scope) {
-    if (expr instanceof PropertyAccessExpression access && scope.get(access.getVariableName()) == VarType.PATH)
+    if (!(expr instanceof PropertyAccessExpression access))
+      return;
+    final VarType declared = scope.get(access.getVariableName());
+    if (declared == VarType.PATH)
       throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
+    if (declared == VarType.RELATIONSHIP_LIST)
+      throw new CommandSemanticException("TypeError: Type mismatch: expected Map, Node, Relationship, Point, Duration, Date, Time, "
+          + "LocalTime, LocalDateTime or DateTime but was List<Relationship>. '" + access.getVariableName()
+          + "' is a variable-length relationship and holds a list of relationships, so '" + access.getVariableName() + "."
+          + access.getPropertyName() + "' reads no property: read it per relationship, e.g. [rel IN "
+          + access.getVariableName() + " | rel." + access.getPropertyName() + "]");
   }
 
   private VarType getExpressionType(final Expression expr, final Map<String, VarType> scope) {

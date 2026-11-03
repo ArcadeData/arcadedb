@@ -287,6 +287,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void fireAfterCreate(final Record record) {
+    checkOwnsBucketOf(record);
     events.onAfterCreate(record);
     if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
@@ -294,6 +295,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public boolean fireBeforeUpdate(final Record record) {
+    checkOwnsBucketOf(record);
     if (!events.onBeforeUpdate(record))
       return false;
     if (hasTriggers())
@@ -304,6 +306,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void fireAfterUpdate(final Record record) {
+    checkOwnsBucketOf(record);
     events.onAfterUpdate(record);
     if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
@@ -311,6 +314,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public boolean fireBeforeDelete(final Record record) {
+    checkOwnsBucketOf(record);
     if (!events.onBeforeDelete(record))
       return false;
     if (hasTriggers())
@@ -321,10 +325,33 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void fireAfterDelete(final Record record) {
+    checkOwnsBucketOf(record);
     events.onAfterDelete(record);
     if (hasAfterWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterDelete(record);
+  }
+
+  /**
+   * A record reaches this type's write listeners only when this type owns the record's bucket (issue #11206). The type a
+   * record carries is whatever the code that built the record gave it, and a walk that hoisted one type over the buckets
+   * of a whole hierarchy built subtype records as the supertype (#11043): their delete then consulted the supertype's
+   * listeners and skipped the subtype's veto, silently. The dispatch sites read the type off the record, so this is the
+   * one place the answer can be checked for every walk, present or future, rather than for the walks someone checked.
+   * <p>
+   * The owner is compared by name as well as by instance, because a record loaded before a schema reload holds the
+   * previous instance of the same type. A bucket no type owns says nothing about the record and is let through. A record
+   * with no identity yet (a BEFORE CREATE) has no bucket to check.
+   */
+  private void checkOwnsBucketOf(final Record record) {
+    final RID rid = record.getIdentity();
+    if (rid == null)
+      return;
+    final DocumentType owner = schema.getTypeByBucketId(rid.getBucketId());
+    if (owner != null && owner != this && !owner.getName().equals(name))
+      throw new IllegalStateException(
+          "Record " + rid + " was built as a '" + name + "' but its bucket belongs to type '" + owner.getName()
+              + "': refusing to dispatch it to the listeners of the wrong type");
   }
 
   public boolean hasBeforeReadListeners() {

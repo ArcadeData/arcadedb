@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.*;
@@ -81,8 +82,9 @@ public class PropertyAccessExpression implements PropertyReadExpression {
     }
 
     // Type validation: property access only works on property-bearing types
-    // Primitive types (Integer, String, Boolean, List, etc.) don't have properties
-    throw new CommandExecutionException(
+    // Primitive types (Integer, String, Boolean, List, etc.) don't have properties: the caller's error, not the server's
+    // (issue #11211)
+    throw new TypeMismatchException(
         "TypeError: Cannot access property '" + propertyName + "' on " +
         variable.getClass().getSimpleName() + " value");
   }

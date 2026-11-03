@@ -24,7 +24,6 @@ import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -122,23 +121,19 @@ public class GetPromQLLabelValuesHandler extends AbstractObservabilityHandler {
     final Set<String> values = new LinkedHashSet<>();
 
     if ("__name__".equals(labelName)) {
-      // Return the TimeSeries type names, which are the metric names.
-      for (final DocumentType type : database.getSchema().getTypes())
+      // Return the TimeSeries type names, which are the metric names. A metric the caller cannot read must not be named
+      // back to it.
+      for (final DocumentType type : SecurityHelper.readableTypes(database))
         if (type instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null
-            && SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD)
             // A metric with no sample in the window is not a metric the range carries. Asked only when a bound
             // was actually sent: an unscoped request must keep naming every type, a type holding no sample at
             // all included, which is what it answered before the bounds existed.
             && (!rangeRequested || hasSamplesInRange(database, tsType, startMs, endMs)))
-          // A metric the caller cannot read must not be named back to it.
           values.add(type.getName());
     } else {
-      // Scan types that have this TAG column, query distinct values
-      for (final DocumentType type : database.getSchema().getTypes()) {
+      // Scan types that have this TAG column, query distinct values: the same filter, since the scan reads the samples
+      for (final DocumentType type : SecurityHelper.readableTypes(database)) {
         if (!(type instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
-          continue;
-        // Same filter for the value scan below, which reads the samples themselves.
-        if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
         final List<ColumnDefinition> columns = tsType.getTsColumns();
         if (!hasTagColumn(labelName, columns))
