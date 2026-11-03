@@ -124,6 +124,21 @@ public class FullTextSearch {
   }
 
   /**
+   * Searches every index of a logical index over several types (issue #11137) and merges the matches. A record belongs to one type, so
+   * no two indexes match the same RID and the merge never overwrites; each index brings up to {@code limit} matches, whose union
+   * contains the global best {@code limit}, and the caller ranks and trims it. BM25 statistics are those of each index, so a score is
+   * relative to the index of its own type.
+   */
+  public static Map<RID, Float> search(final List<TypeIndex> typeIndexes, final String queryText, final int limit) {
+    if (typeIndexes.size() == 1)
+      return search(typeIndexes.getFirst(), queryText, limit);
+    final Map<RID, Float> merged = new HashMap<>();
+    for (final TypeIndex member : typeIndexes)
+      merged.putAll(search(member, queryText, limit));
+    return merged;
+  }
+
+  /**
    * Resolves the named full-text index and searches it for every match, unbounded. Kept for callers that only have an
    * index name on hand, such as the SEARCH_INDEX SQL function, whose per-row boolean semantics need the full match set.
    *

@@ -189,7 +189,8 @@ public final class HybridSearch {
     // (issue #7394). The full-text half is checked inside runFullTextLeg, as soon as that index resolves.
     final boolean expanding = expandArgs != null;
     if (expanding)
-      requireVertexType(database, vectorQuery.index().typeIndex().getTypeName());
+      for (final TypeIndex member : vectorQuery.index().members())
+        requireVertexType(database, member.getTypeName());
 
     final List<LegRow> vectorLeg = runVectorLeg(database, vectorQuery);
 
@@ -228,7 +229,7 @@ public final class HybridSearch {
     }
 
     final JSONObject response = new JSONObject()
-        .put("vectorIndexName", vectorQuery.index().typeIndex().getName())
+        .put("vectorIndexName", vectorQuery.index().name())
         .put("sparse", vectorQuery.sparse())
         .put("scoring", vectorQuery.index().scoring())
         .put("legs", legs);
@@ -569,9 +570,10 @@ public final class HybridSearch {
           "'fulltextIndexName' and 'fulltextQuery' must be supplied together. Give both to add the full-text leg, "
               + "or neither to search without it.");
 
-    final TypeIndex typeIndex;
+    // a name that is a full-text index over several types designates the per-type indexes it spans (issue #11137)
+    final List<TypeIndex> typeIndexes;
     try {
-      typeIndex = FullTextSearch.resolveFullTextIndex(database, indexName);
+      typeIndexes = FullTextSearch.resolveFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
       throw new IllegalArgumentException("Full-text index '" + indexName + "' does not exist. Available full-text "
           + "indexes in '" + database.getName() + "': " + FullTextSearch.listFullTextIndexes(database), e);
@@ -583,8 +585,10 @@ public final class HybridSearch {
     // Before the search, not after it: whether this index can seed a graph expansion is decided by the type it
     // is declared on. Checking it once the hits are in made the same invalid configuration pass or fail
     // depending on whether the corpus happened to contain a match (issue #7394).
+    final TypeIndex typeIndex = typeIndexes.getFirst();
     if (expanding)
-      requireVertexType(database, typeIndex.getTypeName());
+      for (final TypeIndex member : typeIndexes)
+        requireVertexType(database, member.getTypeName());
 
     // The parser's complaint about the caller's own query text is a client error, like every other stage's bad
     // input; left unwrapped it reached the protocol surfaces as an internal error with a logged stack trace
@@ -592,7 +596,7 @@ public final class HybridSearch {
     // analyzer or search-engine fault - is a server fault and stays a 500 with its stack trace.
     final Map<RID, Float> hits;
     try {
-      hits = FullTextSearch.search(typeIndex, queryText, limit);
+      hits = FullTextSearch.search(typeIndexes, queryText, limit);
     } catch (final FullTextQueryParseException e) {
       throw invalidExpression("full-text leg", e);
     }
@@ -605,7 +609,7 @@ public final class HybridSearch {
       rows.add(new LegRow(hit.getKey(), hit.getValue().doubleValue()));
 
     legs.put(LEG_FULLTEXT, new JSONObject()
-        .put("indexName", typeIndex.getName())
+        .put("indexName", typeIndexes.size() == 1 ? typeIndex.getName() : indexName)
         .put("similarity", FullTextSearch.getSimilarity(typeIndex))
         .put("count", rows.size()));
     return new FullTextLeg(rows, typeIndex.getTypeName());

@@ -6279,6 +6279,8 @@ function renderIndexesDataTable(indexes) {
         "'></i>" +
         name;
     }
+    // an index that is a member of a multi-label index (CREATE FULLTEXT/VECTOR INDEX ... FOR (n:A|B)) is queried by that name
+    if (idx.multiTypeIndex) name += " <span class='text-muted small'>(" + escapeHtml(idx.multiTypeIndex) + ")</span>";
     tableData.push([
       name,
       escapeHtml(idx.indexType || "-"),
