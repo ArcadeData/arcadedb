@@ -454,7 +454,7 @@ final class ParallelTypeScan {
       public boolean hasNext() {
         // A FAILED PRODUCER FAILS THE QUERY: FEWER ROWS REPORTED AS SUCCESS IS THE ANTI-PATTERN #4951 REMOVED
         if (failure != null)
-          throw new CommandExecutionException("Parallel scan failed", failure);
+          throw failureToThrow();
 
         if (dispatched >= nRecords) {
           // PAGE BOUNDARY: THE CONSUMER IS ALIVE, SO A PAUSE OF THE UPSTREAM STEPS BETWEEN PAGES IS NOT ABANDONMENT
@@ -519,7 +519,7 @@ final class ParallelTypeScan {
             return false;
           }
           if (failure != null)
-            throw new CommandExecutionException("Parallel scan failed", failure);
+            throw failureToThrow();
           if (polled == END_OF_UNIT) {
             channels[consumerUnit] = null;
             ++consumerUnit;
@@ -547,6 +547,21 @@ final class ParallelTypeScan {
         ParallelTypeScan.this.close();
       }
     };
+  }
+
+  /**
+   * The exception a producer's failure fails the consumer with: the failure itself when it is unchecked, as the partial
+   * aggregation mode rethrows it, as the consumer throws the failure of a unit it scans itself (#8594) and as the sequential
+   * scan throws the failure of any unit. Wrapped, the error of a statement depended on which thread happened to scan the unit
+   * that failed: the {@code SEARCH_INDEX_MORE} refusal of #11137 surfaced either as its own error or as "Parallel scan failed".
+   */
+  private RuntimeException failureToThrow() {
+    final Throwable f = failure;
+    if (f instanceof RuntimeException runtime)
+      return runtime;
+    if (f instanceof Error error)
+      throw error;
+    return new CommandExecutionException("Parallel scan failed", f);
   }
 
   private void startProducers(final CommandContext context) {

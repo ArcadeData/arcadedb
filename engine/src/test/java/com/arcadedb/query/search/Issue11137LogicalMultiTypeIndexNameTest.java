@@ -18,14 +18,18 @@
  */
 package com.arcadedb.query.search;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -67,9 +71,18 @@ class Issue11137LogicalMultiTypeIndexNameTest extends TestHelper {
     assertThat(ids).contains("a1").doesNotContain("p2");
   }
 
-  @Test
-  void searchIndexMoreByAVectorLogicalNameIsRefused() {
-    assertThatThrownBy(() -> ids("SELECT id FROM Doc WHERE SEARCH_INDEX_MORE('emb', [#1:0]) = true")).rootCause().hasMessageContaining("not a full-text");
+  /**
+   * The refusal is the function's own error whether the scan of {@code Doc} runs sequentially or in parallel, and in parallel
+   * whichever thread scans the bucket the function first runs on: a producer of the pool, or the consumer itself when no producer
+   * had taken that bucket yet (#8594). It used to be wrapped in "Parallel scan failed" only when a producer had, so the shape of
+   * the error depended on thread scheduling.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
+  void searchIndexMoreByAVectorLogicalNameIsRefused(final boolean parallelScan) {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, parallelScan);
+    assertThatThrownBy(() -> ids("SELECT id FROM Doc WHERE SEARCH_INDEX_MORE('emb', [#1:0]) = true"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not a full-text index");
   }
 
   @Test
