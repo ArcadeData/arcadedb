@@ -186,6 +186,11 @@ public class TransactionManager {
    */
   private final Set<Long>                   recoveryAppliedPages = new HashSet<>();
   /**
+   * The pages (see {@link #pageKey}) the running replay already warned about a gap in the WAL chain for (#11152), so a page
+   * with many skipped entries is reported once. Touched by the replay thread only.
+   */
+  private final Set<Long>                   recoveryGapWarnedPages = new HashSet<>();
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -989,6 +994,7 @@ public class TransactionManager {
 
         recoveryPageVersions = collectWALPageVersions(recoveryFiles);
         recoveryAppliedPages.clear();
+        recoveryGapWarnedPages.clear();
 
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
         for (int i = 0; i < recoveryFiles.length; ++i) {
@@ -1163,6 +1169,7 @@ public class TransactionManager {
     } finally {
       recoveryPageVersions = null;
       recoveryAppliedPages.clear();
+      recoveryGapWarnedPages.clear();
       // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
       // not deleted, so the next open replays it again.
       if (recoveryFiles != null && !inputReleased)
@@ -1220,19 +1227,37 @@ public class TransactionManager {
    * It is safe only when the WAL holds EVERY version after this entry up to the one on disk: the replay then ends on the last
    * writer of each byte, exactly as the commits did. An entry followed by a gap would overwrite bytes that a later version,
    * whose WAL file was dropped after a successful fsync (so it is durable), had changed.
+   * <br>
+   * Returns the first version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry
+   * of for the page: 0 when the chain is complete (the entry is a repair candidate), -1 when the question does not apply (not a
+   * crash recovery replay, or the replay already applied an entry to the page).
    */
-  private boolean isRepairableOlderEntry(final int fileId, final int pageNumber, final long entryVersion,
-      final long diskVersion) {
+  private long firstMissingChainVersion(final int fileId, final int pageNumber, final long entryVersion, final long diskVersion) {
     final Map<Long, IntHashSet> versions = recoveryPageVersions;
     if (versions == null || recoveryAppliedPages.contains(pageKey(fileId, pageNumber)))
-      return false;
+      return -1;
     final IntHashSet pageVersions = versions.get(pageKey(fileId, pageNumber));
     if (pageVersions == null)
-      return false;
+      return -1;
     for (long v = entryVersion + 1; v <= diskVersion; ++v)
       if (!pageVersions.contains((int) v))
-        return false;
-    return true;
+        return v;
+    return 0;
+  }
+
+  /**
+   * Reports, once per page, a skipped older WAL entry whose chain up to the version on disk has a gap (#11152). It is not told
+   * from a benign skip by anything the replay can see: the missing version may have been flushed and its WAL file dropped
+   * after the fsync (nothing to repair), or the page may be torn and now beyond repair from this WAL. Either way somebody
+   * investigating a page whose content disagrees with its neighbours needs to find the page in the log, so it is a WARNING.
+   */
+  private void warnOlderEntryWithGap(final PageId pageId, final long entryVersion, final long diskVersion, final long missing) {
+    if (recoveryGapWarnedPages.add(pageKey(pageId.getFileId(), pageId.getPageNumber())))
+      LogManager.instance().log(this, Level.WARNING,
+          "Crash recovery skipped the WAL entry v.%d of page %s, older than the page on disk (v.%d), and cannot repair the page from the WAL: "
+              + "v.%d of it is not in the WAL. If it was flushed before its WAL file was dropped this is expected; if the page was torn "
+              + "by a power loss, its content can be stale (a per-page checksum, #11157, would tell)", null, entryVersion, pageId,
+          diskVersion, missing);
   }
 
   /**
@@ -1664,14 +1689,17 @@ public class TransactionManager {
           // write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the v4 flush hitting the platter. If THAT flush
           // tears, the regions changed by v2/v3 can stay stale while the header already says v4 (the schema dictionary then
           // loses names that records already reference). During crash recovery the older entries are therefore re-applied as a
-          // repair below, when the WAL holds every version up to the one on disk (see isRepairableOlderEntry). Where it does
+          // repair below, when the WAL holds every version up to the one on disk (see firstMissingChainVersion). Where it does
           // not (a gap in the chain, a page the replay already touched, a replicated apply) the entry is still skipped, and
-          // a torn page stays torn: detecting that without a WAL needs a per-page checksum (#5054).
+          // a torn page stays torn: detecting that without a WAL needs a per-page checksum (#11157).
           LogManager.instance().log(this, Level.FINE,
               "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
 
-          if (recovery && isRepairableOlderEntry(txPage.fileId, txPage.pageNumber, txPage.currentPageVersion, page.getVersion())) {
+          final long missingVersion = recovery ?
+              firstMissingChainVersion(txPage.fileId, txPage.pageNumber, txPage.currentPageVersion, page.getVersion()) :
+              -1;
+          if (missingVersion == 0) {
             // #11151: THE PAGE MAY BE TORN, SO RE-APPLY THE BYTES THIS VERSION CHANGED. NEITHER THE VERSION NOR THE CONTENT SIZE
             // MOVES: THEY BELONG TO THE LAST ENTRY OF THE CHAIN, WHICH THIS REPLAY REACHES RIGHT AFTER AND APPLIES AT EQUAL VERSION
             final MutablePage repaired = page.modify();
@@ -1689,7 +1717,8 @@ public class TransactionManager {
             if (file.getFileId() == dictionaryId)
               involveDictionary = true;
             changed = true;
-          }
+          } else if (missingVersion > 0)
+            warnOlderEntryWithGap(pageId, txPage.currentPageVersion, page.getVersion(), missingVersion);
           continue;
         }
 
