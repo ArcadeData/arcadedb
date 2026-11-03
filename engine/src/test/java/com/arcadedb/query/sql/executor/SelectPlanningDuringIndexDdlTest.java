@@ -47,8 +47,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SelectPlanningDuringIndexDdlTest extends TestHelper {
-  private static final int READERS = 6;
-  private static final int ROUNDS  = 120;
+  private static final int READERS          = 6;
+  private static final int ROUNDS           = 120;
+  private static final int COMPOSITE_ROUNDS = 300;
+
+  // MATCH estimates the filter against the indexes of the type once the type has more than its threshold of records
+  private static final String MATCH = "MATCH {type: Person, as: p, where: (id = ?)} RETURN p.id AS id";
 
   // WHERE with an index, ORDER BY served by an index, min/max served by an index, a CONTAINSTEXT that may meet a full-text index, MATCH
   private static final String[] QUERIES = {
@@ -58,19 +62,40 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
       "SELECT id FROM Person WHERE id >= ? ORDER BY id DESC LIMIT 5",
       "SELECT min(id) AS m, max(id) AS x FROM Person WHERE id >= ?",
       "SELECT count(*) AS c FROM Person WHERE id < ? AND name CONTAINSTEXT 'x'",
-      // MATCH estimates the filter against the indexes of the type once the type has more than its threshold of records
-      "MATCH {type: Person, as: p, where: (id = ?)} RETURN p.id AS id" };
+      MATCH };
+
+  /** What the DDL thread creates and drops in each round. */
+  private enum Ddl {
+    // an index on a new property, and a composite one sharing the permanent index's first property
+    KEY,
+    FULL_TEXT,
+    // the composite one only
+    COMPOSITE
+  }
 
   @Test
   @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void queriesDoNotFailWhileAnotherThreadCreatesAndDropsIndexes() throws Exception {
-    runRace(false);
+    runRace(QUERIES, Ddl.KEY, ROUNDS);
   }
 
   @Test
   @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void queriesDoNotFailWhileAnotherThreadCreatesAndDropsFullTextIndexes() throws Exception {
-    runRace(true);
+    runRace(QUERIES, Ddl.FULL_TEXT, ROUNDS);
+  }
+
+  /**
+   * The race behind the rare failures of {@link #queriesDoNotFailWhileAnotherThreadCreatesAndDropsIndexes()}, isolated so that a
+   * run meets it far more often: every reader plans the MATCH, whose root estimate reads the entries of the composite index under
+   * {@code id = ?} with a range, and a drop that starts right after the estimate found the index ready deletes the sub-index file
+   * under that range. The page manager's "File with id n was not found" reached the caller of the query, as the estimate took
+   * only an {@link IndexException} for an index that went away while being read.
+   */
+  @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
+  void matchPlanningDoesNotFailWhileAnotherThreadDropsAnIndexItEstimatesFrom() throws Exception {
+    runRace(new String[] { MATCH }, Ddl.COMPOSITE, COMPOSITE_ROUNDS);
   }
 
   @Test
@@ -99,7 +124,7 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
     assertThat(type.getAllIndexes(true)).isEmpty();
   }
 
-  private void runRace(final boolean fullText) throws Exception {
+  private void runRace(final String[] queries, final Ddl ddl, final int rounds) throws Exception {
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE PROPERTY Person.id LONG");
     database.command("sql", "CREATE PROPERTY Person.name STRING");
@@ -113,23 +138,24 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
     final AtomicLong answered = new AtomicLong();
     final Map<String, AtomicLong> failures = new ConcurrentHashMap<>();
     final List<Thread> readers = new ArrayList<>();
+    final boolean checkCounts = queries == QUERIES;
     for (int t = 0; t < READERS; t++) {
       final Random random = new Random(t);
       final Thread thread = new Thread(() -> {
         while (!stop.get()) {
-          final int q = random.nextInt(QUERIES.length);
+          final int q = random.nextInt(queries.length);
           final long bound = random.nextInt(2_000);
-          try (final ResultSet rs = database.query("sql", QUERIES[q], bound)) {
+          try (final ResultSet rs = database.query("sql", queries[q], bound)) {
             // ids 0..1999 are static: the count queries have a known answer, a plan on a half-built index must not change it
             Long count = null;
             while (rs.hasNext()) {
               final Result row = rs.next();
-              if (q < 2)
+              if (checkCounts && q < 2)
                 count = row.getProperty("c");
             }
-            if (q == 0 && (count == null || count != bound))
+            if (checkCounts && q == 0 && (count == null || count != bound))
               failures.computeIfAbsent("wrong count for id < " + bound, k -> new AtomicLong()).incrementAndGet();
-            else if (q == 1 && (count == null || count != 1))
+            else if (checkCounts && q == 1 && (count == null || count != 1))
               failures.computeIfAbsent("wrong count for id = " + bound, k -> new AtomicLong()).incrementAndGet();
             answered.incrementAndGet();
           } catch (final Throwable e) {
@@ -143,15 +169,18 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
     }
 
     try {
-      for (int i = 0; i < ROUNDS; i++) {
+      final boolean fullText = ddl == Ddl.FULL_TEXT;
+      for (int i = 0; i < rounds; i++) {
         database.command("sql", "CREATE PROPERTY Person.p" + i + (fullText ? " STRING" : " LONG"));
-        database.command("sql", "CREATE INDEX ON Person (p" + i + ") " + (fullText ? "FULL_TEXT" : "NOTUNIQUE"));
+        if (ddl != Ddl.COMPOSITE)
+          database.command("sql", "CREATE INDEX ON Person (p" + i + ") " + (fullText ? "FULL_TEXT" : "NOTUNIQUE"));
         // a composite index sharing the permanent one's first property ties with it when ranking WHERE id = ?
         if (!fullText) {
           database.command("sql", "CREATE INDEX ON Person (id, p" + i + ") NOTUNIQUE");
           database.command("sql", "DROP INDEX `Person[id,p" + i + "]`");
         }
-        database.command("sql", "DROP INDEX `Person[p" + i + "]`");
+        if (ddl != Ddl.COMPOSITE)
+          database.command("sql", "DROP INDEX `Person[p" + i + "]`");
       }
     } finally {
       stop.set(true);

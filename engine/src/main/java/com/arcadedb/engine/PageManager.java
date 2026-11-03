@@ -2429,16 +2429,29 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Whether the recovery of a fenced database can bring the page back, so that the flush can drop it: a WAL record describes
+   * it (its WAL file is attached), or it waits for a group-commit WAL write that may never become durable (its ticket), which
+   * the WAL rule forbids writing it before. Neither holds for the page of a transaction with no WAL (txWAL=false, a bulk load),
+   * including the one whose failed publication fenced the database (#10768): nothing can replay it, so dropping it lost a
+   * record the caller was told it holds, or the work of transactions that had committed, depending on whether this thread
+   * reached the page before the fence or after it.
+   */
+  private static boolean isReplayedByRecovery(final MutablePage page) {
+    return page.getWALSyncTicket() > 0 || page.getWALFile() != null;
+  }
+
+  /**
    * @return {@code true} when the page reached its file, {@code false} when there was nothing to write it to (a closed,
    * fenced or dropped database or file) and it was released instead.
    */
   protected boolean flushPage(final MutablePage page) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
 
-    if (!database.isOpen() || database.isFencedForRecovery()) {
+    if (!database.isOpen() || (database.isFencedForRecovery() && isReplayedByRecovery(page))) {
       // A fenced database (#5053) is a "close and reopen to run recovery" state: isOpen() is still true, but
-      // every page still queued here will be replayed from the WAL on the mandatory reopen anyway, so writing
-      // it now through this async pipeline is moot - handled exactly like the closed/dropped case below.
+      // every page still queued here that a WAL record describes will be replayed from the WAL on the mandatory
+      // reopen anyway, so writing it now through this async pipeline is moot - handled exactly like the
+      // closed/dropped case below. A page NO record describes is written instead (see isReplayedByRecovery).
       LogManager.instance()
           .log(this, Level.SEVERE, "Cannot flush page %s because the database is closed or fenced for recovery", page);
       // The page will never be flushed and its content is irrelevant (the database is closed, being dropped,
@@ -2454,7 +2467,10 @@ public class PageManager extends LockContext {
       return false;
     }
 
-    final FileManager fileManager = database.getFileManager();
+    // getFileManager() refuses a fenced database, and the page of one that gets here is a page recovery could not replay
+    final FileManager fileManager = database.isFencedForRecovery() && database.getEmbedded() instanceof LocalDatabase localDatabase ?
+        localDatabase.getFileManagerWhileFenced() :
+        database.getFileManager();
     final int fileId = page.pageId.getFileId();
 
     // ONE lookup, not an existsFile() followed by a get: they hit the same map, and the second answering null is
