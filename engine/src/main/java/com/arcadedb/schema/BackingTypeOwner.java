@@ -18,6 +18,8 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.Database;
+
 /**
  * A schema object whose rows live in a type of their own, the BACKING type, and are derived from other types: a materialized view
  * or a continuous aggregate (issue #11020). The backing type is written by the owner's refresh and by nothing else, which
@@ -28,6 +30,9 @@ package com.arcadedb.schema;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 interface BackingTypeOwner {
+  /** The database the owner belongs to: a refresh scope authorizes writes in that database only. */
+  Database getDatabase();
+
   String getName();
 
   String getBackingTypeName();

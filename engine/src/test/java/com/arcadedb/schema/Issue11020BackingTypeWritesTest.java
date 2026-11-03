@@ -19,6 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.SchemaException;
@@ -213,6 +215,46 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     schema.checkBackingTypeWrite("mv", "insert into");
     schema.materializedViews.merge("mv", view, (a, b) -> b);
     assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
+  }
+
+  /** A document of another type written into a bucket of the backing type by name is refused too (found by CodeRabbit). */
+  @Test
+  void aDocumentOfAnotherTypeIsNotWrittenIntoABackingBucket() {
+    createView("");
+    final String bucket = database.getSchema().getBucketById(database.getSchema().getType("mv").getBucketIds(false).getFirst())
+        .getName();
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      database.newDocument("Sale").set("region", "X").set("amount", 1).save(bucket);
+    })).isInstanceOf(SchemaException.class).hasMessageContaining("backing type for materialized view 'mv'");
+    assertThat(viewRows()).containsExactly("EU=30", "US=5");
+  }
+
+  /** The refresh scope of one database authorizes no write in another one holding a view of the same name (found by CodeRabbit). */
+  @Test
+  void aRefreshScopeAuthorizesWritesInItsOwnDatabaseOnly() {
+    createView("");
+    final MaterializedViewImpl view = database.getSchema().getEmbedded().materializedViews.get("mv");
+
+    final DatabaseFactory factory = new DatabaseFactory(getDatabasePath() + "_other");
+    if (factory.exists())
+      factory.open().drop();
+    final Database other = factory.create();
+    try {
+      other.command("sql", "CREATE DOCUMENT TYPE Sale");
+      other.command("sql", "CREATE MATERIALIZED VIEW mv AS SELECT region, sum(amount) AS total FROM Sale GROUP BY region");
+
+      try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(view)) {
+        // the scope lets this database's refresh write its own backing type...
+        database.transaction(() -> database.newDocument("mv").set("region", "scoped").save());
+        // ...and nothing in the other database
+        assertThatThrownBy(() -> other.transaction(() -> other.newDocument("mv").set("region", "X").save())).isInstanceOf(
+            SchemaException.class);
+      }
+      assertThat(count("mv")).isEqualTo(3L);
+    } finally {
+      other.drop();
+    }
   }
 
   // ---- helpers

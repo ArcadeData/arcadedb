@@ -26,7 +26,7 @@ package com.arcadedb.schema;
  * refresh then runs on the same thread, inside the first scope. A refresh writes its own backing type and no other. The owner is
  * matched by its backing type, not by identity: a schema reload registers a new instance of the same view, and the refresh of the
  * instance it replaced must still be able to finish. Only a write to a backing type asks for the scope, so no other write ever
- * reads the thread local.
+ * reads the thread local. The name is matched within one database only.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -50,9 +50,18 @@ final class BackingTypeWriteScope implements AutoCloseable {
   /** Whether the current thread runs a refresh of {@code owner}. */
   static boolean isRefreshing(final BackingTypeOwner owner) {
     for (BackingTypeWriteScope scope = CURRENT.get(); scope != null; scope = scope.outer)
-      if (scope.owner == owner || scope.owner.getBackingTypeName().equals(owner.getBackingTypeName()))
+      if (scope.owner == owner || (scope.owner.getBackingTypeName().equals(owner.getBackingTypeName()) && sameDatabase(scope.owner,
+          owner)))
         return true;
     return false;
+  }
+
+  /**
+   * A view of the same name in another database open on this thread (a trigger or a listener of the refresh writing it) is another
+   * owner: the scope of one database never authorizes a write in another.
+   */
+  private static boolean sameDatabase(final BackingTypeOwner a, final BackingTypeOwner b) {
+    return a.getDatabase() == b.getDatabase() || a.getDatabase().getDatabasePath().equals(b.getDatabase().getDatabasePath());
   }
 
   @Override

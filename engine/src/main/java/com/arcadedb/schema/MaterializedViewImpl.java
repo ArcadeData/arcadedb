@@ -187,6 +187,11 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   }
 
   @Override
+  public Database getDatabase() {
+    return database;
+  }
+
+  @Override
   public String kind() {
     return "materialized view";
   }

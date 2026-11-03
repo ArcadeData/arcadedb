@@ -1777,12 +1777,14 @@ public class LocalDocumentType implements DocumentType {
     checkForSchemaMutation();
     // A BUCKET OF NO TYPE IS GOVERNED BY NO TYPE'S PERMISSIONS: DETACHING ONE THAT HOLDS RECORDS MUST NOT OPEN THEM. A DROP OF
     // THE TYPE DETACHES ITS BUCKETS TO DROP THEM, RECORDS AND ALL, SO IT OPENS NOTHING
-    if (buckets.contains(bucket) && !schema.isTypeBeingDropped()) {
-      // THE ROWS OF A BACKING TYPE'S BUCKET WOULD LEAVE THE VIEW OR THE AGGREGATE AS A TRUNCATE TAKES THEM (issue #11020)
-      schema.checkBackingTypeWrite(name, "remove a bucket from");
-      schema.checkBucketDetachKeepsAccess(bucket, name);
-    }
     recordFileChanges(() -> {
+      // DECIDED UNDER THE WRITE LOCK, WITH THE DETACHMENT, AND ONLY THE DROP OF THIS VERY TYPE IS EXEMPT: asked before the lock, the
+      // drop of an unrelated type on another thread exempted the check, and a view could be registered in between
+      if (buckets.contains(bucket) && !schema.isTypeBeingDropped(name)) {
+        // THE ROWS OF A BACKING TYPE'S BUCKET WOULD LEAVE THE VIEW OR THE AGGREGATE AS A TRUNCATE TAKES THEM (issue #11020)
+        schema.checkBackingTypeWrite(name, "remove a bucket from");
+        schema.checkBucketDetachKeepsAccess(bucket, name);
+      }
       removeBucketInternal(bucket);
       return null;
     });

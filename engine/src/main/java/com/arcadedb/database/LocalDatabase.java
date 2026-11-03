@@ -1452,6 +1452,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
     if (record instanceof Document doc)
       schema.checkBackingTypeWrite(doc.getTypeName(), "insert into");
+    if (bucketName != null) {
+      // and the bucket named explicitly, which can belong to another type than the document's (INSERT INTO BUCKET:...)
+      final Bucket target = schema.getBucketByNameIfExists(bucketName);
+      if (target != null)
+        schema.checkBackingTypeWrite(target.getFileId(), "insert into");
+    }
 
     setDefaultValues(record);
 

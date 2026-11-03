@@ -503,6 +503,11 @@ public class LocalSchema implements Schema {
   boolean isTypeBeingDropped() {
     return typeBeingDropped != null;
   }
+
+  /** Whether the drop in progress is the one of {@code typeName} itself. Read under the database write lock, as it is written. */
+  boolean isTypeBeingDropped(final String typeName) {
+    return typeName.equals(typeBeingDropped);
+  }
   /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
   private             int                                    recordingDepth                = 0;
   /**

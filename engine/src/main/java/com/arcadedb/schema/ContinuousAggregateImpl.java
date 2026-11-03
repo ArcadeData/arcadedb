@@ -205,6 +205,11 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
   }
 
   @Override
+  public Database getDatabase() {
+    return database;
+  }
+
+  @Override
   public String kind() {
     return "continuous aggregate";
   }
