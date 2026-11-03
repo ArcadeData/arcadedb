@@ -31,7 +31,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class MaterializedViewImpl implements MaterializedView, TypeNameDependant {
+public class MaterializedViewImpl implements MaterializedView, TypeNameDependant, BackingTypeOwner {
   private final Database database;
   private final String name;
   // volatile, not final: a rename of a source type rewrites them in place (#10096), see retargetSourceType()
@@ -181,8 +181,19 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
       retargetSourceType(oldName, newName, schema.retargetedQuery("materialized view", name, query, oldName, newName));
   }
 
-  private String dropStatement() {
+  @Override
+  public String dropStatement() {
     return "DROP MATERIALIZED VIEW " + name;
+  }
+
+  @Override
+  public String kind() {
+    return "materialized view";
+  }
+
+  @Override
+  public String refreshStatement() {
+    return "REFRESH MATERIALIZED VIEW " + name;
   }
 
   /**

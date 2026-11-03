@@ -1449,6 +1449,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
 
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    if (record instanceof Document doc)
+      schema.checkBackingTypeWrite(doc.getTypeName(), "insert into");
+
     setDefaultValues(record);
 
     if (record instanceof MutableDocument doc)
@@ -1636,6 +1640,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException(
           "Bucket '" + bucket.getName() + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be restored into");
 
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    schema.checkBackingTypeWrite(bucket.getFileId(), "restore a record into");
+
     // Auto-transaction parity with createRecordNoLock: on a database opened with setAutoTransaction(true) a plain
     // INSERT wraps itself in a transaction, and RESTORE must not be the one statement that throws instead. Without
     // it, both paths still fail identically outside a transaction (autoTransaction defaults to false).
@@ -1807,6 +1814,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
+
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "update a record of");
 
     try {
       if (record instanceof MutableDocument document) {
@@ -2104,6 +2114,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
+
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "delete from");
 
     // REFUSE UP FRONT (issue #9305). LocalBucket.deleteRecord checks DELETE_RECORD too, but it is the LAST thing a delete
     // does: by then the index entries, the EXTERNAL values and the edges are already gone, and a caller that owns its

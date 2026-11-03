@@ -428,8 +428,13 @@ public class LocalSchema implements Schema {
    */
   private final       AtomicReference<Thread>                stagingThread                 = new AtomicReference<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
-  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
-  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
+  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new BackingTypeRegistry<>();
+  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new BackingTypeRegistry<>();
+  /**
+   * The owner of every backing type by the type's name, rebuilt by the two registries above on every change (issue #11020). Read on
+   * every record write: empty, the common case, it costs one volatile read.
+   */
+  private volatile    Map<String, BackingTypeOwner>         backingTypeOwners             = Map.of();
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   // Concurrent: its emptiness is read on every record write, to skip the trigger walk on a database without triggers
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new ConcurrentHashMap<>();
@@ -3535,6 +3540,79 @@ public class LocalSchema implements Schema {
           dependants.add(impl);
       dependants.addAll(GraphAnalyticalViewPersistence.getTypeNameDependants(database));
       return dependants;
+    }
+  }
+
+  /**
+   * Refuses the write {@code operation} ("insert into", "truncate", ...) on the type {@code typeName} when it is the backing type of a
+   * materialized view or a continuous aggregate and the current thread is not running that owner's refresh (issue #11020). The rows
+   * of a backing type are derived, and its owner's state accounts for exactly the rows its refresh wrote: a materialized view kept
+   * answering a row written beside its query, or emptied by a {@code TRUNCATE}, until its next refresh while reporting VALID, and a
+   * continuous aggregate never recomputed a bucket deleted behind its watermark, so the loss was permanent. PostgreSQL refuses the
+   * same writes on a materialized view.
+   * <p>
+   * The rule is asked by every record create, update and delete ({@code LocalDatabase}) and, before anything is changed, by the
+   * statements that empty a type or a bucket, so that one of them is refused whole and not half-way.
+   */
+  public void checkBackingTypeWrite(final String typeName, final String operation) {
+    final Map<String, BackingTypeOwner> owners = backingTypeOwners;
+    if (owners.isEmpty())
+      return;
+    final BackingTypeOwner owner = owners.get(typeName);
+    if (owner != null && !BackingTypeWriteScope.isRefreshing(owner))
+      throw new SchemaException("Cannot " + operation + " type '" + typeName + "' because it is the backing type for " + owner.kind()
+          + " '" + owner.getName() + "': its rows are computed from its source types and only its refresh writes them. Change the "
+          + "source data and run: " + owner.refreshStatement() + ", or remove the " + owner.kind() + " with: " + owner.dropStatement());
+  }
+
+  /** As {@link #checkBackingTypeWrite(String, String)}, for a record known by its bucket. */
+  public void checkBackingTypeWrite(final int bucketId, final String operation) {
+    if (backingTypeOwners.isEmpty())
+      return;
+    final DocumentType type = getTypeByBucketId(bucketId);
+    if (type != null)
+      checkBackingTypeWrite(type.getName(), operation);
+  }
+
+  private void backingTypeOwnersChanged() {
+    final Map<String, BackingTypeOwner> owners = new HashMap<>();
+    for (final MaterializedViewImpl view : materializedViews.values())
+      owners.put(view.getBackingTypeName(), view);
+    for (final ContinuousAggregateImpl aggregate : continuousAggregates.values())
+      owners.put(aggregate.getBackingTypeName(), aggregate);
+    backingTypeOwners = owners.isEmpty() ? Map.of() : owners;
+  }
+
+  /**
+   * A registry of backing type owners that keeps {@link #backingTypeOwners} in step with itself on every change, so that no code
+   * path that registers or removes a view or an aggregate (creation, drop, schema load, the restore of a staged schema) can leave
+   * the write guard of issue #11020 behind. Only the mutators below are used on the registries.
+   */
+  private final class BackingTypeRegistry<V extends BackingTypeOwner> extends LinkedHashMap<String, V> {
+    @Override
+    public V put(final String key, final V value) {
+      final V previous = super.put(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public void putAll(final Map<? extends String, ? extends V> map) {
+      super.putAll(map);
+      backingTypeOwnersChanged();
+    }
+
+    @Override
+    public V remove(final Object key) {
+      final V previous = super.remove(key);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public void clear() {
+      super.clear();
+      backingTypeOwnersChanged();
     }
   }
 

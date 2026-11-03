@@ -72,6 +72,15 @@ public class TruncateTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
 
+    // ONLY THE REFRESH OF A MATERIALIZED VIEW OR A CONTINUOUS AGGREGATE WRITES ITS BACKING TYPE (issue #11020). Truncated, a view
+    // answered no rows while reporting VALID, and an aggregate lost every bucket behind its watermark for good, since its refresh
+    // recomputes only the buckets after it. Asked of the whole scope and before anything below, UNSAFE or not: the fast path drops
+    // the indexes first, and the per-record refusal of a delete would come after other types of the scope were emptied
+    schema.getEmbedded().checkBackingTypeWrite(typez.getName(), "truncate");
+    if (polymorphic)
+      for (final DocumentType descendant : collectPolymorphicDescendants(typez))
+        schema.getEmbedded().checkBackingTypeWrite(descendant.getName(), "truncate");
+
     // A TIMESERIES TYPE OWNS NO RECORD BUCKET: THE TRUNCATE BELOW REPORTED SUCCESS AND KEPT EVERY SAMPLE (issue #10336). ITS SAMPLES
     // ARE REMOVED BY ITS ENGINE, OUTSIDE ANY TRANSACTION (issue #10342)
     if (typez instanceof LocalTimeSeriesType tsType)

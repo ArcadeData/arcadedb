@@ -101,6 +101,61 @@ class Issue10842CatalogRelationPolicyTest {
       Map.entry("pg_group", "the predefined roles that cannot log in exist in every PostgreSQL (psqlodbc SQLTablePrivileges)"),
       Map.entry("information_schema.column_privileges", "a row per column privilege the user holds (psqlodbc SQLColumnPrivileges)"));
 
+  /**
+   * Issue #11023: the relations that hold rows in EVERY PostgreSQL, a fresh {@code initdb} of PostgreSQL 17, with what the rows
+   * are. A fact about PostgreSQL, not about this catalog, so it does not move when the catalog does: the bootstrap data of
+   * {@code src/include/catalog/*.dat} and what {@code initdb} creates after it (the plpgsql extension, the system views and their
+   * rules, the comments). Answering one of these with no rows claims a PostgreSQL that does not exist, which is the #10371 lie,
+   * and {@link #NO_ROWS_ALTHOUGH_POSTGRES_HOLDS_ROWS} is the only way past it.
+   */
+  static final Map<String, String> HOLDS_ROWS_IN_EVERY_POSTGRES = Map.ofEntries(//
+      Map.entry("pg_aggregate", "the built-in aggregates (pg_aggregate.dat)"),
+      Map.entry("pg_am", "the built-in access methods: heap, btree, hash, gist, gin, spgist, brin (pg_am.dat)"),
+      Map.entry("pg_amop", "the operators of the built-in operator families (pg_amop.dat)"),
+      Map.entry("pg_amproc", "the support functions of the built-in operator families (pg_amproc.dat)"),
+      Map.entry("pg_attribute", "the columns of the system catalogs and views"),
+      Map.entry("pg_auth_members", "the memberships of the predefined roles: pg_monitor in pg_read_all_settings, ..."),
+      Map.entry("pg_cast", "the built-in casts (pg_cast.dat)"),
+      Map.entry("pg_class", "the system catalogs, their indexes and the system views"),
+      Map.entry("pg_collation", "default, C, POSIX, ucs_basic and the collations initdb imports (pg_collation.dat)"),
+      Map.entry("pg_constraint", "the CHECK constraints of the information_schema domains (cardinal_number, ...)"),
+      Map.entry("pg_conversion", "the built-in encoding conversions (pg_conversion.dat)"),
+      Map.entry("pg_database", "postgres, template0 and template1 (pg_database.dat)"),
+      Map.entry("pg_depend", "the dependencies of the system views and of the information_schema"),
+      Map.entry("pg_description", "the comments on the built-in objects (postgres.description)"),
+      Map.entry("pg_extension", "plpgsql, which initdb installs"),
+      Map.entry("pg_group", "the predefined roles that cannot log in"),
+      Map.entry("pg_index", "the indexes of the system catalogs"),
+      Map.entry("pg_language", "internal, c, sql (pg_language.dat) and plpgsql"),
+      Map.entry("pg_namespace", "pg_catalog, pg_toast, public (pg_namespace.dat) and information_schema"),
+      Map.entry("pg_opclass", "the built-in operator classes (pg_opclass.dat)"),
+      Map.entry("pg_operator", "the built-in operators (pg_operator.dat)"),
+      Map.entry("pg_opfamily", "the built-in operator families (pg_opfamily.dat)"),
+      Map.entry("pg_proc", "the built-in functions (pg_proc.dat)"),
+      Map.entry("pg_range", "the built-in range types: int4range, int8range, numrange, tsrange, tstzrange, daterange (pg_range.dat)"),
+      Map.entry("pg_rewrite", "the _RETURN rules of the system views"),
+      Map.entry("pg_roles", "the bootstrap superuser and the predefined roles"),
+      Map.entry("pg_settings", "a row per configuration parameter"),
+      Map.entry("pg_shdescription", "the comments on postgres, template0 and template1"),
+      Map.entry("pg_tablespace", "pg_default and pg_global (pg_tablespace.dat)"),
+      Map.entry("pg_ts_config", "the built-in text-search configurations (pg_ts_config.dat)"),
+      Map.entry("pg_ts_config_map", "the mappings of the built-in text-search configurations (pg_ts_config_map.dat)"),
+      Map.entry("pg_ts_dict", "the built-in text-search dictionaries (pg_ts_dict.dat)"),
+      Map.entry("pg_ts_parser", "the built-in text-search parser (pg_ts_parser.dat)"),
+      Map.entry("pg_ts_template", "the built-in text-search templates (pg_ts_template.dat)"),
+      Map.entry("pg_type", "the built-in types (pg_type.dat) and the row types of the system catalogs"),
+      Map.entry("pg_user", "the bootstrap superuser"));
+
+  /**
+   * Issue #11023: the relations answered with no rows although every PostgreSQL holds rows in them, each a decision of its own
+   * (issue #10591): the rows PostgreSQL holds describe objects this catalog lists nowhere else, so no row here could name them and
+   * no client sees a contradiction. The reason is the production one, {@code PostgresCatalog.noRowRelations()}, and it has to say
+   * so. A relation that enters the no-row set is checked against {@link #HOLDS_ROWS_IN_EVERY_POSTGRES}: one that is in it fails
+   * {@link #aNoRowRelationHoldsNoRowInAStockPostgresUnlessItIsADecision} until it is added here as well, by a reviewer who read
+   * what PostgreSQL holds there.
+   */
+  static final Set<String> NO_ROWS_ALTHOUGH_POSTGRES_HOLDS_ROWS = Set.of("pg_proc", "pg_range", "pg_auth_members", "pg_shdescription");
+
   private Database database;
 
   @BeforeEach
@@ -157,16 +212,61 @@ class Issue10842CatalogRelationPolicyTest {
     assertModelledOrRefusedOnPurpose("psqlodbc info.c", PSQLODBC_INFO_RELATIONS);
   }
 
-  /** A relation the catalog later models leaves the refusal list in the same change, so the list never lies about the catalog. */
+  /**
+   * A relation the catalog later models leaves the refusal list in the same change, so the list never lies about the catalog. The
+   * move is to model it WITH its rows: a move to the no-row set is a different claim, which
+   * {@link #aNoRowRelationHoldsNoRowInAStockPostgresUnlessItIsADecision} holds to what PostgreSQL holds (issue #11023).
+   */
   @Test
   void noRelationIsBothModelledAndRefusedOnPurpose() {
     final Set<String> both = new TreeSet<>(REFUSED_ON_PURPOSE.keySet());
     both.retainAll(PostgresCatalog.modelledRelations());
-    assertThat(both).isEmpty();
+    assertThat(both).as("relations both modelled and refused on purpose: model the rows PostgreSQL holds and drop the refusal, "
+        + "never answer one with no rows").isEmpty();
 
     final Set<String> read = new HashSet<>(PSQL_DESCRIBE_RELATIONS);
     read.addAll(PSQLODBC_INFO_RELATIONS);
     assertThat(read).as("an entry of the refusal list no client reads").containsAll(REFUSED_ON_PURPOSE.keySet());
+  }
+
+  // ------------------------------------------------------------------------------------------------- the no-row set (#11023)
+
+  /** Every relation answered with no rows says why no row is the truth: the judgement is written where it is made. */
+  @Test
+  void everyNoRowRelationSaysWhyItHoldsNoRow() {
+    assertThat(PostgresCatalog.noRowRelations()).as("the no-row set").isNotEmpty();
+    for (final Map.Entry<String, String> entry : PostgresCatalog.noRowRelations().entrySet())
+      assertThat(entry.getValue()).as("why %s holds no row", entry.getKey()).isNotBlank().hasSizeGreaterThan(30)
+          .doesNotContainIgnoringCase("todo");
+  }
+
+  /**
+   * The no-row set is open in production; this closes it against a fact that does not move with it. A relation every PostgreSQL
+   * holds rows in is answered with none only as a decision named in {@link #NO_ROWS_ALTHOUGH_POSTGRES_HOLDS_ROWS}, so moving
+   * {@code pg_amop} from refused to no-row (the #11023 mutation, every other test green) fails here.
+   */
+  @Test
+  void aNoRowRelationHoldsNoRowInAStockPostgresUnlessItIsADecision() {
+    final Set<String> holdRowsInPostgres = new TreeSet<>(PostgresCatalog.noRowRelations().keySet());
+    holdRowsInPostgres.retainAll(HOLDS_ROWS_IN_EVERY_POSTGRES.keySet());
+    assertThat(holdRowsInPostgres)
+        .as("relations every PostgreSQL holds rows in, answered with none: refuse them (REFUSED_ON_PURPOSE) or model their rows, "
+            + "unless the rows PostgreSQL holds describe objects no other relation of this catalog lists - then say so in "
+            + "PostgresCatalog.NEVER_HAVE_ROWS and add the relation to NO_ROWS_ALTHOUGH_POSTGRES_HOLDS_ROWS")
+        .containsExactlyInAnyOrderElementsOf(NO_ROWS_ALTHOUGH_POSTGRES_HOLDS_ROWS);
+  }
+
+  /** Every relation that holds rows in every PostgreSQL is modelled, or refused: never answered "none" by default. */
+  @Test
+  void aRelationThatHoldsRowsInEveryPostgresIsModelledOrRefused() {
+    for (final String relation : HOLDS_ROWS_IN_EVERY_POSTGRES.keySet()) {
+      if (PostgresCatalog.modelledRelations().contains(relation))
+        continue; // its rows, or a decision the test above holds it to
+      assertThat(PostgresCatalog.resolve("select * from pg_catalog." + relation, database, USER)).as(relation)
+          .isSameAs(PostgresCatalog.DECLINED);
+      assertThat(PostgresCatalog.resolve("select count(*) from " + relation, database, USER)).as(relation + " count")
+          .isSameAs(PostgresCatalog.DECLINED);
+    }
   }
 
   private void assertModelledOrRefusedOnPurpose(final String client, final List<String> relations) {

@@ -166,12 +166,18 @@ class Issue10960NoRowPsqlRelationsTest {
     assertThat(PostgresCatalog.declaredType("pg_foreign_server", "srvname")).isEqualTo(PostgresType.VARCHAR);
   }
 
-  /** A relation PostgreSQL holds rows in that this catalog does not model is still refused: the change is not "answer none". */
+  /**
+   * A relation PostgreSQL holds rows in that this catalog does not model is still refused: the change is not "answer none". Every
+   * one of them, not a sample of three that does not grow with the no-row set (issue #11023).
+   */
   @Test
   void aRelationThatHoldsRowsInEveryPostgresIsStillRefused() {
-    for (final String relation : List.of("pg_extension", "pg_language", "pg_operator"))
-      assertThat(PostgresCatalog.resolve("select * from pg_catalog." + relation, database, USER)).as(relation)
-          .isSameAs(PostgresCatalog.DECLINED);
+    for (final String relation : Issue10842CatalogRelationPolicyTest.HOLDS_ROWS_IN_EVERY_POSTGRES.keySet())
+      if (!PostgresCatalog.modelledRelations().contains(relation))
+        assertThat(PostgresCatalog.resolve("select * from pg_catalog." + relation, database, USER)).as(relation)
+            .isSameAs(PostgresCatalog.DECLINED);
+    // and none of the relations of this issue is one of them
+    assertThat(RELATIONS).doesNotContainAnyElementsOf(Issue10842CatalogRelationPolicyTest.HOLDS_ROWS_IN_EVERY_POSTGRES.keySet());
   }
 
   private PostgresCatalog.Answer resolve(final String query) {

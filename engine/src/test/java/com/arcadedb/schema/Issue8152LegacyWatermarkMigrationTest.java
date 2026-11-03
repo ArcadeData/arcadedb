@@ -53,8 +53,11 @@ class Issue8152LegacyWatermarkMigrationTest extends TestHelper {
     final ContinuousAggregateImpl ca = createAggregate();
 
     // What the defect leaves behind: extra full copies of the aggregate, one per refresh that ran.
-    duplicateBackingRows();
-    duplicateBackingRows();
+    // Written as the refresh that had the defect wrote them: nothing else may write a backing type (issue #11020)
+    try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(ca)) {
+      duplicateBackingRows();
+      duplicateBackingRows();
+    }
     assertThat(countBackingRows()).isEqualTo(8);
 
     final ContinuousAggregateImpl legacy = reloadAsLegacySchema(ca, 0);

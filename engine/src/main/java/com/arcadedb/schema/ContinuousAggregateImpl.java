@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant {
+public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant, BackingTypeOwner {
   private final Database database;
   private final String   name;
   // volatile, not final: a rename of the source type rewrites them in place (#10096), see retargetSourceType()
@@ -199,8 +199,19 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
       retargetSourceType(newName, schema.retargetedQuery("continuous aggregate", name, query, oldName, newName));
   }
 
-  private String dropStatement() {
+  @Override
+  public String dropStatement() {
     return "DROP CONTINUOUS AGGREGATE " + name;
+  }
+
+  @Override
+  public String kind() {
+    return "continuous aggregate";
+  }
+
+  @Override
+  public String refreshStatement() {
+    return "REFRESH CONTINUOUS AGGREGATE " + name;
   }
 
   @Override
