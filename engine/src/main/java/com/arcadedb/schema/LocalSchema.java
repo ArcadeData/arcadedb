@@ -3576,6 +3576,12 @@ public class LocalSchema implements Schema {
       checkBackingTypeWrite(type.getName(), operation);
   }
 
+  /**
+   * Rebuilds the snapshot from both registries. Not synchronized on purpose: it runs inside the mutation of a registry, which is
+   * serialized already (under the schema's monitor or the database write lock, as every other access to the registries is), and
+   * taking the monitor here from a thread that holds only the write lock is the order #7457 forbids. Readers never see a partial
+   * map: the snapshot is built aside and published with one volatile write.
+   */
   private void backingTypeOwnersChanged() {
     final Map<String, BackingTypeOwner> owners = new HashMap<>();
     for (final MaterializedViewImpl view : materializedViews.values())
