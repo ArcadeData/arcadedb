@@ -1,0 +1,92 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.engine;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.util.Arrays;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression tests for issue #11250: a crash recovery that did not complete (its WAL has a gap, so it was preserved and
+ * nothing further was replayed) used to leave only a log line behind. Callers that can heal the database from another copy,
+ * an HA node resyncing from its leader, had no way to ask, and the node went on serving a database whose recovery had
+ * stopped half way. {@link TransactionManager#isLastRecoveryIncomplete()} is the answer they read.
+ */
+class Issue11250RecoveryOutcomeTest extends TestHelper {
+
+  private static final int TX_HEADER_SIZE   = 24;
+  private static final int PAGE_HEADER_SIZE = 24;
+  private static final int TX_FOOTER_SIZE   = 12;
+
+  @Override
+  protected void beginTest() {
+    database.getSchema().getOrCreateDocumentType("RecoveryOutcomeType");
+  }
+
+  @Test
+  void aRecoveryAbortedOnAWalGapIsReportedIncomplete() throws Exception {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    assertThat(transactionManager.isLastRecoveryIncomplete()).isFalse();
+
+    // A corrupt first record FOLLOWED by a valid transaction record is the pattern the gap detector aborts recovery on
+    final byte[] garbage = new byte[32];
+    Arrays.fill(garbage, (byte) 0x7F);
+    final byte[] delta = { 1, 2, 3, 4, 5 };
+    final int segmentSize = PAGE_HEADER_SIZE + delta.length;
+    final ByteBuffer buf = ByteBuffer.allocate(garbage.length + TX_HEADER_SIZE + segmentSize + TX_FOOTER_SIZE);
+    buf.put(garbage);
+    buf.putLong(42L);
+    buf.putLong(123456L);
+    buf.putInt(1);
+    buf.putInt(segmentSize);
+    buf.putInt(3);
+    buf.putInt(0);
+    buf.putInt(0);
+    buf.putInt(delta.length - 1);
+    buf.putInt(1);
+    buf.putInt(1024);
+    buf.put(delta);
+    buf.putInt(segmentSize);
+    buf.putLong(WALFile.MAGIC_NUMBER);
+    Files.write(new File(database.getDatabasePath(), "txlog_777.wal").toPath(), buf.array());
+
+    transactionManager.checkIntegrity();
+
+    assertThat(transactionManager.isLastRecoveryIncomplete())
+        .as("recovery stopped on the gap and preserved the WAL: the database is not known to be whole")
+        .isTrue();
+  }
+
+  @Test
+  void aRecoveryThatReplayedEverythingIsNotReportedIncomplete() {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+
+    transactionManager.checkIntegrity();
+
+    assertThat(transactionManager.isLastRecoveryIncomplete()).isFalse();
+  }
+}

@@ -149,6 +149,12 @@ public class TransactionManager {
    */
   private volatile boolean                   recoveryInputUnreplayed;
   /**
+   * Whether the latest crash recovery of this instance ended without replaying every transaction (issue #11250): a WAL gap
+   * aborted it and preserved the files, or an exception escaped it. The database is then not known to hold what its commits
+   * promised, and a caller with another copy to heal from (an HA node and its leader) has to be able to ask.
+   */
+  private volatile boolean                   lastRecoveryIncomplete;
+  /**
    * True once this open has reconstructed {@link #getLastTransactionId()} from real evidence - either the marker
    * persisted at a previous clean close, or WAL replay - rather than falling through to the "no transaction has
    * ever been committed" default of -1 for a reason that says nothing about whether one actually has. That default
@@ -1181,6 +1187,7 @@ public class TransactionManager {
               LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
             }
 
+      lastRecoveryIncomplete = !completed;
       if (!completed)
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
       else if (walKeptForFsync)
@@ -1190,6 +1197,15 @@ public class TransactionManager {
       else
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
+  }
+
+  /**
+   * Whether the latest crash recovery of this instance did not replay every transaction (issue #11250): the WAL had a gap,
+   * so recovery stopped and the files were preserved, or an exception escaped the replay. {@code false} when no recovery ran
+   * or the last one completed.
+   */
+  public boolean isLastRecoveryIncomplete() {
+    return lastRecoveryIncomplete;
   }
 
   private static long pageKey(final int fileId, final int pageNumber) {

@@ -9924,6 +9924,77 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Quarantines every open database whose crash recovery, run when the server opened it, did not replay every transaction
+   * (issue #11250), so the node does not serve it, does not lead with it, and re-installs it from the cluster.
+   * <p>
+   * Called once the Raft server is up, which is after the server opened the databases: the recovery the check reads has
+   * already run. Before this, a node whose recovery had aborted on a WAL gap still rejoined the cluster, won an election
+   * and answered queries from pages a power loss had left behind.
+   * <p>
+   * A sole voter is left alone, for the reason {@link #handleUnexpectedApplyError} spells out: there is no copy to resync
+   * from, so the quarantine could never lift. It is reported instead.
+   *
+   * @return the databases quarantined by this call
+   */
+  List<String> quarantineDatabasesWithIncompleteRecovery() {
+    final ArcadeDBServer srv = this.server;
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (srv == null || raftHA == null)
+      return List.of();
+
+    final List<String> quarantined = new ArrayList<>();
+    for (final String dbName : srv.getDatabaseNames()) {
+      if (ArcadeDBServer.isReservedDatabaseName(dbName))
+        continue;
+      final boolean incomplete;
+      try {
+        final ServerDatabase db = srv.getDatabase(dbName, false, false);
+        incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE, "Cannot read the recovery outcome of database '%s': %s", dbName,
+            e.getMessage());
+        continue;
+      }
+      if (!incomplete)
+        continue;
+
+      if (quarantineAfterIncompleteRecovery(dbName))
+        quarantined.add(dbName);
+    }
+    return quarantined;
+  }
+
+  /**
+   * The decision for one database whose crash recovery did not replay every transaction (issue #11250): quarantine it, start
+   * the targeted resync and hand leadership off, unless this node is the only voter (nothing to resync from, so the
+   * quarantine could never lift: reported at SEVERE instead).
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterIncompleteRecovery(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The crash recovery of database '%s' did not complete and this node is the only voter, so there is no peer to "
+              + "re-install it from. It is NOT quarantined; it may be missing committed data: run CHECK DATABASE and "
+              + "restore it from a backup if it is damaged (issue #11250)", dbName);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.LOCAL_RECOVERY_INCOMPLETE))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The crash recovery of database '%s' did not complete, so its local copy may be missing committed data: "
+            + "quarantining it and re-installing it from the leader (issue #11250)", dbName);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
    * Clears the diverged-database set and the bounded-escalation counter after a snapshot resync has
    * restored consistent state across all databases. A resync always reinstalls every database from
    * the leader, so clearing the whole set (rather than a single database) matches what the resync
