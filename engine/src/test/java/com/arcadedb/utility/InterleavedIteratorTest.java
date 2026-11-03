@@ -57,6 +57,35 @@ class InterleavedIteratorTest {
   }
 
   @Test
+  void asksTheSourceAgainWhenItsPeekedEntryWentAway() {
+    // #11234: an edge-list walk withdraws the entry its hasNext() peeked once the transaction deletes that edge. The rotation
+    // must not stay on the answer it was given before, or its next() asks the source for an entry it no longer has
+    final List<String> shrinking = new ArrayList<>(List.of("a1", "a2"));
+    final Iterator<String> withdrawing = new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return !shrinking.isEmpty();
+      }
+
+      @Override
+      public String next() {
+        if (shrinking.isEmpty())
+          throw new NoSuchElementException();
+        return shrinking.removeFirst();
+      }
+    };
+    final InterleavedIterator<String> it = new InterleavedIterator<>(sources(withdrawing, of("b1")));
+    assertThat(it.next()).isEqualTo("a1");
+    assertThat(it.next()).isEqualTo("b1");
+    assertThat(it.hasNext()).isTrue();
+
+    shrinking.clear();
+
+    assertThat(it.hasNext()).isFalse();
+    assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
+  }
+
+  @Test
   void singleSourceIsPassedThroughInOrder() {
     assertThat(drain(of("a1", "a2", "a3"))).containsExactly("a1", "a2", "a3");
   }

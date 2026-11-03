@@ -85,6 +85,10 @@ public interface EdgeSegment extends Record {
    */
   int removeLightEdge(int edgeTypeBucketId, RID vertexRID);
 
+  /**
+   * Returns the previous chunk in the list, or {@code null} if this is the tail: the chain as the open transaction has it, so a
+   * chunk the transaction deleted after this instance was read is passed (issue #11234).
+   */
   EdgeSegment getPrevious();
 
   /** Returns the RID of the previous chunk in the list without loading it, or {@code null} if this is the tail. */

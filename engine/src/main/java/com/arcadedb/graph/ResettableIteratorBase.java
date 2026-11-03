@@ -362,6 +362,17 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     return currentContainer;
   }
 
+  /**
+   * Whether the open transaction deleted the edge record {@code edge} names: the walk reads a segment as it stood when it reached
+   * it (see {@link #walkable}), so an entry the transaction removed after that is still in the walk's copy (issue #11234). Such an
+   * edge is gone, and handing it out would give the caller a record that no longer exists, which reads like a ghost edge when it
+   * is loaded. For the iterators that hand out edges, which pay a lookup per entry anyway.
+   */
+  protected final boolean deletedByTransaction(final RID edge) {
+    final TransactionContext tx = ((DatabaseInternal) currentContainer.getDatabase()).getTransactionIfExists();
+    return tx != null && tx.isDeletedInTransaction(edge.getBucketId(), edge.getPosition());
+  }
+
   @Override
   public long countEntries() {
     long total = browsed;
