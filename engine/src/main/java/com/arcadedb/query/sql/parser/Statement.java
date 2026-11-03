@@ -554,6 +554,58 @@ public class Statement extends SimpleNode {
     if (timeout.val.longValue() > -1)
       this.timeout = timeout;
   }
+
+  /**
+   * The {@code resultSetLimit} of the current user's security groups when it is tighter than this statement's own LIMIT (or the
+   * statement has none, or one that is not a literal), else -1: the quota is a ceiling, and a LIMIT below it stays in force.
+   * <p>
+   * Read only, on purpose. A statement is shared: the database's statement cache hands the same instance to every user and
+   * thread that runs the same text, so a quota written into it caps everybody after the user it belongs to. A caller that
+   * gets a value here applies it to a {@link #copy()}.
+   */
+  protected long tighterProfiledLimit(final DatabaseInternal database) {
+    final long profiled = database.getResultSetLimit();
+    if (profiled < 0)
+      return -1L;
+    final Number own = limit != null && limit.num != null ? limit.num.getValue() : null;
+    return own == null || own.longValue() < 0 || own.longValue() > profiled ? profiled : -1L;
+  }
+
+  /**
+   * This statement as the current user runs it from the query engine: itself, or a copy carrying the {@code resultSetLimit} of the
+   * user's groups where it is tighter than its own LIMIT. Never this statement modified, for the reason given in
+   * {@link #tighterProfiledLimit}: the query engine used to write the limit into it, so one capped user capped every later user of
+   * the same text, root included, and replaced a LIMIT tighter than the cap with the cap.
+   * <p>
+   * Itself by default, at no cost: only a statement whose plan reads its LIMIT has a quota to carry, and those override this with
+   * {@link #copyWithTighterProfiledLimit}. A SELECT and a MATCH do not: they apply the limit, together with the
+   * {@code readTimeout}, to a copy of their own when they execute, which also covers the paths that execute them without the query
+   * engine.
+   */
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database) {
+    return this;
+  }
+
+  /** {@link #withProfiledResultSetLimit} for a statement whose plan reads its LIMIT and that is planned on every execution. */
+  protected final Statement copyWithTighterProfiledLimit(final DatabaseInternal database) {
+    final long profiledLimit = tighterProfiledLimit(database);
+    if (profiledLimit < 0)
+      return this;
+
+    final Statement statement = copy();
+    statement.setLimit(new Limit().setValue((int) profiledLimit));
+    return statement;
+  }
+
+  /** {@link #tighterProfiledLimit} for the {@code readTimeout} of the current user's groups and this statement's TIMEOUT. */
+  protected long tighterProfiledTimeout(final DatabaseInternal database) {
+    final long profiled = database.getReadTimeout();
+    if (profiled < 0)
+      return -1L;
+    final Number own = timeout != null ? timeout.getVal() : null;
+    return own == null || own.longValue() < 0 || own.longValue() > profiled ? profiled : -1L;
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

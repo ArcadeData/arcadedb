@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
@@ -70,6 +71,15 @@ public class DeleteStatement extends Statement {
 
   public DmlSourcePlanKey getSourcePlanKey() {
     return sourcePlanKey;
+  }
+
+  /**
+   * Its plan reads the LIMIT, and it is planned on every execution. The plan of its source is cached, but the LIMIT is applied
+   * above it and is not part of it, so the copy shares that plan with every user safely.
+   */
+  @Override
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database) {
+    return copyWithTighterProfiledLimit(database);
   }
 
   @Override
