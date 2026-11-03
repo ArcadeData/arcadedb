@@ -735,11 +735,17 @@ public class PostgresNetworkExecutor extends Thread {
                 final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
               portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
               portal.executed = true;
-              resolvePortalColumns(portal, true);
+              if (!isRowlessWrite(portal.sqlStatement))
+                resolvePortalColumns(portal, true);
             }
-          answerWithColumns(portal);
-          portal.rowsDescribed = true;
-          rememberDescribedLayout(portal);
+          if (isRowlessWrite(portal.sqlStatement))
+            // PostgreSQL describes a write with no RETURN as NoData, and Execute answers it with a bare tag (issue #11017)
+            writeNoData();
+          else {
+            answerWithColumns(portal);
+            portal.rowsDescribed = true;
+            rememberDescribedLayout(portal);
+          }
         } catch (final CommandParsingException e) {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
@@ -755,7 +761,7 @@ public class PostgresNetworkExecutor extends Thread {
         } finally {
           CommandTimeoutOverride.clear();
         }
-      } else if (portal.isExpectingResult && portal.columns != null) {
+      } else if (portal.isExpectingResult && portal.columns != null && !isRowlessWrite(portal.sqlStatement)) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
         // previous Describe/Execute already ran. Its columns are answered as they stand rather than
         // re-derived: the rows they came from cannot have changed - the portal is run exactly once - so a
@@ -1113,6 +1119,13 @@ public class PostgresNetworkExecutor extends Thread {
           return;
         }
 
+        // A write with no RETURN is answered as PostgreSQL does on every path, whatever Describe preceded this Execute
+        // (issue #11017): no DataRow, and a tag carrying the number of records it changed
+        if (portal.isExpectingResult && portal.fullResultSet != null && isRowlessWrite(portal.sqlStatement)) {
+          answerRowlessWrite(portal);
+          return;
+        }
+
         if (portal.promisedNoData() && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
           answerDescribedNoData(portal);
           return;
@@ -1208,31 +1221,35 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * Answers an Execute of a write with no RETURN clause (issues #8379, #11017): PostgreSQL's own exchange, a
+   * CommandComplete tagged with the number of records the statement changed and no DataRow. ArcadeDB answers such a
+   * write with the records (or the count) it wrote, which only echo the write: a client that described the statement
+   * rather than the portal - asyncpg, npgsql, pgx - has no column list to decode them with, and one that described the
+   * portal or nothing at all (pgjdbc) reads them as a result set where {@code executeUpdate()} expects none.
+   */
+  private void answerRowlessWrite(final PostgresPortal portal) {
+    portal.resultCursor = portal.fullResultSet.size();
+    portal.suspended = false;
+    writeCommandComplete(portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
+  }
+
+  /**
    * Answers an Execute whose statement a {@code Describe('S')} announced with {@code NoData}, but which produced rows
-   * (issue #8379). A DataRow is only legal after a RowDescription, Execute never sends one (issue #8244), and a client
-   * that described the statement rather than the portal - asyncpg, npgsql, pgx - has no column list or type OIDs to
-   * decode them with, so the rows cannot be sent as they are:
-   * <ul>
-   *   <li>a write with no RETURN clause is what PostgreSQL itself answers with NoData, and its rows are only ArcadeDB
-   *       echoing the records it wrote: the exchange is PostgreSQL's own, CommandComplete tagged with the row count
-   *       and no DataRow;</li>
-   *   <li>anything else really returns a result set its Describe could not name: refused with an error rather than
-   *       answered with rows no RowDescription announced, which no client can decode. Describing the portal instead
-   *       ({@code Describe('P')}, what pgjdbc and libpq send) runs it first and names the columns it produced.</li>
-   * </ul>
+   * (issue #8379) and is not a write with no RETURN clause, which {@link #answerRowlessWrite} answers. A DataRow is only
+   * legal after a RowDescription, Execute never sends one (issue #8244), and a client that described the statement
+   * rather than the portal has no column list or type OIDs to decode them with, so the statement really returns a result
+   * set its Describe could not name: refused with an error rather than answered with rows no RowDescription announced,
+   * which no client can decode. Describing the portal instead ({@code Describe('P')}, what pgjdbc and libpq send) runs
+   * it first and names the columns it produced.
    */
   private void answerDescribedNoData(final PostgresPortal portal) {
     final int rows = portal.fullResultSet.size();
     portal.resultCursor = rows;
     portal.suspended = false;
-    if (isRowlessWrite(portal.sqlStatement))
-      writeCommandComplete(portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
-    else {
-      setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
-          + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
-          "0A000"); // feature_not_supported
-    }
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
+        + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
+        "0A000"); // feature_not_supported
   }
 
   /**
@@ -1442,7 +1459,9 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      if (!answersNoRows) {
+      // A write with no RETURN is answered with the bare tag PostgreSQL gives it, whichever path it arrives on (issue #11017)
+      final boolean rowlessWrite = isRowlessWrite(parsedStatement);
+      if (!answersNoRows && !rowlessWrite) {
         Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
             : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
         if (catalogAnswer == null)
@@ -1464,7 +1483,7 @@ public class PostgresNetworkExecutor extends Thread {
       // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
       // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
       // with an empty command tag instead of e.g. "BEGIN".
-      writeCommandComplete(commandTag, cachedResultSet.size());
+      writeCommandComplete(commandTag, rowlessWrite ? affectedRecords(parsedStatement, cachedResultSet) : cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
