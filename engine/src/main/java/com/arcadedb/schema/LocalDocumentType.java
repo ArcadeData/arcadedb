@@ -3182,6 +3182,9 @@ public class LocalDocumentType implements DocumentType {
     // A lightweight edge type, this one or one below it, would inherit everything the super type carries, including a
     // MANDATORY or default-valued property that no lightweight edge can honour (#9846). Skipped for a linkage that already holds.
     if (newLinkage) {
+      // Every row of this type would be answered by the view whose backing type it extends (issue #11204)
+      schema.checkCanExtend(name, superType);
+
       final Property constraint = superType.findPropertyAppliedToEmptyRecord();
       if (constraint != null) {
         final LocalEdgeType lightweight = findLightweightEdgeTypeInSubtree();
@@ -3194,7 +3197,8 @@ public class LocalDocumentType implements DocumentType {
   /**
    * The refusals of {@link #checkCanAddSuperType} that a type NOT CREATED YET can already be told, so that {@link TypeBuilder} asks
    * them before it registers anything: a new type has no sub types and is no time series, so what is left is the super type being a
-   * time series, and the new type being a LIGHTWEIGHT edge type that would inherit a property it cannot honour (issue #10394).
+   * time series or a backing type (issue #11204), and the new type being a LIGHTWEIGHT edge type that would inherit a property it
+   * cannot honour (issue #10394).
    * <p>
    * Public only because the {@code CREATE ... TYPE} statements, in another package, ask the same questions before they create the type;
    * internal to the schema and the statements that build types, not an API for applications.
@@ -3202,6 +3206,7 @@ public class LocalDocumentType implements DocumentType {
   public static void checkSuperTypeOfNewType(final String typeName, final LocalDocumentType superType, final boolean lightweightEdge) {
     if (superType instanceof LocalTimeSeriesType)
       throw timeSeriesHierarchyRefusal(typeName, superType.getName(), superType.getName());
+    superType.schema.checkCanExtend(typeName, superType);
     if (lightweightEdge)
       LocalEdgeType.checkCanBeLightweight(typeName, superType);
   }

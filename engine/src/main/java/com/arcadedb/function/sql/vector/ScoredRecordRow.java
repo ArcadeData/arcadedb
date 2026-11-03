@@ -53,7 +53,7 @@ import java.util.Set;
  * The record itself can be one whose content is not read yet (issue #10973, see {@code SQLFunctionVectorNeighbors}): its
  * {@code @rid} and {@code @type} are answered without reading it, and the first property asked of the row reads it. A record
  * found gone by that read (removed from its bucket behind the index's back) answers no property, rather than failing the
- * query that asked.
+ * query that asked, and is reported by {@link StaleVectorEntryReporter} (issue #11202).
  */
 final class ScoredRecordRow extends AbstractMap<String, Object> {
   static final         String RECORD = "record";
@@ -66,6 +66,8 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
   private       LinkedHashMap<String, Object> materialized;
   // set once the `record` key was removed from the row: it no longer answers the record
   private       boolean                       recordKeyRemoved;
+  // set once a read found the record gone (issue #11202)
+  private       boolean                       recordGone;
 
   ScoredRecordRow(final Document record, final String scoreKey, final float score) {
     this.record = record;
@@ -171,29 +173,42 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
 
   /** A property of the record, or null when the record is gone (see the class javadoc). */
   private Object property(final String name) {
+    if (recordGone)
+      return null;
     try {
       return record.get(name);
     } catch (final RecordNotFoundException e) {
+      recordFoundGone();
       return null;
     }
   }
 
   private boolean has(final String name) {
+    if (recordGone)
+      return false;
     try {
       return record.has(name);
     } catch (final RecordNotFoundException e) {
+      recordFoundGone();
       return false;
     }
   }
 
+  /** Reported once per row, and never looked up again: each lookup of a record that is gone is a page read for nothing. */
+  private void recordFoundGone() {
+    recordGone = true;
+    StaleVectorEntryReporter.reportMissingRecord(record);
+  }
+
   private LinkedHashMap<String, Object> materialize() {
     if (materialized == null) {
-      Set<String> names;
-      try {
-        names = record.getPropertyNames();
-      } catch (final RecordNotFoundException e) {
-        names = Set.of();
-      }
+      Set<String> names = Set.of();
+      if (!recordGone)
+        try {
+          names = record.getPropertyNames();
+        } catch (final RecordNotFoundException e) {
+          recordFoundGone();
+        }
       final LinkedHashMap<String, Object> copy = new LinkedHashMap<>(names.size() + 5);
       for (final String prop : names)
         copy.put(prop, property(prop));

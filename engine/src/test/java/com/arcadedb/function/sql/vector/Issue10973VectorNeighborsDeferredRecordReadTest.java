@@ -128,6 +128,44 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
     assertThat(withPid).filteredOn(r -> !nearest.equals(r.getProperty("r"))).allSatisfy(r -> assertThat(r.<Object>getProperty("pid")).isNotNull());
   }
 
+  /**
+   * Issue #11202: the row of a record gone behind the index's back takes one of the {@code limit} places, so the answer holds one
+   * real neighbour fewer. It is reported once per row however many properties are read, and {@code REBUILD INDEX}, the repair the
+   * report names, gives the real neighbour its place back.
+   */
+  @Test
+  void aRecordGoneBehindTheIndexIsReportedAndRebuildIndexRepairsTheAnswer() {
+    createDocs(30, "", 0);
+    indexOf().buildVectorGraphNow();
+    final float[] q = new float[DIMENSIONS];
+    final String withPid = "SELECT @rid AS r, pid, payload, vector FROM (SELECT expand(vectorNeighbors('Doc[vector]', ?, 10)))";
+
+    final List<RID> before = new ArrayList<>();
+    rows(withPid, q).forEach(r -> before.add(r.getProperty("r")));
+    final RID nearest = before.getFirst();
+    // the neighbour that has the 11th place while every record is there
+    final List<RID> eleven = new ArrayList<>();
+    rows("SELECT @rid AS r FROM (SELECT expand(vectorNeighbors('Doc[vector]', ?, 11)))", q).forEach(r -> eleven.add(r.getProperty("r")));
+    final RID eleventh = eleven.getLast();
+    assertThat(before).doesNotContain(eleventh);
+
+    database.transaction(() -> ((LocalBucket) database.getSchema().getBucketById(nearest.getBucketId())).deleteRecord(nearest));
+
+    final long reportedBefore = StaleVectorEntryReporter.getTotalReported();
+    final List<Result> damaged = rows(withPid, q);
+    assertThat(damaged).hasSize(10).extracting(r -> r.<RID>getProperty("r")).contains(nearest).doesNotContain(eleventh);
+    // three properties read off the row, one report
+    assertThat(StaleVectorEntryReporter.getTotalReported() - reportedBefore).isEqualTo(1L);
+
+    database.command("sql", "REBUILD INDEX `Doc[vector]`");
+    indexOf().buildVectorGraphNow();
+
+    final List<Result> repaired = rows(withPid, q);
+    assertThat(repaired).hasSize(10).allSatisfy(r -> assertThat(r.<Object>getProperty("pid")).isNotNull());
+    assertThat(repaired).extracting(r -> r.<RID>getProperty("r")).doesNotContain(nearest).contains(eleventh)
+        .containsAll(before.subList(1, 10));
+  }
+
   /** A delete through the API takes the vector out of the index in its own commit: the deferred row never sees it. */
   @Test
   void aCommittedDeleteCostsNoAnswerRow() {
