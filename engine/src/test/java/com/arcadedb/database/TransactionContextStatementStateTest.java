@@ -112,6 +112,10 @@ class TransactionContextStatementStateTest {
     // statement taken back does not undo, and a build that fails drops its index, so a stale name matches no index
     CLASSIFICATION.put("bucketFirstWriteSequences", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("indexesReconciled", NOT_STATEMENT_STATE);
+    // Issue #11234: where a walk goes on past an edge-list segment the transaction deleted. An entry is followed only while
+    // deletedRecordsInTx (journaled) holds its segment, so the entry of a delete taken back is inert, and a later delete of the same
+    // segment writes its own entry over it
+    CLASSIFICATION.put("deletedEdgeSegments", NOT_STATEMENT_STATE);
   }
 
   @Test
