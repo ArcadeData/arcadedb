@@ -61,6 +61,26 @@ class Issue10925CreateRefusesStraySealedFileTest extends TestHelper {
   }
 
   @Test
+  void dropThenRecreateIsNotRefused() throws Exception {
+    database.command("sql", CREATE);
+    database.command("sql", "DROP TYPE Ticker");
+    assertThat(new File(getDatabasePath(), TimeSeriesSealedStore.sealedFileNameFor("Ticker", 0))).doesNotExist();
+
+    database.command("sql", CREATE);
+
+    assertThat(database.getSchema().existsType("Ticker")).isTrue();
+  }
+
+  @Test
+  void ifNotExistsOnAnExistingTypeIsANoOp() throws Exception {
+    database.command("sql", CREATE);
+
+    database.command("sql", CREATE.replace("Ticker", "Ticker IF NOT EXISTS"));
+
+    assertThat(database.getSchema().existsType("Ticker")).isTrue();
+  }
+
+  @Test
   void embeddedBuilderRefusesToo() throws Exception {
     final File sealed = new File(getDatabasePath(), TimeSeriesSealedStore.sealedFileNameFor("Ticker", 0));
     Files.write(sealed.toPath(), new byte[] { 1, 2, 3 });
