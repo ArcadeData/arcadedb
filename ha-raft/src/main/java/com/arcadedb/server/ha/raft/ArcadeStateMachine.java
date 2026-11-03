@@ -122,6 +122,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -301,6 +302,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Tracks the highest term observed so notifyTermIndexUpdated can log only the first time we
   // see each term (otherwise it fires on every config/metadata entry, which is noisy).
   private final    AtomicLong                highestTermSeen  = new AtomicLong(-1);
+  // Publications whose outcome a proposer is waiting for (issue #11240), settled by the entries this node applies
+  private final    Set<PendingPublication>   pendingPublications = ConcurrentHashMap.newKeySet();
   // Raft term seen at the last notifyLeaderChanged. Lets us tell a genuine re-election (term
   // advanced) from a same-term re-notification, so we only warn about real leader churn (#4809 follow-up).
   private volatile long                      lastNotifiedLeaderTerm = -1;
@@ -1993,6 +1996,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
+    // A configuration or no-op entry of a later term settles a pending publication as well (issue #11240)
+    settlePublicationsBefore(term);
     try {
       super.notifyTermIndexUpdated(term, index);
     } catch (final Throwable t) {
@@ -2047,6 +2052,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           appended.decoded() :
           RaftLogEntryCodec.decode(data);
       targetDatabase = decoded.databaseName();
+
+      // Before the entry is applied: one of a later term means a pending publication of an earlier term was truncated, and
+      // its proposer must not keep the layout it published (issue #11240)
+      settlePublicationsBefore(termIndex.getTerm());
 
       if (decoded.type() == null) {
         // A committed entry whose leading type byte is unrecognised (e.g. written by a newer node
@@ -2159,6 +2168,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       if (staleNoDatabaseEntry)
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
+
+      // After the apply, so the proposer persists its swap over a state the entry is already applied to (issue #11240)
+      if (decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
+        confirmPublication(decoded, termIndex.getTerm());
 
       final long previousApplied;
       synchronized (appliedPositionLock) {
@@ -9772,6 +9785,84 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *
    * @return {@code true} when this call quarantined the database
    */
+  /**
+   * A schema entry its proposer published from this node and whose outcome it may have to wait for (issue #11240): a
+   * publication that timed out is either committed or truncated by a leadership change, and the entries this node applies
+   * tell which, because they are applied in log order. The proposer's entry is bound to the term it was proposed in (issue
+   * #9547), so it is committed when this node applies it, and truncated when this node applies an entry of a later term
+   * first: every entry ahead of that one in the log is settled, and the proposal is not among them.
+   */
+  static final class PendingPublication {
+    final         String                     databaseName;
+    final         long                       term;
+    private final CompletableFuture<Boolean> outcome = new CompletableFuture<>();
+    private volatile String                  schemaJson;
+
+    private PendingPublication(final String databaseName, final long term) {
+      this.databaseName = databaseName;
+      this.term = term;
+    }
+
+    /** The schema document the publishing entry carries, which tells it apart from another entry of the same term. */
+    void identify(final String schemaJson) {
+      this.schemaJson = schemaJson;
+    }
+
+    /**
+     * @return {@code TRUE} once the entry is committed and applied here, {@code FALSE} once it is truncated, {@code null}
+     * when neither happened within {@code timeoutMs}
+     */
+    Boolean awaitOutcome(final long timeoutMs) throws InterruptedException {
+      try {
+        return outcome.get(timeoutMs, TimeUnit.MILLISECONDS);
+      } catch (final TimeoutException e) {
+        return null;
+      } catch (final ExecutionException e) {
+        // never completed exceptionally
+        return null;
+      }
+    }
+
+    private boolean matches(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm) {
+      if (entryTerm != term || decoded.moreChunksFollow() || !databaseName.equals(decoded.databaseName()))
+        return false;
+      final String expected = schemaJson;
+      return expected == null || decoded.schemaJson() == null || expected.equals(decoded.schemaJson());
+    }
+  }
+
+  /**
+   * Registers a publication of {@code databaseName} its proposer may wait on, BEFORE the entry is dispatched, so an apply
+   * that races the proposer's timeout is not missed (issue #11240). Forgotten with {@link #forgetPublication}.
+   */
+  PendingPublication expectPublication(final String databaseName, final long term) {
+    final PendingPublication pending = new PendingPublication(databaseName, term);
+    pendingPublications.add(pending);
+    return pending;
+  }
+
+  void forgetPublication(final PendingPublication pending) {
+    pendingPublications.remove(pending);
+  }
+
+  /** Settles as truncated every pending publication of a term before {@code entryTerm} (issue #11240). */
+  private void settlePublicationsBefore(final long entryTerm) {
+    if (pendingPublications.isEmpty())
+      return;
+    for (final PendingPublication pending : pendingPublications)
+      if (pending.term < entryTerm && pending.outcome.complete(Boolean.FALSE))
+        LogManager.instance().log(this, Level.WARNING,
+            "The schema entry of database '%s' proposed in term %d was truncated: this node applies an entry of term %d first "
+                + "(issue #11240)", pending.databaseName, pending.term, entryTerm);
+  }
+
+  /** Settles as committed the pending publication the applied {@code decoded} entry is (issue #11240). */
+  private void confirmPublication(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm) {
+    for (final PendingPublication pending : pendingPublications)
+      if (pending.matches(decoded, entryTerm))
+        pending.outcome.complete(Boolean.TRUE);
+  }
+
   boolean quarantineUnpublishedSchemaChange(final String dbName, final String session, final Throwable refusal) {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA != null && !isDatabaseDiverged(dbName) && raftHA.isSoleVoter()) {

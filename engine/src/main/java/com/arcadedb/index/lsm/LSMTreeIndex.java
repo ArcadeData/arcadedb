@@ -1010,17 +1010,24 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         mutable = newMutableIndex;
         updateCaseInsensitiveKeys();
 
-        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), saveSchema);
+        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), false);
+        if (saveSchema)
+          // Persisted only once an HA compaction is published (issue #11240), at once otherwise
+          database.getWrappedDatabaseInstance()
+              .runOnceCompactionIsPublished(-1, () -> database.getSchema().getEmbedded().saveConfiguration());
         return newMutableIndex;
       });
 
       if (prevMutable != null)
-        try {
-          prevMutable.drop();
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
-              prevMutable);
-        }
+        // Kept until an HA compaction is published (issue #11240), so a leader that loses the entry still has it
+        database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(prevMutable.getFileId(), () -> {
+          try {
+            prevMutable.drop();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
+                prevMutable);
+          }
+        });
 
       return result;
 

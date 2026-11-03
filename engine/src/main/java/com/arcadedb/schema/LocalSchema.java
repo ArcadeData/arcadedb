@@ -4767,6 +4767,10 @@ public class LocalSchema implements Schema {
           migratedTarget.put(Integer.parseInt(key), migratedJSON.getInt(key));
       }
 
+      // The files on disk rebuild the id slots, so the ids of the highest files dropped before are free again unless the
+      // schema says they were used (issue #11240)
+      database.getFileManager().reserveFileIdsBelow(root.getInt(NEXT_FILE_ID, 0));
+
     } catch (final Exception e) {
       readable = false;
       LogManager.instance().log(this, Level.SEVERE,
@@ -5600,6 +5604,11 @@ public class LocalSchema implements Schema {
       root.put("migratedFileIds", migratedJSON);
     }
 
+    // Only past the highest file held (issue #11240): ids of dropped files are never handed out again after a reopen
+    final int nextFileId = database.getFileManager().getNextFileIdPastDroppedFiles();
+    if (nextFileId > -1)
+      root.put(NEXT_FILE_ID, nextFileId);
+
     final Map<String, String> manualNames = manualIndexLogicalNames();
     if (!manualNames.isEmpty()) {
       final JSONObject manualJSON = new JSONObject();
@@ -5824,6 +5833,12 @@ public class LocalSchema implements Schema {
    * its post-compaction file.
    */
   static final String MANUAL_INDEXES = "manualIndexes";
+
+  /**
+   * Key of the first file id never handed out, written only when it is past the highest file the database holds, i.e. when
+   * the highest files were dropped (issue #11240). See {@link FileManager#getNextFileIdPastDroppedFiles()}.
+   */
+  static final String NEXT_FILE_ID = "nextFileId";
 
   /** Current file name -> logical name of every manual LSM index a compaction renamed, in file name order. */
   private Map<String, String> manualIndexLogicalNames() {

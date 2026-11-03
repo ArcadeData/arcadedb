@@ -42,6 +42,7 @@ import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.IOException;
@@ -525,6 +526,27 @@ public interface DatabaseInternal extends Database {
       throw e;
     } catch (final Exception e) {
       throw new IOException("Compaction failed", e);
+    }
+  }
+
+  /**
+   * Runs what a compaction persists of its swap on this node - the schema save, the drop of a file it replaced - once the
+   * cluster accepted the entry that publishes the compaction, or at once when no replicated compaction runs on this thread,
+   * which is always the case standalone (issue #11240). A leader that persisted first and then crashed, or lost the entry
+   * to a leadership change, held a layout no other node had, and its index silently missed what the next leader wrote into
+   * the files it had replaced. Deferred, the local files stay as the cluster knows them until the entry is in the log.
+   *
+   * @param droppedFileId the id of the file {@code action} drops, which the publishing entry announces to the other nodes
+   *                      although this node keeps it until then, or -1 when the action drops no file
+   * @param action        what to persist
+   */
+  default void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    try {
+      action.call();
+    } catch (final RuntimeException | Error e) {
+      throw e;
+    } catch (final Throwable e) {
+      throw new DatabaseOperationException("Error on persisting a compaction", e);
     }
   }
 
