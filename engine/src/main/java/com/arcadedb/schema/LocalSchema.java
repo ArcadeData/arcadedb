@@ -5449,6 +5449,11 @@ public class LocalSchema implements Schema {
 
       savedGeneration = capturedGeneration;
 
+    } catch (final IOException e) {
+      // A FAILED WRITE LEAVES THE SCHEMA DIRTY, WHATEVER ASKED FOR IT: A CHANGE THAT SAVES WITHOUT MARKING ITSELF DIRTY (A
+      // COMPACTION SWAP, #11240) WOULD OTHERWISE NEVER BE WRITTEN AGAIN, NOT AT THE NEXT TRANSACTION END NOR AT THE CLOSE
+      dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
+      throw e;
     } finally {
       // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
       // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
