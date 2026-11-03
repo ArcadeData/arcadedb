@@ -4632,9 +4632,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Only now that the pages are committed may the manifest vouch for them (issue #6106). Written after the
           // commit and never before: a manifest that outlived a persist which did not complete would be the one
-          // thing able to certify a graph nobody built.
-          final Long certifiedFingerprint = writeGraphManifest(gf, finalActiveVectorIds);
-          graphCertified = true;
+          // thing able to certify a graph nobody built. And only once the pages are on the disk: they were committed
+          // without the WAL, so a kill before the asynchronous flush wrote them would leave the manifest vouching for
+          // pages that are not there (issue #11238). Left uncertified, the graph is rebuilt on the next open.
+          final boolean graphOnDisk = isOnDisk(gf);
+          final Long certifiedFingerprint = graphOnDisk ? writeGraphManifest(gf, finalActiveVectorIds) : null;
+          graphCertified = graphOnDisk;
           // Identity, not a flag: if graphIndex was replaced since publish, admitByDemotingResidentGraph() compares
           // this reference against the then-resident graph and finds no match.
           persistedGraphSource = builtGraph;
@@ -4642,8 +4645,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // The replacement is certified now, so the stale pre-compaction file it supersedes is safe to drop -
           // outside any lock, because a reader that already captured it must be able to finish (see
           // dropReplacedComponent()). Doing this only now, rather than as soon as gf existed, is what keeps a
-          // write or commit failure above from deleting the one persisted graph the index still has.
-          if (staleGraphFileFromCompaction != null)
+          // write or commit failure above from deleting the one persisted graph the index still has. An uncertified
+          // replacement (its pages not on the disk yet) keeps it too, and the catch below can still fall back to it.
+          if (staleGraphFileFromCompaction != null && graphCertified)
             dropReplacedComponent(staleGraphFileFromCompaction);
 
           // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
@@ -13175,20 +13179,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // transaction too, so the bulk-loaded vector pages it still held landed on this node only. Skipped, the
             // graph is built the way every other node of the cluster builds it for this same build: node-locally, on
             // first use. It is also exactly what this build does whenever the graph is already loaded.
-            if (vectorIndex().size() > 0 && graphState == GraphState.LOADING && !isReplicated()) {
+            final boolean graphPersisted = vectorIndex().size() > 0 && graphState == GraphState.LOADING && !isReplicated();
+            if (graphPersisted) {
               buildGraphWithChunking(graphCallback, chunkedCommitAllowed);
             }
 
-            // PHASE 4: Final commit and mark READY
-            if (startedTransaction)
+            // PHASE 4: Final commit, durability, and only then READY (issue #11238). The last chunk is committed here,
+            // WITHOUT the WAL like every chunk before it, whenever the build may commit at all: a build that shares a
+            // transaction it did not open (TypeIndexBuilder wraps every build in one) used to leave it to that caller,
+            // whose commit ran after the finally below had switched the WAL back on and wrote the last chunk through
+            // the WAL on top of pages the earlier chunks had only handed to the asynchronous flush. A kill before that
+            // flush left recovery a version gap on those pages, and it replayed nothing after it, every later
+            // transaction of the database included. A build that may not commit (a caller's open transaction) has
+            // committed nothing yet: the caller's own commit writes all of it through the WAL.
+            final boolean commitsItsOwnPages = startedTransaction || chunkedCommitAllowed;
+            if (commitsItsOwnPages) {
               db.getWrappedDatabaseInstance().commit();
+              try {
+                makeBuiltPagesDurable();
+              } finally {
+                if (!startedTransaction)
+                  // the caller's transaction, now empty, for the caller to commit (or roll back) as it always did
+                  db.getWrappedDatabaseInstance().begin();
+              }
+            }
 
             // buildGraphWithChunking() rewrites the graph pages inside this transaction, which drops the manifest;
-            // only here, past the commit, is there a persisted graph to vouch for again (issue #6106).
+            // only here, past the commit, is there a persisted graph to vouch for again (issue #6106), and only once
+            // its pages are on the disk: a manifest certifying pages that a kill took away would be read as a valid
+            // graph (issue #11238). Left without one, the graph is rebuilt on the next open.
             // Single read, not a check-then-use, and this runs on the thread that owns the initial build while
             // the index is UNAVAILABLE (no concurrent COMPACT INDEX possible) - intentionally left out of #6536's
             // local-capture sweep.
-            writeGraphManifest(graphFile, ordinalToVectorId);
+            if (!graphPersisted || !commitsItsOwnPages || isOnDisk(graphFile))
+              writeGraphManifest(graphFile, ordinalToVectorId);
 
             persistBuildState(BUILD_STATE.READY);
 
@@ -13236,6 +13260,82 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     return totalRecords;
+  }
+
+  /**
+   * Makes the vector pages this build committed WITHOUT the WAL durable before the index is declared READY (issue #11238).
+   * <p>
+   * Those commits only handed the pages to the asynchronous flush. A process killed before it wrote them reopened an
+   * index READY and empty, and the first WAL-logged write of one of those pages - the next insert of an indexed record -
+   * left recovery a version gap it cannot bridge, so it stopped replaying and every transaction committed after it, on
+   * any type, was lost too.
+   * <p>
+   * The pages the flush writes within {@link GlobalConfiguration#FLUSH_ALL_PAGES_TIMEOUT} are forced to the disk, which
+   * costs the build nothing more than the wait. The ones it could not write - a flush suspended by a backup, a flush
+   * lagging behind a very large build - are committed once more, through the WAL, as full page images, in chunks of the
+   * bulk-load size: recovery applies a full image whatever version the page has on disk, so the build is durable either
+   * way, and the WAL carries only what the flush did not.
+   */
+  private void makeBuiltPagesDurable() {
+    final DatabaseInternal db = getDatabase();
+    final int fileId = mutable.getFileId();
+    final int[] notOnDisk = db.getPageManager().flushAndSyncWithoutWAL(db, fileId, mutable.getTotalPages(), flushWaitMillis(db));
+    if (notOnDisk.length == 0)
+      return;
+
+    LogManager.instance().log(this, Level.INFO,
+        "Vector index '%s': %d pages not on the disk yet, writing them through the WAL", indexName, notOnDisk.length);
+
+    final int pageSize = mutable.getPageSize();
+    final long chunkSizeBytes = getBulkLoadChunkSizeBytes();
+    final long commitLockTimeout = getGraphPersistCommitLockTimeout();
+    final DatabaseInternal wrapped = db.getWrappedDatabaseInstance();
+    wrapped.begin();
+    try {
+      db.getTransaction().setCommitLockTimeout(commitLockTimeout);
+      long bytesInChunk = 0;
+      for (final int pageNumber : notOnDisk) {
+        db.getTransaction().getPageToModify(new PageId(db, fileId, pageNumber), pageSize, false).markFullyModified();
+        bytesInChunk += pageSize;
+        if (bytesInChunk >= chunkSizeBytes) {
+          wrapped.commit();
+          wrapped.begin();
+          db.getTransaction().setCommitLockTimeout(commitLockTimeout);
+          bytesInChunk = 0;
+        }
+      }
+      wrapped.commit();
+    } catch (final IOException e) {
+      rollbackIfBegun(wrapped);
+      throw new IndexException("Cannot write the pages of vector index '" + indexName + "' through the WAL", e);
+    } catch (final RuntimeException e) {
+      rollbackIfBegun(wrapped);
+      throw e;
+    }
+  }
+
+  /**
+   * Whether every committed page of a component this index wrote WITHOUT the WAL is on the disk, waiting for the flush up
+   * to {@link GlobalConfiguration#FLUSH_ALL_PAGES_TIMEOUT} (issue #11238). For the graph file, which is node-local and
+   * never goes through the WAL: what is not on the disk is not certified, and is rebuilt on the next open.
+   */
+  private boolean isOnDisk(final PaginatedComponent component) {
+    if (component == null)
+      return true;
+    final DatabaseInternal db = getDatabase();
+    return db.getPageManager()
+        .flushAndSyncWithoutWAL(db, component.getFileId(), component.getTotalPages(), flushWaitMillis(db)).length == 0;
+  }
+
+  private static long flushWaitMillis(final DatabaseInternal db) {
+    final long timeout = db.getConfiguration().getValueAsLong(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT);
+    // 0 is "wait forever" for this setting
+    return timeout > 0 ? timeout : Long.MAX_VALUE / 2;
+  }
+
+  private static void rollbackIfBegun(final DatabaseInternal db) {
+    if (db.isTransactionActive())
+      db.rollback();
   }
 
   /**
