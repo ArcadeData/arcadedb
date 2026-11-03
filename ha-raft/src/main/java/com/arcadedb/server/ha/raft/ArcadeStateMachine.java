@@ -9951,7 +9951,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final ServerDatabase db = srv.getDatabase(dbName, false, false);
         incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
       } catch (final RuntimeException e) {
-        LogManager.instance().log(this, Level.FINE, "Cannot read the recovery outcome of database '%s': %s", dbName,
+        LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
             e.getMessage());
         continue;
       }

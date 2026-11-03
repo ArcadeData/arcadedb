@@ -149,7 +149,7 @@ public class TransactionManager {
    */
   private volatile boolean                   recoveryInputUnreplayed;
   /**
-   * Whether the latest crash recovery of this instance ended without replaying every transaction (issue #11250): a WAL gap
+   * Whether a crash recovery of this instance ended without replaying every transaction (issue #11250): a WAL gap
    * aborted it and preserved the files, or an exception escaped it. The database is then not known to hold what its commits
    * promised, and a caller with another copy to heal from (an HA node and its leader) has to be able to ask.
    */
@@ -1187,7 +1187,9 @@ public class TransactionManager {
               LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
             }
 
-      lastRecoveryIncomplete = !completed;
+      if (!completed)
+        // Sticky: a later pass that finds no WAL left to replay says nothing about what the aborted one skipped
+        lastRecoveryIncomplete = true;
       if (!completed)
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
       else if (walKeptForFsync)

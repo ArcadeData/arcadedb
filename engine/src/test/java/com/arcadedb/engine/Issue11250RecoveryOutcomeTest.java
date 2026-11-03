@@ -79,6 +79,10 @@ class Issue11250RecoveryOutcomeTest extends TestHelper {
     assertThat(transactionManager.isLastRecoveryIncomplete())
         .as("recovery stopped on the gap and preserved the WAL: the database is not known to be whole")
         .isTrue();
+
+    // The WAL is now .corrupt, so a second pass finds nothing to replay: it must not erase what the first one skipped
+    transactionManager.checkIntegrity();
+    assertThat(transactionManager.isLastRecoveryIncomplete()).isTrue();
   }
 
   @Test
