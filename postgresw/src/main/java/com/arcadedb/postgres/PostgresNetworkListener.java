@@ -70,7 +70,7 @@ public class PostgresNetworkListener extends Thread {
           // the cap the socket is closed straight away rather than being given either (issue #6412). The refusal
           // is a close and not an ErrorResponse because writing one would be an I/O the refused peer could stall,
           // on the accept thread, which is the one thing that must never be stallable.
-          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept();
+          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept(socket);
           if (ticket == null) {
             preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
             try {

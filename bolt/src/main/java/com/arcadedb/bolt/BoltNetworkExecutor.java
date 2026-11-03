@@ -286,7 +286,10 @@ public class BoltNetworkExecutor extends Thread {
           // Top-level safety net for unexpected dispatch/protocol failures. NeedRetryException (MVCC)
           // classification is handled where those conflicts actually arise - the RUN/PULL/COMMIT
           // query-execution handlers - so this fallback intentionally keeps the generic DATABASE_ERROR.
-          LogManager.instance().log(this, Level.WARNING, "BOLT error processing message", e);
+          if (isPreAuthentication())
+            logPeerError("BOLT error processing message: %s", e.toString());
+          else
+            LogManager.instance().log(this, Level.WARNING, "BOLT error processing message", e);
           try {
             sendFailure(BoltException.DATABASE_ERROR, loggedClientMessage(e.getMessage()));
             state = State.FAILED;
@@ -296,7 +299,10 @@ public class BoltNetworkExecutor extends Thread {
         }
       }
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "BOLT connection error", e);
+      if (isPreAuthentication())
+        logPeerError("BOLT connection error: %s", e.toString());
+      else
+        LogManager.instance().log(this, Level.SEVERE, "BOLT connection error", e);
     } finally {
       ProtocolContext.clear();
       // Whatever ended the loop, the listener's permit must go back: a connection that dies without ever
@@ -359,8 +365,7 @@ public class BoltNetworkExecutor extends Thread {
           this.socket = sslSocket; // route all subsequent I/O and cleanup through the TLS socket
           connectionSocket = sslSocket;
         } else if (sslHelper.getTlsMode() == BoltSslHelper.TlsMode.REQUIRED) {
-          LogManager.instance().log(this, Level.WARNING,
-              """
+          logPeerError("""
               BOLT rejecting non-TLS connection from %s (TLS is REQUIRED). \
               Configure the client to use bolt+s:// or bolt+ssc://""",
               socket.getRemoteSocketAddress());
@@ -434,14 +439,12 @@ public class BoltNetworkExecutor extends Thread {
 
     if (!Arrays.equals(magic, BOLT_MAGIC)) {
       if (magic[0] == 0x16 && magic[1] == 0x03)
-        LogManager.instance().log(this, Level.WARNING,
-            """
+        logPeerError("""
                 TLS/SSL connection attempted on BOLT port but TLS is disabled. \
                 Configure arcadedb.bolt.ssl=OPTIONAL or REQUIRED to enable TLS, \
                 or use bolt:// (unencrypted) on the client""");
       else
-        LogManager.instance().log(this, Level.WARNING,
-            "Invalid BOLT magic bytes: [%d, %d, %d, %d]", magic[0], magic[1], magic[2], magic[3]);
+        logPeerError("Invalid BOLT magic bytes: [%d, %d, %d, %d]", magic[0], magic[1], magic[2], magic[3]);
       return false;
     }
 
@@ -467,7 +470,7 @@ public class BoltNetworkExecutor extends Thread {
     output.writeRawInt(protocolVersion);
 
     if (protocolVersion == 0) {
-      LogManager.instance().log(this, Level.WARNING, "BOLT no compatible version found");
+      logPeerError("BOLT no compatible version found");
       return false;
     }
 
@@ -1791,27 +1794,33 @@ public class BoltNetworkExecutor extends Thread {
    * @throws IOException if sending failure message fails
    */
   private boolean authenticateUser(final String principal, final String credentials) throws IOException {
-    if (principal == null || credentials == null) {
-      sendFailure(BoltException.AUTHENTICATION_ERROR, "Missing credentials");
+    // A LOGON is accepted from READY too (re-authentication on a pooled connection without a LOGOFF), so the connection may
+    // hold a principal already. It is dropped before the attempt and bound again only from a successful one: a refused attempt
+    // to switch identity must leave NO identity in force, or the RESET a pool sends before reusing the connection would bring
+    // it back to READY serving the previous user. "Authentication did not succeed" always means no principal and the bounded
+    // pre-authentication read timeout armed, as LOGOFF leaves it.
+    final boolean wasAuthenticated = user != null;
+    user = null;
+
+    ServerSecurityUser authenticated = null;
+    if (principal != null && credentials != null)
+      try {
+        authenticated = server.getSecurity().authenticate(principal, credentials, databaseName);
+      } catch (final ServerSecurityException e) {
+        // refused: answered below with the same sanitized message as a missing user, to avoid information disclosure
+      }
+
+    if (authenticated == null) {
+      if (wasAuthenticated)
+        markUnauthenticated();
+      sendFailure(BoltException.AUTHENTICATION_ERROR, principal == null || credentials == null ? "Missing credentials" : "Authentication failed");
       state = State.FAILED;
       return false;
     }
 
-    try {
-      user = server.getSecurity().authenticate(principal, credentials, databaseName);
-      if (user == null) {
-        sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
-        state = State.FAILED;
-        return false;
-      }
-      markAuthenticated();
-      return true;
-    } catch (final ServerSecurityException e) {
-      // Sanitize error message to avoid information disclosure
-      sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication failed");
-      state = State.FAILED;
-      return false;
-    }
+    user = authenticated;
+    markAuthenticated();
+    return true;
   }
 
   /**
@@ -1839,6 +1848,23 @@ public class BoltNetworkExecutor extends Thread {
    * back to null - and without this, the infinite timeout would stay in place, breaking the invariant that
    * "unauthenticated" always implies the bounded handshake timeout applies.
    */
+  /** Whether the connection has not authenticated yet: what it sends is under the control of a peer that proved nothing. */
+  private boolean isPreAuthentication() {
+    return preAuthTicket != null && !preAuthTicket.isReleased();
+  }
+
+  /**
+   * Logs what the peer sent wrong at WARNING, through the listener's bounded log while the connection has not authenticated
+   * ({@link PreAuthConnectionGate.Ticket#logProtocolError}): a record per connection, let alone a stack trace, would let a peer
+   * that proved nothing write the server log at the rate it can open connections. {@code message} is a format pattern.
+   */
+  private void logPeerError(final String message, final Object... args) {
+    if (preAuthTicket != null)
+      preAuthTicket.logProtocolError(this, message, args);
+    else
+      LogManager.instance().log(this, Level.WARNING, message, args);
+  }
+
   private void markUnauthenticated() {
     final int handshakeTimeout = server.getConfiguration().getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT);
     try {

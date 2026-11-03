@@ -224,7 +224,12 @@ public class RedisNetworkExecutor extends Thread {
         } catch (final RedisProtocolLimitException e) {
           // The message violates a configured protocol limit (issue #5895): the stream position can no
           // longer be trusted, so report the error and close rather than trying to resync and continue.
-          LogManager.instance().log(this, Level.WARNING, "Redis wrapper: %s, closing connection", e.getMessage());
+          // Before authentication through the listener's bounded log: a peer that has proved nothing must not be able to write
+          // the server log at the rate it can open connections
+          if (preAuthTicket != null)
+            preAuthTicket.logProtocolError(this, "Redis wrapper: %s, closing connection", e.getMessage());
+          else
+            LogManager.instance().log(this, Level.WARNING, "Redis wrapper: %s, closing connection", e.getMessage());
           try {
             value.setLength(0);
             // respErrorMessage() strips embedded \r/\n: the malformed-length message embeds the raw
