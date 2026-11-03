@@ -50,7 +50,9 @@ class Issue9651TypeIndexConcurrentDropReadTest extends TestHelper {
     for (final IndexInternal subIndex : snapshot)
       index.removeIndexOnBucket(subIndex);
     try {
-      assertThat(index.isValid()).isTrue();
+      // not dropped, but no longer valid either: an index lacking the bucket index of a bucket of its type misses its records
+      assertThat(index.isDropped()).isFalse();
+      assertThat(index.isValid()).isFalse();
       assertThat(index.isReadyForQueries()).isFalse();
       assertThat(index.isUnchangedSince(snapshot)).isFalse();
       assertThatThrownBy(() -> index.iterator(true, new Object[] { 1L }, true)).isInstanceOf(IndexException.class);

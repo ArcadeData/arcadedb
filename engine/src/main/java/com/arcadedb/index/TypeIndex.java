@@ -28,6 +28,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
@@ -71,6 +72,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private final AtomicLong          subIndexChanges  = new AtomicLong();
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
+  // The last answer of isComplete(), with what it was computed on: the type's bucket list (replaced, never mutated, on every
+  // change) and the sub-index change counter. Asked by isValid(), which the planners call per candidate index
+  private volatile Completeness     completeness;
+
+  private record Completeness(List<Bucket> buckets, long subIndexChanges, boolean complete) {
+  }
 
   // #8153: CACHED BY keyedCursor(), SEE THERE
   private BinaryComparator comparator;
@@ -933,9 +940,77 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return indexesOnBuckets;
   }
 
+  /**
+   * False once the index was dropped or replaced, AND while it lacks the bucket index of a bucket of its type
+   * ({@link #isComplete()}): such an index misses every record of that bucket, so a lookup through it answers short, a unique
+   * constraint does not hold for that bucket and it must not be reported as usable. The index still serves the calls that
+   * repair it (REBUILD INDEX reads its definition through it), which check {@link #isDropped()} only.
+   */
   @Override
   public boolean isValid() {
-    return valid;
+    return valid && isComplete();
+  }
+
+  /** Whether the index was dropped or replaced, whatever its bucket indexes: the state its own methods refuse to work in. */
+  public boolean isDropped() {
+    return !valid;
+  }
+
+  /**
+   * Whether every bucket of the type has its bucket index in this index, filled. An index built and kept by this version always
+   * is, outside the instants a DDL statement adds or removes a bucket index; one a rebuild interrupted by an earlier version left
+   * behind is not, and stays so until {@code REBUILD INDEX} has given the missing buckets their index and filled it (a bucket index
+   * it created and has not filled yet, {@link LSMTreeIndex#isAwaitingFill()}, does not count).
+   */
+  public boolean isComplete() {
+    if (type == null)
+      return true;
+    final List<Bucket> buckets = type.getBuckets(false);
+    final long changes = subIndexChanges.get();
+    final Completeness cached = completeness;
+    if (cached != null && cached.buckets == buckets && cached.subIndexChanges == changes)
+      return cached.complete;
+
+    final boolean complete = findBucketsWithoutIndex(buckets, true, true).isEmpty();
+    // odd: a change of the sub-indexes is under way, answered without being remembered
+    if ((changes & 1) == 0 && subIndexChanges.get() == changes)
+      completeness = new Completeness(buckets, changes, complete);
+    return complete;
+  }
+
+  /**
+   * The buckets of the type that have no bucket index in this index, empty when every bucket has one. A bucket index created and
+   * not filled yet counts as there: this answers which buckets need one created.
+   */
+  public List<Bucket> getBucketsWithoutIndex() {
+    return type == null ? List.of() : findBucketsWithoutIndex(type.getBuckets(false), false, false);
+  }
+
+  /** Forgets the cached answer of {@link #isComplete()}: a bucket index of this index was created or filled. */
+  public void refreshCompleteness() {
+    completeness = null;
+  }
+
+  private List<Bucket> findBucketsWithoutIndex(final List<Bucket> buckets, final boolean firstOnly, final boolean filledOnly) {
+    List<Bucket> missing = null;
+    for (int i = 0; i < buckets.size(); i++) {
+      final int bucketId = buckets.get(i).getFileId();
+      boolean found = false;
+      for (final IndexInternal onBucket : indexesOnBuckets)
+        if (onBucket.getAssociatedBucketId() == bucketId && !(filledOnly && onBucket instanceof LSMTreeIndex lsm
+            && lsm.isAwaitingFill())) {
+          found = true;
+          break;
+        }
+      if (!found) {
+        if (missing == null)
+          missing = new ArrayList<>(firstOnly ? 1 : 4);
+        missing.add(buckets.get(i));
+        if (firstOnly)
+          break;
+      }
+    }
+    return missing == null ? List.of() : missing;
   }
 
   /**
@@ -1010,7 +1085,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return true;
     // a drop under way removes the sub-index files while the index still answers as valid
     return e instanceof IllegalArgumentException iae && isFileNotFound(iae) && !(index instanceof TypeIndex typeIndex
-        && typeIndex.isValid() && !typeIndex.dropping);
+        && !typeIndex.isDropped() && !typeIndex.dropping);
   }
 
   /**

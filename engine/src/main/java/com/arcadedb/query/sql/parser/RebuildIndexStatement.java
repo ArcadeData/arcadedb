@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.InPlaceIndexRebuild;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
@@ -221,6 +222,9 @@ public class RebuildIndexStatement extends DDLStatement {
       boolean vectorRebuilt = false;
       long vectorSkipped = 0;
 
+      // the UNIQUE type indexes whose bucket indexes the sweep rebuilt in place, checked once each for a key two buckets share
+      final Set<TypeIndex> uniqueToVerify = new LinkedHashSet<>();
+
       int stepIndex = 0;
       for (final Index idx : targetIndexes) {
         indexName = idx.getName();
@@ -251,7 +255,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
         final Index rebuilt;
         try {
-          rebuilt = buildIndex(maxAttempts, database, progressCallback, idx, batchSize);
+          rebuilt = buildIndex(maxAttempts, database, progressCallback, idx, batchSize, uniqueToVerify);
         } catch (final Exception e) {
           // A named single-index rebuild must still fail loudly; only the '*' sweep tolerates a broken index.
           if (!all)
@@ -273,6 +277,19 @@ public class RebuildIndexStatement extends DDLStatement {
           vectorSkipped += skipped;
         }
       }
+      for (final TypeIndex typeIndex : uniqueToVerify) {
+        try {
+          InPlaceIndexRebuild.verifyUniqueAcrossBuckets((DatabaseInternal) database, typeIndex, maxAttempts);
+        } catch (final RuntimeException e) {
+          // as for the rebuild itself: a named rebuild fails loudly, only the '*' sweep reports and goes on
+          if (!all)
+            throw e;
+          failedIndexes.add(typeIndex.getName());
+          LogManager.instance().log(this, Level.SEVERE, "Index '%s' was rebuilt but holds a key two records share: %s", e,
+              typeIndex.getName(), e.getMessage());
+        }
+      }
+
       result.setProperty("indexes", indexList);
       if (!failedIndexes.isEmpty())
         result.setProperty("failedIndexes", failedIndexes);
@@ -406,15 +423,36 @@ public class RebuildIndexStatement extends DDLStatement {
     return skipped;
   }
 
-  /** @return the index the rebuild put in place: a bucket index is re-created under a new name */
+  /**
+   * @return the index the rebuild put in place: the same index when rebuilt in place, otherwise a bucket index is re-created under a
+   * new name
+   */
   private static Index buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
-      final int batchSize) {
+      final int batchSize, final Set<TypeIndex> uniqueToVerify) {
     if (idx == null)
       throw new CommandExecutionException("Index name is null");
 
     if (!idx.isAutomatic())
       throw new CommandExecutionException(
           "Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
+
+    // IN PLACE whenever it can be (an LSM_TREE index of a database that is not replicated): every bucket index gets its new
+    // content the way a full compaction gives it, one bucket at a time, without the database write lock and without ever
+    // dropping the index. A query on another type does not wait for it, the index keeps answering until each bucket's swap,
+    // and a crash at any point reopens with the previous or the new content of every bucket, never without the index. The
+    // drop-and-create below is what is left for the other index kinds, see InPlaceIndexRebuild.
+    final String inPlaceRefusal = InPlaceIndexRebuild.refusal((DatabaseInternal) database, idx);
+    if (inPlaceRefusal == null) {
+      final Index rebuilt = InPlaceIndexRebuild.rebuild((DatabaseInternal) database, idx, callback, maxAttempts);
+      if (!(idx instanceof TypeIndex) && idx.isUnique()) {
+        final TypeIndex owner = ((IndexInternal) idx).getTypeIndex();
+        if (owner != null && owner.countIndexesOnBuckets() > 1)
+          uniqueToVerify.add(owner);
+      }
+      return rebuilt;
+    }
+    LogManager.instance().log(RebuildIndexStatement.class, Level.FINE, "Index '%s' is rebuilt by dropping and creating it again: %s",
+        idx.getName(), inPlaceRefusal);
 
     // The async-context refusal of issue #2097 used to live here. It now runs at the top of executeDDL(), the only
     // path that reaches this method, because the async barrier added there (issue #6281) would otherwise deadlock
