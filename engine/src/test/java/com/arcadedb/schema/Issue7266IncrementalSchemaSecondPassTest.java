@@ -66,7 +66,7 @@ class Issue7266IncrementalSchemaSecondPassTest extends TestHelper {
   @Override
   protected void beginTest() {
     // A small index page size is what makes the compacted output span several pages, i.e. a real series with a real
-    // bloom filter over it - the same fixture shape Issue5662IndexCursorFollowUpsTest uses. Without it the whole
+    // bloom filter over it - the same fixture shape IndexMetadataTest.IndexCursorFollowUps uses. Without it the whole
     // index fits one page and the compactor has nothing to write.
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
 
