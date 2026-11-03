@@ -56,8 +56,12 @@ jobs:
         continue-on-error: true
         uses: MeterianHQ/meterian-github-action@9603528ad7eb3e76e7181d8d721bba25665a403d # v1.0.18
         with:
+          # The e2e-go, e2e-js and e2e-python harnesses are excluded: they drive a server under test from CI and ship in
+          # no ArcadeDB distribution, yet they declare their client drivers as runtime dependencies, which Meterian then
+          # scores as production code (e2e-js alone put ieee754 and xtend, via neo4j-driver and pg, in the report). Their
+          # dependencies stay under Dependabot, and e2e-js under the blocking runtime audit of e2e-dependency-audit.yml.
           cli_args: >-
-            --exclude-folders=**/e2e-go
+            --exclude-folders=**/e2e-go,**/e2e-js,**/e2e-python
             --report-console=nocolor
             --report-sarif=report.sarif
           oss: true
