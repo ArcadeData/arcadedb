@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -612,8 +613,9 @@ public class Statement extends SimpleNode {
     if (database.getResultSetLimit() < 0)
       return this;
 
+    // ONLY A LIMIT GIVEN AS A PARAMETER READS THEM
     Map<String, Object> params = null;
-    if (positionalParams != null && positionalParams.length > 0) {
+    if (limit != null && limit.inputParam != null && positionalParams != null && positionalParams.length > 0) {
       params = new HashMap<>(positionalParams.length * 2);
       for (int i = 0; i < positionalParams.length; i++)
         params.put(String.valueOf(i), positionalParams[i]);
@@ -621,14 +623,18 @@ public class Statement extends SimpleNode {
     return withProfiledResultSetLimit(database, params);
   }
 
-  /** {@link #withProfiledResultSetLimit} for a statement whose plan reads its LIMIT and that is planned on every execution. */
+  /**
+   * {@link #withProfiledResultSetLimit} for a statement whose plan reads its LIMIT and that is planned on every execution. The
+   * copy of the parse tree is paid on every execution of a user whose quota is tighter, and only then: the price of never writing
+   * that quota into the instance the other users share.
+   */
   protected final Statement copyWithTighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
     final long profiledLimit = tighterProfiledLimit(database, params);
     if (profiledLimit < 0)
       return this;
 
     final Statement statement = copy();
-    statement.setLimit(new Limit().setValue((int) profiledLimit));
+    statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
     return statement;
   }
 

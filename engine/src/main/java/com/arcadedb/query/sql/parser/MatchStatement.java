@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.MatchExecutionPlanner;
 import com.arcadedb.query.sql.executor.PatternEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -424,9 +425,9 @@ public class MatchStatement extends Statement {
 
     final MatchStatement statement = copy();
     if (profiledLimit > -1)
-      statement.setLimit(new Limit().setValue((int) profiledLimit));
+      statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
     if (profiledTimeout > -1)
-      statement.setTimeout(new Timeout().setValue((int) profiledTimeout));
+      statement.setTimeout(new Timeout().setValue(NumberUtils.saturateToInt(profiledTimeout)));
     return statement;
   }
 
