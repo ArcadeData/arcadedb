@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -220,6 +221,15 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     schema.checkBackingTypeWrite("mv", "insert into");
     schema.materializedViews.merge("mv", view, (a, b) -> b);
     assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
+
+    // and the SequencedMap mutators and views of LinkedHashMap
+    final LinkedHashMap<String, MaterializedViewImpl> sequenced = (LinkedHashMap<String, MaterializedViewImpl>) schema.materializedViews;
+    assertThat(sequenced.pollFirstEntry().getValue()).isSameAs(view);
+    schema.checkBackingTypeWrite("mv", "insert into");
+    sequenced.putLast("mv", view);
+    assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
+    assertThatThrownBy(() -> sequenced.sequencedKeySet().removeFirst()).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> sequenced.reversed().pollFirstEntry()).isInstanceOf(UnsupportedOperationException.class);
   }
 
   /** A document of another type written into a bucket of the backing type by name is refused too (found by CodeRabbit). */

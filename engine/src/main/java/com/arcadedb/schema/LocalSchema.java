@@ -3682,6 +3682,57 @@ public class LocalSchema implements Schema {
       return Collections.unmodifiableSet(super.entrySet());
     }
 
+    // THE SequencedMap MUTATORS AND VIEWS OF LinkedHashMap (JAVA 21) GO AROUND put/remove, SO THEY ARE COVERED TOO
+    @Override
+    public V putFirst(final String key, final V value) {
+      final V previous = super.putFirst(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public V putLast(final String key, final V value) {
+      final V previous = super.putLast(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    // the default ones remove through the entry view, which is read-only here: through remove(key), which refreshes the snapshot
+    @Override
+    public Map.Entry<String, V> pollFirstEntry() {
+      return isEmpty() ? null : poll(super.firstEntry());
+    }
+
+    @Override
+    public Map.Entry<String, V> pollLastEntry() {
+      return isEmpty() ? null : poll(super.lastEntry());
+    }
+
+    private Map.Entry<String, V> poll(final Map.Entry<String, V> entry) {
+      remove(entry.getKey());
+      return entry;
+    }
+
+    @Override
+    public SequencedSet<String> sequencedKeySet() {
+      return Collections.unmodifiableSequencedSet(super.sequencedKeySet());
+    }
+
+    @Override
+    public SequencedCollection<V> sequencedValues() {
+      return Collections.unmodifiableSequencedCollection(super.sequencedValues());
+    }
+
+    @Override
+    public SequencedSet<Map.Entry<String, V>> sequencedEntrySet() {
+      return Collections.unmodifiableSequencedSet(super.sequencedEntrySet());
+    }
+
+    @Override
+    public SequencedMap<String, V> reversed() {
+      return Collections.unmodifiableSequencedMap(super.reversed());
+    }
+
     @Override
     public V put(final String key, final V value) {
       final V previous = super.put(key, value);
