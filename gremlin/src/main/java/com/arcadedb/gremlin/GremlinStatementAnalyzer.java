@@ -109,6 +109,7 @@ final class GremlinStatementAnalyzer {
    * Whether {@code e} is, or was caused by, a traversal that {@link #guarded} stopped because it writes.
    */
   static boolean isWriteRefused(final Throwable e) {
+    // BOUNDED LIKE THE OTHER CAUSE WALKS OF ArcadeGremlin: THE SCRIPT ENGINES WRAP IT IN ONE OR TWO LEVELS, AND A CYCLIC CHAIN MUST END
     int depth = 0;
     for (Throwable t = e; t != null && depth++ < 16; t = t.getCause())
       if (t instanceof WriteRefusedException)

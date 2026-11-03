@@ -419,6 +419,11 @@ public class ArcadeGremlin extends ArcadeQuery {
    * refuses to run a traversal that writes ({@link GremlinStatementAnalyzer#guarded}): one the script runs while it is evaluated
    * ({@code iterate()}, {@code next()}...) runs only when it reads, and a script that tries to run a write is one that may write
    * anything. Groovy is evaluated for the server administrator only, see {@link #evaluate}.
+   * <p>
+   * The guard sees traversals only: Groovy that writes through another API while it is evaluated ({@code g.getGraph().addVertex()},
+   * a closure in a step) still writes, as it did before. That is arbitrary code run by the administrator, the reason Groovy is
+   * refused to everybody else. A script that fails for any other reason fails the analysis as a gremlin-lang one does: a {@link CommandExecutionException} it
+   * raised stays one, anything else is a {@link CommandParsingException}.
    */
   private QueryEngine.AnalyzedQuery parseGroovy() throws ScriptException {
     final Object result;
