@@ -503,6 +503,7 @@ public class TimeSeriesTypeBuilder {
     type.setRetentionMs(retentionMs);
     type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);
     type.setDownsamplingTiers(downsamplingTiers);
+    type.checkNoSealedFileInTheWay();
 
     // DECLARATION order, deliberately (issue #7740, and the IT that caught the first answer to it): the stored
     // column order is not a presentation detail, it is the type's identity - column indices are positions in it,
