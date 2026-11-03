@@ -477,6 +477,8 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
+  // True when the last readConfiguration() built the schema from schema.prev.json instead of schema.json (issue #11224)
+  private volatile    boolean                                loadedFromPreviousSchema      = false;
   // statistics.json reflects the last graceful close: applied once on open, never over live state on a later reload.
   private             boolean                                storedStatisticsApplied     = false;
   private             boolean                                multipleUpdate                = false;
@@ -4273,6 +4275,7 @@ public class LocalSchema implements Schema {
 
     loadInRamCompleted = false;
     readingFromFile = true;
+    loadedFromPreviousSchema = false;
 
     boolean saveConfiguration = false;
     boolean readable = true;
@@ -4285,6 +4288,7 @@ public class LocalSchema implements Schema {
           return true;
 
         LogManager.instance().log(this, Level.WARNING, "Could not find schema file, loading the previous version saved");
+        loadedFromPreviousSchema = true;
       }
 
       JSONObject root;
@@ -4303,6 +4307,7 @@ public class LocalSchema implements Schema {
           try (final FileInputStream fis = new FileInputStream(prevFile)) {
             root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
           }
+          loadedFromPreviousSchema = true;
           saveConfiguration = true;
         } else
           throw e;
@@ -6428,6 +6433,16 @@ public class LocalSchema implements Schema {
       // any wrapper minted during a load, so a reader never sees it before the load publishes the schema
       owner.addIndexInternal(index, bucketId, propertyNames,
           declaringWrapper != null ? declaringWrapper : declaringType.typeIndexFor(index, propertyNames));
+  }
+
+  /**
+   * Tells whether the last schema load fell back to {@code schema.prev.json} because {@code schema.json} was missing, empty or
+   * unparseable (issue #11224). The engine logs a WARNING and opens the database anyway; a caller that needs the schema files to
+   * be the intended ones, such as a snapshot install, uses this to refuse instead. It describes the most recent load of this
+   * instance: the self-healing rewrite that follows does not clear it.
+   */
+  public boolean isLoadedFromPreviousSchema() {
+    return loadedFromPreviousSchema;
   }
 
   protected boolean isSchemaLoaded() {
