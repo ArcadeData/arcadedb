@@ -476,6 +476,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
   }
 
+  /**
+   * TEST SEAM ONLY, package-private: a crash test installs it in the child JVM it kills. Per thread, and a caller sharing its JVM
+   * must remove it (null) in a finally, as {@code LSMTreeIndexBulkLoader.setBuildTestHook} is.
+   */
   static void setAfterSwapTestHook(final Runnable hook) {
     if (hook == null)
       AFTER_SWAP_TEST_HOOK.remove();

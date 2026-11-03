@@ -285,8 +285,7 @@ public class RebuildIndexStatement extends DDLStatement {
           if (!all)
             throw e;
           failedIndexes.add(typeIndex.getName());
-          LogManager.instance().log(this, Level.SEVERE, "Index '%s' was rebuilt but holds a key two records share: %s", e,
-              typeIndex.getName(), e.getMessage());
+          LogManager.instance().log(this, Level.SEVERE, "%s", e, e.getMessage());
         }
       }
 
@@ -443,6 +442,7 @@ public class RebuildIndexStatement extends DDLStatement {
     // drop-and-create below is what is left for the other index kinds, see InPlaceIndexRebuild.
     final String inPlaceRefusal = InPlaceIndexRebuild.refusal((DatabaseInternal) database, idx);
     if (inPlaceRefusal == null) {
+      LogManager.instance().log(RebuildIndexStatement.class, Level.FINE, "Index '%s' is rebuilt in place", idx.getName());
       final Index rebuilt = InPlaceIndexRebuild.rebuild((DatabaseInternal) database, idx, callback, maxAttempts);
       if (!(idx instanceof TypeIndex) && idx.isUnique()) {
         final TypeIndex owner = ((IndexInternal) idx).getTypeIndex();

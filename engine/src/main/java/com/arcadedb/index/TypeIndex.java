@@ -960,7 +960,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
-   * Whether every bucket of the type has its bucket index in this index, filled. An index built and kept by this version always
+   * Whether every bucket the index covers has its bucket index in this index, filled: the buckets of the type AND of its sub types,
+   * whose bucket indexes are attached to the index of the type that declares it ({@code LocalDocumentType#addIndexInternal}). An index built and kept by this version always
    * is, outside the instants a DDL statement adds or removes a bucket index; one a rebuild interrupted by an earlier version left
    * behind is not, and stays so until {@code REBUILD INDEX} has given the missing buckets their index and filled it (a bucket index
    * it created and has not filled yet, {@link LSMTreeIndex#isAwaitingFill()}, does not count).
@@ -968,11 +969,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public boolean isComplete() {
     if (type == null)
       return true;
-    final List<Bucket> buckets = type.getBuckets(false);
+    final List<Bucket> buckets = type.getBuckets(true);
     final long changes = subIndexChanges.get();
     final long epoch = completenessEpoch.get();
     final Completeness cached = completeness;
-    // identity, not equals(): the type's bucket list is copy-on-write (CollectionUtils.addToUnmodifiableList/removeFrom...), so a
+    // identity, not equals(): the type's polymorphic bucket list is copy-on-write (CollectionUtils.addToUnmodifiableList/removeFrom...,
+    // LocalDocumentType.rebuildPolymorphicBucketsCache replaces it too), so a
     // different instance is exactly "the buckets changed", and comparing by identity keeps this planner hot path allocation-free
     if (cached != null && cached.buckets == buckets && cached.subIndexChanges == changes)
       return cached.complete;
@@ -989,11 +991,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
-   * The buckets of the type that have no bucket index in this index, empty when every bucket has one. A bucket index created and
+   * The buckets the index covers (its type's and its sub types') that have no bucket index in this index, empty when every bucket
+   * has one. A bucket index created and
    * not filled yet counts as there: this answers which buckets need one created.
    */
   public List<Bucket> getBucketsWithoutIndex() {
-    return type == null ? List.of() : findBucketsWithoutIndex(type.getBuckets(false), false, false);
+    return type == null ? List.of() : findBucketsWithoutIndex(type.getBuckets(true), false, false);
   }
 
   /** Forgets the cached answer of {@link #isComplete()}: a bucket index of this index was created or filled. */

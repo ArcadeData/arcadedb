@@ -346,6 +346,8 @@ public class LocalSchema implements Schema {
   private final       Set<String>                            indexEntriesReadAtLoad        = new HashSet<>();
   // Set once the load of the open has published: the orphan sweep runs only before it, when no build of this process can be in flight
   private volatile    boolean                                openLoadDone;
+  // Whether the running load read schema.prev.json because schema.json was missing, empty or unreadable
+  private             boolean                                schemaReadFromPreviousCopy;
   // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
   // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
   private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
@@ -678,7 +680,8 @@ public class LocalSchema implements Schema {
         throw new SchemaException("Cannot load the schema from '" + SCHEMA_FILE_NAME
             + "': it could not be read. The previous schema stays in place, see the log for the cause");
 
-      if (mode == ComponentFile.MODE.READ_WRITE && !openLoadDone)
+      // Not over a schema read from schema.prev.json: it can predate the last indexes created, whose files are no leftovers
+      if (mode == ComponentFile.MODE.READ_WRITE && !openLoadDone && !schemaReadFromPreviousCopy)
         sweepOrphanBucketIndexFiles();
       indexEntriesReadAtLoad.clear();
 
@@ -4381,6 +4384,7 @@ public class LocalSchema implements Schema {
 
     boolean saveConfiguration = false;
     boolean readable = true;
+    schemaReadFromPreviousCopy = false;
     try {
       File file = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
       final File prevFile = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
@@ -4396,6 +4400,7 @@ public class LocalSchema implements Schema {
       try (final FileInputStream fis = new FileInputStream(file)) {
         final String fileContent = FileUtils.readStreamAsString(fis, encoding);
         root = new JSONObject(fileContent);
+        schemaReadFromPreviousCopy = file == prevFile;
       } catch (final Exception e) {
         // The primary schema.json is non-empty but unparseable: this is the classic "server killed in the middle of a
         // schema save" corruption (issue #1249). Fall back to the previous good copy saved in schema.prev.json instead
@@ -4408,6 +4413,7 @@ public class LocalSchema implements Schema {
           try (final FileInputStream fis = new FileInputStream(prevFile)) {
             root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
           }
+          schemaReadFromPreviousCopy = true;
           saveConfiguration = true;
         } else
           throw e;

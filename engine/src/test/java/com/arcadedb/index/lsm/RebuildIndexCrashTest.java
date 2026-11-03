@@ -65,6 +65,7 @@ class RebuildIndexCrashTest {
   private static final int    CRASH_EXIT_CODE = 73;
   private static final String TYPE            = "CrashForm";
   private static final String INDEX           = TYPE + "[uid]";
+  private static final String SUB_TYPE        = "CrashSubForm";
   private static final int    BUCKETS         = 4;
   private static final int    RECORDS         = 4_000;
 
@@ -170,6 +171,47 @@ class RebuildIndexCrashTest {
     assertReopensCompleteAfterSwapCrash(databasePath);
   }
 
+  /**
+   * The same repair for the bucket of a SUB type, whose bucket index belongs to the index of the super type: a crash after it was
+   * created empty reopens with the super type's index incomplete and not valid, and the next REBUILD creates it again, owned by the
+   * sub type, filled.
+   */
+  @Test
+  void aCrashDuringTheRepairOfASubTypeBucketLeavesTheIndexReportedIncomplete() throws Exception {
+    final Path databasePath = tempDirectory.resolve("repair-sub-type-bucket");
+    final ChildResult prepared = runChild("prepare-sub-type-incomplete", databasePath);
+    assertThat(prepared.exitCode()).as(prepared.output()).isZero();
+    final ChildResult crashed = runChild("repair-after-create", databasePath);
+    assertThat(crashed.exitCode()).as(crashed.output()).isEqualTo(CRASH_EXIT_CODE);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+      assertThat(index.isValid()).isFalse();
+      assertThat(index.getBucketsWithoutIndex()).hasSize(1);
+      final Bucket missing = index.getBucketsWithoutIndex().getFirst();
+      assertThat(database.getSchema().getType(SUB_TYPE).getBuckets(false)).contains(missing);
+      assertNoUnreferencedBucketIndex(database);
+
+      database.command("sql", "REBUILD INDEX `" + INDEX + "`");
+      final TypeIndex repaired = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+      assertThat(repaired.isValid()).isTrue();
+      IndexInternal recreated = null;
+      for (final IndexInternal onBucket : repaired.getIndexesOnBuckets())
+        if (onBucket.getAssociatedBucketId() == missing.getFileId())
+          recreated = onBucket;
+      assertThat(recreated).isNotNull();
+      assertThat(recreated.getTypeName()).isEqualTo(SUB_TYPE);
+      assertThat(recreated.countEntries()).isEqualTo(database.getSchema().getBucketById(missing.getFileId()).count());
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument(TYPE).set("uid", "sub-7").save()))
+          .isInstanceOf(DuplicatedKeyException.class);
+    }
+    try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
+      assertThat(((TypeIndex) database.getSchema().getIndexByName(INDEX)).isValid()).isTrue();
+      assertNoUnreferencedBucketIndex(database);
+    }
+    assertThat(buildArtifacts(databasePath)).isEmpty();
+  }
+
   private void assertReopensCompleteAfterSwapCrash(final Path databasePath) throws IOException {
     try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
       final TypeIndex index = database.getSchema().getType(TYPE).getIndexByProperties("uid");
@@ -223,7 +265,20 @@ class RebuildIndexCrashTest {
       throw new IllegalArgumentException("Expected mode and database path");
     if ("prepare".equals(args[0]))
       prepare(args[1]);
-    else if ("prepare-compacted".equals(args[0])) {
+    else if ("prepare-sub-type-incomplete".equals(args[0])) {
+      prepare(args[1]);
+      try (final DatabaseFactory factory = new DatabaseFactory(args[1]); final Database database = factory.open()) {
+        database.command("sql", "CREATE DOCUMENT TYPE " + SUB_TYPE + " EXTENDS " + TYPE + " BUCKETS 2");
+        database.transaction(() -> {
+          for (int i = 0; i < 600; i++)
+            database.newDocument(SUB_TYPE).set("uid", "sub-" + i).save();
+        });
+        final int subBucketId = database.getSchema().getType(SUB_TYPE).getBuckets(false).get(1).getFileId();
+        for (final IndexInternal onBucket : ((TypeIndex) database.getSchema().getIndexByName(INDEX)).getIndexesOnBuckets())
+          if (onBucket.getAssociatedBucketId() == subBucketId)
+            database.getSchema().dropIndex(onBucket.getName());
+      }
+    } else if ("prepare-compacted".equals(args[0])) {
       prepare(args[1]);
       try (final DatabaseFactory factory = new DatabaseFactory(args[1]); final Database database = factory.open()) {
         database.command("sql", "REBUILD INDEX `" + INDEX + "`");

@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -97,7 +98,7 @@ public final class InPlaceIndexRebuild {
       }
       if (typeIndex.getTypeName() == null || !schema.existsType(typeIndex.getTypeName()))
         return "the type of the index is not found";
-      buckets.addAll(schema.getType(typeIndex.getTypeName()).getBuckets(false));
+      buckets.addAll(schema.getType(typeIndex.getTypeName()).getBuckets(true));
     } else if (isPlainLSMTree(index) && ((IndexInternal) index).getTypeIndex() != null
         && bucketOrNull(schema, index.getAssociatedBucketId()) != null)
       buckets.add(schema.getBucketById(index.getAssociatedBucketId()));
@@ -173,6 +174,12 @@ public final class InPlaceIndexRebuild {
   public static void verifyUniqueAcrossBuckets(final DatabaseInternal database, final TypeIndex typeIndex, final int maxAttempts) {
     try (final CommittedReadScope outsideCallerTransaction = CommittedReadScope.open(database)) {
       TypeIndexBuilder.verifyUniqueKeys(database, typeIndex, maxAttempts, true);
+    } catch (final DuplicatedKeyException e) {
+      // Found once every bucket index is swapped in: the index is rebuilt, complete and valid, and holds every record of the key, as
+      // the data does. Said so, with the key, because the drop-and-create rebuild failed the same way with the index gone
+      throw new IndexException("Index '" + typeIndex.getName() + "' was rebuilt, but a key is held by more than one record ("
+          + e.getMessage() + "). The index holds every one of them, as the data does: remove or change the duplicates to restore "
+          + "the unique constraint", e);
     }
   }
 
@@ -210,9 +217,13 @@ public final class InPlaceIndexRebuild {
     // planner uses it), and a stop before the fill reopens without it, in the incomplete state the rebuild started from
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       schema.recordFileChanges(() -> {
-        for (final Bucket bucket : missing)
+        for (final Bucket bucket : missing) {
+          // Created by the type that OWNS the bucket and attached to this index, as linking a sub type (createSubIndexesFor) and
+          // adding a bucket (addBucketInternal) do: the bucket of a sub type belongs to the index its super type declares
+          final LocalDocumentType bucketOwner = schema.getBucketOwner(bucket.getFileId());
+          final LocalDocumentType owner = bucketOwner != null ? bucketOwner : type;
           database.transaction(() -> {
-            final Index created = schema.createBucketIndex(type, typeIndex.getKeyTypes(), bucket, type.getName(), typeIndex.getType(),
+            final Index created = schema.createBucketIndex(owner, typeIndex.getKeyTypes(), bucket, owner.getName(), typeIndex.getType(),
                 typeIndex.isUnique(), typeIndex.getPageSizeForNewFile(), typeIndex.getNullStrategy(), null,
                 typeIndex.getPropertyNames().toArray(new String[0]), typeIndex, IndexBuilder.BUILD_BATCH_SIZE,
                 typeIndex.getMetadataForNewFile(), false);
@@ -225,6 +236,7 @@ public final class InPlaceIndexRebuild {
             lsm.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE }, IndexInternal.INDEX_STATUS.AVAILABLE);
             typeIndex.refreshCompleteness();
           }, false, maxAttempts, null, null);
+        }
         return null;
       });
     }

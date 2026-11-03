@@ -43,6 +43,7 @@ import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * A REBUILD INDEX of an earlier version stopped half way left mutable bucket index files on disk that no schema entry references
@@ -134,6 +135,34 @@ class UnreferencedBucketIndexFilesTest extends TestHelper {
     assertThat(index.countEntries()).isEqualTo(RECORDS);
     assertThatThrownBy(() -> database.transaction(() -> database.newDocument(TYPE).set("uid", "key-7").save()))
         .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  /**
+   * A schema.json that cannot be read makes the open fall back to schema.prev.json, which can predate the last index created: its
+   * bucket index files are not in that schema, and they are not leftovers either. The open that fell back drops nothing.
+   */
+  @Test
+  void anOpenThatFallsBackToThePreviousSchemaDropsNothing() throws IOException {
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE).withTotalBuckets(2).create();
+    type.createProperty("uid", Type.STRING);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument(TYPE).set("uid", "key-" + i).save();
+    });
+    database.getSchema().buildTypeIndex(TYPE, new String[] { "uid" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
+    final IndexInternal bucketIndex = ((TypeIndex) database.getSchema().getIndexByName(INDEX)).getIndexesOnBuckets()[0];
+    final Path indexFile = Path.of(((DatabaseInternal) database).getFileManager().getFile(bucketIndex.getFileId()).getFilePath());
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+
+    final Path previous = databasePath.resolve(LocalSchema.SCHEMA_PREV_FILE_NAME);
+    assertThat(Files.exists(previous)).isTrue();
+    // the previous copy predates the index: the state a fallback can find
+    assumeFalse(Files.readString(previous).contains(bucketIndex.getName()), "schema.prev.json already holds the index");
+    Files.writeString(databasePath.resolve(LocalSchema.SCHEMA_FILE_NAME), "{ corrupt");
+
+    reopenDatabase();
+    assertThat(Files.exists(indexFile)).as("the bucket index file a newer schema referenced is kept").isTrue();
   }
 
   private static final class CapturingHandler extends Handler {

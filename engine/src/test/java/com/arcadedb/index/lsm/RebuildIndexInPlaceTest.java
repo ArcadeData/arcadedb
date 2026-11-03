@@ -45,6 +45,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -209,7 +210,146 @@ class RebuildIndexInPlaceTest extends TestHelper {
     assertThat(duplicate[0].getBucketId()).isNotEqualTo(original.getBucketId());
 
     assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `" + INDEX + "`"))
+        .hasMessageContaining("was rebuilt")
         .hasMessageContaining("key-3");
+
+    // rebuilt all the same, mirroring the data: both records are in the index, which stays valid
+    final TypeIndex after = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+    assertThat(after).isSameAs(index);
+    assertThat(after.isValid()).isTrue();
+    assertThat(after.countEntries()).isEqualTo(RECORDS + 1L);
+    assertThat(count(bucketIndexOf(after, original.getBucketId()).get(new Object[] { "key-3" }))).isEqualTo(1);
+    assertThat(count(bucketIndexOf(after, duplicate[0].getBucketId()).get(new Object[] { "key-3" }))).isEqualTo(1);
+  }
+
+  /**
+   * The bucket indexes of a SUB type's buckets belong to the type index its super type declares. One of them missing leaves the
+   * super type's index short of that bucket's records: it is reported as not valid, and the REBUILD of it creates the bucket index
+   * again, owned by the sub type and attached to the super type's index, as linking the sub type did.
+   */
+  @Test
+  void aSubTypeBucketWithoutItsBucketIndexMakesTheSuperTypeIndexInvalidUntilRebuilt() {
+    createSchema(RECORDS);
+    database.command("sql", "CREATE DOCUMENT TYPE SubForm EXTENDS " + TYPE + " BUCKETS 2");
+    database.transaction(() -> {
+      for (int i = 0; i < 600; i++)
+        database.newDocument("SubForm").set("uid", "sub-" + i).save();
+    });
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+    assertThat(index.getIndexesOnBuckets()).hasSize(BUCKETS + 2);
+    assertThat(index.isValid()).isTrue();
+
+    final Bucket subBucket = database.getSchema().getType("SubForm").getBuckets(false).get(1);
+    database.getSchema().dropIndex(bucketIndexOf(index, subBucket.getFileId()).getName());
+
+    assertThat(index.isValid()).isFalse();
+    assertThat(index.getBucketsWithoutIndex()).containsExactly(subBucket);
+    reopenDatabase();
+    assertThat(((TypeIndex) database.getSchema().getIndexByName(INDEX)).isValid()).isFalse();
+
+    database.command("sql", "REBUILD INDEX `" + INDEX + "`");
+
+    final TypeIndex repaired = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+    assertThat(repaired.isValid()).isTrue();
+    final IndexInternal recreated = bucketIndexOf(repaired, subBucket.getFileId());
+    assertThat(recreated.getTypeName()).isEqualTo("SubForm");
+    assertThat(recreated.countEntries()).isEqualTo(database.getSchema().getBucketById(subBucket.getFileId()).count());
+    for (int i = 0; i < 600; i += 7)
+      assertThat(count(database.lookupByKey(TYPE, "uid", "sub-" + i))).isEqualTo(1);
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument(TYPE).set("uid", "sub-7").save()))
+        .isInstanceOf(DuplicatedKeyException.class);
+
+    reopenDatabase();
+    assertThat(((TypeIndex) database.getSchema().getIndexByName(INDEX)).isValid()).isTrue();
+  }
+
+  /**
+   * Writes to the very bucket being rebuilt wait for its commit lock while it is scanned and swapped, and then end up indexed:
+   * the inserted record is found by its key, the deleted one leaves no entry behind.
+   */
+  @Test
+  void insertsAndDeletesOnTheBucketBeingRebuiltWaitAndEndUpIndexed() throws Exception {
+    createSchema(RECORDS);
+    final CountDownLatch paused = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicInteger pausedOnBucket = new AtomicInteger(-1);
+    final Future<?> rebuild = startRebuildPausedAtFirstAppend(paused, release, pausedOnBucket, "");
+    final Future<?> writer;
+    final String[] deletedKey = new String[1];
+    try {
+      assertThat(paused.await(HANG_DETECT, TimeUnit.SECONDS)).isTrue();
+      final String bucketName = database.getSchema().getBucketById(pausedOnBucket.get()).getName();
+      writer = executor.submit(() -> {
+        database.transaction(() -> {
+          database.newDocument(TYPE).set("uid", "same-bucket-new").save(bucketName);
+          final Document victim = database.iterateBucket(bucketName).next().asDocument();
+          deletedKey[0] = victim.getString("uid");
+          victim.delete();
+        }, false, 10);
+        return null;
+      });
+      // a short wait expected to time out: the commit waits for the bucket being rebuilt
+      assertThatThrownBy(() -> writer.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+    } finally {
+      release.countDown();
+    }
+    rebuild.get(HANG_DETECT, TimeUnit.SECONDS);
+    writer.get(HANG_DETECT, TimeUnit.SECONDS);
+
+    assertIndexMatchesTheRecords();
+    assertThat(count(database.lookupByKey(TYPE, "uid", "same-bucket-new"))).isEqualTo(1);
+    assertThat(count(database.lookupByKey(TYPE, "uid", deletedKey[0]))).isZero();
+  }
+
+  /** A second REBUILD of the same index while the first one runs waits for the bucket indexes the first one holds; both complete. */
+  @Test
+  void twoConcurrentRebuildsOfTheSameIndexLeaveItComplete() throws Exception {
+    createSchema(RECORDS);
+    final CountDownLatch paused = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Future<?> first = startRebuildPausedAtFirstAppend(paused, release, new AtomicInteger(-1), "");
+    final Future<?> second;
+    try {
+      assertThat(paused.await(HANG_DETECT, TimeUnit.SECONDS)).isTrue();
+      second = executor.submit(() -> {
+        database.command("sql", "REBUILD INDEX `" + INDEX + "` WITH maxAttempts = 100");
+        return null;
+      });
+      assertThatThrownBy(() -> second.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+    } finally {
+      release.countDown();
+    }
+    first.get(HANG_DETECT, TimeUnit.SECONDS);
+    second.get(HANG_DETECT, TimeUnit.SECONDS);
+
+    assertThat(((TypeIndex) database.getSchema().getIndexByName(INDEX)).isValid()).isTrue();
+    assertIndexMatchesTheRecords();
+    reopenDatabase();
+    assertIndexMatchesTheRecords();
+  }
+
+  private Future<?> startRebuildPausedAtFirstAppend(final CountDownLatch paused, final CountDownLatch release,
+      final AtomicInteger pausedOnBucket, final String settings) {
+    return executor.submit(() -> {
+      LSMTreeIndexBulkLoader.setBuildTestHook((phase, bucketIndex, completedBuckets) -> {
+        if (phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_BUCKET_APPEND && pausedOnBucket.compareAndSet(-1,
+            bucketIndex.getAssociatedBucketId())) {
+          paused.countDown();
+          try {
+            if (!release.await(HANG_DETECT, TimeUnit.SECONDS))
+              throw new IllegalStateException("The test never released the rebuild");
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      });
+      try {
+        database.command("sql", "REBUILD INDEX `" + INDEX + "`" + settings);
+      } finally {
+        LSMTreeIndexBulkLoader.setBuildTestHook(null);
+      }
+      return null;
+    });
   }
 
   @Test
