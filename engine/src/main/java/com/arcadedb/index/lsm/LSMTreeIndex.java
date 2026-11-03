@@ -91,6 +91,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * subsequent compaction round and at close/drop time).
    */
   private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
+  // old mutable files a published compaction could not drop at once, because a commit still held their lock (#11240)
+  private final        List<LSMTreeIndexMutable>     retiredMutables         = new CopyOnWriteArrayList<>();
   /** Cumulative dead (tombstone-resolved) keys skipped by scans since this index was loaded. */
   private final        AtomicLong                    statsDeadEntriesSkipped = new AtomicLong();
   /**
@@ -252,6 +254,25 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       } catch (final IOException e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on dropping retired compacted index file '%s'", e, retired.getName());
+      } finally {
+        if (locked == LockManager.LOCK_STATUS.YES)
+          getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
+      }
+    }
+
+    for (final LSMTreeIndexMutable retired : retiredMutables) {
+      final int fileId = retired.getFileId();
+      final LockManager.LOCK_STATUS locked = getDatabase().getTransactionManager().tryLockFile(fileId, 0,
+          Thread.currentThread());
+      if (locked == LockManager.LOCK_STATUS.NO)
+        continue;
+
+      try {
+        retired.drop();
+        retiredMutables.remove(retired);
+      } catch (final IOException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, retired.getName());
       } finally {
         if (locked == LockManager.LOCK_STATUS.YES)
           getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
@@ -524,6 +545,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           }
         }
         retiredCompactedIndexes.clear();
+
+        for (final LSMTreeIndexMutable retired : retiredMutables) {
+          try {
+            retired.drop();
+          } catch (final IOException e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, retired.getName());
+          }
+        }
+        retiredMutables.clear();
 
         final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
         if (subIndex != null)
@@ -1028,9 +1059,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           final LockManager.LOCK_STATUS dropLocked = database.getTransactionManager().tryLockFile(fileId,
               database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
           if (dropLocked == LockManager.LOCK_STATUS.NO) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Cannot lock the old copy of mutable index file %s to delete it: it stays on disk, unreferenced", null,
-                prevMutable);
+            // a commit still holds the old file: retried at the next round, like a retired compacted file
+            retiredMutables.add(prevMutable);
             return;
           }
           try {

@@ -4315,11 +4315,6 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Allocation-free containment scan for the late-joiner fast path (lockedFiles is small, typically < 10):
-   * get(i) == fileId unboxes the stored Integer but allocates nothing new. Assumes a RandomAccess list -
-   * lockFilesInOrder and checkExplicitLocks both produce ArrayLists; revisit the loop if that ever changes.
-   */
-  /**
    * Whether this transaction's commit holds the lock of {@code fileId} right now: between the lock acquisition of the 1st
    * phase and the release at the end of the commit, explicit locks included. A component that writes during the commit
    * replay asks it to tell a file the commit locked up front from one it would only join late (issue #11239).
@@ -4329,6 +4324,11 @@ public class TransactionContext implements Transaction {
     return locked != null && containsFileId(locked, fileId);
   }
 
+  /**
+   * Allocation-free containment scan for the late-joiner fast path (lockedFiles is small, typically < 10):
+   * get(i) == fileId unboxes the stored Integer but allocates nothing new. Assumes a RandomAccess list -
+   * lockFilesInOrder and checkExplicitLocks both produce ArrayLists; revisit the loop if that ever changes.
+   */
   private static boolean containsFileId(final List<Integer> lockedFiles, final int fileId) {
     for (int i = 0; i < lockedFiles.size(); i++)
       if (lockedFiles.get(i) == fileId)

@@ -74,6 +74,30 @@ class Issue11238FullPageImageBridgesVersionGapTest extends TestHelper {
     assertThat(after.getContent().array()[BasePage.PAGE_HEADER_SIZE + 10]).isEqualTo((byte) 0xAB);
   }
 
+  /** Only a gap is bridged: a full image OLDER than the page is superseded and must not roll the page back. */
+  @Test
+  void aStaleFullPageImageDoesNotOverwriteANewerPage() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int fileId = db.getSchema().getType("GapType").getBuckets(false).getFirst().getFileId();
+    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
+    final PageId pageId = new PageId(db, fileId, 0);
+    final ImmutablePage before = loadFromDisk(db, pageId, pageSize);
+    final int baseVersion = (int) before.getVersion();
+    assertThat(baseVersion).as("the page needs an older version to be stale against").isGreaterThan(0);
+    final byte markerBefore = before.getContent().array()[BasePage.PAGE_HEADER_SIZE + 10];
+
+    final byte[] image = new byte[pageSize - BasePage.PAGE_HEADER_SIZE];
+    image[10] = (byte) (markerBefore + 1);
+    final WALFile.WALTransaction tx = transactionOf(fileId, baseVersion - 1, BasePage.PAGE_HEADER_SIZE, pageSize - 1, image,
+        before.getContentSize());
+
+    assertThat(db.getTransactionManager().applyChanges(tx, Collections.emptyMap(), false)).isFalse();
+
+    final ImmutablePage after = loadFromDisk(db, pageId, pageSize);
+    assertThat(after.getVersion()).isEqualTo(baseVersion);
+    assertThat(after.getContent().array()[BasePage.PAGE_HEADER_SIZE + 10]).isEqualTo(markerBefore);
+  }
+
   @Test
   void aPartialDeltaOverAVersionGapIsStillRefused() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
