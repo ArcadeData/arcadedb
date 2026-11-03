@@ -63,6 +63,7 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -137,8 +138,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * or moving the dispatch off the workers would quietly change what those two mean.
    */
   private final AtomicInteger        commandsInFlight              = new AtomicInteger();
-  /** Monitor {@link #awaitCommands} parks on; notified when the last in-flight command lands. */
+  /** Monitor {@link #awaitCommands} parks on; notified whenever an in-flight command lands. */
   private final Object               commandsLock                  = new Object();
+  /**
+   * The submission sequence of every command in {@link #commandsInFlight} (issue #11155). {@link #awaitCommands} waits
+   * for the commands submitted up to the moment it started, never for {@code commandsInFlight} to reach zero, which a
+   * steady producer of async commands never lets it do. Only commands go through it, and only DDL is dispatched as a
+   * command, so the set stays tiny.
+   */
+  private final AtomicLong                  commandSequence           = new AtomicLong();
+  private final ConcurrentSkipListSet<Long> commandsInFlightSequences = new ConcurrentSkipListSet<>();
 
   /**
    * Workers a SHRINKING {@link #setParallelLevel(int)} has retired and left DRAINING (issue #6526, item 1).
@@ -1512,6 +1521,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       throw new DatabaseOperationException(
           "Async executor has been shut down; cannot schedule asynchronous task " + task);
 
+    // In the set BEFORE the count, so a barrier that sees the command counted also finds its sequence
+    final long sequence = commandSequence.incrementAndGet();
+    commandsInFlightSequences.add(sequence);
     commandsInFlight.incrementAndGet();
     // Counted at SUBMISSION, as scheduleTask counts a task the moment it reaches a queue, so the stat keeps meaning
     // "how many were accepted" rather than "how many have finished".
@@ -1522,7 +1534,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     boolean handedOver = false;
     try {
-      AsyncCommandPool.getInstance().getExecutorService().execute(() -> runCommand(task));
+      AsyncCommandPool.getInstance().getExecutorService().execute(() -> runCommand(task, sequence));
       handedOver = true;
     } finally {
       // ONLY when the task provably never ran, which is why this is a flag and not a catch around the release.
@@ -1534,11 +1546,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // released itself). Unreachable while the policy is caller-runs; kept because the alternative to a correct
       // backstop is a silent leak the day somebody makes it abort.
       if (!handedOver)
-        commandCompleted();
+        commandCompleted(sequence);
     }
   }
 
-  private void runCommand(final DatabaseAsyncCommand task) {
+  private void runCommand(final DatabaseAsyncCommand task, final long sequence) {
     // EVERYTHING HERE HAS TO SURVIVE RUNNING ON A THREAD THAT IS NOT ONE OF THE POOL'S. The pool's rejection policy
     // is caller-runs, so a saturated pool executes this on the submitter - which for the transport this dispatch
     // exists for is an HTTP worker in the middle of its own request, with its own DatabaseContext and very possibly
@@ -1664,7 +1676,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on notifying the completion of asynchronous command %s", e, task);
       } finally {
-        commandCompleted();
+        commandCompleted(sequence);
       }
     }
   }
@@ -1687,8 +1699,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Always {@code false} on an {@link AsyncCommandPool} thread, and that exemption is the whole reason this is a
    * method rather than a field read. The caller IS one of the commands it would be asking about, and every
    * scan-based index build reaches {@link #waitCompletion(long)}: a dispatched {@code CREATE INDEX} would wait for a
-   * set it is a member of, and {@code LocalDatabase.waitForAsyncCompletion}'s
-   * {@code do { ... } while (isAsyncProcessing())} loop would never exit. That is the self-deadlock #6281 fixed on
+   * set it is a member of, and the barrier would never return. That is the self-deadlock #6281 fixed on
    * the workers, rebuilt one pool over - measured as exactly that before this exemption existed.
    * <p>
    * Waiting for a PEER command would not be safe either, which is why the exemption is "on a pool thread" and not
@@ -1701,28 +1712,42 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     return commandsInFlight.get() > 0 && !AsyncCommandPool.isPoolThread();
   }
 
-  /** Drops one in-flight command and releases {@link #waitCompletion(long)} when the last one lands. */
-  private void commandCompleted() {
-    if (commandsInFlight.decrementAndGet() <= 0)
-      synchronized (commandsLock) {
-        commandsLock.notifyAll();
-      }
+  /** As {@link #hasPendingCommands()}, for the commands submitted up to {@code sequence} only (issue #11155). */
+  private boolean hasPendingCommandsUpTo(final long sequence) {
+    return !AsyncCommandPool.isPoolThread() && commandsInFlightSequences.floor(sequence) != null;
+  }
+
+  /**
+   * Drops one in-flight command and wakes {@link #awaitCommands}: on every command, not only the last, because a barrier
+   * waits for the commands submitted before it, which can all land while later ones are still running.
+   */
+  private void commandCompleted(final long sequence) {
+    commandsInFlightSequences.remove(sequence);
+    commandsInFlight.decrementAndGet();
+    synchronized (commandsLock) {
+      commandsLock.notifyAll();
+    }
   }
 
   /**
    * Waits for the commands dispatched to {@link AsyncCommandPool} within whatever is left of the caller's budget.
    * Runs BEFORE the per-worker markers of {@link #waitCompletion(long)}, because a command can itself submit async
    * record tasks and those have to end up behind the markers rather than in front of them.
+   * <p>
+   * Only the commands submitted up to the moment it starts (issue #11155): waiting for none to be in flight never ended
+   * while another thread kept submitting commands. A command a worker schedules during the pass moves
+   * {@code counterTasksScheduledByWorkers}, so the next pass's snapshot covers it.
    *
    * @return false when the budget ran out first, matching {@link #waitCompletion(long)}'s own contract.
    */
   private boolean awaitCommands(final long beginTime, final long timeout) {
-    while (hasPendingCommands()) {
+    final long submittedBefore = commandSequence.get();
+    while (hasPendingCommandsUpTo(submittedBefore)) {
       final long remaining = timeout - (System.currentTimeMillis() - beginTime);
       if (remaining <= 0)
         return false;
       synchronized (commandsLock) {
-        if (!hasPendingCommands())
+        if (!hasPendingCommandsUpTo(submittedBefore))
           return true;
         try {
           commandsLock.wait(Math.min(remaining, 500));

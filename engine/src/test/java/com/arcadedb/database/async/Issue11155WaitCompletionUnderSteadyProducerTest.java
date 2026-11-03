@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -104,6 +105,31 @@ class Issue11155WaitCompletionUnderSteadyProducerTest extends TestHelper {
     }
   }
 
+  /**
+   * The same starvation one barrier step earlier: DDL dispatched through {@code async().command()} runs on the command pool,
+   * not on a worker, and the barrier waited for no command to be in flight, which a steady producer of commands never lets
+   * happen. It waits for the commands submitted before it now.
+   */
+  @Test
+  @Timeout(60)
+  void waitCompletionReturnsWhileAnotherThreadKeepsSubmittingCommands() throws Exception {
+    final DatabaseAsyncExecutor async = database.async();
+
+    try (final SteadyProducer producer = new SteadyProducer(async, true)) {
+      producer.awaitRunning();
+
+      final AtomicBoolean ownCommandDone = new AtomicBoolean();
+      async.command("sql", "CREATE DOCUMENT TYPE OwnCommand", (AsyncResultsetCallback) resultSet -> ownCommandDone.set(true));
+
+      async.waitCompletion();
+
+      assertThat(ownCommandDone.get()).as("a command submitted before waitCompletion() must be done when it returns").isTrue();
+      assertThat(async.isProcessing()).as("the producer must still have a command in flight, or this test proves nothing")
+          .isTrue();
+      producer.assertNoErrors();
+    }
+  }
+
   @Test
   @Timeout(60)
   void aParallelGraphBatchFlushEndsWhileAnotherThreadKeepsTheExecutorBusy() throws Exception {
@@ -133,18 +159,27 @@ class Issue11155WaitCompletionUnderSteadyProducerTest extends TestHelper {
   /**
    * Keeps a task queued on slot 0 behind the one running there, from its own (non-worker) thread: each task is held until
    * the producer has queued the one after next, so the queue is never empty, not even in the instant the worker polls.
+   * With {@code commands}, the same with DDL commands, which run on the command pool: each is held in its callback until
+   * the next is submitted, so a command is in flight at every instant.
    */
   private static final class SteadyProducer implements AutoCloseable {
     private final DatabaseAsyncExecutor async;
+    private final boolean               commands;
     private final Semaphore             started   = new Semaphore(0);
     private final Semaphore             mayFinish = new Semaphore(0);
     private final AtomicBoolean         stop      = new AtomicBoolean();
     private final AtomicInteger         completed = new AtomicInteger();
+    private final AtomicInteger         submitted = new AtomicInteger();
     private final List<Throwable>       errors    = new CopyOnWriteArrayList<>();
     private final Thread                thread;
 
     SteadyProducer(final DatabaseAsyncExecutor async) {
+      this(async, false);
+    }
+
+    SteadyProducer(final DatabaseAsyncExecutor async, final boolean commands) {
       this.async = async;
+      this.commands = commands;
       this.thread = new Thread(() -> {
         try {
           submit();
@@ -167,10 +202,25 @@ class Issue11155WaitCompletionUnderSteadyProducerTest extends TestHelper {
     }
 
     private void submit() {
-      async.transaction(() -> {
-        started.release();
-        mayFinish.acquireUninterruptibly();
-      }, 0, completed::incrementAndGet, errors::add, 0);
+      if (commands)
+        async.command("sql", "CREATE DOCUMENT TYPE SteadyCommand" + submitted.incrementAndGet(), new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet resultSet) {
+            started.release();
+            mayFinish.acquireUninterruptibly();
+            completed.incrementAndGet();
+          }
+
+          @Override
+          public void onError(final Exception exception) {
+            errors.add(exception);
+          }
+        });
+      else
+        async.transaction(() -> {
+          started.release();
+          mayFinish.acquireUninterruptibly();
+        }, 0, completed::incrementAndGet, errors::add, 0);
     }
 
     void awaitRunning() throws InterruptedException {
