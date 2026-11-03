@@ -20,6 +20,7 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -51,9 +52,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SparsePostingLogCrashRecoveryTest {
-  private static final int    DIMENSIONS = 1_000;
+  private static final int    DIMENSIONS = 10_000;
   private static final String TYPE_NAME  = "LogCrashDoc";
   private static final String IDX_NAME   = TYPE_NAME + "[tokens,weights]";
+  /** Records of {@link #postingsWhosePagesOnlyTheWalHoldsAreReplayed}, all but the first 100 committed with the flush held. */
+  private static final int    WAL_ONLY_RECORDS = 5_000;
 
   @TempDir
   Path tempDirectory;
@@ -156,6 +159,21 @@ class SparsePostingLogCrashRecoveryTest {
     }
   }
 
+  /**
+   * The log pages of the last commits exist only in the WAL at the kill. The index is loaded by the schema load, BEFORE the WAL
+   * recovery writes them back, so the state of its logs must not be read then: the replay would stop at the tail the disk had.
+   */
+  @Test
+  void postingsWhosePagesOnlyTheWalHoldsAreReplayed() throws Exception {
+    final Path path = crash("crash-before-async-flush");
+    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final Database database = factory.open()) {
+      assertThat(database.countType(TYPE_NAME, false)).isEqualTo(WAL_ONLY_RECORDS);
+      assertEveryRecordFoundOnItsDimension(database);
+      assertThat(countEntries(database)).isEqualTo(2L * WAL_ONLY_RECORDS);
+      database.drop();
+    }
+  }
+
   /** A commit that loses the page-version check rolls its log entries back with everything else. */
   @Test
   void aConflictedCommitLeavesNoPostingBehind() throws Exception {
@@ -238,6 +256,7 @@ class SparsePostingLogCrashRecoveryTest {
               .withUnique(true).create();
           database.getSchema().buildTypeIndex(TYPE_NAME, new String[] { "tokens", "weights" }).withSparseVectorType()
               .withDimensions(DIMENSIONS).create();
+          database.getSchema().createDocumentType("Other");
         });
       }
       return;
@@ -287,6 +306,18 @@ class SparsePostingLogCrashRecoveryTest {
       });
       flush(database);
     }
+    case "crash-before-async-flush" -> {
+      // the first commits reach the disk, so the log has a header and a tail there; the next ones stay in the WAL only, and the
+      // header of the log and its tail page on disk are older than what they committed
+      insert(database, 0, 100);
+      ((DatabaseInternal) database).getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+      // ~20 bytes of log a record: 4,900 records fill several pages past the tail the disk has
+      ((DatabaseInternal) database).getPageManager().suspendFlushAndExecute(database, () -> {
+        for (int from = 100; from < WAL_ONLY_RECORDS; from += 700)
+          insert(database, from, Math.min(from + 700, WAL_ONLY_RECORDS));
+        Runtime.getRuntime().halt(CrashingChildJvm.CRASH_EXIT_CODE);
+      });
+    }
     case "legacy-write" -> {
       if (!engine(database).getPostingLogFileIds().isEmpty())
         throw new IllegalStateException("The index was expected to open without posting logs");
@@ -297,12 +328,18 @@ class SparsePostingLogCrashRecoveryTest {
         throw new IllegalStateException("Both posting logs were expected to hold postings after the reopen");
       if (database.countType(TYPE_NAME, false) != 200L || countEntries(database) != 400L)
         throw new IllegalStateException("Both posting logs were expected to be replayed: " + countEntries(database));
-      flush(database);
-      if (engine(database).activePostingLogsForTest() != 0)
-        throw new IllegalStateException("The flush was expected to reset both posting logs");
+      // The flush runs in the after-commit callback of a transaction whose locks are keyed by an explicit requester, as a
+      // server session's are: the reset it commits must not wait on a lock it holds under another identity
+      database.begin();
+      ((DatabaseInternal) database).getTransaction().setRequester("session-11239");
+      ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> flush(database));
+      database.newDocument("Other").set("id", 1).save();
+      database.commit();
+      // Both logs held postings, so there was no empty one to move the commits to: the older one is reset, the commits keep
+      // appending to the newer one, which the next flush resets
+      if (Integer.bitCount(engine(database).activePostingLogsForTest()) != 1)
+        throw new IllegalStateException("The flush was expected to reset the older posting log only");
       insert(database, 200, 300);
-      if (engine(database).activePostingLogsForTest() == 0)
-        throw new IllegalStateException("The insert after the flush was expected to land in a posting log");
     }
     case "conflict" -> {
       insert(database, 0, 100);

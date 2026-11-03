@@ -42,8 +42,10 @@ import java.io.IOException;
  * replays the log into the memtable.
  * <p>
  * An engine owns two of them and writes to one at a time. A flush swaps the memtable and the log together, so the memtable it
- * seals holds exactly the entries of the log it leaves, and resets that log once the segment is on disk. A log is therefore
- * either empty or the postings of one memtable generation.
+ * seals holds exactly the entries of the log it leaves, and resets that log once the segment is on disk. When both logs hold
+ * postings (after a crash replayed both, or a reset that did not commit) there is no empty log to move to: the flush seals
+ * everything, resets the older log only, and the commits keep appending to the newer one behind postings already sealed, which
+ * the next flush resets. Replaying such a log re-applies sealed postings in their commit order, which changes nothing.
  * <p>
  * <b>Layout.</b> Page 0 is the header: a magic number, the generation of the log's content and its state (active or empty).
  * Every following page starts with the generation that wrote it and holds entries up to its content size: dimension, bucket id
@@ -54,7 +56,8 @@ import java.io.IOException;
  * <p>
  * <b>Concurrency.</b> Both logs belong to the index's file set ({@link LSMSparseVectorIndex#getFileIds()}), so every commit that
  * appends holds both files' commit locks from before its first append until after it published its postings into the memtable.
- * The engine takes the same two locks to swap the logs or to replay them, which is what keeps a log and its memtable aligned.
+ * The engine takes the same two locks to swap the logs, to replay them and to reset one, which is what keeps a log and its
+ * memtable aligned. A reset never touches the log the commits append to.
  * The committed tail of a log is mirrored in memory and moved only by a commit that published, under those locks.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -120,8 +123,9 @@ public class SparsePostingLog extends PaginatedComponent {
   }
 
   /**
-   * Reads the committed header and finds the tail, at open. A file that has no page yet, or whose header is not one of ours, is
-   * an empty log.
+   * Reads the committed header and finds the tail. Called at the first use after an open, never by the open itself: the schema
+   * load that builds the engine runs before the WAL recovery restores the pages a crash left only in the WAL. A file that has no
+   * page yet, or whose header is not one of ours, is an empty log.
    */
   void loadState() throws IOException {
     generation = 0L;
