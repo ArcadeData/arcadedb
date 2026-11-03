@@ -29,8 +29,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #11173: the filter of a MATCH must read the graph as it was before a later clause of the same query writes the key it
  * filters on, whatever the pull batch size. A write that names the key waits for the MATCH of every row; an opaque map write
  * keeps streaming, so the upsert shapes {@code MATCH (n {id: row.id}) SET n += row} are not made eager.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue11173MatchFilterSeesLaterSetTest extends TestHelper {
   private static final String EAGER = "EAGER";
