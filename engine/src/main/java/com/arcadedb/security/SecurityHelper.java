@@ -18,11 +18,14 @@
  */
 package com.arcadedb.security;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -88,7 +91,7 @@ public final class SecurityHelper {
    * user bound to {@code database}'s current context. For listings that must silently hide what the caller cannot
    * see rather than fail the whole request.
    */
-  public static boolean canAccessType(final DatabaseInternal database, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
+  public static boolean canAccessType(final Database database, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
     return canAccessType(currentUser(database), type, access);
   }
 
@@ -97,9 +100,43 @@ public final class SecurityHelper {
    * caller). Resolved once by a listing that then asks {@link #canAccessType(SecurityDatabaseUser, DocumentType,
    * SecurityDatabaseUser.ACCESS)} for each type it walks.
    */
-  public static SecurityDatabaseUser currentUser(final DatabaseInternal database) {
+  public static SecurityDatabaseUser currentUser(final Database database) {
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     return dbContext == null ? null : dbContext.getCurrentUser();
+  }
+
+  /**
+   * The types of {@code database} the user bound to its current context may read, in the schema's own order: the walk
+   * every route that PRESENTS the schema to a caller must take - a catalog listing, an introspection answer, a schema
+   * document, a type or record census. A type the user may not read is left out rather than failing the request, the
+   * rule {@code SELECT FROM schema:types} applies (issue #4238), so a route that renders the schema cannot hand a
+   * per-type-denied user the name, properties, indexes or size of what it may not read.
+   * <p>
+   * {@link com.arcadedb.schema.Schema#getTypes()} stays the unchecked accessor for engine-internal callers (planning,
+   * maintenance, replication), which must see every type. No bound user (embedded usage or an internal caller) sees
+   * every type, as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)} answers.
+   */
+  public static Collection<? extends DocumentType> readableTypes(final Database database) {
+    final Collection<? extends DocumentType> types = database.getSchema().getTypes();
+    final SecurityDatabaseUser user = currentUser(database);
+    if (user == null)
+      return types;
+
+    final List<DocumentType> readable = new ArrayList<>(types.size());
+    for (final DocumentType type : types)
+      if (canAccessType(user, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        readable.add(type);
+    return readable;
+  }
+
+  /**
+   * Whether the user bound to {@code database}'s context may read {@code type}, the per-type form of
+   * {@link #readableTypes(Database)}: for a route answering one type by name, or naming a type another one
+   * points at (a supertype, the type an index belongs to). A route answering by name must answer an unreadable type
+   * exactly as it answers one that does not exist, or the difference tells the caller it exists.
+   */
+  public static boolean isReadable(final Database database, final DocumentType type) {
+    return canAccessType(currentUser(database), type, SecurityDatabaseUser.ACCESS.READ_RECORD);
   }
 
   /**

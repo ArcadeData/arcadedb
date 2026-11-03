@@ -68,7 +68,7 @@ public class RedisNetworkListener extends Thread {
 
           // One thread and one file descriptor are committed here, before the client has proved anything: past
           // the cap the socket is closed straight away rather than being given either (issue #6412).
-          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept();
+          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept(socket);
           if (ticket == null) {
             preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
             try {

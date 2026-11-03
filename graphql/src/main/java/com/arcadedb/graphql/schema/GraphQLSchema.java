@@ -55,6 +55,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.math.BigInteger;
 import java.util.*;
@@ -689,14 +690,17 @@ public class GraphQLSchema {
 
     final SelectionSet selectionSet = selection.getSelectionSet();
 
-    // Add GraphQL-defined types
+    // Add GraphQL-defined types. One declared for a database type the caller may not read is hidden with that type: its
+    // fields describe the same records
     for (final ObjectTypeDefinition objType : registry.getTypes()) {
+      if (isHiddenDatabaseType(objType.getName()))
+        continue;
       types.add(buildGraphQLTypeResult(objType, selectionSet, fragments, 0, registry));
       addedTypes.add(objType.getName());
     }
 
-    // Add database types not already covered by GraphQL definitions
-    for (final DocumentType dbType : database.getSchema().getTypes()) {
+    // Add database types not already covered by GraphQL definitions, only those the caller may read (as schema:types lists them)
+    for (final DocumentType dbType : SecurityHelper.readableTypes((DatabaseInternal) database)) {
       if (!addedTypes.contains(dbType.getName())) {
         types.add(buildDatabaseTypeResult(dbType, selectionSet, fragments, 0));
         addedTypes.add(dbType.getName());
@@ -714,13 +718,19 @@ public class GraphQLSchema {
 
   private ResultInternal buildTypeResult(final String typeName, final SelectionSet selectionSet, final GraphQLFragments fragments,
       final int fieldsDepth, final GraphQLTypeRegistry registry) {
+    // A database type the caller may not read is "not found", the answer for a name that does not exist: a refusal would tell the
+    // caller that it exists
+    if (isHiddenDatabaseType(typeName))
+      return null;
+
     final ObjectTypeDefinition objType = registry.get(typeName);
     if (objType != null)
       return buildGraphQLTypeResult(objType, selectionSet, fragments, fieldsDepth, registry);
 
     // Check database types
-    if (database.getSchema().existsType(typeName))
-      return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet, fragments, fieldsDepth);
+    final DocumentType dbType = readableDatabaseType(typeName);
+    if (dbType != null)
+      return buildDatabaseTypeResult(dbType, selectionSet, fragments, fieldsDepth);
 
     // Check scalars
     if (BUILT_IN_SCALAR_SET.contains(typeName))
@@ -734,9 +744,13 @@ public class GraphQLSchema {
     return buildIntrospectionType(objType.getName(), "OBJECT", selectionSet, fragments, fieldsSelection -> {
       final List<Selection> fieldSelections = expandFieldSelections(fieldsSelection, fragments, fieldsDepth);
       final List<ResultInternal> fields = new ArrayList<>();
-      for (final FieldDefinition fd : objType.getFieldDefinitions())
+      for (final FieldDefinition fd : objType.getFieldDefinitions()) {
+        // A field typed by a database type the caller may not read goes with that type (the Query root names them all)
+        if (isHiddenDatabaseType(namedTypeOf(fd.getType())))
+          continue;
         fields.add(buildIntrospectionField(fd.getName(), fieldSelections,
             typeSelectionSet -> buildTypeInfo(fd.getType(), typeSelectionSet, fragments, fieldsDepth + 1, registry)));
+      }
       return fields;
     }, null);
   }
@@ -791,8 +805,9 @@ public class GraphQLSchema {
       return buildIntrospectionType(null, "LIST", selectionSet, fragments, null,
           elementSelectionSet -> buildIntrospectionLeafType(arrayElement, "SCALAR", elementSelectionSet, fragments));
 
-    if (type == Type.EMBEDDED && ofType != null && !ofType.isEmpty() && database.getSchema().existsType(ofType))
-      return buildDatabaseTypeResult(database.getSchema().getType(ofType), selectionSet, fragments, fieldsDepth);
+    final DocumentType embeddedType = type == Type.EMBEDDED ? readableDatabaseType(ofType) : null;
+    if (embeddedType != null)
+      return buildDatabaseTypeResult(embeddedType, selectionSet, fragments, fieldsDepth);
 
     return buildIntrospectionLeafType(mapDatabaseTypeToGraphQL(type), "SCALAR", selectionSet, fragments);
   }
@@ -812,8 +827,9 @@ public class GraphQLSchema {
       if (elementType != null)
         // A primitive element declares no ofType of its own: a LIST of EMBEDDED is a list of open JSON objects
         return buildDatabaseValueTypeInfo(elementType, null, selectionSet, fragments, fieldsDepth);
-      if (database.getSchema().existsType(ofType))
-        return buildDatabaseTypeResult(database.getSchema().getType(ofType), selectionSet, fragments, fieldsDepth);
+      final DocumentType elementDbType = readableDatabaseType(ofType);
+      if (elementDbType != null)
+        return buildDatabaseTypeResult(elementDbType, selectionSet, fragments, fieldsDepth);
     }
     return buildIntrospectionLeafType("String", "SCALAR", selectionSet, fragments);
   }
@@ -1023,6 +1039,30 @@ public class GraphQLSchema {
    */
   static boolean isBuiltInScalar(final String name) {
     return BUILT_IN_SCALAR_SET.contains(name);
+  }
+
+  /**
+   * The database type of this name when it exists AND the principal bound to the database may read it, otherwise null:
+   * introspection describes a type the caller may not read exactly as one that does not exist.
+   */
+  private DocumentType readableDatabaseType(final String name) {
+    if (name == null || name.isEmpty() || !database.getSchema().existsType(name))
+      return null;
+    final DocumentType type = database.getSchema().getType(name);
+    return SecurityHelper.isReadable((DatabaseInternal) database, type) ? type : null;
+  }
+
+  /** The named type at the bottom of the LIST/NON_NULL wrappers of a field type. */
+  private static String namedTypeOf(com.arcadedb.graphql.parser.Type type) {
+    while (type.getListType() != null)
+      type = type.getListType().getType();
+    return type.getTypeName().getName();
+  }
+
+  /** Whether {@code name} is a database type the principal bound to the database may not read. */
+  private boolean isHiddenDatabaseType(final String name) {
+    return database.getSchema().existsType(name) && !SecurityHelper.isReadable((DatabaseInternal) database,
+        database.getSchema().getType(name));
   }
 
   /**

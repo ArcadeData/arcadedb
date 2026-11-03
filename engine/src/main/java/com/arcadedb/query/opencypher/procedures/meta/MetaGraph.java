@@ -19,13 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.meta;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -80,13 +81,12 @@ public class MetaGraph extends AbstractMetaProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Database database = context.getDatabase();
-    final Schema schema = database.getSchema();
 
     final List<Map<String, Object>> nodes = new ArrayList<>();
     final List<Map<String, Object>> relationships = new ArrayList<>();
 
     // Create virtual nodes for each vertex type
-    for (final DocumentType type : schema.getTypes()) {
+    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
       if (type instanceof VertexType) {
         final Map<String, Object> node = new HashMap<>();
         node.put("_type", "vNode");
@@ -104,7 +104,7 @@ public class MetaGraph extends AbstractMetaProcedure {
     }
 
     // Create virtual relationships for each edge type
-    for (final DocumentType type : schema.getTypes()) {
+    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
       if (type instanceof EdgeType) {
         final Map<String, Object> rel = new HashMap<>();
         rel.put("_type", "vRelationship");

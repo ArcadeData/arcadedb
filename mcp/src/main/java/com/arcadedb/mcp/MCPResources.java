@@ -81,7 +81,7 @@ public class MCPResources {
     final ServerDatabase database = server.getDatabaseForClient(databaseName);
     // Bind the principal so engine permission gates enforce for MCP callers (GHSA-6x73-v3rc-f57c); cleared by
     // MCPDispatcher in a finally.
-    MCPToolUtils.bindCurrentUser(database, user);
+    MCPToolUtils.bindCurrentUser(database, user, config.getPermissionsForDatabase(databaseName));
     final JSONObject schema = SchemaInfo.toJSON(database, databaseName);
 
     final JSONArray contents = new JSONArray();

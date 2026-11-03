@@ -51,7 +51,7 @@ public class UpsertEntityTool {
                     .put("description", "The name of the database"))
                 .put("typeName", new JSONObject()
                     .put("type", "string")
-                    .put("description", "The vertex type. Created automatically if it does not exist"))
+                    .put("description", "The vertex type. Created automatically if it does not exist, when the MCP configuration allows schema changes (allowSchemaChange)"))
                 .put("matchKeys", new JSONObject()
                     .put("type", "object")
                     .put("description", "property:value pairs used as the match/merge key; must be non-empty. Values should be scalars"))

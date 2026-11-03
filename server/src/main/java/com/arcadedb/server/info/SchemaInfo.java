@@ -25,8 +25,8 @@ import com.arcadedb.query.RunningQuery;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -48,19 +48,20 @@ public class SchemaInfo {
   }
 
   /**
-   * Builds the JSON schema document for a database. Performs no permission or authorization check; the caller
-   * is responsible for both.
+   * Builds the JSON schema document for a database. Authorizing the database itself is the caller's job; the types are
+   * the ones the principal bound to the database's context may read ({@link SecurityHelper#readableTypes}), so a user
+   * denied a type by its per-type permissions is not handed that type's definition, as {@code SELECT FROM schema:types}
+   * does not hand it either.
    */
   public static JSONObject toJSON(final Database database, final String databaseName) {
-    final Schema schema = database.getSchema();
     final JSONArray types = new JSONArray();
 
     // The entry a caller listed this read under (MCP get_schema, issue #10928): a terminate stops the walk between two types
     final RunningQuery runningQuery = RunningQuery.current();
-    for (final DocumentType type : schema.getTypes()) {
+    for (final DocumentType type : SecurityHelper.readableTypes(database)) {
       if (runningQuery != null)
         runningQuery.checkNotTerminated("the schema read");
-      types.put(typeToJSON(type));
+      types.put(typeToJSON(database, type));
     }
 
     final JSONObject result = new JSONObject();
@@ -69,8 +70,12 @@ public class SchemaInfo {
     return result;
   }
 
-  /** The JSON of one type: category, parents, properties and indexes. Performs no permission check; the caller does. */
-  public static JSONObject typeToJSON(final DocumentType type) {
+  /**
+   * The JSON of one type: category, parents, properties and indexes. Whether the caller may read {@code type} is the
+   * caller's check; a parent type the principal bound to {@code database} may not read is left out of the parents, as
+   * {@code SELECT FROM schema:types} leaves it out.
+   */
+  public static JSONObject typeToJSON(final Database database, final DocumentType type) {
     final JSONObject typeJson = new JSONObject();
     typeJson.put("name", type.getName());
 
@@ -84,7 +89,8 @@ public class SchemaInfo {
     // Parent types
     final JSONArray parents = new JSONArray();
     for (final DocumentType superType : type.getSuperTypes())
-      parents.put(superType.getName());
+      if (SecurityHelper.isReadable(database, superType))
+        parents.put(superType.getName());
     if (parents.length() > 0)
       typeJson.put("parentTypes", parents);
 
@@ -137,16 +143,15 @@ public class SchemaInfo {
    */
   public static JSONObject forUser(final ArcadeDBServer server, final ServerSecurityUser user,
       final String databaseName) {
-    // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened below
-    if (!server.isDatabaseAvailable(databaseName)) {
+    // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened below. A database the user
+    // is not granted is answered exactly as one that does not exist: two different refusals would tell the caller which
+    // names exist on the server, one guess at a time
+    if (!user.canAccessToDatabase(databaseName) || !server.isDatabaseAvailable(databaseName)) {
       final Set<String> installed = new TreeSet<>(server.getAvailableDatabaseNames());
       installed.removeIf(db -> !user.canAccessToDatabase(db));
       throw new IllegalArgumentException(
           "Database '" + databaseName + "' does not exist. Available databases: " + installed);
     }
-    if (!user.canAccessToDatabase(databaseName))
-      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '"
-          + databaseName + "'");
 
     // A client surface (MCP, the AI assistant): resolved like every other one, so a database an operator closed or a restore holds
     // since the existsDatabase() check above is refused rather than reopened (issue #10690)

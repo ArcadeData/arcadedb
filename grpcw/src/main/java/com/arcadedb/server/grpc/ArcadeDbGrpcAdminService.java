@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
@@ -31,6 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -42,6 +44,7 @@ import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.DatabaseUserContext;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.UserAlreadyExistsException;
@@ -361,27 +364,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (db == null)
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      // One snapshot of the types answers the classes, the kind and the census of the count, so the three cannot describe two
-      // schemas. Nothing here is caught: a schema that cannot be read fails the call through respond(), which classifies it,
-      // rather than answering zero classes as if the database had none (issue #10877).
-      final Schema schema = db.getSchema();
-      final Collection<? extends DocumentType> types = schema.getTypes();
-      final Index[] indexes = schema.getIndexes();
-
-      boolean graph = false;
-      for (final DocumentType t : types)
-        if (t instanceof VertexType) {
-          graph = true;
-          break;
-        }
-
-      final RecordCount count = approximateRecordCount(db, types);
-
-      return GetDatabaseInfoResponse.newBuilder()
-          .setDatabase(name)
-          .setClasses(types.size()).setIndexes(indexes.length).setRecords(count.records()).setType(graph ? "graph" : "document")
-          .addAllUncountedTypes(count.uncountedTypes())
-          .build();
+      // The census is read with the caller bound, as every other route that reads a database does, and covers only the types the
+      // caller may read: a type its per-type permissions deny adds nothing to the classes, the indexes or the records, and is not
+      // named among the uncounted ones. Unbound, the answer rested on the engine happening not to gate a count
+      final DatabaseInternal database = (DatabaseInternal) db;
+      return user == null ? databaseInfo(database, name) : DatabaseUserContext.runAs(database, user, () -> databaseInfo(database, name));
     });
   }
 
@@ -1481,6 +1468,38 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * counted - a TimeSeries type whose engine did not open, for one - is named in the answer and logged, never folded into the
    * total as zero (issue #10877).
    */
+  /**
+   * One snapshot of the readable types answers the classes, the kind and the census of the count, so the three cannot describe two
+   * schemas. Nothing here is caught: a schema that cannot be read fails the call through respond(), which classifies it, rather than
+   * answering zero classes as if the database had none (issue #10877).
+   */
+  private GetDatabaseInfoResponse databaseInfo(final DatabaseInternal db, final String name) {
+    final Collection<? extends DocumentType> types = SecurityHelper.readableTypes(db);
+
+    boolean graph = false;
+    for (final DocumentType t : types)
+      if (t instanceof VertexType) {
+        graph = true;
+        break;
+      }
+
+    // the indexes of the readable types; a manual index belongs to no type and is counted as it always was
+    int indexes = 0;
+    for (final Index index : db.getSchema().getIndexes()) {
+      final String typeName = index.getTypeName();
+      if (typeName == null || !db.getSchema().existsType(typeName) || SecurityHelper.isReadable(db, db.getSchema().getType(typeName)))
+        ++indexes;
+    }
+
+    final RecordCount count = approximateRecordCount(db, types);
+
+    return GetDatabaseInfoResponse.newBuilder()
+        .setDatabase(name)
+        .setClasses(types.size()).setIndexes(indexes).setRecords(count.records()).setType(graph ? "graph" : "document")
+        .addAllUncountedTypes(count.uncountedTypes())
+        .build();
+  }
+
   private RecordCount approximateRecordCount(final Database db, final Collection<? extends DocumentType> types) {
     long total = 0L;
     List<String> uncounted = List.of();
