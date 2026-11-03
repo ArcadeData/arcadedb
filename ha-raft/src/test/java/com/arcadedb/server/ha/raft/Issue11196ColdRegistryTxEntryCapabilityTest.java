@@ -25,7 +25,10 @@ import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,6 +91,41 @@ class Issue11196ColdRegistryTxEntryCapabilityTest {
     assertThat(raft.canStateTxPreparedAt()).isFalse();
 
     assertThat(probes.get()).as("a failed probe is recorded, so a down peer does not cost a round per commit").isEqualTo(1);
+  }
+
+  @Test
+  void concurrentCommitsOnAColdRegistryShareOneRound() throws Exception {
+    final RaftHAServer raft = newDetachedServer();
+    final AtomicInteger probes = new AtomicInteger();
+    raft.setCapabilityProber((peerId, http, https, token) -> {
+      probes.incrementAndGet();
+      Thread.sleep(100);
+      return new PeerCapabilityQuery.Advertisement(PEER, "26.11.1", PeerCapabilities.LOCAL);
+    });
+
+    final int committers = 8;
+    final CountDownLatch go = new CountDownLatch(1);
+    final AtomicInteger capable = new AtomicInteger();
+    final List<Thread> threads = new ArrayList<>();
+    for (int i = 0; i < committers; i++) {
+      final Thread thread = new Thread(() -> {
+        try {
+          go.await();
+          if (raft.canStateTxPreparedAt())
+            capable.incrementAndGet();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      thread.start();
+      threads.add(thread);
+    }
+    go.countDown();
+    for (final Thread thread : threads)
+      thread.join(30_000);
+
+    assertThat(capable.get()).as("every committer got the answer of the one round").isEqualTo(committers);
+    assertThat(probes.get()).as("single flight").isEqualTo(1);
   }
 
   @Test

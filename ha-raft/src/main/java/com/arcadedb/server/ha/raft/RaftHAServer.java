@@ -8005,6 +8005,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * part of the cluster.
    * <p>
    * Single flight: concurrent commits on a cold node wait for the one round and find the registry filled.
+   * <p>
+   * Worst case: the round is sequential with {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per unreachable peer, so a cold start
+   * with N unreachable peers stalls the commits that ask for N times that, once; every probe outcome, failure included, is recorded
+   * as a reason, so the next read finds none of them never asked. The same round also runs on the capability monitor and the two can
+   * overlap, which is harmless for the reason given on {@link #peersMissingCapabilityNow}: writes go through the registry's
+   * generation guard and a capable verdict needs a peer's own answer.
    */
   private boolean allPeersSupportOnceAsked(final String capability) {
     List<String> missing = peersMissingCapability(capability);
