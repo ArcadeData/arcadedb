@@ -39,13 +39,14 @@ import java.util.logging.Level;
 final class StaleVectorEntryReporter {
   private static final long       WARNING_WINDOW_NANOS = 60_000_000_000L; // 60s
   private static final AtomicLong totalReported        = new AtomicLong();
-  // One full window in the past, so the first stale entry warns: see GhostEdgeReporter for why not Long.MIN_VALUE
-  private static final AtomicLong lastWarningNanos     = new AtomicLong(-WARNING_WINDOW_NANOS);
+  // One full window before the clock's reading at load, so the first stale entry warns whatever its origin (nanoTime may be
+  // negative); see GhostEdgeReporter for why not Long.MIN_VALUE
+  private static final AtomicLong lastWarningNanos     = new AtomicLong(System.nanoTime() - WARNING_WINDOW_NANOS);
 
   private StaleVectorEntryReporter() {
   }
 
-  /** Records that the row of {@code record} was answered although its record is gone. */
+  /** Records that the row of {@code record} was answered although its record is gone and its index still holds the vector. */
   static void reportMissingRecord(final Document record) {
     final long total = totalReported.incrementAndGet();
 
@@ -63,7 +64,7 @@ final class StaleVectorEntryReporter {
               + "with REBUILD INDEX (total stale rows answered since startup=%d)", record.getTypeName(), record.getIdentity(), total);
   }
 
-  /** Total rows answered for a record that was gone, since JVM startup (monotonic). */
+  /** Total rows answered for a record that was gone, since JVM startup (monotonic). Read by the tests only. */
   static long getTotalReported() {
     return totalReported.get();
   }

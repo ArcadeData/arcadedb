@@ -166,6 +166,25 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
         .containsAll(before.subList(1, 10));
   }
 
+  /**
+   * Issue #11202 (found by CodeRabbit): a delete committed after the search made a row and before the row was first read takes the
+   * vector out of the index as well, so the row finds its record gone and the index is not damaged: nothing is reported.
+   */
+  @Test
+  void aDeleteCommittedBetweenTheSearchAndTheReadIsNotReportedAsDamage() {
+    createDocs(30, "", 0);
+    indexOf().buildVectorGraphNow();
+    final List<ScoredRecordRow> rows = neighbours(new float[DIMENSIONS]);
+    final ScoredRecordRow first = rows.getFirst();
+    assertThat(isUnread(first)).isTrue();
+
+    database.transaction(() -> first.getRecord().getIdentity().asDocument().delete());
+
+    final long reportedBefore = StaleVectorEntryReporter.getTotalReported();
+    assertThat(first.get("pid")).isNull();
+    assertThat(StaleVectorEntryReporter.getTotalReported()).isEqualTo(reportedBefore);
+  }
+
   /** A delete through the API takes the vector out of the index in its own commit: the deferred row never sees it. */
   @Test
   void aCommittedDeleteCostsNoAnswerRow() {

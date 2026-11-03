@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.vector.LSMVectorIndex;
 
 import java.util.AbstractMap;
 import java.util.Collection;
@@ -63,6 +64,7 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
   private final Document                      record;
   private final String                        scoreKey;
   private final Object                        score;
+  private final LSMVectorIndex                deferredBy;
   private       LinkedHashMap<String, Object> materialized;
   // set once the `record` key was removed from the row: it no longer answers the record
   private       boolean                       recordKeyRemoved;
@@ -70,9 +72,18 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
   private       boolean                       recordGone;
 
   ScoredRecordRow(final Document record, final String scoreKey, final float score) {
+    this(record, scoreKey, score, null);
+  }
+
+  /**
+   * @param deferredBy the vector index that made this row without reading its record (issue #10973), asked whether it still holds
+   *                   the vector when the record turns out to be gone; null for a row whose record was read when it was made
+   */
+  ScoredRecordRow(final Document record, final String scoreKey, final float score, final LSMVectorIndex deferredBy) {
     this.record = record;
     this.scoreKey = scoreKey;
     this.score = score;
+    this.deferredBy = deferredBy;
   }
 
   /**
@@ -194,10 +205,15 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
     }
   }
 
-  /** Reported once per row, and never looked up again: each lookup of a record that is gone is a page read for nothing. */
+  /**
+   * Never looked up again: each lookup of a record that is gone is a page read for nothing. Reported once per row, and only when the
+   * index that deferred the read still holds the vector: a delete committed since the search took it out of the index as well, which
+   * is no damage to report.
+   */
   private void recordFoundGone() {
     recordGone = true;
-    StaleVectorEntryReporter.reportMissingRecord(record);
+    if (deferredBy != null && deferredBy.hasLiveVector(record.getIdentity()))
+      StaleVectorEntryReporter.reportMissingRecord(record);
   }
 
   private LinkedHashMap<String, Object> materialize() {
