@@ -1744,7 +1744,8 @@ public enum GlobalConfiguration {
       doing. The handshake timeout (arcadedb.network.socketTimeout) closes a connection that sends NOTHING for that
       long, so a client that keeps sending a few bytes, or a command it is refused for, would otherwise hold its
       pre-authentication slot (arcadedb.network.maxPreAuthConnections) for ever, and enough of them lock every other
-      client out of the listener. 0 disables the limit.""", Long.class, 30_000L),
+      client out of the listener. The deadline is checked once a second, so a connection is closed up to about one
+      second after it. 0 disables the limit.""", Long.class, 30_000L),
 
   NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
 
