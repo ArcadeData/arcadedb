@@ -1066,6 +1066,15 @@ public class PostgresNetworkExecutor extends Thread {
           // until its first row has gone out: a fetch-size cursor continuing a suspended SHOW ALL must keep slicing
           // the answer it started on, and a drained one must stay drained (issue #8708)
           portal.fullResultSet = showResultSet(portal.showName);
+        else if (portal.catalogAnsweredAtParse && portal.resultCursor == 0) {
+          // The same for a catalog query answered at Parse: the schema as it stands at THIS Execute, not the one a named
+          // prepared statement saw at Parse, in both directions (a type created or dropped since). The columns are those
+          // of the emulated relation whatever the rows are, so the ones Parse (or a Describe) fixed stay (issue #10922)
+          final CatalogAnswer fresh = handleCatalogQuery(portal.query);
+          // A query that is no longer recognised keeps the answer Parse gave it, as before this refresh existed
+          if (fresh != null)
+            portal.fullResultSet = fresh.rows();
+        }
         final Map<String, PostgresType> fixedColumns = portal.executed || !portal.isExpectingResult ? null : fixedColumnsOf(portal, false);
         if (fixedColumns != null) {
           // Its columns are known before its rows (issue #6659): run as a live cursor that each Execute pulls only the
@@ -3745,6 +3754,8 @@ public class PostgresNetworkExecutor extends Thread {
           portal.catalogQuery = true;
         } else if (catalogAnswer != null) {
           portal.executed = true;
+          // Re-read at Execute: the schema may change between this Parse and the Execute of a prepared statement (issue #10922)
+          portal.catalogAnsweredAtParse = true;
           // Sliced by the Execute row limit exactly like the same catalog query with bound parameters (issue #8708)
           portal.fullResultSet = catalogAnswer.rows();
           portal.columns = catalogAnswer.columns();
