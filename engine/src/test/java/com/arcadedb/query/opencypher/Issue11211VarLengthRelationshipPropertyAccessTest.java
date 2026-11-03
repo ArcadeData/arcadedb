@@ -93,7 +93,9 @@ class Issue11211VarLengthRelationshipPropertyAccessTest extends TestHelper {
     final Throwable thrown = refusal("UNWIND [[1, 2]] AS l RETURN l.x AS v");
 
     assertThat(thrown).isInstanceOf(TypeMismatchException.class);
-    assertThat(thrown.getMessage()).contains("TypeError: Cannot access property 'x'");
+    // named with the language's type names, not with a Java class
+    assertThat(thrown.getMessage()).contains("TypeError: Cannot access property 'x' on a LIST<ANY> value")
+        .doesNotContain("ArrayList");
     assertThat(ErrorCategory.of(thrown)).isEqualTo(ErrorCategory.VALIDATION);
   }
 

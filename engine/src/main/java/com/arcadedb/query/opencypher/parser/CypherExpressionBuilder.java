@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
@@ -1697,8 +1698,8 @@ class CypherExpressionBuilder {
       // error - mirroring PropertyAccessExpression (variable-bound access) and Neo4j semantics.
       // Note: a null base short-circuits to null above (property access on null propagates null).
       throw new TypeMismatchException(
-          "TypeError: Cannot access property '" + propertyName + "' on " +
-          baseValue.getClass().getSimpleName() + " value");
+          "TypeError: Cannot access property '" + propertyName + "' on a " + CypherFunctionHelper.cypherTypeName(baseValue)
+              + " value");
     }
 
     @Override

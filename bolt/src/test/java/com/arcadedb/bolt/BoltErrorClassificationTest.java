@@ -82,7 +82,7 @@ class BoltErrorClassificationTest {
   /** Every runtime type error is Neo4j's TypeError, not only the storage one (issue #11211). */
   @Test
   void aRuntimeTypeMismatchClassifiesAsAClientTypeError() {
-    final Throwable e = new TypeMismatchException("TypeError: Cannot access property 'x' on ArrayList value");
+    final Throwable e = new TypeMismatchException("TypeError: Cannot access property 'x' on a LIST<ANY> value");
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.TYPE_ERROR);
     assertThat(BoltNetworkExecutor.classifyExecutionError(new RuntimeException("wrapped", e), BoltErrorCodes.DATABASE_ERROR))
