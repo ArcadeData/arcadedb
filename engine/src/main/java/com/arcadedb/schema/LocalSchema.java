@@ -110,6 +110,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -3586,9 +3588,89 @@ public class LocalSchema implements Schema {
   /**
    * A registry of backing type owners that keeps {@link #backingTypeOwners} in step with itself on every change, so that no code
    * path that registers or removes a view or an aggregate (creation, drop, schema load, the restore of a staged schema) can leave
-   * the write guard of issue #11020 behind. Only the mutators below are used on the registries.
+   * the write guard of issue #11020 behind. Every mutator of the map refreshes the snapshot, and the key, value and entry views
+   * are read-only, so a removal through one of them fails instead of leaving the guard stale.
    */
   private final class BackingTypeRegistry<V extends BackingTypeOwner> extends LinkedHashMap<String, V> {
+    @Override
+    public V putIfAbsent(final String key, final V value) {
+      final V previous = super.putIfAbsent(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public V computeIfAbsent(final String key, final Function<? super String, ? extends V> function) {
+      final V result = super.computeIfAbsent(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V computeIfPresent(final String key,
+        final BiFunction<? super String, ? super V, ? extends V> function) {
+      final V result = super.computeIfPresent(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V compute(final String key, final BiFunction<? super String, ? super V, ? extends V> function) {
+      final V result = super.compute(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V merge(final String key, final V value,
+        final BiFunction<? super V, ? super V, ? extends V> function) {
+      final V result = super.merge(key, value, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V replace(final String key, final V value) {
+      final V previous = super.replace(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public boolean replace(final String key, final V oldValue, final V newValue) {
+      final boolean replaced = super.replace(key, oldValue, newValue);
+      backingTypeOwnersChanged();
+      return replaced;
+    }
+
+    @Override
+    public void replaceAll(final BiFunction<? super String, ? super V, ? extends V> function) {
+      super.replaceAll(function);
+      backingTypeOwnersChanged();
+    }
+
+    @Override
+    public boolean remove(final Object key, final Object value) {
+      final boolean removed = super.remove(key, value);
+      backingTypeOwnersChanged();
+      return removed;
+    }
+
+    @Override
+    public Set<String> keySet() {
+      return Collections.unmodifiableSet(super.keySet());
+    }
+
+    @Override
+    public Collection<V> values() {
+      return Collections.unmodifiableCollection(super.values());
+    }
+
+    @Override
+    public Set<Map.Entry<String, V>> entrySet() {
+      return Collections.unmodifiableSet(super.entrySet());
+    }
+
     @Override
     public V put(final String key, final V value) {
       final V previous = super.put(key, value);

@@ -76,10 +76,11 @@ public class TruncateTypeStatement extends DDLStatement {
     // answered no rows while reporting VALID, and an aggregate lost every bucket behind its watermark for good, since its refresh
     // recomputes only the buckets after it. Asked of the whole scope and before anything below, UNSAFE or not: the fast path drops
     // the indexes first, and the per-record refusal of a delete would come after other types of the scope were emptied
+    // the scope of a POLYMORPHIC truncate, walked once: the graph-type guard below reads it too
+    final Set<DocumentType> descendants = polymorphic ? collectPolymorphicDescendants(typez) : Set.of();
     schema.getEmbedded().checkBackingTypeWrite(typez.getName(), "truncate");
-    if (polymorphic)
-      for (final DocumentType descendant : collectPolymorphicDescendants(typez))
-        schema.getEmbedded().checkBackingTypeWrite(descendant.getName(), "truncate");
+    for (final DocumentType descendant : descendants)
+      schema.getEmbedded().checkBackingTypeWrite(descendant.getName(), "truncate");
 
     // A TIMESERIES TYPE OWNS NO RECORD BUCKET: THE TRUNCATE BELOW REPORTED SUCCESS AND KEPT EVERY SAMPLE (issue #10336). ITS SAMPLES
     // ARE REMOVED BY ITS ENGINE, OUTSIDE ANY TRANSACTION (issue #10342)
@@ -176,7 +177,7 @@ public class TruncateTypeStatement extends DDLStatement {
       // subtree, so the guard has to read the whole subtree. The type that actually holds the records is the one
       // named in the message, which is strictly more useful than #7919's "report a grandchild against the direct
       // subtype it hangs from" - that phrasing existed only because a grandchild could not be reached from here.
-      for (final DocumentType descendant : collectPolymorphicDescendants(typez)) {
+      for (final DocumentType descendant : descendants) {
         // Only a graph type can produce a refusal, so anything else is not worth counting. That matters because the
         // count is not free - a bucket-record sum, or a whole count(*) query for a lightweight edge type - and the
         // shape this loop exists for (#8042) is precisely a hierarchy with non-graph types in it, so the intermediate

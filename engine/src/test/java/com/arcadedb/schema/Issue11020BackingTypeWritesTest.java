@@ -193,6 +193,28 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     assertThat(count("mv")).isZero();
   }
 
+  /** No mutator of the registries can leave the write guard behind: each refreshes it, and the views refuse a removal. */
+  @Test
+  void everyMutationOfTheRegistriesKeepsTheGuardInStep() {
+    createView("");
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final MaterializedViewImpl view = schema.materializedViews.get("mv");
+
+    assertThatThrownBy(() -> schema.materializedViews.keySet().remove("mv")).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> schema.materializedViews.values().clear()).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> schema.materializedViews.entrySet().clear()).isInstanceOf(UnsupportedOperationException.class);
+
+    // the map's own mutators each refresh the guard: off with remove(key, value), back on with putIfAbsent
+    assertThat(schema.materializedViews.remove("mv", view)).isTrue();
+    schema.checkBackingTypeWrite("mv", "insert into");
+    schema.materializedViews.putIfAbsent("mv", view);
+    assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
+    schema.materializedViews.computeIfPresent("mv", (k, v) -> null);
+    schema.checkBackingTypeWrite("mv", "insert into");
+    schema.materializedViews.merge("mv", view, (a, b) -> b);
+    assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
+  }
+
   // ---- helpers
 
   private void createAggregate() {
