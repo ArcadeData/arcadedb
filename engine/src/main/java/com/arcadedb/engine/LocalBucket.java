@@ -6472,8 +6472,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * continuation chunk still at the old one, both equal to what the walk read: a record that never existed accepted as
    * current, and under {@code REPEATABLE_READ} recorded as the transaction's snapshot of it. The publication sequence tells
    * whether a publication overlapped the validation ({@link PageManager#getPublicationSequence()}, #9369); when one did, the
-   * validation runs again under the publication lock and, because a replicated apply is not excluded by it (#11283), with the sequence checked again inside it. A chain found changed needs no
-   * second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
+   * validation runs again under the publication lock and, because a replicated apply is not excluded by it (#11283), with the
+   * sequence checked again inside it. A chain found changed needs no second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
    */
   private int validateChainReadAgainstOneCommit(final long[] chainTrace, final int chunks, final Binary record,
                                                 final long lastNextChunkPointer, final long headMarker) throws IOException {
@@ -6505,10 +6505,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Runs a proof that a chunk chain is broken against ONE committed state. The proof walks the newest committed images, and a
    * commit being published puts its pages there one at a time: a head chunk already pointing at a slot its commit has not
    * published yet reads as a cleaned slot, and that is a permanent verdict, the record reported as corrupted and handed to
-   * CHECK DATABASE FIX. A proof that a publication overlapped is run again under the publication lock, which excludes a local commit but not the replicated apply of a replica (#11283), so the
-   * sequence is checked inside it too and a proof that a publication still overlapped is void. A proof
-   * that finds nothing broken is never doubted: it is the one that changes nothing.
+   * CHECK DATABASE FIX. A proof that a publication overlapped is run again under the publication lock,
+   * which excludes a local commit but not the replicated apply of a replica (#11283), so the sequence is checked inside it too and a
+   * proof that a publication still overlapped is void. A proof that finds nothing broken is never doubted: it is the one that changes nothing.
    */
+  // Package-private: visible for testing
   String provenAgainstOneCommit(final Callable<String> proof) throws Exception {
     final PageManager pageManager = database.getPageManager();
     final long sequence = pageManager.getPublicationSequence();

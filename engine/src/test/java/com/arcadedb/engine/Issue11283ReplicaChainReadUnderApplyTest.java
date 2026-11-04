@@ -22,6 +22,7 @@ import com.arcadedb.database.BucketPageLayoutTestSupport;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -53,6 +54,28 @@ class Issue11283ReplicaChainReadUnderApplyTest extends BucketPageLayoutTestSuppo
     }
 
     assertThat(bucket.getRecordFromCommittedPage(rids[0]).toByteArray()).as("settled again: read as before").isEqualTo(expected);
+  }
+
+  @Test
+  void aPlaceholderReadWhileAnApplyIsOpenIsNotAnsweredFromTheLock() {
+    database.transaction(() -> database.getSchema().createDocumentType("Placeholder", 1).createProperty("v", Type.STRING));
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("Placeholder").set("v", "p").save().getIdentity());
+    sealFirstPage("Placeholder");
+    database.transaction(() -> rid[0].asDocument(true).modify().set("v", "b".repeat(20 * 1024)).save());
+    assertThat((Long) bucketStats("Placeholder").get("totalPlaceholderRecords")).as("the fixture needs a placeholder").isEqualTo(1L);
+    final LocalBucket bucket = bucketOf("Placeholder");
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+    final byte[] expected = bucket.getRecordFromCommittedPage(rid[0]).toByteArray();
+
+    pageManager.beginPublication();
+    try {
+      assertThatThrownBy(() -> bucket.getRecordFromCommittedPage(rid[0])).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      pageManager.endPublication();
+    }
+
+    assertThat(bucket.getRecordFromCommittedPage(rid[0]).toByteArray()).isEqualTo(expected);
   }
 
   @Test
