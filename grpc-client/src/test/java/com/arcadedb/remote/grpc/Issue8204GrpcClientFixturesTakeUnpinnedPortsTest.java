@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8204GrpcClientFixturesTakeUnpinnedPortsTest {
 
-  private static final Path   TEST_SOURCES = Path.of("src", "test", "java");
+  private static final Path   TEST_SOURCES = Path.of(System.getProperty("basedir", "."), "src", "test", "java");
   private static final String GRPC_PLUGIN  = "com.arcadedb.server.grpc.GrpcServerPlugin";
 
   /**

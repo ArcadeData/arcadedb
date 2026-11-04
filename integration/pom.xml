@@ -58,4 +58,21 @@
         </dependency>
     </dependencies>
 
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- One JVM in the module directory, whatever -Dsurefire.forkCount and the fork-isolation profile
+                         say: the importer tests name their sources relative to the module (-vertices
+                         src/test/resources/..., IMPORT DATABASE file://src/test/resources/...) and share database
+                         paths under ./target. They run for about a minute -->
+                    <forkCount>1</forkCount>
+                    <workingDirectory>${project.basedir}</workingDirectory>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>

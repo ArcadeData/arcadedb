@@ -31,10 +31,12 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
@@ -60,6 +62,9 @@ class RemoteDateIT {
 
     // Set server configuration BEFORE creating the server
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     // Start the server first so security is properly initialized
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
@@ -127,6 +132,9 @@ class RemoteDateIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     final ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
@@ -177,6 +185,9 @@ class RemoteDateIT {
     final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
     serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
     serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on
+    // localhost, which then answers the remote client below
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     final ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
     arcadeDBServer.start();
@@ -223,6 +234,9 @@ class RemoteDateIT {
     DatabaseFactory databaseFactory = new DatabaseFactory(rootPath + "/databases/remotedate");
     if (databaseFactory.exists())
       databaseFactory.open().drop();
+    // As the fixtures do: a users file another test class left in the shared root keeps ITS root password, and the
+    // server below would refuse DEFAULT_PASSWORD_FOR_TESTS
+    FileUtils.deleteRecursively(new File(rootPath + "/config"));
   }
 
   @AfterEach

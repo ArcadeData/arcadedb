@@ -63,7 +63,7 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
       "(?:\\b\\w*[sS]erver|\\bgetServer\\([^()]*\\)|\\bservers\\[[^\\]]*\\])\\s*\\.\\s*" + DEPRECATED_CALL);
 
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
-  private static final Path REACTOR_ROOT = Path.of("..");
+  private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
 
   /** An {@code arcadedb-server} dependency declared {@code provided}: the module plugs into a server it does not own. */
   private static final Pattern PROVIDED_SERVER_DEPENDENCY = Pattern.compile(

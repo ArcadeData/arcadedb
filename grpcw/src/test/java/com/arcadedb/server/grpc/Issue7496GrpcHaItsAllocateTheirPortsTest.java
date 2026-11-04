@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue7496GrpcHaItsAllocateTheirPortsTest {
 
-  private static final Path TEST_SOURCES = Path.of("src", "test", "java");
+  private static final Path TEST_SOURCES = Path.of(System.getProperty("basedir", "."), "src", "test", "java");
 
   /** How a fixture tells the gRPC plugin which port to bind: the raw key, or the registered setting. */
   private static final Pattern CONFIGURES_GRPC_PORT = Pattern.compile("\"arcadedb\\.grpc\\.port\"|GRPC_PORT\\.getKey\\(\\)");

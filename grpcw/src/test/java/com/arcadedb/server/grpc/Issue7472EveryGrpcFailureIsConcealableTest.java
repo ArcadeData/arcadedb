@@ -61,7 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue7472EveryGrpcFailureIsConcealableTest {
 
-  private static final Path   MAIN_SOURCES = Path.of("src", "main", "java", "com", "arcadedb", "server", "grpc");
+  private static final Path   MAIN_SOURCES = Path.of(System.getProperty("basedir", "."), "src", "main", "java", "com", "arcadedb", "server", "grpc");
   /**
    * Both mapper entry points a production call site can answer a failure through. {@code toStatusException} was
    * added on main while this branch was open and needs the same guard: it delegates to

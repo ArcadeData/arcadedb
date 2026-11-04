@@ -118,7 +118,7 @@ class Issue10154AdminMappingTest {
    */
   @Test
   void everyAdminCatchGoesThroughTheAdminMapping() throws IOException {
-    final String source = Files.readString(Path.of("src/main/java/com/arcadedb/remote/grpc/RemoteGrpcServer.java"));
+    final String source = Files.readString(Path.of(System.getProperty("basedir", "."), "src/main/java/com/arcadedb/remote/grpc/RemoteGrpcServer.java"));
     final Matcher catches = Pattern.compile("catch \\((?:final )?StatusException e\\) \\{(.*?)\\n    }", Pattern.DOTALL)
         .matcher(source);
     int checked = 0;

@@ -42,9 +42,9 @@ public class HTTPSSLIT extends BaseGraphServerTest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration configuration) {
     configuration.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
-    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "src/test/resources/keystore.pkcs12");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, System.getProperty("basedir", ".") + "/src/test/resources/keystore.pkcs12");
     configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
-    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "src/test/resources/truststore.jks");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, System.getProperty("basedir", ".") + "/src/test/resources/truststore.jks");
     configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
   }
 
