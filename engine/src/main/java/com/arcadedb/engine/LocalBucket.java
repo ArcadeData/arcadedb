@@ -168,6 +168,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = chunkFootprint(CHUNK_MARKER_BUDGET, 0);
   /**
+   * Bytes of record area a page must keep after its header and its slot table, so that the minimum page size is not a degenerate
+   * one. The slot table does not shrink with the page, so at the bare minimum of one head chunk (14 bytes) a record of a few
+   * hundred bytes spans dozens of pages, and a batch of 500 records dirties hundreds of thousands of them: the transaction buffer
+   * overflowed 2GB (issue #11286) or the JVM ran out of memory.
+   */
+  private static final   int                       MINIMUM_RECORD_AREA_IN_PAGE      = 4096;
+  /**
    * Bytes a {@link #RECORD_PLACEHOLDER_POINTER} takes in its slot: the marker plus the 8-byte position of the content
    * record. The same 1 + 8 every page walk charges a pointer slot ({@code getPageOccupiedInBytes}), and more than the
    * smallest slot holds, which is why the spill that writes one has to make room for it first (#10617).
@@ -665,13 +672,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * The smallest page a bucket of the file format {@code version} can write a record into: the page header, the content header
-   * (whose slot table does not shrink with the page) and the head chunk of a record, since a record a page cannot host whole is
-   * written as a chunk chain whose head has to fit ({@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}). 8216 bytes at {@link #CURRENT_VERSION},
-   * 1048 at {@link #EXTERNAL_BUCKET_VERSION}. A bucket created with a smaller page accepted the creation and then failed every
+   * (whose slot table does not shrink with the page) and {@link #MINIMUM_RECORD_AREA_IN_PAGE} bytes of record area. The head chunk of a record
+   * ({@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}) is the bare floor under which an insert fails (issue #10876), but a page that small
+   * makes every record a chain of one-chunk pages (issue #11286). 12298 bytes at {@link #CURRENT_VERSION}, 5130 at
+   * {@link #EXTERNAL_BUCKET_VERSION}. A bucket created with a smaller page accepted the creation and then failed every
    * insert inside the page writer (issue #10876).
    */
   public static int minimumPageSize(final int version) {
-    return BasePage.PAGE_HEADER_SIZE + contentHeaderSizeForVersion(version) + MINIMUM_SPACE_FOR_FIRST_CHUNK;
+    return BasePage.PAGE_HEADER_SIZE + contentHeaderSizeForVersion(version) + MINIMUM_RECORD_AREA_IN_PAGE;
   }
 
   public Purpose getPurpose() {
