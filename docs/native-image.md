@@ -246,7 +246,24 @@ To see whether a Linux amd64 host qualifies, `/lib64/ld-linux-x86-64.so.2 --help
 `bmi2` and `fma` flags. In a VM, expose the host CPU (`-cpu host` in QEMU, CPU type `host` in
 Proxmox) or a v3-capable model.
 
-On an older CPU, use the JVM image (`arcadedata/arcadedb:<version>`), whose JIT compiles for the
+Release archives include a second linux/amd64 binary built with `-march=compatibility`:
+`arcadedb-<version>-linux-x86_64-compat.tar.gz` (the default one is `...-linux-x86_64.tar.gz`). It
+starts on any x86-64 CPU, including pre-Haswell hardware, QEMU's `qemu64` and Proxmox's
+`x86-64-v2-AES` (#11253). It is an archive only: there is no `-native-compat-amd64` Docker image, and
+the default images keep the baseline in the table above. To run it in a container, build the image
+yourself with `./native/scripts/build-native-docker.sh --march compatibility`. The workflow builds
+this leg on every published release, and on a manual dispatch that ticks `include_compat`; the
+nightly does not build it.
+
+The default baseline was kept, rather than lowered to `compatibility`, because what lowering it
+costs is only partly measured. The one measurement (#11070: the embedded engine under Python-driven
+point lookups, aggregation, Cypher and ingest, `x86-64-v3` against `compatibility`, both `-O2`) found
+no gain from v3, a geometric mean of 0.996 on the warm figures. It did not exercise the Vector API
+that JVector uses (see [JVector and SIMD](#jvector-and-simd)), the code most likely to depend on
+AVX2, and it did not run the HTTP server. Until a vector-search run under `compatibility` shows the
+same, the default stays at v3 and the compatible build is a separate download.
+
+On an older CPU, use the compat archive above, the JVM image (`arcadedata/arcadedb:<version>`), whose JIT compiles for the
 CPU it actually runs on, or build a native binary for a lower baseline by overriding the property:
 
 ```bash
