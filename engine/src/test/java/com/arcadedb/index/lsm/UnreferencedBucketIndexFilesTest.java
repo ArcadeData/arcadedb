@@ -201,6 +201,55 @@ class UnreferencedBucketIndexFilesTest extends TestHelper {
       assertThat(Files.exists(indexFile)).as("bucket index file %s is kept", indexFile.getFileName()).isTrue();
   }
 
+  /**
+   * A rebuild in place of a HASH index fills a new file before it swaps it in: a stop before the swap leaves that file, a stop after
+   * it the previous one, and no schema entry references either. The open drops such a file, judged by its name as for an LSM one,
+   * and leaves the live hash index, which answers to the name of a file it may no longer have, untouched.
+   */
+  @Test
+  void anOpenDropsTheHashIndexFilesNoSchemaEntryReferences() throws IOException {
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE).withTotalBuckets(4).create();
+    type.createProperty("uid", Type.STRING);
+    database.getSchema().buildTypeIndex(TYPE, new String[] { "uid" }).withType(Schema.INDEX_TYPE.HASH).withUnique(true).create();
+    database.transaction(() -> {
+      for (int i = 0; i < RECORDS; i++)
+        database.newDocument(TYPE).set("uid", "key-" + i).save();
+    });
+    // rebuilt in place once: the bucket indexes keep their names on new files
+    database.command("sql", "REBUILD INDEX `" + INDEX + "`");
+
+    final IndexInternal bucketIndex = ((TypeIndex) database.getSchema().getIndexByName(INDEX)).getIndexesOnBuckets()[1];
+    final String bucketIndexName = bucketIndex.getName();
+    final String bucketName = database.getSchema().getBucketById(bucketIndex.getAssociatedBucketId()).getName();
+    final ComponentFile hashFile = ((DatabaseInternal) database).getFileManager().getFile(bucketIndex.getFileId());
+    final Path source = Path.of(hashFile.getFilePath());
+    int freeFileId = 0;
+    for (final ComponentFile file : ((DatabaseInternal) database).getFileManager().getFiles())
+      if (file != null)
+        freeFileId = Math.max(freeFileId, file.getFileId());
+    freeFileId += 50;
+
+    final String orphanName = bucketName + "_423537393901917";
+    final String sourceName = source.getFileName().toString();
+    final String afterId = sourceName.substring(sourceName.indexOf('.', hashFile.getComponentName().length() + 1));
+    final Path orphan = source.resolveSibling(orphanName + "." + freeFileId + afterId);
+    database.close();
+    Files.copy(source, orphan);
+
+    reopenDatabase();
+
+    assertThat(Files.exists(orphan)).as("the unreferenced hash index file is dropped").isFalse();
+    assertThat(database.getSchema().existsIndex(orphanName)).isFalse();
+    for (final Index index : database.getSchema().getIndexes())
+      assertThat(index.getTypeName()).as("index %s belongs to a type", index.getName()).isNotNull();
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+    assertThat(index.isValid()).isTrue();
+    assertThat(index.countEntries()).isEqualTo(RECORDS);
+    assertThat(database.getSchema().getIndexByName(bucketIndexName).getTypeName()).isEqualTo(TYPE);
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument(TYPE).set("uid", "key-7").save()))
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
   private static final class CapturingHandler extends Handler {
     private final List<String> records = new CopyOnWriteArrayList<>();
 

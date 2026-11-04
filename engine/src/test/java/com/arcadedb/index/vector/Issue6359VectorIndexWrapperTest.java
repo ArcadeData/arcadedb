@@ -65,5 +65,8 @@ class Issue6359VectorIndexWrapperTest extends TestHelper {
 
     assertThat(wrapper.getIndexesOnBuckets()).as("and the wrapper lets go of it when it is dropped")
         .doesNotContain(dropped).hasSize(1);
+
+    // a type index left without the bucket index of one of its buckets is reported by CHECK DATABASE, run after each test
+    database.getSchema().dropIndex(wrapper.getName());
   }
 }
