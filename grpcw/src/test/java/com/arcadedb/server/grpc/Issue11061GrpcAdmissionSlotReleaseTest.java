@@ -30,9 +30,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11061: everything {@link GrpcAdmissionInterceptor} does after admitting a call - listing it in the running
@@ -41,6 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the raw call, not the {@code AdmittedCall} whose {@code close()} is the other release point, and the slot stayed taken
  * for the life of the process. An interceptor built without a server (which keeps no registry) was that failure:
  * {@code register()} dereferenced the server unguarded while the rest of the class guards it.
+ * <p>
+ * The guard makes that failure impossible, so it cannot also pin the ordering (issue #11210): the second case fails between
+ * the admission and the handler for a reason the guard does not cover, and goes red when the registration is moved back
+ * above the {@code try}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -84,8 +90,69 @@ class Issue11061GrpcAdmissionSlotReleaseTest {
     }
   }
 
+  /**
+   * The ordering itself (issue #11210): a failure between the admission and the handler that the null guard does not cover.
+   * The call's transport fails when the interceptor reads the peer it lists the call with, so the failure escapes
+   * {@code onHalfClose} before the handler runs and nothing ever closes the {@code AdmittedCall}. Only the {@code finally}
+   * around the registration gives the slot back: with the registration moved back above the {@code try}, the slot stays
+   * taken and every later call is refused.
+   */
+  @Test
+  void aCallThatFailsBetweenAdmissionAndItsHandlerGivesItsSlotBack() throws Exception {
+    for (int i = 0; i < 3; i++) {
+      final RecordingCall call = new RecordingCall(true);
+      final boolean[] served = { false };
+      final CompletableFuture<Void> attempt = CompletableFuture.runAsync(() -> {
+        final ServerCall.Listener<ExecuteQueryRequest> listener = new GrpcAdmissionInterceptor(null).interceptCall(call,
+            new Metadata(), (c, h) -> new ServerCall.Listener<>() {
+              @Override
+              public void onHalfClose() {
+                served[0] = true;
+                c.close(Status.OK, new Metadata());
+              }
+            });
+        listener.onMessage(ExecuteQueryRequest.getDefaultInstance());
+        listener.onHalfClose();
+      });
+
+      assertThatThrownBy(() -> attempt.get(30, TimeUnit.SECONDS)).as("call %d", i).isInstanceOf(ExecutionException.class)
+          .cause().isInstanceOf(IllegalStateException.class).hasMessageContaining(RecordingCall.TRANSPORT_FAILURE);
+      assertThat(call.status).as("call %d was refused by a slot left behind", i).isNull();
+      assertThat(served[0]).as("call %d never reached its handler", i).isFalse();
+      assertThat(gate.getRunning()).as("slots held after call %d", i).isZero();
+    }
+
+    // And the gate still admits: the next sound call is served
+    final RecordingCall next = new RecordingCall(false);
+    CompletableFuture.runAsync(() -> {
+      final ServerCall.Listener<ExecuteQueryRequest> listener = new GrpcAdmissionInterceptor(null).interceptCall(next,
+          new Metadata(), (c, h) -> new ServerCall.Listener<>() {
+            @Override
+            public void onHalfClose() {
+              c.close(Status.OK, new Metadata());
+            }
+          });
+      listener.onMessage(ExecuteQueryRequest.getDefaultInstance());
+      listener.onHalfClose();
+    }).get(30, TimeUnit.SECONDS);
+    assertThat(next.status.getCode()).isEqualTo(Status.Code.OK);
+    assertThat(gate.getRunning()).isZero();
+  }
+
   private static final class RecordingCall extends ServerCall<ExecuteQueryRequest, ExecuteQueryResponse> {
-    private volatile Status status;
+    private static final String TRANSPORT_FAILURE = "issue 11210: the transport failed";
+
+    // Whether reading the call's attributes fails, as a transport torn down under the call does
+    private final    boolean failingTransport;
+    private volatile Status  status;
+
+    private RecordingCall() {
+      this(false);
+    }
+
+    private RecordingCall(final boolean failingTransport) {
+      this.failingTransport = failingTransport;
+    }
 
     @Override
     public void request(final int numMessages) {
@@ -116,6 +183,8 @@ class Issue11061GrpcAdmissionSlotReleaseTest {
 
     @Override
     public Attributes getAttributes() {
+      if (failingTransport)
+        throw new IllegalStateException(TRANSPORT_FAILURE);
       return Attributes.EMPTY;
     }
   }

@@ -50,6 +50,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
@@ -1979,7 +1980,8 @@ public class BoltNetworkExecutor extends Thread {
    * <p>
    * What the category does <b>not</b> model, and this method still decides:
    * <ul>
-   *   <li>an {@link InvalidPropertyTypeException} - a map, or a list containing one, asked to be stored in a
+   *   <li>a {@link TypeMismatchException} - a property read off a list (issue #11211), or its subtype
+   *       {@link InvalidPropertyTypeException}: a map, or a list containing one, asked to be stored in a
    *       property. {@link ErrorCategory} folds it into {@link ErrorCategory#VALIDATION} with every other bad
    *       argument, and Neo4j has its own TypeError title for exactly that refusal, which is a client error
    *       however it was reached - by a map literal or by copying a value SQL had stored (issue #7729). Tested
@@ -2000,7 +2002,7 @@ public class BoltNetworkExecutor extends Thread {
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
     final ErrorCategory category = ErrorCategory.of(error);
 
-    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, InvalidPropertyTypeException.class))
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, TypeMismatchException.class))
       return BoltErrorCodes.TYPE_ERROR;
 
     // A follower's refusal of leader-only work that names the leader: a redirect, not a conflict to retry in place (#9845)

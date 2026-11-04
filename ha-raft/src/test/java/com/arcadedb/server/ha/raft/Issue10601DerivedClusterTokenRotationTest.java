@@ -251,6 +251,69 @@ class Issue10601DerivedClusterTokenRotationTest {
     assertThat(fingerprint).doesNotExist();
   }
 
+  // ---- 4. issue #10924: the inline source is held to the token too
+
+  @Test
+  void aRotatedInlineRootPasswordRefusesTheNextStart(@TempDir final Path tmp) throws Exception {
+    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("data/.raft-storage/raft-storage-x").toFile());
+
+    final ClusterTokenProvider first = inlineDerived("Secret-v1!");
+    first.verifyDerivedTokenFingerprint(fingerprint, false);
+    assertThat(fingerprint).exists();
+    final String recorded = Files.readString(fingerprint.toPath());
+    assertThat(recorded).isEqualTo(ClusterTokenProvider.tokenFingerprint(first.getClusterToken()));
+    inlineDerived("Secret-v1!").verifyDerivedTokenFingerprint(fingerprint, false);
+
+    final ClusterTokenProvider afterRotation = inlineDerived("Secret-v2!");
+    assertThat(afterRotation.getClusterToken()).isNotEqualTo(first.getClusterToken());
+    assertThatThrownBy(() -> afterRotation.verifyDerivedTokenFingerprint(fingerprint, false))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("Refusing to start")
+        .hasMessageContaining("arcadedb.server.rootPassword")
+        .hasMessageContaining("arcadedb.ha.clusterTokenAllowRotation")
+        .hasMessageNotContaining("Secret-v1!")
+        .hasMessageNotContaining("Secret-v2!");
+    assertThat(Files.readString(fingerprint.toPath())).as("a refused start must not overwrite the record").isEqualTo(recorded);
+  }
+
+  @Test
+  void anExplicitRotationOfAnInlineRootPasswordStartsAndRecordsTheNewToken(@TempDir final Path tmp) throws Exception {
+    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    inlineDerived("Secret-v1!").verifyDerivedTokenFingerprint(fingerprint, false);
+
+    final ClusterTokenProvider rotated = inlineDerived("Secret-v2!");
+    rotated.verifyDerivedTokenFingerprint(fingerprint, true);
+    assertThat(Files.readString(fingerprint.toPath())).isEqualTo(ClusterTokenProvider.tokenFingerprint(rotated.getClusterToken()));
+    inlineDerived("Secret-v2!").verifyDerivedTokenFingerprint(fingerprint, false);
+  }
+
+  @Test
+  void switchingFromTheFileSourceToTheInlineSourceKeepsTheRecord(@TempDir final Path tmp) throws Exception {
+    final Path passwordFile = tmp.resolve("rootPassword");
+    final File fingerprint = RaftHAServer.clusterTokenFingerprintFile(tmp.resolve("raft-storage").toFile());
+    Files.writeString(passwordFile, "Secret-v1!\n");
+    fileDerived(passwordFile).verifyDerivedTokenFingerprint(fingerprint, false);
+    final String recorded = Files.readString(fingerprint.toPath());
+
+    // Same password and cluster name, so the same token: the record survives and the start passes.
+    inlineDerived("Secret-v1!").verifyDerivedTokenFingerprint(fingerprint, false);
+    assertThat(Files.readString(fingerprint.toPath())).isEqualTo(recorded);
+
+    // A different inline password is a different token, and is refused against the file source's record.
+    final ClusterTokenProvider other = inlineDerived("Secret-v2!");
+    assertThatThrownBy(() -> other.verifyDerivedTokenFingerprint(fingerprint, false)).isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("Refusing to start");
+  }
+
+  private static ClusterTokenProvider inlineDerived(final String password) {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "c10601");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, password);
+    final ClusterTokenProvider provider = new ClusterTokenProvider(config);
+    provider.initClusterToken();
+    return provider;
+  }
+
   private static ClusterTokenProvider fileDerived(final Path passwordFile) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "c10601");

@@ -1200,8 +1200,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         lastTxPreparedAtWithheldLog = now;
         LogManager.instance().log(this, Level.WARNING,
             "Database '%s': transactions do not state the index they were prepared at, so a replica transaction prepared before a "
-                + "schema change is NOT refused. Some peer does not advertise '%s' (older build, not probed yet, or offline)",
-            getName(), PeerCapabilities.TX_PREPARED_AT_INDEX);
+                + "schema change is NOT refused. Some peer does not advertise '%s': %s",
+            getName(), PeerCapabilities.TX_PREPARED_AT_INDEX, raft.explainMissingCapability(PeerCapabilities.TX_PREPARED_AT_INDEX));
       }
       return -1L;
     }
@@ -1223,9 +1223,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         lastCorpusDeltasWithheldLog = now;
         LogManager.instance().log(this, Level.WARNING,
             "Database '%s': transactions do not carry their effect on the BM25 corpus counters, so the other nodes do not count "
-                + "them. Some peer does not advertise '%s' (older build, not probed yet, or offline). Once every peer does, run "
+                + "them. Some peer does not advertise '%s': %s. Once every peer does, run "
                 + "REBUILD INDEX <name> WITH statsOnly = true on the leader to bring the counters of every node back in line",
-            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
+            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS, raft.explainMissingCapability(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS));
       }
       return Collections.emptyList();
     }

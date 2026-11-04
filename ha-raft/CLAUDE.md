@@ -60,7 +60,15 @@ The shutdown trigger has a counterintuitive consequence when reproducing durabil
 
 Each has its own local `excludeId` derivation (`leaderId != null ? leaderId : localPeerId`, or the leader directly). They are not factored into a shared helper, so a fix applied to one silently leaves the others wrong and the cluster API response internally inconsistent.
 
-**Any change to what "replica" means must be applied to all three.** This has already caused one incomplete fix that review caught, twice: the second time (#7040) `/api/v1/cluster` learned to tell a declared peer from a member of the live Raft configuration while these three still iterated the static `raftGroup.getPeers()`. Since then the membership itself comes from one place - `ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers()`, read through `RaftHAServer.configuredPeers()` - and `GetClusterHandler` reads the same reconciliation. Grep `RaftHAServer.java` for `raftGroup.getPeers()` before claiming such a fix is complete: the only legitimate direct readers left are the ones that want the *declared* list on purpose (`getConfiguredServers()`, `getDeclaredPeers()`, the membership reconciliation itself).
+**Any change to what "replica" means must be applied to all three.** This has already caused one incomplete fix that review caught, twice: the second time (#7040) `/api/v1/cluster` learned to tell a declared peer from a member of the live Raft configuration while these three still iterated the static `raftGroup.getPeers()`. Since then the membership itself comes from one place - `ClusterMembership.of(raftGroup.getPeers(), getLivePeers()).configuredPeers()`, read through `RaftHAServer.configuredPeers()` - and `GetClusterHandler` reads the same reconciliation. Grep the module for `raftGroup.getPeers()` before claiming such a fix is complete. `raftGroup.getPeers()` is the server list as declared at startup, never the membership, and a direct read of it is legitimate only when the caller wants exactly that, for one of these reasons, stated at its own site:
+
+- it IS the declared list: an accessor that hands it out under that name (`getConfiguredServers()`, `getDeclaredPeers()`);
+- it is an INPUT of the reconciliation with the live configuration, which then decides (`configuredPeers()`, `knownPeers()`, `GetClusterHandler`), or the fallback when the live configuration cannot be read (`getLivePeers()`, the second lookup of `peerRaftAddress()`);
+- an operator named a server, and the answer is the peer that name declares, even one a configuration change has not finished committing (`RaftHAPlugin.resolveShutdownTarget`);
+- it answers before (or instead of) a read of the live configuration on the misdirected-request path (#10088), where the Ratis division can be parked while it initializes. On the gRPC handler thread nothing may read the division: `isMemberWithoutReadingTheDivision` answers from the declared list and the copy of the last configuration seen, and `resolvePeerAddresses` names a peer for a diagnostic from the declared list only. On the channel recovery worker `isMisdirectedPeerMember` asks the declared list first, so the common case never touches the division, and only then reads the live configuration (`readCommittedPeers`), which a peer added after startup needs;
+- it runs before this node is a member of anything: the Kubernetes auto-join probes the declared peers for a leader and finds its own declared definition there (`KubernetesAutoJoin`).
+
+Anything that reports membership, routes a client or picks a replica reads `configuredPeers()` or `knownPeers()` instead. `RaftGroupDeclaredPeerReadersTest` holds every direct reader to this list: a new one fails it until it is either moved to the reconciliation or added there with its reason.
 
 **Addresses follow the same rule as membership (#10861).** A peer that joined at runtime (the Kubernetes auto-join,
 `addPeer`) is in the live configuration only, so every path that turns a peer into an ADDRESS for a client or an
@@ -168,6 +176,15 @@ The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with
    role;
 3. leave decoding unconditional, so the upgrade stays a one-way ratchet - every node reads the section before any node writes one.
 
+**The three optional TX_ENTRY sections are the one documented exception to "ask now" (#11196).** `tx-prepared-at-index`
+(#8686), `tx-fulltext-corpus-deltas` (#10018) and `fixed-width-float-arrays` (#10856) are emitted by any node, since a
+follower commits a client-managed transaction with its own registry (#10040), and they are asked on every commit, so the
+synchronous round of `peersMissingCapabilityNow` is the wrong remedy there. They read `allPeersSupportOnceAsked`: a peer
+`PeerCapabilityRegistry.neverAsked` (no answer, no failed probe, no refusal recorded) is a cold registry, not a "no", and
+one single-flight round runs before the verdict; a peer that answered without the capability or could not be reached is a
+settled "no" and costs nothing more. Treating the cold state as a "yes" is not an option, the cheap-failure rule below
+still holds. Do not move a section onto the plain cached read because it degrades on a "no": that is the reading above.
+
 Step 2 is where #7559 came from, and it is worth being precise about why, because the obvious reading of the
 paragraph below - "a degrading section may read the cache, only a refusing one must ask" - is the reading that
 produced the bug. #7509 appends a compare-and-set precondition to a security entry, which degrades safely: no
@@ -226,7 +243,8 @@ Two things that are specific to a refusal and do not apply to a withheld section
   `ALTER TYPE ... NAME` (#9762) deliberately has none (#9891). A rename is not urgent the way a revocation is, so a
   down peer refusing it costs a wait rather than an incident, and the refusal says there is no override. Decide per
   refusal whether its operation can wait for the peer; do not reuse `securityEntryCapabilityGate` for a non-security
-  entry.
+  entry. `SecurityEntryCapabilityGate.isOverridable` enforces it: only the two security entry types honour the
+  setting, and `DATABASE_CONFIGURATION_ENTRY` (ALTER DATABASE) is refused whatever it says (#11195).
 
 ### Negotiation governs what is written next, never what is already committed
 

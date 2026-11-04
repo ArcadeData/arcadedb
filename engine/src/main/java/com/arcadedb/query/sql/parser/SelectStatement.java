@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -188,11 +189,10 @@ public class SelectStatement extends Statement {
         params.put(String.valueOf(i), args[i]);
     }
 
-    setProfilingConstraints((DatabaseInternal) db);
-
     context.setInputParameters(params);
 
-    return openResultSet(context, this::createExecutionPlan);
+    final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db, context.getInputParameters());
+    return statement.openResultSet(context, statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache);
   }
 
   @Override
@@ -206,10 +206,11 @@ public class SelectStatement extends Statement {
 
     context.setDatabase(db);
 
-    setProfilingConstraints((DatabaseInternal) db);
     context.setInputParameters(params);
 
-    return openResultSet(context, usePlanCache ? this::createExecutionPlan : this::createExecutionPlanNoCache);
+    final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db, context.getInputParameters());
+    return statement.openResultSet(context,
+        usePlanCache && statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache);
   }
 
   /**
@@ -322,14 +323,27 @@ public class SelectStatement extends Statement {
     return whereClause == null || whereClause.isCacheable();
   }
 
-  private void setProfilingConstraints(final DatabaseInternal db) {
-    final long profiledLimit = db.getResultSetLimit();
-    if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
-      setLimit(new Limit().setValue((int) profiledLimit));
+  /**
+   * This statement, or a copy of it carrying the {@code resultSetLimit} and {@code readTimeout} of the current user's groups
+   * where they are tighter than its own LIMIT and TIMEOUT. Never this statement modified: it is the instance the statement cache
+   * shares between every user of the same text, and the quotas written into it used to cap and time out every user after the
+   * one they belong to. The copy is planned without the plan cache, whose key is the text: it does not say whose quotas a plan
+   * was built with, so an uncapped user's cached plan answered a capped one too.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} is compared by
+   */
+  private SelectStatement withProfilingConstraints(final DatabaseInternal db, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(db, params);
+    final long profiledTimeout = tighterProfiledTimeout(db);
+    if (profiledLimit < 0 && profiledTimeout < 0)
+      return this;
 
-    final long profiledTimeout = db.getReadTimeout();
-    if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
-      setTimeout(new Timeout().setValue((int) profiledTimeout));
+    final SelectStatement statement = copy();
+    if (profiledLimit > -1)
+      statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
+    if (profiledTimeout > -1)
+      statement.setTimeout(new Timeout().setValue(NumberUtils.saturateToInt(profiledTimeout)));
+    return statement;
   }
 }
 /* JavaCC - OriginalChecksum=b26959b9726a8cf35d6283eca931da6b (do not edit this line) */

@@ -128,6 +128,86 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
     assertThat(withPid).filteredOn(r -> !nearest.equals(r.getProperty("r"))).allSatisfy(r -> assertThat(r.<Object>getProperty("pid")).isNotNull());
   }
 
+  /**
+   * Issue #11202: the row of a record gone behind the index's back takes one of the {@code limit} places, so the answer holds one
+   * real neighbour fewer. It is reported once per row however many properties are read, and {@code REBUILD INDEX}, the repair the
+   * report names, gives the real neighbour its place back.
+   */
+  @Test
+  void aRecordGoneBehindTheIndexIsReportedAndRebuildIndexRepairsTheAnswer() {
+    createDocs(30, "", 0);
+    indexOf().buildVectorGraphNow();
+    final float[] q = new float[DIMENSIONS];
+    final String withPid = "SELECT @rid AS r, pid, payload, vector FROM (SELECT expand(vectorNeighbors('Doc[vector]', ?, 10)))";
+
+    final List<RID> before = new ArrayList<>();
+    rows(withPid, q).forEach(r -> before.add(r.getProperty("r")));
+    final RID nearest = before.getFirst();
+    // the neighbour that has the 11th place while every record is there
+    final List<RID> eleven = new ArrayList<>();
+    rows("SELECT @rid AS r FROM (SELECT expand(vectorNeighbors('Doc[vector]', ?, 11)))", q).forEach(r -> eleven.add(r.getProperty("r")));
+    final RID eleventh = eleven.getLast();
+    assertThat(before).doesNotContain(eleventh);
+
+    database.transaction(() -> ((LocalBucket) database.getSchema().getBucketById(nearest.getBucketId())).deleteRecord(nearest));
+
+    final long reportedBefore = StaleVectorEntryReporter.getTotalReported();
+    final List<Result> damaged = rows(withPid, q);
+    assertThat(damaged).hasSize(10).extracting(r -> r.<RID>getProperty("r")).contains(nearest).doesNotContain(eleventh);
+    // three properties read off the row, one report
+    assertThat(StaleVectorEntryReporter.getTotalReported() - reportedBefore).isEqualTo(1L);
+
+    database.command("sql", "REBUILD INDEX `Doc[vector]`");
+    indexOf().buildVectorGraphNow();
+
+    final List<Result> repaired = rows(withPid, q);
+    assertThat(repaired).hasSize(10).allSatisfy(r -> assertThat(r.<Object>getProperty("pid")).isNotNull());
+    assertThat(repaired).extracting(r -> r.<RID>getProperty("r")).doesNotContain(nearest).contains(eleventh)
+        .containsAll(before.subList(1, 10));
+  }
+
+  /**
+   * Issue #11202 (found by CodeRabbit): a delete committed after the search made a row and before the row was first read takes the
+   * vector out of the index as well, so the row finds its record gone and the index is not damaged: nothing is reported.
+   */
+  @Test
+  void aDeleteCommittedBetweenTheSearchAndTheReadIsNotReportedAsDamage() {
+    createDocs(30, "", 0);
+    indexOf().buildVectorGraphNow();
+    final List<ScoredRecordRow> rows = neighbours(new float[DIMENSIONS]);
+    final ScoredRecordRow first = rows.getFirst();
+    assertThat(isUnread(first)).isTrue();
+
+    database.transaction(() -> first.getRecord().getIdentity().asDocument().delete());
+
+    final long reportedBefore = StaleVectorEntryReporter.getTotalReported();
+    assertThat(first.get("pid")).isNull();
+    assertThat(StaleVectorEntryReporter.getTotalReported()).isEqualTo(reportedBefore);
+  }
+
+  /**
+   * Issue #11202 (found by CodeRabbit): a record the open transaction deleted is not gone yet. It is not reported (the committed index
+   * still holds the vector until the commit), and once the transaction rolls back the row reads the record again.
+   */
+  @Test
+  void aDeleteOfTheOpenTransactionIsNotReportedAndARollbackBringsTheRowBack() {
+    createDocs(30, "", 0);
+    indexOf().buildVectorGraphNow();
+
+    database.begin();
+    final List<ScoredRecordRow> rows = neighbours(new float[DIMENSIONS]);
+    final ScoredRecordRow first = rows.getFirst();
+    assertThat(isUnread(first)).isTrue();
+    first.getRecord().getIdentity().asDocument().delete();
+
+    final long reportedBefore = StaleVectorEntryReporter.getTotalReported();
+    assertThat(first.get("pid")).isNull();
+    assertThat(StaleVectorEntryReporter.getTotalReported()).isEqualTo(reportedBefore);
+    database.rollback();
+
+    assertThat(first.get("pid")).isInstanceOf(Integer.class);
+  }
+
   /** A delete through the API takes the vector out of the index in its own commit: the deferred row never sees it. */
   @Test
   void aCommittedDeleteCostsNoAnswerRow() {

@@ -82,7 +82,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   // and out underneath it, which is why getMostRecentFileName() and getName() can differ (issue #9213).
   private              String                        name;
   private final        RWLockContext                 lock         = new RWLockContext();
+  // Test seam: runs in splitIndex() once the swap is published and saved, before the previous mutable file is dropped
+  private static final ThreadLocal<Runnable>         AFTER_SWAP_TEST_HOOK = new ThreadLocal<>();
   protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+  /**
+   * Set on a bucket index {@code REBUILD INDEX} created for a bucket its type index lacked, from its creation until it is filled,
+   * and persisted in its schema entry: a type index does not count it as present meanwhile, and a schema load that finds the flag
+   * (a process that stopped before the fill) leaves the bucket index out, so the type index reopens incomplete and reported as not
+   * valid rather than complete and empty for that bucket.
+   */
+  private volatile     boolean                       awaitingFill;
   /**
    * Compacted files replaced by a FULL compaction, awaiting their physical drop. The swap (under the write
    * lock) guarantees no NEW cursor can reach them, but live series cursors load pages lazily and may still
@@ -465,6 +474,26 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isCompacting() {
     return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
+  }
+
+  /**
+   * TEST SEAM ONLY, package-private: a crash test installs it in the child JVM it kills. Per thread, and a caller sharing its JVM
+   * must remove it (null) in a finally, as {@code LSMTreeIndexBulkLoader.setBuildTestHook} is.
+   */
+  static void setAfterSwapTestHook(final Runnable hook) {
+    if (hook == null)
+      AFTER_SWAP_TEST_HOOK.remove();
+    else
+      AFTER_SWAP_TEST_HOOK.set(hook);
+  }
+
+  /** See {@link #awaitingFill}. */
+  public boolean isAwaitingFill() {
+    return awaitingFill;
+  }
+
+  public void setAwaitingFill(final boolean awaitingFill) {
+    this.awaitingFill = awaitingFill;
   }
 
   @Override
@@ -1013,6 +1042,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), saveSchema);
         return newMutableIndex;
       });
+
+      final Runnable afterSwapHook = AFTER_SWAP_TEST_HOOK.get();
+      if (afterSwapHook != null)
+        afterSwapHook.run();
 
       if (prevMutable != null)
         try {

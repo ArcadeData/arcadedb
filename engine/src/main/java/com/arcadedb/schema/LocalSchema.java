@@ -341,6 +341,13 @@ public class LocalSchema implements Schema {
   // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
   // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
   protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
+  // The index entries the running load read from schema.json (file and logical names): what sweepOrphanBucketIndexFiles() must
+  // not touch. Filled and emptied by the loading thread, within one load
+  private final       Set<String>                            indexEntriesReadAtLoad        = new HashSet<>();
+  // Set once the load of the open has published: the orphan sweep runs only before it, when no build of this process can be in flight
+  private volatile    boolean                                openLoadDone;
+  // Whether the running load read schema.prev.json because schema.json was missing, empty or unreadable
+  private             boolean                                schemaReadFromPreviousCopy;
   // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
   // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
   private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
@@ -668,9 +675,17 @@ public class LocalSchema implements Schema {
       if (initialize)
         initComponents();
 
-      if (!readConfiguration() && mustKeepPreviousGeneration())
+      indexEntriesReadAtLoad.clear();
+      final boolean schemaRead = readConfiguration();
+      if (!schemaRead && mustKeepPreviousGeneration())
         throw new SchemaException("Cannot load the schema from '" + SCHEMA_FILE_NAME
             + "': it could not be read. The previous schema stays in place, see the log for the cause");
+
+      // Only over a schema read whole: not one read from schema.prev.json (it can predate the last indexes created, whose files
+      // are no leftovers), and not one whose read failed part-way, which leaves only the index entries parsed before the error
+      if (schemaRead && mode == ComponentFile.MODE.READ_WRITE && !openLoadDone && !schemaReadFromPreviousCopy)
+        sweepOrphanBucketIndexFiles();
+      indexEntriesReadAtLoad.clear();
 
       // filesDuringLoad(), not `files`: the components this load built live in the staged file-id overlay until
       // the barrier below, while the live array still carries the previous generation (issues #7962, #7963).
@@ -690,6 +705,7 @@ public class LocalSchema implements Schema {
       // rather than one that has not finished loading itself - or, before issue #7963, than nothing at all.
       commitStagedPublication();
       published = true;
+      openLoadDone = true;
 
       updateSecurity();
     } finally {
@@ -752,6 +768,10 @@ public class LocalSchema implements Schema {
    * accessor below tests this rather than merely "is a load running", so a component in {@link #stagedIndexMap} is
    * reachable only by the load that built it.
    */
+  public boolean isLoadingOnCurrentThread() {
+    return isStagingPublication();
+  }
+
   private boolean isStagingPublication() {
     return stagingThread.get() == Thread.currentThread();
   }
@@ -1482,6 +1502,30 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * One SEVERE line per type index that lacks the bucket index of a bucket of its type, the state a rebuild interrupted by an
+   * earlier version left behind (11 of 16 buckets without a bucket index, the index still reported valid). Such an index misses
+   * every record of those buckets and, for a UNIQUE one, no longer refuses a duplicate there: it is reported as not valid
+   * ({@link TypeIndex#isValid()}), the planners do not use it, and the line names the statement that repairs it.
+   */
+  private void reportIncompleteTypeIndexes(final Map<String, LocalDocumentType> graph) {
+    for (final LocalDocumentType type : graph.values())
+      for (final TypeIndex typeIndex : type.getAllIndexes(false)) {
+        if (typeIndex.isDropped() || !typeIndex.getTypeName().equals(type.getName()))
+          continue;
+        final List<Bucket> missing = typeIndex.getBucketsWithoutIndex();
+        if (!missing.isEmpty()) {
+          final List<String> names = new ArrayList<>(missing.size());
+          for (final Bucket bucket : missing)
+            names.add(bucket.getName());
+          LogManager.instance().log(this, Level.SEVERE,
+              "Index '%s' on type '%s' has no bucket index for %d of its %d buckets %s: it is NOT valid, queries do not use it and a "
+                  + "UNIQUE constraint is not enforced on those buckets. Run `REBUILD INDEX `%s`` to repair it", null,
+              typeIndex.getName(), type.getName(), missing.size(), type.getBuckets(false).size(), names, typeIndex.getName());
+        }
+      }
+  }
+
+  /**
    * Links every {@code .bfidx} bloom filter component (#5517) to the compacted index it was written for, matching it
    * by name. Only a compacted index the load claimed gets one: an orphan is about to be dropped anyway, and an
    * unattached filter is inert, since nothing but its compacted index ever probes it.
@@ -1490,6 +1534,72 @@ public class LocalSchema implements Schema {
     for (final Component component : snapshot)
       if (component instanceof LSMTreeIndexCompacted compacted && compacted.getMainIndex() != null)
         compacted.attachBloomFilter();
+  }
+
+  /**
+   * Drops the files of LSM bucket indexes no index of the schema references: an index build or rebuild
+   * that stopped half way (a REBUILD INDEX of an earlier version interrupted by a stop, one of this version stopped before it filled
+   * a bucket index it created) leaves mutable index files on disk with no schema entry. Each open re-created them as type-less
+   * indexes nothing reads, and the ones whose compacted file was already gone logged an "Invalid sub-index" line advising a
+   * REBUILD of a name no statement can reach.
+   * <p>
+   * Only what is proven unreferenced is dropped, and only by the first load of an open, when no build of this process can be in
+   * flight: a plain LSM_TREE index (never a bucket, never a wrapper index, never a compacted file, which
+   * {@link #sweepOrphanCompactedIndexFiles} reclaims once its mutable file is gone) left without a type by the whole load including
+   * its orphan-relinking pass, whose name is no schema entry's, and whose name is the {@code <bucket>_<number>} name of a bucket
+   * index of a bucket that exists (a manual index is named by its creator). Not on an HA node, where the files of an index being
+   * created by the leader can arrive before its schema entry.
+   */
+  private void sweepOrphanBucketIndexFiles() {
+    if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      return;
+
+    // The FILES, not the index map: the previous file of an index that never compacted is named after the index, and the live
+    // index re-keyed under that logical name (restoreLogicalIndexName) has already taken its place in the map
+    for (final Component component : filesDuringLoad()) {
+      if (!(component instanceof LSMTreeIndexMutable mutable))
+        continue;
+      final LSMTreeIndex lsm = mutable.getMainIndex();
+      if (lsm == null || lsm.getClass() != LSMTreeIndex.class || lsm.getTypeName() != null)
+        continue;
+      final String fileName = mutable.getName();
+      if (indexEntriesReadAtLoad.contains(fileName))
+        continue;
+      final Bucket bucket = bucketOfBucketIndexName(fileName);
+      if (bucket == null || getBucketOwner(bucket.getFileId()) == null)
+        continue;
+
+      final int fileId = mutable.getFileId();
+      LogManager.instance().log(this, Level.WARNING,
+          "Dropping index file '%s' (fileId=%d) of bucket '%s': no index of the schema references it, it was left behind by an "
+              + "index build or rebuild that did not complete", null, fileName, fileId, bucket.getName());
+      try {
+        database.getPageManager().deleteFile(database, fileId);
+        database.getFileManager().dropFile(fileId);
+        removeFile(fileId);
+        // only the names that still resolve to this very index: the live one may answer to the same logical name
+        for (final String name : new String[] { lsm.getName(), fileName })
+          if (lookupIndex(name) == lsm)
+            removeIndexDuringLoad(name);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on dropping the unreferenced index file '%s'", e, fileName);
+      }
+    }
+  }
+
+  /** The bucket a bucket index is named after ({@code <bucket>_<number>}, a compaction adds one more number), or null. */
+  private Bucket bucketOfBucketIndexName(final String indexName) {
+    String candidate = indexName;
+    for (int i = 0; i < 4; i++) {
+      final String base = LSMTreeIndexAbstract.compactionBaseName(candidate);
+      if (base.equals(candidate))
+        return null;
+      final Bucket bucket = lookupBucket(base);
+      if (bucket != null)
+        return bucket;
+      candidate = base;
+    }
+    return null;
   }
 
   /**
@@ -1583,6 +1693,8 @@ public class LocalSchema implements Schema {
   private static final String UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX = "unenforced-lightweight-constraint:";
   // KEY PREFIX IN reportedUpgradeWarnings: A CONTINUOUS AGGREGATE CREATED BEFORE #10804, WITH NO INDEX ON ITS BUCKET COLUMN
   private static final String UNINDEXED_AGGREGATE_WARNING_PREFIX = "unindexed-continuous-aggregate:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LINKED BELOW A BACKING TYPE BEFORE #11204
+  private static final String BACKING_SUBTYPE_WARNING_PREFIX     = "subtype-of-backing-type:";
 
   /**
    * Issue #10804: names, once per aggregate for the life of this schema, a continuous aggregate whose refresh scans its whole backing
@@ -3475,7 +3587,7 @@ public class LocalSchema implements Schema {
    *
    * @param statement what the statement does, for the message: "drop the type 'T'"
    */
-  private void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
+  void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
     final FileManager fileManager = database.getFileManager();
     for (final Integer fileId : fileIds) {
       final ComponentFile file = fileManager.getFileIfExists(fileId);
@@ -3572,6 +3684,62 @@ public class LocalSchema implements Schema {
           + "source data and run: " + owner.refreshStatement() + ", or remove the " + owner.kind() + " with: " + owner.dropStatement());
   }
 
+  /**
+   * Refuses to link {@code superType} above the type {@code typeName} when {@code superType} is the backing type of a materialized
+   * view or a continuous aggregate, or a type below one (issue #11204). {@code SELECT FROM} a type is polymorphic, so every row of a
+   * subtype is answered by the view, counted in its {@code count(*)} and sorted into its {@code ORDER BY} while the view reports
+   * VALID, and no refresh takes it out: a refresh rewrites the backing type's own buckets only. The write guard of
+   * {@link #checkBackingTypeWrite} cannot stand in for this refusal, because a type linked with its rows already in it brings all of
+   * them into the view without writing one. Asked of a NEW linkage only: a database whose schema already holds such a link still
+   * opens, and the link can be taken out with {@code ALTER TYPE ... SUPERTYPE -}.
+   */
+  public void checkCanExtend(final String typeName, final DocumentType superType) {
+    if (backingTypeOwners.isEmpty())
+      return;
+    final DocumentType backingType = backingTypeAtOrAbove(superType, new HashSet<>());
+    if (backingType == null)
+      return;
+    final BackingTypeOwner owner = backingTypeOwners.get(backingType.getName());
+    final String what = backingType == superType ?
+        "'" + superType.getName() + "' is the backing type for " :
+        "'" + superType.getName() + "' extends '" + backingType.getName() + "', the backing type for ";
+    throw new SchemaException("Cannot make type '" + typeName + "' a subtype of '" + superType.getName() + "' because " + what
+        + owner.kind() + " '" + owner.getName() + "': every row of a subtype is answered by SELECT FROM '" + backingType.getName()
+        + "', while only its refresh writes the rows of the " + owner.kind() + ". Store the rows in a type of their own");
+  }
+
+  /** {@code type} or the first of its super types that is a backing type, or null when none is. */
+  private DocumentType backingTypeAtOrAbove(final DocumentType type, final Set<String> visited) {
+    if (!visited.add(type.getName()))
+      return null;
+    if (backingTypeOwners.containsKey(type.getName()))
+      return type;
+    for (final DocumentType superType : type.getSuperTypes()) {
+      final DocumentType found = backingTypeAtOrAbove(superType, visited);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Names, once per type for the life of this schema, every type a database written before issue #11204 linked below a backing
+   * type: its rows are answered by the view, and the link is what to take out.
+   */
+  private void warnAboutSubtypesOfBackingTypes(final Collection<? extends BackingTypeOwner> owners) {
+    for (final BackingTypeOwner owner : owners) {
+      final String backingTypeName = owner.getBackingTypeName();
+      if (!existsType(backingTypeName))
+        continue;
+      for (final DocumentType subType : getType(backingTypeName).getSubTypes())
+        if (reportedUpgradeWarnings.add(BACKING_SUBTYPE_WARNING_PREFIX + subType.getName()))
+          LogManager.instance().log(this, Level.WARNING,
+              "Type '%s' in database '%s' is a subtype of '%s', the backing type for %s '%s': every row of it is answered by the %s "
+                  + "as if its refresh had computed it. Take the link out with ALTER TYPE `%s` SUPERTYPE -`%s`", null, subType.getName(),
+              database.getName(), backingTypeName, owner.kind(), owner.getName(), owner.kind(), subType.getName(), backingTypeName);
+    }
+  }
+
   /** As {@link #checkBackingTypeWrite(String, String)}, for a record known by its bucket. */
   public void checkBackingTypeWrite(final int bucketId, final String operation) {
     if (backingTypeOwners.isEmpty())
@@ -3600,7 +3768,9 @@ public class LocalSchema implements Schema {
    * A registry of backing type owners that keeps {@link #backingTypeOwners} in step with itself on every change, so that no code
    * path that registers or removes a view or an aggregate (creation, drop, schema load, the restore of a staged schema) can leave
    * the write guard of issue #11020 behind. Every mutator of the map refreshes the snapshot, and the key, value and entry views
-   * are read-only, so a removal through one of them fails instead of leaving the guard stale.
+   * are read-only, so a removal through one of them fails instead of leaving the guard stale. So are the entries they hand out
+   * (issue #11203): {@code Collections.unmodifiableSet} over the entry set hands out the live entries, whose {@code setValue}
+   * replaced an owner behind the snapshot.
    */
   private final class BackingTypeRegistry<V extends BackingTypeOwner> extends LinkedHashMap<String, V> {
     @Override
@@ -3679,7 +3849,7 @@ public class LocalSchema implements Schema {
 
     @Override
     public Set<Map.Entry<String, V>> entrySet() {
-      return Collections.unmodifiableSet(super.entrySet());
+      return new ReadOnlyEntries<>(super.sequencedEntrySet());
     }
 
     // THE SequencedMap MUTATORS AND VIEWS OF LinkedHashMap (JAVA 21) GO AROUND put/remove, SO THEY ARE COVERED TOO
@@ -3725,7 +3895,7 @@ public class LocalSchema implements Schema {
 
     @Override
     public SequencedSet<Map.Entry<String, V>> sequencedEntrySet() {
-      return Collections.unmodifiableSequencedSet(super.sequencedEntrySet());
+      return new ReadOnlyEntries<>(super.sequencedEntrySet());
     }
 
     @Override
@@ -3757,6 +3927,51 @@ public class LocalSchema implements Schema {
     public void clear() {
       super.clear();
       backingTypeOwnersChanged();
+    }
+  }
+
+  /**
+   * The entries of a {@link BackingTypeRegistry}, read-only down to each entry (issue #11203). Not a JDK wrapper over the registry:
+   * {@code Collections.unmodifiableMap(registry).entrySet()} asks the registry for its entry set, which is this view, and the
+   * sequenced wrappers route back the same way. It wraps the map's own entry set instead, whose iterator walks the map's nodes.
+   */
+  private static final class ReadOnlyEntries<V> extends AbstractSet<Map.Entry<String, V>> implements SequencedSet<Map.Entry<String, V>> {
+    private final SequencedSet<Map.Entry<String, V>> entries;
+
+    private ReadOnlyEntries(final SequencedSet<Map.Entry<String, V>> entries) {
+      this.entries = entries;
+    }
+
+    @Override
+    public Iterator<Map.Entry<String, V>> iterator() {
+      final Iterator<Map.Entry<String, V>> iterator = entries.iterator();
+      // no remove(): the default refuses it
+      return new Iterator<>() {
+        @Override
+        public boolean hasNext() {
+          return iterator.hasNext();
+        }
+
+        @Override
+        public Map.Entry<String, V> next() {
+          return new AbstractMap.SimpleImmutableEntry<>(iterator.next());
+        }
+      };
+    }
+
+    @Override
+    public int size() {
+      return entries.size();
+    }
+
+    @Override
+    public boolean contains(final Object o) {
+      return entries.contains(o);
+    }
+
+    @Override
+    public SequencedSet<Map.Entry<String, V>> reversed() {
+      return new ReadOnlyEntries<>(entries.reversed());
     }
   }
 
@@ -4171,6 +4386,7 @@ public class LocalSchema implements Schema {
 
     boolean saveConfiguration = false;
     boolean readable = true;
+    schemaReadFromPreviousCopy = false;
     try {
       File file = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
       final File prevFile = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
@@ -4186,6 +4402,7 @@ public class LocalSchema implements Schema {
       try (final FileInputStream fis = new FileInputStream(file)) {
         final String fileContent = FileUtils.readStreamAsString(fis, encoding);
         root = new JSONObject(fileContent);
+        schemaReadFromPreviousCopy = file == prevFile;
       } catch (final Exception e) {
         // The primary schema.json is non-empty but unparseable: this is the classic "server killed in the middle of a
         // schema save" corruption (issue #1249). Fall back to the previous good copy saved in schema.prev.json instead
@@ -4198,6 +4415,7 @@ public class LocalSchema implements Schema {
           try (final FileInputStream fis = new FileInputStream(prevFile)) {
             root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
           }
+          schemaReadFromPreviousCopy = true;
           saveConfiguration = true;
         } else
           throw e;
@@ -4375,6 +4593,12 @@ public class LocalSchema implements Schema {
 
           for (final String indexName : orderedIndexes) {
             final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
+            final boolean awaitingFill = indexJSON.getBoolean(AWAITING_FILL, false);
+            // FILE names only: the logical name of an index that never compacted is the name of its first file, which a rebuild
+            // in place stopped before deleting it leaves behind once the entry names the new file
+            // only the open load's sweep reads it: loadIncremental (every applied schema entry on an HA follower) must not grow it
+            if (!awaitingFill && !openLoadDone)
+              indexEntriesReadAtLoad.add(indexName);
 
             final JSONArray schemaIndexProperties = indexJSON.getJSONArray("properties");
             final String[] properties = new String[schemaIndexProperties.length()];
@@ -4456,6 +4680,15 @@ public class LocalSchema implements Schema {
                 LogManager.instance()
                     .log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName,
                         index.getName());
+              } else if (awaitingFill) {
+                // Created by a REBUILD INDEX that stopped before filling it: bound, it would make its type index look complete
+                // with no entry for the records of its bucket. Left out instead, and its file goes with the other leftovers
+                // (sweepOrphanBucketIndexFiles): the type index reopens incomplete, reported as not valid, until REBUILD INDEX
+                // runs again
+                LogManager.instance().log(this, Level.WARNING,
+                    "Index '%s' of bucket '%s' was created by a REBUILD INDEX that stopped before filling it: it is left out",
+                    null, index.getName(), bucketName);
+                saveConfiguration = true;
               } else {
                 addLoadedIndex(type, ownerOfBucket, index, bucket.getFileId(), properties);
                 reportUpgradeWarning(index, typeName, properties);
@@ -4583,6 +4816,8 @@ public class LocalSchema implements Schema {
           saveConfiguration = true;
         }
       }
+
+      reportIncompleteTypeIndexes(graph);
 
       // SET THE BUCKET STRATEGY AFTER THE INDEXES BECAUSE SOME OF THEM REQUIRE INDEXES (LIKE THE PARTITIONED)
       for (final String typeName : types.keySet()) {
@@ -4981,6 +5216,9 @@ public class LocalSchema implements Schema {
         }
       }
     }
+
+    warnAboutSubtypesOfBackingTypes(viewTarget.values());
+    warnAboutSubtypesOfBackingTypes(aggregateTarget.values());
 
     // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
     // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
@@ -5717,6 +5955,9 @@ public class LocalSchema implements Schema {
    */
   static final String MANUAL_INDEXES = "manualIndexes";
 
+  /** Marks the schema entry of a bucket index a REBUILD INDEX created and has not filled yet, see {@link LSMTreeIndex#isAwaitingFill()}. */
+  static final String AWAITING_FILL = "awaitingFill";
+
   /** Current file name -> logical name of every manual LSM index a compaction renamed, in file name order. */
   private Map<String, String> manualIndexLogicalNames() {
     final Map<String, String> result = new TreeMap<>();
@@ -5736,6 +5977,8 @@ public class LocalSchema implements Schema {
       return;
     final JSONObject manual = root.getJSONObject(MANUAL_INDEXES);
     for (final String fileName : manual.keySet()) {
+      if (!openLoadDone)
+        indexEntriesReadAtLoad.add(fileName);
       final IndexInternal index = lookupIndex(fileName);
       if (index != null)
         restoreLogicalIndexName(fileName, manual.getString(fileName), index);

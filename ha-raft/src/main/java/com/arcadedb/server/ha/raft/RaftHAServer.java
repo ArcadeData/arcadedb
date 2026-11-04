@@ -2138,8 +2138,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.tokenProvider = new ClusterTokenProvider(configuration);
     this.tokenProvider.initClusterToken();
-    // A token derived from a root password file is held to the one this node last ran with (issue #10601): a file
-    // rewritten in place would otherwise move this node to a token its peers do not hold, silently, at this restart.
+    // A token derived from the root password, inline or from a file, is held to the one this node last ran with (issues
+    // #10601, #10924): a password rotated in place would otherwise move this node to a token its peers do not hold,
+    // silently, at this restart.
     if (persistStorage)
       this.tokenProvider.verifyDerivedTokenFingerprint(clusterTokenFingerprintFile(storageDir),
           configuration.getValueAsBoolean(GlobalConfiguration.HA_CLUSTER_TOKEN_ALLOW_ROTATION));
@@ -7990,8 +7991,86 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return missing;
   }
 
+  private final Object coldRegistryRound = new Object();
+
+  /**
+   * {@link #allPeersSupport} for a section ANY node may emit, which a cold registry must not turn into a "no" (issue #11196).
+   * <p>
+   * A node that has just started, or has just seen a peer join, has no answer for that peer yet, and the cached read says "no" to
+   * it exactly as it does to an older build. The three optional TX_ENTRY sections degrade on a "no", but a degraded commit loses
+   * the #8686 refusal, the #10018 counter deltas or the compact float arrays silently, and since #10040 a follower commits a
+   * client-managed transaction with its own registry. So a peer that was NEVER ASKED is a third state: one bounded round is run
+   * and the answer decides. A peer that answered without the capability, or could not be reached, is a settled "no" that
+   * the round records a reason for, so it is not asked again here: this costs one round per cold start, not one per commit.
+   * Not the synchronous round of {@link #peersMissingCapabilityNow}, which would probe on every commit while an old peer is
+   * part of the cluster.
+   * <p>
+   * Single flight: concurrent commits on a cold node wait for the one round and find the registry filled.
+   * <p>
+   * Worst case: the round is sequential with {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per unreachable peer, so a cold start
+   * with N unreachable peers stalls the commits that ask for N times that, once; every probe outcome, failure included, is recorded
+   * as a reason, so the next read finds none of them never asked. The same round also runs on the capability monitor and the two can
+   * overlap, which is harmless for the reason given on {@link #peersMissingCapabilityNow}: writes go through the registry's
+   * generation guard and a capable verdict needs a peer's own answer.
+   */
+  private boolean allPeersSupportOnceAsked(final String capability) {
+    List<String> missing = peersMissingCapability(capability);
+    if (missing.isEmpty())
+      return true;
+    if (!anyNeverAsked(missing))
+      return false;
+
+    synchronized (coldRegistryRound) {
+      missing = peersMissingCapability(capability);
+      if (missing.isEmpty())
+        return true;
+      if (anyNeverAsked(missing)) {
+        final long startedAt = System.currentTimeMillis();
+        refreshPeerCapabilities();
+        missing = peersMissingCapability(capability);
+        LogManager.instance().log(this, Level.FINE,
+            "Asked the peers never asked about the '%s' capability before a commit needed it (%d ms); still missing: %s",
+            capability, System.currentTimeMillis() - startedAt, missing);
+      }
+    }
+    return missing.isEmpty();
+  }
+
+  private boolean anyNeverAsked(final List<String> peerIds) {
+    for (final String peerId : peerIds)
+      if (peerCapabilities.neverAsked(peerId))
+        return true;
+    return false;
+  }
+
+  /**
+   * Why each peer that has not proved it can decode {@code capability} has not, for a log line an operator can act on (issue
+   * #11196): a peer never asked yet, one that answered without it (an older build), and one that could not be reached are three
+   * different remedies.
+   */
+  String explainMissingCapability(final String capability) {
+    final List<String> missing = peersMissingCapability(capability);
+    if (missing.isEmpty())
+      return "no peer is missing it";
+    final StringBuilder explanation = new StringBuilder();
+    for (final String peerId : missing) {
+      if (!explanation.isEmpty())
+        explanation.append("; ");
+      explanation.append(peerId).append(" (");
+      final PeerCapabilityRegistry.Unknown unknown = peerCapabilities.unknownOf(peerId);
+      if (peerCapabilities.freshAdvertisementOf(peerId) != null)
+        explanation.append("answered without it, an older build");
+      else if (unknown != null)
+        explanation.append(unknown.reason());
+      else
+        explanation.append("has not been asked yet");
+      explanation.append(')');
+    }
+    return explanation.toString();
+  }
+
   private final TxPreparedAtCapabilityCache txPreparedAtCapability = new TxPreparedAtCapabilityCache(
-      () -> allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX), System::currentTimeMillis, 1_000L);
+      () -> allPeersSupportOnceAsked(PeerCapabilities.TX_PREPARED_AT_INDEX), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Cached for a
@@ -8008,7 +8087,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // The same short-lived, membership-aware verdict as the prepared-at one above, asked on every commit as well
   private final TxPreparedAtCapabilityCache fullTextCorpusDeltaCapability = new TxPreparedAtCapabilityCache(
-      () -> allPeersSupport(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS), System::currentTimeMillis, 1_000L);
+      () -> allPeersSupportOnceAsked(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer can read the {@code tx-fulltext-corpus-deltas} section, so a transaction may carry the effect it had on
@@ -8030,7 +8109,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   // Asked on every write of a float or double array, so the same short-lived, membership-aware verdict as the two above
   private final TxPreparedAtCapabilityCache fixedWidthFloatArraysCapability = new TxPreparedAtCapabilityCache(
-      () -> allPeersSupport(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS), System::currentTimeMillis, 1_000L);
+      () -> allPeersSupportOnceAsked(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS), System::currentTimeMillis, 1_000L);
 
   /**
    * Whether every peer reads the fixed-width form of a float or double array, so a record may be written in it (issue #10856).

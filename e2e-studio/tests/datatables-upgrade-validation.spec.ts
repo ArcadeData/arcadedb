@@ -256,8 +256,7 @@ test.describe('DataTables Upgrade Validation Tests', () => {
       const exportButtons = {
         copy: document.querySelector('.buttons-copy') || Array.from(document.querySelectorAll('button')).find(btn => btn.textContent?.includes('Copy')),
         excel: document.querySelector('.buttons-excel') || Array.from(document.querySelectorAll('button')).find(btn => btn.textContent?.includes('Excel')),
-        csv: document.querySelector('.buttons-csv') || Array.from(document.querySelectorAll('button')).find(btn => btn.textContent?.includes('CSV')),
-        pdf: document.querySelector('.buttons-pdf') || Array.from(document.querySelectorAll('button')).find(btn => btn.textContent?.includes('PDF'))
+        csv: document.querySelector('.buttons-csv') || Array.from(document.querySelectorAll('button')).find(btn => btn.textContent?.includes('CSV'))
       };
 
       return {

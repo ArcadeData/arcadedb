@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.MatchExecutionPlanner;
 import com.arcadedb.query.sql.executor.PatternEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -112,9 +113,7 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
     context.setInputParameters(args);
 
-    setProfilingConstraints((DatabaseInternal) database);
-
-    return openResultSet(context);
+    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context);
   }
 
   @Override
@@ -128,10 +127,8 @@ public class MatchStatement extends Statement {
     context.openGraphViewPins();
     context.setDatabase(db);
 
-    setProfilingConstraints((DatabaseInternal) database);
-
     context.setInputParameters(params);
-    return openResultSet(context);
+    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context);
   }
 
   /**
@@ -417,14 +414,26 @@ public class MatchStatement extends Statement {
     return false;
   }
 
-  private void setProfilingConstraints(final DatabaseInternal db) {
-    final long profiledLimit = db.getResultSetLimit();
-    if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
-      setLimit(new Limit().setValue((int) profiledLimit));
+  /**
+   * This statement, or a copy of it carrying the {@code resultSetLimit} and {@code readTimeout} of the current user's groups
+   * where they are tighter than its own LIMIT and TIMEOUT. Never this statement modified: it is the instance the statement cache
+   * shares between every user of the same text, and the quotas written into it used to cap and time out every user after the
+   * one they belong to.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} is compared by
+   */
+  private MatchStatement withProfilingConstraints(final DatabaseInternal db, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(db, params);
+    final long profiledTimeout = tighterProfiledTimeout(db);
+    if (profiledLimit < 0 && profiledTimeout < 0)
+      return this;
 
-    final long profiledTimeout = db.getReadTimeout();
-    if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
-      setTimeout(new Timeout().setValue((int) profiledTimeout));
+    final MatchStatement statement = copy();
+    if (profiledLimit > -1)
+      statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
+    if (profiledTimeout > -1)
+      statement.setTimeout(new Timeout().setValue(NumberUtils.saturateToInt(profiledTimeout)));
+    return statement;
   }
 
   /**

@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -85,8 +86,9 @@ class Issue8098BinaryOpaqueEverywhereTest extends TestHelper {
 
   @Test
   void indexingRejectsIt() {
+    // a type error, the caller's: Neo.ClientError.Statement.TypeError (issue #11211)
     assertThatThrownBy(() -> database.query("opencypher", "MATCH (b:Blob) RETURN b.data[0]").next())
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(TypeMismatchException.class);
   }
 
   @Test

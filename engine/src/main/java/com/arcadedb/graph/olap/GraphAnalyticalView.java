@@ -491,6 +491,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // transaction committed during the scan can be delivered after the build published (issue #8378). Accessed
   // only under synchronized(this).
   private BuildWatch             baseWatch;
+  // The watch of the compaction in flight, opened at its dispatch, before its scan starts. A transaction's pages are readable
+  // before its after-commit callback delivers its change, so a change the compaction scan read can reach the view after the
+  // swap: it is checked against what the scan read, as a full build's is, by keeping this watch as the base watch of the
+  // CSR the compaction publishes. Written under synchronized(this), read without it by the record listeners.
+  private volatile BuildWatch    compactionWatch;
   // Test-only: see setBeforeBuildScanForTest() and setAfterBuildWatchOpenedForTest()
   private volatile Runnable      beforeBuildScanForTest;
   private volatile Runnable      afterBuildWatchOpenedForTest;
@@ -3421,12 +3426,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * Registers, before its transaction commits, that an edge leaving {@code source} is being created or deleted, so
-   * a full build in flight can tell whether its scan read the change (issue #8378).
+   * a full build or a compaction in flight can tell whether its scan read the change (issue #8378).
    */
   void watchEdgeSource(final RID source) {
     final BuildWatch watch = buildWatch;
     if (watch != null)
       watch.watchSource(source);
+    final BuildWatch compaction = compactionWatch;
+    if (compaction != null)
+      compaction.watchSource(source);
   }
 
   /**
@@ -4943,14 +4951,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
-
-      // The view as of this instant - after the triggering delta was merged above, before the first BUFFERED
-      // one arrives. It is the reference the deletion side of the re-application below needs: the fresh CSR
-      // scan is read-committed and non-atomic, so the drop from a pair's multiplicity HERE to its
-      // multiplicity in the fresh base is exactly the number of that pair's buffered deletions the scan
-      // already swallowed (issue #7042). Immutable, so holding the reference across the rebuild is free and
-      // safe from the compaction thread.
-      final Snapshot preCompaction = this.snapshot;
+      // Before the scan: what it reads of every change that may race it, buffered or delivered after the swap
+      final BuildWatch compactionScan = openCompactionWatch();
 
       // See the `generation` field javadoc (issue #6636): captured at dispatch time, deliberately NOT
       // bumped by the synchronous overlay merge just above (or by any applyDelta() call re-entering while
@@ -4969,17 +4971,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             try {
               final long buildStart = System.currentTimeMillis();
               final CSRBuilder builder = newCSRBuilder();
+              builder.setScanObserver(compactionScan);
               final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
               final long durationMs = System.currentTimeMillis() - buildStart;
 
               // Synchronized swap: capture buffered deltas and re-apply against the new mapping
               synchronized (GraphAnalyticalView.this) {
                 // A change committed before the swap and still queued for the asynchronous merge joins the buffered ones
-                // now (issue #10189): merged after the swap, it would be applied to the fresh base unchecked against the
-                // scan, which may already hold it
+                // now (issue #10189)
                 mergeQueuedAsyncDeltas();
                 final List<TxDelta> buffered = pendingDeltas;
                 pendingDeltas = null;
+                closeCompactionWatch(compactionScan);
 
                 if (buffered == null) {
                   // Buffer was aborted (overflow) — keep the current snapshot with its overlay.
@@ -4995,25 +4998,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                       "GraphAnalyticalView '%s': compaction result discarded (superseded by a newer build/restore)", name);
                 } else {
                   Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
+                  // Bound to the fresh CSR, the watch answers for the buffered deltas and for the ones delivered after this
+                  // swap, whose transactions may have committed before the scan read them: merged unchecked, an edge the
+                  // scan read was counted twice for as long as this base is served
+                  final BuildWatch scanWatch = compactionScan.hasWatchedSources() ? compactionScan : null;
+                  if (scanWatch != null)
+                    scanWatch.bindTo(result.getCsrPerType());
 
                   // Re-apply any deltas that arrived during the rebuild.
                   // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
                   // Merging against the new mapping resolves RIDs to correct dense IDs.
                   if (!buffered.isEmpty()) {
-                    // Asked of the pre-compaction snapshot rather than of the fresh one: it answers "how many
-                    // of this pair did the view hold before any buffered delta", which is what tells a
-                    // deletion the scan already swallowed apart from one that committed behind it (#7042).
-                    final DeltaOverlay.PreCompactionPairCount preCount =
-                        (type, src, tgt) -> preCompactionPairCount(preCompaction, type, src, tgt);
                     DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-                    for (final TxDelta d : buffered) {
-                      // Dedup against the fresh base CSR: a buffered delta committed before the scan
-                      // crossed its bucket is already in the new base, so re-merging it blindly would
-                      // create duplicate neighbours (adds, issue #4588) or spend an exclusion budget the
-                      // fresh run cannot pay without hiding a live parallel edge (deletions, issue #7042).
-                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType(), preCount,
-                          result.getCsrPerType());
-                    }
+                    // Dedup against what the scan read, edge by edge: a buffered delta committed before the scan
+                    // crossed its source is already in the new base, so re-merging it blindly would create duplicate
+                    // neighbours (adds, issue #4588) or spend an exclusion budget the fresh run cannot pay without
+                    // hiding a live parallel edge (deletions, issue #7042)
+                    for (final TxDelta d : buffered)
+                      overlay = mergeAgainstBase(overlay, d, result.getMapping(), scanWatch, result.getCsrPerType());
                     // A change to a base edge's properties has no overlay representation, so a delta buffered
                     // during this rebuild may not be reflected in the fresh CSR (if it committed after the
                     // relevant bucket was scanned): flag a follow-up rebuild (#4513). Asked of the overlay the
@@ -5028,8 +5030,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   }
 
                   this.snapshot = fresh;
-                  baseWatch = null;
+                  baseWatch = scanWatch;
                   notifyContractionHierarchies();
+                  // The lightweight pairs the re-application reconciled by counting are checked against the graph, as the
+                  // ones a full build raced on are (issue #9572)
+                  if (scanWatch != null) {
+                    final Set<BuildWatch.RacedLightPair> raced = scanWatch.takeRacedLightPairs();
+                    if (!raced.isEmpty())
+                      checkLightEdgesAgainstGraphLater(raced);
+                  }
                 }
               }
 
@@ -5042,6 +5051,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             // keeps serving its snapshot and overlay, which hold every delta merged so far
             synchronized (GraphAnalyticalView.this) {
               pendingDeltas = null;
+              closeCompactionWatch(compactionScan);
             }
             if (isBenignShutdownError(e))
               LogManager.instance().log(this, Level.FINE,
@@ -5071,6 +5081,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         });
       } catch (final RejectedExecutionException e) {
         pendingDeltas = null;
+        closeCompactionWatch(compactionScan);
         compacting.set(false);
         taskCompleted();
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': compaction rejected (executor shut down)", name);
@@ -5079,22 +5090,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * How many times the pair {@code source -> target} was visible for {@code edgeType} in {@code snap}, asked by
-   * RID so it can be answered against a mapping other than the current one.
-   * <p>
-   * Backs the {@link DeltaOverlay.PreCompactionPairCount} the post-compaction delta re-application hands to
-   * {@link DeltaOverlay#merge}: the buffered deltas carry RIDs, and the dense ids of the pre-compaction
-   * mapping have nothing to do with the ones the freshly built mapping assigns. Zero when either endpoint was
-   * not part of the view at that point - it then held none of the pair, which is what the caller needs to
-   * know. See issue #7042.
+   * Opens the watch of a compaction being dispatched, before its scan starts, as {@link #openBuildWatch} opens a full build's:
+   * every change that may race the scan then has its edge sources registered, so the scan reports what it read of them. The
+   * transactions still open registered theirs before the watch existed, and so did the ones whose change is queued for the
+   * asynchronous merge, which no longer report them as in flight: both are registered here. Must be called under this
+   * instance's monitor, which the asynchronous merge holds while it polls.
    */
-  private int preCompactionPairCount(final Snapshot snap, final String edgeType, final RID source, final RID target) {
-    final DeltaOverlay ov = snap.overlay;
-    final int src = ov != null ? ov.resolveNodeId(source, snap.nodeMapping) : snap.nodeMapping.getGlobalId(source);
-    final int tgt = ov != null ? ov.resolveNodeId(target, snap.nodeMapping) : snap.nodeMapping.getGlobalId(target);
-    if (src < 0 || tgt < 0)
-      return 0;
-    return (int) countBetweenForType(snap, src, tgt, Vertex.DIRECTION.OUT, edgeType);
+  private BuildWatch openCompactionWatch() {
+    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS);
+    compactionWatch = watch;
+    if (deltaCollector != null)
+      // Read after publishing the watch, the reverse of the order a transaction writes them in (see openBuildWatch())
+      deltaCollector.registerInFlightEdgeSources(watch);
+    // Read after the in-flight sources: a transaction queues its change before it stops reporting its sources as in flight
+    for (final QueuedDelta queued : asyncDeltas) {
+      for (final TxDelta.EdgeDelta ed : queued.delta().addedEdges)
+        watch.watchSource(ed.source);
+      for (final TxDelta.EdgeDelta ed : queued.delta().deletedEdges)
+        watch.watchSource(ed.source);
+    }
+    return watch;
+  }
+
+  /** Stops the registrations of a compaction's watch. Must be called under this instance's monitor. */
+  private void closeCompactionWatch(final BuildWatch watch) {
+    watch.close();
+    if (compactionWatch == watch)
+      compactionWatch = null;
   }
 
   private boolean isConnectedForType(final Snapshot snap, final int nodeA, final int nodeB,
