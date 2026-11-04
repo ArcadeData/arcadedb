@@ -145,7 +145,7 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
       return;
     concluded = true;
 
-    engine.applyCommitted(dims, rids, weights, size, appender, tx.getRequester());
+    engine.applyCommitted(dims, rids, weights, size, appender);
 
     release();
   }

@@ -25,7 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.OwnTransaction;
-import com.arcadedb.exception.LockTimeoutException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
@@ -60,11 +60,13 @@ import java.util.logging.Level;
  * every byte of the new segment alongside the regular transaction record - no separate fsync,
  * no flush-on-commit hook, no sparse-vector-specific recovery code.
  * <p>
- * <b>Durability of the memtable (issue #11239).</b> The postings a commit publishes into the memtable are also appended to
- * one of two {@link SparsePostingLog}s, in the commit's own transaction, so the page WAL makes them durable with the records
- * they belong to. A flush swaps the memtable and the log together and resets the log it sealed once the segment is on disk;
- * the first use after an open replays what the logs still hold. A replicated database keeps the memtable in RAM only, as
- * before: see {@link #isPostingLogEnabled()}.
+ * <b>Durability of the memtable (issue #11239).</b> The postings a commit publishes are appended to one of two
+ * {@link SparsePostingLog}s, in the commit's own transaction, so the page WAL makes them durable with the records they belong
+ * to. The memtables are decoded from the committed pages of the logs, one memtable per log (issue #11257): at the end of each
+ * commit that appended, at the first use after an open, and on a replicated database after the apply of every entry that wrote
+ * to a log, so the followers hold the postings the leader has not sealed yet, and a follower promoted to leader goes on from
+ * them. A flush closes the log the commits append to, so they move to the other one, seals the memtable of the closed log and
+ * resets that log once the segment is on disk. A follower never flushes: the segment and the reset come from the leader.
  * <p>
  * <b>Concurrency.</b> Writes ({@link #put}, {@link #remove}) are lock-free against the memtable.
  * Reads ({@link #topK}) take an atomic snapshot of the current memtable + segment set; the
@@ -274,7 +276,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   /**
    * The memtable a {@link #flush} has swapped out and not yet published as a segment, or null (issue #9209). Readers
    * look at it between the live memtable and the segments, so the postings of a memtable being flushed never vanish
-   * from a query. Written only under {@link #mutatorLock}.
+   * from a query. Written under {@link #mutatorLock}, or under {@link #memtableLock} when the engine has posting logs: it is
+   * then the memtable decoded from the log the commits no longer append to.
    */
   private final AtomicReference<Memtable>                  sealedMemtable = new AtomicReference<>();
   private final AtomicLong                                 nextSegmentId = new AtomicLong(1L);
@@ -324,25 +327,41 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private final    SparsePostingLog[] postingLogs        = new SparsePostingLog[2];
   /** The file ids of {@link #postingLogs}, empty until both exist: what the index adds to its file set. */
   private volatile List<Integer>      postingLogFileIds  = List.of();
-  /** The log the commits append to. Moved by a flush, under both logs' commit locks. */
+  /**
+   * The log the commits append to, whose memtable is the live one. Follows the committed headers (see
+   * {@link #syncMemtablesWithLogs()}): a flush moves it by closing the log.
+   */
   private volatile int                activeLog;
   /** The generation stamped on the next log that starts receiving postings: above every generation either log carries. */
   private final    AtomicLong         nextLogGeneration  = new AtomicLong(1L);
   /**
-   * Set at open when the engine found its logs, cleared once their state is read and their postings are in the memtable. Done
-   * lazily, at the first write or read, for two reasons: the engine is built by the schema load, which runs BEFORE the WAL
-   * recovery restores the log pages a crash left only in the WAL; and only then is it known whether the database is replicated
-   * (it is wrapped for HA after it opened): a replicated database neither writes nor replays its logs, see
-   * {@link #isPostingLogEnabled()}.
+   * Set at open when the engine found its logs, cleared once their state is read and their postings are in the memtables. Done
+   * lazily, at the first write or read: the engine is built by the schema load, which runs BEFORE the WAL recovery restores the
+   * log pages a crash left only in the WAL.
    */
   private volatile boolean            logStatePending;
   private final    Object             postingLogMonitor  = new Object();
-  /** Bit mask of the logs whose postings the sealed memtable holds. Under {@link #mutatorLock}. */
-  private          int                sealedMemtableLogs;
   /**
-   * Bit mask of the logs whose postings a segment already carries but whose reset did not commit, retried by the next flush;
-   * and on a replicated database the logs a standalone past left behind.
+   * Guards what the memtables are made of when the engine has posting logs (issue #11257): {@link #logMemtables},
+   * {@link #flushingMemtable}, {@link #sealedGenerations}, the decode cursors of the logs, and the publication of the first two
+   * to the readers. Taken last: under a commit's file locks, and never while waiting for anything.
    */
+  private final    Object             memtableLock       = new Object();
+  /** The postings decoded from each log and not sealed by this node yet, or null. The active log's one is the live memtable. */
+  private final    Memtable[]         logMemtables       = new Memtable[2];
+  /**
+   * A memtable a flush seals that no log's slot holds any more, or null: the live one, when both logs hold postings and the
+   * commits stay on the same log (see {@link #flushLogged()}).
+   */
+  private          Memtable           flushingMemtable;
+  /** The logs to reset once {@link #flushingMemtable} is in a segment. */
+  private          int                flushingResetMask;
+  /**
+   * For each log, the generation whose postings a segment of this node carries since its memtable was sealed, or 0: they are not
+   * decoded into a memtable again. Only the node that sealed them knows; another node keeps them until the log is reset.
+   */
+  private final    long[]             sealedGenerations  = new long[2];
+  /** Bit mask of the logs whose postings a segment already carries but whose reset did not commit, retried by the next flush. */
   private final    AtomicInteger      logsToReset        = new AtomicInteger();
 
   public PaginatedSparseVectorEngine(final DatabaseInternal database, final String indexName, final SegmentParameters params) {
@@ -948,9 +967,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   public long flush() {
     ensureOpen();
     ensurePostingLogReplayed();
+    if (isPostingLogEnabled() && database.isFollower())
+      // The memtables of a follower are decoded from the posting logs the leader writes (issue #11257): the leader seals them,
+      // and the segment and the reset of the log reach this node with the entry that publishes them
+      return -1L;
     localMutations.incrementAndGet();
     mutatorLock.lock();
     try {
+      if (isPostingLogEnabled())
+        return flushLogged();
+
       // A sealed memtable left by a flush that failed is retried before anything else: its postings are committed and
       // still readable, and dropping them would lose them for good.
       final Memtable retained = sealedMemtable.get();
@@ -960,112 +986,20 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
             "Retrying the flush of %d postings of sparse vector engine '%s' left by a failed flush", null,
             retained.totalPostings(), indexName);
       else {
-        if (old.isEmpty()) {
-          // Nothing to seal, but the resets a previous flush could not commit are retried
-          resetPostingLogsInOwnSession(logsToReset.get());
+        if (old.isEmpty())
           return -1L;
-        }
-        if (isPostingLogEnabled()) {
-          // Swapped with the commits' posting-log locks held, so no commit is between its append and its publication: the
-          // memtable sealed here holds exactly the postings of the log the commits stop appending to (issue #11239)
-          // The locks are taken and released right here, under one requester: nothing else runs under them
-          final Object swapRequester = lockRequester();
-          final List<Integer> locked;
-          try {
-            locked = lockPostingLogs(swapRequester);
-          } catch (final LockTimeoutException e) {
-            LogManager.instance().log(this, Level.FINE,
-                "Flush of sparse vector engine '%s' deferred: the commits hold its posting logs (%s)", null, indexName,
-                e.getMessage());
-            return -1L;
-          }
-          try {
-            final int current = activeLog;
-            final int other = 1 - current;
-            // Readers capture the live memtable, then the sealed one, then the segments. Exposing the sealed memtable BEFORE
-            // the swap and clearing it only AFTER the segment is published means every posting is reachable from one of the
-            // three at every instant (issue #9209); a reader that sees a posting twice merges the copies by recency.
-            sealedMemtable.set(old);
-            memtable.set(new Memtable());
-            if (!postingLogs[other].isActive()) {
-              sealedMemtableLogs = 1 << current;
-              activeLog = other;
-            } else
-              // Both logs hold postings: the first flush after a crash replayed both, or the reset of the other one did not
-              // commit. There is no empty log to move the commits to, so they keep appending to the active one, behind the
-              // postings this flush seals. Only the other log is reset: the active one is reset by the next flush, which finds
-              // the other empty and swaps. Replaying it in between re-applies postings a segment already holds, in the order
-              // they were committed, which is harmless: nothing newer than them lives anywhere but after them in this log
-              sealedMemtableLogs = 1 << other;
-          } finally {
-            database.getTransactionManager().unlockFilesInOrder(locked, swapRequester);
-          }
-        } else {
-          // See the comment above on the order of the two writes
-          sealedMemtable.set(old);
-          memtable.set(new Memtable());
-        }
+        // Readers capture the live memtable, then the sealed one, then the segments. Exposing the sealed memtable BEFORE
+        // the swap and clearing it only AFTER the segment is published means every posting is reachable from one of the
+        // three at every instant (issue #9209); a reader that sees a posting twice merges the copies by recency.
+        sealedMemtable.set(old);
+        memtable.set(new Memtable());
       }
-      final int logsSealedByThisFlush = sealedMemtableLogs | logsToReset.get();
-      final long segmentId = nextSegmentId.getAndIncrement();
-      final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
-      final boolean ranOnLeader;
-      try {
-        ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
-          runMutationHookForTest();
-          componentRef[0] = buildSegmentComponent(segmentId, old);
-          // Open the reader and publish it under {@link #mutatorLock} (held by the caller) AND
-          // inside the recording session, so:
-          //   - the segments-array publication is a single set() with no observable gap where a
-          //     concurrent {@link #topK} could see a missing segment;
-          //   - {@link #refreshSegmentsFromFileManager} won't race the publication: at this point
-          //     the file is on disk + registered, and the publication below puts its id into
-          //     knownIds, so the refresh path's "skip if knownIds contains this id" guard prevents
-          //     the duplicate-reader bug that otherwise lands on the next query.
-          try {
-            appendSegment(new PaginatedSegmentReader(componentRef[0]));
-            // Published: the segment now carries the postings, so the sealed memtable can stop being read.
-            sealedMemtable.set(null);
-            sealedMemtableLogs = 0;
-          } catch (final IOException e) {
-            // Build succeeded (component is registered with the FileManager) but reader open
-            // failed - drop the orphan so it does not leak into the next refresh scan and
-            // surface as a phantom segment whose header fails validation. Best-effort drop;
-            // if it also fails, attach to the suppressed chain rather than masking the real
-            // cause.
-            try {
-              dropComponent(componentRef[0]);
-            } catch (final RuntimeException dropFailure) {
-              e.addSuppressed(dropFailure);
-            }
-            throw new IndexException("Failed to open freshly-flushed sparse segment '" + indexName + "_seg" + segmentId + "'",
-                e);
-          }
-          // Inside the session: on a replicated leader the reset rides the entry that ships the segment
-          resetPostingLogs(logsSealedByThisFlush);
-          return Boolean.TRUE;
-        });
-      } catch (final InterruptedException e) {
-        // Restore the interrupt flag so callers higher up the stack can detect cancellation.
-        Thread.currentThread().interrupt();
-        throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
-      } catch (final IOException e) {
-        throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
-      }
-      if (!ranOnLeader) {
+      final long segmentId = sealIntoSegment(old, () -> sealedMemtable.set(null), 0);
+      if (segmentId == -1L) {
         // A follower receives its segments from the leader and never keeps a memtable of its own to retry.
         sealedMemtable.set(null);
-        sealedMemtableLogs = 0;
         return -1L;
       }
-      // Size-tiered auto-compaction gate. Run synchronously under {@code mutatorLock} (which
-      // {@link #compactInputs} reacquires reentrantly): a long bulk-load that fires back-to-back
-      // flushes would otherwise leave the engine with one segment per flush, and BMW DAAT would
-      // pay a per-segment merge cost on every query. Cascade in case the merged segment promotes
-      // its tier to also-overflowing - the loop terminates because each pass moves at least one
-      // segment up a tier and tiers are bounded by the corpus size.
-      while (compactSizeTiered() != -1L)
-        ;
       // A retried memtable is older than the live one; callers that ask for a flush expect the live one sealed too.
       if (retained != null && !memtable.get().isEmpty())
         flush();
@@ -1076,6 +1010,166 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       mutatorLock.unlock();
       localMutations.decrementAndGet();
     }
+  }
+
+  /**
+   * The flush of an engine with posting logs (issues #11239, #11257), under {@link #mutatorLock}. What it seals is a memtable
+   * decoded from a log the commits no longer append to, so the memtable holds exactly the postings of that log and the log can
+   * be reset once the segment is on disk:
+   * <ul>
+   *   <li>the memtable of the other log, when there is one: a flush that failed left it, or the open replayed a closed log;</li>
+   *   <li>otherwise the live memtable, after the log it was decoded from is CLOSED in a transaction of its own, which moves the
+   *   commits to the other log. On a replicated database that transaction is an entry of the log like any other, so every
+   *   node moves to the other log at the same position, and a commit that a follower prepared against the closed log fails its
+   *   page version check (see {@link SparsePostingLog});</li>
+   *   <li>the live memtable as it is, the commits staying on the same log, when that log holds nothing (the memtable holds writes
+   *   that were not logged) or when the other log still holds postings a segment already carries (its reset did not commit):
+   *   there is no empty log to move to, and only the other one is reset.</li>
+   * </ul>
+   */
+  private long flushLogged() {
+    catchUpWithPostingLogs();
+    Memtable toSeal;
+    int sealedLog = -1;
+    int resetMask;
+    synchronized (memtableLock) {
+      final int older = 1 - activeLog;
+      if (flushingMemtable != null) {
+        toSeal = flushingMemtable;
+        resetMask = flushingResetMask;
+      } else if (logMemtables[older] != null && !logMemtables[older].isEmpty()) {
+        toSeal = logMemtables[older];
+        sealedLog = older;
+        resetMask = 1 << older;
+      } else {
+        toSeal = null;
+        resetMask = 0;
+      }
+    }
+    final boolean retained = toSeal != null;
+    if (retained)
+      LogManager.instance().log(this, Level.FINE, "Sparse vector engine '%s' seals %d postings of a posting log it no longer appends to",
+          null, indexName, toSeal.totalPostings());
+    else {
+      if (memtable.get().isEmpty()) {
+        // Nothing to seal, but the resets a previous flush could not commit are retried
+        resetPostingLogsInOwnSession(logsToReset.get());
+        return -1L;
+      }
+      final int current = activeLog;
+      if (postingLogs[current].isActive() && !postingLogs[1 - current].isActive()) {
+        if (!closePostingLog(current))
+          return -1L;
+        // Decodes what committed before the close and moves the live memtable to the other log
+        catchUpWithPostingLogs();
+        synchronized (memtableLock) {
+          if (activeLog == current || logMemtables[current] == null)
+            // Not moved: the close is not what the committed header says, nothing to seal from it
+            return -1L;
+          toSeal = logMemtables[current];
+          sealedLog = current;
+          resetMask = 1 << current;
+        }
+      } else {
+        // Sealed as it is, the commits staying on the same log: either that log holds nothing (what the memtable has came from
+        // writes that were not logged), or the other log still holds postings a segment carries, and only that one is reset
+        synchronized (memtableLock) {
+          toSeal = logMemtables[current] != null ? logMemtables[current] : memtable.get();
+          flushingMemtable = toSeal;
+          flushingResetMask = postingLogs[1 - current].isActive() ? 1 << (1 - current) : 0;
+          resetMask = flushingResetMask;
+          logMemtables[current] = new Memtable();
+          publishMemtables();
+        }
+      }
+    }
+
+    final Memtable sealing = toSeal;
+    final int sealingLog = sealedLog;
+    final long segmentId = sealIntoSegment(sealing, () -> {
+      synchronized (memtableLock) {
+        if (sealingLog >= 0 && logMemtables[sealingLog] == sealing) {
+          logMemtables[sealingLog] = null;
+          sealedGenerations[sealingLog] = postingLogs[sealingLog].getDecodedGeneration();
+        }
+        if (flushingMemtable == sealing) {
+          flushingMemtable = null;
+          flushingResetMask = 0;
+        }
+        publishMemtables();
+      }
+    }, resetMask);
+    if (segmentId == -1L)
+      // Not the leader any more: the memtables keep what the logs hold, and the next leader seals it
+      return -1L;
+    if (retained && !memtable.get().isEmpty())
+      flushLogged();
+    return segmentId;
+  }
+
+  /**
+   * Builds the segment of {@code old}, publishes its reader, runs {@code onPublished}, resets the posting logs of
+   * {@code resetMask} in the same replicated session, then runs the size-tiered compaction. Under {@link #mutatorLock}.
+   *
+   * @return the id of the segment, or -1 when this node is not the leader and built nothing
+   */
+  private long sealIntoSegment(final Memtable old, final Runnable onPublished, final int resetMask) {
+    final int logsSealedByThisFlush = resetMask | logsToReset.get();
+    final long segmentId = nextSegmentId.getAndIncrement();
+    final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
+    final boolean ranOnLeader;
+    try {
+      ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+        runMutationHookForTest();
+        componentRef[0] = buildSegmentComponent(segmentId, old);
+        // Open the reader and publish it under {@link #mutatorLock} (held by the caller) AND
+        // inside the recording session, so:
+        //   - the segments-array publication is a single set() with no observable gap where a
+        //     concurrent {@link #topK} could see a missing segment;
+        //   - {@link #refreshSegmentsFromFileManager} won't race the publication: at this point
+        //     the file is on disk + registered, and the publication below puts its id into
+        //     knownIds, so the refresh path's "skip if knownIds contains this id" guard prevents
+        //     the duplicate-reader bug that otherwise lands on the next query.
+        try {
+          appendSegment(new PaginatedSegmentReader(componentRef[0]));
+          // Published: the segment now carries the postings, so the sealed memtable can stop being read.
+          onPublished.run();
+        } catch (final IOException e) {
+          // Build succeeded (component is registered with the FileManager) but reader open
+          // failed - drop the orphan so it does not leak into the next refresh scan and
+          // surface as a phantom segment whose header fails validation. Best-effort drop;
+          // if it also fails, attach to the suppressed chain rather than masking the real
+          // cause.
+          try {
+            dropComponent(componentRef[0]);
+          } catch (final RuntimeException dropFailure) {
+            e.addSuppressed(dropFailure);
+          }
+          throw new IndexException("Failed to open freshly-flushed sparse segment '" + indexName + "_seg" + segmentId + "'",
+              e);
+        }
+        // Inside the session: on a replicated leader the reset rides the entry that ships the segment
+        resetPostingLogs(logsSealedByThisFlush);
+        return Boolean.TRUE;
+      });
+    } catch (final InterruptedException e) {
+      // Restore the interrupt flag so callers higher up the stack can detect cancellation.
+      Thread.currentThread().interrupt();
+      throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
+    } catch (final IOException e) {
+      throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
+    }
+    if (!ranOnLeader)
+      return -1L;
+    // Size-tiered auto-compaction gate. Run synchronously under {@code mutatorLock} (which
+    // {@link #compactInputs} reacquires reentrantly): a long bulk-load that fires back-to-back
+    // flushes would otherwise leave the engine with one segment per flush, and BMW DAAT would
+    // pay a per-segment merge cost on every query. Cascade in case the merged segment promotes
+    // its tier to also-overflowing - the loop terminates because each pass moves at least one
+    // segment up a tier and tiers are bounded by the corpus size.
+    while (compactSizeTiered() != -1L)
+      ;
+    return segmentId;
   }
 
   /**
@@ -1809,8 +1903,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (closed)
         return;
       // Throw away unsealed memtable state - a drop voids any pending writes.
-      memtable.set(new Memtable());
-      sealedMemtable.set(null);
+      synchronized (memtableLock) {
+        logMemtables[0] = null;
+        logMemtables[1] = null;
+        flushingMemtable = null;
+        memtable.set(new Memtable());
+        sealedMemtable.set(null);
+      }
       // Drop every active segment via the FileManager so the on-disk file is reclaimed and the
       // schema's files list no longer references the component.
       for (final PaginatedSegmentReader r : segments.get()) {
@@ -1859,7 +1958,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     }
   }
 
-  // --- posting logs (issue #11239) -------------------------------------------
+  // --- posting logs (issues #11239, #11257) ----------------------------------
 
   /** The file ids of the posting logs, empty while the engine has none. Part of the index's file set. */
   public List<Integer> getPostingLogFileIds() {
@@ -1886,31 +1985,39 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           ((LocalSchema) database.getSchema().getEmbedded()).registerFile(log);
           postingLogs[i] = log;
         }
+        // Never during an open (index creation, or a first write): nothing is left to recover into these files. What the
+        // memtables hold already, written before the logs existed, stays where it is: the live one is the first log's
+        synchronized (memtableLock) {
+          for (final SparsePostingLog log : postingLogs) {
+            log.readCommittedHeader();
+            log.startDecoding(0L);
+            log.attach(this);
+          }
+          activeLog = 0;
+          logMemtables[0] = memtable.get();
+          logMemtables[1] = null;
+          flushingMemtable = sealedMemtable.get();
+          flushingResetMask = 0;
+          logStatePending = false;
+        }
       } catch (final IOException e) {
         throw new IndexException("Cannot create the posting logs of sparse vector index '" + indexName + "'", e);
       }
-      // Never during an open (index creation, or a first write): nothing is left to recover into these files
-      loadPostingLogStates();
-      logStatePending = false;
       postingLogFileIds = List.of(postingLogs[0].getFileId(), postingLogs[1].getFileId());
     }
   }
 
-  /**
-   * Whether commits log their postings: the engine has its logs and the database is not replicated. A replicated database
-   * keeps today's behaviour, its followers seeing the postings once sealed: only the leader runs the commit replay, so a
-   * follower would hold a log it never feeds into its own memtable, and replaying it at an open would shadow later changes.
-   */
+  /** Whether commits log their postings: the engine has its logs, on a standalone database and on every node of a cluster. */
   boolean isPostingLogEnabled() {
-    return !postingLogFileIds.isEmpty() && !database.getWrappedDatabaseInstance().isReplicated();
+    return !postingLogFileIds.isEmpty();
   }
 
   /**
-   * Opens the appender of {@code tx} on the active log, or answers null when this commit does not log its postings: logging
-   * off, a commit past its 1st phase or without the WAL, or one that does not hold both logs' locks (a late joiner, an explicit
-   * lock taken before the logs existed). A commit without the WAL logs nothing on purpose: its pages reach the disk only through
-   * the asynchronous flush, and a WAL-logged append on a page whose WAL-less version never got there would open a version gap
-   * that stops the recovery of every later transaction.
+   * Opens the appender of {@code tx} on the log the commits append to, or answers null when this commit does not log its
+   * postings: logging off, a commit past its 1st phase or without the WAL, or one that does not hold both logs' locks (a late
+   * joiner, an explicit lock taken before the logs existed). A commit without the WAL logs nothing on purpose: its pages reach
+   * the disk only through the asynchronous flush, and a WAL-logged append on a page whose WAL-less version never got there would
+   * open a version gap that stops the recovery of every later transaction.
    */
   SparsePostingLog.Appender openPostingLogAppender(final TransactionContext tx) {
     if (!isPostingLogEnabled() || tx.getStatus() != TransactionContext.STATUS.COMMIT_1ST_PHASE || !tx.isUseWAL())
@@ -1919,30 +2026,35 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     for (final int fileId : fileIds)
       if (!tx.isFileLockedByCommit(fileId))
         return null;
-    ensurePostingLogReplayed(tx.getRequester());
-    return postingLogs[activeLog].openAppender(tx, nextLogGeneration.get());
+    ensurePostingLogReplayed();
+    final int target = activeLog;
+    final long newGeneration = nextLogGeneration.get();
+    final SparsePostingLog.Appender appender = postingLogs[target].openAppender(tx, newGeneration);
+    // Closed by a flush since this node last read it (on a replicated database, possibly by another node): the other log
+    return appender != null ? appender : postingLogs[1 - target].openAppender(tx, newGeneration);
   }
 
   /**
-   * Publishes the postings of a committed transaction into the live memtable. Runs before the commit releases its file locks,
-   * and with both posting-log locks among them when it logged, so a flush cannot swap the memtable between this transaction's
-   * append and its publication. Takes no engine lock: the backpressure a write owes is paid before the commit, see
+   * Publishes the postings of a committed transaction. Runs before the commit releases its file locks, and with both posting-log
+   * locks among them when it logged. A commit that logged publishes nothing itself: its postings are decoded from the log
+   * (issue #11257), past what an earlier decode already took, which on a replicated database can already include them. Takes no
+   * engine lock but {@link #memtableLock}: the backpressure a write owes is paid before the commit, see
    * {@link LSMSparseVectorIndex}.
    */
   void applyCommitted(final int[] dims, final RID[] rids, final float[] weights, final int size,
-      final SparsePostingLog.Appender appender, final Object requester) {
+      final SparsePostingLog.Appender appender) {
     ensureOpen();
-    ensurePostingLogReplayed(requester);
+    ensurePostingLogReplayed();
+    if (appender != null) {
+      catchUpWithPostingLogs();
+      return;
+    }
     final Memtable target = memtable.get();
     for (int i = 0; i < size; i++)
       if (Float.isNaN(weights[i]))
         target.remove(dims[i], rids[i]);
       else
         target.put(dims[i], rids[i], weights[i]);
-    if (appender != null) {
-      appender.committed();
-      nextLogGeneration.accumulateAndGet(postingLogs[activeLog].getGeneration() + 1, Math::max);
-    }
   }
 
   /**
@@ -1950,79 +2062,145 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * when nothing replicates the database, replays the logs if the open left them pending, and pays the backpressure the write
    * owes. None of it may wait at the publication, which runs under the commit's locks a flush needs.
    */
-  void beforeTransactionalWrite(final TransactionContext tx) {
+  void beforeTransactionalWrite() {
     if (postingLogFileIds.isEmpty() && !database.getWrappedDatabaseInstance().isReplicated())
       createPostingLogs();
-    if (logStatePending)
-      ensurePostingLogReplayed(tx.getRequester());
+    ensurePostingLogReplayed();
     applyBackpressureIfNeeded();
   }
 
-  private void ensurePostingLogReplayed() {
-    if (logStatePending)
-      ensurePostingLogReplayed(lockRequester());
+  /**
+   * Decodes into the memtables what the posting logs committed since the last decode (issue #11257): after a commit of this node
+   * that appended, after a flush closed or reset a log, and on a replicated database after the apply of an entry that wrote to a
+   * log, whichever node it came from ({@link SparsePostingLog#onPagesApplied()}). A failure is logged and the memtables are
+   * rebuilt from the logs at the next use, since they may miss postings the logs hold.
+   */
+  void catchUpWithPostingLogs() {
+    if (postingLogFileIds.isEmpty() || closed)
+      return;
+    synchronized (memtableLock) {
+      // The first use replays everything, and a close or a drop leaves nothing to decode into
+      if (logStatePending || closed)
+        return;
+      try {
+        syncMemtablesWithLogs();
+      } catch (final IOException | RuntimeException e) {
+        logStatePending = true;
+        LogManager.instance().log(this, Level.WARNING,
+            "Sparse vector engine '%s': its posting logs could not be decoded, the memtables are rebuilt from them at the next use: %s",
+            null, indexName, e.getMessage());
+      }
+    }
   }
 
   /**
-   * Loads the state of the posting logs and replays their committed postings into the memtable, once, at the first use after
-   * the open. Not at the open itself: the schema, and with it this engine, is loaded BEFORE the WAL recovery replays the pages a
-   * crash left only in the WAL, so the header and the tail of a log read then can be older than what the commits wrote. With
-   * both logs' commit locks held, so no commit can publish before the replay: a replay that ran after one would put an older
-   * posting above it.
+   * Loads the state of the posting logs and decodes their committed postings into the memtables, once, at the first use after
+   * the open, or after a decode failed. Not at the open itself: the schema, and with it this engine, is loaded BEFORE the WAL
+   * recovery replays the pages a crash left only in the WAL, so the header and the tail of a log read then can be older than what
+   * the commits wrote. A commit that logged meanwhile is decoded by this replay or by the decode that ends it, never by both: the
+   * cursors tell.
    */
-  private void ensurePostingLogReplayed(final Object requester) {
+  private void ensurePostingLogReplayed() {
     if (!logStatePending)
       return;
-    synchronized (postingLogMonitor) {
-      if (!logStatePending)
+    synchronized (memtableLock) {
+      if (!logStatePending || closed)
         return;
-      if (database.getWrappedDatabaseInstance().isReplicated()) {
-        // Never written on a replicated database (see isPostingLogEnabled): what they hold is left from a standalone past, and
-        // already in the segments or lost with it. Reset by the next flush on the leader, inside its replicated session
-        loadPostingLogStates();
-        final int stale = activePostingLogMask();
-        logsToReset.getAndUpdate(m -> m | stale);
-        logStatePending = false;
-        return;
-      }
-      final List<Integer> locked = lockPostingLogs(requester);
       try {
-        loadPostingLogStates();
-        final SparsePostingLog first = postingLogs[0].getGeneration() <= postingLogs[1].getGeneration() ? postingLogs[0] :
-            postingLogs[1];
-        final SparsePostingLog second = first == postingLogs[0] ? postingLogs[1] : postingLogs[0];
-        final Memtable target = memtable.get();
-        final long replayed = first.replayInto(target) + second.replayInto(target);
+        for (int i = 0; i < postingLogs.length; i++) {
+          postingLogs[i].startDecoding(0L);
+          logMemtables[i] = null;
+          sealedGenerations[i] = 0L;
+        }
+        final long replayed = syncMemtablesWithLogs();
         logStatePending = false;
         if (replayed > 0)
           LogManager.instance().log(this, Level.INFO,
-              "Sparse vector engine '%s': %d postings committed and not sealed before the last shutdown replayed from its posting logs",
-              null, indexName, replayed);
+              "Sparse vector engine '%s': %d postings committed and not sealed yet replayed from its posting logs", null, indexName,
+              replayed);
       } catch (final IOException e) {
         throw new IndexException("Cannot replay the posting logs of sparse vector index '" + indexName + "'", e);
-      } finally {
-        database.getTransactionManager().unlockFilesInOrder(locked, requester);
       }
     }
   }
 
-  /** Reads both logs' committed state, then picks the log the commits append to: the newest one holding postings. */
-  private void loadPostingLogStates() {
-    try {
-      postingLogs[0].loadState();
-      postingLogs[1].loadState();
-    } catch (final IOException e) {
-      throw new IndexException("Cannot read the posting logs of sparse vector index '" + indexName + "'", e);
+  /**
+   * Brings the memtables in line with the committed state of the posting logs, under {@link #memtableLock}:
+   * <ul>
+   *   <li>a log whose generation is not the one decoded (reset, or restarted with a new one) drops the memtable of the old one:
+   *   a log is reset only once a segment carries what it held;</li>
+   *   <li>the log the commits append to is the active one, else the one that is not closed; its memtable is the live one, and
+   *   the other log's, when it holds postings no segment of this node carries, the sealed one;</li>
+   *   <li>each log decodes its entries past its cursor into its memtable.</li>
+   * </ul>
+   *
+   * @return the entries decoded
+   */
+  private long syncMemtablesWithLogs() throws IOException {
+    for (int i = 0; i < postingLogs.length; i++) {
+      final SparsePostingLog log = postingLogs[i];
+      log.readCommittedHeader();
+      final long generation = log.isActive() ? log.getGeneration() : 0L;
+      if (log.getDecodedGeneration() != generation) {
+        if (log.getDecodedGeneration() != 0L) {
+          // The generation decoded is gone. A log that starts its first one keeps its memtable: what that holds was not logged
+          logMemtables[i] = null;
+          sealedGenerations[i] = 0L;
+        }
+        log.startDecoding(generation);
+      }
     }
-    activeLog = postingLogs[1].isActive() && (!postingLogs[0].isActive()
-        || postingLogs[1].getGeneration() > postingLogs[0].getGeneration()) ? 1 : 0;
-    nextLogGeneration.set(Math.max(postingLogs[0].getGeneration(), postingLogs[1].getGeneration()) + 1);
+
+    final SparsePostingLog first = postingLogs[0];
+    final SparsePostingLog second = postingLogs[1];
+    int live = activeLog;
+    if (first.isAppendable() && second.isAppendable())
+      // Two active logs: the newest one takes the commits
+      live = second.getGeneration() > first.getGeneration() ? 1 : 0;
+    else if (first.isAppendable() || second.isAppendable())
+      live = first.isAppendable() ? 0 : 1;
+    else if (first.isActive() != second.isActive())
+      // One closed, the other empty: the commits go to the empty one
+      live = first.isActive() ? 1 : 0;
+    activeLog = live;
+
+    long decoded = 0L;
+    for (int i = 0; i < postingLogs.length; i++) {
+      final SparsePostingLog log = postingLogs[i];
+      Memtable target = logMemtables[i];
+      if (target == null) {
+        if (i != live && (log.getDecodedGeneration() == 0L || sealedGenerations[i] == log.getDecodedGeneration()))
+          continue;
+        target = new Memtable();
+      }
+      final long fromThisLog = log.decodeInto(target);
+      decoded += fromThisLog;
+      if (logMemtables[i] == null && (i == live || fromThisLog > 0L)) {
+        logMemtables[i] = target;
+        sealedGenerations[i] = 0L;
+      }
+    }
+    nextLogGeneration.accumulateAndGet(Math.max(first.getGeneration(), second.getGeneration()) + 1L, Math::max);
+    publishMemtables();
+    return decoded;
+  }
+
+  /**
+   * Hands the memtables to the readers: the live one is the active log's, the sealed one the memtable a flush seals or the other
+   * log's. The sealed one first, so a posting is reachable from one of the two at every instant (issue #9209).
+   */
+  private void publishMemtables() {
+    final Memtable live = logMemtables[activeLog];
+    final Memtable older = flushingMemtable != null ? flushingMemtable : logMemtables[1 - activeLog];
+    if (sealedMemtable.get() != older)
+      sealedMemtable.set(older);
+    if (live != null && memtable.get() != live)
+      memtable.set(live);
   }
 
   /**
    * Finds the posting logs at open, by name. Both or none: a crash between the creation of the two leaves one, which is empty,
-   * and {@link #createPostingLogs} adds the other. Their state is read at the first use, see
-   * {@link #ensurePostingLogReplayed(Object)}.
+   * and {@link #createPostingLogs} adds the other. Their state is read at the first use, see {@link #ensurePostingLogReplayed()}.
    */
   private void discoverPostingLogs() {
     for (int i = 0; i < postingLogs.length; i++) {
@@ -2033,6 +2211,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (postingLogs[0] == null || postingLogs[1] == null)
       return;
     logStatePending = true;
+    postingLogs[0].attach(this);
+    postingLogs[1].attach(this);
     postingLogFileIds = List.of(postingLogs[0].getFileId(), postingLogs[1].getFileId());
   }
 
@@ -2043,6 +2223,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   /** Bit mask of the posting logs holding postings (bit 0 and bit 1), for tests. Loads their state first, as any use does. */
   int activePostingLogsForTest() {
     ensurePostingLogReplayed();
+    catchUpWithPostingLogs();
     return activePostingLogMask();
   }
 
@@ -2059,10 +2240,20 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), requester);
   }
 
-  /** The identity the commit locks of a transaction of this thread are taken with, so a lock this engine takes is reentrant. */
-  private Object lockRequester() {
-    final TransactionContext tx = database.getTransactionIfExists();
-    return tx != null ? tx.getRequester() : Thread.currentThread();
+  /**
+   * Closes the log the commits append to, in a transaction of its own, so the next commits append to the other one (issue
+   * #11257). On a replicated database it is an entry of the Raft log, which every node applies at the same position.
+   *
+   * @return false when the close did not commit: a commit holding the logs, or a concurrent append that won the header; the
+   * next flush tries again
+   */
+  private boolean closePostingLog(final int log) {
+    final boolean[] done = { false };
+    runOnPostingLogs(context -> {
+      postingLogs[log].closeToAppends(context);
+      done[0] = true;
+    }, "close");
+    return done[0];
   }
 
   /**
@@ -2070,19 +2261,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * their postings are on disk. A failure leaves them for the next flush, which is safe: a log replayed over a segment that
    * holds the same postings only re-applies them, in the order they were committed.
    * <p>
-   * Never the log the commits append to while logging is on: a commit can append to it at any time, behind the postings sealed,
-   * and its entries would be marked empty with the rest. That log is reset by the flush that swaps away from it. On a replicated
-   * database nothing appends, so every log of the mask is reset.
-   * <p>
-   * The reset takes both logs' commit locks itself, with the identity its own transaction commits with, read from that
-   * transaction once it began: its commit then re-enters them instead of waiting on them, whichever context {@code begin()}
-   * handed out (the thread's inactive one, or a fresh one pushed while the thread is still inside a commit's callbacks), and no
-   * commit appends between the decision and the reset.
+   * Never the log the commits append to: a commit can append to it at any time, behind the postings sealed, and its entries would
+   * be marked empty with the rest. That log is closed and then reset by a later flush.
    */
   private void resetPostingLogs(final int mask) {
     if (postingLogFileIds.isEmpty() || logStatePending)
       return;
-    final int resettable = isPostingLogEnabled() ? mask & ~(1 << activeLog) : mask;
+    final int resettable = mask & ~(1 << activeLog);
     final int toReset = resettable & activePostingLogMask();
     if (toReset == 0) {
       logsToReset.getAndUpdate(m -> m & ~resettable);
@@ -2095,6 +2280,33 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           "Sparse vector engine '%s': the posting logs are kept because the files could not be synced to disk", null, indexName);
       return;
     }
+    final boolean[] reset = { false };
+    runOnPostingLogs(context -> {
+      for (int i = 0; i < postingLogs.length; i++)
+        if ((toReset & (1 << i)) != 0)
+          postingLogs[i].reset(context);
+      reset[0] = true;
+    }, "reset");
+    if (reset[0])
+      logsToReset.getAndUpdate(m -> m & ~toReset);
+    else
+      logsToReset.getAndUpdate(m -> m | toReset);
+  }
+
+  private interface PostingLogChange {
+    void apply(TransactionContext context) throws IOException;
+  }
+
+  /**
+   * Runs {@code change} in a WAL-logged transaction of its own and decodes the logs after it. A failure is logged at WARNING and
+   * leaves {@code change} undone.
+   * <p>
+   * The transaction takes both logs' commit locks itself, with the identity it commits with, read from it once it began: its
+   * commit then re-enters them instead of waiting on them, whichever context {@code begin()} handed out (the thread's inactive
+   * one, or a fresh one pushed while the thread is still inside a commit's callbacks), and no commit of this node appends between
+   * the decision and the change.
+   */
+  private void runOnPostingLogs(final PostingLogChange change, final String what) {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
     final OwnTransaction tx = OwnTransaction.begin(db);
     Object requester = null;
@@ -2103,24 +2315,19 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       final TransactionContext context = db.getTransaction();
       requester = context.getRequester();
       locked = lockPostingLogs(requester);
-      for (int i = 0; i < postingLogs.length; i++)
-        if ((toReset & (1 << i)) != 0)
-          postingLogs[i].reset(context);
+      change.apply(context);
       tx.commit();
-      for (int i = 0; i < postingLogs.length; i++)
-        if ((toReset & (1 << i)) != 0)
-          postingLogs[i].resetCommitted();
-      logsToReset.getAndUpdate(m -> m & ~toReset);
     } catch (final IOException | RuntimeException e) {
       tx.rollbackIfMine();
-      logsToReset.getAndUpdate(m -> m | toReset);
-      LogManager.instance().log(this, Level.WARNING,
-          "Sparse vector engine '%s': the reset of its posting logs failed and is retried by the next flush: %s", null, indexName,
-          e.getMessage());
+      // A commit holding the logs, or an append of another node that won the header: expected, and retried like a failure
+      LogManager.instance().log(this, e instanceof NeedRetryException ? Level.FINE : Level.WARNING,
+          "Sparse vector engine '%s': the %s of its posting logs failed and is retried by the next flush: %s", null, indexName,
+          what, e.getMessage());
     } finally {
       if (locked != null)
         database.getTransactionManager().unlockFilesInOrder(locked, requester);
     }
+    catchUpWithPostingLogs();
   }
 
   /**
@@ -2658,8 +2865,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       final Memtable sealed = sealedMemtable.get();
       // Two flushes between the two reads would pair a stale live memtable with the NEWER sealed one, and the stale
       // one would be read as the newest source. The live memtable still being the same one proves no swap came between.
-      if (memtable.get() == active)
+      if (memtable.get() == active) {
+        // Refreshed again after the capture: a follower drops the memtable of a log once the reset of that log is applied, and
+        // the segment carrying its postings is registered before it (issue #11257). Free when no file changed
+        refreshSegmentsFromFileManager();
         return new MemSnapshot(active, sealed == active ? null : sealed);
+      }
     }
   }
 
