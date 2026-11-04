@@ -65,7 +65,7 @@ set -euo pipefail
 #   --march <baseline>     CPU baseline to compile for (native-image -march), e.g. compatibility
 #                          for a binary that runs on any CPU of the architecture. Default: the
 #                          native.march baseline native/pom.xml sets for the arch (x86-64-v3 /
-#                          armv8.1-a), the one the published images use. See docs/native-image.md,
+#                          armv8-a), the one the published images use. See docs/native-image.md,
 #                          "CPU requirements".
 #   --allow-low-memory     Proceed even though Docker has less memory than this build needs.
 #   --rebuild-builder      Rebuild the builder image even if it already exists locally.
