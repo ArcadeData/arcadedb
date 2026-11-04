@@ -753,10 +753,25 @@ public class HashIndex implements IndexInternal {
       bucket = newBucket;
       return null;
     });
-    database.getSchema().getEmbedded().setMigratedFileId(previous.getFileId(), newBucket.getFileId(), true);
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    schema.setMigratedFileId(previous.getFileId(), newBucket.getFileId(), false);
+    boolean saved = true;
+    try {
+      schema.saveConfigurationOrThrow();
+    } catch (final IOException e) {
+      // The schema stays dirty and names the new file at the next save; until then the file on disk names the previous one
+      saved = false;
+      LogManager.instance().log(this, Level.WARNING,
+          "Keeping the previous file '%s' of hash index '%s': the schema that replaces it could not be saved now", e,
+          previous.getName(), name);
+    }
 
     if (swapHook != null)
       swapHook.accept(SwapPhase.AFTER_SWAP);
+
+    if (!saved)
+      // a restart before the next save reopens the index on it; once a save names the new file, the next open drops it
+      return;
 
     try {
       previous.drop();

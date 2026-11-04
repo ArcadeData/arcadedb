@@ -19,6 +19,7 @@
 package com.arcadedb.index.hash;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -35,6 +36,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -45,6 +48,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -72,6 +76,7 @@ class RebuildHashIndexInPlaceTest extends TestHelper {
   @AfterEach
   void cleanUp() {
     IndexBuildTestHooks.onRecordIndexed = null;
+    HashIndex.setSwapTestHook(null);
     HashIndex.HashIndexFactoryHandler.layoutVersion = HashIndexBucket.CURRENT_VERSION;
     executor.shutdownNow();
   }
@@ -143,6 +148,7 @@ class RebuildHashIndexInPlaceTest extends TestHelper {
     rebuild.get(HANG_DETECT, TimeUnit.SECONDS);
     writer.get(HANG_DETECT, TimeUnit.SECONDS);
     IndexBuildTestHooks.onRecordIndexed = null;
+    HashIndex.setSwapTestHook(null);
 
     // the same index and the same bucket index objects, under the same names, on new files
     final TypeIndex after = (TypeIndex) database.getSchema().getIndexByName(INDEX);
@@ -254,6 +260,41 @@ class RebuildHashIndexInPlaceTest extends TestHelper {
 
     // without the duplicate, the index is consistent again
     database.transaction(() -> database.deleteRecord(database.lookupByRID(duplicate[0], true)));
+  }
+
+  /**
+   * The swap of a bucket index is committed by the schema save. When that save does not happen (here postponed by a transaction
+   * open on the thread, as a failed write would leave it), the schema on disk still names the previous file: it must stay, so a
+   * restart before the next save can open the index on it.
+   */
+  @Test
+  void thePreviousFileIsKeptWhenTheSwapIsNotSaved() {
+    createSchema(true, RECORDS);
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+    final List<Path> previousFiles = new ArrayList<>();
+    for (final IndexInternal onBucket : index.getIndexesOnBuckets())
+      previousFiles.add(Path.of(((DatabaseInternal) database).getFileManager().getFile(onBucket.getFileId()).getFilePath()));
+
+    final AtomicInteger swaps = new AtomicInteger();
+    HashIndex.setSwapTestHook(phase -> {
+      if (swaps.get() == 0 && phase == HashIndex.SwapPhase.BEFORE_SWAP)
+        database.begin();
+      else if (swaps.getAndIncrement() == 0 && phase == HashIndex.SwapPhase.AFTER_SWAP)
+        database.rollback();
+    });
+    try {
+      database.command("sql", "REBUILD INDEX `" + INDEX + "`");
+    } finally {
+      HashIndex.setSwapTestHook(null);
+    }
+
+    assertThat(previousFiles.stream().filter(Files::exists).count()).as("previous files kept").isEqualTo(1);
+    assertIndexMatchesTheRecords();
+
+    // the close saves the schema naming the new file: the previous one is then an orphan the open drops
+    reopenDatabase();
+    assertThat(previousFiles.stream().filter(Files::exists).count()).as("previous files left after the reopen").isZero();
+    assertIndexMatchesTheRecords();
   }
 
   private void createSchema(final boolean unique, final int records) {
