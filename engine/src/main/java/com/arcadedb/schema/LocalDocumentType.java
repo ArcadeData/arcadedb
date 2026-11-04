@@ -2527,7 +2527,9 @@ public class LocalDocumentType implements DocumentType {
     // observable symptom of the "is not valid" failures during REBUILD INDEX / index recreation.
     // Treat a stale entry as if it weren't there: mint a fresh wrapper so the new bucket index
     // can attach.
-    if (propIndex != null && !propIndex.isValid()) {
+    // isDropped(), not isValid(): an index this call is completing bucket by bucket lacks the bucket indexes not attached yet,
+    // which isValid() reports, and must not be thrown away for it
+    if (propIndex != null && propIndex.isDropped()) {
       indexesByProperties.remove(propertyList);
       schema.removeIndexDuringLoad(propIndex.getName());
       propIndex = null;
@@ -3102,6 +3104,8 @@ public class LocalDocumentType implements DocumentType {
         if (custom != null)
           indexJSON.put("typeIndexName", custom);
         LocalSchema.putLogicalIndexName(entry, indexJSON);
+        if (entry.isAwaitingFill())
+          indexJSON.put(LocalSchema.AWAITING_FILL, true);
         indexesByFileName.put(entry.getMostRecentFileName(), indexJSON);
       }
     }

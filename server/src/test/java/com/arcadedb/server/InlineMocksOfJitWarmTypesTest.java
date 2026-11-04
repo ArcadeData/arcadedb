@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InlineMocksOfJitWarmTypesTest {
 
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
-  private static final Path REACTOR_ROOT = Path.of("..");
+  private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
 
   private static final List<String> SKIPPED_TOP_LEVEL = List.of(".worktrees", "e2e", "load-tests", "node_modules");
 

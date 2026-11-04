@@ -183,6 +183,8 @@ class Issue9496GroupByExchangeTest extends TestHelper {
     // max(1 MB, 16 MB / (4 x WORKERS)): ABOUT 800 GROUPS ON 2 WORKERS, 400 ON 4, BEFORE THE 900 THAT START THE EXCHANGE. THE
     // 2,000 GROUPS HELD BY BOTH THE SHARED SIDE AND THE EXCHANGE, PLUS A FLUSH'S WORTH PER WORKER, STILL FIT THE BUDGET
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 0);
+    // ALL OF THE BUDGET FOR THIS QUERY, WHICH MUST LEAVE NOTHING HELD: NOT A QUERY ANOTHER TEST LEFT
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(16L);
     AggregateProjectionCalculationStep.exchangeMinGroups = 900;
     final List<String> parallel = new ArrayList<>();
@@ -197,6 +199,7 @@ class Issue9496GroupByExchangeTest extends TestHelper {
     final String query = "SELECT k, count(*) AS n FROM Item GROUP BY k";
     GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(20_000L);
     AggregateProjectionCalculationStep.exchangeMinGroups = 64;
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
 
     assertThatThrownBy(() -> rows(query)).isInstanceOf(HeapLimitExceededException.class);
     assertThat(QueryHeapBudget.getReservedBytes()).as("everything the query held is given back").isZero();

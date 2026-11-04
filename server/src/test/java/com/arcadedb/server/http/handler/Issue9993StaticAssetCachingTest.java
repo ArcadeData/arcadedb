@@ -64,8 +64,8 @@ class Issue9993StaticAssetCachingTest extends BaseGraphServerTest {
   @Test
   void everyShippedExtensionHasAnEntryAndOnlyPagesAreTemplated() throws IOException {
     final Map<String, Path> shipped = new TreeMap<>();
-    for (final Path root : new Path[] { Path.of("..", "studio", "src", "main", "resources", "static"),
-        Path.of("..", "studio", "target", "classes", "static") })
+    for (final Path root : new Path[] { Path.of(System.getProperty("basedir", "."), "..", "studio", "src", "main", "resources", "static"),
+        Path.of(System.getProperty("basedir", "."), "..", "studio", "target", "classes", "static") })
       if (Files.isDirectory(root))
         try (final Stream<Path> files = Files.walk(root)) {
           files.filter(Files::isRegularFile).forEach(file -> {
@@ -102,7 +102,7 @@ class Issue9993StaticAssetCachingTest extends BaseGraphServerTest {
     assertThat(response.statusCode()).isEqualTo(200);
     assertThat(response.headers().firstValue("Content-Type")).contains("image/png");
     assertThat(response.body()).isEqualTo(
-        Files.readAllBytes(Path.of("src", "test", "resources", "static", "images", "cache-probe.png")));
+        Files.readAllBytes(Path.of(System.getProperty("basedir", "."), "src", "test", "resources", "static", "images", "cache-probe.png")));
   }
 
   // ---------------------------------------------------------------------------------------------------------------------

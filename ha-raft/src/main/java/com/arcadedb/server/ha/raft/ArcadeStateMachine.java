@@ -122,6 +122,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -301,6 +302,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Tracks the highest term observed so notifyTermIndexUpdated can log only the first time we
   // see each term (otherwise it fires on every config/metadata entry, which is noisy).
   private final    AtomicLong                highestTermSeen  = new AtomicLong(-1);
+  // Publications whose outcome a proposer is waiting for (issue #11240), settled by the entries this node applies
+  private final    Set<PendingPublication>   pendingPublications = ConcurrentHashMap.newKeySet();
   // Raft term seen at the last notifyLeaderChanged. Lets us tell a genuine re-election (term
   // advanced) from a same-term re-notification, so we only warn about real leader churn (#4809 follow-up).
   private volatile long                      lastNotifiedLeaderTerm = -1;
@@ -1993,6 +1996,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
+    // A configuration or no-op entry of a later term settles a pending publication as well (issue #11240)
+    settlePublicationsBefore(term);
     try {
       super.notifyTermIndexUpdated(term, index);
     } catch (final Throwable t) {
@@ -2047,6 +2052,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           appended.decoded() :
           RaftLogEntryCodec.decode(data);
       targetDatabase = decoded.databaseName();
+
+      // Before the entry is applied: one of a later term means a pending publication of an earlier term was truncated, and
+      // its proposer must not keep the layout it published (issue #11240)
+      settlePublicationsBefore(termIndex.getTerm());
 
       if (decoded.type() == null) {
         // A committed entry whose leading type byte is unrecognised (e.g. written by a newer node
@@ -2159,6 +2168,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       if (staleNoDatabaseEntry)
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
+
+      // After the apply, so the proposer persists its swap over a state the entry is already applied to (issue #11240)
+      if (decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
+        confirmPublication(decoded, termIndex.getTerm(), index);
 
       final long previousApplied;
       synchronized (appliedPositionLock) {
@@ -2513,7 +2526,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The lowest index of an entry held for the replay, {@link Long#MAX_VALUE} when none is. A hold at or below the boundary
    * a Raft install covered is dropped on the way: the installed copy carries what the entry did (issue #10086).
    */
-  private long lowestHeldEntry() {
+  // @VisibleForTesting
+  long lowestHeldEntry() {
     if (heldEntryFloors.isEmpty() && heldConfigurations.isEmpty())
       return Long.MAX_VALUE;
     final long boundary = installedRaftBoundary.get();
@@ -2727,7 +2741,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // (issue #7752). The same ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall)
     // before lastAppliedIndex moves past it, so an applied index read first is never paired with a floor that does not
     // yet cover it.
-    final long floor = Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor());
+    // A compaction whose entry is applied here but whose swap its proposer has not persisted yet is held the same way
+    // (issue #11240), raised before the applied index moves past it as well
+    final long floor = Math.min(Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor()),
+        lowestUnpersistedPublication());
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
@@ -7823,6 +7840,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     releaseHeldConfiguration(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
     clearCompactionHoldOff(databaseName);
+    // Nor a compaction whose swap could not be persisted (issue #11240): there is nothing left to replay it into
+    releaseHeldEntry(unpersistedPublicationKey(databaseName));
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
@@ -9772,6 +9791,136 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *
    * @return {@code true} when this call quarantined the database
    */
+  /**
+   * A schema entry its proposer published from this node and whose outcome it may have to wait for (issue #11240): a
+   * publication that timed out is either committed or truncated by a leadership change, and the entries this node applies
+   * tell which, because they are applied in log order. The proposer's entry is bound to the term it was proposed in (issue
+   * #9547), so it is committed when this node applies it, and truncated when this node applies an entry of a later term
+   * first: every entry ahead of that one in the log is settled, and the proposal is not among them.
+   */
+  static final class PendingPublication {
+    final         String                     databaseName;
+    final         long                       term;
+    private final CompletableFuture<Boolean> outcome = new CompletableFuture<>();
+    private volatile String                  schemaJson;
+    // The log index this node applied the entry at, once it did: the checkpoint stays below it until the proposer has
+    // persisted what the entry publishes and forgets the publication (see takeSnapshot)
+    private volatile long                    appliedAtIndex = -1L;
+
+    private PendingPublication(final String databaseName, final long term) {
+      this.databaseName = databaseName;
+      this.term = term;
+    }
+
+    /** The schema document the publishing entry carries, which tells it apart from another entry of the same term. */
+    void identify(final String schemaJson) {
+      this.schemaJson = schemaJson;
+    }
+
+    /**
+     * @return {@code TRUE} once the entry is committed and applied here, {@code FALSE} once it is truncated, {@code null}
+     * when neither happened within {@code timeoutMs}
+     */
+    Boolean awaitOutcome(final long timeoutMs) throws InterruptedException {
+      try {
+        return outcome.get(timeoutMs, TimeUnit.MILLISECONDS);
+      } catch (final TimeoutException e) {
+        return null;
+      } catch (final ExecutionException e) {
+        // never completed exceptionally
+        return null;
+      }
+    }
+
+    private boolean matches(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm) {
+      if (entryTerm != term || decoded.moreChunksFollow() || !databaseName.equals(decoded.databaseName()))
+        return false;
+      final String expected = schemaJson;
+      return expected == null || decoded.schemaJson() == null || expected.equals(decoded.schemaJson());
+    }
+  }
+
+  /**
+   * Registers a publication of {@code databaseName} its proposer may wait on, BEFORE the entry is dispatched, so an apply
+   * that races the proposer's timeout is not missed (issue #11240). Forgotten with {@link #forgetPublication}.
+   */
+  PendingPublication expectPublication(final String databaseName, final long term) {
+    final PendingPublication pending = new PendingPublication(databaseName, term);
+    pendingPublications.add(pending);
+    return pending;
+  }
+
+  void forgetPublication(final PendingPublication pending) {
+    pendingPublications.remove(pending);
+  }
+
+  /** Settles as truncated every pending publication of a term before {@code entryTerm} (issue #11240). */
+  private void settlePublicationsBefore(final long entryTerm) {
+    if (pendingPublications.isEmpty())
+      return;
+    for (final PendingPublication pending : pendingPublications)
+      if (pending.term < entryTerm && pending.outcome.complete(Boolean.FALSE))
+        LogManager.instance().log(this, Level.WARNING,
+            "The schema entry of database '%s' proposed in term %d was truncated: this node applies an entry of term %d first "
+                + "(issue #11240)", pending.databaseName, pending.term, entryTerm);
+  }
+
+  /**
+   * Settles as committed the pending publication the applied {@code decoded} entry is (issue #11240). Called before the
+   * applied position moves past {@code index}, so a checkpoint that reads the advanced position also reads the floor
+   * {@link #lowestUnpersistedPublication()} derives from it.
+   */
+  private void confirmPublication(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm, final long index) {
+    for (final PendingPublication pending : pendingPublications)
+      if (pending.matches(decoded, entryTerm)) {
+        pending.appliedAtIndex = index;
+        pending.outcome.complete(Boolean.TRUE);
+      }
+  }
+
+  /**
+   * The lowest log index of an applied publication whose proposer has not persisted it yet, or {@link Long#MAX_VALUE}
+   * (issue #11240). An HA compaction saves its schema and drops the files it replaced only after its entry is applied here,
+   * and on the proposer the apply skips the entry: until the proposer has persisted the swap, only a replay of the entry
+   * could restore it after a crash, so the log must not be purged through it. This covers the short window while the
+   * proposer persists; one whose persistence failed hands the entry to the holds of {@link #lowestHeldEntry()} instead
+   * ({@link #holdUnpersistedPublication}). A Raft install past the entry carries what it published, so it no longer holds.
+   */
+  long lowestUnpersistedPublication() {
+    if (pendingPublications.isEmpty())
+      return Long.MAX_VALUE;
+    final long boundary = installedRaftBoundary.get();
+    long lowest = Long.MAX_VALUE;
+    for (final PendingPublication pending : pendingPublications) {
+      final long index = pending.appliedAtIndex;
+      if (index > boundary && index < lowest)
+        lowest = index;
+    }
+    return lowest;
+  }
+
+  /**
+   * Keeps the entry of a publication its proposer could not persist replayable until a restart replays it, a Raft install
+   * covers it or the database is dropped (issue #11240): one of the holds of {@link #lowestHeldEntry()}, which drops it past
+   * an install and reminds the operator while it stands. Raised before the publication is forgotten, so the entry is never
+   * left uncovered in between.
+   */
+  void holdUnpersistedPublication(final PendingPublication pending) {
+    final long index = pending.appliedAtIndex;
+    if (index > -1) {
+      final String key = unpersistedPublicationKey(pending.databaseName);
+      final long lowest = heldEntryFloors.merge(key, index, Math::min);
+      LogManager.instance().log(this, lowest == index ? Level.SEVERE : Level.FINE,
+          "Raft entry at index %d of database '%s' publishes a compaction this node could not persist: no snapshot checkpoint "
+              + "will cover it, so a restart replays it (issue #11240)", index, pending.databaseName);
+    }
+    forgetPublication(pending);
+  }
+
+  private static String unpersistedPublicationKey(final String databaseName) {
+    return "compaction:" + databaseName;
+  }
+
   boolean quarantineUnpublishedSchemaChange(final String dbName, final String session, final Throwable refusal) {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA != null && !isDatabaseDiverged(dbName) && raftHA.isSoleVoter()) {
@@ -9921,6 +10070,110 @@ public class ArcadeStateMachine extends BaseStateMachine {
             dbName, cause, getAppliedIndexFile());
       return true;
     }
+  }
+
+  /**
+   * Quarantines every open database whose crash recovery, run when the server opened it, did not replay every transaction
+   * (issue #11250), so the node does not serve it, does not lead with it, and re-installs it from the cluster.
+   * <p>
+   * Called once the Raft server is up, which is after the server opened the databases: the recovery the check reads has
+   * already run. Before this, a node whose recovery had aborted on a WAL gap still rejoined the cluster, won an election
+   * and answered queries from pages a power loss had left behind.
+   * <p>
+   * A sole voter is left alone, for the reason {@link #handleUnexpectedApplyError} spells out: there is no copy to resync
+   * from, so the quarantine could never lift. It is reported instead.
+   *
+   * @return the databases quarantined by this call
+   */
+  List<String> quarantineDatabasesWithIncompleteRecovery() {
+    final ArcadeDBServer srv = this.server;
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (srv == null || raftHA == null)
+      return List.of();
+
+    final List<String> quarantined = new ArrayList<>();
+    for (final String dbName : srv.getDatabaseNames()) {
+      if (ArcadeDBServer.isReservedDatabaseName(dbName))
+        continue;
+      final boolean incomplete;
+      final List<String> unavailableUnique;
+      try {
+        final ServerDatabase db = srv.getDatabase(dbName, false, false);
+        incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
+        unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
+            e.getMessage());
+        continue;
+      }
+      if (incomplete) {
+        if (quarantineAfterIncompleteRecovery(dbName))
+          quarantined.add(dbName);
+      } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
+        quarantined.add(dbName);
+    }
+    return quarantined;
+  }
+
+  /**
+   * The decision for one database whose crash recovery did not replay every transaction (issue #11250): quarantine it, start
+   * the targeted resync and hand leadership off, unless this node is the only voter (nothing to resync from, so the
+   * quarantine could never lift: reported at SEVERE instead).
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterIncompleteRecovery(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The crash recovery of database '%s' did not complete and this node is the only voter, so there is no peer to "
+              + "re-install it from. It is NOT quarantined; it may be missing committed data: run CHECK DATABASE and "
+              + "restore it from a backup if it is damaged (issue #11250)", dbName);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.LOCAL_RECOVERY_INCOMPLETE))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The crash recovery of database '%s' did not complete, so its local copy may be missing committed data: "
+            + "quarantining it and re-installing it from the leader (issue #11250)", dbName);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
+   * The decision for one database that opened with a unique index it could not load, for a file with no header page (issue
+   * #11258): the index enforces nothing on this node, and the load cannot tell a half-arrived compaction file from one a power
+   * loss emptied. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines the database and re-installs it from the
+   * leader, unless this node is the only voter.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterUnavailableUniqueIndex(final String dbName, final List<String> indexNames) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' opened without its unique indexes %s (no header page) and this node is the only voter, so there is "
+              + "no peer to re-install it from. It is NOT quarantined; the constraint is not enforced: run REBUILD INDEX "
+              + "(issue #11258)", null, dbName, indexNames);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.UNAVAILABLE_UNIQUE_INDEX))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
+            + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
   }
 
   /**

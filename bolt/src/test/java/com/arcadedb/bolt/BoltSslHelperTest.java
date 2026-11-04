@@ -45,9 +45,9 @@ class BoltSslHelperTest {
   void parsesOptionalMode() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.BOLT_SSL, "OPTIONAL");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "../server/src/test/resources/keystore.pkcs12");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/keystore.pkcs12");
     config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "../server/src/test/resources/truststore.jks");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/truststore.jks");
     config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
     final BoltSslHelper helper = new BoltSslHelper(config);
     assertThat(helper.getTlsMode()).isEqualTo(BoltSslHelper.TlsMode.OPTIONAL);
@@ -57,9 +57,9 @@ class BoltSslHelperTest {
   void parsesRequiredMode() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.BOLT_SSL, "REQUIRED");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "../server/src/test/resources/keystore.pkcs12");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/keystore.pkcs12");
     config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "../server/src/test/resources/truststore.jks");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/truststore.jks");
     config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
     final BoltSslHelper helper = new BoltSslHelper(config);
     assertThat(helper.getTlsMode()).isEqualTo(BoltSslHelper.TlsMode.REQUIRED);
@@ -69,9 +69,9 @@ class BoltSslHelperTest {
   void caseInsensitiveModeParsing() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.BOLT_SSL, "optional");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "../server/src/test/resources/keystore.pkcs12");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/keystore.pkcs12");
     config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "../server/src/test/resources/truststore.jks");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/truststore.jks");
     config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
     final BoltSslHelper helper = new BoltSslHelper(config);
     assertThat(helper.getTlsMode()).isEqualTo(BoltSslHelper.TlsMode.OPTIONAL);
@@ -100,7 +100,7 @@ class BoltSslHelperTest {
   void missingTruststoreThrowsException() {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.BOLT_SSL, "REQUIRED");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "../server/src/test/resources/keystore.pkcs12");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, System.getProperty("basedir", ".") + "/../server/src/test/resources/keystore.pkcs12");
     config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
     // No truststore configured
     assertThatThrownBy(() -> new BoltSslHelper(config))

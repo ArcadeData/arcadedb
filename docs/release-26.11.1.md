@@ -237,7 +237,51 @@ more is lost at fewer subspaces. Raise `rerank`
 (or `rerankOversample` on the index) and `efSearch` to close the gap; `INT8` is the quantization to pick when the exact walk is
 what matters.
 
+### HA: an index compaction whose publication has an unknown outcome quarantines the leader (#11240)
+
+The leader of an HA cluster now keeps its old index files and schema untouched until the cluster has accepted an index
+compaction, and only then saves the swap and drops the replaced files. When the publication times out, the leader waits up to
+the quorum timeout for the Raft log to settle it: applied, the swap is saved; lost to a leadership change, or still unknown when
+the wait ends, the database is quarantined on that node and resynced from a peer. It used to be left alone, and the old leader's
+index could silently miss entries the next leader wrote.
+
+**Who sees a different behaviour.** An HA cluster whose compaction publication times out (a slow or partitioned quorum): the node
+reports the database as resyncing (`503` on `/api/v1/ready`, the `local-resync-in-progress` alert) until the resync completes.
+
 ## Fixes
+
+- **#11238** A process killed right after `CREATE INDEX` or `REBUILD INDEX` of an `LSM_VECTOR` index no longer reopens with the
+  index empty, nor loses every transaction committed after the build: the build makes its pages durable before reporting the
+  index ready, and WAL recovery applies a full page image over a version gap.
+- **#11239** Committed `LSM_SPARSE_VECTOR` postings survive a crash: each sparse index logs them with the commit in two
+  `.sparselog` files and replays them at open (roughly 5-10% on a sparse-heavy write load).
+- **#11257** HA: every node of a cluster answers a sparse vector search with the postings the leader has not sealed into a
+  segment yet, without waiting for a flush, and they survive the leader going away: each node feeds its memtable from the
+  posting logs it applies.
+- **#11240** A file id freed by a drop is no longer handed out again after a restart, and a schema save that fails is retried at
+  the next transaction end or close instead of being forgotten.
+
+- **#11204** A type can no longer be made a subtype of a materialized view's backing type (`CREATE ... EXTENDS`, `ALTER TYPE ...
+  SUPERTYPE +`, or the Java API): every row of the subtype was answered by `SELECT FROM` the view, which still reported `VALID`,
+  and no refresh removed them. A schema that already holds such a link opens, warns once, and the link can be removed with
+  `ALTER TYPE ... SUPERTYPE -`.
+- **#11202** A vector search row whose record was removed behind the index's back is reported in the log (a throttled WARNING
+  naming `REBUILD INDEX`) instead of silently taking a top-K place with a RID that resolves to nothing.
+- **#11211** openCypher: reading a property of a variable-length relationship list (`MATCH (a)-[r*]->(b) RETURN r.prop`) answers
+  a client type error (HTTP `400`, Bolt `TypeError`) instead of a `500`.
+- **#11206** A record saved with `save(bucketName)` into a bucket another type owns is refused with an `IllegalArgumentException`,
+  and the record listeners always see the record's real type. `MOVE VERTEX` to a bucket of another vertex type moves the vertex
+  to that type (#11235).
+- **#11207** gRPC: a list property of a vector-search or full-text-search hit reaches the client as a list, as on the query path,
+  instead of a JSON string.
+- **#11208** A JSON import whose commit is refused no longer leaves its transaction open on the caller's thread.
+- **#11245** A parallel scan that fails reports the error its unit raised, instead of a generic "Parallel scan failed".
+- **#11248** A user's `resultSetLimit` and `readTimeout` apply to that user's executions only (a cached statement could carry them
+  to another user), and a tighter `LIMIT` or `TIMEOUT` written in the statement is kept.
+- **Studio** The graph GraphML export carries the vertex and edge properties (the old plugin wrote them as `[object Object]`) and
+  follows the server's GraphML layout. The table Excel export no longer needs JSZip, and the PDF export button is removed (#11236,
+  #11237).
+- **Dependencies** Guava pinned to 33.7.2-android (CVE-2026-102554) (#11237).
 
 - **#10588** A `CREATE INDEX` no longer leaves out a record that another session, or an outer transaction of the caller, had written
   and not committed. The build indexes the committed state; the writer queued no entry for an index that did not exist when it saved

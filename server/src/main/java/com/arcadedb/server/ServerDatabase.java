@@ -69,6 +69,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.monitor.ProfilingResultSet;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.utility.CallableNoReturn;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -243,6 +244,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public boolean runWithCompactionReplication(final Callable<Boolean> compaction) throws IOException, InterruptedException {
     return current().runWithCompactionReplication(compaction);
+  }
+
+  @Override
+  public void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    current().runOnceCompactionIsPublished(droppedFileId, action);
   }
 
   @Override
