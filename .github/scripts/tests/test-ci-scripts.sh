@@ -48,6 +48,7 @@ NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
 NATIVEMARCH="$SCRIPTS/check-native-march.py"
+NATIVEMARCHDEFAULT="$SCRIPTS/check-native-march-builder-default.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 WRAPPER="$SCRIPTS/check-maven-wrapper.py"
@@ -1647,6 +1648,12 @@ march_pom() {
         <native.march.expected.x86_64>${MARCH_EXPECTED_X86_64:-x86-64-v3}</native.march.expected.x86_64>
         <native.march.expected.aarch64>${MARCH_EXPECTED_AARCH64:-armv8-a}</native.march.expected.aarch64>"
     fi
+    if [[ -z ${MARCH_PINS_NONE:-} ]]; then
+        expected_xml="$expected_xml
+        <native.march.pins-builder-default.amd64>${MARCH_PINS_AMD64:-true}</native.march.pins-builder-default.amd64>
+        <native.march.pins-builder-default.x86_64>${MARCH_PINS_X86_64:-true}</native.march.pins-builder-default.x86_64>
+        <native.march.pins-builder-default.aarch64>${MARCH_PINS_AARCH64:-false}</native.march.pins-builder-default.aarch64>"
+    fi
     [[ -n $arg ]] && arg_xml="<buildArg>$arg</buildArg>"
     if [[ $profiles != no-profiles ]]; then
         profile_xml='
@@ -1765,9 +1772,72 @@ MARCH_EXPECTED_NONE=1 march_pom "$work/march/no-expected-pom.xml" '-march=${nati
 expect "reports a pom that records no expected baseline" 1 "records no expected baseline for aarch64" \
     "$NATIVEMARCH" "$work/march/no-expected-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
 
+# The record of whether a baseline claims to be the builder's default is required, so the native job has a claim to check.
+MARCH_PINS_NONE=1 march_pom "$work/march/no-pins-pom.xml" '-march=${native.march}' compatibility
+expect "reports a pom that does not say whether its baseline is the builder's default (#11254)" 1 \
+    "<native.march.pins-builder-default.aarch64> must be true or false" \
+    "$NATIVEMARCH" "$work/march/no-pins-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
 # The repository's own pom, docs, workflow and scripts must pass.
 expect "the repository's own native CPU baseline is explicit and documented" 0 "explicit and documented" \
     "$NATIVEMARCH"
+
+echo
+echo "check-native-march-builder-default.py"
+
+# A stand-in builder: prints what `native-image --expert-options-all` prints about -H:MicroArchitecture
+# (wrapped over lines, as the real one is) with $2 as the AMD64 default and $3 as the AArch64 one.
+fake_builder() {
+    local path="$1" amd64="$2" aarch64="$3"
+    cat >"$path" <<SH
+#!/bin/sh
+echo "  -H:MicroArchitecture=...     Generate instructions for a specific machine type. Defaults to '$amd64' on AMD64"
+echo "                               and '$aarch64' on AArch64. Use -march=compatibility for best compatibility."
+SH
+    chmod +x "$path"
+}
+
+mkdir -p "$work/marchdefault"
+D="$work/marchdefault"
+march_pom "$D/pom.xml" '-march=${native.march}' compatibility
+fake_builder "$D/builder" x86-64-v3 armv8.1-a
+
+expect "accepts amd64 pinning the builder's default" 0 "builder default 'x86-64-v3', pom baseline 'x86-64-v3'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" amd64
+expect "accepts a macOS Intel build (x86_64) the same way" 0 "builder default 'x86-64-v3'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" x86_64
+expect "accepts aarch64 recorded as a deliberate departure from the builder's default" 0 \
+    "builder default 'armv8.1-a', pom baseline 'armv8-a'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" arm64
+
+# The #10715 shape: the pom claims it pins the builder's default, and the builder's default is another value.
+MARCH_PINS_AARCH64=true march_pom "$D/claims-pom.xml" '-march=${native.march}' compatibility
+expect "rejects a pom that claims armv8-a is the builder's default when it is armv8.1-a (#10715, #11254)" 1 \
+    "this builder defaults to 'armv8.1-a'" \
+    "$NATIVEMARCHDEFAULT" "$D/claims-pom.xml" "$D/builder" aarch64
+
+# The builder moved its default: a baseline recorded as deliberate that now equals it is a stale record.
+fake_builder "$D/builder-moved" x86-64-v3 armv8-a
+expect "rejects a deliberate-departure record the builder's default has caught up with" 1 \
+    "departs from the builder's default, but this builder defaults to 'armv8-a' too" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder-moved" aarch64
+fake_builder "$D/builder-v4" x86-64-v4 armv8.1-a
+expect "rejects amd64 claiming the default when the builder's default is another level" 1 \
+    "this builder defaults to 'x86-64-v4'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder-v4" amd64
+
+# Fail closed: an unreadable default leaves the claim unverified, which is what this check exists to end.
+printf '#!/bin/sh\necho "no such sentence"\n' >"$D/builder-silent"
+chmod +x "$D/builder-silent"
+expect "fails when the builder's help no longer states its default" 1 "claim about it is unverified" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder-silent" amd64
+expect "fails when there is no native-image to ask" 1 "claim about it is unverified" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/no-such-builder" amd64
+MARCH_PINS_NONE=1 march_pom "$D/no-pins-pom.xml" '-march=${native.march}' compatibility
+expect "fails when the pom records no claim" 1 "is '', not true or false" \
+    "$NATIVEMARCHDEFAULT" "$D/no-pins-pom.xml" "$D/builder" amd64
+expect "skips an architecture the pom records no baseline for" 0 "nothing to verify" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" riscv64
 
 echo
 echo "check-release-upload-assets.py"

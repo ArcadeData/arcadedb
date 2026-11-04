@@ -278,6 +278,18 @@ jobs:
           sudo swapon /swapfile.native
           free -h
 
+      # native/pom.xml says per architecture whether its -march baseline is GraalVM's own default or a
+      # deliberate departure from it. Nothing offline can check that claim (#10581 and #10715 both got it
+      # wrong), so ask the builder before spending an hour building on it (#11254). A matrix.march override
+      # (the compat leg) does not use the pom's baseline.
+      - name: Verify the pom's -march claim against the builder
+        if: ${{ matrix.march == '' }}
+        shell: bash
+        run: |
+          # Windows runners have python, not python3.
+          PY="$(command -v python3 || command -v python)"
+          "$PY" .github/scripts/check-native-march-builder-default.py
+
       - name: Build native image
         shell: bash
         run: |
