@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -159,6 +160,12 @@ public class TraverseStatement extends Statement {
       return true;
 
     return this.whileClause != null && this.whileClause.refersToParent();
+  }
+
+  /** Its plan reads the LIMIT, and it is planned on every execution, so the copy reaches no plan cache. */
+  @Override
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    return copyWithTighterProfiledLimit(database, params);
   }
 
   @Override
