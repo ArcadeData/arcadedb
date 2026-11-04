@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -263,35 +264,42 @@ class Issue10580DfsBoundedWalkTest extends TestHelper {
   }
 
   /**
-   * The iterative DFS {@code algo.dfs} always ran, written out with plain arrays over the full node count: a node is marked when it
-   * is pushed, the neighbours are pushed in reverse so the first is popped first, and a node is reported when it is popped, at
-   * the depth of the node that pushed it plus one, except the start.
+   * The iterative DFS {@code algo.dfs} runs, written out with plain arrays over the full node count: a node is pushed when it is
+   * first met, the neighbours are pushed in reverse so the first is popped first, and a node is reported when it is first
+   * popped, at the depth of the node that pushed it plus one, except the start. Since issue #10622 a bounded walk also pushes a
+   * node again when it meets it at a smaller depth than before, skips an entry overtaken that way, and does not push a node
+   * reported already that the bound would not expand.
    */
   private static List<Row> referenceDfs(final IntFunction<int[]> neighbors, final int start, final int maxDepth) {
-    final boolean[] visited = new boolean[NODES];
-    final int[] stack = new int[NODES];
-    final int[] stackDepth = new int[NODES];
+    final boolean bounded = maxDepth != Integer.MAX_VALUE;
+    final int[] best = new int[NODES];
+    Arrays.fill(best, Integer.MAX_VALUE);
+    final boolean[] reported = new boolean[NODES];
+    final List<int[]> stack = new ArrayList<>();
     final List<Row> result = new ArrayList<>();
-    int top = 0;
-    stack[top] = start;
-    stackDepth[top] = 0;
-    top++;
-    visited[start] = true;
-    while (top > 0) {
-      top--;
-      final int v = stack[top];
-      final int d = stackDepth[top];
-      if (d > 0)
+    stack.add(new int[] { start, 0 });
+    best[start] = 0;
+    reported[start] = true;
+    while (!stack.isEmpty()) {
+      final int[] entry = stack.remove(stack.size() - 1);
+      final int v = entry[0];
+      final int d = entry[1];
+      if (d > best[v])
+        continue;
+      if (!reported[v]) {
+        reported[v] = true;
         result.add(new Row(v, d));
+      }
       if (d < maxDepth) {
         final int[] row = neighbors.apply(v);
         for (int i = row.length - 1; i >= 0; i--) {
           final int u = row[i];
-          if (!visited[u]) {
-            visited[u] = true;
-            stack[top] = u;
-            stackDepth[top] = d + 1;
-            top++;
+          final boolean firstMet = best[u] == Integer.MAX_VALUE;
+          if (firstMet || (bounded && d + 1 < best[u])) {
+            best[u] = d + 1;
+            if (!firstMet && reported[u] && d + 1 == maxDepth)
+              continue;
+            stack.add(new int[] { u, d + 1 });
           }
         }
       }

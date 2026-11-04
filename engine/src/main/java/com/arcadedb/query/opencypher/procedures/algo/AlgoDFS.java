@@ -29,13 +29,14 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 import java.util.function.IntFunction;
 import java.util.function.IntUnaryOperator;
 import java.util.stream.IntStream;
@@ -60,7 +61,9 @@ import java.util.stream.Stream;
  *   <li>startNode (required): the node from which to start the traversal</li>
  *   <li>relTypes (optional): relationship types to traverse (null = all)</li>
  *   <li>direction (optional): "OUT", "IN", or "BOTH" (default "BOTH")</li>
- *   <li>maxDepth (optional): maximum depth to traverse (default unbounded)</li>
+ *   <li>maxDepth (optional): maximum depth to traverse (default unbounded). Every node within that many hops of the start is
+ *   reported, whatever order the edges are read in (issue #10622): a node first met by a longer path is walked again from the
+ *   shorter one, so its reported depth is that of the first path that reported it, never more than the bound</li>
  * </ul>
  * </p>
  * <p>
@@ -84,6 +87,13 @@ public class AlgoDFS extends AbstractAlgoProcedure {
   private static final long TRAVERSAL_ENTRY_BYTES = 4 * INT_BYTES;
   // What one neighbour held while the walk reads a vertex costs: the RID the edge answered and the slot that holds it
   private static final long OLTP_ROW_ENTRY_BYTES  = 40L;
+  // What one node reached by a bounded walk over node ids costs in its best-depth map: a key and a value, at a load of 3/8 to
+  // 3/4 in a power-of-two table (issue #10622)
+  private static final long BEST_DEPTH_ENTRY_BYTES = 6 * INT_BYTES;
+  // The low bit of a node's best-depth state: set once the node is reported. The depth is in the bits above it
+  private static final int  REPORTED              = 1;
+  // The state of a far vertex the walk without a view could not load: never pushed, never reported
+  private static final int  GONE                  = -1;
 
   @Override
   public String getName() {
@@ -152,17 +162,38 @@ public class AlgoDFS extends AbstractAlgoProcedure {
    * DFS over dense node ids, from a packed neighbour view when {@code nv} is not null, from the materialised {@code adj} when
    * it is not null, and otherwise one node at a time through {@link GraphData#neighborIds}. Iterative, with an explicit stack
    * to avoid stack overflow on large graphs. A node is marked when it is pushed, the neighbours are pushed in reverse so the
-   * first is popped first, and a node is reported when it is popped, at the depth of the node that pushed it plus one.
-   * Allocates a visited bitmap of the node count, and a stack and a result that grow with the nodes reached.
+   * first is popped first, and a node is reported when it is first popped, at the depth of the node that pushed it plus one.
+   * <p>
+   * A bounded walk also pushes a node again when it reaches it at a smaller depth than before (issue #10622): marking it at its
+   * first push lost what lies within the bound beyond a node first met by a long path, which the bound stopped expanding. Such
+   * an entry expands the node from the smaller depth, so the walk reaches every node within the bound, the nodes
+   * {@code algo.bfs} reports for it, and a node is reported once, at the depth of the first entry popped for it. Each node is
+   * pushed at most {@code maxDepth} times. An unbounded walk has nothing to lose and pushes every node once.
+   * <p>
+   * Allocates a visited bitmap of the node count when unbounded, a best-depth map of the nodes reached when bounded, and a stack
+   * and a result that grow with the nodes reached.
    */
   private Stream<Result> walkIds(final GraphData graph, final NeighborView nv, final int[][] adj, final int n, final int startIdx,
       final int maxDepth, final Vertex.DIRECTION dir, final String[] relTypes) {
     final MemoryBudget memory = graph.memory();
-    memory.reserve(saturatingProduct((n + 63L) >>> 6, LONG_BYTES), "the visited bitmap", n + " nodes");
-    final long[] visited = new long[(n + 63) >>> 6];
+    // Only a bounded walk needs the best depth of every node reached (issue #10622). It keeps it in a map that grows with the
+    // nodes it reaches, and an unbounded one marks the nodes in a bitmap of the node count, as before. Bounded means what it means
+    // in walkRecords, which cannot know the node count, so that a call answers the same with a view and without one
+    final boolean bounded = maxDepth != Integer.MAX_VALUE;
+    final IntIntHashMap best = bounded ? new IntIntHashMap(INITIAL_CAPACITY) : null;
+    long bestCharged = 0;
+    final long[] visited;
+    if (bounded)
+      visited = null;
+    else {
+      memory.reserve(saturatingProduct((n + 63L) >>> 6, LONG_BYTES), "the visited bitmap", n + " nodes");
+      visited = new long[(n + 63) >>> 6];
+    }
     final int[] nbrs = nv != null ? nv.neighbors() : null;
 
-    // Neither the stack nor the result can hold more than the node count: a node is pushed once, and the start is not reported
+    // The result cannot hold more than the node count: a node is reported once, and the start is not reported. Nor can the stack
+    // of an unbounded walk, which pushes a node once; a bounded one pushes it again when it reaches it at a smaller depth
+    final int stackCeiling = bounded ? Integer.MAX_VALUE - 8 : n;
     final int firstCapacity = Math.min(n, INITIAL_CAPACITY);
     memory.reserve(saturatingProduct(firstCapacity, TRAVERSAL_ENTRY_BYTES), "the traversal state", firstCapacity + " nodes");
     int[] stack = new int[firstCapacity];
@@ -175,15 +206,33 @@ public class AlgoDFS extends AbstractAlgoProcedure {
     stack[top] = startIdx;
     stackDepth[top] = 0;
     top++;
-    visited[startIdx >>> 6] |= 1L << (startIdx & 63);
+    if (bounded) {
+      memory.reserve(saturatingProduct(INITIAL_CAPACITY, BEST_DEPTH_ENTRY_BYTES), "the visited nodes", INITIAL_CAPACITY + " nodes");
+      bestCharged = INITIAL_CAPACITY;
+      best.put(startIdx, REPORTED);
+    } else
+      visited[startIdx >>> 6] |= 1L << (startIdx & 63);
 
     while (top > 0) {
       top--;
       final int v = stack[top];
       final int d = stackDepth[top];
 
-      if (d > 0) {
+      final boolean report;
+      if (bounded) {
+        final int state = best.get(v, 0);
+        if (d > state >>> 1)
+          // Reached again at a smaller depth since this entry was pushed: the entry pushed then expands it
+          continue;
+        // Reported at the first entry popped. A later one only expands it again, from the smaller depth it was reached at since
+        report = (state & REPORTED) == 0;
+        if (report)
+          best.put(v, state | REPORTED);
+      } else
         // Don't emit the start node itself
+        report = d > 0;
+
+      if (report) {
         if (size == order.length) {
           final int grown = (int) Math.min(n, (long) order.length * 2);
           memory.reserve(saturatingProduct(grown - order.length, 2 * INT_BYTES), "the traversal state", "at least " + grown + " nodes");
@@ -209,22 +258,44 @@ public class AlgoDFS extends AbstractAlgoProcedure {
           to = row.length;
         }
         // Push neighbors in reverse order so that forward order is preserved
+        final int nextDepth = d + 1;
         for (int j = to - 1; j >= from; j--) {
           final int u = row[j];
-          final int word = u >>> 6;
-          final long bit = 1L << (u & 63);
-          if ((visited[word] & bit) == 0) {
+          if (bounded) {
+            // Pushed when first reached, and again when reached at a smaller depth than before, so that what lies within the
+            // bound beyond it is reached too (issue #10622): at most maxDepth pushes per node, each at a smaller depth
+            final int state = best.get(u, -1);
+            if (state == -1) {
+              if (best.size() >= bestCharged) {
+                memory.reserve(saturatingProduct(bestCharged, BEST_DEPTH_ENTRY_BYTES), "the visited nodes",
+                    "at least " + bestCharged * 2 + " nodes");
+                bestCharged *= 2;
+              }
+              best.put(u, nextDepth << 1);
+            } else if (nextDepth < state >>> 1) {
+              best.put(u, nextDepth << 1 | (state & REPORTED));
+              if ((state & REPORTED) != 0 && nextDepth == maxDepth)
+                // Reported already, and not expanded at the bound: an entry would do nothing
+                continue;
+            } else
+              continue;
+          } else {
+            final int word = u >>> 6;
+            final long bit = 1L << (u & 63);
+            if ((visited[word] & bit) != 0)
+              continue;
             visited[word] |= bit;
-            if (top == stack.length) {
-              final int grown = (int) Math.min(n, (long) stack.length * 2);
-              memory.reserve(saturatingProduct(grown - stack.length, 2 * INT_BYTES), "the traversal state", "at least " + grown + " nodes");
-              stack = Arrays.copyOf(stack, grown);
-              stackDepth = Arrays.copyOf(stackDepth, grown);
-            }
-            stack[top] = u;
-            stackDepth[top] = d + 1;
-            top++;
           }
+
+          if (top == stack.length) {
+            final int grown = (int) Math.min(stackCeiling, (long) stack.length * 2);
+            memory.reserve(saturatingProduct(grown - stack.length, 2 * INT_BYTES), "the traversal state", "at least " + grown + " nodes");
+            stack = Arrays.copyOf(stack, grown);
+            stackDepth = Arrays.copyOf(stackDepth, grown);
+          }
+          stack[top] = u;
+          stackDepth[top] = nextDepth;
+          top++;
         }
       }
     }
@@ -246,8 +317,11 @@ public class AlgoDFS extends AbstractAlgoProcedure {
     long capacity = memory.capacityFor(OLTP_VERTEX_BYTES);
     final CommandContext edgeContext = incomingSideContext(db, context);
 
-    final Set<RID> visited = new HashSet<>();
-    visited.add(start.getIdentity());
+    // The state of every vertex met, as in walkIds: its best depth above a REPORTED bit, or GONE for a far vertex that could not be
+    // loaded. Only a bounded walk pushes a vertex again, when it reaches it at a smaller depth (issue #10622)
+    final boolean bounded = maxDepth != Integer.MAX_VALUE;
+    final Map<RID, Integer> best = new HashMap<>();
+    best.put(start.getIdentity(), REPORTED);
     // The vertices loaded so far, the start included: what the budget is charged for
     long loaded = 1;
     final List<RID> order = new ArrayList<>();
@@ -267,8 +341,13 @@ public class AlgoDFS extends AbstractAlgoProcedure {
       final int d = stackDepth[top];
       stack[top] = null;
 
-      if (d > 0) {
-        // Don't emit the start node itself
+      // As in walkIds: an entry overtaken by one at a smaller depth is skipped, and a vertex is reported at the first entry
+      // popped. The start is marked as reported, so it is never emitted
+      final int state = best.get(v.getIdentity());
+      if (d > state >>> 1)
+        continue;
+      if ((state & REPORTED) == 0) {
+        best.put(v.getIdentity(), state | REPORTED);
         if (order.size() == depths.length)
           depths = Arrays.copyOf(depths, depths.length * 2);
         depths[order.size()] = d;
@@ -289,7 +368,7 @@ public class AlgoDFS extends AbstractAlgoProcedure {
             continue;
           }
           // A damaged edge can carry no endpoint: there is no vertex to reach through it
-          if (nid == null || visited.contains(nid))
+          if (nid == null || !isWorthPushing(best.get(nid), d + 1, maxDepth, bounded))
             continue;
           if (rowSize == row.length) {
             // One buffer for the whole walk, charged by what it grows by (the old length, as it doubles), so for the most it held
@@ -304,7 +383,9 @@ public class AlgoDFS extends AbstractAlgoProcedure {
         for (int j = rowSize - 1; j >= 0; j--) {
           final RID nid = row[j];
           row[j] = null;
-          if (!visited.add(nid))
+          // Asked again: a vertex met twice in one row was pushed at its last entry, and the earlier one now finds it met
+          final Integer previous = best.get(nid);
+          if (!isWorthPushing(previous, d + 1, maxDepth, bounded))
             continue;
           final Vertex u;
           try {
@@ -312,13 +393,19 @@ public class AlgoDFS extends AbstractAlgoProcedure {
           } catch (final RecordNotFoundException rnf) {
             // A far vertex that is gone stays marked as met, so another entry naming it is not read again, and it is not
             // loaded, so it is not charged
+            best.put(nid, GONE);
             GhostEdgeReporter.reportSkipped(rnf);
             continue;
           }
-          if (loaded >= capacity)
-            capacity = memory.extendCapacity(loaded + 1, OLTP_VERTEX_BYTES, "the visited vertices",
-                "at least " + (loaded + 1) + " nodes");
-          loaded++;
+          if (previous == null) {
+            // Charged once, when first loaded: a vertex pushed again at a smaller depth is the same vertex
+            if (loaded >= capacity)
+              capacity = memory.extendCapacity(loaded + 1, OLTP_VERTEX_BYTES, "the visited vertices",
+                  "at least " + (loaded + 1) + " nodes");
+            loaded++;
+            best.put(nid, (d + 1) << 1);
+          } else
+            best.put(nid, (d + 1) << 1 | (previous & REPORTED));
           if (top == stack.length) {
             stack = Arrays.copyOf(stack, stack.length * 2);
             stackDepth = Arrays.copyOf(stackDepth, stackDepth.length * 2);
@@ -333,6 +420,19 @@ public class AlgoDFS extends AbstractAlgoProcedure {
 
     final int[] reachedDepths = depths;
     return rows(order.size(), order::get, i -> reachedDepths[i]);
+  }
+
+  /**
+   * Whether a vertex reached at {@code depth} is pushed, given its state so far ({@code null} when never met): when first met,
+   * and in a bounded walk again when met at a smaller depth than before (issue #10622), unless it is reported already and would
+   * not be expanded at that depth, where an entry does nothing. A vertex that is gone is never pushed.
+   */
+  private static boolean isWorthPushing(final Integer state, final int depth, final int maxDepth, final boolean bounded) {
+    if (state == null)
+      return true;
+    if (!bounded || state == GONE || depth >= state >>> 1)
+      return false;
+    return (state & REPORTED) == 0 || depth < maxDepth;
   }
 
   /**
