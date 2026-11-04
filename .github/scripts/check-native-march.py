@@ -38,13 +38,16 @@ Four things are enforced:
      happened to have and refuse to start on a CPU with less.
   3. Each resolved baseline equals the baseline RECORDED for that architecture in the pom's
      `native.march.expected.<arch>` property, next to the GraalVM pin. #10581 stated GraalVM's
-     defaults "so that stating them changes no published binary" and pinned armv8.1-a on aarch64
-     where GraalVM 25's default is armv8-a, dropping every ARMv8.0 core (Raspberry Pi 3/4, Graviton1)
-     with a lint that was green on it (#10715). The family patterns below cannot see a raised
-     baseline and the docs table is edited in the same change, so only a recorded value, which a
-     raise must edit in the same diff, makes raising a deliberate decision. This is a tripwire for
-     an accidental or unannounced change, NOT proof of what the builder's own default is: the record
-     is only as right as whoever wrote it, and nothing here runs `native-image -march=list`.
+     defaults "so that stating them changes no published binary" and pinned armv8.1-a on aarch64,
+     dropping every ARMv8.0 core (Raspberry Pi 3/4, Graviton1) with a lint that was green on it
+     (#10715). The family patterns below cannot see a raised baseline and the docs table is edited
+     in the same change, so only a recorded value, which a raise must edit in the same diff, makes
+     raising a deliberate decision. This script is a tripwire for an accidental or unannounced
+     change and cannot say what the builder's own default is. The pom therefore also records, per
+     arch, whether the baseline claims to BE that default (`native.march.pins-builder-default.<arch>`,
+     required here), and check-native-march-builder-default.py checks the claim against the builder
+     in the native job (#11254): #10581 and #10715 both claimed armv8-a was GraalVM 25's AArch64
+     default, and it is armv8.1-a.
      The recorded value is read from the pom's top-level <properties> only, so a profile cannot
      override it to match a raised baseline.
   4. The table in docs/native-image.md's "CPU requirements" section names every resolved baseline,
@@ -64,6 +67,7 @@ from pathlib import Path
 
 PROPERTY = "native.march"
 EXPECTED_PROPERTY = "native.march.expected"
+PINS_PROPERTY = "native.march.pins-builder-default"
 
 # The os.arch values a JVM reports on the platforms native-image.yml and the local scripts build on.
 # Linux and Windows report amd64, macOS reports x86_64, for the same architecture. An arch outside
@@ -177,6 +181,12 @@ def check_pom(pom, problems):
                 f"({EXPECTED_PROPERTY}.{arch}) is '{expected}'. A baseline is the binary's minimum CPU, so changing "
                 f"it drops CPUs: if that is intended, change the recorded value in the same commit, with the "
                 f"measurement and a release note; if not, restore '{expected}' (#10715)."
+            )
+        if defaults.get(f"{PINS_PROPERTY}.{arch}", "") not in ("true", "false"):
+            problems.append(
+                f"{pom}: <{PINS_PROPERTY}.{arch}> must be true or false: it says whether the {arch} baseline is "
+                f"the builder's own default or a deliberate departure from it, which the native job then checks "
+                f"against the builder (#11254)."
             )
         resolved[arch] = value
 
