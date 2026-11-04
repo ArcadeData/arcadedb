@@ -60,6 +60,18 @@ public final class SortedIndexBuildRecoveryMarker {
 
   static SortedIndexBuildRecoveryMarker create(final DatabaseInternal database, final String typeName,
       final List<String> propertyNames, final Path configuredSpillParent) {
+    return create(database, typeName, propertyNames, configuredSpillParent, false);
+  }
+
+  /**
+   * @param inPlace the build REPLACES the files of a live index one bucket index at a time, as a full compaction does
+   *                ({@link InPlaceIndexRebuild}), rather than filling new empty indexes. Every file it has created by the time
+   *                of a crash is either published (the schema names it) or an orphan the schema load already reclaims, so the
+   *                recovery removes only the spill workspace: the "files not in the baseline" rule of a new index would take
+   *                away the files of the bucket indexes already swapped in, which are now the only ones the index has
+   */
+  static SortedIndexBuildRecoveryMarker create(final DatabaseInternal database, final String typeName,
+      final List<String> propertyNames, final Path configuredSpillParent, final boolean inPlace) {
     final String buildId = UUID.randomUUID().toString();
     final Path databasePath = Path.of(database.getDatabasePath()).toAbsolutePath().normalize();
     final Path spillParent = (configuredSpillParent != null ? configuredSpillParent : databasePath)
@@ -81,6 +93,8 @@ public final class SortedIndexBuildRecoveryMarker {
     marker.put("startedUtc", Instant.now().toString());
     marker.put("baselineFileIds", baselineFileIds);
     marker.put("spillWorkspace", spillWorkspace.toString());
+    if (inPlace)
+      marker.put("inPlace", true);
 
     final Path markerPath = databasePath.resolve(FILE_PREFIX + buildId + FILE_SUFFIX);
     try {
@@ -144,7 +158,8 @@ public final class SortedIndexBuildRecoveryMarker {
 
     final String typeName = marker.getString("typeName");
     final List<String> propertyNames = marker.getJSONArray("propertyNames").toListOfStrings();
-    final boolean published = isPublished(databasePath, typeName, propertyNames);
+    final boolean inPlace = marker.getBoolean("inPlace", false);
+    final boolean published = inPlace || isPublished(databasePath, typeName, propertyNames);
 
     int removedFiles = 0;
     if (!published) {
@@ -170,8 +185,8 @@ public final class SortedIndexBuildRecoveryMarker {
     Files.deleteIfExists(markerPath);
 
     LogManager.instance().log(database, Level.WARNING,
-        "Recovered interrupted sorted index build for %s%s (published=%s removedFiles=%d)", null, typeName,
-        propertyNames, published, removedFiles);
+        "Recovered interrupted sorted index build for %s%s (published=%s removedFiles=%d%s)", null, typeName,
+        propertyNames, published, removedFiles, inPlace ? " inPlaceRebuild=true" : "");
   }
 
   private static boolean isPublished(final Path databasePath, final String typeName, final List<String> propertyNames) {
