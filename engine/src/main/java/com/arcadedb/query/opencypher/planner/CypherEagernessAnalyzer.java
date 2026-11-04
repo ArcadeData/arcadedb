@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.opencypher.planner;
 
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -27,6 +29,7 @@ import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
@@ -51,7 +54,9 @@ import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -126,9 +131,20 @@ public final class CypherEagernessAnalyzer {
   // The variables known never to hold a record (a LOAD CSV row, an UNWIND of a literal list): no record
   // write can change what a read of one of them answers
   private final Set<String> nonRecordVariables     = new HashSet<>();
+  // The variables a WITH bound to a property of a variable that cannot hold a record ({@code WITH row, row.id AS id}), to the
+  // variable and the key: a lookup by one of them reads the same value as that property (issue #11230)
+  private final Map<String, String[]> projectedProperties = new HashMap<>();
 
-  /** A property read: the variable it reads through (null when not known) and the key (null when any key). */
-  private record PropertyReadSite(String variable, String key) {
+  /**
+   * A property read: the variable it reads through (null when not known) and the key (null when any key). {@code pair} names the
+   * variable the other side of an equality {@code a.k = b.k} (or of an inline {@code (a {k: b.k})}) reads through, when both
+   * sides read the same key: the two reads then hold the same value on every row, which is what lets an opaque write of
+   * {@code b} onto {@code a} leave the lookup alone (issue #11230).
+   */
+  private record PropertyReadSite(String variable, String key, String pair) {
+    private PropertyReadSite(final String variable, final String key) {
+      this(variable, key, null);
+    }
   }
 
   /**
@@ -577,9 +593,10 @@ public final class CypherEagernessAnalyzer {
    * The reads of a MATCH's own pattern and WHERE are kept apart: they select which entities a row binds rather than project a
    * value into it. A write that names their key ({@code SET n.k}, {@code REMOVE n.k}, {@code SET n += {k: ..}}) conflicts with
    * them, so {@code MATCH (a)-[:R]->(c) WHERE c.k = 1 SET c.k = 2} matches every row before the first SET runs (issue #11173).
-   * An opaque write ({@code SET n += row}, {@code SET n = map}, a computed key) does not: counting it would plant the barrier on
-   * {@code LOAD CSV ... MATCH (n {id: row.id}) SET n += row}, holding the whole file in memory, to protect only the rows that
-   * rewrite the key they were found by.
+   * An opaque write ({@code SET n += map}, {@code SET n = map}, a computed key) can rewrite any key, so it conflicts with every
+   * one of them, with one exception that keeps the upserts streaming: the map is the very variable the key is looked up by
+   * ({@code MATCH (n {id: row.id}) SET n += row}, {@code WHERE n.id = row.id}), which rewrites the key with the value it was found
+   * by. Planting the barrier there would hold the whole file of a {@code LOAD CSV} in memory (issue #11230).
    *
    * @param startsStatement whether the clause is the first one of the statement or of a subquery body, i.e. receives a
    *                        single row
@@ -589,7 +606,8 @@ public final class CypherEagernessAnalyzer {
     if (entry == null)
       return;
     if (entry.getType() == ClauseEntry.ClauseType.MATCH)
-      CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingMatchReads, false, Set.of(), List.of()));
+      CypherExpressionWalker.walk(entry,
+          new PropertyReadCollector(pendingMatchReads, false, Set.of(), List.of(), samePropertyPairs(entry.getTypedClause(), projectedProperties)));
     else {
       final List<PathPattern> ownPatterns = switch (entry.getType()) {
         case CREATE -> ((CreateClause) entry.getClause()).getPathPatterns();
@@ -603,7 +621,7 @@ public final class CypherEagernessAnalyzer {
       final Set<String> shadowed = entry.getType() == ClauseEntry.ClauseType.FOREACH ?
           Set.of(((ForeachClause) entry.getClause()).getVariable()) :
           Set.of();
-      CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingPropertyReads, false, shadowed, ownPatterns));
+      CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingPropertyReads, false, shadowed, ownPatterns, Map.of()));
     }
 
     switch (entry.getType()) {
@@ -686,7 +704,8 @@ public final class CypherEagernessAnalyzer {
         return true;
     }
     for (final PropertyReadSite read : pendingMatchReads)
-      if (read.key() == null ? !writes.writtenPropertyKeys.isEmpty() : writes.writtenPropertyKeys.contains(read.key()))
+      // an opaque write of the body can rewrite the key the MATCH found its entity by (issue #11230)
+      if (writes.writesAnyPropertyKey || (read.key() == null ? !writes.writtenPropertyKeys.isEmpty() : writes.writtenPropertyKeys.contains(read.key())))
         return true;
     return false;
   }
@@ -702,19 +721,19 @@ public final class CypherEagernessAnalyzer {
       final String variable = item.getVariable();
       switch (item.getType()) {
       case PROPERTY -> {
-        if (propertyWriteConflicts(variable, item.getKeyExpression() != null ? null : item.getProperty(), shadowed))
+        if (propertyWriteConflicts(variable, item.getKeyExpression() != null ? null : item.getProperty(), shadowed, null))
           return true;
       }
       case MERGE_MAP -> {
         if (item.getValueExpression() instanceof MapExpression map) {
           for (final String key : map.getEntries().keySet())
-            if (propertyWriteConflicts(variable, key, shadowed))
+            if (propertyWriteConflicts(variable, key, shadowed, null))
               return true;
-        } else if (propertyWriteConflicts(variable, null, shadowed))
+        } else if (propertyWriteConflicts(variable, null, shadowed, mapVariable(item.getValueExpression())))
           return true;
       }
       case REPLACE_MAP -> {
-        if (propertyWriteConflicts(variable, null, shadowed))
+        if (propertyWriteConflicts(variable, null, shadowed, mapVariable(item.getValueExpression())))
           return true;
       }
       default -> {
@@ -728,7 +747,7 @@ public final class CypherEagernessAnalyzer {
   private boolean removeWritesConflict(final RemoveClause removeClause, final Set<String> shadowed) {
     for (final RemoveClause.RemoveItem item : removeClause.getItems())
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY
-          && propertyWriteConflicts(item.getVariable(), item.getKeyExpression() != null ? null : item.getProperty(), shadowed))
+          && propertyWriteConflicts(item.getVariable(), item.getKeyExpression() != null ? null : item.getProperty(), shadowed, null))
         return true;
     return false;
   }
@@ -759,8 +778,13 @@ public final class CypherEagernessAnalyzer {
    * Whether writing {@code key} (null: a key the planner cannot name) through {@code variable} (null: an expression) can
    * change what a pending read answers for another row. A read through the same variable is safe when that variable holds a
    * different entity on every row: the only row that reads the entity is the one that writes it.
+   * <p>
+   * A write that names a key conflicts with the MATCH reads of that key. An opaque one ({@code key} null) can write any key, so it
+   * conflicts with every MATCH read, unless the map it writes is {@code mapVariable}, a variable the read is paired with
+   * ({@link PropertyReadSite#pair}): {@code MATCH (n {id: row.id}) SET n += row} rewrites the key with the value it was found by
+   * (issue #11230).
    */
-  private boolean propertyWriteConflicts(final String variable, final String key, final Set<String> shadowed) {
+  private boolean propertyWriteConflicts(final String variable, final String key, final Set<String> shadowed, final String mapVariable) {
     final boolean ownRowOnly = variable != null && !shadowed.contains(variable) && rowUniqueVariables.contains(variable);
     for (final PropertyReadSite read : pendingPropertyReads) {
       if (key != null && read.key() != null && !key.equals(read.key()))
@@ -769,15 +793,78 @@ public final class CypherEagernessAnalyzer {
         continue;
       return true;
     }
-    if (key != null)
-      for (final PropertyReadSite read : pendingMatchReads) {
-        if (read.key() != null && !key.equals(read.key()))
-          continue;
-        if (ownRowOnly && variable.equals(read.variable()))
-          continue;
-        return true;
-      }
+    final boolean pairedMap = mapVariable != null && variable != null && !shadowed.contains(variable) && !shadowed.contains(mapVariable);
+    for (final PropertyReadSite read : pendingMatchReads) {
+      if (key != null && read.key() != null && !key.equals(read.key()))
+        continue;
+      if (ownRowOnly && variable.equals(read.variable()))
+        continue;
+      if (key == null && pairedMap && read.key() != null && isPairedLookup(read, variable, mapVariable))
+        continue;
+      return true;
+    }
     return false;
+  }
+
+  /** Whether {@code read} is one side of an equality between {@code variable} and {@code mapVariable} on one key. */
+  private static boolean isPairedLookup(final PropertyReadSite read, final String variable, final String mapVariable) {
+    return read.pair() != null && ((variable.equals(read.variable()) && mapVariable.equals(read.pair()))
+        || (mapVariable.equals(read.variable()) && variable.equals(read.pair())));
+  }
+
+  /** The variable a map write takes its map from, when the map is nothing but that variable, or null. */
+  private static String mapVariable(final Expression map) {
+    return map instanceof VariableExpression variable ? variable.getVariableName() : null;
+  }
+
+  /**
+   * The property reads of a MATCH that look an entity up by the value of the same key of another variable, so that both sides
+   * hold the same value on every row: {@code (n {id: row.id})}, and the conjuncts {@code n.id = row.id} of its WHERE. Each read
+   * object maps to the variable of the opposite side. The side that is an inline key has no object of its own, and is paired
+   * where its pattern is visited.
+   */
+  private static Map<Object, String> samePropertyPairs(final MatchClause matchClause, final Map<String, String[]> projectedProperties) {
+    final Map<Object, String> pairs = new IdentityHashMap<>();
+    if (matchClause == null)
+      return pairs;
+    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+      for (final NodePattern node : pathPattern.getNodes())
+        pairInline(pairs, node.getVariable(), node.getProperties(), projectedProperties);
+      for (final RelationshipPattern relationship : pathPattern.getRelationships())
+        pairInline(pairs, relationship.getVariable(), relationship.getProperties(), projectedProperties);
+    }
+    if (matchClause.hasWhereClause())
+      pairConjuncts(pairs, matchClause.getWhereClause().getConditionExpression());
+    return pairs;
+  }
+
+  private static void pairInline(final Map<Object, String> pairs, final String variable, final Map<String, Object> properties,
+      final Map<String, String[]> projectedProperties) {
+    if (variable == null || properties == null)
+      return;
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      if (entry.getValue() instanceof PropertyAccessExpression access && entry.getKey().equals(access.getPropertyName())
+          && !variable.equals(access.getVariableName()))
+        pairs.put(access, variable);
+      else if (entry.getValue() instanceof VariableExpression name) {
+        // (n {id: id}) after WITH row, row.id AS id: nothing but the lookup reads the key, the read of the row was the WITH's
+        final String[] source = projectedProperties.get(name.getVariableName());
+        if (source != null && source[1].equals(entry.getKey()) && !variable.equals(source[0]))
+          pairs.put(name, source[0]);
+      }
+    }
+  }
+
+  private static void pairConjuncts(final Map<Object, String> pairs, final BooleanExpression condition) {
+    if (condition instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      pairConjuncts(pairs, logical.getLeft());
+      pairConjuncts(pairs, logical.getRight());
+    } else if (condition instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.EQUALS
+        && comparison.getLeft() instanceof PropertyAccessExpression left && comparison.getRight() instanceof PropertyAccessExpression right
+        && left.getPropertyName().equals(right.getPropertyName()) && !left.getVariableName().equals(right.getVariableName())) {
+      pairs.put(left, right.getVariableName());
+      pairs.put(right, left.getVariableName());
+    }
   }
 
   private void observeCreated(final String variable, final Set<String> boundVariables) {
@@ -843,6 +930,15 @@ public final class CypherEagernessAnalyzer {
       if (groupingKeys == 1 && groupingVariable != null)
         unique.add(groupingVariable);
     }
+    final Map<String, String[]> projected = new HashMap<>();
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (!item.isStar() && item.getExpression() instanceof PropertyAccessExpression access && nonRecordVariables.contains(access.getVariableName()))
+        projected.put(item.getOutputName(), new String[] { access.getVariableName(), access.getPropertyName() });
+    for (final Map.Entry<String, String[]> kept : projectedProperties.entrySet())
+      if ((star || forwarded.contains(kept.getKey())) && !rebound.contains(kept.getKey()) && !isRenamed(kept.getValue()[0], star, forwarded, rebound))
+        projected.putIfAbsent(kept.getKey(), kept.getValue());
+    projectedProperties.clear();
+    projectedProperties.putAll(projected);
     rowUniqueVariables.clear();
     rowUniqueVariables.addAll(unique);
     nonRecordVariables.clear();
@@ -857,12 +953,20 @@ public final class CypherEagernessAnalyzer {
     final List<PropertyReadSite> renamed = new ArrayList<>();
     for (final Iterator<PropertyReadSite> it = reads.iterator(); it.hasNext(); ) {
       final PropertyReadSite read = it.next();
-      if (read.variable() != null && (rebound.contains(read.variable()) || (!star && !forwarded.contains(read.variable())))) {
+      if (read.variable() != null && isRenamed(read.variable(), star, forwarded, rebound)) {
         it.remove();
         renamed.add(new PropertyReadSite(null, read.key()));
+      } else if (read.pair() != null && isRenamed(read.pair(), star, forwarded, rebound)) {
+        // the other side of the equality is another value now
+        it.remove();
+        renamed.add(new PropertyReadSite(read.variable(), read.key()));
       }
     }
     reads.addAll(renamed);
+  }
+
+  private static boolean isRenamed(final String name, final boolean star, final Set<String> forwarded, final Set<String> rebound) {
+    return rebound.contains(name) || (!star && !forwarded.contains(name));
   }
 
   /** The variable of a MATCH that binds one node and nothing else, or null. */
@@ -899,10 +1003,10 @@ public final class CypherEagernessAnalyzer {
     return !reachesRecord[0];
   }
 
-  private void observePropertyRead(final Set<PropertyReadSite> sink, final String variable, final String key) {
+  private void observePropertyRead(final Set<PropertyReadSite> sink, final String variable, final String key, final String pair) {
     if (variable != null && nonRecordVariables.contains(variable))
       return;
-    sink.add(new PropertyReadSite(variable, key));
+    sink.add(new PropertyReadSite(variable, key, pair));
   }
 
   /**
@@ -916,19 +1020,22 @@ public final class CypherEagernessAnalyzer {
     private final Set<String>       shadowed;
     // the patterns the clause itself creates or merges: their inline maps are values written, not keys read
     private final List<PathPattern> ownPatterns;
+    // the reads of a MATCH that look an entity up by the same key of another variable, each to the variable of the other side
+    private final Map<Object, String> pairs;
 
     private PropertyReadCollector(final Set<PropertyReadSite> sink, final boolean nested, final Set<String> shadowed,
-        final List<PathPattern> ownPatterns) {
+        final List<PathPattern> ownPatterns, final Map<Object, String> pairs) {
       this.sink = sink;
       this.nested = nested;
       this.shadowed = shadowed;
       this.ownPatterns = ownPatterns;
+      this.pairs = pairs;
     }
 
     @Override
     public void visit(final Expression expression) {
       switch (expression) {
-      case PropertyAccessExpression access -> read(access.getVariableName(), access.getPropertyName());
+      case PropertyAccessExpression access -> read(access.getVariableName(), access.getPropertyName(), pairs.get(access));
       case ListIndexExpression index -> {
         final Expression keyExpression = index.getIndexExpression();
         if (keyExpression instanceof LiteralExpression literal && literal.getValue() instanceof Number)
@@ -969,14 +1076,14 @@ public final class CypherEagernessAnalyzer {
 
     @Override
     public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
-      return new PropertyReadCollector(sink, true, shadowed, List.of());
+      return new PropertyReadCollector(sink, true, shadowed, List.of(), Map.of());
     }
 
     @Override
     public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
       final Set<String> local = new HashSet<>(shadowed);
       local.addAll(Arrays.asList(variables));
-      return new PropertyReadCollector(sink, nested, local, ownPatterns);
+      return new PropertyReadCollector(sink, nested, local, ownPatterns, pairs);
     }
 
     @Override
@@ -984,7 +1091,7 @@ public final class CypherEagernessAnalyzer {
       if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
         final Set<String> local = new HashSet<>(shadowed);
         local.add(((ForeachClause) entry.getClause()).getVariable());
-        return new PropertyReadCollector(sink, nested, local, ownPatterns);
+        return new PropertyReadCollector(sink, nested, local, ownPatterns, pairs);
       }
       return this;
     }
@@ -993,12 +1100,21 @@ public final class CypherEagernessAnalyzer {
       if (parameterName != null)
         read(variable, null);
       else if (properties != null)
-        for (final String key : properties.keySet())
-          read(variable, key);
+        for (final Map.Entry<String, Object> entry : properties.entrySet())
+          read(variable, entry.getKey(), switch (entry.getValue()) {
+            case PropertyAccessExpression access when pairs.containsKey(access) -> access.getVariableName();
+            case VariableExpression name -> pairs.get(name);
+            case null, default -> null;
+          });
     }
 
     private void read(final String variable, final String key) {
-      observePropertyRead(sink, nested || variable == null || shadowed.contains(variable) ? null : variable, key);
+      read(variable, key, null);
+    }
+
+    private void read(final String variable, final String key, final String pair) {
+      final boolean known = !nested && variable != null && !shadowed.contains(variable);
+      observePropertyRead(sink, known ? variable : null, key, known && pair != null && !shadowed.contains(pair) ? pair : null);
     }
   }
 
