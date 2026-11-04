@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
@@ -98,7 +99,15 @@ class CompactionChunksAcrossFollowerRestartTest {
     // The follower starts byte-identical to the leader, as after a snapshot install
     FileUtils.copyDirectory(leaderPath.toFile(), followerPath.toFile());
     leaderDb = (LocalDatabase) new DatabaseFactory(leaderPath.toString()).open();
-    followerDb = (LocalDatabase) new DatabaseFactory(followerPath.toString()).open();
+    followerDb = (LocalDatabase) openFollower();
+  }
+
+  /**
+   * The follower copy, opened as the server opens a database of an HA node (issue #11240): the open-time sweep of unreferenced
+   * bucket index files must leave alone the files a restarted follower holds of an index whose schema entry has not arrived yet.
+   */
+  private Database openFollower() {
+    return new DatabaseFactory(followerPath.toString()).setReplicatedNode(true).open();
   }
 
   @AfterEach
@@ -158,7 +167,7 @@ class CompactionChunksAcrossFollowerRestartTest {
     for (int appliedBeforeRestart = 1; appliedBeforeRestart < compaction.chunks.size(); appliedBeforeRestart++) {
       followerPath = tempDir.resolve("follower-" + appliedBeforeRestart).resolve(DB);
       FileUtils.copyDirectory(pristine.toFile(), followerPath.toFile());
-      followerDb = (LocalDatabase) new DatabaseFactory(followerPath.toString()).open();
+      followerDb = (LocalDatabase) openFollower();
       restartAfter(compaction, appliedBeforeRestart);
       followerDb.close();
     }
@@ -177,7 +186,7 @@ class CompactionChunksAcrossFollowerRestartTest {
     // A snapshot marker covering the chunks applied so far, then a restart: the database is closed and opened again (full
     // schema load, orphan sweep), and Ratis replays only the entries after the marker
     followerDb.close();
-    followerDb = (LocalDatabase) new DatabaseFactory(followerPath.toString()).open();
+    followerDb = (LocalDatabase) openFollower();
 
     for (final int fileId : compaction.filesToAdd.keySet())
       assertThat(followerDb.getFileManager().existsFile(fileId)).as(

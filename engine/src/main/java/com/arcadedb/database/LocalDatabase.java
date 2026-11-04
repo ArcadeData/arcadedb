@@ -286,6 +286,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   // so nothing may ever wait for the async workers while holding it.
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
+  private            boolean                                   replicatedNode            = false;
   protected volatile boolean                                   open                      = false;
   /**
    * Set by {@link #closeForReopen()}: this instance was closed so that the same database could be reopened (#8199). Never
@@ -2746,6 +2747,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void setAutoTransaction(final boolean autoTransaction) {
     this.autoTransaction = autoTransaction;
+  }
+
+  /** See {@link DatabaseFactory#setReplicatedNode(boolean)}. */
+  void setReplicatedNode(final boolean replicatedNode) {
+    this.replicatedNode = replicatedNode;
+  }
+
+  /**
+   * Whether this database is opened as a node of an HA cluster (issue #11240), known from the open on, before the replicated
+   * wrapper is installed.
+   */
+  public boolean isReplicatedNode() {
+    return replicatedNode;
   }
 
   @Override
