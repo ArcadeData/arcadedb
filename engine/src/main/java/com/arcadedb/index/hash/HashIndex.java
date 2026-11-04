@@ -28,9 +28,11 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.EmptyIndexCursor;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -51,8 +53,10 @@ import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.RWLockContext;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -63,6 +67,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -74,13 +79,25 @@ import java.util.logging.Level;
 public class HashIndex implements IndexInternal {
   private static final IndexCursor EMPTY_CURSOR = new EmptyIndexCursor();
 
-  private final String                        name;
+  // Test seam: runs in replaceBucket() before the swap, and once the swap is published and saved, before the previous file is dropped
+  private static final ThreadLocal<Consumer<SwapPhase>> SWAP_TEST_HOOK = new ThreadLocal<>();
+
+  /** The points of {@link #replaceBucket} a test can stop at. */
+  enum SwapPhase {BEFORE_SWAP, AFTER_SWAP}
+
+  // The name the index answers to. It is the name of its file until a rebuild in place gives it a new file
+  // (replaceBucket), which keeps the index and its name: the schema entry then carries it as the logical name of the new
+  // file, and a load restores it (restoreLogicalName), as for an LSM index a compaction swapped (issue #9213)
+  private volatile String                      name;
   private final RWLockContext                  lock   = new RWLockContext();
   protected final AtomicReference<INDEX_STATUS> status = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
   private TypeIndex                            typeIndex;
   private boolean                              valid  = true;
   private IndexMetadata                        metadata;
-  protected HashIndexBucket                    bucket;
+  // Replaced by replaceBucket() under the write lock; read without it by the accessors, hence volatile
+  protected volatile HashIndexBucket           bucket;
+  // See IndexInternal#isAwaitingFill()
+  private volatile boolean                     awaitingFill;
   // CI collation flags per key component, mirrored from `metadata` - see #7766. `LSMTreeIndexAbstract` keeps the
   // same kind of array for the same reason: HashIndexBucket has no collation concept of its own, so folding must
   // happen here, in convertKeys(), on both the write and the lookup side.
@@ -434,6 +451,7 @@ public class HashIndex implements IndexInternal {
         final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
         db.getIndexer().addToIndex(HashIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
+        IndexBuildTestHooks.recordIndexed(HashIndex.this, record.getIdentity());
 
         if (total.get() % 10_000 == 0) {
           final long elapsed = System.currentTimeMillis() - startTime;
@@ -636,9 +654,151 @@ public class HashIndex implements IndexInternal {
         pageSize;
   }
 
+  /** A rebuild in place marks the index as compacting for the time of its build and swap: a DROP is refused meanwhile. */
   @Override
   public boolean isCompacting() {
-    return false;
+    return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
+  }
+
+  @Override
+  public boolean isAwaitingFill() {
+    return awaitingFill;
+  }
+
+  @Override
+  public void setAwaitingFill(final boolean awaitingFill) {
+    this.awaitingFill = awaitingFill;
+  }
+
+  /**
+   * Gives an index a load has just built from its file the name it answered to when the schema was saved: the name of the file it
+   * had before a rebuild in place gave it a new one. Only an instance still named after its file, as for an LSM index.
+   */
+  public void restoreLogicalName(final String logicalName) {
+    if (!name.equals(bucket.getName()))
+      throw new IllegalStateException(
+          "Cannot restore the name '" + logicalName + "' on index '" + name + "': it no longer answers to its file name");
+    this.name = logicalName;
+  }
+
+  // ─── REBUILD IN PLACE ────────────────────────────────────
+
+  /**
+   * Creates, in the caller's transaction, an empty file in the current layout to rebuild this index into: named
+   * {@code shadowName}, with the key types, uniqueness and null strategy of this index and the page size a new file of it gets
+   * ({@link #getPageSizeForNewFile()}), so a rebuild is also how an index in a legacy layout moves to the current one. The file is
+   * registered as a file of the database and in no schema entry: until {@link #replaceBucket} it is an orphan the next open drops.
+   */
+  public HashIndexBucket createShadowBucket(final String shadowName) {
+    checkIsValid();
+    final DatabaseInternal database = getDatabase();
+    try {
+      final HashIndexBucket shadow = new HashIndexBucket(this, database, shadowName, isUnique(),
+          database.getDatabasePath() + File.separator + shadowName, ComponentFile.MODE.READ_WRITE, bucket.keyTypes,
+          getPageSizeForNewFile(), bucket.nullStrategy, HashIndexBucket.CURRENT_VERSION);
+      database.getSchema().getEmbedded().registerFile(shadow);
+      return shadow;
+    } catch (final IOException e) {
+      throw new IndexException("Cannot create the file to rebuild hash index '" + name + "' into", e);
+    }
+  }
+
+  /**
+   * Writes into {@code shadow}, in the caller's transaction, the entry a write of this index stores for {@code keys}, the indexed
+   * values of the record {@code rid}: the same key conversion and null strategy, and a key another record of the shadow holds is
+   * refused on a UNIQUE index as a commit refuses it.
+   */
+  public void putIntoShadow(final HashIndexBucket shadow, final Object[] keys, final RID rid) {
+    checkForNulls(keys);
+    final Object[] convertedKeys = convertKeys(keys);
+    final boolean nullKey = LSMTreeIndexAbstract.isKeyNull(convertedKeys);
+    if (nullKey && bucket.nullStrategy == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+      return;
+    try {
+      if (isUnique() && !nullKey) {
+        final List<RID> holders = shadow.get(convertedKeys, 1);
+        if (!holders.isEmpty()) {
+          if (holders.getFirst().equals(rid))
+            return;
+          throw new DuplicatedKeyException(name, Arrays.toString(keys), holders.getFirst());
+        }
+      }
+      shadow.put(convertedKeys, rid);
+    } catch (final IOException e) {
+      throw new IndexException("Error on rebuilding hash index '" + name + "'", e);
+    }
+  }
+
+  /**
+   * Swaps {@code newBucket}, filled by a rebuild in place, in for the current file of this index, which keeps its object and its
+   * name. The caller holds the commit locks of the current file and of the indexed bucket, so no transaction writes either.
+   * <p>
+   * The commit point is the schema save: until then a crash reopens on the previous file (the new one is an orphan the next open
+   * drops), after it on the new one, whose schema entry carries the name of this index as its logical name, and the previous file
+   * is the orphan. The previous file is dropped last, while its lock is still held: a commit that locked it meanwhile finds it gone
+   * and is sent to the new file by the migration recorded here.
+   */
+  public void replaceBucket(final HashIndexBucket newBucket) {
+    checkIsValid();
+    final DatabaseInternal database = getDatabase();
+    // the new pages are on disk before the schema names the file
+    database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+
+    final Consumer<SwapPhase> swapHook = SWAP_TEST_HOOK.get();
+    if (swapHook != null)
+      swapHook.accept(SwapPhase.BEFORE_SWAP);
+
+    final HashIndexBucket previous = bucket;
+    lock.executeInWriteLock(() -> {
+      bucket = newBucket;
+      return null;
+    });
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    schema.setMigratedFileId(previous.getFileId(), newBucket.getFileId(), false);
+    try {
+      schema.saveConfigurationOrThrow();
+    } catch (final IOException e) {
+      // The schema on disk still names the previous file: the index goes back to it before any commit can write the new one (the
+      // caller still holds the commit locks), so what a restart reopens is what the index holds. The caller drops the new file
+      lock.executeInWriteLock(() -> {
+        bucket = previous;
+        return null;
+      });
+      schema.removeMigratedFileId(previous.getFileId(), newBucket.getFileId());
+      throw new IndexException("Cannot rebuild hash index '" + name + "' in place: the schema naming its new file could not be saved",
+          e);
+    }
+
+    if (swapHook != null)
+      swapHook.accept(SwapPhase.AFTER_SWAP);
+
+    try {
+      previous.drop();
+    } catch (final IOException e) {
+      // the index is complete on its new file: the previous one is an orphan the next open drops
+      LogManager.instance().log(this, Level.WARNING, "Cannot drop the previous file '%s' of hash index '%s'", e, previous.getName(),
+          name);
+    }
+  }
+
+  /** Drops a file {@link #createShadowBucket} created, when the rebuild that filled it did not complete. */
+  public void dropShadowBucket(final HashIndexBucket shadow) {
+    final DatabaseInternal database = getDatabase();
+    try {
+      database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+      shadow.drop();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot drop the file '%s' of an interrupted rebuild of hash index '%s'", e,
+          shadow.getName(), name);
+    }
+  }
+
+  /** Test seam, package-private: see {@link #replaceBucket}. Per thread; a caller sharing its JVM removes it (null) in a finally. */
+  static void setSwapTestHook(final Consumer<SwapPhase> hook) {
+    if (hook == null)
+      SWAP_TEST_HOOK.remove();
+    else
+      SWAP_TEST_HOOK.set(hook);
   }
 
   @Override

@@ -221,11 +221,11 @@ class RebuildIndexTest {
     }
 
     /**
-     * The contrast the report draws, which the vector indexes now match: a stale HASH bucket refuses its reads. An LSM_TREE index is
-     * rebuilt IN PLACE: its bucket index is the same object before and after, and keeps answering.
+     * The contrast the report draws, which the vector indexes now match, no longer holds for the LSM_TREE and HASH indexes: they are
+     * rebuilt IN PLACE, so a bucket index held across a rebuild is the same object before and after, and keeps answering.
      */
     @Test
-    void lsmTreeAndHashBucketIndexesHeldAcrossARebuildRefuseTheirReads() {
+    void lsmTreeAndHashBucketIndexesHeldAcrossARebuildKeepAnswering() {
       database.command("sql", "CREATE DOCUMENT TYPE Tag BUCKETS 1");
       database.command("sql", "CREATE PROPERTY Tag.name STRING");
       database.command("sql", "CREATE PROPERTY Tag.code STRING");
@@ -243,19 +243,11 @@ class RebuildIndexTest {
         database.command("sql", "REBUILD INDEX `" + name + "`");
 
         final IndexInternal fresh = ((TypeIndex) database.getSchema().getIndexByName(name)).getIndexesOnBuckets()[0];
-        if (name.equals("Tag[name]")) {
-          assertThat(fresh).isSameAs(old);
-          assertThat(old.isValid()).isTrue();
-          assertThat(old.countEntries()).isEqualTo(COUNT);
-          assertThat(old.get(new Object[] { "t5" }).hasNext()).isTrue();
-          continue;
-        }
-
-        assertThat(old.isValid()).isFalse();
-        assertRefused(old::countEntries);
-        assertRefused(() -> old.get(new Object[] { "c5" }));
-        assertThat(fresh.countEntries()).isEqualTo(COUNT);
-        assertThat(fresh.getStats()).isNotNull();
+        assertThat(fresh).isSameAs(old);
+        assertThat(old.isValid()).isTrue();
+        assertThat(old.countEntries()).isEqualTo(COUNT);
+        assertThat(old.get(new Object[] { name.equals("Tag[name]") ? "t5" : "c5" }).hasNext()).isTrue();
+        assertThat(old.getStats()).isNotNull();
       }
     }
 

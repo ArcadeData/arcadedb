@@ -19,11 +19,19 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -212,6 +220,40 @@ class RebuildIndexCrashTest {
     assertThat(buildArtifacts(databasePath)).isEmpty();
   }
 
+  /**
+   * {@code CHECK DATABASE FIX} rebuilds the bucket index of a bucket holding a corrupted record, and used to drop it first: a crash
+   * during the build reopened without that bucket index (and, for a UNIQUE index, without the constraint on its bucket). It is now
+   * rebuilt in place, so a crash leaves it present and valid. A crash before the swap leaves its previous content, which still
+   * holds the entry of the record FIX removed: a REBUILD INDEX (or the next FIX of a corruption there) gives it the new one.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "fix-mid-scan", "fix-after-swap-before-old-drop" })
+  void aCrashDuringCheckDatabaseFixLeavesTheIndexPresent(final String crashPoint) throws Exception {
+    final Path databasePath = tempDirectory.resolve(crashPoint);
+    final ChildResult prepared = runChild("prepare-corrupt", databasePath);
+    assertThat(prepared.exitCode()).as(prepared.output()).isZero();
+
+    final ChildResult crashed = runChild(crashPoint, databasePath);
+    assertThat(crashed.exitCode()).as(crashed.output()).isEqualTo(CRASH_EXIT_CODE);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
+      final TypeIndex index = database.getSchema().getType(TYPE).getIndexByProperties("uid");
+      assertThat(index).as("the index survives the crash").isNotNull();
+      assertThat(index.isValid()).isTrue();
+      assertThat(index.getIndexesOnBuckets()).as("no bucket index is missing").hasSize(BUCKETS);
+      assertNoUnreferencedBucketIndex(database);
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument(TYPE).set("uid", "key-42").save()))
+          .isInstanceOf(DuplicatedKeyException.class);
+      if (crashPoint.contains("after-swap"))
+        // the new content was swapped in before the crash
+        assertComplete(database, index);
+
+      database.command("sql", "REBUILD INDEX `" + INDEX + "`");
+      assertComplete(database, (TypeIndex) database.getSchema().getIndexByName(INDEX));
+    }
+    assertThat(buildArtifacts(databasePath)).isEmpty();
+  }
+
   private void assertReopensCompleteAfterSwapCrash(final Path databasePath) throws IOException {
     try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
       final TypeIndex index = database.getSchema().getType(TYPE).getIndexByProperties("uid");
@@ -283,6 +325,11 @@ class RebuildIndexCrashTest {
       try (final DatabaseFactory factory = new DatabaseFactory(args[1]); final Database database = factory.open()) {
         database.command("sql", "REBUILD INDEX `" + INDEX + "`");
       }
+    } else if ("prepare-corrupt".equals(args[0])) {
+      prepare(args[1]);
+      try (final DatabaseFactory factory = new DatabaseFactory(args[1]); final Database database = factory.open()) {
+        corruptRecordTypeByte((DatabaseInternal) database, database.lookupByKey(TYPE, "uid", "key-41").next().getIdentity());
+      }
     } else if ("prepare-incomplete".equals(args[0])) {
       prepare(args[1]);
       try (final DatabaseFactory factory = new DatabaseFactory(args[1]); final Database database = factory.open()) {
@@ -311,8 +358,21 @@ class RebuildIndexCrashTest {
     // so a drop-and-create rebuild takes the sorted build too, and reaches the same points
     GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS.setValue(1L);
 
-    if ("after-swap-before-old-drop".equals(mode))
+    if ("after-swap-before-old-drop".equals(mode) || "fix-after-swap-before-old-drop".equals(mode))
       LSMTreeIndex.setAfterSwapTestHook(() -> Runtime.getRuntime().halt(CRASH_EXIT_CODE));
+    if ("fix-mid-scan".equals(mode)) {
+      final AtomicInteger records = new AtomicInteger();
+      IndexBuildTestHooks.onRecordIndexed = (index, rid) -> {
+        if (records.incrementAndGet() == 100)
+          Runtime.getRuntime().halt(CRASH_EXIT_CODE);
+      };
+    }
+    if (mode.startsWith("fix-")) {
+      try (final DatabaseFactory factory = new DatabaseFactory(databasePath); final Database database = factory.open()) {
+        database.command("sql", "CHECK DATABASE FIX");
+      }
+      throw new AssertionError("CHECK DATABASE FIX completed without reaching the crash point " + mode);
+    }
 
     final AtomicInteger swaps = new AtomicInteger();
     LSMTreeIndexBulkLoader.setBuildTestHook((phase, index, completedBuckets) -> {
@@ -334,6 +394,25 @@ class RebuildIndexCrashTest {
       database.command("sql", "REBUILD INDEX `" + INDEX + "`");
     }
     throw new AssertionError("The rebuild completed without reaching the crash point " + mode);
+  }
+
+  /** Breaks the type byte of a record, which CHECK DATABASE FIX removes, then rebuilds the indexes of its bucket. */
+  private static void corruptRecordTypeByte(final DatabaseInternal database, final RID rid) {
+    final int fileId = rid.getBucketId();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(fileId);
+    final int pageSize = ((PaginatedComponentFile) database.getFileManager().getFile(fileId)).getPageSize();
+    final int pageId = (int) (rid.getPosition() / bucket.getMaxRecordsInPage());
+    final int positionInPage = (int) (rid.getPosition() % bucket.getMaxRecordsInPage());
+    database.transaction(() -> {
+      try {
+        final MutablePage page = database.getTransaction().getPageToModify(new PageId(database, fileId, pageId), pageSize, false);
+        final int recordOffset = (int) page.readUnsignedInt(Binary.SHORT_SERIALIZED_SIZE + positionInPage * Binary.INT_SERIALIZED_SIZE);
+        final long[] recordSize = page.readNumberAndSize(recordOffset);
+        page.writeByte((int) (recordOffset + recordSize[1]), (byte) 99);
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
   }
 
   private ChildResult runChild(final String mode, final Path databasePath) throws IOException, InterruptedException {

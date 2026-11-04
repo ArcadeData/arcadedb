@@ -222,8 +222,9 @@ public class RebuildIndexStatement extends DDLStatement {
       boolean vectorRebuilt = false;
       long vectorSkipped = 0;
 
-      // the UNIQUE type indexes whose bucket indexes the sweep rebuilt in place, checked once each for a key two buckets share
-      final Set<TypeIndex> uniqueToVerify = new LinkedHashSet<>();
+      // the type indexes whose bucket indexes the sweep rebuilt in place, completed once each: the type-wide work of their kind and,
+      // for a UNIQUE one, the check for a key two buckets share
+      final Set<TypeIndex> typeIndexesToComplete = new LinkedHashSet<>();
 
       int stepIndex = 0;
       for (final Index idx : targetIndexes) {
@@ -255,7 +256,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
         final Index rebuilt;
         try {
-          rebuilt = buildIndex(maxAttempts, database, progressCallback, idx, batchSize, uniqueToVerify);
+          rebuilt = buildIndex(maxAttempts, database, progressCallback, idx, batchSize, typeIndexesToComplete);
         } catch (final Exception e) {
           // A named single-index rebuild must still fail loudly; only the '*' sweep tolerates a broken index.
           if (!all)
@@ -277,9 +278,9 @@ public class RebuildIndexStatement extends DDLStatement {
           vectorSkipped += skipped;
         }
       }
-      for (final TypeIndex typeIndex : uniqueToVerify) {
+      for (final TypeIndex typeIndex : typeIndexesToComplete) {
         try {
-          InPlaceIndexRebuild.verifyUniqueAcrossBuckets((DatabaseInternal) database, typeIndex, maxAttempts);
+          InPlaceIndexRebuild.completeBucketRebuilds((DatabaseInternal) database, typeIndex, maxAttempts);
         } catch (final RuntimeException e) {
           // as for the rebuild itself: a named rebuild fails loudly, only the '*' sweep reports and goes on
           if (!all)
@@ -427,7 +428,7 @@ public class RebuildIndexStatement extends DDLStatement {
    * new name
    */
   private static Index buildIndex(final int maxAttempts, Database database, Index.BuildIndexCallback callback, Index idx,
-      final int batchSize, final Set<TypeIndex> uniqueToVerify) {
+      final int batchSize, final Set<TypeIndex> typeIndexesToComplete) {
     if (idx == null)
       throw new CommandExecutionException("Index name is null");
 
@@ -435,7 +436,8 @@ public class RebuildIndexStatement extends DDLStatement {
       throw new CommandExecutionException(
           "Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
 
-    // IN PLACE whenever it can be (an LSM_TREE index of a database that is not replicated): every bucket index gets its new
+    // IN PLACE whenever it can be (an index of a kind InPlaceRebuildStrategy knows, on a database that is not replicated): every
+    // bucket index gets its new
     // content the way a full compaction gives it, one bucket at a time, without the database write lock and without ever
     // dropping the index. A query on another type does not wait for it, the index keeps answering until each bucket's swap,
     // and a crash at any point reopens with the previous or the new content of every bucket, never without the index. The
@@ -444,10 +446,10 @@ public class RebuildIndexStatement extends DDLStatement {
     if (inPlaceRefusal == null) {
       LogManager.instance().log(RebuildIndexStatement.class, Level.FINE, "Index '%s' is rebuilt in place", idx.getName());
       final Index rebuilt = InPlaceIndexRebuild.rebuild((DatabaseInternal) database, idx, callback, maxAttempts);
-      if (!(idx instanceof TypeIndex) && idx.isUnique()) {
+      if (!(idx instanceof TypeIndex)) {
         final TypeIndex owner = ((IndexInternal) idx).getTypeIndex();
-        if (owner != null && owner.countIndexesOnBuckets() > 1)
-          uniqueToVerify.add(owner);
+        if (owner != null)
+          typeIndexesToComplete.add(owner);
       }
       return rebuilt;
     }
