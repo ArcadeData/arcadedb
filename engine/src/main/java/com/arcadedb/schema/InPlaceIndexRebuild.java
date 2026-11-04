@@ -337,6 +337,7 @@ public final class InPlaceIndexRebuild {
       final long indexedBefore = indexed.get();
       try {
         rebuildBucketIndexOnce(database, strategy, index, callback, indexed);
+        strategy.afterBucketIndexRebuilt(database, index);
         return;
       } catch (final NeedRetryException e) {
         // nothing was swapped: the index still has its previous content, and the count of this attempt is taken back

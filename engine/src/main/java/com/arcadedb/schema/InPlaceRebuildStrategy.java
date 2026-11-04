@@ -38,8 +38,10 @@ import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -69,6 +71,8 @@ abstract class InPlaceRebuildStrategy {
       return FullTextStrategy.INSTANCE;
     if (index.getClass() == HashIndex.class && index.getType() == Schema.INDEX_TYPE.HASH)
       return HashStrategy.INSTANCE;
+    if (index.getClass() == LSMVectorIndex.class && index.getType() == Schema.INDEX_TYPE.LSM_VECTOR)
+      return VectorStrategy.INSTANCE;
     return null;
   }
 
@@ -89,6 +93,10 @@ abstract class InPlaceRebuildStrategy {
    */
   abstract void scanAndSwap(DatabaseInternal database, IndexInternal index, Bucket bucket, Index.BuildIndexCallback callback,
       AtomicLong indexed);
+
+  /** Runs once {@code index}, a bucket index, was rebuilt, outside the locks of {@link #scanAndSwap}. */
+  void afterBucketIndexRebuilt(final DatabaseInternal database, final IndexInternal index) {
+  }
 
   /**
    * Runs once a type index had its bucket indexes rebuilt, outside the locks of {@link #scanAndSwap}.
@@ -393,6 +401,57 @@ abstract class InPlaceRebuildStrategy {
         }
       }
       return false;
+    }
+  }
+
+  /**
+   * An LSM_VECTOR index is not built again into new files: it is made to hold exactly what a build from the records puts
+   * ({@link LSMVectorIndex#reconcileWithBucket}), so the records it already holds right stay in its resident graph and keep being
+   * found, and its file is then compacted, which writes it again and builds a fresh graph while the resident one keeps answering
+   * ({@link LSMVectorIndex#compactAfterRebuild}). An index whose vector ids cannot be trusted, or that was never built to the end, is
+   * created again.
+   */
+  static final class VectorStrategy extends InPlaceRebuildStrategy {
+    static final VectorStrategy INSTANCE = new VectorStrategy();
+
+    @Override
+    String kindName() {
+      return "LSM_VECTOR";
+    }
+
+    @Override
+    String refusal(final IndexInternal index) {
+      return ((LSMVectorIndex) index).inPlaceRebuildRefusal();
+    }
+
+    @Override
+    void scanAndSwap(final DatabaseInternal database, final IndexInternal index, final Bucket bucket,
+        final Index.BuildIndexCallback callback, final AtomicLong indexed) {
+      final long changed = ((LSMVectorIndex) index).reconcileWithBucket(IndexBuilder.BUILD_BATCH_SIZE, (document, total) -> {
+        final long all = indexed.incrementAndGet();
+        if (callback != null)
+          callback.onDocumentIndexed(document, all);
+      });
+      LogManager.instance().log(InPlaceRebuildStrategy.class, Level.INFO, "Rebuilt vector index '%s' in place: %,d records written again",
+          index.getName(), changed);
+    }
+
+    @Override
+    void afterBucketIndexRebuilt(final DatabaseInternal database, final IndexInternal index) {
+      try {
+        ((LSMVectorIndex) index).compactAfterRebuild();
+      } catch (final IOException | RuntimeException e) {
+        // the index holds every record: only the space of the replaced entries and the fresh graph wait for the next compaction
+        LogManager.instance().log(InPlaceRebuildStrategy.class, Level.WARNING,
+            "Vector index '%s' was rebuilt, but its compaction did not run: %s", index.getName(), e.getMessage());
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+
+    @Override
+    void verifyUniqueAcrossBuckets(final DatabaseInternal database, final TypeIndex typeIndex, final int maxAttempts) {
+      // a vector index is never unique
     }
   }
 }

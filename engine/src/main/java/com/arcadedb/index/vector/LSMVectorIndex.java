@@ -49,6 +49,7 @@ import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
@@ -108,6 +109,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -13095,6 +13097,165 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Why {@code REBUILD INDEX} must drop and re-create this index instead of rebuilding it in place
+   * ({@link #reconcileWithBucket}), or null when it can be rebuilt in place. The rebuild in place keeps the vector ids the index
+   * holds, so an index whose ids cannot be trusted, or that was never built to the end, is created again.
+   */
+  public String inPlaceRebuildRefusal() {
+    if (metadata.dimensions < 1)
+      return "the vector index '" + indexName + "' has not decided its dimensions yet";
+    if (buildState != BUILD_STATE.READY)
+      return "the vector index '" + indexName + "' was not built to the end (" + buildState + ")";
+    final List<String> problems = checkIntegrity();
+    return problems.isEmpty() ? null : "the vector index '" + indexName + "' is damaged: " + problems.getFirst();
+  }
+
+  /**
+   * {@code REBUILD INDEX} in place: makes the committed index hold exactly what a build from the records of its bucket puts, without
+   * dropping it and without the database write lock. A record the index already holds as a write of it would leave it (one live
+   * vector of the record, with the payload a write stores) is not touched, so it stays in the resident graph and keeps being found by
+   * its searches. A record the index misses, holds more than once or with another payload is written again (a fresh id, searched in
+   * the delta buffer until the next graph build), and an entry no record of the bucket holds is removed.
+   * <p>
+   * The caller holds the commit locks of the bucket and of the files of this index, so nothing else commits to either meanwhile. The
+   * changes go through ordinary transactions of the calling thread, with the WAL, committed every {@code batchSize} records: a stop
+   * at any point leaves every record either as it was or as the rebuild set it. {@link #compactAfterRebuild} then rewrites the file and
+   * builds a fresh graph.
+   *
+   * @return the number of records written again or taken out of the index
+   */
+  public long reconcileWithBucket(final int batchSize, final BuildIndexCallback callback) {
+    final DatabaseInternal database = getDatabase();
+    final VectorLocationIndex locations = vectorIndex();
+    // The records the index holds a vector of: what is left once the scan has seen the records of the bucket belongs to none
+    final Set<RID> heldRecords = new HashSet<>();
+    locations.getActiveVectorIds().forEach(vectorId -> {
+      final RID rid = locations.getRid(vectorId);
+      if (rid != null)
+        heldRecords.add(rid);
+    });
+    final ComparableVector supersedeKey = buildSupersedeKey();
+    final long[] counters = new long[3]; // records scanned, records changed, records left out
+    // as a build reports them (issue #10938): a value that is not a vector of the index's dimensions is left out, and said so
+    final List<String> rejectedSamples = new ArrayList<>(MAX_REJECTED_RECORDS_REPORTED);
+
+    database.begin();
+    try {
+      database.scanBucket(database.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
+        final RID rid = record.getIdentity();
+        heldRecords.remove(rid);
+        final Document document = (Document) record;
+        final Object[][] keys = new Object[1][];
+        database.getIndexer().forEachIndexKey(this, document, k -> keys[0] = k);
+        final float[] vector = usableVector(keys[0]);
+        if (vector == null && keys[0] != null && keys[0].length > 0 && keys[0][0] != null
+            && ++counters[2] <= MAX_REJECTED_RECORDS_REPORTED)
+          rejectedSamples.add(rid.toString());
+        if (!holdsExactly(rid, vector)) {
+          if (locations.getVectorIdsForRid(rid).length > 0)
+            // replayed before the ADD below, in the same commit: the record ends with its one fresh vector
+            database.getTransaction().addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+                new Object[] { supersedeKey }, rid);
+          if (vector != null)
+            put(new Object[] { vector }, new RID[] { rid });
+          ++counters[1];
+        }
+        IndexBuildTestHooks.recordIndexed(this, rid);
+        if (callback != null)
+          callback.onDocumentIndexed(document, ++counters[0]);
+        IndexInternal.commitBuildBatch(database, counters[0], batchSize, false);
+        return true;
+      }, (rid, exception) -> {
+        if (exception instanceof RuntimeException runtimeException)
+          throw runtimeException;
+        throw new IndexException("Error reading record " + rid + " while rebuilding index '" + indexName + "'", exception);
+      });
+
+      for (final RID rid : heldRecords) {
+        database.getTransaction().addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+            new Object[] { supersedeKey }, rid);
+        IndexInternal.commitBuildBatch(database, ++counters[1], batchSize, false);
+      }
+      database.commit();
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    lastBuildSkippedRecords = counters[2];
+    if (counters[2] > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector index '%s': %d %s not indexed, holding a value that is not a vector of %d dimensions (first: %s). Fix or remove "
+              + "the value of %s in these records, then run REBUILD INDEX to index them", indexName, counters[2],
+          counters[2] == 1 ? "record is" : "records are", metadata.dimensions, String.join(", ", rejectedSamples),
+          metadata.propertyNames);
+    return counters[1];
+  }
+
+  /**
+   * The second half of a rebuild in place ({@link #reconcileWithBucket}), run once the commit locks are released: the data file is
+   * compacted, which writes it again with the live vectors only and builds a fresh graph while the resident one keeps answering, and
+   * a PRODUCT-quantized index trains a new codebook, as a rebuild always did. A compaction that cannot run now (a backup in progress,
+   * the file busy) leaves the index complete, with its graph caught up by the next build.
+   */
+  public void compactAfterRebuild() throws IOException, InterruptedException {
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+      discardProductQuantization();
+    if (scheduleCompaction())
+      compact();
+  }
+
+  /** The vector a write of {@code keys} stores, or null when it stores none (no value, or one this index refuses). */
+  private float[] usableVector(final Object[] keys) {
+    if (keys == null || keys.length == 0 || keys[0] == null)
+      return null;
+    final float[] vector;
+    try {
+      vector = keys[0] instanceof ComparableVector c ? c.vector : VectorUtils.toFloatArray(keys[0], metadata.encoding);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+    if (vector.length != metadata.dimensions)
+      return null;
+    for (final float component : vector)
+      if (!Float.isFinite(component))
+        return null;
+    return vector;
+  }
+
+  /**
+   * Whether the committed index holds of {@code rid} exactly what a write of {@code vector} puts: no live vector when it is null,
+   * otherwise one, whose stored payload (an inline-quantized index stores one, the others read the record) is the one the write
+   * stores.
+   */
+  private boolean holdsExactly(final RID rid, final float[] vector) {
+    final VectorLocationIndex locations = vectorIndex();
+    int live = 0;
+    int liveId = -1;
+    for (final int vectorId : locations.getVectorIdsForRid(rid))
+      if (locations.isLocationOf(vectorId, rid)) {
+        ++live;
+        liveId = vectorId;
+      }
+    if (vector == null)
+      return live == 0;
+    if (live != 1)
+      return false;
+
+    final VectorQuantizationMetadata qmeta = (VectorQuantizationMetadata) quantizeVector(vector);
+    if (qmeta == null)
+      return true;
+    final long offsetAndFlag = locations.getOffsetAndFlag(liveId);
+    if (offsetAndFlag == VectorLocationIndex.ABSENT)
+      return false;
+    final float[] stored = readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
+        VectorLocationIndex.isCompactedOf(offsetAndFlag));
+    final byte[] written = qmeta instanceof VectorQuantizationMetadata.Int8QuantizationMetadata int8 ? int8.quantized :
+        ((VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta).packed;
+    return stored != null && Arrays.equals(stored, dequantizeVector(written, qmeta));
+  }
+
+  /**
    * {@code buildIndexBatchSize} is IGNORED here, and deliberately: this build chunks by BYTES
    * ({@code arcadedb.vectorIndex.txChunkSizeMB}), not by record count, so a record count means nothing to it. The
    * permission to commit at all arrives as its own parameter (issue #6324, item 1) - reading it off the batch size
@@ -13424,6 +13585,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return true;
       }
       total.incrementAndGet();
+      IndexBuildTestHooks.recordIndexed(LSMVectorIndex.this, rid);
 
       // Estimate bytes written (rough approximation)
       // Each vector: dimensions * 4 bytes + metadata overhead
