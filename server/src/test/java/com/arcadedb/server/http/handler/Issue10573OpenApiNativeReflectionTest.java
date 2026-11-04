@@ -59,8 +59,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue10573OpenApiNativeReflectionTest {
   private static final String MODEL_PACKAGE = "io.swagger.v3.oas.models.";
   private static final String FEATURE       = "com.arcadedb.nativeimage.OpenApiModelReflectionFeature";
-  private static final Path   NATIVE_POM    = Path.of("..", "native", "pom.xml");
-  private static final Path   FEATURE_SOURCE = Path.of("..", "native", "src", "main", "java", "com", "arcadedb", "nativeimage",
+  private static final Path   NATIVE_POM    = Path.of(System.getProperty("basedir", "."), "..", "native", "pom.xml");
+  private static final Path   FEATURE_SOURCE = Path.of(System.getProperty("basedir", "."), "..", "native", "src", "main", "java", "com", "arcadedb", "nativeimage",
       "OpenApiModelReflectionFeature.java");
 
   @Test

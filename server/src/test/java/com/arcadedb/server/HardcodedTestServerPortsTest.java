@@ -70,7 +70,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HardcodedTestServerPortsTest {
 
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
-  private static final Path REACTOR_ROOT = Path.of("..");
+  private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
 
   /**
    * Modules that are not scanned: the Testcontainers suites address the container-internal 2480 on purpose, and a

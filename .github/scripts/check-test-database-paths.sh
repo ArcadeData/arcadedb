@@ -77,8 +77,11 @@ run_static() {
 
 run_runtime() {
   local leaked
-  # <module>/databases is a leak; anything under a target/ dir is the goal state, not a leak.
-  leaked=$(find . -maxdepth 2 -type d -name databases -not -path './.git/*' -not -path '*/target/*' || true)
+  # <module>/databases is a leak; anything under a target/ dir is the goal state, not a leak. Under the
+  # fork-isolation profile each test JVM runs in <module>/target/test-fork-N/work, which stands for the module
+  # directory, so a databases/ directly inside it is the same leak.
+  leaked=$( (find . -maxdepth 2 -type d -name databases -not -path './.git/*' -not -path '*/target/*';
+    find . -mindepth 5 -maxdepth 5 -type d -path './*/target/test-fork-*/work/databases') || true)
 
   if [[ -n "${leaked}" ]]; then
     echo "ERROR: the test run left a repo-relative 'databases/' directory behind."
