@@ -258,6 +258,28 @@ reports the database as resyncing (`503` on `/api/v1/ready`, the `local-resync-i
 - **#11240** A file id freed by a drop is no longer handed out again after a restart, and a schema save that fails is retried at
   the next transaction end or close instead of being forgotten.
 
+- **#11204** A type can no longer be made a subtype of a materialized view's backing type (`CREATE ... EXTENDS`, `ALTER TYPE ...
+  SUPERTYPE +`, or the Java API): every row of the subtype was answered by `SELECT FROM` the view, which still reported `VALID`,
+  and no refresh removed them. A schema that already holds such a link opens, warns once, and the link can be removed with
+  `ALTER TYPE ... SUPERTYPE -`.
+- **#11202** A vector search row whose record was removed behind the index's back is reported in the log (a throttled WARNING
+  naming `REBUILD INDEX`) instead of silently taking a top-K place with a RID that resolves to nothing.
+- **#11211** openCypher: reading a property of a variable-length relationship list (`MATCH (a)-[r*]->(b) RETURN r.prop`) answers
+  a client type error (HTTP `400`, Bolt `TypeError`) instead of a `500`.
+- **#11206** A record saved with `save(bucketName)` into a bucket another type owns is refused with an `IllegalArgumentException`,
+  and the record listeners always see the record's real type. `MOVE VERTEX` to a bucket of another vertex type moves the vertex
+  to that type (#11235).
+- **#11207** gRPC: a list property of a vector-search or full-text-search hit reaches the client as a list, as on the query path,
+  instead of a JSON string.
+- **#11208** A JSON import whose commit is refused no longer leaves its transaction open on the caller's thread.
+- **#11245** A parallel scan that fails reports the error its unit raised, instead of a generic "Parallel scan failed".
+- **#11248** A user's `resultSetLimit` and `readTimeout` apply to that user's executions only (a cached statement could carry them
+  to another user), and a tighter `LIMIT` or `TIMEOUT` written in the statement is kept.
+- **Studio** The graph GraphML export carries the vertex and edge properties (the old plugin wrote them as `[object Object]`) and
+  follows the server's GraphML layout. The table Excel export no longer needs JSZip, and the PDF export button is removed (#11236,
+  #11237).
+- **Dependencies** Guava pinned to 33.7.2-android (CVE-2026-102554) (#11237).
+
 - **#10588** A `CREATE INDEX` no longer leaves out a record that another session, or an outer transaction of the caller, had written
   and not committed. The build indexes the committed state; the writer queued no entry for an index that did not exist when it saved
   the record, so the record was invisible to every index-backed query and a `UNIQUE` index accepted a duplicate of its key, with the
