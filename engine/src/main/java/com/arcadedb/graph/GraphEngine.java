@@ -3618,8 +3618,14 @@ public class GraphEngine {
     return moveTo(vertex, typeName, null);
   }
 
+  /**
+   * A bucket another type owns makes the vertex a vertex of that type, as INSERT INTO BUCKET types a record by the bucket's
+   * owner: a record of the old type there would be read back as the owner while the old type's indexes answered for it, which
+   * the create refuses (issue #11206).
+   */
   protected RID moveToBucket(final Vertex vertex, final String bucketName) {
-    return moveTo(vertex, vertex.getTypeName(), bucketName);
+    final DocumentType owner = vertex.getDatabase().getSchema().getTypeByBucketName(bucketName);
+    return moveTo(vertex, owner != null ? owner.getName() : vertex.getTypeName(), bucketName);
   }
 
   // newLightEdge() is deprecated in favour of declaring LIGHTWEIGHT on the edge type, but this method must
