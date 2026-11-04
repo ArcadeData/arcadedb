@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
@@ -50,6 +51,8 @@ import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
@@ -869,6 +872,32 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether the user bound to this thread may read the bucket of this index. No bound user may, as for
+   * {@link SecurityHelper#canAccessFile}.
+   */
+  boolean isBucketReadable() {
+    return SecurityHelper.canAccessFile(underlyingIndex.getMutableIndex().getDatabase(), getAssociatedBucketId(),
+        SecurityDatabaseUser.ACCESS.READ_RECORD);
+  }
+
+  /**
+   * Whether the user bound to this thread may read every bucket the corpus counters count. The counters are a statistic of all of
+   * them, so a user who may not is answered from the buckets it may read.
+   */
+  boolean isCorpusReadable() {
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    for (final Bucket bucket : corpusBuckets())
+      if (!SecurityHelper.canAccessFile(db, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return false;
+    return true;
+  }
+
+  /** The documents of this index's own bucket, for a caller that counts only the buckets it may read. */
+  long getBucketDocumentCount() {
+    return associatedBucketCount();
+  }
+
+  /**
    * Returns the live record count of the bucket this index is associated with, or 0 when it cannot be resolved.
    */
   private long associatedBucketCount() {
@@ -899,6 +928,25 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   private void ensureCounters() {
     if (ftMetadata == null)
       return;
+    // The counters are the index's own and count every document of the corpus, so checking them is the index's work and not the
+    // caller's: the user bound to this thread may not read every bucket of the corpus, and what it is answered is decided apart
+    // (see isCorpusReadable). Nothing here reaches the caller but the counters, which stay whole for everybody.
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
+    final SecurityDatabaseUser user = context != null ? context.getCurrentUser() : null;
+    if (user == null) {
+      validateCounters();
+      return;
+    }
+    context.setCurrentUser(null);
+    try {
+      validateCounters();
+    } finally {
+      context.setCurrentUser(user);
+    }
+  }
+
+  private void validateCounters() {
     if (!ftMetadata.isCountersValid()) {
       // Cold counters (pre-feature/unsaved index): rebuild so the caller scores with valid statistics. This is the ONLY place
       // that needs a lock - the counters themselves are AtomicLong (lock-free reads/updates everywhere else); the synchronized
@@ -1029,11 +1077,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * The BM25 corpus counters of a full-text index as {@code schema:index:<name>} shows them, without running the drift check
    * that reading them through a query would: an operator can look at a drift before anything repairs it.
    *
-   * @return the counters and the state of the drift check, or null when {@code index} is not a BM25 full-text index
+   * @return the counters and the state of the drift check, or null when {@code index} is not a BM25 full-text index, or the user
+   * bound to this thread may not read every bucket they count
    */
   public static Map<String, Object> describeCorpusCounters(final Index index) {
     final FullTextIndexMetadata metadata = metadataOf(index);
     if (metadata == null || !metadata.isBM25())
+      return null;
+    final Index bucketIndex = index instanceof final TypeIndex typeIndex ? typeIndex.getIndexesOnBuckets()[0] : index;
+    if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex && !ftIndex.isCorpusReadable())
       return null;
     final Map<String, Object> result = new LinkedHashMap<>();
     // One pair, not two reads: no commit's delta is half applied in what is reported
@@ -1977,6 +2029,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (sourceRids.size() > config.getMaxSourceDocs())
       throw new IllegalArgumentException(
           "Number of source documents (" + sourceRids.size() + ") exceeds maxSourceDocs (" + config.getMaxSourceDocs() + ")");
+
+    // A bucket the caller may not read answers nothing: its matches are not the caller's, and its size is not either
+    if (!isBucketReadable())
+      return new TempIndexCursor(Collections.emptyList());
 
     // Step 1 & 2: Extract terms from source documents and count term frequencies
     final Map<String, Integer> termFreqs = new HashMap<>();
