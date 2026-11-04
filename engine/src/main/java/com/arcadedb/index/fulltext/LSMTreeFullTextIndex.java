@@ -31,6 +31,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -71,6 +72,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -1258,17 +1260,43 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
-    if (underlyingIndex.isStoreTermFrequency()) {
-      putWithStats(keys, rids);
-      return;
-    }
+    final int docLen = forEachPosting(keys, rids, (token, values) -> underlyingIndex.put(new String[] { token }, values));
+    if (underlyingIndex.isStoreTermFrequency())
+      countDocuments(rids.length, docLen);
+  }
+
+  /**
+   * Hands {@code entries} the postings {@link #put} writes into the underlying LSM tree for {@code keys}, the indexed values of the
+   * record {@code rid}, instead of writing them: what a rebuild in place sorts into the new content of the index. The tokens are the
+   * ones of this index's analyzer, field-prefixed and unprefixed on a multi-property index, and on a BM25 index every posting is a
+   * {@link FullTextPostingRID} carrying its term frequency and the document length. The corpus counters are not touched: the record
+   * is already counted in them.
+   */
+  public void forEachBulkEntry(final Object[] keys, final RID rid, final BiConsumer<Object[], RID> entries) {
+    forEachPosting(keys, new RID[] { rid }, (token, values) -> entries.accept(new Object[] { token }, values[0]));
+  }
+
+  /** Where {@link #forEachPosting} hands each posting: the token and the values stored under it. */
+  @FunctionalInterface
+  private interface PostingSink {
+    void accept(String token, RID[] values);
+  }
+
+  /**
+   * The postings of a document, the single definition {@link #put} and {@link #forEachBulkEntry} share.
+   *
+   * @return the length of the document for the BM25 corpus counters, 0 on a CLASSIC index
+   */
+  private int forEachPosting(final Object[] keys, final RID[] rids, final PostingSink postings) {
+    if (underlyingIndex.isStoreTermFrequency())
+      return forEachPostingWithStats(keys, rids, postings);
 
     // CLASSIC similarity: store one posting per token occurrence (RID-only), unchanged behavior.
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
       for (final String k : keywords)
-        underlyingIndex.put(new String[] { k }, rids);
+        postings.accept(k, rids);
     } else {
       // Multi-property - prefix tokens with field name
       final List<String> propertyNames = getPropertyNames();
@@ -1279,20 +1307,23 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
         for (final String k : keywords) {
           // Store with field prefix for field-specific queries
-          underlyingIndex.put(new String[] { fieldName + ":" + k }, rids);
+          postings.accept(fieldName + ":" + k, rids);
           // Also store without prefix for unqualified queries
-          underlyingIndex.put(new String[] { k }, rids);
+          postings.accept(k, rids);
         }
       }
     }
+    return 0;
   }
 
   /**
-   * BM25 indexing path: aggregates the per-token term frequency and the document length, then stores one posting per distinct
-   * token carrying {@link FullTextPostingRID} so scoring can read tf and document length back without re-reading the document. Also
-   * maintains the persisted corpus counters (document count and total length) used to compute the average document length.
+   * BM25 indexing path: aggregates the per-token term frequency and the document length, then hands one posting per distinct
+   * token carrying {@link FullTextPostingRID} so scoring can read tf and document length back without re-reading the document. The
+   * caller maintains the persisted corpus counters (document count and total length) used to compute the average document length.
+   *
+   * @return the length of the document
    */
-  private void putWithStats(final Object[] keys, final RID[] rids) {
+  private int forEachPostingWithStats(final Object[] keys, final RID[] rids, final PostingSink postings) {
     final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
 
     if (getPropertyCount() == 1) {
@@ -1311,49 +1342,48 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
       final int docLen = documentLength(keywords);
       for (final Map.Entry<String, Integer> e : tfs.entrySet())
-        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+        postings.accept(e.getKey(), withStats(db, rids, e.getValue(), docLen));
       if (hasNull)
         // Plain RID (no stats): if NULL_STRATEGY indexes it, the posting carries tf=0/docLength=0 rather than a stale tf.
-        underlyingIndex.put(new String[] { null }, rids);
-      countDocuments(rids.length, docLen);
-    } else {
-      final List<String> propertyNames = getPropertyNames();
-
-      // PASS 1: analyze every field, accumulate document length and per-field + global term frequencies.
-      // Design choice: the unprefixed (field-agnostic) posting carries the GLOBAL tf - the term's total occurrences across all
-      // indexed fields of the document - while each field-prefixed posting carries that field's tf. So an unqualified query
-      // (`java`) treats a term appearing in both title and body as tf=2, whereas a field-qualified query (`title:java`) sees
-      // tf=1. This differs from Lucene's per-field independence and means cross-field repetition boosts unqualified relevance;
-      // it is intentional ("how often does the term occur anywhere in the document").
-      final Map<String, Integer> globalTf = new HashMap<>();
-      final List<String> fieldNames = new ArrayList<>();
-      final List<Map<String, Integer>> fieldTfs = new ArrayList<>();
-      int docLen = 0;
-      for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
-        if (keys[i] == null)
-          continue;
-        final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
-        docLen += documentLength(keywords);
-        final Map<String, Integer> fieldTf = new HashMap<>();
-        for (final String k : keywords) {
-          fieldTf.merge(k, 1, Integer::sum);
-          globalTf.merge(k, 1, Integer::sum);
-        }
-        fieldNames.add(propertyNames.get(i));
-        fieldTfs.add(fieldTf);
-      }
-
-      // PASS 2: store field-prefixed postings (per-field tf) and unprefixed postings (global tf) now that docLen is known.
-      for (int f = 0; f < fieldNames.size(); f++) {
-        final String fieldName = fieldNames.get(f);
-        for (final Map.Entry<String, Integer> e : fieldTfs.get(f).entrySet())
-          underlyingIndex.put(new String[] { fieldName + ":" + e.getKey() }, withStats(db, rids, e.getValue(), docLen));
-      }
-      for (final Map.Entry<String, Integer> e : globalTf.entrySet())
-        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
-
-      countDocuments(rids.length, docLen);
+        postings.accept(null, rids);
+      return docLen;
     }
+
+    final List<String> propertyNames = getPropertyNames();
+
+    // PASS 1: analyze every field, accumulate document length and per-field + global term frequencies.
+    // Design choice: the unprefixed (field-agnostic) posting carries the GLOBAL tf - the term's total occurrences across all
+    // indexed fields of the document - while each field-prefixed posting carries that field's tf. So an unqualified query
+    // (`java`) treats a term appearing in both title and body as tf=2, whereas a field-qualified query (`title:java`) sees
+    // tf=1. This differs from Lucene's per-field independence and means cross-field repetition boosts unqualified relevance;
+    // it is intentional ("how often does the term occur anywhere in the document").
+    final Map<String, Integer> globalTf = new HashMap<>();
+    final List<String> fieldNames = new ArrayList<>();
+    final List<Map<String, Integer>> fieldTfs = new ArrayList<>();
+    int docLen = 0;
+    for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
+      if (keys[i] == null)
+        continue;
+      final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+      docLen += documentLength(keywords);
+      final Map<String, Integer> fieldTf = new HashMap<>();
+      for (final String k : keywords) {
+        fieldTf.merge(k, 1, Integer::sum);
+        globalTf.merge(k, 1, Integer::sum);
+      }
+      fieldNames.add(propertyNames.get(i));
+      fieldTfs.add(fieldTf);
+    }
+
+    // PASS 2: store field-prefixed postings (per-field tf) and unprefixed postings (global tf) now that docLen is known.
+    for (int f = 0; f < fieldNames.size(); f++) {
+      final String fieldName = fieldNames.get(f);
+      for (final Map.Entry<String, Integer> e : fieldTfs.get(f).entrySet())
+        postings.accept(fieldName + ":" + e.getKey(), withStats(db, rids, e.getValue(), docLen));
+    }
+    for (final Map.Entry<String, Integer> e : globalTf.entrySet())
+      postings.accept(e.getKey(), withStats(db, rids, e.getValue(), docLen));
+    return docLen;
   }
 
   /**
@@ -1569,6 +1599,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return underlyingIndex.isCompacting();
   }
 
+  @Override
+  public boolean isAwaitingFill() {
+    return underlyingIndex.isAwaitingFill();
+  }
+
+  @Override
+  public void setAwaitingFill(final boolean awaitingFill) {
+    underlyingIndex.setAwaitingFill(awaitingFill);
+  }
+
   /**
    * A full-text index stores its terms in an ordinary LSM string index, so it is exposed to the same physical
    * key-order mismatch after an upgrade (#5802) - and its terms are user text, which is where non-ASCII characters
@@ -1739,6 +1779,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
         db.getIndexer().addToIndex(LSMTreeFullTextIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
+        IndexBuildTestHooks.recordIndexed(LSMTreeFullTextIndex.this, record.getIdentity());
 
         IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
 

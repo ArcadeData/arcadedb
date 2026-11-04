@@ -172,21 +172,31 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     if (rid == null)
       throw new IndexException("Cannot bulk-index a non-persistent record in '" + indexName + "'");
 
-    database.getIndexer().forEachIndexKey(index, record, rawKeys -> {
-      final Object[] normalizedKeys = index.normalizeKeysForBulkBuild(rawKeys);
-      index.getMutableIndex().checkForNulls(normalizedKeys);
-      final boolean containsNull = LSMTreeIndexAbstract.isKeyNull(normalizedKeys);
-      if (containsNull && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
-        return;
+    database.getIndexer().forEachIndexKey(index, record, rawKeys -> addEntry(index, rawKeys, rid));
+  }
 
-      registerIndex(index);
-      final TransactionIndexContext.ComparableKey key = shareKey(new TransactionIndexContext.ComparableKey(normalizedKeys));
-      entries.add(new Entry(index, key, rid, lastKeyGroup));
-      runBytes += entryBytes(key);
-      totalEntries++;
-      if (runBytes >= memoryBudgetBytes || entries.size() >= entriesPerRunLimit)
-        spillCurrentRun();
-    });
+  /**
+   * Adds one entry of {@code index}: {@code rawKeys} as a write would give them to the LSM tree, {@code rid} the value it stores. The
+   * entry point of the index kinds whose entries are not the property values of the record (a geospatial index stores the cells of a
+   * shape, a full-text index the tokens of a text): they turn a record into entries themselves and hand them here one by one. The
+   * value may be a {@link FullTextPostingRID}, whose statistics travel with it to the compacted file.
+   */
+  public void addEntry(final LSMTreeIndex index, final Object[] rawKeys, final RID rid) {
+    if (rid == null)
+      throw new IndexException("Cannot bulk-index a non-persistent record in '" + indexName + "'");
+    final Object[] normalizedKeys = index.normalizeKeysForBulkBuild(rawKeys);
+    index.getMutableIndex().checkForNulls(normalizedKeys);
+    final boolean containsNull = LSMTreeIndexAbstract.isKeyNull(normalizedKeys);
+    if (containsNull && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
+      return;
+
+    registerIndex(index);
+    final TransactionIndexContext.ComparableKey key = shareKey(new TransactionIndexContext.ComparableKey(normalizedKeys));
+    entries.add(new Entry(index, key, rid, lastKeyGroup));
+    runBytes += entryBytes(key);
+    totalEntries++;
+    if (runBytes >= memoryBudgetBytes || entries.size() >= entriesPerRunLimit)
+      spillCurrentRun();
   }
 
   /**

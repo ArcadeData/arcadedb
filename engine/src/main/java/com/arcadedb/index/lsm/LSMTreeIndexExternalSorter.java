@@ -71,6 +71,12 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
   private final BinarySerializer                  serializer;
   private final byte[]                            binaryKeyTypes;
   private final Map<Integer, LSMTreeIndex>         indexesByBucket;
+  /**
+   * Whether the entries carry the statistics of a BM25 full-text posting ({@link FullTextPostingRID}): an index that stores them
+   * stores them for every posting, so the term frequency and the document length are written after the RID of every entry (zero for
+   * a plain RID, which is what the index reads back for one) and read back into a posting.
+   */
+  private final boolean                           postingStatistics;
   private final Path                              directory;
   private final int                               mergeFanIn;
   private final int                               admittedMergeParallelism;
@@ -102,6 +108,10 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
     this.serializer = database.getSerializer();
     this.binaryKeyTypes = Arrays.copyOf(binaryKeyTypes, binaryKeyTypes.length);
     this.indexesByBucket = indexesByBucket;
+    boolean storeTermFrequency = false;
+    for (final LSMTreeIndex index : indexesByBucket.values())
+      storeTermFrequency |= index.isStoreTermFrequency();
+    this.postingStatistics = storeTermFrequency;
     final long availableFileDescriptors = getAvailableFileDescriptors();
     this.mergeFanIn = selectMergeFanIn(configuredMergeFanIn, memoryBudgetBytes, availableFileDescriptors);
     this.admittedMergeParallelism = selectMergeParallelism(configuredMergeParallelism, mergeFanIn,
@@ -424,6 +434,15 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
         serializer.serializeValue(database, payload, binaryKeyTypes[i], key);
     }
     serializer.serializeValue(database, payload, BinaryTypes.TYPE_COMPRESSED_RID, entry.rid());
+    if (postingStatistics) {
+      if (entry.rid() instanceof FullTextPostingRID posting) {
+        payload.putNumber(posting.getTf());
+        payload.putNumber(posting.getDocLength());
+      } else {
+        payload.putNumber(0);
+        payload.putNumber(0);
+      }
+    }
 
     output.writeInt(entry.index().getAssociatedBucketId());
     output.writeInt(payload.size());
@@ -629,7 +648,10 @@ final class LSMTreeIndexExternalSorter implements AutoCloseable {
         for (int i = 0; i < binaryKeyTypes.length; i++)
           if (payload.getByte() != 0)
             keys[i] = serializer.deserializeValue(database, payload, binaryKeyTypes[i], null);
-        final RID rid = (RID) serializer.deserializeValue(database, payload, BinaryTypes.TYPE_COMPRESSED_RID, null);
+        RID rid = (RID) serializer.deserializeValue(database, payload, BinaryTypes.TYPE_COMPRESSED_RID, null);
+        if (postingStatistics)
+          rid = new FullTextPostingRID(database, rid.getBucketId(), rid.getPosition(), (int) payload.getNumber(),
+              (int) payload.getNumber());
         current = new LSMTreeIndexBulkLoader.Entry(index, new TransactionIndexContext.ComparableKey(keys), rid);
         remaining--;
       } catch (final EOFException error) {

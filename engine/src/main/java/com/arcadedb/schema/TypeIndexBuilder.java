@@ -31,6 +31,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -1101,6 +1102,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
           bulkLoader.add(bucketIndex, record);
           final long total = scannedRecords.incrementAndGet();
+          IndexBuildTestHooks.recordIndexed(bucketIndex, record.getIdentity());
           if (total % SORTED_BUILD_PROGRESS_INTERVAL == 0)
             LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records (%,.0f records/sec)...",
                 logicalIndexName, total, total / Math.max(0.001, (System.nanoTime() - sourceScanStarted) / 1e9));

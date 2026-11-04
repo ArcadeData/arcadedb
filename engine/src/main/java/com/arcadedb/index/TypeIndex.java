@@ -28,7 +28,6 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
-import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
@@ -964,7 +963,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * whose bucket indexes are attached to the index of the type that declares it ({@code LocalDocumentType#addIndexInternal}). An index built and kept by this version always
    * is, outside the instants a DDL statement adds or removes a bucket index; one a rebuild interrupted by an earlier version left
    * behind is not, and stays so until {@code REBUILD INDEX} has given the missing buckets their index and filled it (a bucket index
-   * it created and has not filled yet, {@link LSMTreeIndex#isAwaitingFill()}, does not count).
+   * it created and has not filled yet, {@link IndexInternal#isAwaitingFill()}, does not count).
    */
   public boolean isComplete() {
     if (type == null)
@@ -999,6 +998,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return type == null ? List.of() : findBucketsWithoutIndex(type.getBuckets(true), false, false);
   }
 
+  /** A type index is never filled itself: its bucket indexes are, each one flagged on its own. */
+  @Override
+  public void setAwaitingFill(final boolean awaitingFill) {
+    throw new UnsupportedOperationException("Index '" + getName() + "' is a type index: only its bucket indexes await a fill");
+  }
+
   /** Forgets the cached answer of {@link #isComplete()}: a bucket index of this index was created or filled. */
   public void refreshCompleteness() {
     completenessEpoch.incrementAndGet();
@@ -1011,8 +1016,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       final int bucketId = buckets.get(i).getFileId();
       boolean found = false;
       for (final IndexInternal onBucket : indexesOnBuckets)
-        if (onBucket.getAssociatedBucketId() == bucketId && !(filledOnly && onBucket instanceof LSMTreeIndex lsm
-            && lsm.isAwaitingFill())) {
+        if (onBucket.getAssociatedBucketId() == bucketId && !(filledOnly && onBucket.isAwaitingFill())) {
           found = true;
           break;
         }

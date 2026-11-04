@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -123,6 +124,9 @@ class CheckDatabaseFixDocumentTypeTest extends TestHelper {
    * The duplicate is inserted straight into the bucket via {@code LocalBucket.createRecord}, which does not go
    * through {@code DocumentIndexer}: that is the only way to hold a unique index and a violating record at the same
    * time, which is exactly the state a rebuild cannot resolve.
+   * <p>
+   * Since the bucket index is rebuilt in place, the failed rebuild leaves it as it was instead of missing: nothing is dropped
+   * before the new content is complete.
    */
   @Test
   void rebuildFailureIsReportedAndDoesNotAbortTheCheck() {
@@ -161,12 +165,12 @@ class CheckDatabaseFixDocumentTypeTest extends TestHelper {
 
     final Collection<String> warnings = fix.getProperty("warnings");
     assertThat(warnings)
-        .as("the failure must be REPORTED, naming the index and saying it is now missing")
-        .anyMatch(w -> w.contains("myUniqueDocIdx") && w.contains("missing"));
+        .as("the failure must be REPORTED, naming the index and saying what it holds")
+        .anyMatch(w -> w.contains("myUniqueDocIdx") && w.contains("keeps its previous content"));
 
-    // The honest end state: the index really is gone. Recreating it empty would be worse - queries would silently
-    // return nothing - so the contract is that the operator is told, loudly, and recreates it.
-    assertThat(database.getSchema().existsIndex("myUniqueDocIdx")).isFalse();
+    // The index was rebuilt in place, so the failure left it as it was, constraint included, rather than missing
+    assertThat(database.getSchema().existsIndex("myUniqueDocIdx")).isTrue();
+    assertThat(((IndexInternal) database.getSchema().getIndexByName("myUniqueDocIdx")).isValid()).isTrue();
   }
 
   /**
