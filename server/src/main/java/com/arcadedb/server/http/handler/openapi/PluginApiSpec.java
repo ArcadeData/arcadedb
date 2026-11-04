@@ -992,7 +992,8 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("snapshotDownloadQueued", SpecBuilders.bool("A snapshot install is waiting to start"));
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
-        "Databases quarantined because this node's WAL diverged from the leader's"));
+        "Databases this node quarantined and does not serve until a copy from the cluster replaces them, for the cause "
+            + "'divergenceCauses' names: a WAL divergence from the leader, or a local copy found incomplete or unsafe"));
     final Schema<String> cause = SpecBuilders.string("""
         Why this database was quarantined. 'WAL_VERSION_GAP' means an intermediate transaction never reached \
         this node; 'UNDECODABLE_LOG_ENTRY' a corrupt local log segment or an entry written by a newer node, \
