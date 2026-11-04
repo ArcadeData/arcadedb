@@ -10096,18 +10096,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (ArcadeDBServer.isReservedDatabaseName(dbName))
         continue;
       final boolean incomplete;
+      final List<String> unavailableUnique;
       try {
         final ServerDatabase db = srv.getDatabase(dbName, false, false);
         incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
+        unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
             e.getMessage());
         continue;
       }
-      if (!incomplete)
-        continue;
-
-      if (quarantineAfterIncompleteRecovery(dbName))
+      if (incomplete) {
+        if (quarantineAfterIncompleteRecovery(dbName))
+          quarantined.add(dbName);
+      } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
         quarantined.add(dbName);
     }
     return quarantined;
@@ -10138,6 +10140,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.SEVERE,
         "The crash recovery of database '%s' did not complete, so its local copy may be missing committed data: "
             + "quarantining it and re-installing it from the leader (issue #11250)", dbName);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
+   * The decision for one database that opened with a unique index it could not load, for a file with no header page (issue
+   * #11258): the index enforces nothing on this node, and the load cannot tell a half-arrived compaction file from one a power
+   * loss emptied. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines the database and re-installs it from the
+   * leader, unless this node is the only voter.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterUnavailableUniqueIndex(final String dbName, final List<String> indexNames) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' opened without its unique indexes %s (no header page) and this node is the only voter, so there is "
+              + "no peer to re-install it from. It is NOT quarantined; the constraint is not enforced: run REBUILD INDEX "
+              + "(issue #11258)", null, dbName, indexNames);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.UNAVAILABLE_UNIQUE_INDEX))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
+            + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
     triggerDatabaseResync(dbName);
     handOffLeadershipIfLeader(dbName);
     return true;
