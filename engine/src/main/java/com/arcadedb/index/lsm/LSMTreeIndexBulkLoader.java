@@ -122,6 +122,12 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
   private       int                        admittedWriterParallelism = 1;
   private       int                        maxConcurrentWriters;
   private final AtomicInteger              completedWriterGroups = new AtomicInteger();
+  /**
+   * Whether the indexes this loader writes are LIVE indexes whose entries it replaces ({@link #replaceEntriesOf}) rather than
+   * empty ones it fills: each one gets its new content attached even when the stream holds no entry for it, the schema is
+   * saved at the swap and the compacted file it had before is retired, as a full compaction does.
+   */
+  private       boolean                    replacingLiveIndexes;
 
   public LSMTreeIndexBulkLoader(final DatabaseInternal database, final String indexName,
       final long configuredMemoryBudgetBytes, final Path spillDirectory, final int mergeFanIn) {
@@ -183,6 +189,21 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     });
   }
 
+  /**
+   * Makes this loader REPLACE every entry of {@code index}, a live index already serving reads and writes, with the entries
+   * {@link #add} is given for it: {@link #writeCompacted()} writes them into a new compacted file and swaps it in under the
+   * lock of the index, with an empty mutable file in front, exactly as a full compaction publishes its result. Until that swap
+   * the index keeps answering from its previous files, and a crash before it leaves them in place: the new compacted file is
+   * an orphan no mutable file claims, dropped at the next open. An index given no entry ends up empty.
+   * <p>
+   * The caller holds the commit locks of the index files and of the bucket it scans, so no transaction can write to either
+   * between the scan and the swap.
+   */
+  public void replaceEntriesOf(final LSMTreeIndex index) {
+    registerIndex(index);
+    replacingLiveIndexes = true;
+  }
+
   public BuildOutcome writeCompacted() {
     if (database.isTransactionActive())
       throw new IndexException("Sorted build for '" + indexName + "' requires no active transaction");
@@ -213,6 +234,10 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
       final long streamNanos = System.nanoTime() - streamStarted;
       finalStreamAndWriteNanos += Math.max(0L,
           streamNanos - (getMaterializedMergeNanos() - mergeNanosBeforeStream));
+      if (replacingLiveIndexes)
+        // An index the scan found no entry for is replaced too, by an empty one: whatever it held is not in the data
+        for (final LSMTreeIndex index : indexesByBucket.values())
+          getOrCreateWriter(writers, index);
       invokeBuildTestHook(BuildPhase.AFTER_ENTRY_WRITES, null, 0);
 
       final long attachmentStarted = System.nanoTime();
@@ -890,9 +915,26 @@ public final class LSMTreeIndexBulkLoader implements AutoCloseable {
     private void finishAndAttach() throws IOException, InterruptedException {
       streamWriter.finishIfActive();
       database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
-      mainIndex.splitIndex(mainIndex.getMutableIndex().getTotalPages(), compactedIndex, false);
+      if (!replacingLiveIndexes) {
+        mainIndex.splitIndex(mainIndex.getMutableIndex().getTotalPages(), compactedIndex, false);
+        compactedIndex.setEntryCount(streamWriter.getWrittenEntries());
+        attached = true;
+        return;
+      }
+
+      // A LIVE INDEX: published as a full compaction publishes its result. Nothing of the previous mutable file is carried
+      // over (the caller holds its commit lock, so the scan saw everything it holds), the schema is saved by the swap so a
+      // crash after it reopens on the new files, and the previous compacted file is retired once no cursor reads it.
+      final LSMTreeIndexCompacted previousCompacted = mainIndex.getMutableIndex().getSubIndex();
+      mainIndex.splitIndex(mainIndex.getMutableIndex().getTotalPages(), compactedIndex, true);
       compactedIndex.setEntryCount(streamWriter.getWrittenEntries());
       attached = true;
+      mainIndex.resetDeadEntriesSkippedSinceFullCompaction();
+      if (previousCompacted != null && previousCompacted != compactedIndex) {
+        database.getSchema().getEmbedded().setMigratedFileId(previousCompacted.getFileId(),
+            compactedIndex.getFileId(), false);
+        mainIndex.retireCompactedIndex(previousCompacted);
+      }
     }
 
     private void abort() {

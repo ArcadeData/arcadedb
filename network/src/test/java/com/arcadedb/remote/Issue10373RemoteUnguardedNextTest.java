@@ -49,8 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue10373RemoteUnguardedNextTest {
 
   /** The remote record layer: the HTTP driver, then the gRPC one that extends it. */
-  private static final List<Path> ROOTS = List.of(Path.of("src/main/java/com/arcadedb/remote"),
-      Path.of("..", "grpc-client", "src/main/java/com/arcadedb/remote/grpc"));
+  private static final List<Path> ROOTS = List.of(Path.of(System.getProperty("basedir", "."), "src/main/java/com/arcadedb/remote"),
+      Path.of(System.getProperty("basedir", "."), "..", "grpc-client", "src/main/java/com/arcadedb/remote/grpc"));
 
   /** How many lines before a call a check still counts as the guard of that call. */
   private static final int WINDOW = 8;

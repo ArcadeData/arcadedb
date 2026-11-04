@@ -41,6 +41,7 @@ import java.util.logging.Level;
 public class DatabaseFactory implements AutoCloseable {
   private              SecurityManager                                            security;
   private              boolean                                                    autoTransaction      = false;
+  private              boolean                                                    replicatedNode       = false;
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
@@ -128,6 +129,7 @@ public class DatabaseFactory implements AutoCloseable {
     try {
       database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
       database.setAutoTransaction(autoTransaction);
+      database.setReplicatedNode(replicatedNode);
       database.open();
 
       registerActiveInstance(database);
@@ -155,6 +157,7 @@ public class DatabaseFactory implements AutoCloseable {
     try {
       database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
       database.setAutoTransaction(autoTransaction);
+      database.setReplicatedNode(replicatedNode);
       database.create();
 
       registerActiveInstance(database);
@@ -171,6 +174,16 @@ public class DatabaseFactory implements AutoCloseable {
 
   public synchronized DatabaseFactory setAutoTransaction(final boolean enabled) {
     autoTransaction = enabled;
+    return this;
+  }
+
+  /**
+   * Opens the database as a node of an HA cluster, where the files of a replicated change can arrive before the schema entry
+   * that names them (issue #11240). Not a configuration setting on purpose: a database's own {@code configuration.json}
+   * replaces the context configuration at open, and with it whatever the opener put there.
+   */
+  public synchronized DatabaseFactory setReplicatedNode(final boolean replicatedNode) {
+    this.replicatedNode = replicatedNode;
     return this;
   }
 

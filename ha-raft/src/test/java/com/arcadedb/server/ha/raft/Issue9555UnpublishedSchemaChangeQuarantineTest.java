@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import org.apache.ratis.protocol.ClientId;
 import org.junit.jupiter.api.AfterEach;
@@ -171,18 +172,24 @@ class Issue9555UnpublishedSchemaChangeQuarantineTest {
     assertThat(new MajorityCommittedAllFailedException("committed", null, 1L)).isNotInstanceOf(NeedRetryException.class);
   }
 
-  /** Dispatched and unanswered: the entry may still commit, so the local compaction may be the committed one. */
+  /**
+   * Dispatched and unanswered: since issue #11240 the compaction waits for the log to settle the entry, and one this node
+   * still cannot tell committed from truncated when the wait ends is quarantined, because the swap it made here may be a
+   * layout no other node holds. A committed or truncated one is covered by {@code CompactionPersistedOnlyOncePublishedTest}.
+   */
   @Test
-  void aCompactionWhosePublishingEntryHasAnUnknownOutcomeIsNotQuarantined() {
-    final RaftReplicatedDatabase replicated = replicated(leader(new FakeRaftTransactionBroker().fails("replicateSchema",
-        new ReplicationDispatchedTimeoutException("Group commit timed out (entry was dispatched to Raft)"))));
+  void aCompactionWhosePublishingEntryKeepsAnUnknownOutcomeIsQuarantined() {
+    final ArcadeDBServer server = TestServerHelper.unstartedServer();
+    server.getConfiguration().setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, 50L);
+    final RaftReplicatedDatabase replicated = new RaftReplicatedDatabase(server, db, leader(new FakeRaftTransactionBroker()
+        .fails("replicateSchema", new ReplicationDispatchedTimeoutException("Group commit timed out (entry was dispatched to Raft)"))));
 
     assertThatThrownBy(() -> replicated.runWithCompactionReplication(() -> {
       db.getSchema().createDocumentType("Compacted", 1);
       return true;
     })).isInstanceOf(ReplicationDispatchedTimeoutException.class);
 
-    assertThat(stateMachine.isDatabaseDiverged(db.getName())).isFalse();
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
   }
 
   /** The DDL entry point: a schema change on a node whose session went stale is refused after it ran here. */

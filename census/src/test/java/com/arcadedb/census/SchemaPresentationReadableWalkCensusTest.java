@@ -76,7 +76,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SchemaPresentationReadableWalkCensusTest {
-  private static final Path   REACTOR_ROOT = Path.of("..");
+  private static final Path   REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
   /** The authority: every walk of every type of a schema is a call of this method. */
   private static final String AUTHORITY    = "com/arcadedb/schema/Schema";
   private static final String WALK         = "getTypes";
