@@ -394,15 +394,18 @@ public class FullTextSearch {
         scanDocumentFrequencies(bucketIndexes, shownTokens, WorkGuard.forCommandDeadline(null)));
     final FullTextIndexMetadata metadata = bucketIndexes.getFirst().getFullTextMetadata();
 
+    final boolean wholeCorpus = bucketIndexes.getFirst().isCorpusReadable();
     final JSONObject explain = new JSONObject()
         .put("similarity", FullTextIndexMetadata.SIMILARITY_BM25)
         .put("k1", metadata.getBm25K1())
         .put("b", metadata.getBm25B())
-        .put("totalDocs", context.totalDocs())
-        .put("avgDocLength", context.avgDocLength())
-        .put("bucketCount", bucketIndexes.size())
-        .put("corpusScope", "type")
-        .put("note", "statistics are type-wide; BM25 scores are comparable across all bucket indexes");
+        .put("totalDocs", context.totalDocs());
+    if (wholeCorpus)
+      explain.put("avgDocLength", context.avgDocLength());
+    explain.put("bucketCount", bucketIndexes.size())
+        .put("corpusScope", wholeCorpus ? "type" : "readable")
+        .put("note", wholeCorpus ? "statistics are type-wide; BM25 scores are comparable across all bucket indexes" :
+            "statistics cover the buckets this user may read; BM25 scores are comparable across them");
 
     if (allTokens.size() > shownTokens.size()) {
       explain.put("termsTruncated", true);
@@ -423,10 +426,15 @@ public class FullTextSearch {
     return explain;
   }
 
+  /**
+   * The bucket indexes a search walks: those of the buckets the user bound to this thread may read. Every entry point goes through
+   * here, so what a user may not read is neither matched nor counted, and a wildcard is not expanded over the terms only such a
+   * bucket holds.
+   */
   private static List<LSMTreeFullTextIndex> getBucketIndexes(final TypeIndex typeIndex) {
     final List<LSMTreeFullTextIndex> indexes = new ArrayList<>();
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
-      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex)
+      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex && ftIndex.isBucketReadable())
         indexes.add(ftIndex);
     return indexes;
   }
@@ -467,8 +475,17 @@ public class FullTextSearch {
     // otherwise be rejected by BM25ScoringContext; length normalization is meaningless for such a corpus anyway. The average
     // goes through the scorer's own rule and not a floor of 1.0: a corpus averaging less than one token per document (most of
     // them empty) normalizes by its real average here exactly as on the bucket-level path (issue #10735).
-    return new BM25ScoringContext(Math.max(1L, first.getTypeWideDocumentCount()),
+    // A user who may not read the whole corpus counts the documents of the buckets it walks, as the frequencies it is handed do. The
+    // average stays the corpus': no counter keeps the lengths of one bucket, and it says nothing of how many documents there are
+    return new BM25ScoringContext(Math.max(1L, first.isCorpusReadable() ? first.getTypeWideDocumentCount() : documentsOf(bucketIndexes)),
         BM25Scorer.lengthNormalizer(first.getTypeWideAverageDocumentLength()), documentFrequencies);
+  }
+
+  private static long documentsOf(final List<LSMTreeFullTextIndex> bucketIndexes) {
+    long documents = 0L;
+    for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
+      documents += ftIndex.getBucketDocumentCount();
+    return documents;
   }
 
   /**
