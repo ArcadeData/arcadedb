@@ -1723,7 +1723,14 @@ public class TransactionManager {
         }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
-          if (!tx.forceApply) {
+          // A single segment covering the WHOLE content region is a full image of the page: what the page held before it,
+          // the versions the gap stands for included, is overwritten byte for byte, so it bridges the gap safely (the
+          // #4510 reasoning below). It is how a writer that committed a page WITHOUT the WAL, and could not wait for that
+          // page to reach the disk, makes it durable: LSMVectorIndex.build() writes such pages again through the WAL as
+          // full images (issue #11238). Any other entry over a gap still stops the replay.
+          final boolean fullPageImage = lastSegment - firstSegment == 1 && txPage.changesFrom == BasePage.PAGE_HEADER_SIZE
+              && txPage.changesTo - txPage.changesFrom + 1 == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
+          if (!tx.forceApply && !fullPageImage) {
             LogManager.instance().log(this, Level.WARNING,
                 "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
                 null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
@@ -1743,13 +1750,10 @@ public class TransactionManager {
           // cluster (issue #4510). A full-page payload (what serializeFilePagesAsWal ships) covers the
           // entire content region, so it is safe regardless of the gap; a partial one is rejected here
           // so the follower recovers via a full snapshot instead.
-          final int deltaSize = txPage.changesTo - txPage.changesFrom + 1;
           // A multi-segment page is by definition a partial delta (the gaps between its intervals were not shipped),
           // so it never qualifies: forceApply entries are built page-at-a-time by the compaction serializer and
           // always carry exactly one full-page segment.
-          final boolean fullPage = lastSegment - firstSegment == 1
-              && txPage.changesFrom == BasePage.PAGE_HEADER_SIZE && deltaSize == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
-          if (!fullPage) {
+          if (!fullPageImage) {
             LogManager.instance().log(this, Level.SEVERE,
                 "Refusing forceApply of partial delta for page %s over a stale baseline (WAL v.%d, db v.%d) fileId=%d: bytes outside the delta range would stay stale while the version is forced forward. A full-page snapshot is required.",
                 null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
@@ -1760,6 +1764,12 @@ public class TransactionManager {
                     + txPage.currentPageVersion + ", db v." + page.getVersion()
                     + "): a full page is required to safely bypass the version gap, fileId=" + txPage.fileId);
           }
+          if (!tx.forceApply)
+            // EXPECTED AFTER A WAL-LESS WRITER SEALED ITS PAGES (#11238), BUT LOGGED: A WRITER SHIPPING A FULL IMAGE WITH A WRONG
+            // VERSION WOULD OTHERWISE BE ACCEPTED WITHOUT A TRACE
+            LogManager.instance().log(this, Level.INFO,
+                "Bridging the version gap of page %s with a full page image (WAL v.%d, db v.%d) fileId=%d txId=%d", null,
+                pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId, tx.txId);
         }
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,

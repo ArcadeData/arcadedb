@@ -114,6 +114,7 @@ import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.http.handler.LeaderDial;
+import com.arcadedb.utility.CallableNoReturn;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
@@ -194,6 +195,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // install the rewritten sealed files atomically with the buffered mutable-bucket clear WAL.
   private static final ThreadLocal<List<RaftLogEntryCodec.TsSealedBlob>> compactionSealedBuffer =
       ThreadLocal.withInitial(ArrayList::new);
+  /**
+   * What the compaction running on this thread persists of its swap - the schema save, the drops of the files it replaced -
+   * held back until the entry publishing it is accepted (issue #11240). Non-null only inside
+   * {@link #runWithCompactionReplication}; per database, unlike the buffers above, because the deferral is asked through
+   * the database the compaction runs on.
+   */
+  private final ThreadLocal<List<CallableNoReturn>> compactionPersistence = new ThreadLocal<>();
   /**
    * Non-null only while a {@code recordFileChanges} session on THIS thread is shipping its buffered WAL in
    * instalments (issue #6136). Thread-local for the same reason the buffers are, and null everywhere else - notably
@@ -4041,6 +4049,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // to already-existing files can be shipped afterwards (see the loop below).
       final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
 
+      // Issue #11240: what the compaction persists of its swap waits for the entry publishing it (see
+      // runOnceCompactionIsPublished), so a leader that crashes before, or loses the entry to a leadership change, still holds
+      // the layout every other node holds
+      final List<CallableNoReturn> persistence = new ArrayList<>();
+      compactionPersistence.set(persistence);
+
       final boolean result;
       try {
         result = invokeCompaction(compaction);
@@ -4051,7 +4065,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
       }
-      if (!result)
+      // A compaction that swapped something and still answered false publishes what it swapped all the same
+      if (!result && persistence.isEmpty())
         return false;
 
       // Issue #9555 / #9558: from here on the compaction has ALREADY run on this node - the file id is allocated, the
@@ -4062,15 +4077,58 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // (ReplicationDispatchedTimeoutException) passes through: its entry may still commit, and then this node's layout
       // is the committed one. Why every NeedRetryException the broker raises is definite is listed on
       // SchemaInstalmentState.refusal.
+      //
+      // Issue #11240: an indeterminate failure of the PUBLISHING entry is no longer let through as if the layout were the
+      // committed one. Its entry is either committed or truncated by a leadership change, and the Raft log tells which: the
+      // state machine applies it, or applies an entry of a later term first. The wait below holds the session, so no other
+      // change on this database can persist the swapped layout while the answer is pending. Committed, the swap is persisted
+      // like a published one; truncated, or still unknown when the wait ends, this node holds a layout no other node has and
+      // is quarantined. An indeterminate failure of anything shipped BEFORE the publishing entry (a sealed-store slice)
+      // means that entry was never sent at all: unpublished, like a definite failure.
       final boolean[] published = { false };
+      final boolean[] dispatched = { false };
+      // Set when what the entry publishes could not be persisted here: the publication is then handed to the held entries, so
+      // the state machine keeps the entry replayable for the restart (see ArcadeStateMachine.holdUnpersistedPublication)
+      final boolean[] unpersisted = { false };
+      final ArcadeStateMachine stateMachine = stateMachineOrNull();
+      final ArcadeStateMachine.PendingPublication pending =
+          stateMachine != null ? stateMachine.expectPublication(getName(), sessionTerm) : null;
       try {
-        return publishCompaction(result, pageCountsBefore, published);
+        final boolean outcome = publishCompaction(result, pageCountsBefore, published, dispatched, pending);
+        unpersisted[0] = !persistPublishedCompaction(persistence);
+        return outcome;
       } catch (final Throwable t) {
-        if (!published[0] && !isIndeterminatePublishFailure(t))
+        if (published[0] || dispatched[0] && isCommittedPublishFailure(t))
+          // In the log: only what came after the publication failed
+          unpersisted[0] = !persistPublishedCompaction(persistence);
+        else if (dispatched[0] && isIndeterminatePublishFailure(t)) {
+          final Boolean committed = awaitPublicationOutcome(pending);
+          if (Boolean.TRUE.equals(committed)) {
+            LogManager.instance().log(this, Level.WARNING,
+                "The compaction on database '%s' timed out on its way to the log, and the log then committed it: the swap is "
+                    + "persisted (issue #11240)", getName());
+            unpersisted[0] = !persistPublishedCompaction(persistence);
+            if (stateMachine != null)
+              stateMachine.clearCompactionHoldOff(getName());
+            return result;
+          }
+          quarantineUnpublishedChange("compaction", new ReplicationException(committed == null ?
+              "the entry publishing the compaction timed out and its outcome was still unknown when the wait for it ended" :
+              "the entry publishing the compaction timed out and was then truncated by a leadership change (issue #11240)", t),
+              true);
+        } else
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
+      } finally {
+        if (pending != null) {
+          if (unpersisted[0])
+            stateMachine.holdUnpersistedPublication(pending);
+          else
+            stateMachine.forgetPublication(pending);
+        }
       }
     } finally {
+      compactionPersistence.remove();
       // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
       // thread and defers (returns false above) whenever a session is already open, so it never nests
       // inside another session whose mark it could clear.
@@ -4092,13 +4150,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * slices of any sealed store too big for it. Split from {@link #runWithCompactionReplication} so everything that can
    * fail after the compaction ran is in one place for its caller to classify (issue #9558).
    *
-   * @param published set to {@code true} the moment the publishing entry is accepted, so a failure after it - of the
-   *                  bookkeeping or of a diagnostic - is not mistaken for an unpublished change
+   * @param published  set to {@code true} the moment the publishing entry is accepted, so a failure after it - of the
+   *                   bookkeeping or of a diagnostic - is not mistaken for an unpublished change
+   * @param dispatched set to {@code true} right before the publishing entry is handed to the broker, so a failure whose
+   *                   outcome is unknown can be told from one of an entry shipped before it (issue #11240)
+   * @param pending   the publication the state machine settles for a proposer whose wait timed out, told the document the
+   *                   entry carries; null without a state machine
    *
    * @return {@code result}, once the change is published or there was nothing to publish
    */
   private boolean publishCompaction(final boolean result, final Map<Integer, Integer> pageCountsBefore,
-      final boolean[] published) throws IOException {
+      final boolean[] published, final boolean[] dispatched, final ArcadeStateMachine.PendingPublication pending)
+      throws IOException {
     final Map<Integer, String> addFiles = new HashMap<>();
     final Map<Integer, String> removeFiles = new HashMap<>();
     final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
@@ -4200,6 +4263,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     sealedChunksShipped.addAndGet(sealedSlicesShipped);
 
+    if (pending != null)
+      pending.identify(serializedSchema);
+    dispatched[0] = true;
     broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
         sealedBlobs, finalSealedChunks);
     // Published: nothing below may send the caller into a quarantine for a change every node now holds.
@@ -4224,6 +4290,69 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       logSchemaPayloadDiagnostics("compaction", serializedSchema, addFiles, removeFiles);
 
     return result;
+  }
+
+  @Override
+  public void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    final List<CallableNoReturn> persistence = compactionPersistence.get();
+    if (persistence == null) {
+      proxied.runOnceCompactionIsPublished(droppedFileId, action);
+      return;
+    }
+    // The entry announces the drop now, the file goes once the entry is accepted (issue #11240)
+    if (droppedFileId > -1)
+      proxied.getFileManager().recordDeferredDrop(droppedFileId);
+    persistence.add(action);
+  }
+
+  /**
+   * Runs, in order, what a compaction whose entry the log holds deferred of its swap (issue #11240). The first failure ends
+   * the run: the schema save comes first, and the drops after it must not remove files the schema on disk still names. The
+   * change is the committed one and this node already serves it from memory; what it did not persist comes back from the
+   * entry the next restart replays, which the caller keeps replayable for it.
+   *
+   * @return {@code true} when every step succeeded
+   */
+  private boolean persistPublishedCompaction(final List<CallableNoReturn> persistence) {
+    try {
+      for (final CallableNoReturn action : persistence)
+        action.call();
+      return true;
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error on persisting the published compaction of database '%s': the files it replaced stay, the log keeps the entry "
+              + "replayable and the next restart replays it (issue #11240)", e, getName());
+      return false;
+    } finally {
+      persistence.clear();
+    }
+  }
+
+  /**
+   * Waits for the Raft log to settle the entry of a compaction whose publication timed out (issue #11240), at most the
+   * quorum timeout the publication already waited.
+   *
+   * @return {@code TRUE} when the log committed it, {@code FALSE} when it was truncated, {@code null} when this node could
+   * not tell in time (or has no state machine to ask)
+   */
+  private Boolean awaitPublicationOutcome(final ArcadeStateMachine.PendingPublication pending) {
+    if (pending == null)
+      return null;
+    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    try {
+      return pending.awaitOutcome(timeout);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return null;
+    }
+  }
+
+  /**
+   * Whether {@code failure} reports an entry the log committed although the publication failed afterwards
+   * ({@link MajorityCommittedAllFailedException}): the change is published (issue #11240).
+   */
+  static boolean isCommittedPublishFailure(final Throwable failure) {
+    return causeChainContains(failure, MajorityCommittedAllFailedException.class);
   }
 
   private static boolean invokeCompaction(final Callable<Boolean> compaction) throws IOException, InterruptedException {

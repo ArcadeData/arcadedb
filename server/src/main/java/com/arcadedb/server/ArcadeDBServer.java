@@ -1793,7 +1793,7 @@ public class ArcadeDBServer {
             + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory. Snapshot recovery must "
             + "reconcile it first", Reason.RECOVERING);
 
-      final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true);
+      final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true).setReplicatedNode(isHARequested());
 
       factory.setSecurity(getDatabaseSecurityManager());
 
@@ -2613,7 +2613,7 @@ public class ArcadeDBServer {
               + "the leader while opening a copy the last HA resync could not verify, and has not compared it with the "
               + "other servers' copies yet. Retry the request", Reason.RECOVERING);
 
-        final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
+        final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true).setReplicatedNode(isHARequested());
 
         factory.setSecurity(getDatabaseSecurityManager());
 

@@ -19,6 +19,7 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.IndexReplayConclusion;
 
 import java.util.Arrays;
@@ -64,6 +65,13 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
   private static final int INITIAL_CAPACITY = 16;
 
   private final PaginatedSparseVectorEngine engine;
+  private final TransactionContext          tx;
+  /**
+   * Where the commit logs its postings, so they are durable with its records (issue #11239), or null when it does not log
+   * them (see {@link PaginatedSparseVectorEngine#openPostingLogAppender}). Opened on the first posting, inside the replay.
+   */
+  private SparsePostingLog.Appender appender;
+  private boolean                   appenderResolved;
 
   // Parallel primitive arrays rather than a list of tuples: one bulk-load transaction defers one entry per non-zero
   // dimension of every record it writes, which on a learned-sparse corpus is hundreds per record, and this has to
@@ -87,8 +95,9 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
    */
   private boolean concluded;
 
-  SparseVectorReplayBuffer(final PaginatedSparseVectorEngine engine) {
+  SparseVectorReplayBuffer(final PaginatedSparseVectorEngine engine, final TransactionContext tx) {
     this.engine = engine;
+    this.tx = tx;
   }
 
   /**
@@ -113,6 +122,15 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
     rids[size] = rid;
     weights[size] = isRemove ? Float.NaN : weight;
     ++size;
+
+    // Appended to the pages of THIS transaction: a rollback takes the entry back with the rest, a commit writes it to the WAL
+    // with the records. Only in the 1st phase, the one whose pages the WAL still has to write
+    if (!appenderResolved) {
+      appenderResolved = true;
+      appender = engine.openPostingLogAppender(tx);
+    }
+    if (appender != null && tx.getStatus() == TransactionContext.STATUS.COMMIT_1ST_PHASE)
+      appender.append(dim, rid, weights[size - 1]);
   }
 
   /**
@@ -127,11 +145,7 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
       return;
     concluded = true;
 
-    for (int i = 0; i < size; i++)
-      if (Float.isNaN(weights[i]))
-        engine.remove(dims[i], rids[i]);
-      else
-        engine.put(dims[i], rids[i], weights[i]);
+    engine.applyCommitted(dims, rids, weights, size, appender, tx.getRequester());
 
     release();
   }
@@ -157,5 +171,6 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
     rids = null;
     weights = null;
     size = 0;
+    appender = null;
   }
 }
