@@ -264,9 +264,34 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private volatile OkCallback    onOkCallback;
   private volatile ErrorCallback onErrorCallback;
   private final    AtomicLong    counterScheduledTasks = new AtomicLong();
-  // #11155: tasks and commands scheduled by one of this executor's OWN workers - the cascades waitCompletion() has to go
-  // around again for. Only ever compared with an earlier reading of itself, and written from the workers alone, so an adder
-  private final    LongAdder     counterTasksScheduledByWorkers = new LongAdder();
+  // #11201: moved by every waitCompletion() call as it begins, and stamped on every task a thread that is not a worker schedules
+  // (DatabaseAsyncTask.getRootEpoch()). A task whose root epoch is below a wait's own was submitted before that wait began, and
+  // so were the cascades it starts, which inherit it.
+  private final    AtomicLong    waitEpoch             = new AtomicLong();
+  // #11201: the waitCompletion() calls in progress, each counting the cascades it owes its caller. Replaced, never mutated, under
+  // pendingWaitsLock; read lock-free by the workers on every cascade, so the common case (no wait in progress) is one volatile
+  // read of an empty array.
+  private volatile PendingWait[] pendingWaits          = NO_PENDING_WAITS;
+  private final    Object        pendingWaitsLock      = new Object();
+
+  private static final PendingWait[] NO_PENDING_WAITS = new PendingWait[0];
+
+  // #11201: the root epoch of the dispatched command running on the current thread (on AsyncCommandPool, or on its submitter
+  // when the pool runs it there), so the tasks it schedules descend from the command rather than starting a root of their own
+  private static final ThreadLocal<RunningCommand> RUNNING_COMMAND = new ThreadLocal<>();
+
+  /** One {@link #waitCompletion(long)} in progress: its epoch, and the cascades scheduled since it began that it owes its caller. */
+  private static final class PendingWait {
+    final long      epoch;
+    final LongAdder cascades = new LongAdder();
+
+    PendingWait(final long epoch) {
+      this.epoch = epoch;
+    }
+  }
+
+  private record RunningCommand(DatabaseAsyncExecutorImpl owner, long rootEpoch) {
+  }
 
   public class AsyncThread extends Thread {
     public final    BlockingQueue<DatabaseAsyncTask> queue;
@@ -335,6 +360,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     private          TransactionContext         taskBatchTx              = null;
     /** #7667: {@link #taskBatchTx}'s commit count at the moment it was handed to the running task. */
     private          long                       taskBatchTxCommitCount   = 0;
+    /**
+     * #11201: the root epoch of the task this worker is working for, inherited by every task it schedules meanwhile (a cascade):
+     * the task it is executing, from its {@code execute()} to its {@code completed()}, or the buffered task it is replaying or
+     * telling about an abandoned batch. The executor-wide callbacks are no task's and run under the current wait epoch instead
+     * (see {@link #onOk()}). 0 outside all of that, which reads as predating every wait. Thread-confined.
+     */
+    private          long                       currentRootEpoch         = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
     // that commits, rolls back, or otherwise closes the shared batch transaction goes through here instead
@@ -508,13 +540,27 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     /**
+     * Runs a task on behalf of the submission it descends from (#11201): all it schedules until it has been told it completed
+     * inherits its root epoch, {@code completed()} included.
+     */
+    private void executeTask(final DatabaseAsyncTask message) {
+      final long previousRootEpoch = currentRootEpoch;
+      currentRootEpoch = message.getRootEpoch();
+      try {
+        runTask(message);
+      } finally {
+        currentRootEpoch = previousRootEpoch;
+      }
+    }
+
+    /**
      * Executes a single task applying the shared transaction-batching contract (begin on demand,
      * commit every {@code commitEvery} tasks, rollback + onError on failure, always notify
      * {@code completed()}). Called from the run loop only: the help-while-waiting path of #4953
      * defers polled tasks back to the run loop instead of nesting executions, so that no
      * transaction boundary can fall inside a suspended task's execution (#5062 review, point 1).
      */
-    private void executeTask(final DatabaseAsyncTask message) {
+    private void runTask(final DatabaseAsyncTask message) {
       final boolean nested = executingTask.getAndSet(true);
       try {
         LogManager.instance()
@@ -734,15 +780,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // replay re-executes the whole batch, so running it back to back raced the workers that had just caused
             // the conflict on the same tail page and could burn every retry in a row.
             delayBeforeReplay(attempt - 1, configuration);
+            // #11201: a replayed command's cascades descend from that command, not from the task whose boundary this is
+            final long previousRootEpoch = currentRootEpoch;
             replayingBatch = true;
             try {
               database.begin();
               database.getTransaction().setUseWAL(currentUseWAL);
               database.getTransaction().setWALFlush(currentSync);
-              for (final DatabaseAsyncCommand command : pendingBatchCommands)
+              for (final DatabaseAsyncCommand command : pendingBatchCommands) {
+                currentRootEpoch = command.getRootEpoch();
                 command.execute(this, database);
+              }
             } finally {
               replayingBatch = false;
+              currentRootEpoch = previousRootEpoch;
             }
           }
 
@@ -844,19 +895,28 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final List<DatabaseAsyncCommand> abandonedCommands = new ArrayList<>(pendingBatchCommands);
       final List<DatabaseAsyncTask>    abandonedTasks    = new ArrayList<>(pendingUnreplayableTasks);
       clearBatchState();
-      for (final DatabaseAsyncCommand command : abandonedCommands)
-        command.notifyError(cause);
-      for (final DatabaseAsyncTask task : abandonedTasks) {
-        try {
-          task.notifyBatchAbandoned(cause);
-        } catch (final Throwable notifyError) {
-          // #7615 (code review): every current override of notifyBatchAbandoned() already swallows its
-          // own callback's failure, same as DatabaseAsyncCommand#notifyError - wrapped here too, at this
-          // single choke point, so that guarantee does not depend on every future override remembering it.
-          // Left uncaught, this would both abort the loop (skipping notification for the rest of the
-          // batch) and replace the real conflict propagating out of commitBatch() with this one instead.
-          LogManager.instance().log(this, Level.WARNING, "Error on invoking notifyBatchAbandoned() of %s", notifyError, task);
+      // #11201: what a submitter's callback schedules here (a resubmission, typically) descends from the task it is told about
+      final long previousRootEpoch = currentRootEpoch;
+      try {
+        for (final DatabaseAsyncCommand command : abandonedCommands) {
+          currentRootEpoch = command.getRootEpoch();
+          command.notifyError(cause);
         }
+        for (final DatabaseAsyncTask task : abandonedTasks) {
+          currentRootEpoch = task.getRootEpoch();
+          try {
+            task.notifyBatchAbandoned(cause);
+          } catch (final Throwable notifyError) {
+            // #7615 (code review): every current override of notifyBatchAbandoned() already swallows its
+            // own callback's failure, same as DatabaseAsyncCommand#notifyError - wrapped here too, at this
+            // single choke point, so that guarantee does not depend on every future override remembering it.
+            // Left uncaught, this would both abort the loop (skipping notification for the rest of the
+            // batch) and replace the real conflict propagating out of commitBatch() with this one instead.
+            LogManager.instance().log(this, Level.WARNING, "Error on invoking notifyBatchAbandoned() of %s", notifyError, task);
+          }
+        }
+      } finally {
+        currentRootEpoch = previousRootEpoch;
       }
     }
 
@@ -1011,12 +1071,21 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // task's journey, that is the only thing left standing between it and being lost. Neither side is
         // sufficient alone; whichever one actually dequeues the task is the one responsible for its fate.
         boolean rescheduled = false;
-        for (int attempt = 0; !rescheduled && attempt < 3 && executorThreads != null; attempt++) {
-          try {
-            rescheduled = getOwner().scheduleTask(-1, leftover, true, 0);
-          } catch (final Throwable e) {
-            // Stalled, not necessarily closed - loop around for another attempt, or fall through below.
+        // #11201: a hand-over, not a new task, so it keeps the root epoch it was submitted with (scheduleTask stamps what
+        // this worker reads as running). Counted as a cascade, which makes a wait that owes it go around for it once more:
+        // it may have moved behind that wait's marker on the worker it lands on.
+        final long previousRootEpoch = currentRootEpoch;
+        currentRootEpoch = leftover.getRootEpoch();
+        try {
+          for (int attempt = 0; !rescheduled && attempt < 3 && executorThreads != null; attempt++) {
+            try {
+              rescheduled = getOwner().scheduleTask(-1, leftover, true, 0);
+            } catch (final Throwable e) {
+              // Stalled, not necessarily closed - loop around for another attempt, or fall through below.
+            }
           }
+        } finally {
+          currentRootEpoch = previousRootEpoch;
         }
         if (rescheduled)
           continue;
@@ -1045,11 +1114,29 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     public void onError(final Throwable e) {
-      DatabaseAsyncExecutorImpl.this.onError(e);
+      final long previousRootEpoch = currentRootEpoch;
+      currentRootEpoch = waitEpoch.get();
+      try {
+        DatabaseAsyncExecutorImpl.this.onError(e);
+      } finally {
+        currentRootEpoch = previousRootEpoch;
+      }
     }
 
+    /**
+     * #11201: the executor-wide callbacks answer for a whole batch, or for nothing at all (every marker fires this one), so what
+     * they schedule descends from no submission: it is a root of its own, like a task from a thread that is not a worker. Were
+     * it anybody's cascade, a callback that schedules would keep a wait going by itself, every pass firing the callback whose
+     * task asks for the next pass.
+     */
     public void onOk() {
-      DatabaseAsyncExecutorImpl.this.onOk();
+      final long previousRootEpoch = currentRootEpoch;
+      currentRootEpoch = waitEpoch.get();
+      try {
+        DatabaseAsyncExecutorImpl.this.onOk();
+      } finally {
+        currentRootEpoch = previousRootEpoch;
+      }
     }
 
     public boolean isExecutingTask() {
@@ -1286,16 +1373,92 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // database.async() on a machine with 3 workers - then made every pass end with "still processing", for ever: a
     // GraphBatch parallel flush, which waits here for its own connect tasks, hung for 20+ minutes on a 4-CPU runner,
     // every pass completing behind ~1000 unrelated tasks per worker. A cascade is the one thing a pass can miss, and a
-    // cascade is scheduled by a worker: one that a task queued before a marker schedules lands in the counter before
-    // that marker fires, so an unchanged counter across a pass proves nothing was left behind its markers.
-    long scheduledByWorkers;
-    do {
-      scheduledByWorkers = counterTasksScheduledByWorkers.sum();
-      if (!waitCompletionOnePass(beginTime, timeout))
-        return false;
-    } while (counterTasksScheduledByWorkers.sum() != scheduledByWorkers);
+    // cascade is scheduled by a worker: one that a task queued before a marker schedules is counted before that marker
+    // fires, so an unchanged count across a pass proves nothing was left behind its markers.
+    //
+    // ONLY THE CASCADES OF THIS CALL'S OWN WORK (issue #11201). The count used to be one per executor, so the cascades of
+    // tasks another thread submitted after this call began moved it too: a second thread whose tasks schedule more tasks kept
+    // it moving for ever and this method never returned, with the caller's own work finished after the first pass. Every
+    // task now carries the wait epoch of the submission it descends from (DatabaseAsyncTask.getRootEpoch(): a task scheduled
+    // by a worker inherits the one of the task that worker is running), and this call counts only the cascades whose root
+    // epoch is below its own, i.e. that descend from work submitted before it began. That set is finite whenever what the
+    // caller submitted cascades finitely, whatever anybody else submits meanwhile, so the loop ends after a bounded number of
+    // passes. A task that does not store its root epoch reads 0 and is counted by every wait, as every cascade was before. A
+    // task scheduled by an executor-wide callback is a root of its own (see AsyncThread.onOk()).
+    final PendingWait wait = registerWait();
+    try {
+      long cascades;
+      do {
+        cascades = wait.cascades.sum();
+        if (!waitCompletionOnePass(beginTime, timeout))
+          return false;
+      } while (wait.cascades.sum() != cascades);
 
-    return true;
+      return true;
+    } finally {
+      unregisterWait(wait);
+    }
+  }
+
+  /**
+   * Opens a new wait epoch and publishes the wait that owns it, both under the lock, so the epochs of the pending waits grow
+   * with their position in {@link #pendingWaits}. A cascade that read the array before the publication had already reached
+   * its queue, hence lands in front of every marker this wait offers: missing it in the count costs nothing.
+   */
+  private PendingWait registerWait() {
+    synchronized (pendingWaitsLock) {
+      final PendingWait wait = new PendingWait(waitEpoch.incrementAndGet());
+      final PendingWait[] current = pendingWaits;
+      final PendingWait[] updated = Arrays.copyOf(current, current.length + 1);
+      updated[current.length] = wait;
+      pendingWaits = updated;
+      return wait;
+    }
+  }
+
+  private void unregisterWait(final PendingWait wait) {
+    synchronized (pendingWaitsLock) {
+      final PendingWait[] current = pendingWaits;
+      if (current.length == 1 && current[0] == wait) {
+        pendingWaits = NO_PENDING_WAITS;
+        return;
+      }
+      final PendingWait[] updated = new PendingWait[current.length - 1];
+      int j = 0;
+      for (final PendingWait w : current)
+        if (w != wait)
+          updated[j++] = w;
+      pendingWaits = updated;
+    }
+  }
+
+  /**
+   * The root epoch a task scheduled by the current thread descends from (issue #11201): the one of the task a worker of this
+   * executor is running, the one of the dispatched command the thread is running, or else the current wait epoch, which makes
+   * the task a root of its own that every wait already in progress owes its caller.
+   */
+  private long rootEpochOfCurrentThread() {
+    if (Thread.currentThread() instanceof final AsyncThread worker && worker.getOwner() == this)
+      return worker.currentRootEpoch;
+    final RunningCommand command = RUNNING_COMMAND.get();
+    if (command != null && command.owner() == this)
+      return command.rootEpoch();
+    return waitEpoch.get();
+  }
+
+  private boolean isCurrentThreadRunningOneOfMyCommands() {
+    final RunningCommand command = RUNNING_COMMAND.get();
+    return command != null && command.owner() == this;
+  }
+
+  /**
+   * Called by a worker of this executor once a task it scheduled reached a queue (a cascade): counted by every pending wait
+   * the task's root epoch predates, which is every wait that owes it to its caller.
+   */
+  private void countCascade(final long rootEpoch) {
+    for (final PendingWait wait : pendingWaits)
+      if (rootEpoch < wait.epoch)
+        wait.cascades.increment();
   }
 
   /**
@@ -1521,6 +1684,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       throw new DatabaseOperationException(
           "Async executor has been shut down; cannot schedule asynchronous task " + task);
 
+    task.setRootEpoch(rootEpochOfCurrentThread());
+
     // In the set BEFORE the count, so a barrier that sees the command counted also finds its sequence
     final long sequence = commandSequence.incrementAndGet();
     commandsInFlightSequences.add(sequence);
@@ -1528,9 +1693,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // Counted at SUBMISSION, as scheduleTask counts a task the moment it reaches a queue, so the stat keeps meaning
     // "how many were accepted" rather than "how many have finished".
     counterScheduledTasks.incrementAndGet();
-    if (isCurrentThreadOneOfMyWorkers())
-      // A CASCADE, as in scheduleTask: the next pass of waitCompletion() awaits it in awaitCommands (#11155)
-      counterTasksScheduledByWorkers.increment();
+    if (isCurrentThreadOneOfMyWorkers() || isCurrentThreadRunningOneOfMyCommands())
+      // A CASCADE, as in scheduleTask: the next pass of waitCompletion() awaits it in awaitCommands (#11155), when it
+      // descends from that wait's own work (#11201). From a command too, unlike a task it schedules: that one reaches a queue
+      // while awaitCommands holds the pass, in front of its markers, but this one is past the sequence awaitCommands snapshotted
+      countCascade(task.getRootEpoch());
 
     boolean handedOver = false;
     try {
@@ -1631,7 +1798,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           }
 
           // No AsyncThread to hand it: the task never used it, and error reporting is this method's job now.
-          task.execute(null, database);
+          // #11201: what the command schedules descends from the command's own submission. Restored, not removed: on the
+          // caller-runs path this thread may already be running a command of its own.
+          final RunningCommand previousCommand = RUNNING_COMMAND.get();
+          RUNNING_COMMAND.set(new RunningCommand(this, task.getRootEpoch()));
+          try {
+            task.execute(null, database);
+          } finally {
+            if (previousCommand != null)
+              RUNNING_COMMAND.set(previousCommand);
+            else
+              RUNNING_COMMAND.remove();
+          }
 
           if (ownTransaction && database.isTransactionActive())
             database.commit();
@@ -1738,7 +1916,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * <p>
    * Only the commands submitted up to the moment it starts (issue #11155): waiting for none to be in flight never ended
    * while another thread kept submitting commands. A command a worker schedules during the pass moves
-   * {@code counterTasksScheduledByWorkers}, so the next pass's snapshot covers it.
+   * the cascade count of every wait it descends from the work of (#11201), so that wait's next pass covers it.
    *
    * @return false when the budget ran out first, matching {@link #waitCompletion(long)}'s own contract.
    */
@@ -2574,6 +2752,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   public boolean scheduleTask(final int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
                               final int applyBackPressureOnPercentage) {
+    // #11201: BEFORE the task can reach a queue, where a worker may poll it at once
+    task.setRootEpoch(rootEpochOfCurrentThread());
     return scheduleTask(slot, task, waitIfQueueIsFull, applyBackPressureOnPercentage, 0);
   }
 
@@ -2664,8 +2844,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         }
         counterScheduledTasks.incrementAndGet();
         if (isCurrentThreadOneOfMyWorkers())
-          // A CASCADE: waitCompletion() has to go around again for it (#11155)
-          counterTasksScheduledByWorkers.increment();
+          // A CASCADE: waitCompletion() has to go around again for it (#11155), when it descends from that wait's own work
+          // (#11201)
+          countCascade(task.getRootEpoch());
       }
       return scheduled;
 

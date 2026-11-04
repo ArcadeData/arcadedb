@@ -25,7 +25,7 @@ import com.arcadedb.database.Identifiable;
 import java.util.Iterator;
 import java.util.concurrent.CountDownLatch;
 
-public class DatabaseAsyncBrowseIterator implements DatabaseAsyncTask {
+public class DatabaseAsyncBrowseIterator extends DatabaseAsyncAbstractTask {
   public final CountDownLatch                   semaphore;
   public final DocumentCallback                 callback;
   public final Iterator<? extends Identifiable> iterator;

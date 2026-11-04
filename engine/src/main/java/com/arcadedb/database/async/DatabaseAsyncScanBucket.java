@@ -30,7 +30,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
-public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
+public class DatabaseAsyncScanBucket extends DatabaseAsyncAbstractTask {
   public final CountDownLatch             semaphore;
   public final DocumentCallback           userCallback;
   public final ErrorRecordCallback        errorRecordCallback;

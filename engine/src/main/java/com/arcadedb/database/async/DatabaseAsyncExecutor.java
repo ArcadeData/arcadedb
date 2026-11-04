@@ -43,10 +43,14 @@ public interface DatabaseAsyncExecutor {
   /**
    * Waits for the completion of all the pending tasks: the ones submitted before this call, and the ones those tasks
    * schedule in turn. Tasks other threads submit while it waits are not guaranteed to be waited for, so a steady producer
-   * cannot keep it from returning.
+   * cannot keep it from returning, and neither can the tasks that producer's tasks schedule: this call returns after a bounded
+   * number of passes whenever the tasks it answers for are a finite set, whatever any other thread submits meanwhile.
    * <p>
-   * When no other thread submits work, the executor is idle by the time this returns: {@link #isProcessing()} asked right
-   * after it answers {@code false}.
+   * A task scheduled from the callbacks of {@link #onOk(OkCallback)} and {@link #onError(ErrorCallback)} counts as submitted by
+   * another thread: those callbacks answer for a whole batch, not for one task.
+   * <p>
+   * When no other thread and no executor-wide callback submits work, the executor is idle by the time this returns:
+   * {@link #isProcessing()} asked right after it answers {@code false}.
    */
   void waitCompletion();
 
@@ -521,6 +525,8 @@ public interface DatabaseAsyncExecutor {
    * from {@link #waitCompletion()}. The registered {@link OkCallback} must be thread-safe, and is invoked
    * synchronously on the committing worker's own thread at every one of those boundaries - a slow or blocking
    * callback directly throttles that worker's batch throughput, so keep it cheap.
+   * <p>
+   * A task this callback schedules is not waited for by a {@link #waitCompletion()} already in progress, see there.
    *
    * @param callback Callback invoked every time this executor's shared batch transaction commits; must be
    *                 thread-safe and cheap, since it runs synchronously on the committing worker's thread
@@ -528,7 +534,8 @@ public interface DatabaseAsyncExecutor {
   void onOk(OkCallback callback);
 
   /**
-   * Defines a global callback to handle all the errors from asynchronous operations.
+   * Defines a global callback to handle all the errors from asynchronous operations. A task this callback schedules is not
+   * waited for by a {@link #waitCompletion()} already in progress, see there.
    *
    * @param callback Callback invoked when an asynchronous operation fails
    */

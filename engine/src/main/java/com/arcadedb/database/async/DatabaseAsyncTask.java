@@ -39,6 +39,24 @@ public interface DatabaseAsyncTask {
   }
 
   /**
+   * The wait epoch of the submission this task descends from (issue #11201): the value of the executor's wait epoch when a
+   * thread that is not one of its workers scheduled it, or, for a task a worker scheduled while running another (a cascade),
+   * the root epoch of that other task. {@link DatabaseAsyncExecutor#waitCompletion(long)} goes around again only for a cascade
+   * whose root epoch is below its own, i.e. one that descends from work submitted before it began.
+   * <p>
+   * The default, 0, is below every wait's epoch: a task that does not store the value (see {@link DatabaseAsyncAbstractTask})
+   * counts as everybody's, which is what every cascade counted as before #11201.
+   */
+  default long getRootEpoch() {
+    return 0L;
+  }
+
+  /** Stamped by the executor when the task is scheduled; see {@link #getRootEpoch()}. The default stores nothing. */
+  default void setRootEpoch(final long rootEpoch) {
+    // DEFAULT IMPLEMENTATION: nothing stored, the task reads as predating every wait
+  }
+
+  /**
    * Whether this task's write, if it has one, lands in the worker's shared batch transaction that
    * {@code AsyncThread#commitBatch} tracks and can replay after a rolled-back periodic-boundary commit
    * (issue #7615 review). {@code requiresActiveTx()} answers a different question - whether this task
