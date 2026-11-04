@@ -237,7 +237,26 @@ more is lost at fewer subspaces. Raise `rerank`
 (or `rerankOversample` on the index) and `efSearch` to close the gap; `INT8` is the quantization to pick when the exact walk is
 what matters.
 
+### HA: an index compaction whose publication has an unknown outcome quarantines the leader (#11240)
+
+The leader of an HA cluster now keeps its old index files and schema untouched until the cluster has accepted an index
+compaction, and only then saves the swap and drops the replaced files. When the publication times out, the leader waits up to
+the quorum timeout for the Raft log to settle it: applied, the swap is saved; lost to a leadership change, or still unknown when
+the wait ends, the database is quarantined on that node and resynced from a peer. It used to be left alone, and the old leader's
+index could silently miss entries the next leader wrote.
+
+**Who sees a different behaviour.** An HA cluster whose compaction publication times out (a slow or partitioned quorum): the node
+reports the database as resyncing (`503` on `/api/v1/ready`, the `local-resync-in-progress` alert) until the resync completes.
+
 ## Fixes
+
+- **#11238** A process killed right after `CREATE INDEX` or `REBUILD INDEX` of an `LSM_VECTOR` index no longer reopens with the
+  index empty, nor loses every transaction committed after the build: the build makes its pages durable before reporting the
+  index ready, and WAL recovery applies a full page image over a version gap.
+- **#11239** Committed `LSM_SPARSE_VECTOR` postings survive a crash: each sparse index logs them with the commit in two
+  `.sparselog` files and replays them at open (roughly 5-10% on a sparse-heavy write load). Not yet on HA (#11257).
+- **#11240** A file id freed by a drop is no longer handed out again after a restart, and a schema save that fails is retried at
+  the next transaction end or close instead of being forgotten.
 
 - **#10588** A `CREATE INDEX` no longer leaves out a record that another session, or an outer transaction of the caller, had written
   and not committed. The build indexes the committed state; the writer queued no entry for an index that did not exist when it saved
