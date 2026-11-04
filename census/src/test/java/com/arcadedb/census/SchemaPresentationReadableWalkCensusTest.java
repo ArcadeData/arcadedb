@@ -123,6 +123,7 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("database/DocumentValidator#requireDateConstraintsSatisfiableUnder", MAINTENANCE),
       Map.entry("engine/DatabaseChecker#check", MAINTENANCE),
       Map.entry("engine/DatabaseChecker#checkExternalProperties", MAINTENANCE),
+      Map.entry("engine/DatabaseChecker#checkIndexes", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#collectEdgeSegmentBucketIds", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#collectEdgesToReconnect", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#reclaimOrphanedEdgeSegments", MAINTENANCE),
