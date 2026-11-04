@@ -61,14 +61,14 @@ import java.util.Set;
  * {@link WriteRefusingStrategy}, which stops one that writes before its first step, and the script is then a write</li>
  * </ul>
  * A script the grammar cannot read is Groovy, which only the {@code auto} and {@code groovy} engines run: it is code, which only
- * evaluating tells the traversal of, so {@code ArcadeGremlin} evaluates it with a {@link #guarded} source, which lets a traversal
- * the script runs while it is evaluated run only when it reads.
+ * running tells what it does, so {@code ArcadeGremlin} does not evaluate it and answers {@link #anyOperation()} for it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class GremlinStatementAnalyzer {
   private static final Set<OperationType> READ      = Set.of(OperationType.READ);
-  private static final Set<OperationType> ANY_WRITE = Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+  private static final Set<OperationType> ANY_WRITE     = Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+  private static final Set<OperationType> ANY_OPERATION = Set.of(OperationType.values());
 
   private GremlinStatementAnalyzer() {
   }
@@ -99,22 +99,10 @@ final class GremlinStatementAnalyzer {
 
   /**
    * {@code source} with {@link WriteRefusingStrategy}: a traversal built from it that writes is stopped before its first step, with
-   * an exception {@link #isWriteRefused} recognises.
+   * a {@link WriteRefusedException}.
    */
   static GraphTraversalSource guarded(final GraphTraversalSource source) {
     return source.withStrategies(WriteRefusingStrategy.INSTANCE);
-  }
-
-  /**
-   * Whether {@code e} is, or was caused by, a traversal that {@link #guarded} stopped because it writes.
-   */
-  static boolean isWriteRefused(final Throwable e) {
-    // BOUNDED LIKE THE OTHER CAUSE WALKS OF ArcadeGremlin: THE SCRIPT ENGINES WRAP IT IN ONE OR TWO LEVELS, AND A CYCLIC CHAIN MUST END
-    int depth = 0;
-    for (Throwable t = e; t != null && depth++ < 16; t = t.getCause())
-      if (t instanceof WriteRefusedException)
-        return true;
-    return false;
   }
 
   static QueryEngine.AnalyzedQuery read() {
@@ -132,11 +120,18 @@ final class GremlinStatementAnalyzer {
   }
 
   /**
-   * The answer for a script that tried to run a write while it was built or evaluated: what else it does is not known, so it may
-   * write anything.
+   * The answer for a script that tried to run a write while it was built: what else it does is not known, so it may write anything.
    */
   static QueryEngine.AnalyzedQuery anyWrite() {
     return result(ANY_WRITE);
+  }
+
+  /**
+   * The answer for a script that cannot be read without running it (Groovy): code, which can reach the database through any API,
+   * so it may do anything, a schema change or an administrative operation included.
+   */
+  static QueryEngine.AnalyzedQuery anyOperation() {
+    return result(ANY_OPERATION);
   }
 
   /**

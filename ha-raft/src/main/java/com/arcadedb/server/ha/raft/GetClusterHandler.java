@@ -353,7 +353,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // Cluster-level health alerts (e.g. single-bucket types that serialize concurrent writes on the
     // leader). Surfaced in Studio's HA panel so operators see actionable warnings without log-grepping.
     // Scoped like the database list above, because the alert payloads name databases and, for the
-    // single-bucket check, their type names too.
+    // single-bucket check, their type names too: those are scoped to the types the caller may read as well.
     // The membership divergence is a cluster-level condition: the only one on this endpoint that nothing else
     // flags, and the one an operator most needs told rather than left to diff the peer list by eye (issue #7040).
     // The local node's resync / WAL-gap quarantine state (issue #7136): the invariant is that anything making
@@ -404,7 +404,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
             localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader,
-            replicationPathUnproven, leaderUnreachable));
+            replicationPathUnproven, leaderUnreachable, user));
 
     return new ExecutionResponse(200, response.toString());
   }

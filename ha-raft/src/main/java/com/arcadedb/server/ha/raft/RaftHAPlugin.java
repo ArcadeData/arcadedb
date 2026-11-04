@@ -276,7 +276,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       if (!warnedSingleBucketDatabases.add(db.getName()))
         return;
 
-      final List<String> singleBucketTypes = ClusterAlerts.findSingleBucketTypes(db);
+      // THE OPERATOR'S LOG, ANSWERED TO NO CALLER: EVERY TYPE
+      final List<String> singleBucketTypes = ClusterAlerts.findSingleBucketTypes(db, null);
       if (singleBucketTypes.isEmpty())
         return;
 
