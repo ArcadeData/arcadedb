@@ -27,6 +27,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -110,10 +112,14 @@ class Issue9795RecoveryTransactionIdCounterTest extends TestHelper {
     // before+2: A'S RECORD LANDS ALONE IN THE NEW FILE, SO THE REPLAY SEES ONLY before+1
     commitInterleaved(() -> {
       database.transaction(() -> database.newDocument(TYPE_B).set("k", 1).save());
+      // THE ROTATION DROPS ONLY A WAL WHOSE PAGES ARE ON DISK: WAIT FOR B'S, WRITTEN BY THE ASYNCHRONOUS FLUSH THREAD. A'S
+      // PAGES ARE NOT PUBLISHED BEFORE ITS PHASE 2, SO THIS DOES NOT WAIT FOR THEM
+      final DatabaseInternal db = (DatabaseInternal) database;
+      assertThat(db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
       try {
-        ((DatabaseInternal) database).getTransactionManager().rotateAndDropWALForTesting();
-      } catch (final Exception e) {
-        throw new RuntimeException(e);
+        assertThat(db.getTransactionManager().rotateAndDropWALForTesting()).as("the rotation must drop B's WAL file").isTrue();
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
       }
     });
 
