@@ -2092,7 +2092,7 @@ public class LocalSchema implements Schema {
     final int minimum = LocalBucket.minimumPageSize(version);
     if (pageSize < minimum)
       throw new SchemaException("Cannot create bucket '" + bucketName + "' with a page size of " + pageSize
-          + " bytes: the minimum is " + minimum + " bytes, the room a page needs for its header, its slot table and a useful record area. "
+          + " bytes: the minimum is " + minimum + " bytes, the room a page needs for its header, its slot table and 4KB of record area. "
           + "Without an explicit page size it comes from the database setting '" + (version >= LocalBucket.EXTERNAL_BUCKET_VERSION ?
           GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE.getKey() :
           GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey()) + "'");

@@ -27,6 +27,7 @@ import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11286: the first commit of about 500 records failed with "Transaction buffer bigger than 2.00GB" when the bucket
@@ -35,11 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue11286MinimumPageSizeBatchCommitTest extends TestHelper {
 
   @Test
-  void theMinimumLeavesARecordAreaSoARecordDoesNotSpanDozensOfPages() {
-    // At the bare head-chunk floor (8216) every byte of a record past 14 went to a new page
-    assertThat(LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)).isGreaterThan(8216 + 1024);
-    assertThat(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getMinimum()).isEqualTo(
-        LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION));
+  void aPageSizeBelowTheMinimumIsRefused() {
+    final int minimum = LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION);
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE Tiny PAGESIZE " + (minimum - 1)).close())
+        .hasMessageContaining(String.valueOf(minimum));
   }
 
   @Test
@@ -50,6 +50,7 @@ class Issue11286MinimumPageSizeBatchCommitTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Item");
     type.createProperty("id", Type.INTEGER);
     type.createProperty("name", Type.STRING);
+    assertThat(((LocalBucket) type.getBuckets(false).getFirst()).getPageSize()).isEqualTo(minimum);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Item", "id");
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Item", "name");
 
