@@ -356,6 +356,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private          Memtable           flushingMemtable;
   /** The logs to reset once {@link #flushingMemtable} is in a segment. */
   private          int                flushingResetMask;
+  /** The log whose slot {@link #flushingMemtable} was taken from. */
+  private          int                flushingFromLog;
   /**
    * For each log, the generation whose postings a segment of this node carries since its memtable was sealed, or 0: they are not
    * decoded into a memtable again. Only the node that sealed them knows; another node keeps them until the log is reset.
@@ -967,10 +969,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   public long flush() {
     ensureOpen();
     ensurePostingLogReplayed();
-    if (isPostingLogEnabled() && database.isFollower())
+    if (isPostingLogEnabled() && database.isFollower()) {
       // The memtables of a follower are decoded from the posting logs the leader writes (issue #11257): the leader seals them,
-      // and the segment and the reset of the log reach this node with the entry that publishes them
+      // and the segment and the reset of the log reach this node with the entry that publishes them. A flush of this node's
+      // leadership that failed may have left a memtable out of its slot: back in it
+      restoreFlushingMemtable();
       return -1L;
+    }
     localMutations.incrementAndGet();
     mutatorLock.lock();
     try {
@@ -1076,6 +1081,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         synchronized (memtableLock) {
           toSeal = logMemtables[current] != null ? logMemtables[current] : memtable.get();
           flushingMemtable = toSeal;
+          flushingFromLog = current;
           flushingResetMask = postingLogs[1 - current].isActive() ? 1 << (1 - current) : 0;
           resetMask = flushingResetMask;
           logMemtables[current] = new Memtable();
@@ -1099,12 +1105,44 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         publishMemtables();
       }
     }, resetMask);
-    if (segmentId == -1L)
-      // Not the leader any more: the memtables keep what the logs hold, and the next leader seals it
+    if (segmentId == -1L) {
+      // Not the leader any more: nothing was sealed, the memtables keep what they hold, and the next leader seals it
+      restoreFlushingMemtable();
       return -1L;
+    }
     if (retained && !memtable.get().isEmpty())
       flushLogged();
     return segmentId;
+  }
+
+  /**
+   * Puts the memtable a flush took out of its log's slot back into it, when no segment will carry it: this node is no longer
+   * the leader, and only the leader seals. Merged under what the slot received since, which is newer, rather than rebuilt from
+   * the logs: it can hold postings that were never logged. Left in place, it would hide the other log's memtable from the
+   * readers (see {@link #publishMemtables()}).
+   */
+  private void restoreFlushingMemtable() {
+    synchronized (memtableLock) {
+      final Memtable older = flushingMemtable;
+      if (older == null)
+        return;
+      final Memtable newer = logMemtables[flushingFromLog];
+      if (newer != null && newer != older)
+        for (final int dim : newer.sortedDims()) {
+          final Iterator<MemtablePosting> postings = newer.iterateDim(dim);
+          while (postings.hasNext()) {
+            final MemtablePosting posting = postings.next();
+            if (posting.tombstone())
+              older.remove(dim, posting.rid());
+            else
+              older.put(dim, posting.rid(), posting.weight());
+          }
+        }
+      logMemtables[flushingFromLog] = older;
+      flushingMemtable = null;
+      flushingResetMask = 0;
+      publishMemtables();
+    }
   }
 
   /**
@@ -2227,6 +2265,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return activePostingLogMask();
   }
 
+  /** Whether a memtable a flush took out of its log's slot is still waiting for a segment, for tests. */
+  boolean hasFlushingMemtableForTest() {
+    synchronized (memtableLock) {
+      return flushingMemtable != null;
+    }
+  }
+
   private int activePostingLogMask() {
     int mask = 0;
     for (int i = 0; i < postingLogs.length; i++)
@@ -2248,12 +2293,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * next flush tries again
    */
   private boolean closePostingLog(final int log) {
-    final boolean[] done = { false };
-    runOnPostingLogs(context -> {
-      postingLogs[log].closeToAppends(context);
-      done[0] = true;
-    }, "close");
-    return done[0];
+    return runOnPostingLogs(context -> postingLogs[log].closeToAppends(context), "close");
   }
 
   /**
@@ -2280,14 +2320,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           "Sparse vector engine '%s': the posting logs are kept because the files could not be synced to disk", null, indexName);
       return;
     }
-    final boolean[] reset = { false };
-    runOnPostingLogs(context -> {
+    final boolean reset = runOnPostingLogs(context -> {
       for (int i = 0; i < postingLogs.length; i++)
         if ((toReset & (1 << i)) != 0)
           postingLogs[i].reset(context);
-      reset[0] = true;
     }, "reset");
-    if (reset[0])
+    if (reset)
       logsToReset.getAndUpdate(m -> m & ~toReset);
     else
       logsToReset.getAndUpdate(m -> m | toReset);
@@ -2300,23 +2338,27 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   /**
    * Runs {@code change} in a WAL-logged transaction of its own and decodes the logs after it. A failure is logged at WARNING and
    * leaves {@code change} undone.
+   *
+   * @return whether the transaction committed
    * <p>
    * The transaction takes both logs' commit locks itself, with the identity it commits with, read from it once it began: its
    * commit then re-enters them instead of waiting on them, whichever context {@code begin()} handed out (the thread's inactive
    * one, or a fresh one pushed while the thread is still inside a commit's callbacks), and no commit of this node appends between
    * the decision and the change.
    */
-  private void runOnPostingLogs(final PostingLogChange change, final String what) {
+  private boolean runOnPostingLogs(final PostingLogChange change, final String what) {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
     final OwnTransaction tx = OwnTransaction.begin(db);
     Object requester = null;
     List<Integer> locked = null;
+    boolean committed = false;
     try {
       final TransactionContext context = db.getTransaction();
       requester = context.getRequester();
       locked = lockPostingLogs(requester);
       change.apply(context);
       tx.commit();
+      committed = true;
     } catch (final IOException | RuntimeException e) {
       tx.rollbackIfMine();
       // A commit holding the logs, or an append of another node that won the header: expected, and retried like a failure
@@ -2328,6 +2370,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         database.getTransactionManager().unlockFilesInOrder(locked, requester);
     }
     catchUpWithPostingLogs();
+    return committed;
   }
 
   /**

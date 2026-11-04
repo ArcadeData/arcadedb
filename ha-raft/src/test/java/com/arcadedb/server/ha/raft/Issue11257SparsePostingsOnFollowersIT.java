@@ -181,7 +181,7 @@ class Issue11257SparsePostingsOnFollowersIT extends BaseRaftHATest {
 
   private void assertEveryServerAnswers(final int leader, final int expectedDocuments) {
     for (int i = 0; i < getServerCount(); i++)
-      waitForReplicationIsCompleted(i);
+      assertThat(awaitReplicationIsCompleted(i)).as("server %d applied what the leader applied", i).isTrue();
 
     final List<String> expected = answerOf(leader);
     assertThat(expected).as("the leader answers every live document").hasSize(expectedDocuments);
