@@ -93,4 +93,46 @@ class Issue11250RecoveryOutcomeTest extends TestHelper {
 
     assertThat(transactionManager.isLastRecoveryIncomplete()).isFalse();
   }
+
+  /**
+   * Issue #11280: a replay that THROWS (a torn page whose bytes no longer decode) escaped recovery, so the open failed and every
+   * restart repeated it, because the WAL stayed in place against the same torn pages. It is now the same outcome as a WAL gap:
+   * the WAL is preserved aside, the database opens, and the recovery is reported incomplete for the HA node to quarantine it.
+   */
+  @Test
+  void aRecoveryWhoseReplayThrowsIsReportedIncompleteInsteadOfFailingTheOpen() throws Exception {
+    final TransactionManager transactionManager = ((DatabaseInternal) database).getTransactionManager();
+    database.transaction(() -> database.newDocument("RecoveryOutcomeType").set("a", 1).save());
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("RecoveryOutcomeType").getBuckets(false).get(0);
+    final int pageVersion = (int) ((DatabaseInternal) database).getPageManager()
+        .getImmutablePage(new PageId(database, bucket.getFileId(), 0), bucket.getPageSize(), false, false).getVersion();
+
+    // A well-formed transaction one version ahead of the page, whose change lies far outside the page: applying it throws
+    final byte[] delta = { 1, 2, 3, 4, 5 };
+    final int changesFrom = Integer.MAX_VALUE / 2;
+    final int segmentSize = PAGE_HEADER_SIZE + delta.length;
+    final ByteBuffer buf = ByteBuffer.allocate(TX_HEADER_SIZE + segmentSize + TX_FOOTER_SIZE);
+    buf.putLong(42L);
+    buf.putLong(123456L);
+    buf.putInt(1);
+    buf.putInt(segmentSize);
+    buf.putInt(bucket.getFileId());
+    buf.putInt(0);
+    buf.putInt(changesFrom);
+    buf.putInt(changesFrom + delta.length - 1);
+    buf.putInt(pageVersion + 1);
+    buf.putInt(bucket.getPageSize());
+    buf.put(delta);
+    buf.putInt(segmentSize);
+    buf.putLong(WALFile.MAGIC_NUMBER);
+    final File wal = new File(database.getDatabasePath(), "txlog_778.wal");
+    Files.write(wal.toPath(), buf.array());
+
+    transactionManager.checkIntegrity();
+
+    assertThat(transactionManager.isLastRecoveryIncomplete()).isTrue();
+    assertThat(wal).as("the WAL must not stay in place to be replayed and thrown on again at every open").doesNotExist();
+    assertThat(new File(wal.getPath() + ".corrupt")).as("preserved aside for inspection").exists();
+  }
 }

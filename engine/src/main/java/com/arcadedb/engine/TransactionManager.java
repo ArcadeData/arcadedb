@@ -26,6 +26,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
@@ -1062,6 +1063,17 @@ public class TransactionManager {
             LogManager.instance().log(this, Level.SEVERE,
                 "Recovery aborted for database '%s': version gap in WAL (txId=%d). WAL files have been preserved for manual inspection. No further transactions will be replayed.",
                 null, database, lowerTxId);
+            walGapDetected = true;
+            break;
+          } catch (final SerializationException | IllegalArgumentException | IndexOutOfBoundsException e) {
+            // The replay threw on what the pages hold: a torn page whose bytes no longer decode, or a change outside the page
+            // (issue #11280). Escaping failed the open and left the WAL in place to be replayed against the same pages at every
+            // restart: a crash loop. It is the same verdict as a version gap: stop, preserve the WAL aside and report the recovery
+            // incomplete, so the open completes and a node with another copy (an HA node) quarantines and resyncs the database.
+            // Any other failure (an I/O error, an injected one) says nothing about the pages and still escapes, WAL kept for a retry
+            LogManager.instance().log(this, Level.SEVERE,
+                "Recovery aborted for database '%s': replaying the WAL (txId=%d) failed on what the pages hold. WAL files have been preserved for manual inspection. No further transactions will be replayed.",
+                e, database, lowerTxId);
             walGapDetected = true;
             break;
           }
