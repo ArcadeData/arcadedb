@@ -232,7 +232,9 @@ that has every feature of that baseline. `native/pom.xml` states the baseline ex
 | amd64 (Linux, Windows, macOS Intel) | `x86-64-v3` | AVX, AVX2, BMI1, BMI2, FMA, F16C, LZCNT, MOVBE | Intel before Haswell (2013), AMD before Excavator, Intel Atom/Celeron/Pentium parts without AVX, VMs whose CPU model hides AVX2 (QEMU's default `qemu64`, Proxmox's default `x86-64-v2-AES` and older `kvm64`) |
 | arm64 (Linux, macOS Apple silicon) | `armv8-a` | ASIMD (the ARMv8.0 baseline) | None: runs on every 64-bit ARM core, including the Cortex-A53/A72 (Raspberry Pi 3/4) and Graviton1 |
 
-These are GraalVM 25's own defaults (`x86-64-v3` on x64, `armv8-a` on AArch64), now pinned rather than inherited, so the published images
+`x86-64-v3` is GraalVM 25's own default on x64. On AArch64 the builder's default is `armv8.1-a` (CRC32 and LSE atomics), and `armv8-a`
+is a deliberate choice below it, so that ARMv8.0 cores keep working. The native workflow checks both claims against the builder before it builds
+(`.github/scripts/check-native-march-builder-default.py`, #11254). The published images
 (`<version>-native-amd64` / `-native-arm64`) carry exactly these requirements. On a CPU below them
 the binary exits immediately with:
 
