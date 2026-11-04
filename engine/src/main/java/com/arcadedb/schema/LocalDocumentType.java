@@ -43,7 +43,6 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -3105,7 +3104,7 @@ public class LocalDocumentType implements DocumentType {
         if (custom != null)
           indexJSON.put("typeIndexName", custom);
         LocalSchema.putLogicalIndexName(entry, indexJSON);
-        if (entry instanceof LSMTreeIndex lsm && lsm.isAwaitingFill())
+        if (entry.isAwaitingFill())
           indexJSON.put(LocalSchema.AWAITING_FILL, true);
         indexesByFileName.put(entry.getMostRecentFileName(), indexJSON);
       }

@@ -186,6 +186,8 @@ class Issue10450IndexBuildWithUnrelatedPendingWritesTest extends TestHelper {
     database.rollback();
 
     assertThat(index[0].countEntries()).isEqualTo(2L);
+    // an index on one of the two buckets of the type is reported by CHECK DATABASE (run after each test) as lacking the other one
+    database.getSchema().dropIndex(index[0].getName());
   }
 
   /** Bucket-level builder: a write to the indexed bucket itself still joins the transaction. */

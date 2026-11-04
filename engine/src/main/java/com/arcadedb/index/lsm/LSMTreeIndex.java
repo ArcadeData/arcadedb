@@ -36,6 +36,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.EmptyIndexCursor;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -519,10 +520,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   /** See {@link #awaitingFill}. */
+  @Override
   public boolean isAwaitingFill() {
     return awaitingFill;
   }
 
+  @Override
   public void setAwaitingFill(final boolean awaitingFill) {
     this.awaitingFill = awaitingFill;
   }
@@ -1164,6 +1167,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
         db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
+        IndexBuildTestHooks.recordIndexed(LSMTreeIndex.this, record.getIdentity());
 
         // Periodic progress logging
         if (total.get() % LOG_INTERVAL == 0) {

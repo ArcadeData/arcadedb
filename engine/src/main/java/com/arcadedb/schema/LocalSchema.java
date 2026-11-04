@@ -67,10 +67,10 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.hash.HashIndex;
-import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
+import com.arcadedb.index.hash.HashIndex;
+import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
@@ -1548,7 +1548,8 @@ public class LocalSchema implements Schema {
    * <p>
    * Only what is proven unreferenced is dropped, and only by the first load of an open, when no build of this process can be in
    * flight: a plain LSM_TREE index (never a bucket, never a wrapper index, never a compacted file, which
-   * {@link #sweepOrphanCompactedIndexFiles} reclaims once its mutable file is gone) left without a type by the whole load including
+   * {@link #sweepOrphanCompactedIndexFiles} reclaims once its mutable file is gone), or a HASH index (the new file of a rebuild in place
+   * stopped before its swap, or the previous one of a rebuild stopped after it), left without a type by the whole load including
    * its orphan-relinking pass, whose name is no schema entry's, and whose name is the {@code <bucket>_<number>} name of a bucket
    * index of a bucket that exists (a manual index is named by its creator). Not on an HA node, where the files of an index being
    * created by the leader can arrive before its schema entry.
@@ -1567,19 +1568,27 @@ public class LocalSchema implements Schema {
     // The FILES, not the index map: the previous file of an index that never compacted is named after the index, and the live
     // index re-keyed under that logical name (restoreLogicalIndexName) has already taken its place in the map
     for (final Component component : filesDuringLoad()) {
-      if (!(component instanceof LSMTreeIndexMutable mutable))
+      // a plain LSM_TREE bucket index, or a HASH one (a rebuild in place of a hash index fills a new file before it swaps it in)
+      final IndexInternal orphan;
+      if (component instanceof LSMTreeIndexMutable mutable) {
+        final LSMTreeIndex lsm = mutable.getMainIndex();
+        if (lsm == null || lsm.getClass() != LSMTreeIndex.class)
+          continue;
+        orphan = lsm;
+      } else if (component instanceof HashIndexBucket hashBucket && hashBucket.getMainComponent() instanceof HashIndex hashIndex)
+        orphan = hashIndex;
+      else
         continue;
-      final LSMTreeIndex lsm = mutable.getMainIndex();
-      if (lsm == null || lsm.getClass() != LSMTreeIndex.class || lsm.getTypeName() != null)
+      if (orphan.getTypeName() != null)
         continue;
-      final String fileName = mutable.getName();
+      final String fileName = component.getName();
       if (indexEntriesReadAtLoad.contains(fileName))
         continue;
       final Bucket bucket = bucketOfBucketIndexName(fileName);
       if (bucket == null || getBucketOwner(bucket.getFileId()) == null)
         continue;
 
-      final int fileId = mutable.getFileId();
+      final int fileId = component.getFileId();
       LogManager.instance().log(this, Level.WARNING,
           "Dropping index file '%s' (fileId=%d) of bucket '%s': no index of the schema references it, it was left behind by an "
               + "index build or rebuild that did not complete", null, fileName, fileId, bucket.getName());
@@ -1588,8 +1597,8 @@ public class LocalSchema implements Schema {
         database.getFileManager().dropFile(fileId);
         removeFile(fileId);
         // only the names that still resolve to this very index: the live one may answer to the same logical name
-        for (final String name : new String[] { lsm.getName(), fileName })
-          if (lookupIndex(name) == lsm)
+        for (final String name : new String[] { orphan.getName(), fileName })
+          if (lookupIndex(name) == orphan)
             removeIndexDuringLoad(name);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Error on dropping the unreferenced index file '%s'", e, fileName);
@@ -5989,6 +5998,11 @@ public class LocalSchema implements Schema {
       saveConfiguration();
   }
 
+  /** Withdraws a migration {@link #setMigratedFileId} recorded, for a swap undone before the schema naming it was saved. */
+  public void removeMigratedFileId(final int oldFileId, final int newFileId) {
+    migratedFileIds.remove(oldFileId, newFileId);
+  }
+
   public Integer getMigratedFileId(final int oldFileId) {
     return migratedFileIds.get(oldFileId);
   }
@@ -6060,6 +6074,9 @@ public class LocalSchema implements Schema {
     final LSMTreeIndex lsm = lsmTreeIndexOf(index);
     if (lsm != null && !lsm.getName().equals(lsm.getMostRecentFileName()))
       indexJSON.put(LOGICAL_INDEX_NAME, lsm.getName());
+    else if (index instanceof HashIndex hashIndex && !hashIndex.getName().equals(hashIndex.getMostRecentFileName()))
+      // a hash index rebuilt in place keeps its name on a new file
+      indexJSON.put(LOGICAL_INDEX_NAME, hashIndex.getName());
   }
 
   /**
@@ -6087,10 +6104,14 @@ public class LocalSchema implements Schema {
       return;
 
     final LSMTreeIndex lsm = lsmTreeIndexOf(index);
-    if (lsm == null || !fileName.equals(lsm.getName()))
+    if (lsm != null) {
+      if (!fileName.equals(lsm.getName()))
+        return;
+      lsm.restoreLogicalName(logicalName);
+    } else if (index instanceof HashIndex hashIndex && fileName.equals(hashIndex.getName()))
+      hashIndex.restoreLogicalName(logicalName);
+    else
       return;
-
-    lsm.restoreLogicalName(logicalName);
     publishIndexDuringLoad(logicalName, index);
     removeIndexDuringLoad(fileName);
   }

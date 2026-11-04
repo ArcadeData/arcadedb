@@ -313,6 +313,21 @@ public interface IndexInternal extends Index {
 
   boolean isCompacting();
 
+  /**
+   * Whether this bucket index was created by a REBUILD INDEX for a bucket its type index lacked and has not been filled yet. Such a
+   * bucket index is not counted by its type index ({@link TypeIndex#isComplete()}), and its schema entry carries the flag, so a stop
+   * before the fill reopens without it. Only the kinds the rebuild in place creates bucket indexes for keep it.
+   */
+  default boolean isAwaitingFill() {
+    return false;
+  }
+
+  /** See {@link #isAwaitingFill()}. */
+  default void setAwaitingFill(final boolean awaitingFill) {
+    if (awaitingFill)
+      throw new UnsupportedOperationException("Index '" + getName() + "' of kind " + getType() + " cannot await a fill");
+  }
+
   boolean isValid();
 
   boolean scheduleCompaction();

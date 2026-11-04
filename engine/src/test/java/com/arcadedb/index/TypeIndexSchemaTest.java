@@ -860,6 +860,9 @@ class TypeIndexSchemaTest {
           assertThat(strategies(typeIndex)).as(setter.toString()).hasSize(BUCKETS).containsOnly(NULL_STRATEGY.INDEX);
         }
         case "setMetadata/1", "setTypeIndex/1" -> assertRefuses(setter, typeIndex);
+        // only a bucket index is created empty and filled by a REBUILD INDEX
+        case "setAwaitingFill/1" -> assertThatThrownBy(() -> typeIndex.setAwaitingFill(true)).as(setter.toString())
+            .isInstanceOf(UnsupportedOperationException.class);
         case "setStatus/2" -> {
           // a facade has no status of its own: it must not report a change that no bucket index went through
           assertThat(typeIndex.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE }, INDEX_STATUS.UNAVAILABLE))
