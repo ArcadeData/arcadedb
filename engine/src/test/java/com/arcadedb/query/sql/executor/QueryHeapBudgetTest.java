@@ -180,10 +180,7 @@ class QueryHeapBudgetTest {
   @Test
   void aQueryLargerThanTheWholeBudgetIsRefusedForGood() {
     // The verdict compares the query with the whole budget, so nothing else may hold a share of it here
-    await().atMost(Duration.ofSeconds(30)).until(() -> {
-      System.gc();
-      return QueryHeapBudget.getReservedBytes() == 0;
-    });
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(2L);
 
     final QueryHeapTracker query = new QueryHeapTracker();

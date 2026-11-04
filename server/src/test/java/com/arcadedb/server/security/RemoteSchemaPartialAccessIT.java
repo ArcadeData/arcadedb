@@ -164,6 +164,9 @@ class RemoteSchemaPartialAccessIT {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on localhost,
+    // which then answers this test's localhost clients
+    GlobalConfiguration.SERVER_HTTP_INCOMING_HOST.setValue("localhost");
 
     SERVER = new ArcadeDBServer();
     SERVER.start();

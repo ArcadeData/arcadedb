@@ -49,6 +49,7 @@ import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
@@ -108,6 +109,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -4632,18 +4634,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Only now that the pages are committed may the manifest vouch for them (issue #6106). Written after the
           // commit and never before: a manifest that outlived a persist which did not complete would be the one
-          // thing able to certify a graph nobody built.
-          final Long certifiedFingerprint = writeGraphManifest(gf, finalActiveVectorIds);
-          graphCertified = true;
+          // thing able to certify a graph nobody built. And only once the pages are on the disk: they were committed
+          // without the WAL, so a kill before the asynchronous flush wrote them would leave the manifest vouching for
+          // pages that are not there (issue #11238). Uncertified, the manifest refuses the pages, rather than leaving none
+          // (which the next open would read as "unverifiable" and judge by node count), and the graph is rebuilt.
+          final boolean graphOnDisk = isOnDisk(gf);
+          final Long certifiedFingerprint = graphOnDisk ? writeGraphManifest(gf, finalActiveVectorIds) : null;
+          if (!graphOnDisk)
+            gf.getManifest().markUnusable("graph pages not on the disk yet");
+          graphCertified = graphOnDisk;
           // Identity, not a flag: if graphIndex was replaced since publish, admitByDemotingResidentGraph() compares
-          // this reference against the then-resident graph and finds no match.
-          persistedGraphSource = builtGraph;
+          // this reference against the then-resident graph and finds no match. Only a graph the disk holds can be demoted
+          // to it and read back later.
+          if (graphCertified)
+            persistedGraphSource = builtGraph;
 
           // The replacement is certified now, so the stale pre-compaction file it supersedes is safe to drop -
           // outside any lock, because a reader that already captured it must be able to finish (see
           // dropReplacedComponent()). Doing this only now, rather than as soon as gf existed, is what keeps a
-          // write or commit failure above from deleting the one persisted graph the index still has.
-          if (staleGraphFileFromCompaction != null)
+          // write or commit failure above from deleting the one persisted graph the index still has. An uncertified
+          // replacement (its pages not on the disk yet) keeps it too, and the catch below can still fall back to it.
+          if (staleGraphFileFromCompaction != null && graphCertified)
             dropReplacedComponent(staleGraphFileFromCompaction);
 
           // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
@@ -13086,6 +13097,165 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Why {@code REBUILD INDEX} must drop and re-create this index instead of rebuilding it in place
+   * ({@link #reconcileWithBucket}), or null when it can be rebuilt in place. The rebuild in place keeps the vector ids the index
+   * holds, so an index whose ids cannot be trusted, or that was never built to the end, is created again.
+   */
+  public String inPlaceRebuildRefusal() {
+    if (metadata.dimensions < 1)
+      return "the vector index '" + indexName + "' has not decided its dimensions yet";
+    if (buildState != BUILD_STATE.READY)
+      return "the vector index '" + indexName + "' was not built to the end (" + buildState + ")";
+    final List<String> problems = checkIntegrity();
+    return problems.isEmpty() ? null : "the vector index '" + indexName + "' is damaged: " + problems.getFirst();
+  }
+
+  /**
+   * {@code REBUILD INDEX} in place: makes the committed index hold exactly what a build from the records of its bucket puts, without
+   * dropping it and without the database write lock. A record the index already holds as a write of it would leave it (one live
+   * vector of the record, with the payload a write stores) is not touched, so it stays in the resident graph and keeps being found by
+   * its searches. A record the index misses, holds more than once or with another payload is written again (a fresh id, searched in
+   * the delta buffer until the next graph build), and an entry no record of the bucket holds is removed.
+   * <p>
+   * The caller holds the commit locks of the bucket and of the files of this index, so nothing else commits to either meanwhile. The
+   * changes go through ordinary transactions of the calling thread, with the WAL, committed every {@code batchSize} records: a stop
+   * at any point leaves every record either as it was or as the rebuild set it. {@link #compactAfterRebuild} then rewrites the file and
+   * builds a fresh graph.
+   *
+   * @return the number of records written again or taken out of the index
+   */
+  public long reconcileWithBucket(final int batchSize, final BuildIndexCallback callback) {
+    final DatabaseInternal database = getDatabase();
+    final VectorLocationIndex locations = vectorIndex();
+    // The records the index holds a vector of: what is left once the scan has seen the records of the bucket belongs to none
+    final Set<RID> heldRecords = new HashSet<>();
+    locations.getActiveVectorIds().forEach(vectorId -> {
+      final RID rid = locations.getRid(vectorId);
+      if (rid != null)
+        heldRecords.add(rid);
+    });
+    final ComparableVector supersedeKey = buildSupersedeKey();
+    final long[] counters = new long[3]; // records scanned, records changed, records left out
+    // as a build reports them (issue #10938): a value that is not a vector of the index's dimensions is left out, and said so
+    final List<String> rejectedSamples = new ArrayList<>(MAX_REJECTED_RECORDS_REPORTED);
+
+    database.begin();
+    try {
+      database.scanBucket(database.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
+        final RID rid = record.getIdentity();
+        heldRecords.remove(rid);
+        final Document document = (Document) record;
+        final Object[][] keys = new Object[1][];
+        database.getIndexer().forEachIndexKey(this, document, k -> keys[0] = k);
+        final float[] vector = usableVector(keys[0]);
+        if (vector == null && keys[0] != null && keys[0].length > 0 && keys[0][0] != null
+            && ++counters[2] <= MAX_REJECTED_RECORDS_REPORTED)
+          rejectedSamples.add(rid.toString());
+        if (!holdsExactly(rid, vector)) {
+          if (locations.getVectorIdsForRid(rid).length > 0)
+            // replayed before the ADD below, in the same commit: the record ends with its one fresh vector
+            database.getTransaction().addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+                new Object[] { supersedeKey }, rid);
+          if (vector != null)
+            put(new Object[] { vector }, new RID[] { rid });
+          ++counters[1];
+        }
+        IndexBuildTestHooks.recordIndexed(this, rid);
+        if (callback != null)
+          callback.onDocumentIndexed(document, ++counters[0]);
+        IndexInternal.commitBuildBatch(database, counters[0], batchSize, false);
+        return true;
+      }, (rid, exception) -> {
+        if (exception instanceof RuntimeException runtimeException)
+          throw runtimeException;
+        throw new IndexException("Error reading record " + rid + " while rebuilding index '" + indexName + "'", exception);
+      });
+
+      for (final RID rid : heldRecords) {
+        database.getTransaction().addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+            new Object[] { supersedeKey }, rid);
+        IndexInternal.commitBuildBatch(database, ++counters[1], batchSize, false);
+      }
+      database.commit();
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    lastBuildSkippedRecords = counters[2];
+    if (counters[2] > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Vector index '%s': %d %s not indexed, holding a value that is not a vector of %d dimensions (first: %s). Fix or remove "
+              + "the value of %s in these records, then run REBUILD INDEX to index them", indexName, counters[2],
+          counters[2] == 1 ? "record is" : "records are", metadata.dimensions, String.join(", ", rejectedSamples),
+          metadata.propertyNames);
+    return counters[1];
+  }
+
+  /**
+   * The second half of a rebuild in place ({@link #reconcileWithBucket}), run once the commit locks are released: the data file is
+   * compacted, which writes it again with the live vectors only and builds a fresh graph while the resident one keeps answering, and
+   * a PRODUCT-quantized index trains a new codebook, as a rebuild always did. A compaction that cannot run now (a backup in progress,
+   * the file busy) leaves the index complete, with its graph caught up by the next build.
+   */
+  public void compactAfterRebuild() throws IOException, InterruptedException {
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+      discardProductQuantization();
+    if (scheduleCompaction())
+      compact();
+  }
+
+  /** The vector a write of {@code keys} stores, or null when it stores none (no value, or one this index refuses). */
+  private float[] usableVector(final Object[] keys) {
+    if (keys == null || keys.length == 0 || keys[0] == null)
+      return null;
+    final float[] vector;
+    try {
+      vector = keys[0] instanceof ComparableVector c ? c.vector : VectorUtils.toFloatArray(keys[0], metadata.encoding);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+    if (vector.length != metadata.dimensions)
+      return null;
+    for (final float component : vector)
+      if (!Float.isFinite(component))
+        return null;
+    return vector;
+  }
+
+  /**
+   * Whether the committed index holds of {@code rid} exactly what a write of {@code vector} puts: no live vector when it is null,
+   * otherwise one, whose stored payload (an inline-quantized index stores one, the others read the record) is the one the write
+   * stores.
+   */
+  private boolean holdsExactly(final RID rid, final float[] vector) {
+    final VectorLocationIndex locations = vectorIndex();
+    int live = 0;
+    int liveId = -1;
+    for (final int vectorId : locations.getVectorIdsForRid(rid))
+      if (locations.isLocationOf(vectorId, rid)) {
+        ++live;
+        liveId = vectorId;
+      }
+    if (vector == null)
+      return live == 0;
+    if (live != 1)
+      return false;
+
+    final VectorQuantizationMetadata qmeta = (VectorQuantizationMetadata) quantizeVector(vector);
+    if (qmeta == null)
+      return true;
+    final long offsetAndFlag = locations.getOffsetAndFlag(liveId);
+    if (offsetAndFlag == VectorLocationIndex.ABSENT)
+      return false;
+    final float[] stored = readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
+        VectorLocationIndex.isCompactedOf(offsetAndFlag));
+    final byte[] written = qmeta instanceof VectorQuantizationMetadata.Int8QuantizationMetadata int8 ? int8.quantized :
+        ((VectorQuantizationMetadata.BinaryQuantizationMetadata) qmeta).packed;
+    return stored != null && Arrays.equals(stored, dequantizeVector(written, qmeta));
+  }
+
+  /**
    * {@code buildIndexBatchSize} is IGNORED here, and deliberately: this build chunks by BYTES
    * ({@code arcadedb.vectorIndex.txChunkSizeMB}), not by record count, so a record count means nothing to it. The
    * permission to commit at all arrives as its own parameter (issue #6324, item 1) - reading it off the batch size
@@ -13175,20 +13345,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // transaction too, so the bulk-loaded vector pages it still held landed on this node only. Skipped, the
             // graph is built the way every other node of the cluster builds it for this same build: node-locally, on
             // first use. It is also exactly what this build does whenever the graph is already loaded.
-            if (vectorIndex().size() > 0 && graphState == GraphState.LOADING && !isReplicated()) {
+            final boolean graphPersisted = vectorIndex().size() > 0 && graphState == GraphState.LOADING && !isReplicated();
+            if (graphPersisted) {
               buildGraphWithChunking(graphCallback, chunkedCommitAllowed);
             }
 
-            // PHASE 4: Final commit and mark READY
-            if (startedTransaction)
+            // PHASE 4: Final commit, durability, and only then READY (issue #11238). The last chunk is committed here,
+            // WITHOUT the WAL like every chunk before it, whenever the build may commit at all: a build that shares a
+            // transaction it did not open (TypeIndexBuilder wraps every build in one) used to leave it to that caller,
+            // whose commit ran after the finally below had switched the WAL back on and wrote the last chunk through
+            // the WAL on top of pages the earlier chunks had only handed to the asynchronous flush. A kill before that
+            // flush left recovery a version gap on those pages, and it replayed nothing after it, every later
+            // transaction of the database included. A build that may not commit (a caller's open transaction) has
+            // committed nothing yet: the caller's own commit writes all of it through the WAL.
+            final boolean commitsItsOwnPages = startedTransaction || chunkedCommitAllowed;
+            if (commitsItsOwnPages) {
               db.getWrappedDatabaseInstance().commit();
+              try {
+                makeBuiltPagesDurable();
+              } finally {
+                if (!startedTransaction)
+                  // the caller's transaction, now empty, for the caller to commit (or roll back) as it always did
+                  db.getWrappedDatabaseInstance().begin();
+              }
+            }
 
             // buildGraphWithChunking() rewrites the graph pages inside this transaction, which drops the manifest;
-            // only here, past the commit, is there a persisted graph to vouch for again (issue #6106).
+            // only here, past the commit, is there a persisted graph to vouch for again (issue #6106), and only once
+            // its pages are on the disk: a manifest certifying pages that a kill took away would be read as a valid
+            // graph (issue #11238). Left without one, the graph is rebuilt on the next open.
             // Single read, not a check-then-use, and this runs on the thread that owns the initial build while
             // the index is UNAVAILABLE (no concurrent COMPACT INDEX possible) - intentionally left out of #6536's
             // local-capture sweep.
-            writeGraphManifest(graphFile, ordinalToVectorId);
+            if (!graphPersisted || !commitsItsOwnPages || isOnDisk(graphFile))
+              writeGraphManifest(graphFile, ordinalToVectorId);
+            else
+              graphFile.getManifest().markUnusable("graph pages not on the disk yet");
 
             persistBuildState(BUILD_STATE.READY);
 
@@ -13236,6 +13428,82 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     return totalRecords;
+  }
+
+  /**
+   * Makes the vector pages this build committed WITHOUT the WAL durable before the index is declared READY (issue #11238).
+   * <p>
+   * Those commits only handed the pages to the asynchronous flush. A process killed before it wrote them reopened an
+   * index READY and empty, and the first WAL-logged write of one of those pages - the next insert of an indexed record -
+   * left recovery a version gap it cannot bridge, so it stopped replaying and every transaction committed after it, on
+   * any type, was lost too.
+   * <p>
+   * The pages the flush writes within {@link GlobalConfiguration#FLUSH_ALL_PAGES_TIMEOUT} are forced to the disk, which
+   * costs the build nothing more than the wait. The ones it could not write - a flush suspended by a backup, a flush
+   * lagging behind a very large build - are committed once more, through the WAL, as full page images, in chunks of the
+   * bulk-load size: recovery applies a full image whatever version the page has on disk, so the build is durable either
+   * way, and the WAL carries only what the flush did not.
+   */
+  private void makeBuiltPagesDurable() {
+    final DatabaseInternal db = getDatabase();
+    final int fileId = mutable.getFileId();
+    final int[] notOnDisk = db.getPageManager().flushAndSyncWithoutWAL(db, fileId, mutable.getTotalPages(), flushWaitMillis(db));
+    if (notOnDisk.length == 0)
+      return;
+
+    LogManager.instance().log(this, Level.INFO,
+        "Vector index '%s': %d pages not on the disk yet, writing them through the WAL", indexName, notOnDisk.length);
+
+    final int pageSize = mutable.getPageSize();
+    final long chunkSizeBytes = getBulkLoadChunkSizeBytes();
+    final long commitLockTimeout = getGraphPersistCommitLockTimeout();
+    final DatabaseInternal wrapped = db.getWrappedDatabaseInstance();
+    wrapped.begin();
+    try {
+      db.getTransaction().setCommitLockTimeout(commitLockTimeout);
+      long bytesInChunk = 0;
+      for (final int pageNumber : notOnDisk) {
+        db.getTransaction().getPageToModify(new PageId(db, fileId, pageNumber), pageSize, false).markFullyModified();
+        bytesInChunk += pageSize;
+        if (bytesInChunk >= chunkSizeBytes) {
+          wrapped.commit();
+          wrapped.begin();
+          db.getTransaction().setCommitLockTimeout(commitLockTimeout);
+          bytesInChunk = 0;
+        }
+      }
+      wrapped.commit();
+    } catch (final IOException e) {
+      rollbackIfBegun(wrapped);
+      throw new IndexException("Cannot write the pages of vector index '" + indexName + "' through the WAL", e);
+    } catch (final RuntimeException e) {
+      rollbackIfBegun(wrapped);
+      throw e;
+    }
+  }
+
+  /**
+   * Whether every committed page of a component this index wrote WITHOUT the WAL is on the disk, waiting for the flush up
+   * to {@link GlobalConfiguration#FLUSH_ALL_PAGES_TIMEOUT} (issue #11238). For the graph file, which is node-local and
+   * never goes through the WAL: what is not on the disk is not certified, and is rebuilt on the next open.
+   */
+  private boolean isOnDisk(final PaginatedComponent component) {
+    if (component == null)
+      return true;
+    final DatabaseInternal db = getDatabase();
+    return db.getPageManager()
+        .flushAndSyncWithoutWAL(db, component.getFileId(), component.getTotalPages(), flushWaitMillis(db)).length == 0;
+  }
+
+  private static long flushWaitMillis(final DatabaseInternal db) {
+    final long timeout = db.getConfiguration().getValueAsLong(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT);
+    // 0 is "wait forever" for this setting
+    return timeout > 0 ? timeout : Long.MAX_VALUE / 2;
+  }
+
+  private static void rollbackIfBegun(final DatabaseInternal db) {
+    if (db.isTransactionActive())
+      db.rollback();
   }
 
   /**
@@ -13317,6 +13585,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return true;
       }
       total.incrementAndGet();
+      IndexBuildTestHooks.recordIndexed(LSMVectorIndex.this, rid);
 
       // Estimate bytes written (rough approximation)
       // Each vector: dimensions * 4 bytes + metadata overhead

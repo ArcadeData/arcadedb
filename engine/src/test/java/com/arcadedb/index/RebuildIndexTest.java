@@ -148,8 +148,12 @@ class RebuildIndexTest {
     private static final int    DIMENSIONS = 16;
     private static final String NOT_VALID  = "is not valid. Probably has been drop";
 
+    /**
+     * A dense vector index is rebuilt IN PLACE now, as the LSM_TREE and HASH ones are: a bucket index held across a rebuild is the same
+     * object before and after, and keeps answering.
+     */
     @Test
-    void aDenseVectorBucketIndexHeldAcrossARebuildRefusesInsteadOfAnsweringNothing() {
+    void aDenseVectorBucketIndexHeldAcrossARebuildKeepsAnswering() {
       database.command("sql", "CREATE VERTEX TYPE Doc BUCKETS 1");
       database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
       final Random random = new Random(7);
@@ -168,24 +172,15 @@ class RebuildIndexTest {
 
       database.command("sql", "REBUILD INDEX `Doc[embedding]`");
 
-      assertThat(old.isValid()).isFalse();
-      assertRefused(() -> old.findNeighborsFromVector(query, 5));
-      assertRefused(() -> old.findNeighborsFromVector(query, 5, -1, null, WorkGuard.forCommandDeadline(null)));
-      assertRefused(() -> old.findNeighborsFromVectorApproximate(query, 5));
-      assertRefused(() -> old.findNeighborsFromVectorGrouped(query, 5, 1, -1, null, rid -> rid));
-      assertRefused(() -> old.findNeighborsFromVectorForGroups(query, Set.of("g"), 1, -1, null, rid -> "g", Float.POSITIVE_INFINITY));
-      assertRefused(() -> old.get(new Object[] { query }, 5));
-      assertRefused(old::countEntries);
-      // the stats describe the instance itself, and its close-time diagnostics are read after it was released
-      assertThat(old.getStats()).isNotNull();
-
-      // the data is intact: the index fetched again by name answers it
       final LSMVectorIndex fresh = (LSMVectorIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]"))
           .getIndexesOnBuckets()[0];
-      assertThat(fresh).isNotSameAs(old);
-      assertThat(fresh.findNeighborsFromVector(query, 5)).hasSize(5);
-      assertThat(fresh.countEntries()).isEqualTo(COUNT);
-      assertThat(fresh.getStats().get("activeVectors")).isEqualTo(COUNT);
+      assertThat(fresh).isSameAs(old);
+      assertThat(old.isValid()).isTrue();
+      assertThat(old.findNeighborsFromVector(query, 5)).hasSize(5);
+      assertThat(old.findNeighborsFromVector(query, 5, -1, null, WorkGuard.forCommandDeadline(null))).hasSize(5);
+      assertThat(old.findNeighborsFromVectorApproximate(query, 5)).hasSize(5);
+      assertThat(old.countEntries()).isEqualTo(COUNT);
+      assertThat(old.getStats().get("activeVectors")).isEqualTo(COUNT);
     }
 
     @Test
@@ -220,9 +215,12 @@ class RebuildIndexTest {
       assertThat(fresh.topK(tokens, weights, 5, null)).hasSize(5);
     }
 
-    /** The contrast the report draws, which the vector indexes now match: a stale LSM_TREE or HASH bucket refuses its reads. */
+    /**
+     * The contrast the report draws, which the vector indexes now match, no longer holds for the LSM_TREE and HASH indexes: they are
+     * rebuilt IN PLACE, so a bucket index held across a rebuild is the same object before and after, and keeps answering.
+     */
     @Test
-    void lsmTreeAndHashBucketIndexesHeldAcrossARebuildRefuseTheirReads() {
+    void lsmTreeAndHashBucketIndexesHeldAcrossARebuildKeepAnswering() {
       database.command("sql", "CREATE DOCUMENT TYPE Tag BUCKETS 1");
       database.command("sql", "CREATE PROPERTY Tag.name STRING");
       database.command("sql", "CREATE PROPERTY Tag.code STRING");
@@ -239,12 +237,12 @@ class RebuildIndexTest {
 
         database.command("sql", "REBUILD INDEX `" + name + "`");
 
-        assertThat(old.isValid()).isFalse();
-        assertRefused(old::countEntries);
-        assertRefused(() -> old.get(new Object[] { name.equals("Tag[name]") ? "t5" : "c5" }));
         final IndexInternal fresh = ((TypeIndex) database.getSchema().getIndexByName(name)).getIndexesOnBuckets()[0];
-        assertThat(fresh.countEntries()).isEqualTo(COUNT);
-        assertThat(fresh.getStats()).isNotNull();
+        assertThat(fresh).isSameAs(old);
+        assertThat(old.isValid()).isTrue();
+        assertThat(old.countEntries()).isEqualTo(COUNT);
+        assertThat(old.get(new Object[] { name.equals("Tag[name]") ? "t5" : "c5" }).hasNext()).isTrue();
+        assertThat(old.getStats()).isNotNull();
       }
     }
 

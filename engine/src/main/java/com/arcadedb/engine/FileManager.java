@@ -490,7 +490,14 @@ public class FileManager {
           if (unshippedCreates != null)
             unshippedCreates.remove(fileId);
 
-          if (recordedChanges.remove(entry)) {
+          final int recorded = recordedChanges.indexOf(entry);
+          if (recorded > -1 && !recordedChanges.get(recorded).create) {
+            // ALREADY ANNOUNCED BY recordDeferredDrop (issue #11240): the session's entry carries this drop already
+            LogManager.instance().log(this, Level.FINE,
+                "dropFile fileId=%d was announced ahead of the drop (componentName='%s', fileName='%s')",
+                null, fileId, file.getComponentName(), file.getFileName());
+          } else if (recorded > -1) {
+            recordedChanges.remove(recorded);
             if (cancelledCreates == null)
               cancelledCreates = new HashSet<>();
             cancelledCreates.add(fileId);
@@ -715,6 +722,45 @@ public class FileManager {
     LogManager.instance().log(this, Level.FINE,
         "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
         null, file.getFileId(), file.getFileName(), file.getComponentName());
+  }
+
+  /**
+   * Announces in the active recording session the drop of {@code fileId}, which happens only later (issue #11240): an HA
+   * compaction keeps the file it replaces until the entry publishing the replacement is accepted, so a leader that loses
+   * the entry still has it, while the entry must tell the other nodes to drop it. The later {@link #dropFile} finds the
+   * announcement and records nothing more. A no-op outside a session, or for a file this manager does not hold.
+   */
+  public synchronized void recordDeferredDrop(final int fileId) {
+    if (recordedChanges == null)
+      return;
+    final ComponentFile file = fileIdMap.get(fileId);
+    if (file == null)
+      return;
+    final FileChange entry = new FileChange(false, fileId, file.getFileName());
+    if (!recordedChanges.contains(entry))
+      recordedChanges.add(entry);
+  }
+
+  /**
+   * The id {@link #newFileId()} hands out next when it is past the slot after the highest file this manager holds, i.e.
+   * when the highest ids belong to files dropped in this session, otherwise -1 (issue #11240). The schema persists it, so a
+   * reopen, which rebuilds the slots from the files on disk, does not hand a dropped id out again: a node that still holds
+   * a file under that id would refuse the new file under it.
+   */
+  public synchronized int getNextFileIdPastDroppedFiles() {
+    for (int i = files.size() - 1; i > -1; --i)
+      if (files.get(i) != null)
+        return i == files.size() - 1 ? -1 : files.size();
+    return files.isEmpty() ? -1 : files.size();
+  }
+
+  /**
+   * Reserves every id below {@code nextFileId} as used, so {@link #newFileId()} never hands one out again, whether or not a
+   * file holds it now (issue #11240). Read back from the schema at open, see {@link #getNextFileIdPastDroppedFiles()}.
+   */
+  public synchronized void reserveFileIdsBelow(final int nextFileId) {
+    while (files.size() < nextFileId)
+      files.add(null);
   }
 
   public synchronized int newFileId() {

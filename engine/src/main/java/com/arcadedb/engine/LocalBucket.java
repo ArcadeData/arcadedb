@@ -7066,18 +7066,32 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private void linkNextChunk(final RID originalRID, final MutablePage page, final int offset, final MutablePage nextPage,
                              final int slot, final int coverage) {
+    final boolean selfDescribing = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_SELF_DESCRIBING_CHUNK_LINKS);
     writeNextChunkPointer(page, offset,
-            nextChunkLink(originalRID, getName(), nextPage.getPageId().getPageNumber(), slot, maxRecordsInPage), coverage);
+            nextChunkLink(originalRID, getName(), nextPage.getPageId().getPageNumber(), slot, maxRecordsInPage, selfDescribing),
+            coverage);
   }
 
   /**
-   * The value of a link to a continuation chunk at {@code slot} of {@code pageNumber}, refusing the one value that reads as
-   * "no next chunk" (#10701): see {@link #linkNextChunk}. Package-private and static so the refusal can be tested without an
-   * allocator that hands out position 0.
+   * The value of a link to a continuation chunk at {@code slot} of {@code pageNumber}, in the legacy form, refusing the one
+   * value that reads as "no next chunk" (#10701): see {@link #linkNextChunk}.
    */
   static long nextChunkLink(final RID originalRID, final String bucketName, final int pageNumber, final int slot,
                             final int maxRecordsInPage) {
+    return nextChunkLink(originalRID, bucketName, pageNumber, slot, maxRecordsInPage, false);
+  }
+
+  /**
+   * The value of a link to a continuation chunk at {@code slot} of {@code pageNumber}. With {@code selfDescribing} off it is
+   * the legacy absolute position, refusing the one value that reads as "no next chunk" (#10701); with it on it is
+   * {@link #nextChunkLinkOf}, which can name position 0 too (#10949). Package-private and static so the refusal can be tested
+   * without an allocator that hands out position 0.
+   */
+  static long nextChunkLink(final RID originalRID, final String bucketName, final int pageNumber, final int slot,
+                            final int maxRecordsInPage, final boolean selfDescribing) {
     final long pointer = (long) pageNumber * maxRecordsInPage + slot;
+    if (selfDescribing)
+      return nextChunkLinkOf(pointer);
     if (pointer == 0L)
       throw new DatabaseOperationException("Cannot link a continuation chunk of record " + originalRID
               + " at position 0 of bucket '" + bucketName + "': that value means 'no next chunk' and would truncate the record");
@@ -7100,9 +7114,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * The returned value is what the walks compare, put in their loop detectors and hand to each other, so two links to
    * the same chunk in different encodings are the same link everywhere.
    * <p>
-   * Only the READ side of the new form exists so far: every writer still stores the legacy form, so a database written
-   * by this release stays readable by the previous one. This is the read-before-write step of the rollout, which lets a
-   * later release start writing the new form without making a downgrade by one release lose data.
+   * The writers store the new form only when {@link GlobalConfiguration#BUCKET_SELF_DESCRIBING_CHUNK_LINKS} is on (#10949,
+   * default off), so a database written with the default stays readable by a release that predates the read support.
    */
   static long decodeNextChunkLink(final long link) {
     if (link > 0L)
@@ -7124,7 +7137,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * The self-describing form of a link to the chunk at {@code position}: {@code -(position + 1)}, which
    * {@link #decodeNextChunkLink} reads back as {@code position}, position 0 included (#10853). Not written by any writer
-   * yet - see {@link #decodeNextChunkLink} for the rollout.
+   * by default - see {@link #decodeNextChunkLink} for the rollout.
    */
   static long nextChunkLinkOf(final long position) {
     if (position < 0L)

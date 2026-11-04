@@ -73,7 +73,8 @@ class Issue9402GroupByBudgetWorkersTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
     assertThat(expected).hasSize(10);
 
-    // A BUDGET THE GROUPS FIT ONCE, BUT NOT ONCE PER WORKER
+    // A BUDGET THE GROUPS FIT ONCE, BUT NOT ONCE PER WORKER: ALL OF IT FOR THIS QUERY, WHICH MUST LEAVE NOTHING HELD
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(96L);
     final StringBuilder plan = new StringBuilder();
     final List<String> parallel = rows(query, plan);
@@ -95,6 +96,7 @@ class Issue9402GroupByBudgetWorkersTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
     assertThat(expected).hasSize(GROUPS);
 
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(96L);
     final List<String> parallel = rows(query, null);
     assertThat(parallel).isEqualTo(expected);

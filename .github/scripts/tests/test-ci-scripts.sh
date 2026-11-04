@@ -1635,10 +1635,18 @@ echo "check-native-march.py"
 
 # Writes a native pom whose base native-maven-plugin passes $2 as its -march build arg (none when
 # empty), with $3 as the native.march default and the per-arch profiles of the real pom unless $4
-# is "no-profiles". Extra profile XML can be passed as $5.
+# is "no-profiles". Extra profile XML can be passed as $5. The recorded expected baselines
+# (native.march.expected.<arch>, #10715) come from $MARCH_EXPECTED_* and default to the real pom's;
+# MARCH_EXPECTED_NONE=1 leaves them out.
 march_pom() {
     local path="$1" arg="$2" default="$3" profiles="${4:-}" extra="${5:-}"
-    local arg_xml="" profile_xml=""
+    local arg_xml="" profile_xml="" expected_xml=""
+    if [[ -z ${MARCH_EXPECTED_NONE:-} ]]; then
+        expected_xml="
+        <native.march.expected.amd64>${MARCH_EXPECTED_AMD64:-x86-64-v3}</native.march.expected.amd64>
+        <native.march.expected.x86_64>${MARCH_EXPECTED_X86_64:-x86-64-v3}</native.march.expected.x86_64>
+        <native.march.expected.aarch64>${MARCH_EXPECTED_AARCH64:-armv8-a}</native.march.expected.aarch64>"
+    fi
     [[ -n $arg ]] && arg_xml="<buildArg>$arg</buildArg>"
     if [[ $profiles != no-profiles ]]; then
         profile_xml='
@@ -1647,12 +1655,12 @@ march_pom() {
         <profile><id>native-march-x86_64</id><activation><os><arch>x86_64</arch></os></activation>
             <properties><native.march>x86-64-v3</native.march></properties></profile>
         <profile><id>native-march-aarch64</id><activation><os><arch>aarch64</arch></os></activation>
-            <properties><native.march>armv8.1-a</native.march></properties></profile>'
+            <properties><native.march>armv8-a</native.march></properties></profile>'
     fi
     cat >"$path" <<XML
 <project xmlns="http://maven.apache.org/POM/4.0.0">
     <properties>
-        <native.march>$default</native.march>
+        <native.march>$default</native.march>$expected_xml
     </properties>
     <build>
         <plugins>
@@ -1676,11 +1684,11 @@ XML
 }
 
 mkdir -p "$work/march"
-printf '## CPU requirements\n\n| Arch | -march |\n|---|---|\n| amd64 | `x86-64-v3` |\n| arm64 | `armv8.1-a` |\n\nOverride: `-Dnative.march=x86-64-v2`.\n\n## Next\n\n| `x86-64-v4` |\n' >"$work/march/docs.md"
+printf '## CPU requirements\n\n| Arch | -march |\n|---|---|\n| amd64 | `x86-64-v3` |\n| arm64 | `armv8-a` |\n\nOverride: `-Dnative.march=x86-64-v2`.\n\n## Next\n\n| `x86-64-v4` |\n' >"$work/march/docs.md"
 printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.static=true package\n' >"$work/march/clean.yml"
 
 march_pom "$work/march/ok-pom.xml" '-march=${native.march}' compatibility
-expect "accepts a per-arch -march that the docs name" 0 "amd64=x86-64-v3, x86_64=x86-64-v3, aarch64=armv8.1-a" \
+expect "accepts a per-arch -march that the docs name" 0 "amd64=x86-64-v3, x86_64=x86-64-v3, aarch64=armv8-a" \
     "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
 
 # The #10581 shape: no -march at all, so the binary silently inherits GraalVM's x86-64-v3 default.
@@ -1726,6 +1734,33 @@ expect "rejects a baseline only a table under another heading names" 1 "table do
 printf '# Native\n\nno table here\n' >"$work/march/no-section.md"
 expect "reports docs without a CPU requirements table" 1 "has no table under a 'CPU requirements' heading" \
     "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/no-section.md" "$work/march/clean.yml"
+
+# The #10715 shape: the arm64 profile raised to armv8.1-a (drops every ARMv8.0 core) while the docs
+# table was edited in the same change, so the docs check is satisfied by the change it should question.
+# Only the recorded expected baseline catches it.
+printf '## CPU requirements\n\n| Arch | -march |\n|---|---|\n| amd64 | `x86-64-v3` |\n| arm64 | `armv8.1-a` |\n' >"$work/march/docs-raised.md"
+march_pom "$work/march/raised-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>a</id><activation><os><arch>aarch64</arch></os></activation><properties><native.march>armv8.1-a</native.march></properties></profile>'
+expect "rejects a baseline raised above the recorded one even when the docs were edited to match (#10715)" 1 \
+    "on aarch64 -march resolves to 'armv8.1-a' but the recorded baseline" \
+    "$NATIVEMARCH" "$work/march/raised-pom.xml" "$work/march/docs-raised.md" "$work/march/clean.yml"
+
+# Raising it deliberately is a two-line change: the profile and the recorded value, in one reviewed diff.
+MARCH_EXPECTED_AARCH64=armv8.1-a march_pom "$work/march/raised-ok-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>a</id><activation><os><arch>aarch64</arch></os></activation><properties><native.march>armv8.1-a</native.march></properties></profile>'
+expect "accepts a raised baseline once the recorded value is raised with it" 0 "aarch64=armv8.1-a" \
+    "$NATIVEMARCH" "$work/march/raised-ok-pom.xml" "$work/march/docs-raised.md" "$work/march/clean.yml"
+
+# The record is read from the top-level properties only: a profile that sets it too cannot launder a raise.
+march_pom "$work/march/laundered-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>a</id><activation><os><arch>aarch64</arch></os></activation><properties><native.march>armv8.1-a</native.march><native.march.expected.aarch64>armv8.1-a</native.march.expected.aarch64></properties></profile>'
+expect "does not let a profile override the recorded baseline" 1 "but the recorded baseline" \
+    "$NATIVEMARCH" "$work/march/laundered-pom.xml" "$work/march/docs-raised.md" "$work/march/clean.yml"
+
+# Fail closed: a pom that records no expected baseline leaves nothing to compare against.
+MARCH_EXPECTED_NONE=1 march_pom "$work/march/no-expected-pom.xml" '-march=${native.march}' compatibility
+expect "reports a pom that records no expected baseline" 1 "records no expected baseline for aarch64" \
+    "$NATIVEMARCH" "$work/march/no-expected-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
 
 # The repository's own pom, docs, workflow and scripts must pass.
 expect "the repository's own native CPU baseline is explicit and documented" 0 "explicit and documented" \
@@ -2530,6 +2565,26 @@ if grep -qF '"suffix":"-compat","march":"compatibility"' "$NATIVEWF" \
     pass "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
 else
     fail "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
+fi
+
+# #11001: a `*Test` class outside the engine tagged slow/vector ran in no lane. The engine-only tag lanes never
+# build it and the unit-tests shards exclude the tag, so the tag must have a lane for the module or must not be there.
+echo
+echo "tag lanes cover every module"
+# Captured first: `git grep | grep -q` under pipefail reports SIGPIPE as "no match".
+vector_outside=$(git grep -lE '@Tag\("vector"\)' -- ':!engine' '*.java' || true)
+slow_outside=$(git grep -lE '@Tag\("slow"\)' -- ':!engine' '*Test.java' || true)
+if [[ -n $vector_outside ]]; then
+    fail "no test outside the engine carries @Tag(\"vector\") (the vector lane builds only the engine)" "$vector_outside"
+else
+    pass "no test outside the engine carries @Tag(\"vector\") (the vector lane builds only the engine)"
+fi
+if [[ -z $slow_outside ]]; then
+    pass "no slow *Test class outside the engine needs a lane"
+elif grep -E 'mvnw .*-pl .!engine[^ ]*. .*-Dgroups=slow' .github/workflows/mvn-test.yml | grep -qF -- '-Dsurefire.includes=**/*Test.java'; then
+    pass "slow *Test classes outside the engine have a lane in mvn-test.yml"
+else
+    fail "slow *Test classes outside the engine have a lane in mvn-test.yml" "$slow_outside"
 fi
 
 echo

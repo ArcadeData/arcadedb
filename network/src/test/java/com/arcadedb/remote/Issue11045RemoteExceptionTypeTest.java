@@ -26,26 +26,28 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ExceptionPackageCensus;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.function.FunctionExecutionException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
+import com.arcadedb.schema.trigger.TriggerExecutionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Modifier;
-import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
-import java.util.stream.Stream;
+import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,6 +59,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue11045RemoteExceptionTypeTest {
+  /** The few that cannot come back as themselves, with what they come back as. */
+  private static final Map<String, Class<?>> REBUILT_AS = Map.of(
+      // its (String) constructor takes a type name: rebuilt as the AlreadyExistsException it extends (issue #10153)
+      TypeAlreadyExistsException.class.getName(), AlreadyExistsException.class,
+      // its constructor takes the names of the missing parameters: rebuilt as the semantic error it extends
+      CommandParameterMissingException.class.getName(), CommandSemanticException.class,
+      // rebuilt from its exceptionArgs, which this body does not carry (issue #9473, see RemoteHttpComponentTest)
+      DuplicatedKeyException.class.getName(), RemoteException.class);
+
   private RemoteHttpComponentTest.TestableRemoteHttpComponent component;
 
   @BeforeEach
@@ -118,52 +129,50 @@ class Issue11045RemoteExceptionTypeTest {
    */
   @Test
   void everyExceptionOfTheEnginePackageComesBackAsItself() throws Exception {
-    final Map<String, Class<?>> rebuiltAs = Map.of(
-        // its (String) constructor takes a type name: rebuilt as the AlreadyExistsException it extends (issue #10153)
-        TypeAlreadyExistsException.class.getName(), AlreadyExistsException.class,
-        // its constructor takes the names of the missing parameters: rebuilt as the semantic error it extends
-        CommandParameterMissingException.class.getName(), CommandSemanticException.class,
-        // rebuilt from its exceptionArgs, which this body does not carry (issue #9473, see RemoteHttpComponentTest)
-        DuplicatedKeyException.class.getName(), RemoteException.class);
-
     final List<String> wrong = new ArrayList<>();
-    for (final Class<?> type : concreteExceptionsOfTheEnginePackage()) {
+    for (final Class<?> type : ExceptionPackageCensus.concreteExceptions()) {
       final Exception result = component.manageException(500, body(type.getName(), "boom"), "command");
-      final Class<?> expected = rebuiltAs.getOrDefault(type.getName(), type);
+      final Class<?> expected = REBUILT_AS.getOrDefault(type.getName(), type);
       if (result.getClass() != expected)
         wrong.add(type.getName() + " came back as " + result.getClass().getName());
     }
     assertThat(wrong).isEmpty();
   }
 
-  private static List<Class<?>> concreteExceptionsOfTheEnginePackage() throws Exception {
-    final String packagePath = ArcadeDBException.class.getPackageName().replace('.', '/');
-    final URL location = ArcadeDBException.class.getProtectionDomain().getCodeSource().getLocation();
-    final List<String> classNames = new ArrayList<>();
-    final Path root = Path.of(location.toURI());
-    if (Files.isDirectory(root)) {
-      try (final Stream<Path> files = Files.list(root.resolve(packagePath))) {
-        files.map(p -> p.getFileName().toString()).filter(n -> n.endsWith(".class") && !n.contains("$"))
-            .forEach(n -> classNames.add(n.substring(0, n.length() - ".class".length())));
-      }
-    } else {
-      try (final JarFile jar = new JarFile(root.toFile())) {
-        jar.stream().map(JarEntry::getName)
-            .filter(n -> n.startsWith(packagePath + "/") && n.endsWith(".class") && !n.contains("$") && n.indexOf('/',
-                packagePath.length() + 1) < 0)
-            .forEach(n -> classNames.add(n.substring(packagePath.length() + 1, n.length() - ".class".length())));
-      }
+  /**
+   * Issue #11198: the census above reads a package, the table draws from several. This one reads the authority's own key set,
+   * so an entry cannot leave {@link RemoteExceptionRebuilder} without a test noticing, wherever its class lives: every name it
+   * holds comes back over the driver as the class it names (or as the one it is documented to be rebuilt as).
+   */
+  @Test
+  void everyNameOfTheAuthorityComesBackAsItself() throws Exception {
+    final List<String> wrong = new ArrayList<>();
+    for (final String name : RemoteExceptionRebuilder.names()) {
+      final Exception result = component.manageException(500, body(name, "boom"), "command");
+      final Class<?> expected = REBUILT_AS.getOrDefault(name, Class.forName(name));
+      if (result.getClass() != expected)
+        wrong.add(name + " came back as " + result.getClass().getName());
     }
+    assertThat(wrong).isEmpty();
+  }
 
-    final List<Class<?>> types = new ArrayList<>();
-    for (final String simpleName : classNames) {
-      final Class<?> type = Class.forName(ArcadeDBException.class.getPackageName() + "." + simpleName);
-      if (ArcadeDBException.class.isAssignableFrom(type) && Modifier.isPublic(type.getModifiers()) && !Modifier.isAbstract(
-          type.getModifiers()))
-        types.add(type);
-    }
-    assertThat(types).as("the scan found the package").hasSizeGreaterThan(30);
-    return types;
+  /**
+   * Issue #11198: the entries whose class is not in the engine's exception package are pinned class by class, so deleting one
+   * (or adding one without saying why it is there) fails here instead of turning a remote exception back into a
+   * {@link RemoteException} unseen.
+   */
+  @Test
+  void theNamesOutsideTheEnginePackageArePinned() {
+    final String enginePackage = ArcadeDBException.class.getPackageName() + ".";
+    final Set<String> outside = new TreeSet<>();
+    for (final String name : RemoteExceptionRebuilder.names())
+      if (!name.startsWith(enginePackage) || name.indexOf('.', enginePackage.length()) >= 0)
+        outside.add(name);
+
+    assertThat(outside).containsExactlyInAnyOrder(FunctionExecutionException.class.getName(), IndexException.class.getName(),
+        QuorumNotReachedException.class.getName(), FeatureNotImplementedException.class.getName(),
+        TriggerExecutionException.class.getName(), LockException.class.getName(), IllegalArgumentException.class.getName(),
+        NoSuchElementException.class.getName(), SecurityException.class.getName());
   }
 
   /** A 503 keeps the retry contract: a rebuilt type has to be retryable, or a NeedRetryException comes back instead. */

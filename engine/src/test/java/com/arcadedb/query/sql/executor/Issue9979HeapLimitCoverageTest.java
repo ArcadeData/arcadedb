@@ -183,6 +183,9 @@ class Issue9979HeapLimitCoverageTest extends TestHelper {
   void aLetSubqueryIsChargedToTheSharedBudgetAndReleased() {
     createData(true);
     setCap(-1L);
+    // The counter is read while the LET is open: a query another test left would move it by more than the LET holds when it is
+    // collected meanwhile, and would answer the refusals below in place of the statements under test
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     final long baseline = QueryHeapBudget.getReservedBytes();
 
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);

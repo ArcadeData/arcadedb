@@ -180,6 +180,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode,
         new Type[] { Type.INTEGER, Type.LINK, Type.FLOAT }, pageSize, nullStrategy);
     this.engine = openEngine(this.underlyingIndex, metadata);
+    // Created with the index, in the schema frame that creates it, so a replicated index ships them with its other files
+    this.engine.createPostingLogs();
     this.afterCommitFlushKey = "sparse-flush:" + name;
   }
 
@@ -1080,6 +1082,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
     if (tx != null && tx.getStatus() == TransactionContext.STATUS.BEGUN) {
+      // Before the commit, holding none of its locks: the posting logs exist and are replayed, and the backpressure a write
+      // owes is paid here rather than at the publication, which runs under the commit's locks (issue #11239)
+      engine.beforeTransactionalWrite();
       tx.addIndexOperation(this,
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
@@ -1173,7 +1178,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (registered != null)
       return (SparseVectorReplayBuffer) registered;
 
-    final SparseVectorReplayBuffer created = new SparseVectorReplayBuffer(engine);
+    final SparseVectorReplayBuffer created = new SparseVectorReplayBuffer(engine, tx);
     tx.addIndexReplayConclusion(this, created);
     // Registered here as well as in queueOrApply, and keyed so the two never register it twice: a transaction whose
     // ONLY sparse writes are deferred updates (which never pass through the BEGUN branch) would otherwise leave the
@@ -1476,7 +1481,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public List<Integer> getFileIds() {
-    return underlyingIndex.getFileIds();
+    // The posting logs belong to the file set: a commit that appends to them locks them like the rest of the index, and so
+    // does an explicit LOCK (issue #11239)
+    final List<Integer> logs = engine.getPostingLogFileIds();
+    if (logs.isEmpty())
+      return underlyingIndex.getFileIds();
+    final List<Integer> shell = underlyingIndex.getFileIds();
+    final List<Integer> all = new ArrayList<>(shell.size() + logs.size());
+    all.addAll(shell);
+    all.addAll(logs);
+    return all;
   }
 
   @Override

@@ -157,14 +157,19 @@
 
               amd64 / x86_64  x86-64-v3   AVX, AVX2, BMI1, BMI2, FMA, F16C, LZCNT, MOVBE
                                           (Intel Haswell 2013+, AMD Excavator/Zen 2015+)
-              aarch64         armv8.1-a   ASIMD + CRC32 + LSE atomics
-                                          (excludes ARMv8.0 cores such as the Raspberry Pi 4's Cortex-A72)
+              aarch64         armv8-a     ASIMD, the ARMv8.0 baseline: runs on every 64-bit ARM core,
+                                          Raspberry Pi 3/4 (Cortex-A53/A72) and Graviton1 included
 
-            These are kept, rather than lowered to compatibility, until what that costs has been
-            measured: the 26.10.2 amd64 binary carries AVX2/FMA/BMI2 code throughout (the issue
-            counted 8,098 ymm operands, 46 FMA and 25,482 BMI2 instructions), and on aarch64 LSE
-            turns each CAS into one instruction instead of an LL/SC loop. A compatibility-built
-            archive for older amd64 CPUs is built by native-image.yml's include_compat leg (#11253).
+            These are the baselines the published binaries carried before -march was stated at all,
+            so stating them changes no published binary. They are kept, rather than lowered to
+            compatibility, until what that costs has been measured: the 26.10.2 amd64 binary carries
+            AVX2/FMA/BMI2 code throughout (the issue counted 8,098 ymm operands, 46 FMA and 25,482
+            BMI2 instructions). A compatibility-built archive for older amd64 CPUs is built by native-image.yml's
+            include_compat leg (#11253).
+
+            aarch64 was pinned to armv8.1-a (CRC32 + LSE atomics) by the commit that introduced this
+            property, which dropped every ARMv8.0 core while saying it changed nothing (#10715).
+            Raising it is a decision of its own, with a measurement and a release note.
 
             This default is the fallback for an architecture none of those profiles names, and
             `compatibility` is valid on every architecture native-image supports. Override it
@@ -180,6 +185,17 @@
             losing its -march build arg or docs/native-image.md naming different baselines.
         -->
         <native.march>compatibility</native.march>
+        <!--
+            The baseline each architecture's published binary is recorded as being built for (#10715).
+            .github/scripts/check-native-march.py fails when the baseline a native-march-* profile
+            resolves to differs from the value here, so changing one without the other is a red lint
+            job, not a silent change of the minimum CPU. To raise or lower a baseline deliberately,
+            change the profile, this value and the docs/native-image.md table in the same commit.
+            These are properties only for the checker to read; the build does not use them.
+        -->
+        <native.march.expected.amd64>x86-64-v3</native.march.expected.amd64>
+        <native.march.expected.x86_64>x86-64-v3</native.march.expected.x86_64>
+        <native.march.expected.aarch64>armv8-a</native.march.expected.aarch64>
         <!--
             native-image optimization level (#11070). -O3 inlines more aggressively than GraalVM's default
             -O2: faster code for a larger binary and a longer image build. The timed A/B behind it (same
@@ -618,7 +634,7 @@
                 </os>
             </activation>
             <properties>
-                <native.march>armv8.1-a</native.march>
+                <native.march>armv8-a</native.march>
             </properties>
         </profile>
     </profiles>

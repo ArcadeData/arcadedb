@@ -76,7 +76,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SchemaPresentationReadableWalkCensusTest {
-  private static final Path   REACTOR_ROOT = Path.of("..");
+  private static final Path   REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
   /** The authority: every walk of every type of a schema is a call of this method. */
   private static final String AUTHORITY    = "com/arcadedb/schema/Schema";
   private static final String WALK         = "getTypes";
@@ -123,6 +123,7 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("database/DocumentValidator#requireDateConstraintsSatisfiableUnder", MAINTENANCE),
       Map.entry("engine/DatabaseChecker#check", MAINTENANCE),
       Map.entry("engine/DatabaseChecker#checkExternalProperties", MAINTENANCE),
+      Map.entry("engine/DatabaseChecker#checkIndexes", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#collectEdgeSegmentBucketIds", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#collectEdgesToReconnect", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#reclaimOrphanedEdgeSegments", MAINTENANCE),
