@@ -718,7 +718,9 @@ class TypeIndexSchemaTest {
       for (final IndexInternal subIndex : snapshot)
         index.removeIndexOnBucket(subIndex);
       try {
-        assertThat(index.isValid()).isTrue();
+        // not dropped, but no longer valid either: an index lacking the bucket index of a bucket of its type misses its records
+        assertThat(index.isDropped()).isFalse();
+        assertThat(index.isValid()).isFalse();
         assertThat(index.isReadyForQueries()).isFalse();
         assertThat(index.isUnchangedSince(snapshot)).isFalse();
         assertThatThrownBy(() -> index.iterator(true, new Object[] { 1L }, true)).isInstanceOf(IndexException.class);
@@ -858,6 +860,9 @@ class TypeIndexSchemaTest {
           assertThat(strategies(typeIndex)).as(setter.toString()).hasSize(BUCKETS).containsOnly(NULL_STRATEGY.INDEX);
         }
         case "setMetadata/1", "setTypeIndex/1" -> assertRefuses(setter, typeIndex);
+        // only a bucket index is created empty and filled by a REBUILD INDEX
+        case "setAwaitingFill/1" -> assertThatThrownBy(() -> typeIndex.setAwaitingFill(true)).as(setter.toString())
+            .isInstanceOf(UnsupportedOperationException.class);
         case "setStatus/2" -> {
           // a facade has no status of its own: it must not report a change that no bucket index went through
           assertThat(typeIndex.setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE }, INDEX_STATUS.UNAVAILABLE))

@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
@@ -30,6 +31,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -63,7 +65,7 @@ import java.util.logging.Level;
 public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private static final ThreadLocal<Consumer<SortedIndexBuildMetrics>> SORTED_BUILD_METRICS_TEST_HOOK = new ThreadLocal<>();
 
-  private static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
+  static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
   private static final long MIN_SORTED_BUILD_MEMORY_BUDGET    = 1L << 20;
   private static final long SORTED_BUILD_PROGRESS_INTERVAL    = 1_000_000L;
 
@@ -337,7 +339,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         // Read without the lock, so a concurrent replacer can be dropping the index while it is decided over here (issue
         // #9741). It stays registered - dropping, then invalid - until that drop completes under the schema write lock, so
         // the request is decided there instead, over whatever replaced it or over nothing. Any other refusal is the answer.
-        if (found.isValid() && !found.isDropping())
+        if (!found.isDropped() && !found.isDropping())
           throw e;
         found = null;
       }
@@ -1004,6 +1006,18 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * that are checked when it commits.
    */
   private void verifyUniqueKeys(final TypeIndex index) {
+    verifyUniqueKeys(database, index, maxAttempts, false);
+  }
+
+  /**
+   * See {@link #verifyUniqueKeys(TypeIndex)}.
+   *
+   * @param confirmWithLookup the index can be written while it is walked ({@link InPlaceIndexRebuild}): a key two records seem
+   *                          to share is confirmed by looking it up again before it is refused, because a commit that moved the
+   *                          key from one record to the other between two page reads of the walk shows both records once
+   */
+  static void verifyUniqueKeys(final DatabaseInternal database, final TypeIndex index, final int maxAttempts,
+      final boolean confirmWithLookup) {
     final String indexName = index.getName();
     try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
       database.transaction(() -> {
@@ -1016,7 +1030,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             // ACROSS next() IS SAFE
             final Object[] keys = cursor.getKeys();
             if (previousKeys != null && !rid.equals(previousRid) && !LSMTreeIndexAbstract.isKeyNull(keys)
-                && LSMTreeIndexAbstract.compareKeys(cursor.getComparator(), cursor.getBinaryKeyTypes(), previousKeys, keys) == 0)
+                && LSMTreeIndexAbstract.compareKeys(cursor.getComparator(), cursor.getBinaryKeyTypes(), previousKeys, keys) == 0
+                && (!confirmWithLookup || isKeyHeldByMoreThanOneRecord(index, keys)))
               throw new DuplicatedKeyException(indexName, Arrays.toString(keys), previousRid);
             previousKeys = keys;
             previousRid = rid;
@@ -1024,6 +1039,28 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
       }, false, maxAttempts, null, null);
     }
+  }
+
+  /**
+   * Asked of every bucket index on its own: a lookup through the type index of a UNIQUE index stops at the first record it finds,
+   * which is exactly the answer that cannot tell one holder from two.
+   */
+  private static boolean isKeyHeldByMoreThanOneRecord(final TypeIndex index, final Object[] keys) {
+    RID first = null;
+    for (final IndexInternal onBucket : index.getIndexesOnBuckets())
+      try (final IndexCursor cursor = onBucket.get(keys)) {
+        while (cursor.hasNext()) {
+          final Identifiable next = cursor.next();
+          if (next == null)
+            continue;
+          final RID rid = next.getIdentity();
+          if (first == null)
+            first = rid;
+          else if (!first.equals(rid))
+            return true;
+        }
+      }
+    return false;
   }
 
   private SortedIndexBuildMetrics createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type,
@@ -1065,6 +1102,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
           bulkLoader.add(bucketIndex, record);
           final long total = scannedRecords.incrementAndGet();
+          IndexBuildTestHooks.recordIndexed(bucketIndex, record.getIdentity());
           if (total % SORTED_BUILD_PROGRESS_INTERVAL == 0)
             LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records (%,.0f records/sec)...",
                 logicalIndexName, total, total / Math.max(0.001, (System.nanoTime() - sourceScanStarted) / 1e9));

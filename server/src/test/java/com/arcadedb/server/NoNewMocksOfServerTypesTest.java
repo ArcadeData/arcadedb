@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NoNewMocksOfServerTypesTest {
 
   /** The reactor root, seen from the {@code server} module that surefire runs this class in (not the IDE's repo root). */
-  private static final Path   REACTOR_ROOT             = Path.of("..");
+  private static final Path   REACTOR_ROOT             = Path.of(System.getProperty("basedir", "."), "..");
   private static final String ALLOWLIST                = "mocks-of-server-types-allowlist.txt";
   private static final int    EXPECTED_MINIMUM_SOURCES = 1000;
 

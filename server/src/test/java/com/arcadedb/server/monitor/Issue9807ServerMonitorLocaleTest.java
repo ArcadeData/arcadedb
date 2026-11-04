@@ -113,7 +113,7 @@ class Issue9807ServerMonitorLocaleTest {
    */
   @Test
   void noServerEventMessageIsFormattedWithTheDefaultLocale() throws IOException {
-    final Path sources = Path.of("src", "main", "java");
+    final Path sources = Path.of(System.getProperty("basedir", "."), "src", "main", "java");
     assertThat(sources).as("run from the server module").isDirectory();
 
     final List<String> offenders = new ArrayList<>();

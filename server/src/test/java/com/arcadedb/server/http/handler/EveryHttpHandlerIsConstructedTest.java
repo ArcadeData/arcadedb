@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EveryHttpHandlerIsConstructedTest {
 
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
-  private static final Path REACTOR_ROOT = Path.of("..");
+  private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
 
   private static final Path HANDLER_PACKAGE = REACTOR_ROOT.resolve(
       Path.of("server", "src", "main", "java", "com", "arcadedb", "server", "http", "handler"));

@@ -44,7 +44,7 @@ class Issue9772ToolArgumentReadsTest {
 
   @Test
   void noToolReadsAnArgumentWithTheRawAccessor() throws IOException {
-    final Path tools = Path.of("src", "main", "java", "com", "arcadedb", "mcp", "tools");
+    final Path tools = Path.of(System.getProperty("basedir", "."), "src", "main", "java", "com", "arcadedb", "mcp", "tools");
     assertThat(tools).as("the test runs from the mcp module directory").isDirectory();
 
     final List<String> offenders = new ArrayList<>();

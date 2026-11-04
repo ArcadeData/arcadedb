@@ -364,7 +364,7 @@ class Issue10158GrpcWrappedRefusalStatusTest {
    */
   @Test
   void theStatusLaddersHoldNoHeadOnlyInstanceofArm() throws IOException {
-    final Path sources = Path.of("src/main/java/com/arcadedb/server/grpc");
+    final Path sources = Path.of(System.getProperty("basedir", "."), "src/main/java/com/arcadedb/server/grpc");
 
     assertThat(instanceofTargets(Files.readString(sources.resolve("ArcadeDbGrpcAdminService.java"), StandardCharsets.UTF_8),
         "StatusException toStatus(")).as("toStatus").containsOnly("StatusException");

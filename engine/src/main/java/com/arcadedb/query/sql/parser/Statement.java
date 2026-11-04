@@ -24,6 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -32,16 +34,26 @@ import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntFunction;
+import java.util.logging.Level;
 
 public class Statement extends SimpleNode {
+  /**
+   * How many attempts in all a query gets when the index its plan reads is gone by the time it starts (issue #9331). The last
+   * of them plans without the key indexes of the types it reads (issue #9615), see {@link #openResultSetPlanningAgainOnStaleIndex}.
+   */
+  protected static final int STALE_INDEX_PLAN_MAX_ATTEMPTS = 3;
+
   // Only for internal use!!! (caching)
   public Statement originalStatement;
   public String    originalStatementAsString;
@@ -252,6 +264,49 @@ public class Statement extends SimpleNode {
 
   public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context) {
     return createExecutionPlan(context);
+  }
+
+  /**
+   * Plans the statement and runs the first batch of its plan; when an index the planner or a step reads has been dropped or
+   * rebuilt meanwhile (issue #9331) it plans the statement again. The planner validates an index, picks it, and reads it again
+   * a few calls later; the steps read it once more when they start. A concurrent {@code DROP INDEX} in any of those gaps left
+   * a plan that no longer matches the schema, and the {@link IndexException} reached the caller of a read-only query.
+   * <p>
+   * Only the planning and the first batch are covered: an index dropped after the first rows were returned surfaces as the
+   * {@link IndexException} of {@code FetchFromIndexStep}, which beats a silently short answer. Before the first row nothing has
+   * been returned, so running the statement again is safe (a function with side effects, such as {@code sequence.next()},
+   * would run twice, but the exception comes from the index, before the first row). {@link LocalResultSet} computes the first
+   * row when it is created, so that row is inside the loop.
+   * <p>
+   * {@code planner} answers the plan of each attempt, from 1 to {@link #STALE_INDEX_PLAN_MAX_ATTEMPTS}. Every attempt after the
+   * first plans without the cache, which may still hold the stale plan. Planning again picks the index of the same name when a
+   * concurrent DDL recreated it, and a DDL that keeps dropping and recreating it can take that one away too, attempt after
+   * attempt (issue #9615). The last attempt therefore plans without the key indexes of the types it reads, which no DDL can take
+   * away under it: a scan answers what such an index would have, slower.
+   */
+  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner) {
+    for (int attempt = 1; ; attempt++) {
+      InternalExecutionPlan plan = null;
+      try {
+        plan = planner.apply(attempt);
+        return new LocalResultSet(plan);
+      } catch (final IndexException e) {
+        if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
+          throw e;
+        // The last attempt reads the types without their key indexes: a full scan, worth a warning to an operator
+        final boolean lastAttemptNext = attempt + 1 >= STALE_INDEX_PLAN_MAX_ATTEMPTS;
+        LogManager.instance().log(this, lastAttemptNext ? Level.WARNING : Level.INFO,
+            "Planning the statement again after attempt %d%s, its index was dropped or rebuilt: %s", null, attempt,
+            lastAttemptNext ? " without the key indexes of its types (a scan)" : "", e.getMessage());
+        if (plan != null)
+          try {
+            plan.close();
+          } catch (final RuntimeException closeFailure) {
+            // The stale index is the reason for the retry, not the close of the plan it spoiled
+            e.addSuppressed(closeFailure);
+          }
+      }
+    }
   }
 
   public Statement copy() {
@@ -554,6 +609,100 @@ public class Statement extends SimpleNode {
     if (timeout.val.longValue() > -1)
       this.timeout = timeout;
   }
+
+  /**
+   * The {@code resultSetLimit} of the current user's security groups when it is tighter than this statement's own LIMIT, else -1:
+   * the quota is a ceiling, and a LIMIT below it stays in force. A LIMIT given as a parameter ({@code LIMIT :n}, {@code LIMIT ?})
+   * is compared by the value {@code params} binds to it, like a literal; only a LIMIT whose value cannot be known here (no value
+   * bound, a value that is not a number, an expression) is taken as no limit, and the quota applies.
+   * <p>
+   * Read only, on purpose. A statement is shared: the database's statement cache hands the same instance to every user and
+   * thread that runs the same text, so a quota written into it caps everybody after the user it belongs to. A caller that
+   * gets a value here applies it to a {@link #copy()}.
+   *
+   * @param params the parameters bound to this execution, keyed as {@link InputParameter#getValue(Map)} reads them; may be null
+   */
+  protected long tighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    final long profiled = database.getResultSetLimit();
+    if (profiled < 0)
+      return -1L;
+    final Number own = ownLimit(params);
+    return own == null || own.longValue() < 0 || own.longValue() > profiled ? profiled : -1L;
+  }
+
+  /** The value of this statement's LIMIT for an execution bound to {@code params}, or null when it has none or it is unknown. */
+  private Number ownLimit(final Map<String, Object> params) {
+    if (limit == null)
+      return null;
+    if (limit.num != null)
+      return limit.num.getValue();
+    if (limit.inputParam != null && limit.inputParam.getValue(params) instanceof Number bound)
+      return bound;
+    return null;
+  }
+
+  /**
+   * This statement as the current user runs it from the query engine: itself, or a copy carrying the {@code resultSetLimit} of the
+   * user's groups where it is tighter than its own LIMIT. Never this statement modified, for the reason given in
+   * {@link #tighterProfiledLimit}: the query engine used to write the limit into it, so one capped user capped every later user of
+   * the same text, root included, and replaced a LIMIT tighter than the cap with the cap.
+   * <p>
+   * Itself by default, at no cost: only a statement whose plan reads its LIMIT has a quota to carry, and those override this with
+   * {@link #copyWithTighterProfiledLimit}. A SELECT and a MATCH do not: they apply the limit, together with the
+   * {@code readTimeout}, to a copy of their own when they execute, which also covers the paths that execute them without the query
+   * engine.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} reads; may be null
+   */
+  public Statement withProfiledResultSetLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    return this;
+  }
+
+  /**
+   * {@link #withProfiledResultSetLimit(DatabaseInternal, Map)} for positional parameters. They are keyed by position, the way
+   * every statement keys them, only when the user has a quota: a user without one pays nothing.
+   */
+  public final Statement withProfiledResultSetLimit(final DatabaseInternal database, final Object[] positionalParams) {
+    if (database.getResultSetLimit() < 0)
+      return this;
+
+    // ONLY A LIMIT GIVEN AS A PARAMETER READS THEM
+    Map<String, Object> params = null;
+    if (limit != null && limit.inputParam != null && positionalParams != null && positionalParams.length > 0) {
+      params = new HashMap<>(positionalParams.length * 2);
+      for (int i = 0; i < positionalParams.length; i++)
+        params.put(String.valueOf(i), positionalParams[i]);
+    }
+    return withProfiledResultSetLimit(database, params);
+  }
+
+  /**
+   * {@link #withProfiledResultSetLimit} for a statement whose plan reads its LIMIT and that is planned on every execution. The
+   * copy of the parse tree is paid on every execution of a user whose quota is tighter, and only then: the price of never writing
+   * that quota into the instance the other users share.
+   */
+  protected final Statement copyWithTighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(database, params);
+    if (profiledLimit < 0)
+      return this;
+
+    final Statement statement = copy();
+    statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
+    return statement;
+  }
+
+  /**
+   * {@link #tighterProfiledLimit} for the {@code readTimeout} of the current user's groups and this statement's TIMEOUT, which the
+   * grammar takes as a literal only.
+   */
+  protected long tighterProfiledTimeout(final DatabaseInternal database) {
+    final long profiled = database.getReadTimeout();
+    if (profiled < 0)
+      return -1L;
+    final Number own = timeout != null ? timeout.getVal() : null;
+    return own == null || own.longValue() < 0 || own.longValue() > profiled ? profiled : -1L;
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

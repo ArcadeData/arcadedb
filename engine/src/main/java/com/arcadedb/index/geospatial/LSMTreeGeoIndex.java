@@ -27,6 +27,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
@@ -62,6 +63,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -224,6 +226,25 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   @Override
   public void put(final Object[] keys, final RID[] rids) {
+    forEachToken(keys, rids, building.get() != null, token -> underlyingIndex.put(new Object[] { token }, rids));
+  }
+
+  /**
+   * Hands {@code entries} the entries {@link #put} writes into the underlying LSM tree for {@code keys}, the indexed values of the
+   * record {@code rid}, instead of writing them: what a rebuild in place sorts into the new content of the index. The tokens are the
+   * ones of this index's precision, tokenization and planar setting, and an invalid geometry is skipped with a WARNING, as a build
+   * skips it.
+   */
+  public void forEachBulkEntry(final Object[] keys, final RID rid, final BiConsumer<Object[], RID> entries) {
+    forEachToken(keys, new RID[] { rid }, true, token -> entries.accept(new Object[] { token }, rid));
+  }
+
+  /**
+   * The cells {@link #put} stores for {@code keys}.
+   *
+   * @param skipInvalid an invalid geometry is skipped with a WARNING (a build over existing records) instead of refused
+   */
+  private void forEachToken(final Object[] keys, final RID[] rids, final boolean skipInvalid, final Consumer<String> tokens) {
     if (keys == null || keys.length == 0 || keys[0] == null)
       return;
 
@@ -233,7 +254,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     final Object key0 = keys[0];
 
     if (key0 instanceof Shape shape) {
-      indexShape(shape, rids);
+      indexShape(shape, tokens);
       return;
     }
 
@@ -246,7 +267,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
       // A write the index cannot hold is refused: skipped, the record was missing from the index while every scan that
       // evaluated it failed, so the index answered where the scan threw (issue #10210). A build over existing records
       // still skips one, loudly, so a database holding such a value written before can rebuild its index.
-      if (building.get() == null)
+      if (!skipInvalid)
         throw new IndexException(
             "Geospatial index '" + getName() + "' cannot index " + Arrays.toString(rids) + ": " + e.getMessage(), e);
       LogManager.instance().log(this, Level.WARNING, "Geospatial index '%s': skipping %s, invalid geometry: %s", getName(),
@@ -256,18 +277,36 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (shape == null)
       return;
 
-    indexShape(shape, rids);
+    indexShape(shape, tokens);
   }
 
   /**
-   * Tokenizes a shape using the geohash prefix tree strategy and stores each token in the
-   * underlying LSM index. Inside a transaction the underlying LSM-Tree queues the per-token
-   * write onto {@code TransactionIndexContext}; commit replay then re-enters via
-   * {@link #putReplay}, which skips re-tokenization.
+   * Tokenizes a shape using the geohash prefix tree strategy and gives each token to {@code tokens}, which {@link #put} makes store
+   * it in the underlying LSM index. Inside a transaction the underlying LSM-Tree queues the per-token write onto
+   * {@code TransactionIndexContext}; commit replay then re-enters via {@link #putReplay}, which skips re-tokenization.
    */
-  private void indexShape(final Shape shape, final RID[] rids) {
+  private void indexShape(final Shape shape, final Consumer<String> tokens) {
     for (final String token : extractTokens(shape))
-      underlyingIndex.put(new Object[] { token }, rids);
+      tokens.accept(token);
+  }
+
+  /**
+   * Whether a REBUILD INDEX is meant to change what this index stores: an index in the legacy {@code FULL} cell layout or built
+   * before shapes were read on the plane is rebuilt into the current one by dropping and creating it again, which a rebuild in
+   * place, keeping this index and its settings, cannot do.
+   */
+  public boolean isUpgradedByRebuild() {
+    return tokenization == GeoIndexMetadata.TOKENIZATION.FULL || !planar;
+  }
+
+  @Override
+  public boolean isAwaitingFill() {
+    return underlyingIndex.isAwaitingFill();
+  }
+
+  @Override
+  public void setAwaitingFill(final boolean awaitingFill) {
+    underlyingIndex.setAwaitingFill(awaitingFill);
   }
 
   @Override
@@ -555,6 +594,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
         final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
         db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
+        IndexBuildTestHooks.recordIndexed(LSMTreeGeoIndex.this, record.getIdentity());
 
         IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
 

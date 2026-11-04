@@ -185,9 +185,9 @@ class Issue10847PqCodebookReuseTest extends TestHelper {
     final ProductQuantization first = indexOf().pqCodesForTest().quantization();
 
     database.command("sql", "REBUILD INDEX `Embedding[vector]`");
+    // rebuilt in place: the compaction that ends the rebuild builds the graph right away, with a codebook of its own
     final LSMVectorIndex rebuilt = indexOf();
-    rebuilt.buildVectorGraphNow();
-
+    assertThat(rebuilt.pqCodesForTest()).isNotNull();
     assertThat(rebuilt.pqCodesForTest().quantization()).isNotSameAs(first);
     assertThat(rebuilt.getLastPqReusedCodes()).isZero();
   }

@@ -507,6 +507,15 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   /**
+   * Ships the whole page with the commit: its WAL entry becomes one segment covering the entire content region, a full
+   * image that WAL recovery applies whatever version the page has on disk (issue #11238). For a page whose earlier
+   * versions were committed without the WAL and may never have reached the disk.
+   */
+  public void markFullyModified() {
+    updateModifiedRange(PAGE_HEADER_SIZE, getPhysicalSize() - 1);
+  }
+
+  /**
    * Declares that every byte the caller is about to write on this page can be re-derived at commit time by the given
    * commit-time replay mechanism(s) - a bit set of {@link #COVERAGE_EDGE_APPEND_MERGE} and
    * {@link #COVERAGE_SLOT_MERGE} - and returns the previous declaration so it can be restored by

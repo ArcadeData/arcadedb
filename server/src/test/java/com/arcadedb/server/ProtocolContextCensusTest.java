@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ProtocolContextCensusTest {
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
-  private static final Path REACTOR_ROOT = Path.of("..");
+  private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
 
   /** The tag, set on a thread that serves a client. */
   private static final String TAG_CALL = "ProtocolContext.set(";
@@ -120,7 +120,7 @@ class ProtocolContextCensusTest {
         TAG_CALLS.get(module).covering()).isEqualTo(TAG_CALLS.get(module).calls()));
 
     // The server itself: the HTTP handlers and the WebSocket insert sessions
-    assertThat(countTagCalls(Path.of("src/main/java"))).as("server").isPositive();
+    assertThat(countTagCalls(Path.of(System.getProperty("basedir", "."), "src/main/java"))).as("server").isPositive();
   }
 
   @Test

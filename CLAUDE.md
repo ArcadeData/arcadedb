@@ -74,7 +74,7 @@ General design principles:
   build" must range over the thing that defines an offender, and must assert that it reached it:
   - if the authority is a method, scan the compiled call sites of that method (see
     `Issue10850NoNarrowingReadsInFunctionsTest`, `SchemaPresentationReadableWalkCensusTest`); if it is a table or
-    registry, read its key set (see `Issue11170MCPToolAnnotationsTest`, `RemoteExceptionRebuilder.rebuildableNames()`)
+    registry, read its key set (see `Issue11170MCPToolAnnotationsTest`, `RemoteExceptionRebuilder.names()`)
   - a census rooted in a directory, a module list, a package or a source spelling can be left by writing the offender
     somewhere else, and a reviewer reading it cannot tell
   - every census carries at least one assertion of the form "the scan still reaches X", where X names the authority and

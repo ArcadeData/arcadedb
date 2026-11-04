@@ -20,12 +20,14 @@ package com.arcadedb.query.opencypher.procedures.path;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -34,6 +36,8 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -51,13 +55,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The graph is a chain of 40 diamonds, {@code j0 -> (top|bottom) -> j1 -> ...}: 2^40 trails from {@code j0}, so a walk read to a
  * {@code LIMIT} is far from its end and holds a frontier of thousands of branches.
+ * <p>
+ * The walks read what their own query holds, from the {@link QueryHeapTracker} of the query, rather than the JVM-wide
+ * {@link QueryHeapBudget} counter: that one also carries the reservations of the queries other tests of the same JVM abandoned
+ * without closing them, which the {@code Cleaner} of the tracker gives back whenever the garbage collector finds them, so it can
+ * drop by more than the walk holds while the walk is open. The tracker is the share of the budget the query holds: the walk
+ * reserves from the budget through it, and gives it back through it. The walk is {@code path.expandConfig} itself, under a
+ * name of its own that hands the test the tracker of the query that called it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
   private static final int DIAMONDS = 40;
 
-  private static final String WALK = "path.expandConfig(s, {relationshipFilter: 'E>'}) YIELD path";
+  private static final String WALK = TrackedExpandConfig.NAME + "(s, {relationshipFilter: 'E>'}) YIELD path";
+
+  /** The tracker of every query that called the walk. */
+  private final Set<QueryHeapTracker> trackers = ConcurrentHashMap.newKeySet();
 
   @Override
   protected void beginTest() {
@@ -78,55 +92,58 @@ class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
     });
     // The budget is on: the frontier of a walk is charged to it. TestHelper puts the setting back after the test
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L << 30);
+    CypherProcedureRegistry.registerOrReplace(new TrackedExpandConfig(trackers));
+  }
+
+  @Override
+  protected void endTest() {
+    unregister(TrackedExpandConfig.NAME);
   }
 
   @Test
   @Timeout(120)
   void theIssueReproduction() {
-    final long before = QueryHeapBudget.getReservedBytes();
     try (final ResultSet resultSet = database.query("opencypher",
         "MATCH (s:J {name: 'j0'}) CALL " + WALK + " RETURN path LIMIT 20000")) {
       assertThat(drain(resultSet)).isEqualTo(20000);
-      assertThat(QueryHeapBudget.getReservedBytes()).as("the walk holds its frontier while the rows are read").isGreaterThan(before);
+      assertWalkHoldsItsFrontier();
     }
-    assertThat(QueryHeapBudget.getReservedBytes()).as("closing the ResultSet gave the frontier back").isLessThanOrEqualTo(before);
+    assertWalkGaveItsFrontierBack();
   }
 
   @Test
   @Timeout(120)
   void aStandaloneCallGivesItBackToo() {
     final Vertex start = database.query("sql", "SELECT FROM J WHERE name = 'j0'").next().getVertex().get();
-    final long before = QueryHeapBudget.getReservedBytes();
-    try (final ResultSet resultSet = database.query("opencypher", "CALL path.expandConfig($s, {relationshipFilter: 'E>'}) YIELD path RETURN path LIMIT 20000",
-        Map.of("s", start))) {
+    try (final ResultSet resultSet = database.query("opencypher",
+        "CALL " + TrackedExpandConfig.NAME + "($s, {relationshipFilter: 'E>'}) YIELD path RETURN path LIMIT 20000", Map.of("s", start))) {
       assertThat(drain(resultSet)).isEqualTo(20000);
-      assertThat(QueryHeapBudget.getReservedBytes()).isGreaterThan(before);
+      assertWalkHoldsItsFrontier();
     }
-    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(before);
+    assertWalkGaveItsFrontierBack();
   }
 
   @Test
   @Timeout(120)
   void aConsumerThatStopsBeforeAnyLimitGivesItBack() {
-    final long before = QueryHeapBudget.getReservedBytes();
     try (final ResultSet resultSet = database.query("opencypher", "MATCH (s:J {name: 'j0'}) CALL " + WALK + " RETURN path")) {
       for (int i = 0; i < 20000; i++)
         resultSet.next();
-      assertThat(QueryHeapBudget.getReservedBytes()).isGreaterThan(before);
+      assertWalkHoldsItsFrontier();
     }
-    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(before);
+    assertWalkGaveItsFrontierBack();
   }
 
   @Test
   @Timeout(120)
   void everyWalkOfAChainedCallGivesItsFrontierBack() {
-    final long before = QueryHeapBudget.getReservedBytes();
     try (final ResultSet resultSet = database.query("opencypher",
         "MATCH (s:J) WHERE s.name IN ['j0', 'j10', 'j20'] CALL " + WALK + " RETURN path LIMIT 20000")) {
       assertThat(drain(resultSet)).isEqualTo(20000);
-      assertThat(QueryHeapBudget.getReservedBytes()).isGreaterThan(before);
+      assertWalkHoldsItsFrontier();
     }
-    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(before);
+    // Every walk the chained call opened charged the same tracker, the one of the query: it holds nothing once they are all closed
+    assertWalkGaveItsFrontierBack();
   }
 
   /** Whatever stream a procedure answers is closed with the ResultSet: the guarantee does not depend on the procedure. */
@@ -176,6 +193,20 @@ class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
     }
   }
 
+  /** The control: the walk really holds its frontier, past what a query may buffer before it reserves from the shared budget. */
+  private void assertWalkHoldsItsFrontier() {
+    assertThat(trackers).as("every walk of a query charges the tracker of that query").hasSize(1);
+    final QueryHeapTracker tracker = trackers.iterator().next();
+    assertThat(tracker.getReservedBytes()).as("the walk holds its frontier while the rows are read").isGreaterThan(0L);
+  }
+
+  private void assertWalkGaveItsFrontierBack() {
+    assertThat(trackers).as("every walk of a query charges the tracker of that query").hasSize(1);
+    final QueryHeapTracker tracker = trackers.iterator().next();
+    assertThat(tracker.getUsedBytes()).as("closing the ResultSet gave the frontier back").isZero();
+    assertThat(tracker.getReservedBytes()).as("and its share of the shared budget with it").isZero();
+  }
+
   private static int drain(final ResultSet resultSet) {
     int rows = 0;
     while (resultSet.hasNext()) {
@@ -201,13 +232,44 @@ class Issue10150ProcedureStreamClosedByCallTest extends TestHelper {
 
   private static void unregister(final List<CypherProcedure> procedures) {
     for (final CypherProcedure procedure : procedures)
-      CypherProcedureRegistry.unregister(procedure.getName());
+      unregister(procedure.getName());
+  }
+
+  /** From both registries: registering a Cypher procedure also registers it in the unified one, which would keep it. */
+  private static void unregister(final String name) {
+    CypherProcedureRegistry.unregister(name);
+    ProcedureRegistry.unregister(name);
   }
 
   private static Result row(final int n) {
     final ResultInternal row = new ResultInternal();
     row.setProperty("n", n);
     return row;
+  }
+
+  /**
+   * {@code path.expandConfig} under a name of its own, recording the tracker of the query that calls it: the walk, its stream and
+   * the {@code onClose} that gives its frontier back are those of the procedure.
+   */
+  private static final class TrackedExpandConfig extends PathExpandConfig {
+    static final String NAME = "issue10150.expandConfig";
+
+    private final Set<QueryHeapTracker> trackers;
+
+    TrackedExpandConfig(final Set<QueryHeapTracker> trackers) {
+      this.trackers = trackers;
+    }
+
+    @Override
+    public String getName() {
+      return NAME;
+    }
+
+    @Override
+    public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
+      trackers.add(context.getQueryHeapTracker());
+      return super.execute(args, inputRow, context);
+    }
   }
 
   /** A procedure whose stream registers an {@code onClose} that counts, as {@code AbstractPathProcedure.pathRows} does to give its heap back. */

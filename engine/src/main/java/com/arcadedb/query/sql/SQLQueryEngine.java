@@ -44,7 +44,6 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
-import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
@@ -207,8 +206,8 @@ public class SQLQueryEngine implements QueryEngine {
 
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
     statement.checkParametersBound(bound);
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    return executeGuarded(statement, database, bound);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
+    return executeGuarded(executed, database, bound);
   }
 
   @Override
@@ -219,10 +218,11 @@ public class SQLQueryEngine implements QueryEngine {
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
     statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    if (lookup.parameters() != null)
-      return executeGuarded(statement, database, lookup.mergeParameters(positionalParameters(parameters)));
-    return executeGuarded(statement, database, parameters);
+    if (lookup.parameters() != null) {
+      final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), database, bound);
+    }
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), database, parameters);
   }
 
   @Override
@@ -231,13 +231,13 @@ public class SQLQueryEngine implements QueryEngine {
     final Statement statement = lookup.statement();
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
     statement.checkParametersBound(bound);
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
 
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
 
-    return executeGuarded(statement, executionDatabase(), bound, context);
+    return executeGuarded(executed, executionDatabase(), bound, context);
   }
 
   /**
@@ -255,7 +255,7 @@ public class SQLQueryEngine implements QueryEngine {
     final Statement statement = lookup.statement();
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
     statement.checkParametersBound(bound);
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
 
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
@@ -264,7 +264,7 @@ public class SQLQueryEngine implements QueryEngine {
       for (final Map.Entry<String, Object> entry : variables.entrySet())
         context.setVariable(entry.getKey(), entry.getValue());
 
-    return executeGuarded(statement, executionDatabase(), bound, context);
+    return executeGuarded(executed, executionDatabase(), bound, context);
   }
 
   @Override
@@ -272,15 +272,14 @@ public class SQLQueryEngine implements QueryEngine {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
     statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
     if (lookup.parameters() != null) {
       final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
       context.setInputParameters(bound);
-      return executeGuarded(statement, executionDatabase(), bound, context);
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), executionDatabase(), bound, context);
     }
-    return executeGuarded(statement, executionDatabase(), parameters, context);
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), executionDatabase(), parameters, context);
   }
 
   /**
@@ -355,9 +354,6 @@ public class SQLQueryEngine implements QueryEngine {
 
       @Override
       public ResultSet execute(final Map<String, Object> parameters) {
-        final long resultSetLimit = database.getResultSetLimit();
-        if (resultSetLimit > 0)
-          statement.setLimit(new Limit().setValue((int) resultSetLimit));
         // Same resolution as command(): this is a third execution entry point, not an analysis-only one.
         // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
         // database.command() fallback is only reached by engines whose execute() returns null), so leaving
@@ -374,9 +370,10 @@ public class SQLQueryEngine implements QueryEngine {
         final String databaseName = database.getName();
         final Map<String, Object> bound = lookup.mergeParameters(parameters);
         statement.checkParametersBound(bound);
+        final Statement executed = statement.withProfiledResultSetLimit(database, bound);
         final long start = QueryMetricsRecorder.Holder.startNanos();
         try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
-          return executeGuarded(statement, executionDatabase(), bound);
+          return executeGuarded(executed, executionDatabase(), bound);
         } finally {
           QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
         }

@@ -441,9 +441,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     if (mainPageCount == 0) {
-      // NO PAGES. THIS SHOULD NEVER HAPPEN
-      LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
+      // NO SERIES. A REBUILD IN PLACE OF AN INDEX WHOSE BUCKET HOLDS NO RECORD (InPlaceIndexRebuild) ATTACHES A COMPACTED FILE OF
+      // ONLY ITS MAIN PAGE, WHICH IS EMPTY BY DESIGN. ANYTHING LARGER SHOULD NEVER HAPPEN
+      if (totalPages > 1)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
       return Collections.emptyList();
     }
 
@@ -660,9 +662,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     if (mainPageCount == 0) {
-      // NO PAGES. THIS SHOULD NEVER HAPPEN
-      LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
+      // NO SERIES. A REBUILD IN PLACE OF AN INDEX WHOSE BUCKET HOLDS NO RECORD (InPlaceIndexRebuild) ATTACHES A COMPACTED FILE OF
+      // ONLY ITS MAIN PAGE, WHICH IS EMPTY BY DESIGN. ANYTHING LARGER SHOULD NEVER HAPPEN
+      if (totalPages > 1)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
       return;
     }
 

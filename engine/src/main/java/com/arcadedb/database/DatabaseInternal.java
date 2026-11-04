@@ -33,6 +33,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
@@ -42,6 +43,7 @@ import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.IOException;
@@ -51,6 +53,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
+import java.util.logging.Level;
 
 /**
  * Internal API, do not use as an end user.
@@ -525,6 +528,33 @@ public interface DatabaseInternal extends Database {
       throw e;
     } catch (final Exception e) {
       throw new IOException("Compaction failed", e);
+    }
+  }
+
+  /**
+   * Runs what a compaction persists of its swap on this node - the schema save, the drop of a file it replaced - once the
+   * cluster accepted the entry that publishes the compaction, or at once when no replicated compaction runs on this thread,
+   * which is always the case standalone (issue #11240). A leader that persisted first and then crashed, or lost the entry
+   * to a leadership change, held a layout no other node had, and its index silently missed what the next leader wrote into
+   * the files it had replaced. Deferred, the local files stay as the cluster knows them until the entry is in the log.
+   *
+   * <p>
+   * A failure of {@code action} is reported to the caller of the replicated compaction, which then keeps the entry
+   * replayable and skips what follows it. Run at once, it is logged and does not propagate: the swap is already in memory and
+   * serving, and an exception here would leave the compaction half undone. An action that depends on an earlier one checks
+   * for itself whether that one failed (a dropped file the schema on disk still names, say).
+   *
+   * @param droppedFileId the id of the file {@code action} drops, which the publishing entry announces to the other nodes
+   *                      although this node keeps it until then, or -1 when the action drops no file
+   * @param action        what to persist
+   */
+  default void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    try {
+      action.call();
+    } catch (final Error e) {
+      throw e;
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on persisting the compaction of database '%s'", e, getName());
     }
   }
 

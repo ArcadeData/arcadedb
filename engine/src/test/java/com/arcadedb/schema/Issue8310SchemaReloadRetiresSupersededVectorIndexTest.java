@@ -164,19 +164,25 @@ class Issue8310SchemaReloadRetiresSupersededVectorIndexTest extends TestHelper {
         .untilAsserted(() -> assertThat(timerThreadsOf(index)).isEmpty());
   }
 
-  /** {@code REBUILD INDEX} replaces the instance by dropping the old one, so it must leave no timer behind either. */
+  /**
+   * {@code REBUILD INDEX} used to replace the instance by dropping the old one, which had to leave no timer behind. It is rebuilt in
+   * place now: the instance stays, and the compaction that ends the rebuild moves it to a file of another name, which must not leave
+   * the timer armed under the previous name either.
+   */
   @Test
-  void rebuildingTheIndexStopsTheTimerOfTheInstanceItReplaces() {
+  void rebuildingTheIndexLeavesNoTimerUnderThePreviousName() {
     final IndexInternal before = bucketLevelVectorIndex(schema());
     assertThat(timerThreadsOf(before)).as("the fixture must arm the inactivity timer it then expects gone").hasSize(1);
+    final String timerBefore = TIMER_THREAD_PREFIX + before.getName();
 
     database.command("sql", "REBUILD INDEX `" + INDEX_NAME + "`");
 
-    assertThat(bucketLevelVectorIndex(schema())).as("the rebuild must have replaced the instance").isNotSameAs(before);
-    Awaitility.await("the replaced index's inactivity timer thread exits")
+    assertThat(bucketLevelVectorIndex(schema())).as("rebuilt in place").isSameAs(before);
+    Awaitility.await("the inactivity timer thread under the previous name exits")
         .atMost(Duration.ofSeconds(10))
         .pollInterval(Duration.ofMillis(20))
-        .untilAsserted(() -> assertThat(timerThreadsOf(before)).isEmpty());
+        .untilAsserted(() -> assertThat(Thread.getAllStackTraces().keySet().stream()
+            .filter(t -> t.isAlive() && t.getName().equals(timerBefore))).isEmpty());
     assertThat(neighbors()).as("the rebuilt index answers").containsExactly("a");
   }
 

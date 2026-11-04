@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
@@ -250,8 +251,40 @@ class ParallelScanSafetyTest extends TestHelper {
         while (rs.hasNext())
           rs.next();
       }).as("a failed producer must fail the query, not shrink its result set")
-          .isInstanceOf(CommandExecutionException.class)
-          .hasMessageContaining("Parallel scan failed");
+          .isInstanceOf(DatabaseOperationException.class)
+          .rootCause().isInstanceOf(AssertionError.class).hasMessage("injected producer failure");
+    } finally {
+      step.close();
+    }
+  }
+
+  /**
+   * A unit fails the query with the exception its scan threw, whichever thread scanned it: a producer of the pool, or the consumer
+   * itself when no producer had taken the unit yet (#8594). The consumer's own scan always threw it as it was; a producer's was
+   * wrapped in "Parallel scan failed", so the same statement failed with one error or the other depending on thread scheduling.
+   */
+  @Test
+  void failingProducerSurfacesItsOwnExceptionAsTheSequentialScanWould() {
+    createAndPopulate();
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(TYPE_NAME, null, context, null);
+    final CommandExecutionException injected = new CommandExecutionException("injected unit failure");
+    try {
+      step.getSubSteps().add(new AbstractExecutionStep(context) {
+        @Override
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+          throw injected;
+        }
+      });
+
+      final ResultSet rs = step.syncPull(context, RECORDS * 2 + 1);
+      assertThatThrownBy(() -> {
+        while (rs.hasNext())
+          rs.next();
+      }).as("the failure of a unit must reach the caller as it was thrown, whether a producer or the consumer scanned it")
+          .isSameAs(injected);
     } finally {
       step.close();
     }

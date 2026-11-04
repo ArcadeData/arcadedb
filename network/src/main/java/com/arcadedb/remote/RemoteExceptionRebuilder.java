@@ -93,7 +93,9 @@ import java.util.function.Function;
  * Adding an exception: a new class of {@code com.arcadedb.exception} whose {@code (String)} constructor takes its message gets
  * one line here, and the scanning test fails until it has it. A message-only exception that lives in another package of the
  * engine or of the network module ({@code FeatureNotImplementedException}, {@code TriggerExecutionException},
- * {@code QuorumNotReachedException}, ...) is outside the scan, so whoever adds one adds its line here by hand. An exception
+ * {@code QuorumNotReachedException}, ...) is outside the scan, so whoever adds one adds its line here by hand and to the pinned
+ * list of {@code theNamesOutsideTheEnginePackageArePinned}, while the census of {@link #names()} (issue #11198) checks that
+ * each entry, wherever its class lives, still comes back as itself over both drivers. An exception
  * that carries more than its message gets a structured mapping in the drivers instead, ahead of this table.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -163,14 +165,6 @@ public final class RemoteExceptionRebuilder {
   }
 
   /**
-   * The class names this table rebuilds. It is the authority a census of the drivers' exception mapping has to enumerate
-   * from (issue #11199): a scan of a package sees only the classes that happen to live there.
-   */
-  public static Set<String> rebuildableNames() {
-    return FACTORIES.keySet();
-  }
-
-  /**
    * The exception {@code className} names, carrying {@code message}, or null when it is not one listed here.
    */
   public static RuntimeException rebuild(final String className, final String message) {
@@ -178,5 +172,13 @@ public final class RemoteExceptionRebuilder {
       return null;
     final Function<String, RuntimeException> factory = FACTORIES.get(className);
     return factory != null ? factory.apply(message) : null;
+  }
+
+  /**
+   * The class names this table rebuilds, which is the authority the drivers read. The census tests enumerate it rather than a
+   * package, so an entry cannot leave the table unseen wherever its class lives (issue #11198).
+   */
+  public static Set<String> names() {
+    return FACTORIES.keySet();
   }
 }

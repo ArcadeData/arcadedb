@@ -2170,6 +2170,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.raftProperties = properties;
 
+    // A database whose crash recovery stopped short is quarantined before this node can serve it or lead with it, and is
+    // re-installed from the cluster (issue #11250)
+    stateMachine.quarantineDatabasesWithIncompleteRecovery();
+
     raftClient = buildRaftClient(raftGroup, properties, parameters);
 
     LogManager.instance()

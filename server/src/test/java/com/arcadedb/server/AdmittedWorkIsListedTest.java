@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class AdmittedWorkIsListedTest {
-  private static final Path    REACTOR_ROOT = Path.of("..");
+  private static final Path    REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
   private static final Pattern ADMITS       = Pattern.compile("\\.admit\\(");
   private static final Pattern REGISTERS    = Pattern.compile("getRunningQueries\\(\\)|registerRunningQuery\\(");
 

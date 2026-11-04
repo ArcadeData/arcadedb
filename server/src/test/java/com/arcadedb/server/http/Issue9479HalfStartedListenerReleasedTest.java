@@ -170,9 +170,9 @@ class Issue9479HalfStartedListenerReleasedTest {
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, httpFirst + "-" + (httpFirst + RANGE_WIDTH - 1));
     config.setValue(GlobalConfiguration.SERVER_HTTPS_INCOMING_PORT, httpsFirst + "-" + httpsLast);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, true);
-    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "src/test/resources/keystore.pkcs12");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, System.getProperty("basedir", ".") + "/src/test/resources/keystore.pkcs12");
     config.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
-    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "src/test/resources/truststore.jks");
+    config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, System.getProperty("basedir", ".") + "/src/test/resources/truststore.jks");
     config.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
     return config;
   }

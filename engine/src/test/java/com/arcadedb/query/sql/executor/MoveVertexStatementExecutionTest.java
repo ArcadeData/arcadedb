@@ -293,6 +293,31 @@ class MoveVertexStatementExecutionTest extends TestHelper {
   }
 
   /**
+   * A vertex moved into a bucket another type owns becomes a vertex of that type, as INSERT INTO BUCKET types a record by the
+   * bucket's owner: the move re-created it with its old type there, which the guard of #11206 now refuses, and before it the
+   * old type's indexes answered for a record read back as the other type.
+   */
+  @Test
+  void moveVertexToABucketOfAnotherTypeRetypesIt() {
+    final String typeA = "testMoveOtherBucketA";
+    final String typeB = "testMoveOtherBucketB";
+    database.getSchema().createVertexType(typeA).createProperty("name", String.class).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    database.getSchema().createVertexType(typeB).createProperty("name", String.class).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+    final String bucketOfB = database.getSchema().getType(typeB).getBuckets(false).getLast().getName();
+    database.setAutoTransaction(true);
+
+    final String rid = database.command("sql", "create vertex " + typeA + " set name = 'moved'").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX " + rid + " TO BUCKET:" + bucketOfB)) {
+      final Result moved = rs.next();
+      assertThat(moved.getElement().get().getTypeName()).isEqualTo(typeB);
+      assertThat(database.getSchema().getBucketById(moved.getIdentity().get().getBucketId()).getName()).isEqualTo(bucketOfB);
+    }
+
+    assertThat(database.query("sql", "SELECT FROM " + typeA + " WHERE name = 'moved'").stream().count()).isZero();
+    assertThat(database.query("sql", "SELECT FROM " + typeB + " WHERE name = 'moved'").stream().count()).isEqualTo(1);
+  }
+
+  /**
    * Regression test for issue #5871: MOVE VERTEX ... TO bucket:&lt;number&gt; (the numeric bucket form) must move the
    * vertex to the target bucket. This form is parsed via {@code Bucket.bucketNumber} rather than {@code bucketName},
    * a path that was silently discarding the parsed bucket id before this fix (the AST builder was constructing the
