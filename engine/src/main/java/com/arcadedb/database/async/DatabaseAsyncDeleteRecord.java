@@ -33,7 +33,7 @@ import java.util.logging.Level;
  * (issue #7003). A veto is learnt from the delegate's return value instead, so a vetoed delete still skips the
  * success callback as it always did.
  */
-public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
+public class DatabaseAsyncDeleteRecord extends DatabaseAsyncAbstractTask {
   public final Record                record;
   public final DeletedRecordCallback onOkCallback;
   public final ErrorCallback         onErrorCallback;

@@ -46,7 +46,7 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DatabaseAsyncParkWorker implements DatabaseAsyncTask {
+public class DatabaseAsyncParkWorker extends DatabaseAsyncAbstractTask {
   /** Bounds how often the park re-reads the shutdown flag, so a closing executor is not held by a lost release. */
   private static final long          PARK_POLL_MILLIS = 500;
   private final        CountDownLatch parked;

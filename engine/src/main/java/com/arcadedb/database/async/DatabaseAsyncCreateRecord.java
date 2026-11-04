@@ -25,7 +25,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
-public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
+public class DatabaseAsyncCreateRecord extends DatabaseAsyncAbstractTask {
   public final Record            record;
   public final Bucket            bucket;
   public final NewRecordCallback onOkCallback;
