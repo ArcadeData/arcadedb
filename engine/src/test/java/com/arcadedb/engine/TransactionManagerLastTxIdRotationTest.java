@@ -58,13 +58,44 @@ class TransactionManagerLastTxIdRotationTest extends TestHelper {
     final File marker = new File(db.getDatabasePath(), TransactionManager.LAST_TX_ID_FILE_NAME);
     assertThat(marker).doesNotExist();
 
-    // One runtime rotation pass, as the background timer runs it (retire actives + drop inactives).
-    db.getTransactionManager().rotateAndDropWALForTesting();
+    // One runtime rotation pass, as the background timer runs it (retire actives + drop inactives). It drops only a WAL
+    // whose pages reached the disk, so wait for the asynchronous flush first.
+    assertThat(db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+    assertThat(db.getTransactionManager().rotateAndDropWALForTesting()).as("the rotation must drop the WAL file").isTrue();
 
     assertThat(marker).as("the runtime WAL rotation must persist the recency marker it is deleting the source of")
         .exists();
     try (final DataInputStream in = new DataInputStream(new FileInputStream(marker))) {
       assertThat(in.readLong()).isEqualTo(lastTxId);
     }
+  }
+
+  /**
+   * The rotation hook used to force the drop, deleting the WAL of a committed transaction whose pages the asynchronous
+   * flush thread had not written yet: a crash right after lost the transaction. It surfaced as an intermittent failure of
+   * {@code Issue9795RecoveryTransactionIdCounterTest} on a loaded CI runner, where the flush lagged behind the commit.
+   * Suspending the flush makes that interleaving certain.
+   */
+  @Test
+  void runtimeWalRotationNeverDropsTheWalOfAPageNotOnDisk() throws Exception {
+    final LocalDatabase db = (LocalDatabase) database;
+    db.transaction(() -> db.getSchema().getOrCreateDocumentType("RotationType"));
+    assertThat(db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db)).isTrue();
+
+    // THE COMMIT'S PAGES STAY OFF THE DISK: ITS WAL IS THEIR ONLY DURABLE COPY
+    assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+        .as("flush suspension must engage or the pages could reach disk, invalidating the test").isTrue();
+    db.transaction(() -> db.newDocument("RotationType").set("k", 1).save());
+
+    assertThat(db.getTransactionManager().rotateAndDropWALForTesting())
+        .as("a WAL protecting a page that is not on disk must survive the rotation").isFalse();
+
+    db.kill();
+    // UNREGISTERS THE KILLED INSTANCE ONLY: THE LOCK FILE AND THE WAL STAY, SO THE OPEN BELOW RUNS RECOVERY
+    db.close();
+    database = factory.open();
+
+    assertThat(database.countType("RotationType", false)).as("the committed transaction must be recovered from its WAL")
+        .isEqualTo(1);
   }
 }
