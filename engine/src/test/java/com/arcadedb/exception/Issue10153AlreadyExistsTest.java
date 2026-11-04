@@ -241,6 +241,8 @@ class Issue10153AlreadyExistsTest extends TestHelper {
       // the rename of a TIMESERIES type onto a sealed file left in the database directory: a file no schema object holds (#10796).
       // The component it collides with is a bucket or an index, refused as a taken name
       "schema/LocalTimeSeriesType.java:SchemaException:Cannot rename the TIMESERIES type '\" + oldName + \"' to '\" + newName + \"': the sealed file '",
+      // the same file met by CREATE TIMESERIES TYPE (#10925): a file no schema object holds, refused by the rule of the rename above
+      "schema/LocalTimeSeriesType.java:SchemaException:Cannot create the TIMESERIES type '\" + name + \"': the sealed file '",
       // the same file met by the move itself, the guard behind the check above that ATOMIC_MOVE does not replace it (#10796)
       "engine/timeseries/TimeSeriesSealedStore.java:IOException:Cannot move the sealed store '");
 
