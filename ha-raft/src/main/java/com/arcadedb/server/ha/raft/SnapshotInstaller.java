@@ -126,6 +126,13 @@ public final class SnapshotInstaller {
    */
   static final String SNAPSHOT_VALIDATION_FAILED_FILE = SNAPSHOT_SWAP_STATE_FILE + ".validation-failed";
   /**
+   * The account of the installed files (size and name, one per line) taken from the verified staging. It is written into
+   * {@code .snapshot-new} before the completion marker, so it is carried into the live directory by the swap itself, and
+   * crash recovery compares the live files with it before it deletes the retained backup (issue #11223). Deleted with the
+   * rest of the swap state.
+   */
+  static final String SNAPSHOT_MANIFEST_FILE = ".snapshot-manifest";
+  /**
    * Every regular file the install writes into a database directory (the {@code SNAPSHOT_*_DIR} entries are
    * directories). None of them is part of the database, so the cross-node checksum scan
    * ({@code SnapshotManager.computeFileChecksums}) leaves them out: issue #9307 was the verdict record above, added
@@ -136,7 +143,8 @@ public final class SnapshotInstaller {
    * otherwise escapes the guard.
    */
   private static final Set<String> SNAPSHOT_MACHINERY_FILES = Set.of(SNAPSHOT_PENDING_FILE, SNAPSHOT_COMPLETE_FILE,
-      SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE);
+      SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE,
+      SNAPSHOT_MANIFEST_FILE);
   /**
    * The directories the snapshot install keeps in a database directory: the staging, the retained backup and the
    * orphans. With {@link #SNAPSHOT_MACHINERY_FILES} this is every entry the swap leaves in place (issue #9446), so a new
@@ -617,16 +625,18 @@ public final class SnapshotInstaller {
       throw e;
     }
 
+    // The staging has just been verified against the leader's manifest, which is dropped after the download. Keep
+    // its account (name and size of every file) for the length of the install, so the files that end up live can be
+    // compared with it before the retained backup is deleted (issue #11200). It is also persisted, before the
+    // completion marker that vouches for the staging, so crash recovery has the same account to compare with (#11223).
+    final Map<String, Long> expectedFiles = expectedInstalledFiles(snapshotNew);
+    writeInstalledFilesManifest(snapshotNew, expectedFiles);
+
     // Mark download as complete. The extracted files were each fsynced as they were written
     // (see extractAndVerifySnapshot), so fsyncing this marker and the staging directory now
     // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
     // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
     writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
-
-    // The staging has just been verified against the leader's manifest, which is dropped after the download. Keep
-    // its account (name and size of every file) for the length of the install, so the files that end up live can be
-    // compared with it before the retained backup is deleted (issue #11200).
-    final Map<String, Long> expectedFiles = expectedInstalledFiles(snapshotNew);
 
     final Consumer<String> staged = snapshotStagedForTesting;
     if (staged != null)
@@ -777,9 +787,39 @@ public final class SnapshotInstaller {
         if (!Files.isRegularFile(file))
           continue;
         final String name = snapshotNew.relativize(file).toString().replace('\\', '/');
-        if (SNAPSHOT_COMPLETE_FILE.equals(name))
+        if (SNAPSHOT_COMPLETE_FILE.equals(name) || SNAPSHOT_MANIFEST_FILE.equals(name))
           continue;
         expected.put(name, Files.size(file));
+      }
+    }
+    return expected;
+  }
+
+  /** Persists {@code expected} as {@link #SNAPSHOT_MANIFEST_FILE} in {@code directory}, durably (issue #11223). */
+  static void writeInstalledFilesManifest(final Path directory, final Map<String, Long> expected) throws IOException {
+    final StringBuilder content = new StringBuilder(expected.size() * 32);
+    for (final Map.Entry<String, Long> entry : expected.entrySet())
+      content.append(entry.getValue()).append('\t').append(entry.getKey()).append('\n');
+    writeFileForced(directory.resolve(SNAPSHOT_MANIFEST_FILE), content.toString());
+    fsyncDirectory(directory);
+  }
+
+  /** The account persisted by {@link #writeInstalledFilesManifest}, or null when {@code directory} holds none (an install that predates it). */
+  static Map<String, Long> readInstalledFilesManifest(final Path directory) throws IOException {
+    final Path file = directory.resolve(SNAPSHOT_MANIFEST_FILE);
+    if (!Files.isRegularFile(file))
+      return null;
+    final Map<String, Long> expected = new HashMap<>();
+    for (final String line : Files.readAllLines(file)) {
+      if (line.isEmpty())
+        continue;
+      final int tab = line.indexOf('\t');
+      if (tab <= 0)
+        throw new IOException("Malformed snapshot manifest line in " + file);
+      try {
+        expected.put(line.substring(tab + 1), Long.parseLong(line.substring(0, tab)));
+      } catch (final NumberFormatException e) {
+        throw new IOException("Malformed snapshot manifest line in " + file, e);
       }
     }
     return expected;
@@ -1873,11 +1913,24 @@ public final class SnapshotInstaller {
    */
   private static void rollBackUnlessSnapshotOpens(final Path dbDir, final Path snapshotNew, final Path snapshotBackup)
       throws IOException {
-    if (!Files.isDirectory(snapshotBackup) || snapshotOpens(dbDir))
+    if (!Files.isDirectory(snapshotBackup))
       return;
 
-    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-        "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
+    // What the live files are compared with is the account taken from the verified staging (issue #11223): a snapshot
+    // that opens can still hold zero-length page files or a schema.json that fell back to schema.prev.json (#11200).
+    // An install that predates the manifest has nothing to compare with, and keeps the proof of the open alone.
+    final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
+    final String mismatch = expected != null ? firstInstalledFileMismatch(expected, dbDir) : null;
+    if (mismatch == null && snapshotOpens(dbDir))
+      return;
+
+    if (mismatch != null)
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "The snapshot rolled forward in %s does not match what the leader sent (%s): restoring the retained backup instead of deleting it",
+          null, dbDir, mismatch);
+    else
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
     writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
     resumeRollback(dbDir, snapshotBackup);
     deleteDirectoryIfExists(snapshotNew);
@@ -1958,6 +2011,7 @@ public final class SnapshotInstaller {
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_VALIDATION_FAILED_FILE));
+    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_MANIFEST_FILE));
     fsyncDirectory(dbDir);
   }
 
