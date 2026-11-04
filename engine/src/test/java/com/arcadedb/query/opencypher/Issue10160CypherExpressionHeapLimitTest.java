@@ -26,6 +26,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.procedures.control.DoWhen;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -97,6 +98,9 @@ class Issue10160CypherExpressionHeapLimitTest extends TestHelper {
   void aCollectIsChargedToTheSharedBudgetAndReleased() {
     createData();
     setCap(-1L);
+    // The verdict compares the query with the whole budget, so nothing else may hold a share of it here: a query another test left
+    // holding it turns "more than the whole budget" into "the running queries hold too much"
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     final long baseline = QueryHeapBudget.getReservedBytes();
 
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);
