@@ -406,8 +406,9 @@ final class DuplexHttpExchange implements HttpResponse<InputStream>, AutoCloseab
     final long[] still = { progress.getAsLong(), System.nanoTime() };
     final ByteArrayOutputStream line = new ByteArrayOutputStream(128);
 
-    socket.setSoTimeout(sampleMs);
     try {
+      // INSIDE THE TRANSLATION: AN UPLOAD THAT FAILED ALREADY HAS ABORTED THE SOCKET, AND ITS OWN FAILURE IS THE ANSWER
+      socket.setSoTimeout(sampleMs);
       do {
         final String status = readHeadLine(line, deadlineNanos, progress, still);
         statusCode = parseStatus(status);

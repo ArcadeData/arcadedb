@@ -50,6 +50,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue11182GremlinAnalysisDoesNotExecuteTest {
+  /** Groovy that writes through the Graph API, not through a traversal, then reads. */
+  private static final String GRAPH_API_WRITE = "g.getGraph().addVertex('Probe'); g.V()";
 
   private ArcadeGraph graph;
   private Database    database;
@@ -75,6 +77,12 @@ class Issue11182GremlinAnalysisDoesNotExecuteTest {
     assertThat(analyzed.isIdempotent()).isFalse();
     assertThat(analyzed.getOperationTypes()).containsExactly(OperationType.CREATE);
     assertThat(database.countType("Probe", true)).as("the analysis of '%s' must not write", terminal).isZero();
+  }
+
+  @Test
+  void aTraversalThatWritesIsNotDDL() {
+    // A TRAVERSAL CANNOT CHANGE THE SCHEMA: ITS WRITE STAYS IN THE CLIENT'S TRANSACTION ON AN HA REPLICA (#10040)
+    assertThat(analyzeInATransaction("g.addV('Probe').iterate()").isDDL()).isFalse();
   }
 
   @Test
@@ -186,33 +194,68 @@ class Issue11182GremlinAnalysisDoesNotExecuteTest {
 
   @Test
   void aGroovyScriptThatWritesIsNeverRunByTheAnalysis() {
-    // WITH THE 'auto' ENGINE A SCRIPT THE gremlin-lang GRAMMAR CANNOT READ FALLS BACK TO GROOVY, WHICH IS CODE: ONLY EVALUATING IT
-    // TELLS ITS TRAVERSAL. THE ANALYSIS EVALUATES IT WITH A SOURCE THAT STOPS A TRAVERSAL THAT WRITES BEFORE ITS FIRST STEP
+    // WITH THE 'auto' ENGINE A SCRIPT THE gremlin-lang GRAMMAR CANNOT READ FALLS BACK TO GROOVY, WHICH IS CODE: ONLY RUNNING IT
+    // TELLS WHAT IT DOES, SO THE ANALYSIS DOES NOT RUN IT AND IT MAY WRITE ANYTHING
     database.getConfiguration().setValue(GlobalConfiguration.GREMLIN_ENGINE, "auto");
 
     final QueryEngine.AnalyzedQuery analyzed = analyzeInATransaction("def v = g.addV('Probe').next(); v");
 
     assertThat(analyzed.isIdempotent()).isFalse();
-    assertThat(analyzed.getOperationTypes()).contains(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.values());
     assertThat(database.countType("Probe", true)).isZero();
   }
 
   @Test
-  void aGroovyScriptThatReadsIsARead() {
+  void aGroovyScriptThatWritesThroughTheGraphApiIsNeverRunByTheAnalysis() {
+    // A WRITE THAT IS NOT A TRAVERSAL: NO GUARDED TRAVERSAL SOURCE CAN STOP IT, ONLY NOT RUNNING THE SCRIPT DOES. IT WAS RUN, MADE
+    // DURABLE, AND THEN REPORTED AS A READ, SO EVERY CALLER THAT ANALYSES BEFORE IT RUNS (THE READ-ONLY QUERY PATH, THE MCP QUERY TOOL,
+    // THE HA FOLLOWER'S FORWARD) LET THE WRITE THROUGH
+    database.getConfiguration().setValue(GlobalConfiguration.GREMLIN_ENGINE, "auto");
+
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("gremlin").analyze(GRAPH_API_WRITE);
+
+    assertThat(analyzed.isIdempotent()).isFalse();
+    assertThat(analyzed.isDDL()).as("Groovy may change the schema: an HA replica must forward it even in a client's transaction")
+        .isTrue();
+    assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.values());
+    assertThat(database.isTransactionActive()).as("the analysis must not leave a transaction behind").isFalse();
+    assertThat(database.countType("Probe", true)).isZero();
+  }
+
+  @Test
+  void aGroovyScriptThatOnlyReadsCannotBeToldFromAWriteWithoutRunningIt() {
     database.getConfiguration().setValue(GlobalConfiguration.GREMLIN_ENGINE, "auto");
     database.transaction(() -> database.newVertex("Probe").set("name", "groovy").save());
 
-    final QueryEngine.AnalyzedQuery ranARead = graph.gremlin("def c = g.V().hasLabel('Probe').count().next(); c").parse();
-    assertThat(ranARead.isIdempotent()).isTrue();
-    assertThat(ranARead.getOperationTypes()).containsExactly(OperationType.READ);
-
-    final QueryEngine.AnalyzedQuery builtARead = graph.gremlin("def t = g.V().hasLabel('Probe'); t.values('name')").parse();
-    assertThat(builtARead.isIdempotent()).isTrue();
-
-    final QueryEngine.AnalyzedQuery builtAWrite = analyzeInATransaction("def t = g.V().hasLabel('Probe'); t.drop()");
-    assertThat(builtAWrite.isIdempotent()).isFalse();
-    assertThat(builtAWrite.getOperationTypes()).containsExactly(OperationType.DELETE);
+    for (final String script : new String[] { "def c = g.V().hasLabel('Probe').count().next(); c",
+        "def t = g.V().hasLabel('Probe'); t.values('name')", "def t = g.V().hasLabel('Probe'); t.drop()" }) {
+      final QueryEngine.AnalyzedQuery analyzed = analyzeInATransaction(script);
+      assertThat(analyzed.isIdempotent()).as("'%s' is Groovy", script).isFalse();
+      assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.values());
+    }
     assertThat(database.countType("Probe", true)).isEqualTo(1L);
+  }
+
+  @Test
+  void theReadOnlyQueryPathRefusesGroovyWithoutRunningIt() {
+    database.getConfiguration().setValue(GlobalConfiguration.GREMLIN_ENGINE, "auto");
+
+    assertThatThrownBy(() -> database.query("gremlin", GRAPH_API_WRITE).close()).isInstanceOf(QueryNotIdempotentException.class);
+    assertThat(database.countType("Probe", true)).isZero();
+  }
+
+  @Test
+  void theCommandStillRunsAGroovyScriptOnce() {
+    database.getConfiguration().setValue(GlobalConfiguration.GREMLIN_ENGINE, "auto");
+
+    database.transaction(() -> database.command("gremlin", GRAPH_API_WRITE).close());
+    assertThat(database.countType("Probe", true)).isEqualTo(1L);
+  }
+
+  @Test
+  void theJavaEngineStillRefusesGroovyAsAParsingError() {
+    assertThatThrownBy(() -> database.getQueryEngine("gremlin").analyze(GRAPH_API_WRITE)).isInstanceOf(CommandParsingException.class);
+    assertThat(database.countType("Probe", true)).isZero();
   }
 
   @Test

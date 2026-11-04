@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -256,9 +257,12 @@ class GremlinTest {
           database.newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      final ResultSet result = database.query("gremlin",
-          "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
-          "p1", 25);
+      final String script = "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)";
+
+      // RUN AS GROOVY, WHICH THE READ-ONLY PATH CANNOT TELL FROM A WRITE WITHOUT RUNNING IT: REFUSED THERE, RUN AS A COMMAND
+      assertThatThrownBy(() -> database.query("gremlin", script, "p1", 25)).isInstanceOf(QueryNotIdempotentException.class);
+
+      final ResultSet result = database.command("gremlin", script, "p1", 25);
 
       int i = 0;
       int lastAge = 0;

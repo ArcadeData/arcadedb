@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
@@ -63,7 +64,7 @@ class ClusterAlertsTest {
     db.command("sql", "CREATE VERTEX TYPE SingleBucketV BUCKETS 1");
     db.command("sql", "CREATE DOCUMENT TYPE SingleBucketD BUCKETS 1");
 
-    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db);
+    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db, null);
 
     assertThat(flagged).contains("SingleBucketV", "SingleBucketD");
   }
@@ -73,7 +74,7 @@ class ClusterAlertsTest {
     db.command("sql", "CREATE VERTEX TYPE MultiBucketV BUCKETS 8");
     db.command("sql", "CREATE EDGE TYPE MultiBucketE BUCKETS 8");
 
-    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db);
+    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db, null);
 
     assertThat(flagged).doesNotContain("MultiBucketV", "MultiBucketE");
   }
@@ -81,12 +82,12 @@ class ClusterAlertsTest {
   @Test
   void growingBucketCountClearsTheFlag() {
     db.command("sql", "CREATE VERTEX TYPE Account BUCKETS 1");
-    assertThat(ClusterAlerts.findSingleBucketTypes(db)).contains("Account");
+    assertThat(ClusterAlerts.findSingleBucketTypes(db, null)).contains("Account");
 
     // Add a second bucket to the live type: the contention diagnostic must clear.
     db.command("sql", "ALTER TYPE Account BUCKET +Account_extra1");
 
-    assertThat(ClusterAlerts.findSingleBucketTypes(db)).doesNotContain("Account");
+    assertThat(ClusterAlerts.findSingleBucketTypes(db, null)).doesNotContain("Account");
   }
 
   @Test
@@ -95,9 +96,52 @@ class ClusterAlertsTest {
     db.command("sql", "CREATE VERTEX TYPE Apple BUCKETS 1");
     db.command("sql", "CREATE VERTEX TYPE Mango BUCKETS 1");
 
-    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db);
+    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db, null);
 
     assertThat(flagged).isSorted();
+  }
+
+  @Test
+  void aTypeTheReaderMayNotReadIsNotNamed() {
+    db.command("sql", "CREATE DOCUMENT TYPE OpenSingle BUCKETS 1");
+    db.command("sql", "CREATE DOCUMENT TYPE HiddenSingle BUCKETS 1");
+    final Set<Integer> denied = Set.copyOf(db.getSchema().getType("HiddenSingle").getBucketIds(false));
+
+    final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db, new SecurityDatabaseUser() {
+      @Override
+      public String getName() {
+        return "scoped";
+      }
+
+      @Override
+      public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+        return true;
+      }
+
+      @Override
+      public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+        return !denied.contains(fileId);
+      }
+
+      @Override
+      public boolean requestAccessOnType(final String typeName, final ACCESS access) {
+        return !"HiddenSingle".equals(typeName);
+      }
+
+      @Override
+      public long getResultSetLimit() {
+        return -1;
+      }
+
+      @Override
+      public long getReadTimeout() {
+        return -1;
+      }
+    });
+
+    assertThat(flagged).contains("OpenSingle").doesNotContain("HiddenSingle");
+    // NO READER IS THE OPERATOR VIEW
+    assertThat(ClusterAlerts.findSingleBucketTypes(db, null)).contains("OpenSingle", "HiddenSingle");
   }
 
   // ---- leader-missing-databases alert (issue #4727) ----

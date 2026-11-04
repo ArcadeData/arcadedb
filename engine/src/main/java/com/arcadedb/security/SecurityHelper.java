@@ -117,8 +117,16 @@ public final class SecurityHelper {
    * every type, as {@link #canAccessType(SecurityDatabaseUser, DocumentType, SecurityDatabaseUser.ACCESS)} answers.
    */
   public static Collection<? extends DocumentType> readableTypes(final Database database) {
+    return readableTypes(database, currentUser(database));
+  }
+
+  /**
+   * The types of {@code database} that {@code user} may read, in the schema's own order: {@link #readableTypes(Database)} for a
+   * route that answers a principal it holds rather than one bound to the database's context, such as a server endpoint walking a
+   * database through a server-side handle that no request is bound to. A {@code null} user sees every type.
+   */
+  public static Collection<? extends DocumentType> readableTypes(final Database database, final SecurityDatabaseUser user) {
     final Collection<? extends DocumentType> types = database.getSchema().getTypes();
-    final SecurityDatabaseUser user = currentUser(database);
     if (user == null)
       return types;
 

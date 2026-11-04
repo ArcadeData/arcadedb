@@ -992,7 +992,8 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("snapshotDownloadQueued", SpecBuilders.bool("A snapshot install is waiting to start"));
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
-        "Databases quarantined because this node's WAL diverged from the leader's"));
+        "Databases this node quarantined and does not serve until a copy from the cluster replaces them, for the cause "
+            + "'divergenceCauses' names: a WAL divergence from the leader, or a local copy found incomplete or unsafe"));
     final Schema<String> cause = SpecBuilders.string("""
         Why this database was quarantined. 'WAL_VERSION_GAP' means an intermediate transaction never reached \
         this node; 'UNDECODABLE_LOG_ENTRY' a corrupt local log segment or an entry written by a newer node, \
@@ -1000,9 +1001,10 @@ public class PluginApiSpec implements OpenApiContributor {
         'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index; \
         'UNPUBLISHED_SCHEMA_CHANGE' a schema change or compaction this node ran locally whose replication was \
         refused or could not be published, so no other node holds it; 'LOCAL_RECOVERY_INCOMPLETE' a crash \
-        recovery of this node's own copy that did not replay every transaction.""");
+        recovery of this node's own copy that did not replay every transaction; 'UNAVAILABLE_UNIQUE_INDEX' a \
+        unique index of this node's own copy that could not be loaded, so its constraint is not enforced here.""");
     cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE",
-        "UNPUBLISHED_SCHEMA_CHANGE", "LOCAL_RECOVERY_INCOMPLETE"));
+        "UNPUBLISHED_SCHEMA_CHANGE", "LOCAL_RECOVERY_INCOMPLETE", "UNAVAILABLE_UNIQUE_INDEX"));
     // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read
     // from DivergenceCause for the same reason the alert severities are - this module cannot see ha-raft - and
     // Issue7577ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
@@ -1070,7 +1072,8 @@ public class PluginApiSpec implements OpenApiContributor {
         "Why the leader had refused to reopen the copy, when a refusal was standing. Present on accept-copy."));
     schema.addProperty("divergenceCause", SpecBuilders.string(
         "Why the lifted quarantine had been raised (WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY, APPLY_ERROR, "
-            + "SNAPSHOT_INSTALL_INCOMPLETE, UNPUBLISHED_SCHEMA_CHANGE, LOCAL_RECOVERY_INCOMPLETE), when one stood. Present on accept-diverged."));
+            + "SNAPSHOT_INSTALL_INCOMPLETE, UNPUBLISHED_SCHEMA_CHANGE, LOCAL_RECOVERY_INCOMPLETE, UNAVAILABLE_UNIQUE_INDEX), when one "
+            + "stood. Present on accept-diverged."));
     schema.addProperty("readFloor", SpecBuilders.integer(
         "The read floor that was lifted with the quarantine, when one stood. Present on accept-diverged, and on "
             + "accept-stale-snapshot as the node-wide floor that was lifted."));

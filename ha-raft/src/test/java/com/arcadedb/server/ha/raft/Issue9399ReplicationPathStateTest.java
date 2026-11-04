@@ -300,7 +300,7 @@ class Issue9399ReplicationPathStateTest {
       final LeaderReachSinceRestartTracker.Unreachable unreachable) {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     return ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
-        new ClusterAlerts.NodeStatus(null, null, false, true), stuck, stall, unproven, unreachable);
+        new ClusterAlerts.NodeStatus(null, null, false, true), stuck, stall, unproven, unreachable, null);
   }
 
   private static long unreachableMs(final RaftHAServer raft) {

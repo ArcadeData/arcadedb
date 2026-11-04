@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -27,6 +29,7 @@ import com.arcadedb.server.SecurityConvergenceStatus;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ArcadeStateMachine.LocalResyncState;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
+import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -226,24 +229,29 @@ public class ClusterAlerts {
       final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
       final FollowerStallTracker.Stall stalledBehindLeader) {
     return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
-        nodeStatus, stuckAtStaleTerm, stalledBehindLeader, false, null);
+        nodeStatus, stuckAtStaleTerm, stalledBehindLeader, false, null, null);
   }
 
   /**
    * Scan overload that also takes this node's replication-path state since an in-place Ratis restart: whether the
    * path is still unproven ({@link RaftHAServer#isReplicationPathUnprovenSinceRestart()}, issue #9013), and a leader
-   * failing to reach it, {@code null} when none is ({@link RaftHAServer#trackLeaderReachSinceRestart()}, issue #8953).
-   * This is the production entry point; {@link GetClusterHandler} calls it directly, with the same samples it renders
-   * into the status document.
+   * failing to reach it, {@code null} when none is ({@link RaftHAServer#trackLeaderReachSinceRestart()}, issue #8953),
+   * and the principal the alerts are answered to. This is the production entry point; {@link GetClusterHandler} calls
+   * it directly, with the same samples it renders into the status document.
+   * <p>
+   * {@code caller} scopes the type names the single-bucket check reports to the types the caller may read in each
+   * database, the rule every route that describes the schema to a principal follows ({@link SecurityHelper#readableTypes}):
+   * {@code visibleDatabases} scopes the databases and cannot say which of their types a per-type grant hides. Pass
+   * {@code null} for the unrestricted operator view, as for {@code visibleDatabases}.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
       final FollowerStallTracker.Stall stalledBehindLeader, final boolean replicationPathUnproven,
-      final LeaderReachSinceRestartTracker.Unreachable leaderUnreachable) {
+      final LeaderReachSinceRestartTracker.Unreachable leaderUnreachable, final ServerSecurityUser caller) {
     final JSONArray alerts = new JSONArray();
-    checkSingleBucketTypes(server, alerts, visibleDatabases);
+    checkSingleBucketTypes(server, alerts, visibleDatabases, caller);
     if (stateMachine != null) {
       // First, because they are the only conditions here from which this node does not recover by waiting: the
       // state machine has stopped applying, or the log writer has been refusing every append since it failed. An
@@ -1245,7 +1253,7 @@ public class ClusterAlerts {
   }
 
   static void checkSingleBucketTypes(final ArcadeDBServer server, final JSONArray alerts,
-      final Set<String> visibleDatabases) {
+      final Set<String> visibleDatabases, final ServerSecurityUser caller) {
     final JSONObject byDatabase = new JSONObject();
     int totalTypes = 0;
 
@@ -1255,7 +1263,8 @@ public class ClusterAlerts {
       try {
         // allowLoad=false: never re-open a database just to compute a status poll.
         final ServerDatabase db = server.getDatabase(dbName, false, false);
-        final List<String> singleBucketTypes = findSingleBucketTypes(db);
+        // THE HANDLE IS THE SERVER'S OWN, BOUND TO NO REQUEST: THE CALLER'S PERMISSIONS ON THIS DATABASE ARE RESOLVED HERE
+        final List<String> singleBucketTypes = findSingleBucketTypes(db, caller == null ? null : caller.getDatabaseUser(db));
         if (!singleBucketTypes.isEmpty()) {
           totalTypes += singleBucketTypes.size();
           final JSONArray reported = new JSONArray();
@@ -1290,10 +1299,13 @@ public class ClusterAlerts {
    * Returns the names of the type(s) in the database that are backed by a single bucket, sorted for
    * deterministic output. A single-bucket type cannot spread writes regardless of the configured
    * selection strategy (round-robin and thread both reduce to bucket 0 when there is only one).
+   * <p>
+   * Only the types {@code reader} may read are considered, so the alert never names a type to a principal a per-type
+   * grant hides it from; {@code null} considers every type.
    */
-  static List<String> findSingleBucketTypes(final Database db) {
+  static List<String> findSingleBucketTypes(final Database db, final SecurityDatabaseUser reader) {
     final List<String> result = new ArrayList<>();
-    for (final DocumentType type : db.getSchema().getTypes()) {
+    for (final DocumentType type : SecurityHelper.readableTypes(db, reader)) {
       if (type.getBuckets(false).size() <= 1)
         result.add(type.getName());
     }

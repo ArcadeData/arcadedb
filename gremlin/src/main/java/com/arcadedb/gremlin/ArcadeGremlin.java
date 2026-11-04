@@ -40,7 +40,6 @@ import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinParserException;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
-import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.BulkSet;
@@ -393,7 +392,14 @@ public class ArcadeGremlin extends ArcadeQuery {
    * What the script does, read without running it (issue #11182, see {@link GremlinStatementAnalyzer}): the HA follower forwards a
    * command by this verdict, and the read-only paths refuse a write by it, so a write applied here was applied before either could
    * act. A script the gremlin-lang grammar cannot read is a parsing error for the {@code java} engine, which would refuse it too, and
-   * Groovy for the engines that fall back to it, see {@link #parseGroovy()}.
+   * Groovy for the engines that fall back to it.
+   * <p>
+   * Groovy is code: only running it tells what it does, and it can write through any API it reaches ({@code g.getGraph().addVertex()},
+   * the database itself, a closure in a step), not only through the traversals a guarded source could stop. The analysis runs nothing,
+   * so such a script may do anything, a schema change or an administrative operation included, and every caller that analyses before
+   * it runs (the read-only query path, the HA follower's forward, the MCP tools, the streaming gate) treats it as a write. It is still
+   * refused to everybody but the server administrator, as its evaluation is, so the analysis fails for the others as the execution
+   * would.
    */
   public QueryEngine.AnalyzedQuery parse() {
     try {
@@ -402,7 +408,8 @@ public class ArcadeGremlin extends ArcadeQuery {
       } catch (final GremlinParserException e) {
         if ("java".equals(getEffectiveEngine()))
           throw new CommandParsingException("Error on parsing gremlin query: " + e.getMessage(), e);
-        return parseGroovy();
+        GremlinHostAccessGuard.checkServerAdministrator(graph.getDatabase(), "evaluate Groovy");
+        return GremlinStatementAnalyzer.anyOperation();
       }
     } catch (final LinkageError error) {
       // THE SAME ANTLR ATN MISMATCH THE EXECUTION REPORTS, SEE evaluate() (#5937)
@@ -412,32 +419,6 @@ public class ArcadeGremlin extends ArcadeQuery {
     } catch (final Exception e) {
       throw new CommandParsingException("Error on parsing command", e);
     }
-  }
-
-  /**
-   * A Groovy script is code, so only evaluating it tells which traversal it builds. It is evaluated with a traversal source that
-   * refuses to run a traversal that writes ({@link GremlinStatementAnalyzer#guarded}): one the script runs while it is evaluated
-   * ({@code iterate()}, {@code next()}...) runs only when it reads, and a script that tries to run a write is one that may write
-   * anything. Groovy is evaluated for the server administrator only, see {@link #evaluate}.
-   * <p>
-   * The guard sees traversals only: Groovy that writes through another API while it is evaluated ({@code g.getGraph().addVertex()},
-   * a closure in a step) still writes, as it did before. That is arbitrary code run by the administrator, the reason Groovy is
-   * refused to everybody else. A script that fails for any other reason fails the analysis as a gremlin-lang one does: a {@link CommandExecutionException} it
-   * raised stays one, anything else is a {@link CommandParsingException}.
-   */
-  private QueryEngine.AnalyzedQuery parseGroovy() throws ScriptException {
-    final Object result;
-    try {
-      result = evaluate("groovy", GremlinStatementAnalyzer.guarded(graph.traversal()));
-    } catch (final ScriptException | RuntimeException e) {
-      if (GremlinStatementAnalyzer.isWriteRefused(e))
-        return GremlinStatementAnalyzer.anyWrite();
-      throw e;
-    }
-    // A VALUE IS WHAT A TERMINAL STEP ANSWERED, AFTER THE GUARD LET ITS TRAVERSAL RUN AS ONE THAT ONLY READS
-    return result instanceof Traversal<?, ?> traversal ?
-        GremlinStatementAnalyzer.analyze(List.of(traversal.asAdmin())) :
-        GremlinStatementAnalyzer.read();
   }
 
   protected String getEffectiveEngine() {
@@ -523,7 +504,7 @@ public class ArcadeGremlin extends ArcadeQuery {
 
     } else if ("groovy".equals(gremlinEngine)) {
       // GROOVY IS ARBITRARY JVM CODE: ONLY THE SERVER ADMINISTRATOR MAY EVALUATE IT, WHETHER THE ENGINE IS CONFIGURED
-      // AS 'groovy' OR REACHED THROUGH THE 'auto' FALLBACK, AND FOR ANALYSIS TOO (parseGroovy() EVALUATES THE SCRIPT)
+      // AS 'groovy' OR REACHED THROUGH THE 'auto' FALLBACK. THE ANALYSIS NEVER EVALUATES IT, SEE parse()
       GremlinHostAccessGuard.checkServerAdministrator(graph.getDatabase(), "evaluate Groovy");
 
       // GROOVY ENGINE - INSECURE, LOG WARNING
