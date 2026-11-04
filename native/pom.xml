@@ -164,7 +164,8 @@
             so stating them changes no published binary. They are kept, rather than lowered to
             compatibility, until what that costs has been measured: the 26.10.2 amd64 binary carries
             AVX2/FMA/BMI2 code throughout (the issue counted 8,098 ymm operands, 46 FMA and 25,482
-            BMI2 instructions). A compatibility-built image for older CPUs is tracked separately.
+            BMI2 instructions). A compatibility-built archive for older amd64 CPUs is built by native-image.yml's
+            include_compat leg (#11253).
 
             aarch64 was pinned to armv8.1-a (CRC32 + LSE atomics) by the commit that introduced this
             property, which dropped every ARMv8.0 core while saying it changed nothing (#10715).

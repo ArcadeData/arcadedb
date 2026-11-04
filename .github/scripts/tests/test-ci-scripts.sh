@@ -1703,6 +1703,9 @@ expect "rejects a native.march that resolves to native" 1 "targets the CPU of th
 printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.march=native package\n' >"$work/march/native.yml"
 expect "rejects a workflow that builds with -Dnative.march=native" 1 "native.yml:4" \
     "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/native.yml"
+printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.march=compatibility package\n' >"$work/march/compat.yml"
+expect "accepts a workflow that builds the amd64 compatibility variant with -Dnative.march=compatibility (#11253)" 0 "" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/compat.yml"
 
 # A profile's buildArgs are appended after the base ones, so a second -march there silently wins.
 march_pom "$work/march/profile-arg-pom.xml" '-march=${native.march}' compatibility "" \
@@ -2492,6 +2495,19 @@ if grep -qF "labels[]=do not merge'" .github/workflows/claude-code-review.yml; t
     pass "the review flags a hazardous PR with the repository's 'do not merge' label"
 else
     fail "the review flags a hazardous PR with the repository's 'do not merge' label"
+fi
+
+# The linux/amd64 -march=compatibility leg (#11253) shares os_name and arch with the default
+# linux/amd64 leg, so it must carry a `suffix` that keeps its workflow artifact and its release
+# archive apart: without it both upload `arcadedb-native-linux-amd64` and the `docker` job would
+# take whichever finished last, publishing the slow compat binary as the default image.
+NATIVEWF=".github/workflows/native-image.yml"
+if grep -qF '"suffix":"-compat","march":"compatibility"' "$NATIVEWF" \
+    && grep -qF 'name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}${{ matrix.suffix }}' "$NATIVEWF" \
+    && grep -qF 'ARCHIVE="$BIN${{ matrix.suffix }}.tar.gz"' "$NATIVEWF"; then
+    pass "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
+else
+    fail "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
 fi
 
 # #11001: a `*Test` class outside the engine tagged slow/vector ran in no lane. The engine-only tag lanes never
