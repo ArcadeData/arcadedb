@@ -2459,6 +2459,26 @@ else
     fail "the review flags a hazardous PR with the repository's 'do not merge' label"
 fi
 
+# #11001: a `*Test` class outside the engine tagged slow/vector ran in no lane. The engine-only tag lanes never
+# build it and the unit-tests shards exclude the tag, so the tag must have a lane for the module or must not be there.
+echo
+echo "tag lanes cover every module"
+# Captured first: `git grep | grep -q` under pipefail reports SIGPIPE as "no match".
+vector_outside=$(git grep -lE '@Tag\("vector"\)' -- ':!engine' '*.java' || true)
+slow_outside=$(git grep -lE '@Tag\("slow"\)' -- ':!engine' '*Test.java' || true)
+if [[ -n $vector_outside ]]; then
+    fail "no test outside the engine carries @Tag(\"vector\") (the vector lane builds only the engine)" "$vector_outside"
+else
+    pass "no test outside the engine carries @Tag(\"vector\") (the vector lane builds only the engine)"
+fi
+if [[ -z $slow_outside ]]; then
+    pass "no slow *Test class outside the engine needs a lane"
+elif grep -E 'mvnw .*-pl .!engine[^ ]*. .*-Dgroups=slow' .github/workflows/mvn-test.yml | grep -qF -- '-Dsurefire.includes=**/*Test.java'; then
+    pass "slow *Test classes outside the engine have a lane in mvn-test.yml"
+else
+    fail "slow *Test classes outside the engine have a lane in mvn-test.yml" "$slow_outside"
+fi
+
 echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"

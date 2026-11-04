@@ -395,6 +395,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The `slow` tag is not an engine-only concept. The step above builds `-pl engine`, and the unit-tests
+      # shards run `-DexcludedGroups=slow,benchmark,vector`, so a `*Test` class OUTSIDE the engine that carries
+      # `slow` was excluded from every lane and ran in none (#11001: 23 methods in 18 files). This step is the
+      # lane for them: the modules of the ha-raft and modules shards of unit-tests, `slow` only, and
+      # `**/*Test.java` only because the `*IT` classes run under failsafe, which does not take this tag filter.
+      # `benchmark` stays out everywhere on purpose, and `vector` belongs to the engine, which
+      # .github/scripts/tests/test-ci-scripts.sh enforces.
+      - name: Run Slow Unit Tests of the other modules with Coverage
+        run: ./mvnw verify -Pcoverage --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -pl '!engine,!e2e,!load-tests' -Dgroups=slow -DexcludedGroups=vector,benchmark -Dsurefire.includes=**/*Test.java
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check no test leaked a databases/ directory
         run: ./.github/scripts/check-test-database-paths.sh --runtime
 
