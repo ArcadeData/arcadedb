@@ -19,15 +19,21 @@
 package com.arcadedb.index.columnar;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.DateUtils;
 
+import java.io.UncheckedIOException;
 import java.lang.reflect.Array;
 import java.time.DateTimeException;
 import java.util.Arrays;
@@ -202,6 +208,83 @@ public final class ColumnarValueExtractor {
     return extractRaw(raw, column, dictionary, true, sink);
   }
 
+  /**
+   * Task 2 of #10662: {@link #extractValueForApplyUncounted} of the String stored at the content's position (its length prefix, the
+   * type byte read) for an ORDINAL column, looked up in the dictionary from its UTF-8 bytes; the content is left after the value. A
+   * String is always a supported dictionary value, so nothing fails.
+   *
+   * @throws SerializationException when the length prefix does not fit the content, as the record read refuses it
+   */
+  static int extractUtf8ForApply(final Binary content, final GlobalDictionary dictionary, final ValueSink sink) {
+    final int length = stringLength(content);
+    final int at = content.position();
+    final int ordinal = dictionary.getOrAddUtf8(content, at, length);
+    content.position(at + length);
+    sink.ordinal(ordinal);
+    return 0;
+  }
+
+  /**
+   * Task 2 of #10662: {@link #extractValueForApplyUncounted} of the list stored at the content's position (its count, the type byte
+   * read) for an ORDINAL_LIST column: a String item is looked up from its UTF-8 bytes, any other item is deserialized and added as the
+   * record read's list would add it. The content is left after the list.
+   *
+   * @throws SerializationException when the count or an item does not fit the content, as the record read refuses it
+   */
+  int extractListForApply(final Binary content, final BinarySerializer serializer, final Database database,
+      final GlobalDictionary dictionary, final ValueSink sink) {
+    final long declared = content.getUnsignedNumber();
+    if (declared < 0L || declared > Integer.MAX_VALUE || declared > content.size())
+      throw new SerializationException("Invalid element count " + declared + " in buffer of size " + content.size());
+    final int count = (int) declared;
+    final OrdinalBuffer buffer = buffers.get();
+    buffer.reset();
+    int failures = 0;
+    try {
+      for (int i = 0; i < count; i++) {
+        final byte type = content.getByte();
+        if (type == BinaryTypes.TYPE_STRING) {
+          final int length = stringLength(content);
+          final int at = content.position();
+          buffer.add(dictionary.getOrAddUtf8(content, at, length));
+          content.position(at + length);
+        } else
+          failures += addItem(deserializeForApply(serializer, database, content, type), dictionary, true, buffer);
+      }
+      for (int i = 0; i < buffer.unknownCount; i++)
+        sink.unknownValue(buffer.unknown[i]);
+      if (buffer.count > 0) {
+        buffer.sortAndDeduplicate();
+        sink.ordinals(buffer.ordinals, buffer.count);
+      } else if (buffer.unknownCount == 0)
+        sink.missing();
+    } finally {
+      buffer.reset();
+    }
+    return failures;
+  }
+
+  /**
+   * The value of the type at the content's position, for the direct read of the apply: an {@link UncheckedIOException} of the
+   * deserializer (an external or embedded value that cannot be read) becomes a {@link SerializationException}, so the direct read
+   * declines and the record read decides as before; only a dictionary append's {@link UncheckedIOException} fails the pass.
+   */
+  static Object deserializeForApply(final BinarySerializer serializer, final Database database, final Binary content, final byte type) {
+    try {
+      return serializer.deserializeValue(database, content, type, null);
+    } catch (final UncheckedIOException e) {
+      throw new SerializationException("Value of type " + type + " could not be read", e);
+    }
+  }
+
+  /** The length prefix of a String at the content's position, checked as {@code Binary.getString()} checks it; left on the bytes. */
+  private static int stringLength(final Binary content) {
+    final long length = content.getUnsignedNumber();
+    if (length < 0L || length > Integer.MAX_VALUE || length > Math.min(content.size(), content.limit()) - content.position())
+      throw new SerializationException("Invalid string length " + length + " at position " + content.position());
+    return (int) length;
+  }
+
   /** Counts {@code coerced} values of the column converted from another stored type ({@link #isCoerced}). */
   void countCoerced(final ColumnDefinition column, final long coerced) {
     stats.addCoercedValues(typeName, column.property(), coerced);
@@ -316,10 +399,15 @@ public final class ColumnarValueExtractor {
    * several Java types legitimately.
    */
   static boolean isCoerced(final ColumnDefinition column, final Object raw) {
+    return isCoerced(column, raw.getClass());
+  }
+
+  /** {@link #isCoerced(ColumnDefinition, Object)} of a raw value of the class, for a value read without building it. */
+  static boolean isCoerced(final ColumnDefinition column, final Class<?> rawClass) {
     if (column.byItem())
       return false;
     return switch (column.propertyType()) {
-      case STRING, BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE -> raw.getClass() != column.propertyType().getDefaultJavaType();
+      case STRING, BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE -> rawClass != column.propertyType().getDefaultJavaType();
       default -> false;
     };
   }
@@ -447,6 +535,51 @@ public final class ColumnarValueExtractor {
           wanted++;
         }
       }
+    }
+
+    /** Every column is read through the walk (no nested path, no {@code @} property, every name known at {@link #prepare}). */
+    boolean walksEveryColumn() {
+      return wanted == columns.length;
+    }
+
+    /**
+     * Task 2 of #10662: walks the header of the record whose bytes are {@code content} (positioned at the record type byte, at 0) for
+     * the columns of {@link #prepare}, skipping the vertex or edge prefix as the record classes do, without building the record. False
+     * when the bytes are not a document, a vertex or an edge, or their prefix or header does not read: the caller then reads the
+     * record. The content's position is left anywhere; {@link #position} answers where each column's value starts (its type byte).
+     */
+    boolean begin(final Binary content, final BinarySerializer serializer) {
+      if (content.position() != 0 || content.size() < 1)
+        return false;
+      final int start;
+      switch (content.getByte(0)) {
+      case Document.RECORD_TYPE -> start = 1;
+      case Vertex.RECORD_TYPE -> {
+        // record type, out-edge RID (int + long), in-edge RID (int + long)
+        start = Binary.BYTE_SERIALIZED_SIZE + 2 * (Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE);
+        if (content.size() < start)
+          return false;
+      }
+      case Edge.RECORD_TYPE -> {
+        // record type, out and in vertex RIDs compressed (bucket id and position varints each)
+        content.position(1);
+        for (int i = 0; i < 4; i++)
+          content.getNumber();
+        start = content.position();
+        if (start > content.size())
+          return false;
+      }
+      default -> {
+        return false;
+      }
+      }
+      content.position(start);
+      return serializer.locateProperties(content, slotByNameId, positions, wanted);
+    }
+
+    /** {@link #begin(Binary, BinarySerializer)}: where the value of column k starts in the content, -1 when the record has none. */
+    int position(final int k) {
+      return positions[k];
     }
 
     /** Walks the header of the record for the columns of {@link #prepare}; pair with {@link #end()}. */

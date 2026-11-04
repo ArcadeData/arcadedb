@@ -136,35 +136,141 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
       manager.paceAfterPassForTesting(now);
       factors[i] = manager.applyPacingForTesting();
     }
-    assertThat(factors).containsExactly(2, 4, ColumnarIndexManager.APPLY_PACING_MAX_FACTOR, ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
-    assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(100L * ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+    // default applyMaxLag 500 over the 100 ms interval: the factor caps at 5
+    assertThat(factors).containsExactly(2, 4, 5, 5);
+    assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(500L);
 
     // the oldest mark waits longer than the lag limit: back to the base interval, however sustained the ingest
-    manager.paceAfterPassForTesting(now + ColumnarIndexManager.APPLY_PACING_LAG_LIMIT_MS + 60_000L);
+    manager.paceAfterPassForTesting(now + GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG.getValueAsLong() + 60_000L);
     assertThat(manager.applyPacingForTesting()).isEqualTo(1);
     assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(100L);
   }
 
   @Test
   void applyPacingNeverStretchesPastTheLagLimitOrTheBase() {
-    // batch 3 r1 M1: the stretched interval is capped at max(base, 500 ms) whatever the configured interval
+    // batch 3 r1 M1: the stretched interval is capped at max(base, applyMaxLag = 500 ms) whatever the configured interval
     final ColumnarProjection projection = suspendedProjection();
     final ColumnarIndexManager manager = manager();
     final long now = System.currentTimeMillis();
     manager.markPages(projection.bucketId(), new int[] { 0 }, 1);
     for (int i = 0; i < 4; i++)
       manager.paceAfterPassForTesting(now);
-    assertThat(manager.applyPacingForTesting()).isEqualTo(ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+    assertThat(manager.applyPacingForTesting()).isEqualTo(5);
     try {
       database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 1_000L);
       assertThat(manager.tickIntervalForTesting().getAsLong()).as("a base above the limit is never stretched").isEqualTo(1_000L);
       database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 200L);
-      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(ColumnarIndexManager.APPLY_PACING_LAG_LIMIT_MS);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(500L);
       database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 50L);
-      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(50L * ColumnarIndexManager.APPLY_PACING_MAX_FACTOR);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(50L * 5);
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, 100L);
     }
+  }
+
+  /**
+   * Task 4 (#10662): the pacing factor caps at {@code max(1, applyMaxLag / applyInterval)}. With a 1000 ms bound and a 100 ms
+   * interval it doubles up to 10, never to 11 or 16, and the stretched interval is the bound itself.
+   */
+  @Test
+  void pacingNeverExceedsApplyMaxLag() {
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, 1_000L);
+    try {
+      final long now = System.currentTimeMillis();
+      manager.markPages(projection.bucketId(), new int[] { 0 }, 1);
+      final int[] factors = new int[6];
+      for (int i = 0; i < factors.length; i++) {
+        manager.paceAfterPassForTesting(now);
+        factors[i] = manager.applyPacingForTesting();
+      }
+      assertThat(factors).containsExactly(2, 4, 8, 10, 10, 10);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(1_000L);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, 500L);
+    }
+  }
+
+  /** Task 4 (#10662): a bound below twice the interval never stretches it, so the base interval is kept under sustained ingest. */
+  @Test
+  void applyMaxLagBelowIntervalKeepsTheBaseInterval() {
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    final long now = System.currentTimeMillis();
+    manager.markPages(projection.bucketId(), new int[] { 0 }, 1);
+    try {
+      for (final long maxLag : new long[] { 50L, 100L, 199L }) {
+        database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, maxLag);
+        for (int i = 0; i < 4; i++)
+          manager.paceAfterPassForTesting(now);
+        assertThat(manager.applyPacingForTesting()).as("applyMaxLag %d, interval 100", maxLag).isEqualTo(1);
+        assertThat(manager.tickIntervalForTesting().getAsLong()).as("applyMaxLag %d, interval 100", maxLag).isEqualTo(100L);
+      }
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, 200L);
+      manager.paceAfterPassForTesting(now);
+      assertThat(manager.applyPacingForTesting()).as("applyMaxLag 200 allows one doubling").isEqualTo(2);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(200L);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, 500L);
+    }
+  }
+
+  /**
+   * Task 4 (#10662): the pacing falls back to the base interval once the oldest pending mark is older than {@code applyMaxLag}, and
+   * not before: with a 1000 ms bound a mark 1000 ms old keeps the pacing growing, one 1001 ms old resets it.
+   */
+  @Test
+  void oldestMarkOlderThanMaxLagResetsPacing() {
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, 1_000L);
+    try {
+      final long before = System.currentTimeMillis();
+      manager.markPages(projection.bucketId(), new int[] { 0 }, 1);
+      final long after = System.currentTimeMillis();
+      manager.paceAfterPassForTesting(before);
+      manager.paceAfterPassForTesting(before);
+      assertThat(manager.applyPacingForTesting()).isEqualTo(4);
+
+      // at most 1000 ms old (the epoch started at or after 'before'): still within the bound, the pacing keeps growing
+      manager.paceAfterPassForTesting(before + 1_000L);
+      assertThat(manager.applyPacingForTesting()).as("a mark at most applyMaxLag old").isEqualTo(8);
+
+      // at least 1001 ms old (the epoch started at or before 'after'): past the bound, back to the base interval
+      manager.paceAfterPassForTesting(after + 1_001L);
+      assertThat(manager.applyPacingForTesting()).as("a mark older than applyMaxLag").isEqualTo(1);
+      assertThat(manager.tickIntervalForTesting().getAsLong()).isEqualTo(100L);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG, 500L);
+    }
+  }
+
+  /**
+   * Task 9 (#10662) cadence: a stale rank view is rebuilt one second after the previous rebuild, not ten. Paging a terms facet AFTER a
+   * cursor over an unranked tail of 20% of the values measured about 5x the walk over the same values ranked
+   * ({@code FacetTuningBenchmark.afterPagingRankCadence}), so the window a stale view is served in is kept short.
+   */
+  @Test
+  void aStaleRankViewIsRebuiltOneSecondAfterThePreviousRebuild() throws InterruptedException {
+    final ColumnarProjection projection = suspendedProjection();
+    final ColumnarIndexManager manager = manager();
+    final long[] now = { 1_000_000L };
+    manager.setClockForTesting(() -> now[0]);
+    final GlobalDictionary dictionary = projection.dictionary("brand");
+    for (int i = 0; i < 2_000; i++)
+      dictionary.getOrAdd("v" + i);
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).isEqualTo(2_000);
+
+    for (int i = 2_000; i < 4_000; i++)
+      dictionary.getOrAdd("v" + i);
+    now[0] += 999L;
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).as("throttled for less than a second").isEqualTo(2_000);
+    now[0] += 1L;
+    scheduleAndWait(manager);
+    assertThat(dictionary.rankViewSize()).as("one second after the previous rebuild").isEqualTo(4_000);
   }
 
   @Test

@@ -262,6 +262,26 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable != null;
+  }
+
+  /**
+   * Adds the values of a collector of the same column and ordinal map that counted other pages (parallel counting), as the merge at
+   * {@link #finish} folds them, reserving any growth first; refused, the facet is unavailable.
+   */
+  @Override
+  public boolean absorb(final FacetCollector other) {
+    if (!(other instanceof DistinctFacetCollector partial) || partial.kind != kind || partial.map != map)
+      return false;
+    if (unavailable != null)
+      return true;
+    missing += partial.missing;
+    fold(partial);
+    return true;
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof DistinctFacetCollector collector))
       throw new IllegalArgumentException("FACETS " + spec.alias() + ": cannot merge a " + other.getClass().getSimpleName() + " into distinct");
@@ -285,7 +305,7 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
         // instants meet in the finest unit any collector counts in, whatever their order: a finer one rescales those folded before
         for (final DistinctFacetCollector collector : others)
           if (unavailable == null)
-            absorb(collector);
+            fold(collector);
         if (map != null && unavailable == null && (exactSize() > 0 || sketch != null || values != null))
           moveKeyedOrdinals();
         reason = unavailable;
@@ -734,7 +754,7 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
   }
 
   /** Folds the values of another collector of the facet into this one, charged to this one's budget. */
-  private void absorb(final DistinctFacetCollector other) {
+  private void fold(final DistinctFacetCollector other) {
     if (other.bits != null) {
       if (map != null && other.map.version() == map.version())
         orBits(other.bits);

@@ -154,6 +154,11 @@ public final class HistogramCollector implements FacetCollector {
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable;
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof HistogramCollector collector))
       throw new IllegalArgumentException(

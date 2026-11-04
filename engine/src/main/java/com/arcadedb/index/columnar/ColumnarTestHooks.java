@@ -35,6 +35,25 @@ public final class ColumnarTestHooks {
   /** Called with the name of every point reached; null in production. */
   public static volatile Consumer<String> killPoint;
 
+  /** A segment file forced at the end of its write. */
+  public static final String FORCE_SEGMENT    = "force.segment";
+  /** A dead set file forced at the end of its write. */
+  public static final String FORCE_DEAD_SET   = "force.deadSet";
+  /** An owner map file forced at the end of its write. */
+  public static final String FORCE_OWNER_MAP  = "force.ownerMap";
+  /** A dictionary file forced by {@link GlobalDictionary#fsync()}. */
+  public static final String FORCE_DICTIONARY = "force.dictionary";
+  /** Any other file forced through {@link ColumnarStore} (a tmp file of an atomic replace, the manifest's included). */
+  public static final String FORCE_FILE       = "force.file";
+  /** A directory forced through {@link ColumnarStore#fsyncDirectory}. */
+  public static final String FORCE_DIRECTORY  = "force.directory";
+
+  /**
+   * Called with the kind ({@code FORCE_*}) of every file or directory force of the projection files, after it returned; null in production.
+   * Task 3 of #10662 counts what a publish forces with it.
+   */
+  public static volatile Consumer<String> forceListener;
+
   /**
    * Calls that reached a write method of a {@link ColumnarIndex} (put, remove and their replays), JVM-wide. No write path should
    * reach one (the indexer and the graph batch skip the type), so the opt-out tests read it to prove the skip, not only the no-op.
@@ -49,6 +68,12 @@ public final class ColumnarTestHooks {
   }
 
   private ColumnarTestHooks() {
+  }
+
+  static void forced(final String kind) {
+    final Consumer<String> listener = forceListener;
+    if (listener != null)
+      listener.accept(kind);
   }
 
   static void reach(final String name) {

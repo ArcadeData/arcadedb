@@ -62,6 +62,7 @@ class ColumnarFlusherTest extends TestHelper {
   @Override
   protected void endTest() {
     ColumnarTestHooks.killPoint = null;
+    ColumnarIndexManager.REAPPLY_FLOOR = 1_024;
     executor.shutdownNow();
     for (final ColumnarProjection projection : opened)
       projection.close();
@@ -277,12 +278,12 @@ class ColumnarFlusherTest extends TestHelper {
     final long oldest = projection.overlay().oldestRowMs();
     assertThat(oldest).isPositive();
 
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 500, 1000, 65_536)).isFalse();
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 999, 1000, 65_536)).isFalse();
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 1000, 1000, 65_536)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 500, 1000, 65_536, 0, 1000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 999, 1000, 65_536, 0, 1000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 1000, 1000, 65_536, 0, 1000)).isTrue();
     // the row bound ignores the age
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1000, 10)).isTrue();
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1000, 11)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1000, 10, 0, 1000)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1000, 11, 0, 1000)).isFalse();
 
     final int[] many = new int[2 * MAX];
     for (int page = 1; page <= 32; page++) {
@@ -293,7 +294,7 @@ class ColumnarFlusherTest extends TestHelper {
       apply(projection, page, many);
     }
     assertThat(projection.overlay().rows()).isGreaterThanOrEqualTo(65_536);
-    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1000, 65_536)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1000, 65_536, 0, 1000)).isTrue();
   }
 
   @Test
@@ -302,14 +303,14 @@ class ColumnarFlusherTest extends TestHelper {
     apply(projection, 0, 1, 1, 2, 2);
     ColumnarFlusher.flush(projection, 1);
     final long flushedAt = projection.lastFlushMs();
-    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 5_000, 1000, 65_536)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 5_000, 1000, 65_536, 0, 1000)).isFalse();
 
     // a delete only: no overlay row, but a dead set and an unflushed page to persist
     apply(projection, 0, 1, DELETE);
     assertThat(projection.overlay().rows()).isZero();
     assertThat(recoverySet(projection).contains(0)).isTrue();
-    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 500, 1000, 65_536)).isFalse();
-    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 1000, 1000, 65_536)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 500, 1000, 65_536, 0, 1000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 1000, 1000, 65_536, 0, 1000)).isTrue();
 
     ColumnarFlusher.flush(projection, 2);
     final ColumnarManifest.SegmentEntry entry = projection.manifest().segments().getFirst();
@@ -321,6 +322,82 @@ class ColumnarFlusherTest extends TestHelper {
 
     projection.close();
     assertThat(counts(open())).isEqualTo(expected(2, 1));
+  }
+
+  /** Task 3 of #10662: an overlay below flushMinRows ignores flushInterval and waits for flushMaxAge. */
+  @Test
+  void smallOverlayWaitsForMinRowsUntilMaxAge() {
+    final ColumnarProjection projection = open();
+    applyRows(projection, 0, 100);
+    assertThat(projection.overlay().rows()).isEqualTo(100);
+    final long oldest = projection.overlay().oldestRowMs();
+
+    // flushInterval 1000, flushMaxRows 65536, flushMinRows 4096, flushMaxAge 30000
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 1_001, 1_000, 65_536, 4_096, 30_000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 29_999, 1_000, 65_536, 4_096, 30_000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 30_000, 1_000, 65_536, 4_096, 30_000)).isTrue();
+
+    // flushMinRows reached: flushInterval decides again
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 999, 1_000, 65_536, 100, 30_000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 1_000, 1_000, 65_536, 100, 30_000)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 1_000, 1_000, 65_536, 101, 30_000)).isFalse();
+
+    // a flushMaxAge below flushInterval never flushes earlier than the interval
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 999, 1_000, 65_536, 4_096, 10)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest + 1_000, 1_000, 65_536, 4_096, 10)).isTrue();
+  }
+
+  /** Task 3 of #10662: flushMaxRows flushes at once, whatever flushMinRows, flushInterval and flushMaxAge say. */
+  @Test
+  void fullOverlayFlushesAtOnce() {
+    final ColumnarProjection projection = open();
+    applyRows(projection, 0, 100);
+    final long oldest = projection.overlay().oldestRowMs();
+
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1_000, 100, 4_096, 30_000)).isTrue();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, 1_000, 101, 4_096, 30_000)).isFalse();
+  }
+
+  /**
+   * Task 3 of #10662: a coalesced overlay flushes once its unflushed pages reach half of {@link ColumnarIndexManager#REAPPLY_FLOOR},
+   * whatever its rows and age, so an unclean open re-applies the pages a crash left unflushed instead of rebuilding the projection.
+   */
+  @Test
+  void unflushedPagesFlushAtHalfTheReapplyFloor() {
+    ColumnarIndexManager.REAPPLY_FLOOR = 64;
+    final ColumnarProjection projection = open();
+    for (int page = 0; page < 31; page++)
+      applyRows(projection, page, 1);
+    final long oldest = projection.overlay().oldestRowMs();
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, Long.MAX_VALUE, 65_536, 4_096, Long.MAX_VALUE)).isFalse();
+
+    applyRows(projection, 31, 1);
+    assertThat(projection.tracker().unflushedPages()).hasSize(32);
+    assertThat(ColumnarFlusher.shouldFlush(projection, oldest, Long.MAX_VALUE, 65_536, 4_096, Long.MAX_VALUE)).isTrue();
+  }
+
+  /** Task 3 of #10662: the deletes-only branch waits for flushMaxAge too. */
+  @Test
+  void deletesOnlyWorkloadWaitsForMaxAge() throws Exception {
+    final ColumnarProjection projection = open();
+    apply(projection, 0, 1, 1, 2, 2);
+    ColumnarFlusher.flush(projection, 1);
+    final long flushedAt = projection.lastFlushMs();
+    apply(projection, 0, 1, DELETE);
+    assertThat(projection.overlay().rows()).isZero();
+
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 1_000, 1_000, 65_536, 4_096, 30_000)).isFalse();
+    assertThat(ColumnarFlusher.shouldFlush(projection, flushedAt + 30_000, 1_000, 65_536, 4_096, 30_000)).isTrue();
+  }
+
+  /** {@code count} rows (slots 0..count-1, brand 1) applied to the page. */
+  private static void applyRows(final ColumnarProjection projection, final int page, final int count) {
+    final int[] slots = new int[2 * count];
+    for (int i = 0; i < count; i++) {
+      slots[2 * i] = i;
+      slots[2 * i + 1] = 1;
+    }
+    apply(projection, page, slots);
   }
 
   @Test

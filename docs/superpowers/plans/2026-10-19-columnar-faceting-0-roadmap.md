@@ -379,3 +379,141 @@ Baseline for tuning #10662 (container runs on a developer host, logged, not asse
 - Single server, 4 writers x 20000 mixed ops, 2 query threads: 1.0-1.9k ops/s, query p95 69-102 ms, `lagMs` p95 ~500-660, `patched` p95 ~6.6k-8k, 0 budget waits, 0 patch overflows, 0 fallback scans, 0 rebuilds, 0 inexact answers.
 - Three nodes, 3 writers x 15000 ops through node 0, one query thread per node: 72-125 ops/s (writes forwarded to the leader), query p50 9-13 ms and p95 32-45 ms per node, `lagMs` p95 332-464, `patched` p50 202-434, apply-lag max ~500 ms, overlay max 13-28 rows, 0 inexact answers.
 - WAL (O15): at the end of each three-node leg the leader held one WAL file of 28-62 MB and the followers none: no sign of delayed WAL drops at this load.
+
+## Tuning outcome (#10662, plan 7, 2026-11-04)
+
+Plan 7 measured first and then pulled levers in the order the profile ranked them. Each lever was kept only on a WIN of its primary
+metric beyond the measured noise floor, with no LOSS on its guards. Before/after: the branch at `8da84eb9f3` (plan 6 done) against the
+final tree with every A/B switch removed, alternating, 5 runs per side, on one host (Apple M3 Pro, 12 cores, OpenJDK 25). Working notes,
+data and the per-lever ledger: `.superpowers/sdd/2026-11-02-columnar-faceting-7-tuning/` (`tuning-report.md`, `levers.md`,
+`bench/t17/`).
+
+Summary of what shipped:
+- **Record-granular pending marks** (`ColumnarIndexManager.markRecords`, up to 16 records per page, else the whole page). A commit with
+  WAL marks the records it wrote instead of their pages, so the apply pass re-reads and a lagging query patches only those records. A
+  page read by record is stamped with the version it read, so far fewer `unclean_pages` rebuilds follow a crash. The stamp is refused
+  (the page keeps counting as changed) while a replicated apply or WAL replay is between its writes and its mark, when the page was
+  marked again since the drain, or when a record of it was unreadable.
+- **Apply pass**:
+  - Allocation-free old-value lookups (`ColumnarProjection.LiveLookup`, `SegmentReader.PointCursor`).
+  - Direct decode of the projected values from the record bytes, with no record, String or list built.
+- **Parallel counting** of one facet over page slices on `QueryEngineManager`'s pool (`arcadedb.columnar.parallelCountTasks`,
+  default 4), once a bucket holds `arcadedb.columnar.parallelMinMatches` (262,144) matches.
+- **Query side**:
+  - `facet.searchValues` counts through the projection directly, and the SQL path keeps one statement shape per batch size.
+  - One hierarchy view per query.
+  - Read events fire once per matched record: the facets are counted from the rows the WHERE read.
+  - Hierarchy build cancellation inside the sort, depths and cycle passes.
+  - Rank-view rebuild cadence 10 s -> 1 s.
+- **Correctness hardening**: `LocalBucket.assembleFromNewestCommitted` validates a chunk chain once no publication is open; a chunked
+  record deleted meanwhile reads as an empty slot.
+- **New keys**, both with defaults that keep the earlier behavior:
+  - `arcadedb.columnar.flushMinRows` / `flushMaxAge`: flush coalescing, defaults 0 (off).
+  - `arcadedb.columnar.applyMaxLag`: default 500 ms. It replaces the fixed pacing constants.
+- **Always on**: a flush is due once a projection's unflushed pages reach 512 (`REAPPLY_FLOOR / 2`). This bounds the pages a steady
+  ingest leaves unflushed. It is checked on the manager tick and the flush runs on the maintenance pool, so a single apply pass that
+  applies more than 1,024 pages (a bulk commit rewriting thousands of pages) followed by a crash before the flush publishes can still
+  lead to an `unclean_pages` rebuild.
+
+Reverted or not built, by measurement:
+- Reverted: pooled counters, cached AFTER plans, one-pass hierarchy build (LOSS), single publish fsync.
+- Not built, below noise: restricted-user ordinal-map caching, skipping the redundant commit mark.
+- Not built, Step 0 bound: GROUP BY acceleration with a WHERE (no gain without a native match source).
+
+Before -> after (medians; the verdicts use the protocol floors):
+
+| Measure | Before | After |
+|---|---|---|
+| Ingest: apply allocation, inserts / updates / catch-up (MB) | 94.6 / 660 / 323 | 40.5 / 156 / 48.4 (WIN) |
+| Ingest: apply CPU, updates / catch-up (ms) | 672 / 348 | 376 / 131 (WIN) |
+| Ingest: catch-up after 100k updates (ms) | 571 | 328 (WIN) |
+| Facets 200k, lagging (5,000 pending), broad / no WHERE, exact (ms) | 95.9 / 92.2 | 38.3 / 31.7 (WIN) |
+| Facets 200k, lagging broad, records patched | 120,152 (pre-Task 15 run; the baseline harness records no patched count) | 12,779 |
+| Facets 200k, caught up, broad / no WHERE / 3 buckets (ms) | 28.0 / 16.8 / 29.4 | 28.2 / 16.9 / 29.4 (NOISE) |
+| Facets 1M, caught up broad / no WHERE (ms) | 313 / 95 | 243 / 28 (WIN) |
+| Facets 1M, lagging broad / no WHERE (ms) | 411 / 212 | 259 / 52 (WIN) |
+| Load single server: query p95 (ms) / patched p95 | 52.9-58.3 / 7,249-8,047 | 48.8-51.0 / 4,376-5,064 |
+| Load single server: `lagMs` p95, apply-lag max (ms) | 494-498, 479-573 | 487-492, 460-511 |
+| Load three nodes: `lagMs` p95 / patched p95 | 297-339 / 636-784 | 227-312 / 270-669 |
+| Load three nodes: query p95 HTTP / gRPC (ms, per node) | 51.2-58.1 / 52.5-56.8 | 56.7-64.6 / 66.9-72.7 |
+| Load three nodes: throughput HTTP / gRPC (ops/s) | 69.2 / 76.1 | 65.5 / 61.9 |
+
+The three-node rows are one run per image. The final run started at a 5-minute host load of 12.0, and three-node throughput moves by
+up to 40% between two runs of the same image (batch G3 report). These rows cannot separate the two trees; they point toward worse
+three-node query latency and throughput, which is not re-measured.
+
+Exit criterion verdict:
+- **Facet latency: met on the engine benchmarks and the single-server load test; not separable on three nodes** (one run per image,
+  query p95 and throughput pointing worse, see the caveat above; a three-node A/B with several runs per image is open).
+  - Better than the plan 4 numbers in every lagging case: 38 ms vs 105 ms broad and exact at 200k.
+  - Equal when caught up (28 / 17 / 29 ms vs 26 / 17 / 30).
+- **Apply lag: met.** It is no worse than plan 6 (single server `lagMs` p95 about 490 vs 500-660; three nodes 227-312 vs 332-464).
+- **Apply overhead** (CPU, allocation and records re-read at 9 rounds, the judge set by the plan's ruling):
+  - Met for CPU and allocation: down 44-85%, beyond the A-vs-A floors.
+  - Not met for update re-reads: +15%. A faster apply takes more passes per epoch, and 500-record commits put about 25 updates on a
+    page, past the 16-record cap, so updates stay page-granular. The catch-up re-reads half as many.
+- **"Inserts and updates within noise of no-COLUMNAR": not met in wall time.**
+  - Inserts are +6.1% over A, unchanged from before.
+  - Updates are +10.5% (before: +5.6%). About 3 points of the difference sit on the commit path: B' (apply held) went from +1.3% to
+    +4.4% over A, and committer CPU from +0.0% to +2.5%. Attributed to the record-granular marks on the commit (likely, unprofiled: the final tree also slowed variant A, open item 9).
+  - The A-vs-A floors are 4.1% (inserts) and 2.9% (updates).
+- The remaining cost is listed below with its knob.
+
+Remaining costs and their knobs:
+
+| Cost | Size (this host) | Knob |
+|---|---|---|
+| Commit path of inserts (page marks of a COLUMNAR type) | inserts +5.5% of the +6.1% over no-COLUMNAR (B', apply held; before plan 7: +5.3%) | none; pre-existing, unchanged by plan 7 (see also the commit allocation row and open item 9) |
+| Commit path of updates (record-granular marks, likely, unprofiled) | updates +4.4% of the +10.5% (B'; before plan 7: +1.3%), committer CPU +2.5% | none (always on since the switches were removed); would need a page-only mode |
+| Background apply competing with writers | inserts about +0.6%, updates about +6% over no-COLUMNAR | `arcadedb.columnar.applyMaxLag` (500 ms; 1000 cuts update re-reads by a third and apply CPU by 38%, but doubles lag p95 and raises catch-up by 75%), `applyInterval` (100 ms), `applyThreads` (2, shared by databases, one pass per database at a time), fewer COLUMNAR properties |
+| Commit allocation on every type, COLUMNAR or not | +4.2% committer bytes per insert commit (about 12 bytes per record), +0.07% per update commit | none; unprofiled (open item 9) |
+| Patching while lagging | 12.8k records for 5,000 pending writes at 200k (38 ms vs 28 caught up) | `arcadedb.columnar.patchBudget` / `patchBudgetRatio` (ratio 0: inexact answers flagged, no patching) |
+| Maintenance (flush / merge) | update phase maintenance CPU 52 -> 118 ms per run (one more flush from the 512-page bound) | `arcadedb.columnar.flushInterval`, `flushMaxRows`, `flushMinRows`, `flushMaxAge`, `mergeMaxSegments`; the 512-page bound itself is fixed |
+| Parallel counting on the shared query pool | up to 3 extra tasks per facet of a 262,144+ match bucket | `arcadedb.columnar.parallelCountTasks` (4; 1 = serial), `parallelMinMatches` |
+| Query memory | bounded per JVM | `arcadedb.columnar.queryMemoryBudget` (256 MB), `queryBudgetWait` |
+
+Follow-ups (open items):
+1. Task 16 follow-ups:
+   - Evaluate simple predicates on projected columns, so a GROUP BY with a WHERE gets a native match source.
+   - Count inside the parallel scan workers, instead of draining matches to one thread.
+   - Either one would make `groupByAccelerationWhere` pay.
+2. Question for the user: should parallel counting stay on `QueryEngineManager`'s pool, shared with the parallel query steps (ruling
+   T8), or get a dedicated pool? The load ITs (at most 3 query threads) showed no starvation. Many concurrent broad FACETS queries at
+   1M records are unmeasured.
+3. Follower flake, classified and not a plan 7 regression: `ThreeNodesFacetLoadTestIT` fails about 1 method in 3, on either tree
+   (batch 5/12 vs base 4/12, Fisher p = 1.0), on one `Possible corrupted record` log line on a follower.
+   - Cause: the replica transactional read in `FacetPatcher`. `validateChainReadAgainstOneCommit` / `provenAgainstOneCommit` /
+     `committedPlaceholderContent` rely on `executeInLock`, which does not exclude a replicated apply.
+   - Proposed as its own issue, pending the user's approval. A fix using the publication-sequence check, as the committed walk now
+     does, would also let the `FacetPatcher.recordAt` mapping go.
+4. `TermsCollector` pages through unranked ordinals (the rank-view tail) by a scan per page. The 1 s cadence bounds the tail but not the
+   per-page cost.
+5. 44.6 MB allocated per broad facet query at 200k records, unprofiled. Dense counters are 0.9% of it (Task 6).
+6. Temporal values (`DATETIME` / `DATE` to `Instant`, `LocalDateTime`, `LocalDate`) still decode through objects in the apply pass:
+   13% of decode allocation after Task 2's first lever. Converting the stored long directly needs the precision rules of
+   `DateUtils.dateTimeToTimestamp`, so Task 2 left it out to keep exactness simple.
+7. The restricted-user ordinal merge, re-measured at about 100k-value facets (`task7-measure-first.patch`). At 800 values it is 0.33% of
+   a query.
+8. Apply-lag spikes under flush coalescing: 1.7-2.3 s in load-single at 4096 rows / 30 s, against 0.6 s at the defaults. The cause is
+   unprofiled, and coalescing stays off by default until it is explained. Similar isolated spikes (1.8 s) appeared once in a three-node
+   run at `parallelCountTasks` 1.
+9. Engine-wide direction:
+   - Variant A (no COLUMNAR) of the ingest benchmark and nearly every plain GROUP BY row of the facets benchmark run 1-5% slower on the
+     final tree. Each row alone is noise, except one GROUP BY LOSS (1M, 3 buckets, broad, -3.2%).
+   - Insert commits allocate 4.2% more bytes on every type.
+   - Candidates: the record read path (Task 14 hardening) and the commit path (Task 15 marks, Task 15b stamping). Profile A and a plain
+     scan before the merge.
+10. Update re-reads +15%: 500-record commits exceed the 16-records-per-page cap, so updates stay page-granular. Measure a larger cap or
+    a stripe-only mark for heavy update batches.
+11. Unfiled side findings, pre-existing, outside facets, pending the user:
+    - A subtype's AFTER READ listener does not fire when the query scans the supertype (normal plan too).
+    - An embedded query of a restricted user may return rows of a hidden bucket. Check whether it is a test-setup artifact.
+    - A bucket page size of 8216 makes the first 500-record commit fail with "Transaction buffer bigger than 2.00GB".
+12. On a replica, `LocalBucket.assembleFromNewestCommitted` gives up when every attempt (4 x 20 ms) met an open publication. The
+    sequence is JVM-wide, so a follower hosting several databases or applying a run of large entries can keep it open. The chunked
+    record read then raises a `ConcurrentModificationException`, which the apply pass counts as an unreadable attempt, and five in a
+    row (`UNREADABLE_ATTEMPTS_BEFORE_REBUILD`) request a `corrupt` rebuild with no data at fault. Not observed: G3 saw 0 rebuilds.
+    Suggested fix: count a publication-overlap conflict under a distinct cause that does not escalate, or reset the count when the
+    sequence moved.
+13. Re-run the three-node load A/B with several runs per image on a quiet host. The single run per image of Task 17 points to higher
+    query p95 (56.7-72.7 vs 51.2-58.1 ms) and lower throughput, but cannot separate the trees.

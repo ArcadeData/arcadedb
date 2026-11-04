@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ColumnarTransactionManagerTestAccess;
@@ -29,6 +30,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -39,7 +41,11 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -47,6 +53,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,6 +79,7 @@ class ColumnarDurabilityTest extends TestHelper {
   @Override
   protected void endTest() {
     ColumnarTestHooks.killPoint = null;
+    ColumnarTestHooks.forceListener = null;
     ColumnarProjection.failTombstoneRenameForTesting = false;
     ColumnarIndexManager.REAPPLY_FLOOR = 1_024;
     ColumnarTransactionManagerTestAccess.onWALForce(null);
@@ -601,6 +609,108 @@ class ColumnarDurabilityTest extends TestHelper {
       dropper.shutdownNow();
     }
     assertThat(pages.get()).as("pages the check read once the drop stopped it").isLessThanOrEqualTo(2);
+  }
+
+  /**
+   * Task 3 of #10662: a WAL drop never asks a coalesced overlay to flush. The recovery set naming its unflushed pages is persisted
+   * before the first WAL file is dropped, and it is what recovers the rows after a crash.
+   */
+  @Test
+  void walDropWaitsForTheCoalescedOverlaysRecoverySet() throws Exception {
+    final ColumnarTestData data = schemaWithData(48L, 1_000);
+    cancelHousekeeping();
+    // a coalescing configuration: a finite flushInterval, which the overlay ignores because it stays below flushMinRows, and a
+    // flushMaxAge it never reaches here, so the flushMinRows branch is what holds the rows
+    GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL.setValue(1_000L);
+    GlobalConfiguration.COLUMNAR_FLUSH_MIN_ROWS.setValue(4_096);
+    GlobalConfiguration.COLUMNAR_FLUSH_MAX_AGE.setValue(Long.MAX_VALUE);
+    data.mutate(database, 300);
+    FacetOracle.awaitCaughtUp(database);
+    final int bucketId = bucketId();
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final long flushes = manager().getStats().flushCount(ColumnarTestData.TYPE);
+    final int[] unflushed = projection.tracker().unflushedPages();
+    assertThat(unflushed).isNotEmpty();
+    assertThat(projection.overlay().rows()).isPositive();
+
+    final File databaseDir = new File(database.getDatabasePath());
+    final Set<String> walFiles = walFiles(databaseDir);
+    assertThat(walFiles).isNotEmpty();
+    final AtomicReference<Set<String>> walAtPersist = new AtomicReference<>();
+    ColumnarTestHooks.killPoint = name -> {
+      if (name.equals(ColumnarIndexManager.RECOVERY_SET_PERSISTED))
+        walAtPersist.set(walFiles(databaseDir));
+    };
+    try {
+      assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(embedded())).isTrue();
+      ColumnarTransactionManagerTestAccess.rotateAndDropWAL(embedded().getTransactionManager());
+    } finally {
+      ColumnarTestHooks.killPoint = null;
+    }
+
+    assertThat(walAtPersist.get()).as("the recovery set is persisted before any WAL file is dropped").containsAll(walFiles);
+    assertThat(walFiles(databaseDir)).as("the rotation dropped the WAL files").doesNotContainAnyElementsOf(walFiles);
+    assertThat(RecoverySetFile.read(recoveryFile()).get(bucketId)).as("the recovery set names every unflushed page").contains(unflushed);
+    assertThat(projection.overlay().rows()).as("the WAL drop asked no flush").isPositive();
+    assertThat(manager().getStats().flushCount(ColumnarTestData.TYPE)).isEqualTo(flushes);
+
+    kill();
+    database = factory.open();
+    assertRecoveredWithoutRebuild();
+  }
+
+  /**
+   * Task 3 of #10662, spec 5.5: a publish forces each file it writes once, every dictionary of the projection once (brand, tags and
+   * author; skipping the dictionary of an unchanged column, {@code SINGLE_PUBLISH_FSYNC}, measured as noise and was reverted), the
+   * bucket directory twice (before the manifest rename and after it) and the WAL once.
+   */
+  @Test
+  void publishForcesEachFileOnceTheDirectoryTwiceAndTheWalOnce() throws Exception {
+    // one WAL file: the commits of a round all land in the one file the publish forces
+    GlobalConfiguration.TX_WAL_FILES.setValue(1);
+    reopenDatabase();
+    schemaWithData(49L, 1_000);
+    cancelHousekeeping();
+    final List<RID> rids = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT @rid AS rid FROM " + ColumnarTestData.TYPE + " LIMIT 51")) {
+      result.forEachRemaining(row -> rids.add(row.getProperty("rid")));
+    }
+    assertThat(rids).hasSize(51);
+
+    // fileSize is a LONG column without a dictionary: no dictionary gains a value
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        rids.get(i).asDocument().modify().set("fileSize", 7L * i).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+    assertThat(forcesOfAFlush()).isEqualTo(Map.of(ColumnarTestHooks.FORCE_SEGMENT, 1, ColumnarTestHooks.FORCE_DEAD_SET, 1,
+        ColumnarTestHooks.FORCE_DICTIONARY, 3, ColumnarTestHooks.FORCE_FILE, 1, ColumnarTestHooks.FORCE_DIRECTORY, 2, "wal", 1));
+
+    // a brand no record held: the brand dictionary gained a value, the forces are the same
+    database.transaction(() -> rids.get(50).asDocument().modify().set("brand", "brand-never-seen").save());
+    FacetOracle.awaitCaughtUp(database);
+    assertThat(forcesOfAFlush()).isEqualTo(Map.of(ColumnarTestHooks.FORCE_SEGMENT, 1, ColumnarTestHooks.FORCE_DEAD_SET, 1,
+        ColumnarTestHooks.FORCE_DICTIONARY, 3, ColumnarTestHooks.FORCE_FILE, 1, ColumnarTestHooks.FORCE_DIRECTORY, 2, "wal", 1));
+    assertEquivalent();
+  }
+
+  /** The forces of one {@code flushNow}, by kind ({@code wal} for the WAL file forces). */
+  private Map<String, Integer> forcesOfAFlush() throws InterruptedException {
+    final Map<String, Integer> forces = new ConcurrentHashMap<>();
+    ColumnarTestHooks.forceListener = kind -> forces.merge(kind, 1, Integer::sum);
+    ColumnarTransactionManagerTestAccess.onWALForce(() -> forces.merge("wal", 1, Integer::sum));
+    try {
+      manager().flushNow();
+    } finally {
+      ColumnarTestHooks.forceListener = null;
+      ColumnarTransactionManagerTestAccess.onWALForce(null);
+    }
+    return forces;
+  }
+
+  private static Set<String> walFiles(final File databaseDir) {
+    final String[] names = databaseDir.list((dir, name) -> name.endsWith(".wal"));
+    return names == null ? Set.of() : Set.of(names);
   }
 
   private static void hold(final CountDownLatch reached, final CountDownLatch release) {

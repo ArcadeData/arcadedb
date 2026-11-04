@@ -1017,31 +1017,129 @@ public final class ColumnarProjection {
    * without a value for the column (a column the segment does not have, or a missing value) answers with {@code present} false.
    * Segment columns are matched by index file id, so a RENAME keeps its values. The caller holds {@link #applyLock()}, so the segment
    * set it reads cannot change during the pass (every publish changing it holds the same lock).
+   * <p>
+   * The search is {@link LiveLookup}'s, the one the apply pass runs; a segment value is read here through the column's
+   * {@link ColumnReader} ({@link #readSegmentValue}) instead of the pass's point cursor, so this method is the reference the tests hold
+   * the pass's reads to. Test support only: it allocates a lookup per call, so production code (the apply pass) uses its own
+   * {@link LiveLookup} and must never call this on a hot path.
    *
    * @return {@link #LOOKUP_OVERLAY}, {@link #LOOKUP_FROZEN}, the id of the segment holding the live row, or {@link #LOOKUP_ABSENT}
    * (then {@code present} is false)
    */
   long liveValueLookup(final long position, final int column, final RowValues out) {
-    if (position >= 0 && position / maxRecordsInPage <= Integer.MAX_VALUE) {
-      if (readOverlayValue(overlay, position, column, out))
-        return LOOKUP_OVERLAY;
-      final ColumnarOverlay frozen = frozenOverlay;
-      if (frozen != null && !supersededInFrozen.get(position) && readOverlayValue(frozen, position, column, out))
-        return LOOKUP_FROZEN;
-      final SegmentReader[] segments = state.get().segments();
+    final LiveLookup lookup = new LiveLookup(this);
+    final long where = lookup.locate(position);
+    if (lookup.block != null)
+      readOverlayValue(lookup.block, lookup.row, column, out);
+    else if (lookup.segment != null)
+      readSegmentValue(lookup.segment, position, columns[column], column, out);
+    else
+      out.present[column] = false;
+    lookup.clear();
+    return where;
+  }
+
+  /**
+   * Apply thread, under {@link #applyLock()}: the old-value lookups of one apply pass (Task 2 of #10662). {@link #lookup} answers
+   * exactly what {@link #liveValueLookup} answers, but locates the position once per record (the overlay block and row, or the segment
+   * and row) and reads the segment blocks through a {@link SegmentReader.PointCursor}, so a lookup allocates nothing once its blocks are
+   * held. Owned by one pass, reused across its passes; {@link #clear} at the end of each drops the blocks it holds.
+   */
+  static final class LiveLookup {
+    private final ColumnarProjection        projection;
+    private final SegmentReader.PointCursor cursor   = new SegmentReader.PointCursor();
+    private       long                      position = -1;
+    private       long                      where;
+    private       OverlayPageBlock          block;
+    private       int                       row;
+    private       SegmentReader             segment;
+
+    LiveLookup(final ColumnarProjection projection) {
+      this.projection = projection;
+    }
+
+    /**
+     * {@link #liveValueLookup}: the live value of column {@code column} at the position into the same slot of {@code out}, and where it
+     * is. A record's lookups start at column 0, which locates the position; a later column of the same position reuses that location,
+     * valid while the overlay and the segment set do not change (the apply pass changes them only when it publishes).
+     */
+    long lookup(final long position, final int column, final RowValues out) {
+      if (column == 0 || position != this.position)
+        locate(position);
+      if (block != null)
+        readOverlayValue(block, row, column, out);
+      else if (segment != null) {
+        final int segmentColumn = segment.columnOfDefinition(projection.columns[column]);
+        if (segmentColumn < 0)
+          out.present[column] = false;
+        else
+          segment.readRowValue(row, segmentColumn, column, out, cursor);
+      } else
+        out.present[column] = false;
+      return where;
+    }
+
+    /** Drops the location and the segment blocks held; the next lookup locates again. */
+    void clear() {
+      position = -1;
+      block = null;
+      segment = null;
+      cursor.clear();
+    }
+
+    /**
+     * The search of {@link #liveValueLookup}, the only place it is written: newest first, the live overlay, the frozen overlay (unless
+     * superseded there), then the segments from the newest, skipping dead rows. Kept for the next columns of the record.
+     *
+     * @return where the live row is, as {@link #liveValueLookup} answers it
+     */
+    private long locate(final long position) {
+      this.position = position;
+      block = null;
+      segment = null;
+      where = LOOKUP_ABSENT;
+      final int maxRecordsInPage = projection.maxRecordsInPage;
+      if (position < 0 || position / maxRecordsInPage > Integer.MAX_VALUE)
+        return where;
+      final int page = (int) (position / maxRecordsInPage);
+      final int slot = (int) (position % maxRecordsInPage);
+      if (locateInOverlay(projection.overlay, page, slot)) {
+        where = LOOKUP_OVERLAY;
+        return where;
+      }
+      final ColumnarOverlay frozen = projection.frozenOverlay;
+      if (frozen != null && !projection.supersededInFrozen.get(position) && locateInOverlay(frozen, page, slot)) {
+        where = LOOKUP_FROZEN;
+        return where;
+      }
+      final SegmentReader[] segments = projection.state.get().segments();
       for (int i = segments.length - 1; i >= 0; i--) {
-        final SegmentReader segment = segments[i];
-        if (segment.row(position) < 0)
+        final SegmentReader candidate = segments[i];
+        final int found = candidate.row(position, cursor);
+        if (found < 0)
           continue;
-        final PositionBitmap dead = segment.deadSet();
+        final PositionBitmap dead = candidate.deadSet();
         if (dead != null && dead.get(position))
           continue;
-        readSegmentValue(segment, position, columns[column], column, out);
-        return segment.segmentId();
+        segment = candidate;
+        row = found;
+        where = candidate.segmentId();
+        return where;
       }
+      return where;
     }
-    out.present[column] = false;
-    return LOOKUP_ABSENT;
+
+    private boolean locateInOverlay(final ColumnarOverlay from, final int page, final int slot) {
+      final OverlayPageBlock found = from.page(page);
+      if (found == null)
+        return false;
+      final int at = found.row(slot);
+      if (at < 0)
+        return false;
+      block = found;
+      row = at;
+      return true;
+    }
   }
 
   /**
@@ -1090,18 +1188,6 @@ public final class ColumnarProjection {
     this.applyScratch = scratch;
   }
 
-  /** Reads the value of column k at the position from the overlay into {@code out}; false when the overlay holds no row there. */
-  private boolean readOverlayValue(final ColumnarOverlay from, final long position, final int k, final RowValues out) {
-    final OverlayPageBlock block = from.page((int) (position / maxRecordsInPage));
-    if (block == null)
-      return false;
-    final int row = block.row((int) (position % maxRecordsInPage));
-    if (row < 0)
-      return false;
-    readOverlayValue(block, row, k, out);
-    return true;
-  }
-
   private static void readOverlayValue(final OverlayPageBlock block, final int row, final int k, final RowValues out) {
     final boolean present = block.present(k, row);
     out.present[k] = present;
@@ -1112,9 +1198,9 @@ public final class ColumnarProjection {
     case LONG -> out.longs[k] = block.scalar(k, row);
     case DOUBLE -> out.doubles[k] = Double.longBitsToDouble(block.scalar(k, row));
     case ORDINAL_LIST -> {
-      int count = block.ordinals(k, row, listOf(out, k, 0));
+      int count = block.ordinals(k, row, out.listOf(k, 0));
       if (count > out.list[k].length)
-        count = block.ordinals(k, row, listOf(out, k, count));
+        count = block.ordinals(k, row, out.listOf(k, count));
       out.listCount[k] = count;
     }
     }
@@ -1131,8 +1217,8 @@ public final class ColumnarProjection {
 
   /** The segment's reader of the column {@code definition} (by index file id, same kind), null when the segment has no such column. */
   static ColumnReader columnReader(final SegmentReader segment, final ColumnDefinition definition) {
-    final ColumnReader reader = segment.columnByIndexFileId(definition.indexFileId());
-    return reader == null || reader.kind() != definition.kind() ? null : reader;
+    final int column = segment.columnOfDefinition(definition);
+    return column < 0 ? null : segment.columnAt(column);
   }
 
   /** Reads the value at the position from {@code reader} (null: no such column) into slot {@code k} of {@code out}. */
@@ -1148,19 +1234,12 @@ public final class ColumnarProjection {
     case LONG -> out.longs[k] = reader.longValue(position);
     case DOUBLE -> out.doubles[k] = reader.doubleValue(position);
     case ORDINAL_LIST -> {
-      int count = reader.ordinals(position, listOf(out, k, 0));
+      int count = reader.ordinals(position, out.listOf(k, 0));
       if (count > out.list[k].length)
-        count = reader.ordinals(position, listOf(out, k, count));
+        count = reader.ordinals(position, out.listOf(k, count));
       out.listCount[k] = count;
     }
     }
-  }
-
-  /** The list array of slot {@code k}, grown to at least {@code length} entries. */
-  private static int[] listOf(final RowValues out, final int k, final int length) {
-    if (out.list[k] == null || out.list[k].length < length)
-      out.list[k] = new int[Math.max(length, 8)];
-    return out.list[k];
   }
 
   /**

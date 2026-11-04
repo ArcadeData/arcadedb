@@ -93,6 +93,59 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
 
   private static final ThreadLocal<PointMemo> POINT_MEMO = ThreadLocal.withInitial(PointMemo::new);
 
+  /**
+   * A point-read memo owned by one caller (an apply pass, Task 2 of #10662), for the reads of {@link #row(long, PointCursor)} and
+   * {@link #readRowValue}: direct-mapped slots of presence blocks (by file) and of row blocks (by file and column), overwritten in place,
+   * so a lookup that alternates columns or segments finds its blocks without a cache call, and a hit allocates nothing. A miss goes to
+   * the {@link BlockCache} as {@link #pointPresence} does. The blocks it holds are pinned until {@link #clear()}, which the owner calls
+   * at the end of its pass; cache file ids are never reused, so a slot never answers for another file. Not thread safe.
+   */
+  static final class PointCursor {
+    private static final int PRESENCE_SLOTS = 8;
+    private static final int ENCODED_SLOTS  = 32;
+
+    private final long[]          presenceFile  = new long[PRESENCE_SLOTS];
+    private final int[]           presenceBlock = new int[PRESENCE_SLOTS];
+    private final Presence[]      presence      = new Presence[PRESENCE_SLOTS];
+    private final long[]          encodedFile   = new long[ENCODED_SLOTS];
+    private final int[]           encodedBlock  = new int[ENCODED_SLOTS];
+    private final int[]           encodedColumn = new int[ENCODED_SLOTS];
+    private final EncodedColumn[] encoded       = new EncodedColumn[ENCODED_SLOTS];
+
+    /** Drops every block the cursor holds. */
+    void clear() {
+      Arrays.fill(presence, null);
+      Arrays.fill(encoded, null);
+    }
+
+    private Presence presence(final SegmentReader reader, final int block) {
+      final long fileId = reader.file.cacheFileId();
+      final int slot = (int) (fileId & (PRESENCE_SLOTS - 1));
+      final Presence held = presence[slot];
+      if (held != null && presenceFile[slot] == fileId && presenceBlock[slot] == block)
+        return held;
+      final Presence loaded = reader.presence(block);
+      presenceFile[slot] = fileId;
+      presenceBlock[slot] = block;
+      presence[slot] = loaded;
+      return loaded;
+    }
+
+    private EncodedColumn encoded(final SegmentReader reader, final int block, final int k) {
+      final long fileId = reader.file.cacheFileId();
+      final int slot = (int) ((fileId * 7 + k) & (ENCODED_SLOTS - 1));
+      final EncodedColumn held = encoded[slot];
+      if (held != null && encodedFile[slot] == fileId && encodedBlock[slot] == block && encodedColumn[slot] == k)
+        return held;
+      final EncodedColumn loaded = reader.encoded(block, k);
+      encodedFile[slot] = fileId;
+      encodedBlock[slot] = block;
+      encodedColumn[slot] = k;
+      encoded[slot] = loaded;
+      return loaded;
+    }
+  }
+
   /** One presence block: covered pages, the row of the first position of each, and their stripes ({@code wordsPerStripe} each). */
   private record Presence(int[] pages, int[] rowStart, long[] stripes) {
     long bytes() {
@@ -250,6 +303,11 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
 
   /** The row of the position (its rank in the segment's position order), -1 when the segment holds no row there. */
   int row(final long position) {
+    return row(position, null);
+  }
+
+  /** {@link #row(long)} reading the presence block through the cursor, or through the thread's memo when the cursor is null. */
+  int row(final long position, final PointCursor cursor) {
     if (position < 0)
       return -1;
     final long pageNumber = position / layout.maxRecordsInPage;
@@ -259,7 +317,7 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
     final int block = presenceBlockOf(page);
     if (block < 0)
       return -1;
-    final Presence presence = pointPresence(block);
+    final Presence presence = cursor == null ? pointPresence(block) : cursor.presence(this, block);
     final int index = Arrays.binarySearch(presence.pages, page);
     if (index < 0)
       return -1;
@@ -324,13 +382,50 @@ final class SegmentReader implements ColumnarSegmentView, AutoCloseable {
     return index == null ? null : readers[index];
   }
 
-  /** The reader of the column of the index file id (stable across a property RENAME), null when the segment has no such column. */
-  ColumnReader columnByIndexFileId(final int indexFileId) {
+  /**
+   * The segment's column of the definition: the same index file id (stable across a property RENAME) and the same kind; -1 when the
+   * segment has no such column.
+   */
+  int columnOfDefinition(final ColumnDefinition definition) {
     final ColumnDefinition[] columns = layout.columns;
     for (int k = 0; k < columns.length; k++)
-      if (columns[k].indexFileId() == indexFileId)
-        return readers[k];
-    return null;
+      if (columns[k].indexFileId() == definition.indexFileId())
+        return columns[k].kind() == definition.kind() ? k : -1;
+    return -1;
+  }
+
+  /** The reader of the segment's column {@code column} (an index of its columns, {@link #columnOfDefinition}). */
+  ColumnReader columnAt(final int column) {
+    return readers[column];
+  }
+
+  /**
+   * Reads the value of the segment's column {@code column} at the row ({@link #row(long, PointCursor)}) into slot {@code k} of
+   * {@code out}, as {@code ColumnarProjection.readValue} reads it through the column's {@link ColumnReader}: missing when the row has no
+   * value, the list array of the slot grown to the count. Blocks come through the cursor, so a hit allocates nothing.
+   */
+  void readRowValue(final int row, final int column, final int k, final RowValues out, final PointCursor cursor) {
+    final EncodedColumn encoded = cursor.encoded(this, row / layout.blockRows, column);
+    final int r = row % layout.blockRows;
+    if (!encoded.present(r)) {
+      out.present[k] = false;
+      return;
+    }
+    out.present[k] = true;
+    switch (readers[column].kind) {
+    case ORDINAL -> out.ordinal[k] = encoded.ordinal(r);
+    case LONG -> out.longs[k] = encoded.longValue(r);
+    case DOUBLE -> out.doubles[k] = encoded.doubleValue(r);
+    case ORDINAL_LIST -> {
+      final long range = encoded.listRange(r);
+      final int start = (int) (range >>> 32);
+      final int count = (int) range - start;
+      final int[] list = out.listOf(k, count);
+      for (int i = 0; i < count; i++)
+        list[i] = encoded.listOrdinal(start + i);
+      out.listCount[k] = count;
+    }
+    }
   }
 
   @Override

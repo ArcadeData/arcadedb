@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
@@ -84,11 +85,12 @@ import java.util.logging.Level;
  * {@link ColumnarProjection#addColumn}). Opening never throws to the registering caller (a schema load has published its generation by
  * then): a bucket that fails is logged, reported unusable and retried by later passes with a backoff, and the other buckets open.
  * <p>
- * <b>Marks.</b> {@link #markPages} is on the commit path: one volatile read and one array read for a file with no projection, an atomic
- * OR per page for a projected one; a database with no projection and no watcher is not even called ({@link #hasMarkTargets()}). A
- * mark on an external-property bucket goes to the owning projection's external tracker (R7). Any file, projected or not, may be
- * watched ({@link #watchFiles}): its marks bump the watcher's generation synchronously and the watcher runs later on
- * {@link ColumnarApplyPool}, coalesced.
+ * <b>Marks.</b> {@link #markPages} is on the commit path: one volatile read and one array read for a file with no projection, two atomic
+ * ORs per page for a projected one; a database with no projection and no watcher is not even called ({@link #hasMarkTargets()}). A local
+ * commit with WAL names the records it wrote on a page instead when they are all it changed there ({@link #markRecords}, Task 15 of
+ * #10662): an atomic OR per record and one per page. A mark on an external-property bucket goes to the owning projection's external
+ * tracker (R7). Any file, projected or not, may be watched ({@link #watchFiles}): its marks bump the watcher's generation synchronously
+ * and the watcher runs later on {@link ColumnarApplyPool}, coalesced.
  * <p>
  * <b>Hierarchies (plan 5).</b> {@link #hierarchy} creates, on first use, one {@link HierarchyManager} per (declaring type, property)
  * whose COLUMNAR index has a hierarchy in its METADATA; the registry listens to the schema events once for all of them, and closes a
@@ -155,18 +157,13 @@ public final class ColumnarIndexManager {
   /** Reached by the reconcile of a pass before it reads the schema. */
   static final String RECONCILE = "manager.reconcile";
   /**
-   * Largest factor the apply interval ({@code arcadedb.columnar.applyInterval}) is stretched by while every pass leaves new marks
-   * behind (sustained ingest): 5, and never past {@code max(applyInterval, }{@link #APPLY_PACING_LAG_LIMIT_MS}{@code )}, so 100 ms
-   * stretches to 500 ms at most and the apply lag stays below the spec's ~1 s target.
-   */
-  static final int    APPLY_PACING_MAX_FACTOR = 5;
-  /**
    * Least time between two rank-view rebuilds of one projection (plan 3 rank view): a dictionary that keeps growing past the staleness
-   * threshold ({@link GlobalDictionary#isRankViewStale()}) is re-sorted at most this often, on the maintenance pool.
+   * threshold ({@link GlobalDictionary#isRankViewStale()}) is re-sorted at most this often, on the maintenance pool. Short, because a
+   * stale view is costly to read and cheap to replace: paging AFTER a cursor over an unranked tail of 20% of the values takes about 5x
+   * the same walk over ranked values, while re-sorting 60,000 values takes milliseconds (#10662 Task 9). The staleness threshold, not
+   * this interval, bounds how many rebuilds a growing dictionary pays (one per 1/8 of growth).
    */
-  static final long   RANK_VIEW_MIN_INTERVAL_MS = 10_000L;
-  /** Oldest pending mark age past which the pacing falls back to the base interval, whatever the ingest. */
-  static final long   APPLY_PACING_LAG_LIMIT_MS = 500L;
+  static final long   RANK_VIEW_MIN_INTERVAL_MS = 1_000L;
 
   private static final long   LOG_THROTTLE_MS = 60_000L;
   private static final long[] NO_SEGMENTS     = new long[0];
@@ -227,6 +224,11 @@ public final class ColumnarIndexManager {
   private final ColumnarStats stats        = new ColumnarStats();
   /** Permits of {@link #fallbackScans()}: {@code arcadedb.columnar.maxFallbackScans}, read at construction. */
   private final Semaphore     fallbackScans;
+  /**
+   * Task 15b of #10662: the {@code TransactionManager.applyChanges} calls (Raft apply, a forwarded write, WAL replay) between the write
+   * of their first page and their mark, which follows the writes. See {@link #hasUnmarkedApplies()}.
+   */
+  private final AtomicInteger unmarkedApplies = new AtomicInteger();
   private final AtomicLong    reconcileRequests = new AtomicLong();
   /** The value of {@link #reconcileRequests} the last ended reconcile started from; written by the pass thread (one per database). */
   private volatile long       reconciledRequests;
@@ -313,7 +315,7 @@ public final class ColumnarIndexManager {
   private boolean             tickRegistered;
   private final Object        tickLock            = new Object();
   /**
-   * The factor the apply interval is stretched by under sustained ingest, 1 to {@link #APPLY_PACING_MAX_FACTOR} (see
+   * The factor the apply interval is stretched by under sustained ingest, 1 to {@code max(1, applyMaxLag / applyInterval)} (see
    * {@link #paceAfterPass}); written by the pass only, which never runs twice at once for a database.
    */
   private volatile int        applyPacing         = 1;
@@ -1268,9 +1270,28 @@ public final class ColumnarIndexManager {
     return fileId >= 0 && fileId < current.byFileId.length && current.byFileId[fileId] != null;
   }
 
+  /**
+   * Records of one page a local commit marks one by one (Task 15 of #10662): a commit that wrote more records of a page, or a page any
+   * other way, marks the whole page.
+   */
+  public static final int MAX_SLOT_MARKS_PER_PAGE = 16;
+  /** {@link #packRecord}: the file id above this many bits of position. */
+  private static final int  RECORD_KEY_FILE_SHIFT    = 44;
+  private static final long RECORD_KEY_POSITION_MASK = (1L << RECORD_KEY_FILE_SHIFT) - 1;
+
   /** Packs a page for {@link #markPackedPages}: sorting the keys groups them by file id, then by page number. */
   public static long packPage(final int fileId, final int pageNumber) {
     return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
+  }
+
+  /**
+   * Packs a record position of a file for {@link #markPackedPages(long[], int, int[], long[], int, long[], boolean)}: sorting the keys
+   * groups them by file id, then by page. Returns -1 when the file id or the position does not fit (the caller marks the page instead).
+   */
+  public static long packRecord(final int fileId, final long position) {
+    if (fileId < 0 || fileId >= 1 << (63 - RECORD_KEY_FILE_SHIFT) || position < 0 || position > RECORD_KEY_POSITION_MASK)
+      return -1L;
+    return ((long) fileId << RECORD_KEY_FILE_SHIFT) | position;
   }
 
   /** True when one of the first {@code count} {@link #packPage packed} keys, sorted, is on a {@link #isProjected projected} file. */
@@ -1286,6 +1307,15 @@ public final class ColumnarIndexManager {
   }
 
   /**
+   * The file is a projected bucket whose marks can name records ({@link #markRecords}): a primary bucket, not the external-property
+   * bucket of one. Lock free.
+   */
+  public boolean acceptsRecordMarks(final int fileId) {
+    final Routes current = routes;
+    return fileId >= 0 && fileId < current.byFileId.length && current.byFileId[fileId] != null && !current.externalFileId[fileId];
+  }
+
+  /**
    * Marks the first {@code count} {@link #packPage packed} keys, sorted, one {@link #markPages} (or {@link #markPagesWithoutWAL}) call
    * per file. {@code buffer} receives the page numbers of one file at a time, so it holds {@code count} ints at least: nothing is
    * allocated. Every file is marked even when the no-WAL marker of one cannot be written; the first such failure is thrown after.
@@ -1293,14 +1323,37 @@ public final class ColumnarIndexManager {
    * @throws UncheckedIOException with {@code withoutWAL}, when the {@code NOWAL} marker of a projection cannot be written
    */
   public void markPackedPages(final long[] sortedKeys, final int count, final int[] buffer, final boolean withoutWAL) {
+    markPackedPages(sortedKeys, count, buffer, null, 0, null, withoutWAL);
+  }
+
+  /**
+   * {@link #markPackedPages(long[], int, int[], boolean)} with record marks: the first {@code recordCount} {@link #packRecord packed}
+   * record keys, sorted, are marked in the same call per file as its pages ({@link #markRecords}), so a file is marked once per call
+   * whatever mix of pages and records it has. {@code recordBuffer} holds {@code recordCount} longs at least. A commit without WAL marks
+   * no record ({@link #markPagesWithoutWAL} is page granular).
+   *
+   * @throws IllegalArgumentException when records are passed with {@code withoutWAL}
+   * @throws UncheckedIOException     with {@code withoutWAL}, when the {@code NOWAL} marker of a projection cannot be written
+   */
+  public void markPackedPages(final long[] sortedKeys, final int count, final int[] buffer, final long[] sortedRecordKeys,
+      final int recordCount, final long[] recordBuffer, final boolean withoutWAL) {
+    if (withoutWAL && recordCount > 0)
+      throw new IllegalArgumentException("A commit without WAL marks pages, not records");
     UncheckedIOException failure = null;
-    for (int i = 0; i < count; ) {
-      final int fileId = (int) (sortedKeys[i] >>> 32);
+    int i = 0;
+    int r = 0;
+    while (i < count || r < recordCount) {
+      final int pageFile = i < count ? (int) (sortedKeys[i] >>> 32) : Integer.MAX_VALUE;
+      final int recordFile = r < recordCount ? (int) (sortedRecordKeys[r] >>> RECORD_KEY_FILE_SHIFT) : Integer.MAX_VALUE;
+      final int fileId = Math.min(pageFile, recordFile);
       int pages = 0;
       while (i < count && (int) (sortedKeys[i] >>> 32) == fileId)
         buffer[pages++] = (int) sortedKeys[i++];
+      int records = 0;
+      while (r < recordCount && (int) (sortedRecordKeys[r] >>> RECORD_KEY_FILE_SHIFT) == fileId)
+        recordBuffer[records++] = sortedRecordKeys[r++] & RECORD_KEY_POSITION_MASK;
       if (!withoutWAL)
-        markPages(fileId, buffer, pages);
+        mark(fileId, buffer, pages, recordBuffer, records);
       else
         try {
           markPagesWithoutWAL(fileId, buffer, pages);
@@ -1313,9 +1366,38 @@ public final class ColumnarIndexManager {
       throw failure;
   }
 
-  /** Marks the pages of the file dirty (commit, Raft apply, WAL replay). No lock; nothing allocated. */
+  /** An apply that marks its pages only after writing them (Task 15b) starts writing; called before its first page is written. */
+  public void unmarkedApplyStarted() {
+    unmarkedApplies.incrementAndGet();
+  }
+
+  /** The apply of {@link #unmarkedApplyStarted()} marked its pages, or failed: called once, in a finally, after the mark. */
+  public void unmarkedApplyEnded() {
+    unmarkedApplies.decrementAndGet();
+  }
+
+  /**
+   * Some apply wrote pages it has not marked yet: a page read now may hold its writes without any mark naming them, so an apply pass
+   * that read the page by record must not stamp it with the version it read (Task 15b). Lock free.
+   */
+  boolean hasUnmarkedApplies() {
+    return unmarkedApplies.get() != 0;
+  }
+
+  /** Marks the pages of the file dirty, whole (commit, Raft apply, WAL replay). No lock; nothing allocated. */
   public void markPages(final int fileId, final int[] pageNumbers, final int count) {
-    mark(fileId, pageNumbers, count);
+    mark(fileId, pageNumbers, count, null, 0);
+  }
+
+  /**
+   * Marks the records at the first {@code count} positions of the file dirty, their pages next to each other (a local commit that
+   * wrote them with WAL, Task 15 of #10662): a query's pending positions and the next apply pass take only these records of their
+   * pages, unless the page is marked whole in the same epoch or gets more than {@link #MAX_SLOT_MARKS_PER_PAGE} records. A mark of the
+   * external-property bucket of a projection is page granular whatever it names. No lock; nothing allocated once the page was marked
+   * by record before.
+   */
+  public void markRecords(final int fileId, final long[] positions, final int count) {
+    mark(fileId, null, 0, positions, count);
   }
 
   /**
@@ -1329,7 +1411,7 @@ public final class ColumnarIndexManager {
    *                              and the next no-WAL mark tries the marker again
    */
   public void markPagesWithoutWAL(final int fileId, final int[] pageNumbers, final int count) {
-    final ColumnarProjection projection = mark(fileId, pageNumbers, count);
+    final ColumnarProjection projection = mark(fileId, pageNumbers, count, null, 0);
     if (projection == null)
       return;
     final long epoch = projection.bumpNoWalEpoch();
@@ -1354,10 +1436,12 @@ public final class ColumnarIndexManager {
   }
 
   /**
-   * Marks into the tracker the file id routes to and returns its projection (null for none); then notifies the watchers of the file,
-   * projected or not (plan 5 R9: a hierarchy's tag type may have a COLUMNAR index of its own).
+   * Marks the pages (whole) and the records into the tracker the file id routes to and returns its projection (null for none); then
+   * notifies the watchers of the file, projected or not (plan 5 R9: a hierarchy's tag type may have a COLUMNAR index of its own). The
+   * external tracker is read page by page only, so the records it receives count as their pages.
    */
-  private ColumnarProjection mark(final int fileId, final int[] pageNumbers, final int count) {
+  private ColumnarProjection mark(final int fileId, final int[] pageNumbers, final int count, final long[] positions,
+      final int positionCount) {
     final IntConsumer hook = onMarkForTesting;
     if (hook != null)
       hook.accept(fileId);
@@ -1365,8 +1449,11 @@ public final class ColumnarIndexManager {
     ColumnarProjection projection = null;
     if (fileId >= 0 && fileId < current.byFileId.length) {
       projection = current.byFileId[fileId];
-      if (projection != null)
-        (current.externalFileId[fileId] ? projection.externalTracker() : projection.tracker()).mark(pageNumbers, count);
+      if (projection != null) {
+        final DirtyPageTracker tracker = current.externalFileId[fileId] ? projection.externalTracker() : projection.tracker();
+        tracker.mark(pageNumbers, count);
+        tracker.markRecords(positions, positionCount);
+      }
     }
     final Watcher[][] byFile = watchersByFileId;
     if (fileId >= 0 && fileId < byFile.length && byFile[fileId] != null) {
@@ -1551,15 +1638,18 @@ public final class ColumnarIndexManager {
   /**
    * The interval {@link ColumnarApplyPool} checks the tick at: every base period while there is nothing to do (the tick then returns
    * after its few volatile reads, and no configuration is read, C-M1), otherwise {@code arcadedb.columnar.applyInterval} times the
-   * current pacing factor, capped at {@code max(applyInterval, }{@link #APPLY_PACING_LAG_LIMIT_MS}{@code )}.
+   * current pacing factor, capped at {@code max(applyInterval, applyMaxLag)} ({@code arcadedb.columnar.applyMaxLag}).
    */
   private long tickIntervalMs() {
     if (isIdle())
       return 0L;
     final long base = database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL);
     final int factor = applyPacing;
-    // batch 3 r1 M1: never stretched past max(base, the lag limit), so the lag bound holds whatever the configured interval
-    return factor == 1 ? base : Math.min(base * factor, Math.max(base, APPLY_PACING_LAG_LIMIT_MS));
+    if (factor == 1)
+      return base;
+    // batch 3 r1 M1: never stretched past max(base, applyMaxLag), so the lag bound holds whatever the configured interval, also when
+    // either setting changed after the pass that set the factor
+    return Math.min(base * factor, Math.max(base, database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG)));
   }
 
   /** Nothing for a tick to do: no projection, no pending watcher, no failed open, no due reconcile. Volatile reads only. */
@@ -1569,20 +1659,31 @@ public final class ColumnarIndexManager {
 
   /**
    * Adaptive apply pacing (final review C, spec 2 "ingest cost unchanged"), after the apply loop of a pass: when the pass leaves marks
-   * behind that arrived while it ran (sustained ingest), the interval to the next pass doubles, up to {@link #APPLY_PACING_MAX_FACTOR}
-   * times the base, so one pass covers more commits and a page written by consecutive commits is re-read once instead of once per base
-   * interval. It falls back to the base as soon as a pass finds nothing left, or the oldest pending mark is older than
-   * {@link #APPLY_PACING_LAG_LIMIT_MS}. The stretched interval never exceeds {@code max(applyInterval, 500 ms)}
-   * ({@link #tickIntervalMs}), so the apply lag stays bounded by that plus one pass: an interval of 500 ms or more is not stretched at
-   * all. Everything else the tick drives (reconcile, watchers, open retries, waiting rebuilds) rides on the same interval.
+   * behind that arrived while it ran (sustained ingest), the interval to the next pass doubles, up to
+   * {@code max(1, applyMaxLag / applyInterval)} times the base ({@code arcadedb.columnar.applyMaxLag}, 500 ms by default: 5 times the
+   * default 100 ms interval), so one pass covers more commits and a page written by consecutive commits is re-read once instead of once
+   * per base interval. It falls back to the base as soon as a pass finds nothing left, or the oldest pending mark is older than
+   * {@code applyMaxLag}. The stretched interval never exceeds {@code max(applyInterval, applyMaxLag)} ({@link #tickIntervalMs}), so the
+   * apply lag stays bounded by that plus one pass: an interval above half of {@code applyMaxLag} is not stretched at all.
+   * Everything else the tick drives (reconcile, watchers, open retries, waiting rebuilds) rides on the same interval.
    */
   private void paceAfterPass(final long nowMs) {
     final long oldest = oldestPendingMarkMs();
-    if (oldest == 0 || nowMs - oldest > APPLY_PACING_LAG_LIMIT_MS) {
+    if (oldest == 0) {
       if (applyPacing != 1)
         applyPacing = 1;
-    } else if (applyPacing < APPLY_PACING_MAX_FACTOR)
-      applyPacing = Math.min(APPLY_PACING_MAX_FACTOR, applyPacing * 2);
+      return;
+    }
+    final ContextConfiguration configuration = database.getConfiguration();
+    final long maxLag = configuration.getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG);
+    final int maxFactor = (int) Math.min(Integer.MAX_VALUE,
+        Math.max(1L, maxLag / Math.max(1L, configuration.getValueAsLong(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL))));
+    if (nowMs - oldest > maxLag) {
+      if (applyPacing != 1)
+        applyPacing = 1;
+    } else if (applyPacing != maxFactor)
+      // a cap lowered since the last pass takes effect at once
+      applyPacing = (int) Math.min(maxFactor, applyPacing * 2L);
   }
 
   /** The start time of the oldest epoch with pending marks over every projection, 0 for none; lock free. */
@@ -1839,7 +1940,7 @@ public final class ColumnarIndexManager {
         rebuild = ColumnarRebuilder.UNCLEAN_PAGES;
       else if (!changed.isEmpty()) {
         final int[] pages = changed.toArray();
-        mark(projection.bucketId(), pages, pages.length);
+        mark(projection.bucketId(), pages, pages.length, null, 0);
         stats.recoveryPages(pages.length);
       }
       if (rebuild == null) {
@@ -1868,7 +1969,7 @@ public final class ColumnarIndexManager {
     final int[] pages = recovery.get(fileId);
     if (pages == null || pages.length == 0)
       return 0;
-    mark(fileId, pages, pages.length);
+    mark(fileId, pages, pages.length, null, 0);
     return pages.length;
   }
 
@@ -2257,6 +2358,8 @@ public final class ColumnarIndexManager {
     final long now = clockMs.getAsLong();
     final long intervalMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL);
     final int maxRows = database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS);
+    final int minRows = database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_FLUSH_MIN_ROWS);
+    final long maxAgeMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.COLUMNAR_FLUSH_MAX_AGE);
     for (final Slot slot : slots) {
       final ColumnarProjection projection = slot.projection;
       if (closing || projection.isClosedOrDropped())
@@ -2267,7 +2370,7 @@ public final class ColumnarIndexManager {
       final boolean attemptDue = now >= slot.nextAttemptMs;
       // a pass due for a wanted merge only does not flush (final review A-I1): a flush per merge pass added a segment as fast as the
       // merge removed one
-      final boolean flushDue = attemptDue && ColumnarFlusher.shouldFlush(projection, now, intervalMs, maxRows);
+      final boolean flushDue = attemptDue && ColumnarFlusher.shouldFlush(projection, now, intervalMs, maxRows, minRows, maxAgeMs);
       final boolean maintainDue = flushDue || attemptDue && slot.mergeWanted;
       final boolean rankDue = isRankViewRebuildDue(slot, now);
       if (!maintainDue && !rankDue)

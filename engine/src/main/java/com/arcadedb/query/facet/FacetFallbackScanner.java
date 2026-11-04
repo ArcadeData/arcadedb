@@ -204,28 +204,21 @@ public final class FacetFallbackScanner {
       return 0;
     final int facetCount = sources.size();
     final MatchSet.FacetMatches[] facetMatches = new MatchSet.FacetMatches[facetCount];
-    GlobalDictionary noValues = null;
-    for (int f = 0; f < facetCount; f++) {
-      final Source source = sources.get(f);
-      if (source == null)
-        continue;
-      facetMatches[f] = matches.facetMatches(f, bucketId);
-      if (source.read() == Read.COLUMN && noValues == null)
-        // never grown: a dictionary value is reported by value, which the collectors merge with the projection's ordinals
-        noValues = GlobalDictionary.createInMemory();
-    }
-    final GlobalDictionary dictionary = noValues;
-
-    final PatchedValue value = new PatchedValue();
-    final HashSet<Object> seen = new HashSet<>();
+    for (int f = 0; f < facetCount; f++)
+      if (sources.get(f) != null)
+        facetMatches[f] = matches.facetMatches(f, bucketId);
+    final Extraction extraction = new Extraction(sources, ctx, sink);
+    final boolean[] admitted = new boolean[facetCount];
     final long[] read = new long[1];
     final int[] ticks = new int[1];
     base.forEach(position -> {
       guard.checkPeriodically(++ticks[0]);
       final boolean patched = patch != null && patch.get(position);
       boolean scanned = false;
-      for (int f = 0; f < facetCount && !scanned; f++)
-        scanned = facetMatches[f] != null && facetMatches[f].get(position);
+      for (int f = 0; f < facetCount; f++) {
+        admitted[f] = facetMatches[f] != null && facetMatches[f].get(position);
+        scanned |= admitted[f];
+      }
       if (!scanned && !patched)
         return;
       final Document record = FacetPatcher.recordAt(db, new RID(bucketId, position));
@@ -236,9 +229,49 @@ public final class FacetFallbackScanner {
       if (!scanned)
         return;
       read[0]++;
+      extraction.extract(record, position, admitted);
+    });
+    return read[0];
+  }
+
+  /**
+   * Reads the values of the scanned facets of one bucket from its records, one record at a time, and hands each to the sink: what
+   * {@link #scan} does with each record it reads, and what a FACETS statement does with each row of a bucket whose records fire read
+   * events ({@link FacetExecutor.RowScan}). The value, the dictionary and the deduplication set are reused from one record to the next.
+   * Not thread safe.
+   */
+  static final class Extraction {
+    private final List<Source>     sources;
+    private final CommandContext   ctx;
+    private final ScanSink         sink;
+    /** Never grown: a dictionary value is reported by value, which the collectors merge with the projection's ordinals. */
+    private final GlobalDictionary dictionary;
+    private final PatchedValue     value = new PatchedValue();
+    private final HashSet<Object>  seen  = new HashSet<>();
+
+    /**
+     * @param sources the facets of the query by index, null for a facet that is not scanned in the bucket
+     * @param ctx     the context the expressions of expression facets are evaluated in
+     */
+    Extraction(final List<Source> sources, final CommandContext ctx, final ScanSink sink) {
+      this.sources = sources;
+      this.ctx = ctx;
+      this.sink = sink;
+      boolean columns = false;
+      for (final Source source : sources)
+        columns |= source != null && source.read() == Read.COLUMN;
+      this.dictionary = columns ? GlobalDictionary.createInMemory() : null;
+    }
+
+    /**
+     * Hands the record's value to the sink for every facet {@code admitted} names (by index; each must have a source).
+     *
+     * @param position the record's position in its bucket
+     */
+    void extract(final Document record, final long position, final boolean[] admitted) {
       ResultInternal row = null;
-      for (int f = 0; f < facetCount; f++) {
-        if (facetMatches[f] == null || !facetMatches[f].get(position))
+      for (int f = 0; f < admitted.length; f++) {
+        if (!admitted[f])
           continue;
         final Source source = sources.get(f);
         final FacetSpec spec = source.spec();
@@ -264,8 +297,7 @@ public final class FacetFallbackScanner {
         }
         sink.accept(f, position, value);
       }
-    });
-    return read[0];
+    }
   }
 
   /**
@@ -273,7 +305,8 @@ public final class FacetFallbackScanner {
    * triggers of its lineage (a super type's included), exactly what a record read dispatches to ({@code LocalBucket.fireBeforeReadEvents},
    * {@code LocalDatabase.invokeAfterReadEvents}). A bucket of such a type is never answered from the projection (final review B-I1): a
    * BEFORE READ trigger may hide a record and an AFTER READ listener filter or rewrite it, which only a read of the record applies, so its
-   * records are read ({@link #scan}, {@link FacetPatcher#recordAt}) and GROUP BY runs the normal plan. Asked at each execution, so a
+   * records are read ({@link #scan}, {@link FacetPatcher#recordAt}; for a bucket of the statement's target, the rows of the statement
+   * themselves, {@link FacetExecutor.RowScan}) and GROUP BY runs the normal plan. Asked at each execution, so a
    * cached plan follows a trigger created or dropped since; with no read listener anywhere it costs two list checks and a volatile read.
    */
   public static boolean firesReadEvents(final DatabaseInternal db, final DocumentType type) {

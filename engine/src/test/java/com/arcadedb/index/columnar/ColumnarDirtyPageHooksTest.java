@@ -326,6 +326,65 @@ class ColumnarDirtyPageHooksTest extends TestHelper {
   }
 
   @Test
+  void localCommitMarksOnlyTheRecordsItWrote() throws Exception {
+    createAsset();
+    final int bucketId = bucketId("Asset");
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final List<RID> rids = insertSmall(20);
+    settle(projection);
+
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      database.transaction(() -> rids.get(4).asDocument().modify().set("brand", "changed").save());
+      assertThat(pendingPositions(projection)).containsExactly(rids.get(4).getPosition());
+      // the recovery set stays page granular
+      assertThat(pending(projection.tracker())).containsExactly(0);
+    }
+  }
+
+  @Test
+  void pathsWithoutRecordsMarkWholePages() throws Exception {
+    createAsset();
+    final int bucketId = bucketId("Asset");
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final int maxRecordsInPage = ((LocalBucket) database.getSchema().getBucketById(bucketId)).getMaxRecordsInPage();
+    final List<RID> rids = insertSmall(20);
+    settle(projection);
+
+    // a Raft apply on a follower and the WAL replay at startup both go through TransactionManager.applyChanges: no record is known
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      final int version = (int) page(bucketId, 0).getVersion();
+      assertThat(applyChanges(walTransaction(bucketId, new int[] { 0 }, new int[] { version + 1 }))).isTrue();
+      assertThat(pendingPositions(projection)).hasSize(maxRecordsInPage);
+    }
+    settle(projection);
+
+    // a commit without WAL marks through markPagesWithoutWAL, page granular
+    final TransactionContext transaction = ((DatabaseInternal) database).getTransaction();
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      transaction.setUseWAL(false);
+      database.transaction(() -> rids.get(4).asDocument().modify().set("brand", "nowal").save());
+      assertThat(pendingPositions(projection)).hasSize(maxRecordsInPage);
+    } finally {
+      transaction.setUseWAL(true);
+    }
+    settle(projection);
+
+    // a page the commit created: no record of it was there before
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      final RID[] big = new RID[3];
+      database.transaction(() -> {
+        for (int i = 0; i < big.length; i++)
+          big[i] = database.newDocument("Asset").set("brand", "big").set("blob", BLOB).save().getIdentity();
+      });
+      final int newPage = (int) (big[2].getPosition() / maxRecordsInPage);
+      assertThat(newPage).as("the premise: the third big record opened a page").isPositive();
+      final List<Long> pending = pendingPositions(projection);
+      assertThat(pending).contains((long) newPage * maxRecordsInPage, (newPage + 1L) * maxRecordsInPage - 1);
+    }
+    settle(projection);
+  }
+
+  @Test
   void markCostIsOneArrayReadForOtherBuckets() {
     createAsset();
     database.command("sql", "CREATE DOCUMENT TYPE Other BUCKETS 1");
@@ -378,6 +437,25 @@ class ColumnarDirtyPageHooksTest extends TestHelper {
     assertThat(projection.tracker().isEmpty()).isTrue();
     if (projection.externalTracker() != null)
       assertThat(projection.externalTracker().isEmpty()).isTrue();
+  }
+
+  /** {@code count} small records of Asset in one commit, all on page 0. */
+  private List<RID> insertSmall(final int count) {
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < count; i++)
+        rids.add(database.newDocument("Asset").set("brand", "b" + i).save().getIdentity());
+    });
+    return rids;
+  }
+
+  /** The pending positions a query acquiring the projection now sees, ascending. */
+  private static List<Long> pendingPositions(final ColumnarProjection projection) {
+    final List<Long> positions = new ArrayList<>();
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      snapshot.pendingPositions().forEach(positions::add);
+    }
+    return positions;
   }
 
   /** The pages in an epoch, in flight or unflushed, ascending; reads only. */

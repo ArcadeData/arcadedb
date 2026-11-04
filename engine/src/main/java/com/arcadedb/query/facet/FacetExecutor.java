@@ -20,8 +20,10 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnKind;
@@ -32,6 +34,7 @@ import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.PositionBitmap;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
@@ -43,9 +46,14 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.LongPredicate;
 import java.util.logging.Level;
 
@@ -62,7 +70,8 @@ import java.util.logging.Level;
  * meanwhile, an unusable snapshot, a column the snapshot does not publish with the schema's current encoding, a segment view without
  * the column holding a match, no COLUMNAR index on the property, an expression facet, a type whose records fire read events, see
  * {@link FacetFallbackScanner#firesReadEvents}: the scan reads them as any read does, so a record a trigger hides counts nowhere and a
- * record a listener rewrites counts as rewritten) is counted from its matched records by
+ * record a listener rewrites counts as rewritten; the buckets of the statement's target of such a type are counted from the statement's
+ * rows instead, {@link RowScan}, so no record is read twice) is counted from its matched records by
  * {@link FacetFallbackScanner}, by collectors of their own (one per declaring type of the column, one for raw values) merged with the
  * others by value. The answer stays exact and the facet's source is {@code scan}. A query that scans takes one permit of
  * {@link ColumnarIndexManager#fallbackScans()} without waiting; refused, every facet that needed a scan is {@code unavailable} with the
@@ -85,6 +94,11 @@ import java.util.logging.Level;
  * Waiting for counting memory is bounded per collector (one {@code arcadedb.columnar.queryBudgetWait} window, see
  * {@link CollectorReservations}), and a facet that spans N declaring types has N collectors: it can wait up to N windows in all.
  * Every reservation that waited, even one refused afterwards, is counted in {@code query.budget.waits}.
+ * <p>
+ * Parallel counting (plan 7 Task 8): with {@code arcadedb.columnar.parallelCountTasks} above 1 (default 4) and at least
+ * {@code arcadedb.columnar.parallelMinMatches} matches of a facet in a bucket, the matches are split into slices of contiguous pages
+ * counted by tasks on {@link QueryEngineManager}'s pool, each into a collector of its own that never waits for the budget, then folded
+ * into the facet's collector. Patching, fallback scans, hierarchies, histograms and the STATS of a DOUBLE column stay on the query thread.
  */
 public final class FacetExecutor {
   /** The {@code source} of a facet a bucket of which was read from its records. */
@@ -97,6 +111,23 @@ public final class FacetExecutor {
   private static final String[] REASON_TEXTS = { "expression facet", "no projection", "no COLUMNAR index",
       "column not published (create or schema window)", "column encoding changed", "segment without the column", "read events",
       "own writes over patch budget" };
+
+  /**
+   * {@link #parallelCountHook} events on the caller: before and after the slice collectors reserve their counters, and once the tasks
+   * are submitted, before the caller counts its own slice.
+   */
+  static final String FORK_RESERVE   = "fork.reserve";
+  static final String FORK_RESERVED  = "fork.reserved";
+  static final String FORK_SUBMITTED = "fork.submitted";
+  /** {@link #parallelCountHook} event on the caller: every slice is counted, before the slice collectors are released and folded. */
+  static final String FORK_COUNTED   = "fork.counted";
+  /** {@link #parallelCountHook} events: in a forked task, when it starts, before each segment it counts, and when it ends. */
+  static final String TASK_START     = "task.start";
+  static final String TASK_SEGMENT   = "task.segment";
+  static final String TASK_END       = "task.end";
+
+  /** Called with the parallel counting events above, for tests; null in production. */
+  static volatile Consumer<String> parallelCountHook;
 
   private FacetExecutor() {
   }
@@ -117,6 +148,16 @@ public final class FacetExecutor {
    */
   public static FacetResults execute(final DatabaseInternal db, final MatchSet matches, final List<FacetSpec> facets,
       final CommandContext ctx, final DocumentType target) {
+    return execute(db, matches, facets, ctx, target, null);
+  }
+
+  /**
+   * @param rowScan the buckets whose records fire read events, counted from the rows of the statement ({@link #rowScan}), null for
+   *                none: those buckets are not in {@code matches}, and their collectors are merged into the facets here. Owned by the
+   *                caller, which closes it.
+   */
+  public static FacetResults execute(final DatabaseInternal db, final MatchSet matches, final List<FacetSpec> facets,
+      final CommandContext ctx, final DocumentType target, final RowScan rowScan) {
     final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
     if (matches.budgetWaits() > 0)
       manager.getStats().queryBudgetWaits(matches.budgetWaits());
@@ -132,7 +173,7 @@ public final class FacetExecutor {
       return new FacetResults(true, 0, 0, results);
     }
 
-    final int[] bucketIds = readableBuckets(db, matches.bucketIds());
+    final int[] bucketIds = readableBuckets(db, matches.bucketIds(), rowScan);
     final ColumnarSnapshot[] snapshots = new ColumnarSnapshot[bucketIds.length];
     final boolean[] acquired = new boolean[bucketIds.length];
     final CollectorReservations patchCharges = new CollectorReservations(GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
@@ -177,7 +218,8 @@ public final class FacetExecutor {
             if (facetReasons[i] == ANSWERS)
               facetReasons[i] = scanReason(ColumnarStats.FALLBACK_OWN_WRITES);
 
-      final long patched = count(db, manager, matches, facets, ctx, target, bucketIds, snapshots, patches, reasons, results, stats);
+      final long patched = count(db, manager, matches, facets, ctx, target, bucketIds, snapshots, patches, reasons, results, stats,
+          rowScan);
       if (patched > 0)
         manager.getStats().queryPatched(patched);
       final FacetResults facetResults = new FacetResults(exact, patched, lagMs, results);
@@ -314,31 +356,46 @@ public final class FacetExecutor {
    * scan; it is not waited for, and refused, every facet with a scanned bucket is {@code unavailable / fallback scans capped}. Granted,
    * the query counts once under the reason of its first scanned facet and bucket, and every scanned facet and bucket is logged at FINE.
    *
+   * A {@code rowScan} that read rows took the permit (or was refused it) for the whole query: its collectors join the facets' plans,
+   * and its permit (or its refusal) stands for the buckets scanned here too.
+   *
    * @param reasons by facet and bucket, {@link #ANSWERS} or why the facet is scanned in the bucket; {@link #plan} sets the reason of a
    *                bucket it scans for a column found missing or redefined meanwhile
+   * @param rowScan the buckets counted from the statement's rows, null for none
    *
    * @return the records read to patch the projection (not those read for scanned facets)
    */
   private static long count(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
       final List<FacetSpec> facets, final CommandContext ctx, final DocumentType target, final int[] bucketIds,
       final ColumnarSnapshot[] snapshots, final PositionBitmap[] patches, final byte[][] reasons,
-      final LinkedHashMap<String, FacetResult> results, final LinkedHashMap<String, FacetExecutionStats> stats) {
+      final LinkedHashMap<String, FacetResult> results, final LinkedHashMap<String, FacetExecutionStats> stats, final RowScan rowScan) {
     final WorkGuard guard = WorkGuard.forCommandDeadline(ctx);
+    // counting from the projection is not bound by the deadline (a facet past it is still answered, final review A-M4): parallel
+    // counting checks only that the statement was not terminated, so it answers what the query thread alone would answer
+    final WorkGuard termination = WorkGuard.forDeadline("the command", Long.MAX_VALUE);
     final FacetPlan[] plans = new FacetPlan[facets.size()];
     final DerivedMatches derived = new DerivedMatches(matches, facets);
+    // one view per hierarchy for the whole query (plan 7 Task 12): every HIERARCHY collector of a declaring type counts over one tree
+    // the rows' collectors and these share the views: one tree for the query
+    final Map<HierarchyFacetCollector.ViewSource.Key, HierarchyFacetCollector.ViewSource> views = rowScan != null ? rowScan.views :
+        new HashMap<>();
+    // the rows read a bucket with read events: the query's one scan permit was asked for then
+    final boolean rowsScanned = rowScan != null && rowScan.plans != null;
     boolean scanPermit = false;
     try {
       boolean wantsScan = false;
       for (int f = 0; f < plans.length; f++) {
         plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots,
-            reasons[f]);
+            reasons[f], views, null);
         plans[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
+        if (rowsScanned)
+          rowScan.handOver(f, plans[f]);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
       }
       if (wantsScan) {
-        scanPermit = manager.fallbackScans().tryAcquire();
-        if (scanPermit)
-          countScans(db, manager, plans, bucketIds, reasons);
+        scanPermit = !rowsScanned && manager.fallbackScans().tryAcquire();
+        if (scanPermit || rowsScanned && rowScan.permit)
+          countScans(db, manager, plans, bucketIds, reasons, rowsScanned);
         else
           for (final FacetPlan plan : plans)
             plan.capped = plan.scanned;
@@ -365,7 +422,7 @@ public final class FacetExecutor {
             if (segmentMatches == null)
               plans[f].refuse();
             else
-              patching[f] = plans[f].countBucket(i, snapshots[i], segmentMatches);
+              patching[f] = plans[f].countBucket(i, snapshots[i], segmentMatches, termination);
             derived.facetDone();
           }
           patchingColumns[f] = patching[f] != null ? plans[f].columnOf[i] : null;
@@ -404,13 +461,16 @@ public final class FacetExecutor {
   }
 
   /**
-   * Counts the query in {@code query.fallback.scans} under the reason of its first scanned facet and bucket, and logs every scanned
-   * facet and bucket at FINE with its reason (the text is built only when FINE is on).
+   * Counts the query in {@code query.fallback.scans} under the reason of its first scanned facet and bucket, unless
+   * {@code alreadyCounted} (the rows' scan counted it), and logs every scanned facet and bucket at FINE with its reason (the text is built
+   * only when FINE is on).
    */
   private static void countScans(final DatabaseInternal db, final ColumnarIndexManager manager, final FacetPlan[] plans,
-      final int[] bucketIds, final byte[][] reasons) {
+      final int[] bucketIds, final byte[][] reasons, final boolean alreadyCounted) {
     final boolean fine = LogManager.instance().isLoggable(FacetExecutor.class, Level.FINE);
-    boolean counted = false;
+    if (alreadyCounted && !fine)
+      return;
+    boolean counted = alreadyCounted;
     for (int f = 0; f < plans.length; f++) {
       if (!plans[f].scanned || plans[f].unavailable)
         continue;
@@ -531,16 +591,17 @@ public final class FacetExecutor {
   public static FacetCollector collectorFor(final FacetSpec spec, final DocumentType type, final ColumnarProjection projection,
       final long matchCount) {
     if (type == null)
-      return collectorFor(spec, null, matchCount, null, null, null);
-    return columnCollector(spec, type, column(type, spec.property()), matchCount);
+      return collectorFor(spec, null, matchCount, null, null, null, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
+    return columnCollector(spec, type, column(type, spec.property()), matchCount, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
   }
 
   /** The collector of a facet for one declaring type, counting {@code column} (the definition the counted segments were written with). */
   private static FacetCollector columnCollector(final FacetSpec spec, final DocumentType type, final ColumnDefinition column,
-      final long matchCount) {
+      final long matchCount, final long budgetWaitMs) {
     final DatabaseInternal db = (DatabaseInternal) type.getSchema().getEmbedded().getDatabase();
     return collectorFor(spec, column, matchCount, db,
-        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column), type.getName());
+        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column), type.getName(),
+        budgetWaitMs);
   }
 
   /**
@@ -548,10 +609,10 @@ public final class FacetExecutor {
    * @param extractor     converts literals (and raw scanned values) into the column's LONG encoding
    * @param declaringType the type of the COLUMNAR index of the property in the counted buckets (whose METADATA holds a HIERARCHY
    *                      facet's hierarchy), null when unknown or when they have none
+   * @param budgetWaitMs  the longest the collector waits for the memory budget, all its reservations together; 0 never waits
    */
   private static FacetCollector collectorFor(final FacetSpec spec, final ColumnDefinition column, final long matchCount,
-      final DatabaseInternal db, final ColumnConversion extractor, final String declaringType) {
-    final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
+      final DatabaseInternal db, final ColumnConversion extractor, final String declaringType, final long budgetWaitMs) {
     return switch (spec) {
       case TermsFacetSpec terms -> new TermsCollector(terms, column, matchCount, budgetWaitMs, db, extractor);
       case RangeFacetSpec range -> new RangeCollector(range, column, budgetWaitMs, db, extractor);
@@ -571,10 +632,15 @@ public final class FacetExecutor {
    *
    * @param reasons by bucket index, {@link #ANSWERS} or why the facet is scanned in the bucket; a bucket found without a usable column
    *                here is scanned too, and its reason set
+   * @param views   the hierarchy views of the query, shared by its HIERARCHY collectors of one declaring type and property, projected or
+   *                scanned, of every facet
+   * @param records by bucket index, the records a scanned collector is sized for when there is no match set ({@code matches} null: a
+   *                {@link RowScan}, every bucket scanned); null with a match set, which tells the facet's matches
    */
   private static FacetPlan plan(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
-      final int facetIndex, final FacetSpec spec, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final byte[] reasons) {
-    final FacetPlan plan = new FacetPlan(spec, bucketIds.length);
+      final int facetIndex, final FacetSpec spec, final int[] bucketIds, final ColumnarSnapshot[] snapshots, final byte[] reasons,
+      final Map<HierarchyFacetCollector.ViewSource.Key, HierarchyFacetCollector.ViewSource> views, final long[] records) {
+    final FacetPlan plan = new FacetPlan(spec, bucketIds.length, views);
     final String property = spec.property();
     // the buckets of each declaring type, in bucket order; the scanned buckets by column or kind of raw read
     final LinkedHashMap<String, List<Integer>> groups = new LinkedHashMap<>();
@@ -634,7 +700,7 @@ public final class FacetExecutor {
           return plan;
         }
       for (final List<Integer> members : scanGroups.values())
-        plan.addScanGroup(db, matches, facetIndex, members, bucketIds);
+        plan.addScanGroup(db, matches, facetIndex, members, bucketIds, records);
       return plan;
     } catch (final RuntimeException | Error e) {
       plan.release();
@@ -653,6 +719,9 @@ public final class FacetExecutor {
     private final CrossBucketOrdinalMap[]     mapOf;
     /** By bucket index: the column {@link #collectorOf} decodes, which a patched record of the bucket is read with too. */
     private final ColumnDefinition[]          columnOf;
+    /** By bucket index: the declaring type of {@link #collectorOf}, and the matches it was sized for, to make collectors like it. */
+    private final DocumentType[]              typeOf;
+    private final long[]                      matchCountOf;
     /** By bucket index: the collector of a bucket the facet is scanned in, null for the others. */
     private final FacetCollector[]            scanCollectorOf;
     /** By bucket index: how a bucket the facet is scanned in is read, null for the others. */
@@ -663,24 +732,36 @@ public final class FacetExecutor {
     private       boolean                     capped;
     /** A bucket of the facet was read from its records instead of the projection. */
     private       boolean                     scanned;
+    /** The statement's deadline, which a HIERARCHY collector waits for its view until. */
+    private       long                        deadlineMs = Long.MAX_VALUE;
+    /** The hierarchy views of the query, by declaring type and property. */
+    private final Map<HierarchyFacetCollector.ViewSource.Key, HierarchyFacetCollector.ViewSource> views;
 
-    private FacetPlan(final FacetSpec spec, final int buckets) {
+    private FacetPlan(final FacetSpec spec, final int buckets,
+        final Map<HierarchyFacetCollector.ViewSource.Key, HierarchyFacetCollector.ViewSource> views) {
       this.spec = spec;
+      this.views = views;
       this.collectorOf = new FacetCollector[buckets];
       this.mapOf = new CrossBucketOrdinalMap[buckets];
       this.columnOf = new ColumnDefinition[buckets];
+      this.typeOf = new DocumentType[buckets];
+      this.matchCountOf = new long[buckets];
       this.scanCollectorOf = new FacetCollector[buckets];
       this.scanSourceOf = new FacetFallbackScanner.Source[buckets];
     }
 
     /**
      * Prepares scanned buckets read the same way (one column, or one kind of raw read): one collector for the column of their
-     * {@link FacetFallbackScanner.Source}, sized for the facet's matches in them.
+     * {@link FacetFallbackScanner.Source}, sized for the facet's matches in them (without a match set, for the records of the buckets).
      */
     private void addScanGroup(final DatabaseInternal db, final MatchSet matches, final int facetIndex, final List<Integer> members,
-        final int[] bucketIds) {
+        final int[] bucketIds, final long[] records) {
       long matchCount = 0;
       for (final int i : members) {
+        if (matches == null) {
+          matchCount += records[i];
+          continue;
+        }
         final MatchSet.FacetMatches facetMatches = matches.facetMatches(facetIndex, bucketIds[i]);
         if (facetMatches != null)
           matchCount += facetMatches.cardinality();
@@ -689,8 +770,9 @@ public final class FacetExecutor {
       final DocumentType bucketType = db.getSchema().getTypeByBucketId(bucketIds[members.getFirst()]);
       final FacetCollector collector = spec instanceof HierarchyFacetSpec hierarchy ?
           new HierarchyFacetCollector(hierarchy, source.column(), matchCount, db, declaringTypeName(bucketType, spec.property()),
-              bucketType != null ? bucketType.getName() : null, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong()) :
-          collectorFor(spec, source.column(), matchCount, db, source.conversion(), null);
+              bucketType != null ? bucketType.getName() : null, views, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong()) :
+          collectorFor(spec, source.column(), matchCount, db, source.conversion(), null,
+              GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
       collectors.add(collector);
       for (final int i : members)
         scanCollectorOf[i] = collector;
@@ -737,18 +819,42 @@ public final class FacetExecutor {
         maps.add(map);
       }
 
-      final FacetCollector collector = columnCollector(spec, declaringType, column, matchCount);
+      final FacetCollector collector = spec instanceof HierarchyFacetSpec hierarchy ?
+          new HierarchyFacetCollector(hierarchy, column, matchCount, db, declaring, declaring, views,
+              GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong()) :
+          columnCollector(spec, declaringType, column, matchCount, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
       collectors.add(collector);
       for (final int i : members) {
         collectorOf[i] = collector;
         mapOf[i] = map;
         columnOf[i] = column;
+        typeOf[i] = declaringType;
+        matchCountOf[i] = matchCount;
       }
       return true;
     }
 
+    /**
+     * Takes over the collectors of {@code rows} (a {@link RowScan}'s plan of the same facet) that counted a bucket, so they merge with
+     * this plan's at {@link #finish} and are released with them; the others are released now. A facet the rows were refused the scan
+     * permit for is capped.
+     *
+     * @param counted the collectors of {@code rows} that began a bucket
+     */
+    private void adopt(final FacetPlan rows, final List<FacetCollector> counted) {
+      for (final FacetCollector collector : rows.collectors)
+        if (counted.contains(collector))
+          collectors.add(collector);
+        else
+          collector.release();
+      rows.collectors.clear();
+      scanned |= !counted.isEmpty() || rows.capped;
+      capped |= rows.capped;
+    }
+
     /** The deadline of the statement: a HIERARCHY collector waits for its view, and builds it, until then at most (final review A-M4). */
     private void deadline(final long deadlineMs) {
+      this.deadlineMs = deadlineMs;
       for (final FacetCollector collector : collectors)
         if (collector instanceof HierarchyFacetCollector hierarchy)
           hierarchy.deadline(deadlineMs);
@@ -768,18 +874,141 @@ public final class FacetExecutor {
     /**
      * Begins the bucket on its collector and counts its segment views.
      *
+     * With {@code arcadedb.columnar.parallelCountTasks} above 1 and at least {@code arcadedb.columnar.parallelMinMatches} segment matches,
+     * the matches are counted in parallel, by slices of pages ({@link #countForked}).
+     *
      * @param segmentMatches the facet's matches in the bucket minus the patch set: what the segments count
+     * @param guard          the statement's termination, checked before each segment a forked count visits (not its deadline)
      *
      * @return the collector, which then takes the bucket's patched records
      */
-    private FacetCollector countBucket(final int i, final ColumnarSnapshot snapshot, final PositionBitmap segmentMatches) {
+    private FacetCollector countBucket(final int i, final ColumnarSnapshot snapshot, final PositionBitmap segmentMatches,
+        final WorkGuard guard) {
       final FacetCollector collector = collectorOf[i];
       collector.beginBucket(snapshot.bucketId(), snapshot, mapOf[i]);
+      final int tasks = parallelCountTasks();
+      if (tasks > 1 && forks(i, collector, segmentMatches)) {
+        countForked(i, snapshot, segmentMatches, guard, tasks);
+        return collector;
+      }
       for (final ColumnarSegmentView segment : snapshot.segments())
         // a view without the column holds no match of the facet live, or the bucket would be scanned (projectionReason)
         if (segment.column(spec.property()) != null)
           collector.collect(segment, segmentMatches);
       return collector;
+    }
+
+    /**
+     * Whether the bucket's matches may be counted in parallel: only the kinds whose collector adds another one's counts in
+     * ({@link FacetCollector#absorb}): TERMS, RANGES, DISTINCT and the STATS of a LONG column. Not a histogram (it counts at
+     * {@link FacetCollector#finish}, its {@link FacetCollector#collect} only keeps the views), not a hierarchy (its node counts are not
+     * absorbed), not the STATS of a DOUBLE column (a double sum depends on the order it adds in: parallel partial sums would change its
+     * last bits), not a collector the budget already refused, and only with enough matches.
+     */
+    private boolean forks(final int i, final FacetCollector collector, final PositionBitmap segmentMatches) {
+      if (collector.isUnavailable() || spec instanceof HistogramFacetSpec || spec instanceof HierarchyFacetSpec
+          || spec instanceof StatsFacetSpec && columnOf[i].kind() == ColumnKind.DOUBLE)
+        return false;
+      return segmentMatches.cardinality() >= GlobalConfiguration.COLUMNAR_PARALLEL_MIN_MATCHES.getValueAsLong();
+    }
+
+    /**
+     * Counts the bucket's segment views (those holding the column) with the facet's matches split into at most {@code tasks} slices of
+     * contiguous pages ({@link PositionBitmap#slice}, as many pages each): a record lives on one page, so each record is counted by one
+     * slice, whatever the number and sizes of the segments.
+     * <p>
+     * Every slice is counted into a collector of its own ({@link #newCollectorLike}), slice 0 by the caller and the others by tasks on
+     * the query pool ({@link QueryEngineManager}, bounded queue and caller-runs), awaited with a wait that reclaims a task still queued
+     * ({@link GraphAlgorithms#awaitFutures}). Those collectors reserve their counters on the caller, without waiting, and never wait to
+     * grow: a refused one gives its slice back. The facet's own collector reserves nothing while the slices are counted. Then every
+     * slice collector's reservation is released (its counts stay readable until the fold ends) and the slices are folded in order into
+     * the facet's collector ({@link FacetCollector#absorb}), which reserves what it grows by, waiting as a sequential count would; a slice
+     * whose collector was refused, or not absorbed, is counted into it on the caller. So the facet's collector reaches the state and the
+     * reservations of a sequential count with no slice collector still charged: parallel counting does not make a facet unavailable
+     * that the query thread alone would answer, and no slice collector outlives its bucket.
+     * <p>
+     * A failure (a termination, an interrupt, a failed task) ends every task before it is thrown ({@link Fork#abandon}): no task outlives
+     * the query's snapshots and counters.
+     */
+    private void countForked(final int i, final ColumnarSnapshot snapshot, final PositionBitmap matches, final WorkGuard guard,
+        final int tasks) {
+      final FacetCollector collector = collectorOf[i];
+      final List<ColumnarSegmentView> all = snapshot.segments();
+      final ColumnarSegmentView[] views = new ColumnarSegmentView[all.size()];
+      int n = 0;
+      for (final ColumnarSegmentView segment : all)
+        if (segment.column(spec.property()) != null)
+          views[n++] = segment;
+      final int counted = n;
+      final int pages = matches.pageCount();
+      final int slices = Math.max(1, Math.min(tasks, pages));
+      final PositionBitmap[] slice = new PositionBitmap[slices];
+      for (int r = 0; r < slices; r++)
+        slice[r] = matches.slice((int) ((long) pages * r / slices), (int) ((long) pages * (r + 1) / slices));
+
+      final FacetCollector[] partials = new FacetCollector[slices];
+      final Future<?>[] futures = new Future<?>[slices];
+      final Fork fork = new Fork();
+      int launched = 0;
+      boolean awaited = false;
+      try {
+        hook(FORK_RESERVE);
+        for (int r = 0; r < slices; r++) {
+          final FacetCollector partial = newCollectorLike(i);
+          partials[r] = partial;
+          partial.beginBucket(snapshot.bucketId(), snapshot, mapOf[i]);
+          if (partial.isUnavailable()) {
+            partial.release();
+            partials[r] = null;
+          }
+        }
+        hook(FORK_RESERVED);
+
+        final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
+        for (int r = 1; r < slices; r++)
+          if (partials[r] != null) {
+            final FacetCollector partial = partials[r];
+            final PositionBitmap part = slice[r];
+            futures[launched++] = executor.submit(() -> fork.run(partial, views, counted, part, guard));
+          }
+        hook(FORK_SUBMITTED);
+        if (partials[0] != null)
+          countSlice(partials[0], views, counted, slice[0], guard);
+        GraphAlgorithms.awaitFutures(futures, launched);
+        awaited = true;
+        hook(FORK_COUNTED);
+
+        // no slice collector stays charged while the facet's collector grows: the fold reserves as a sequential count would
+        for (final FacetCollector partial : partials)
+          if (partial != null)
+            partial.release();
+        for (int r = 0; r < slices; r++) {
+          final FacetCollector partial = partials[r];
+          // the segments of the bucket are reported as the query thread visited them (slice 0), once, not once per slice
+          if (partial != null && r > 0 && partial.stats() != null)
+            partial.stats().clearSegments();
+          if (partial == null || partial.isUnavailable() || !collector.absorb(partial))
+            // refused (before or while counting), or not absorbed: the slice is counted here, as the query thread alone counts it
+            countSlice(collector, views, counted, slice[r], guard);
+          else if (r == 0 && partial.stats() != null && collector.stats() != null)
+            collector.stats().addSegments(partial.stats());
+          partials[r] = null;
+        }
+      } finally {
+        if (!awaited)
+          fork.abandon(futures, launched);
+        for (final FacetCollector partial : partials)
+          if (partial != null)
+            partial.release();
+      }
+    }
+
+    /**
+     * A collector of the same facet, column, declaring type and size as {@link #collectorOf}, which never waits for the budget. Only a
+     * forked facet asks ({@link #forks}), never a HIERARCHY one, so no deadline is passed on.
+     */
+    private FacetCollector newCollectorLike(final int i) {
+      return columnCollector(spec, typeOf[i], columnOf[i], matchCountOf[i], 0L);
     }
 
     /**
@@ -827,6 +1056,270 @@ public final class FacetExecutor {
         collector.release();
       for (final CrossBucketOrdinalMap map : maps)
         map.close();
+    }
+  }
+
+  /**
+   * {@code arcadedb.columnar.parallelCountTasks}, at most the number of cores: the query pool has {@code max(2, cores)} threads by
+   * default, and more slices than cores only add counters and folds.
+   */
+  static int parallelCountTasks() {
+    return Math.min(GlobalConfiguration.COLUMNAR_PARALLEL_COUNT_TASKS.getValueAsInteger(), Runtime.getRuntime().availableProcessors());
+  }
+
+  /** Counts the matches of {@code slice} in {@code views[0..n)} into {@code collector}, checking the statement's termination before each view. */
+  private static void countSlice(final FacetCollector collector, final ColumnarSegmentView[] views, final int n, final PositionBitmap slice,
+      final WorkGuard guard) {
+    for (int v = 0; v < n; v++) {
+      guard.check();
+      collector.collect(views[v], slice);
+    }
+  }
+
+  private static void hook(final String event) {
+    final Consumer<String> hook = parallelCountHook;
+    if (hook != null)
+      hook.accept(event);
+  }
+
+  /**
+   * The forked tasks of one {@link FacetPlan#countForked}: how many are inside {@link #run}, and whether the caller gave up on them.
+   * A task that starts after {@link #abandon} returns at once, touching nothing; one running stops before its next segment.
+   */
+  private static final class Fork {
+    private final    AtomicInteger active = new AtomicInteger();
+    private volatile boolean       abandoned;
+
+    /** Counts the matches of {@code slice} in {@code views[0..n)} into {@code collector}, on a pool thread (or on the caller, when the wait reclaims it). */
+    private void run(final FacetCollector collector, final ColumnarSegmentView[] views, final int n, final PositionBitmap slice,
+        final WorkGuard guard) {
+      // counted in before abandoned is read: a caller that set abandoned and then saw no task active can return safely
+      active.incrementAndGet();
+      try {
+        if (abandoned)
+          return;
+        hook(TASK_START);
+        try {
+          for (int v = 0; v < n; v++) {
+            if (abandoned)
+              return;
+            guard.check();
+            hook(TASK_SEGMENT);
+            collector.collect(views[v], slice);
+          }
+        } finally {
+          hook(TASK_END);
+        }
+      } finally {
+        if (active.decrementAndGet() == 0 && abandoned)
+          synchronized (this) {
+            notifyAll();
+          }
+      }
+    }
+
+    /**
+     * Gives up on the tasks after a failure of the caller (its own range, the deadline, an interrupt, a failed task): the queued ones are
+     * cancelled, and the call returns once no task is running. An interrupt during the wait is kept for the caller.
+     */
+    private void abandon(final Future<?>[] futures, final int launched) {
+      abandoned = true;
+      for (int t = 0; t < launched; t++)
+        futures[t].cancel(false);
+      boolean interrupted = false;
+      synchronized (this) {
+        while (active.get() > 0)
+          try {
+            wait(10);
+          } catch (final InterruptedException e) {
+            interrupted = true;
+          }
+      }
+      if (interrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * The counting of the buckets whose records fire read events from the rows of the statement (plan 7 Task 13), or null when
+   * {@code bucketIds} is empty. See {@link RowScan}.
+   *
+   * @param facets             the facets of the statement, compiled
+   * @param ctx                the statement's context: its deadline bounds a HIERARCHY collector's wait for its view
+   * @param target             the type the statement selects from
+   * @param bucketIds          the buckets of {@code target} whose records fire read events and that the current user may read
+   * @param filterIndexByFacet per facet, the index of its FILTER (the bit of a row's fail mask), -1 for none
+   */
+  public static RowScan rowScan(final DatabaseInternal db, final List<FacetSpec> facets, final CommandContext ctx,
+      final DocumentType target, final int[] bucketIds, final int[] filterIndexByFacet) {
+    return bucketIds.length == 0 ? null : new RowScan(db, facets, ctx, target, bucketIds, filterIndexByFacet);
+  }
+
+  /**
+   * The facets of the buckets whose records fire read events ({@link FacetFallbackScanner#firesReadEvents}), counted from the rows the
+   * statement reads anyway. Such a bucket is never answered from the projection: its records are read as any read does, so a record a
+   * BEFORE READ trigger hides is no row and one an AFTER READ listener rewrites is counted as rewritten. Reading them again for the
+   * fallback scan would fire every read event a second time; the rows are those records, as the read events left them.
+   * <p>
+   * Planned at the first row of such a bucket, as the executor plans a scan of it: one collector per facet and way of reading
+   * ({@link FacetFallbackScanner#sourceOf}), sized for the records of the buckets, and the query's one fallback-scan permit, asked for
+   * without waiting. Refused, every facet is {@code unavailable / fallback scans capped} and the rows are only counted. Each row is
+   * extracted once ({@link FacetFallbackScanner.Extraction}) for the facets its fail mask admits (spec 7.5: every FILTER passed, every
+   * facet; exactly one refused, that FILTER's facet only) and is not added to the match set; {@link #execute} skips those buckets and
+   * merges these collectors into the facets ({@code source} {@code scan}, reason {@code read_events}).
+   * <p>
+   * Owned by the statement's step, which closes it: the collectors {@link #execute} did not take over and the permit are released then.
+   * The permit is held from the first row of such a bucket until the facets are computed or the result set is closed: a result set an
+   * application abandons without closing it holds one of {@code arcadedb.columnar.maxFallbackScans} until it is garbage collected (the
+   * step's cleaner), and other queries that need a scan meanwhile are capped. Driven by the query thread; {@link #close} may also run on
+   * the step's cleaner.
+   */
+  public static final class RowScan {
+    private final DatabaseInternal        db;
+    private final List<FacetSpec>         facets;
+    private final CommandContext          ctx;
+    private final DocumentType            target;
+    private final int[]                   bucketIds;
+    private final int[]                   filterIndexByFacet;
+    /** By bucket id, the bucket's index in {@link #bucketIds} plus one; 0 for a bucket the rows do not count. */
+    private final int[]                   slotOf;
+    /** The hierarchy views of the query, which {@link #execute} shares. */
+    private final Map<HierarchyFacetCollector.ViewSource.Key, HierarchyFacetCollector.ViewSource> views;
+    /** By facet, planned at the first row; null before. */
+    private       FacetPlan[]             plans;
+    private       boolean                 permit;
+    /** By bucket index: the facets' collectors once the bucket's first row began them, and the bucket's extraction. */
+    private       FacetCollector[][]      begun;
+    private       FacetFallbackScanner.Extraction[] extractions;
+    private       boolean[]               admitted;
+    private       long                    rows;
+    private       boolean                 closed;
+
+    private RowScan(final DatabaseInternal db, final List<FacetSpec> facets, final CommandContext ctx, final DocumentType target,
+        final int[] bucketIds, final int[] filterIndexByFacet) {
+      this.db = db;
+      this.facets = facets;
+      this.ctx = ctx;
+      this.target = target;
+      this.bucketIds = bucketIds;
+      this.filterIndexByFacet = filterIndexByFacet;
+      int max = 0;
+      for (final int bucketId : bucketIds)
+        max = Math.max(max, bucketId);
+      this.slotOf = new int[max + 1];
+      for (int i = 0; i < bucketIds.length; i++)
+        slotOf[bucketIds[i]] = i + 1;
+      this.views = new HashMap<>();
+    }
+
+    /** Whether the rows of the bucket are counted here (and not added to the match set). */
+    public boolean covers(final int bucketId) {
+      return bucketId >= 0 && bucketId < slotOf.length && slotOf[bucketId] > 0;
+    }
+
+    /** The rows given to {@link #accept}: matches of the statement, which a PROFILE counts. */
+    public long rows() {
+      return rows;
+    }
+
+    /**
+     * Counts one row of a bucket it {@link #covers}: the record as the statement read it, which the read events applied to.
+     *
+     * @param failMask bit {@code i} set when FILTER {@code i} refuses the row
+     */
+    public void accept(final Document record, final int failMask) {
+      rows++;
+      if (plans == null)
+        plan();
+      if (!permit)
+        return;
+      final int bucketId = record.getIdentity().getBucketId();
+      final int i = slotOf[bucketId] - 1;
+      FacetCollector[] collectors = begun[i];
+      if (collectors == null)
+        collectors = begin(i, bucketId);
+      for (int f = 0; f < admitted.length; f++) {
+        final int filterIndex = filterIndexByFacet[f];
+        admitted[f] = collectors[f] != null && (failMask == 0 || filterIndex >= 0 && failMask == 1 << filterIndex);
+      }
+      extractions[i].extract(record, record.getIdentity().getPosition(), admitted);
+    }
+
+    /** Plans every facet over the buckets, as {@link #count} plans a scan of them, and asks for the scan permit. */
+    private void plan() {
+      final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
+      final long[] records = new long[bucketIds.length];
+      for (int i = 0; i < bucketIds.length; i++)
+        records[i] = db.getSchema().getBucketById(bucketIds[i]).count();
+      final byte[][] reasons = new byte[facets.size()][bucketIds.length];
+      final ColumnarSnapshot[] snapshots = new ColumnarSnapshot[bucketIds.length];
+      final FacetPlan[] planned = new FacetPlan[facets.size()];
+      try {
+        for (int f = 0; f < planned.length; f++) {
+          Arrays.fill(reasons[f], scanReason(ColumnarStats.FALLBACK_READ_EVENTS));
+          planned[f] = FacetExecutor.plan(db, manager, null, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds,
+              snapshots, reasons[f], views, records);
+          planned[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
+        }
+      } catch (final RuntimeException | Error e) {
+        for (final FacetPlan plan : planned)
+          if (plan != null)
+            plan.release();
+        throw e;
+      }
+      plans = planned;
+      begun = new FacetCollector[bucketIds.length][];
+      extractions = new FacetFallbackScanner.Extraction[bucketIds.length];
+      admitted = new boolean[planned.length];
+      permit = manager.fallbackScans().tryAcquire();
+      if (permit)
+        countScans(db, manager, planned, bucketIds, reasons, false);
+      else
+        for (final FacetPlan plan : planned) {
+          plan.capped = plan.scanned;
+          // a capped facet counts nothing: its collectors' reservations go now, not when the application is done with the rows
+          plan.release();
+          plan.collectors.clear();
+          plan.maps.clear();
+        }
+    }
+
+    /** Begins the bucket on every facet's collector, at its first row. */
+    private FacetCollector[] begin(final int i, final int bucketId) {
+      final FacetCollector[] collectors = new FacetCollector[plans.length];
+      final FacetFallbackScanner.Source[] sources = new FacetFallbackScanner.Source[plans.length];
+      for (int f = 0; f < plans.length; f++) {
+        collectors[f] = plans[f].scanBucket(i, bucketId);
+        sources[f] = collectors[f] != null ? plans[f].scanSourceOf[i] : null;
+      }
+      begun[i] = collectors;
+      extractions[i] = new FacetFallbackScanner.Extraction(Arrays.asList(sources), ctx,
+          (f, position, value) -> collectors[f].collectPatched(position, value));
+      return collectors;
+    }
+
+    /** Hands the facet's collectors that counted a bucket over to {@code plan} ({@link FacetPlan#adopt}). */
+    private void handOver(final int facetIndex, final FacetPlan plan) {
+      final List<FacetCollector> counted = new ArrayList<>(1);
+      for (final FacetCollector[] collectors : begun)
+        if (collectors != null && collectors[facetIndex] != null && !counted.contains(collectors[facetIndex]))
+          counted.add(collectors[facetIndex]);
+      plan.adopt(plans[facetIndex], counted);
+    }
+
+    /** Releases the collectors {@link #execute} did not take over, and the permit; idempotent. */
+    public synchronized void close() {
+      if (closed)
+        return;
+      closed = true;
+      try {
+        if (plans != null)
+          for (final FacetPlan plan : plans)
+            plan.release();
+      } finally {
+        if (permit)
+          ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().fallbackScans().release();
+      }
     }
   }
 
@@ -925,12 +1418,15 @@ public final class FacetExecutor {
     return column;
   }
 
-  /** The buckets of the match set the current user may read records of; the others are not counted. */
-  private static int[] readableBuckets(final DatabaseInternal db, final int[] bucketIds) {
+  /**
+   * The buckets of the match set the current user may read records of; the others are not counted, and neither are those the rows
+   * counted ({@code rowScan}, null for none).
+   */
+  private static int[] readableBuckets(final DatabaseInternal db, final int[] bucketIds, final RowScan rowScan) {
     final int[] readable = new int[bucketIds.length];
     int n = 0;
     for (final int bucketId : bucketIds)
-      if (SecurityHelper.canAccessFile(db, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
+      if ((rowScan == null || !rowScan.covers(bucketId)) && SecurityHelper.canAccessFile(db, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
         readable[n++] = bucketId;
     return n == readable.length ? readable : Arrays.copyOf(readable, n);
   }

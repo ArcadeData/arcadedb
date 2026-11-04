@@ -19,16 +19,20 @@
 package com.arcadedb.index.columnar;
 
 import com.arcadedb.utility.IntHashSet;
+import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.lang.management.ManagementFactory;
 import java.util.Arrays;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -373,6 +377,270 @@ class DirtyPageTrackerTest {
     final IntHashSet recovery = new IntHashSet();
     tracker.collectRecoverySet(recovery);
     assertThat(sorted(recovery)).containsExactly(5);
+  }
+
+  @Test
+  void recordMarksPendOnlyTheirRecords() {
+    final DirtyPageTracker tracker = tracker();
+    final ContentOwnerMap owners = new ContentOwnerMap();
+    final long base = 7L * PAGE_SLOTS;
+    tracker.markRecords(new long[] { base + 3, base + 700, base + 2047 }, 3);
+
+    final PositionBitmap pending = tracker.pendingPositions(owners);
+    assertThat(positions(pending)).containsExactly(base + 3, base + 700, base + 2047);
+
+    // the drain offers the page with its records, which stay pending while in flight
+    final IntHashSet drained = new IntHashSet();
+    final PositionBitmap slices = new PositionBitmap(PAGE_SLOTS);
+    assertThat(tracker.drainInto(drained, slices)).isEqualTo(1);
+    assertThat(sorted(drained)).containsExactly(7);
+    assertThat(positions(slices)).containsExactly(base + 3, base + 700, base + 2047);
+    assertThat(positions(tracker.pendingPositions(owners))).containsExactly(base + 3, base + 700, base + 2047);
+
+    tracker.completed(new int[] { 7 }, 1);
+    assertThat(tracker.pendingPositions(owners).isEmpty()).isTrue();
+    final IntHashSet recovery = new IntHashSet();
+    tracker.collectRecoverySet(recovery);
+    assertThat(sorted(recovery)).containsExactly(7);
+  }
+
+  @Test
+  void seventeenRecordsOfAPageEscalateToTheWholePage() {
+    final int limit = ColumnarIndexManager.MAX_SLOT_MARKS_PER_PAGE;
+    final DirtyPageTracker tracker = tracker();
+    final ContentOwnerMap owners = new ContentOwnerMap();
+    // the same records marked twice, as the two marks of one commit do: still records, not the page
+    tracker.markRecords(range(0, limit), limit);
+    tracker.markRecords(range(0, limit), limit);
+    assertThat(tracker.pendingPositions(owners).cardinality()).isEqualTo(limit);
+
+    // one more record of the page, in a later mark of the same epoch: the page is whole
+    tracker.markRecords(new long[] { limit }, 1);
+    assertThat(tracker.pendingPositions(owners).cardinality()).isEqualTo(PAGE_SLOTS);
+
+    // seventeen records in one mark of another page: whole at once
+    final DirtyPageTracker other = tracker();
+    other.markRecords(range(PAGE_SLOTS, limit + 1), limit + 1);
+    final PositionBitmap pending = other.pendingPositions(owners);
+    assertThat(pending.cardinality()).isEqualTo(PAGE_SLOTS);
+    assertThat(pending.get(2L * PAGE_SLOTS - 1)).isTrue();
+    final PositionBitmap slices = new PositionBitmap(PAGE_SLOTS);
+    other.drainInto(new IntHashSet(), slices);
+    assertThat(slices.isEmpty()).as("a whole page offers no records").isTrue();
+  }
+
+  @Test
+  void aPageMarkMakesTheRecordMarksOfItsPageWhole() {
+    final ContentOwnerMap owners = new ContentOwnerMap();
+    final DirtyPageTracker recordsFirst = tracker();
+    recordsFirst.markRecords(new long[] { 5 }, 1);
+    recordsFirst.mark(new int[] { 0 }, 1);
+    assertThat(recordsFirst.pendingPositions(owners).cardinality()).isEqualTo(PAGE_SLOTS);
+
+    final DirtyPageTracker pageFirst = tracker();
+    pageFirst.mark(new int[] { 0 }, 1);
+    pageFirst.markRecords(new long[] { 5 }, 1);
+    assertThat(pageFirst.pendingPositions(owners).cardinality()).isEqualTo(PAGE_SLOTS);
+
+    // the records of another page keep their granularity
+    pageFirst.markRecords(new long[] { PAGE_SLOTS + 9L }, 1);
+    final PositionBitmap slices = new PositionBitmap(PAGE_SLOTS);
+    final IntHashSet drained = new IntHashSet();
+    pageFirst.drainInto(drained, slices);
+    assertThat(sorted(drained)).containsExactly(0, 1);
+    assertThat(positions(slices)).containsExactly(PAGE_SLOTS + 9L);
+  }
+
+  @Test
+  void recordsInFlightMergeWithTheMarksOfTheNextEpoch() {
+    final DirtyPageTracker tracker = tracker();
+    final ContentOwnerMap owners = new ContentOwnerMap();
+    tracker.markRecords(new long[] { 3 }, 1);
+    tracker.drainInto(new IntHashSet(), new PositionBitmap(PAGE_SLOTS));
+    // the pass failed (no completed): the records of the next epoch join the ones in flight
+    tracker.markRecords(new long[] { 5 }, 1);
+    PositionBitmap slices = new PositionBitmap(PAGE_SLOTS);
+    tracker.drainInto(new IntHashSet(), slices);
+    assertThat(positions(slices)).containsExactly(3L, 5L);
+    assertThat(positions(tracker.pendingPositions(owners))).containsExactly(3L, 5L);
+
+    // a page mark makes the page in flight whole, and later record marks cannot narrow it again
+    tracker.mark(new int[] { 0 }, 1);
+    tracker.drainInto(new IntHashSet(), new PositionBitmap(PAGE_SLOTS));
+    tracker.markRecords(new long[] { 9 }, 1);
+    slices = new PositionBitmap(PAGE_SLOTS);
+    final IntHashSet drained = new IntHashSet();
+    tracker.drainInto(drained, slices);
+    assertThat(sorted(drained)).containsExactly(0);
+    assertThat(slices.isEmpty()).isTrue();
+    assertThat(tracker.pendingPositions(owners).cardinality()).isEqualTo(PAGE_SLOTS);
+
+    // completed: nothing pending, and the next record mark of the page is records only again
+    tracker.completed(new int[] { 0 }, 1);
+    tracker.markRecords(new long[] { 11 }, 1);
+    assertThat(positions(tracker.pendingPositions(owners))).containsExactly(11L);
+  }
+
+  @Test
+  void recordMarksKeepTheOwnersOfTheirPage() {
+    final DirtyPageTracker tracker = tracker();
+    final ContentOwnerMap owners = new ContentOwnerMap();
+    owners.setOwnerPages(10L, new int[] { 2 }, 1); // record 10 (page 0) has content on page 2
+    tracker.markRecords(new long[] { 2L * PAGE_SLOTS + 1 }, 1);
+    assertThat(positions(tracker.pendingPositions(owners))).containsExactly(10L, 2L * PAGE_SLOTS + 1);
+  }
+
+  @Test
+  void recordMarkAllocatesNothingOnceThePageGroupExists() {
+    final DirtyPageTracker tracker = tracker();
+    final long[] positions = { 3, 9, PAGE_SLOTS + 4L };
+    final IntHashSet target = new IntHashSet();
+    for (int i = 0; i < 1_000; i++) {
+      tracker.markRecords(positions, positions.length);
+      if (i % 10 == 0) {
+        target.clear();
+        tracker.drainInto(target);
+        tracker.completed(new int[] { 0, 1 }, 2);
+      }
+    }
+    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    final long before = threads.getCurrentThreadAllocatedBytes();
+    for (int i = 0; i < 10_000; i++)
+      tracker.markRecords(positions, positions.length);
+    assertThat(threads.getCurrentThreadAllocatedBytes() - before).isZero();
+  }
+
+  @Test
+  @Timeout(120)
+  void recordMarksDuringDrainsAreNeverLost() throws Exception {
+    final int threads = 4;
+    final int marksPerThread = 50_000;
+    final int pageRange = 64;
+    final DirtyPageTracker tracker = tracker();
+    final ContentOwnerMap noOwners = new ContentOwnerMap();
+    // every mark that returned, in return order: a record position + 1, or -(page + 1) for a page mark
+    final AtomicLongArray returned = new AtomicLongArray(threads * marksPerThread);
+    final AtomicInteger returnedCount = new AtomicInteger();
+    // what an apply pass took, set BEFORE the pass completes its pages: a mark absent from a pending sample must be here
+    final AtomicIntegerArray applied = new AtomicIntegerArray(pageRange * PAGE_SLOTS);
+    final CountDownLatch start = new CountDownLatch(1);
+    final AtomicBoolean writing = new AtomicBoolean(true);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicInteger samples = new AtomicInteger();
+
+    final Thread[] writers = new Thread[threads];
+    final CountDownLatch writersDone = new CountDownLatch(threads);
+    for (int t = 0; t < threads; t++) {
+      final int index = t;
+      writers[t] = new Thread(() -> {
+        try {
+          final Random random = new Random(index);
+          final long[] one = new long[1];
+          final int[] page = new int[1];
+          start.await();
+          for (int i = 0; i < marksPerThread; i++) {
+            final long encoded;
+            if (i % 10 == 9) {
+              // now and then a page mark (a Raft apply, a retry): the page is whole for the rest of its epoch
+              page[0] = random.nextInt(pageRange);
+              tracker.mark(page, 1);
+              encoded = -(page[0] + 1L);
+            } else {
+              // a few slots per page, so most pages stay records only and some escalate
+              one[0] = (long) random.nextInt(pageRange) * PAGE_SLOTS + random.nextInt(24);
+              tracker.markRecords(one, 1);
+              encoded = one[0] + 1;
+            }
+            returned.set(returnedCount.getAndIncrement(), encoded);
+          }
+        } catch (final Throwable e) {
+          failure.set(e);
+        } finally {
+          writersDone.countDown();
+        }
+      });
+      writers[t].start();
+    }
+
+    final Thread applier = new Thread(() -> {
+      try {
+        start.await();
+        while (writing.get())
+          drainOnce(tracker, applied);
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    });
+    // pendingPositions read while drains seal, clear and move the epochs: every mark that returned before a sample began is in the
+    // sample (a page mark as the whole page) or was taken by a pass
+    final Thread reader = new Thread(() -> {
+      try {
+        start.await();
+        while (writing.get()) {
+          final int count = returnedCount.get();
+          final PositionBitmap sample = tracker.pendingPositions(noOwners);
+          for (int i = 0; i < count; i++) {
+            final long encoded = returned.get(i);
+            if (encoded == 0)
+              continue; // its index was taken, the value not written yet
+            // a page mark: a slot no record mark ever names must be pending
+            final long position = encoded > 0 ? encoded - 1 : (-encoded - 1) * PAGE_SLOTS + PAGE_SLOTS - 1;
+            if (!sample.get(position) && applied.get((int) position) == 0)
+              throw new AssertionError((encoded > 0 ? "record " + position : "page " + (-encoded - 1)) + " returned before sample "
+                  + samples.get() + " and is neither pending nor applied");
+          }
+          samples.incrementAndGet();
+        }
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    });
+    applier.start();
+    reader.start();
+    start.countDown();
+    writersDone.await();
+    writing.set(false);
+    applier.join();
+    reader.join();
+    drainOnce(tracker, applied);
+
+    assertThat(failure.get()).isNull();
+    assertThat(samples.get()).as("pending samples taken during the drains").isPositive();
+    for (int i = 0; i < returnedCount.get(); i++) {
+      final long encoded = returned.get(i);
+      final long position = encoded > 0 ? encoded - 1 : (-encoded - 1) * PAGE_SLOTS + PAGE_SLOTS - 1;
+      assertThat(applied.get((int) position)).as("mark %d (%d) applied", i, encoded).isEqualTo(1);
+    }
+  }
+
+  /** One pass: what it offers is recorded as applied (a whole page as every slot of it) before its pages complete. */
+  private static void drainOnce(final DirtyPageTracker tracker, final AtomicIntegerArray applied) {
+    final IntHashSet target = new IntHashSet();
+    final PositionBitmap slices = new PositionBitmap(PAGE_SLOTS);
+    tracker.drainInto(target, slices);
+    final int[] pages = target.toArray();
+    for (final int page : pages)
+      if (slices.stripeForTesting(page) == null)
+        for (int slot = 0; slot < PAGE_SLOTS; slot++)
+          applied.set(page * PAGE_SLOTS + slot, 1);
+    slices.forEach(position -> applied.set((int) position, 1));
+    tracker.completed(pages, pages.length);
+  }
+
+  private static long[] range(final long from, final int count) {
+    final long[] positions = new long[count];
+    for (int i = 0; i < count; i++)
+      positions[i] = from + i;
+    return positions;
+  }
+
+  private static long[] positions(final PositionBitmap bitmap) {
+    final long[] count = new long[1];
+    bitmap.forEach(p -> count[0]++);
+    final long[] positions = new long[(int) count[0]];
+    final int[] i = new int[1];
+    bitmap.forEach(p -> positions[i[0]++] = p);
+    return positions;
   }
 
   @Test

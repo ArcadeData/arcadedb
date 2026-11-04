@@ -18,6 +18,8 @@
  */
 package com.arcadedb.index.columnar;
 
+import java.util.function.LongSupplier;
+
 /**
  * The package-private test hooks of {@link ColumnarIndexManager} and {@link ColumnarRebuilder}, for tests of other modules (the HA
  * integration tests of plan 3, Task 23) that cannot live in this package.
@@ -29,6 +31,11 @@ public final class ColumnarTestAccess {
   /** Runs the flush and merge job of the bucket's projection on the calling thread, whatever its schedule. */
   public static void maintainNow(final ColumnarIndexManager manager, final int bucketId) {
     manager.maintainForTesting(bucketId);
+  }
+
+  /** The number of shared views the hierarchy built so far (the private views of a transaction's own changes are not counted). */
+  public static long hierarchyRebuildCount(final HierarchyManager hierarchy) {
+    return hierarchy.rebuildCount();
   }
 
   /** A rebuild of the bucket's projection is queued or running. */
@@ -59,6 +66,14 @@ public final class ColumnarTestAccess {
     } finally {
       state.release();
     }
+  }
+
+  /**
+   * Replaces the clock the manager's schedules read (flush interval, backoffs, rank-view throttle); {@code System::currentTimeMillis}
+   * restores the real one. A frozen clock keeps a rank-view rebuild from ever coming due again after the first one it stamps.
+   */
+  public static void setClock(final ColumnarIndexManager manager, final LongSupplier clockMs) {
+    manager.setClockForTesting(clockMs);
   }
 
   /** Closes the hierarchy manager as a database close or a dropped index does: a build running on another thread is cancelled. */

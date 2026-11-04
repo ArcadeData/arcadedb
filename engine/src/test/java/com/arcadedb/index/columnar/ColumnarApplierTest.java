@@ -29,6 +29,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.LocalBucketTestAccess;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.graph.MutableVertex;
@@ -55,6 +56,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -384,6 +386,49 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
     assertThat(projection.overlay().rows()).as("the vertex's brand did not change: no row").isZero();
     assertThat(stats().overlayRows("Product")).isZero();
     assertThat(brandCounts(projection)).isEqualTo(Map.of("acme", 1L));
+  }
+
+  /**
+   * Task 14 of #10662: a chunked record deleted while the apply pass walks its chain is an empty slot of that pass, not an unreadable
+   * record: no retry, no unreadable count, and the position is no longer live.
+   */
+  @Test
+  void chunkedRecordDeletedDuringWalkIsAnEmptySlot() throws Exception {
+    createAsset();
+    final RID rid = chunkedRecord("a");
+    caughtUp();
+    assertThat(brandCounts()).isEqualTo(Map.of("a", 1L));
+    final long unreadableBefore = stats().unreadableCount("Asset");
+
+    final ExecutorService deleter = Executors.newSingleThreadExecutor();
+    final AtomicBoolean armed = new AtomicBoolean();
+    final AtomicBoolean deletedMidWalk = new AtomicBoolean();
+    LocalBucketTestAccess.setCommittedWalkHook(() -> {
+      if (!Thread.currentThread().getName().startsWith("ArcadeDB-ColumnarApply-") || !armed.compareAndSet(true, false))
+        return;
+      try {
+        deleter.submit(() -> database.transaction(() -> database.deleteRecord(rid.asDocument(true)))).get(30, TimeUnit.SECONDS);
+        deletedMidWalk.set(true);
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+    try {
+      try (final AutoCloseable hold = manager().suspendApply()) {
+        // the update marks the page; the pass that reads it walks the chain, and the record is deleted between its head and the rest
+        setBrand(rid, "b");
+        armed.set(true);
+      }
+      caughtUp();
+    } finally {
+      LocalBucketTestAccess.setCommittedWalkHook(null);
+      deleter.shutdownNow();
+    }
+
+    assertThat(deletedMidWalk.get()).as("the record was deleted in the middle of the pass's walk").isTrue();
+    assertThat(stats().unreadableCount("Asset")).as("a deleted record is no unreadable one").isEqualTo(unreadableBefore);
+    assertThat(projection().unreadablePages().sizeForTesting()).as("nothing to retry").isZero();
+    assertThat(brandCounts()).as("the position is not live").isEmpty();
   }
 
   @Test
