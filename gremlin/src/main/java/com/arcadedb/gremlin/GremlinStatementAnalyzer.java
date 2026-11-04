@@ -185,6 +185,9 @@ final class GremlinStatementAnalyzer {
 
   private static QueryEngine.AnalyzedQuery result(final Set<OperationType> operations) {
     final boolean idempotent = operations.equals(READ);
+    // ONLY anyOperation() NAMES A SCHEMA CHANGE: A TRAVERSAL CANNOT MAKE ONE. IT IS DDL THEN, SO AN HA REPLICA FORWARDS THE SCRIPT TO
+    // THE LEADER EVEN INSIDE A CLIENT'S TRANSACTION, WHERE A WRITE THAT IS NOT DDL RUNS LOCALLY
+    final boolean ddl = operations.contains(OperationType.SCHEMA);
     return new QueryEngine.AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -193,7 +196,7 @@ final class GremlinStatementAnalyzer {
 
       @Override
       public boolean isDDL() {
-        return false;
+        return ddl;
       }
 
       @Override

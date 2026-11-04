@@ -80,6 +80,12 @@ class Issue11182GremlinAnalysisDoesNotExecuteTest {
   }
 
   @Test
+  void aTraversalThatWritesIsNotDDL() {
+    // A TRAVERSAL CANNOT CHANGE THE SCHEMA: ITS WRITE STAYS IN THE CLIENT'S TRANSACTION ON AN HA REPLICA (#10040)
+    assertThat(analyzeInATransaction("g.addV('Probe').iterate()").isDDL()).isFalse();
+  }
+
+  @Test
   void aDropIsNeverAppliedByTheAnalysis() {
     database.transaction(() -> database.newVertex("Probe").set("name", "kept").save());
 
@@ -209,6 +215,8 @@ class Issue11182GremlinAnalysisDoesNotExecuteTest {
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("gremlin").analyze(GRAPH_API_WRITE);
 
     assertThat(analyzed.isIdempotent()).isFalse();
+    assertThat(analyzed.isDDL()).as("Groovy may change the schema: an HA replica must forward it even in a client's transaction")
+        .isTrue();
     assertThat(analyzed.getOperationTypes()).containsExactlyInAnyOrder(OperationType.values());
     assertThat(database.isTransactionActive()).as("the analysis must not leave a transaction behind").isFalse();
     assertThat(database.countType("Probe", true)).isZero();
