@@ -1917,7 +1917,8 @@ public final class SnapshotInstaller {
         "Opening the rolled-forward snapshot in %s to prove it before the retained backup is deleted (can take long on a large database)",
         null, dbDir);
     final long start = System.currentTimeMillis();
-    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
+    // an HA node's copy: the open must not sweep away files a replicated change delivered ahead of its schema entry (#11240)
+    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString()).setReplicatedNode(true)) {
       factory.open().close();
       LogManager.instance().log(SnapshotInstaller.class, Level.INFO, "The snapshot in %s opened in %dms", null, dbDir,
           System.currentTimeMillis() - start);

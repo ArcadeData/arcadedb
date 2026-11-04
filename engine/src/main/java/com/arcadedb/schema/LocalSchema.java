@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -73,6 +74,7 @@ import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
+import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
@@ -569,6 +571,7 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(SparseSegmentComponent.FILE_EXT,
         new SparseSegmentComponent.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(SparsePostingLog.FILE_EXT, new SparsePostingLog.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesTagDictionary.DICT_EXT,
         new TimeSeriesTagDictionary.PaginatedComponentFactoryHandler());
@@ -1551,7 +1554,14 @@ public class LocalSchema implements Schema {
    * created by the leader can arrive before its schema entry.
    */
   private void sweepOrphanBucketIndexFiles() {
-    if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+    // A follower restarted in the middle of a chunked compaction holds the delivered files of the new index before the entry
+    // that names them (issue #11240). The server says so through the open (DatabaseFactory.setReplicatedNode): the database's
+    // configuration alone cannot, its configuration.json replaces what the opener put there. The settings are read too, on the
+    // rule the HA plugin starts on (the flag, or a server list alone), for a node configured JVM-wide
+    if (database.getEmbedded() instanceof LocalDatabase local && local.isReplicatedNode())
+      return;
+    final ContextConfiguration configuration = database.getConfiguration();
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled())
       return;
 
     // The FILES, not the index map: the previous file of an index that never compacted is named after the index, and the live
@@ -4898,6 +4908,10 @@ public class LocalSchema implements Schema {
           migratedTarget.put(Integer.parseInt(key), migratedJSON.getInt(key));
       }
 
+      // The files on disk rebuild the id slots, so the ids of the highest files dropped before are free again unless the
+      // schema says they were used (issue #11240)
+      database.getFileManager().reserveFileIdsBelow(root.getInt(NEXT_FILE_ID, 0));
+
     } catch (final Exception e) {
       readable = false;
       LogManager.instance().log(this, Level.SEVERE,
@@ -5523,6 +5537,34 @@ public class LocalSchema implements Schema {
    *                              commit of the outermost transaction, right before its durable phase
    */
   private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
+    try {
+      writeConfiguration(ignoreOpenTransaction);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
+          databasePath + File.separator + SCHEMA_FILE_NAME);
+    }
+  }
+
+  /**
+   * As {@link #saveConfiguration()}, for a caller that acts on the file holding the schema afterwards (issue #11240): an HA
+   * compaction drops the files the previous schema names only once the new one is on disk, and releases the replay of its
+   * entry then. Fails instead of logging.
+   *
+   * @throws IOException when the file could not be written, or the save was postponed (a load, a multiple update or an open
+   *                     transaction in progress)
+   */
+  public synchronized void saveConfigurationOrThrow() throws IOException {
+    if (!writeConfiguration(false))
+      throw new IOException("The schema of database '" + database.getName()
+          + "' cannot be saved now: a load, a multiple update or a transaction is in progress");
+  }
+
+  /**
+   * @return {@code false} when the save is postponed, {@code true} when the file was written
+   *
+   * @throws IOException when the file could not be written
+   */
+  private synchronized boolean writeConfiguration(final boolean ignoreOpenTransaction) throws IOException {
     refreshBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
@@ -5533,7 +5575,7 @@ public class LocalSchema implements Schema {
     if (readingFromFile || !loadInRamCompleted || multipleUpdate || (!ignoreOpenTransaction && database.isTransactionActive())) {
       // POSTPONE THE SAVING - ensure at least one generation is marked dirty
       dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
-      return;
+      return false;
     }
 
     // Capture the generation BEFORE serializing. Any concurrent modification that increments
@@ -5547,14 +5589,18 @@ public class LocalSchema implements Schema {
       savedGeneration = capturedGeneration;
 
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
-          databasePath + File.separator + SCHEMA_FILE_NAME);
+      // A FAILED WRITE LEAVES THE SCHEMA DIRTY, WHATEVER ASKED FOR IT: A CHANGE THAT SAVES WITHOUT MARKING ITSELF DIRTY (A
+      // COMPACTION SWAP, #11240) WOULD OTHERWISE NEVER BE WRITTEN AGAIN, NOT AT THE NEXT TRANSACTION END NOR AT THE CLOSE
+      dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
+      throw e;
+    } finally {
+      // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
+      // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
+      // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
+      // Refreshed whether or not the write succeeded, as before it could report the failure.
+      updateSecurity();
     }
-
-    // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
-    // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
-    // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
-    updateSecurity();
+    return true;
   }
 
   /**
@@ -5730,6 +5776,11 @@ public class LocalSchema implements Schema {
         migratedJSON.put(String.valueOf(entry.getKey()), entry.getValue());
       root.put("migratedFileIds", migratedJSON);
     }
+
+    // Only past the highest file held (issue #11240): ids of dropped files are never handed out again after a reopen
+    final int nextFileId = database.getFileManager().getNextFileIdPastDroppedFiles();
+    if (nextFileId > -1)
+      root.put(NEXT_FILE_ID, nextFileId);
 
     final Map<String, String> manualNames = manualIndexLogicalNames();
     if (!manualNames.isEmpty()) {
@@ -5955,6 +6006,12 @@ public class LocalSchema implements Schema {
    * its post-compaction file.
    */
   static final String MANUAL_INDEXES = "manualIndexes";
+
+  /**
+   * Key of the first file id never handed out, written only when it is past the highest file the database holds, i.e. when
+   * the highest files were dropped (issue #11240). See {@link FileManager#getNextFileIdPastDroppedFiles()}.
+   */
+  static final String NEXT_FILE_ID = "nextFileId";
 
   /** Marks the schema entry of a bucket index a REBUILD INDEX created and has not filled yet, see {@link LSMTreeIndex#isAwaitingFill()}. */
   static final String AWAITING_FILL = "awaitingFill";

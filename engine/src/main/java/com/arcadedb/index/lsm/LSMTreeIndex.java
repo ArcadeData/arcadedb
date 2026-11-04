@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -99,6 +100,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * subsequent compaction round and at close/drop time).
    */
   private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
+  // old mutable files a published compaction could not drop at once, because a commit still held their lock (#11240)
+  private final        List<LSMTreeIndexMutable>     retiredMutables         = new CopyOnWriteArrayList<>();
+  // Set when the schema save of the last swap failed (issue #11240): the schema on disk still names the files the swap
+  // replaced, so they are kept. Read only by what the same compaction runs after the save; compactions of one index are
+  // serial
+  private volatile     boolean                       swapNotPersisted;
   /** Cumulative dead (tombstone-resolved) keys skipped by scans since this index was loaded. */
   private final        AtomicLong                    statsDeadEntriesSkipped = new AtomicLong();
   /**
@@ -242,6 +249,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * the migrated-file mapping. Synchronized so concurrent callers (a compaction round and a close) cannot
    * double-drop the same file.
    */
+  /** Whether the schema save of the last swap failed, so the files it replaced must stay (issue #11240). */
+  boolean isSwapNotPersisted() {
+    return swapNotPersisted;
+  }
+
   synchronized void dropRetiredCompactedIndexes() {
     for (final LSMTreeIndexCompacted retired : retiredCompactedIndexes) {
       if (retired.countActiveCursors() != 0)
@@ -260,6 +272,25 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       } catch (final IOException e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on dropping retired compacted index file '%s'", e, retired.getName());
+      } finally {
+        if (locked == LockManager.LOCK_STATUS.YES)
+          getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
+      }
+    }
+
+    for (final LSMTreeIndexMutable retired : retiredMutables) {
+      final int fileId = retired.getFileId();
+      final LockManager.LOCK_STATUS locked = getDatabase().getTransactionManager().tryLockFile(fileId, 0,
+          Thread.currentThread());
+      if (locked == LockManager.LOCK_STATUS.NO)
+        continue;
+
+      try {
+        retired.drop();
+        retiredMutables.remove(retired);
+      } catch (final IOException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, retired.getName());
       } finally {
         if (locked == LockManager.LOCK_STATUS.YES)
           getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
@@ -552,6 +583,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
           }
         }
         retiredCompactedIndexes.clear();
+
+        for (final LSMTreeIndexMutable retired : retiredMutables) {
+          try {
+            retired.drop();
+          } catch (final IOException e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, retired.getName());
+          }
+        }
+        retiredMutables.clear();
 
         final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
         if (subIndex != null)
@@ -972,6 +1013,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
     final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
+    swapNotPersisted = false;
 
     try {
       final LSMTreeIndexMutable prevMutable = mutable;
@@ -1039,7 +1081,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         mutable = newMutableIndex;
         updateCaseInsensitiveKeys();
 
-        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), saveSchema);
+        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), false);
+        if (saveSchema)
+          // Persisted only once an HA compaction is published (issue #11240), at once otherwise. A failure is reported, not
+          // logged and passed over: the old file is dropped only once the schema on disk no longer names it
+          database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(-1, () -> {
+            try {
+              database.getSchema().getEmbedded().saveConfigurationOrThrow();
+            } catch (final IOException e) {
+              swapNotPersisted = true;
+              throw e;
+            }
+          });
         return newMutableIndex;
       });
 
@@ -1048,12 +1101,34 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         afterSwapHook.run();
 
       if (prevMutable != null)
-        try {
-          prevMutable.drop();
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
-              prevMutable);
-        }
+        // Kept until an HA compaction is published (issue #11240), so a leader that loses the entry still has it
+        database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(prevMutable.getFileId(), () -> {
+          if (swapNotPersisted) {
+            // The schema on disk still names the old file: a restart reopens the index on it, so it stays
+            LogManager.instance().log(this, Level.WARNING,
+                "Keeping the old copy of mutable index file %s: the schema that replaces it could not be saved", null, prevMutable);
+            return;
+          }
+          // Under the old file's lock, as the swap above: deferred, the drop no longer runs inside it, and a commit still
+          // holding that lock must not have the file dropped underneath it. Standalone the lock is still held here (the
+          // same thread, ALREADY_LOCKED) and is not released early
+          final LockManager.LOCK_STATUS dropLocked = database.getTransactionManager().tryLockFile(fileId,
+              database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
+          if (dropLocked == LockManager.LOCK_STATUS.NO) {
+            // a commit still holds the old file: retried at the next round, like a retired compacted file
+            retiredMutables.add(prevMutable);
+            return;
+          }
+          try {
+            prevMutable.drop();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
+                prevMutable);
+          } finally {
+            if (dropLocked == LockManager.LOCK_STATUS.YES)
+              database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
+          }
+        });
 
       return result;
 

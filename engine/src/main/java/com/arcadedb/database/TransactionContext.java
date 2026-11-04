@@ -4315,6 +4315,16 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Whether this transaction's commit holds the lock of {@code fileId} right now: between the lock acquisition of the 1st
+   * phase and the release at the end of the commit, explicit locks included. A component that writes during the commit
+   * replay asks it to tell a file the commit locked up front from one it would only join late (issue #11239).
+   */
+  public boolean isFileLockedByCommit(final int fileId) {
+    final List<Integer> locked = lockedFiles;
+    return locked != null && containsFileId(locked, fileId);
+  }
+
+  /**
    * Allocation-free containment scan for the late-joiner fast path (lockedFiles is small, typically < 10):
    * get(i) == fileId unboxes the stored Integer but allocates nothing new. Assumes a RandomAccess list -
    * lockFilesInOrder and checkExplicitLocks both produce ArrayLists; revisit the loop if that ever changes.
@@ -4533,9 +4543,13 @@ public class TransactionContext implements Transaction {
       final List<Integer> locked = database.getTransactionManager().tryLockFiles(filesToLock.toArray(), timeout, captureRequester());
 
       // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX.
+      // A file a compaction migrated counts as missing even while it is still on disk (issue #11240): an HA leader keeps the
+      // replaced file until the compaction is published, and a commit that resolved its id before the swap would otherwise
+      // hold the old file's lock only, and write the index entries into the new file without its lock. A migrated id is
+      // never handed out again, so the mapping alone says the file is retired
       int missingFile = -1;
       for (final Integer f : locked)
-        if (!database.getFileManager().existsFile(f)) {
+        if (!database.getFileManager().existsFile(f) || schema.getMigratedFileId(f) != null) {
           missingFile = f;
           break;
         }
