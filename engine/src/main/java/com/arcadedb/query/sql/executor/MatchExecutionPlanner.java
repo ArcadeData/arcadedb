@@ -83,6 +83,7 @@ public class MatchExecutionPlanner {
   protected final Limit                  limit;
   protected final Timeout                timeout;
   private final   MatchStatement         statement;
+  private         boolean                withoutKeyIndexes;
 
   //post-parsing
   private Pattern                  pattern;
@@ -114,6 +115,15 @@ public class MatchExecutionPlanner {
     this.groupBy = stm.getGroupBy() == null ? null : stm.getGroupBy().copy();
     this.orderBy = stm.getOrderBy() == null ? null : stm.getOrderBy().copy();
     this.unwind = stm.getUnwind() == null ? null : stm.getUnwind().copy();
+  }
+
+  /**
+   * Plans the root fetch of every alias as if its type had no key index, see {@link SelectExecutionPlanner#withoutKeyIndexes()}:
+   * the last attempt of a statement whose index kept being dropped under it (issue #9615).
+   */
+  public MatchExecutionPlanner withoutKeyIndexes() {
+    this.withoutKeyIndexes = true;
+    return this;
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
@@ -1117,7 +1127,10 @@ public class MatchExecutionPlanner {
     select.setTarget(from);
     select.setWhereClause(filter == null ? null : filter.copy());
 
-    final InternalExecutionPlan plan = select.createExecutionPlan(context);
+    final SelectExecutionPlanner selectPlanner = new SelectExecutionPlanner(select);
+    if (withoutKeyIndexes)
+      selectPlanner.withoutKeyIndexes();
+    final InternalExecutionPlan plan = selectPlanner.createExecutionPlan(context, !withoutKeyIndexes);
     final boolean checkType = rid != null && typeName != null;
     final boolean checkBucket = bucketName != null && (rid != null || typeName != null);
     if (checkType || checkBucket) {

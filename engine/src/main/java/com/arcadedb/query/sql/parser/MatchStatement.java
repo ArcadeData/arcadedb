@@ -113,10 +113,7 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
     context.setInputParameters(args);
 
-    final InternalExecutionPlan executionPlan = withProfilingConstraints((DatabaseInternal) database,
-        context.getInputParameters()).createExecutionPlan(context);
-
-    return new LocalResultSet(executionPlan);
+    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context);
   }
 
   @Override
@@ -131,10 +128,18 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
 
     context.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = withProfilingConstraints((DatabaseInternal) database,
-        context.getInputParameters()).createExecutionPlan(context);
+    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context);
+  }
 
-    return new LocalResultSet(executionPlan);
+  /**
+   * Plans the statement again when an index of a root fetch was dropped or rebuilt before the first row, as a {@code SELECT}
+   * does (see {@link #openResultSetPlanningAgainOnStaleIndex}). A correlated leg of a cartesian product is planned again for
+   * every outer row, after rows were returned, so an index dropped under that one still reaches the caller.
+   */
+  private ResultSet openResultSet(final CommandContext context) {
+    return openResultSetPlanningAgainOnStaleIndex(attempt -> attempt < STALE_INDEX_PLAN_MAX_ATTEMPTS ?
+        createExecutionPlan(context) :
+        new MatchExecutionPlanner(this).withoutKeyIndexes().createExecutionPlan(context));
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
