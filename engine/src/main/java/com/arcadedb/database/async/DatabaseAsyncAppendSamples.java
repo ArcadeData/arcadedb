@@ -26,7 +26,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
-public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
+public class DatabaseAsyncAppendSamples extends DatabaseAsyncAbstractTask {
   private final TimeSeriesEngine    engine;
   private final int                 shardIndex;
   private final TimeSeriesRowSource source;

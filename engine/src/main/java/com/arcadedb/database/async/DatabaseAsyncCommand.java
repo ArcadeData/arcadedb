@@ -28,7 +28,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.util.Map;
 import java.util.logging.Level;
 
-public class DatabaseAsyncCommand implements DatabaseAsyncTask {
+public class DatabaseAsyncCommand extends DatabaseAsyncAbstractTask {
   public final boolean                idempotent;
   public final String                 language;
   public final String                 command;

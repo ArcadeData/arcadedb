@@ -26,7 +26,7 @@ import com.arcadedb.graph.Edge;
 /**
  * Asynchronous Task that creates the relationship between the destinationVertex and the sourceVertex as incoming.
  */
-public class CreateIncomingEdgeAsyncTask implements DatabaseAsyncTask {
+public class CreateIncomingEdgeAsyncTask extends DatabaseAsyncAbstractTask {
   protected final RID          sourceVertexRID;
   protected final Identifiable destinationVertex;
   protected final Identifiable edge;

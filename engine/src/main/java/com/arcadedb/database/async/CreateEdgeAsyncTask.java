@@ -26,7 +26,7 @@ import com.arcadedb.graph.VertexInternal;
 /**
  * Asynchronous Task that creates the edge that connects 2 vertices.
  */
-public class CreateEdgeAsyncTask implements DatabaseAsyncTask {
+public class CreateEdgeAsyncTask extends DatabaseAsyncAbstractTask {
   protected final Identifiable sourceVertex;
   protected final Identifiable destinationVertex;
 

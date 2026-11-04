@@ -34,7 +34,7 @@ import com.arcadedb.utility.RetryBackoff;
 
 import java.util.logging.Level;
 
-public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
+public class DatabaseAsyncTransaction extends DatabaseAsyncAbstractTask {
   public final Database.TransactionScope tx;
   public final  int           retries;
   private final OkCallback    onOkCallback;

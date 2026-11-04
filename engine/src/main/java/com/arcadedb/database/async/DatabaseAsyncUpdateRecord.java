@@ -35,7 +35,7 @@ import java.util.logging.Level;
  * {@link DatabaseInternal#updateRecordWithEventsNoLock(Record, boolean)}, which the synchronous update shares: this task
  * re-implemented two of the three and missed the statistic (issue #9987).
  */
-public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
+public class DatabaseAsyncUpdateRecord extends DatabaseAsyncAbstractTask {
   public final Record                record;
   public final UpdatedRecordCallback onOkCallback;
   public final ErrorCallback         onErrorCallback;
