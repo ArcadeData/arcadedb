@@ -110,7 +110,8 @@ final class PeerAuthSessionQuery {
    */
   static void revokeEverywhere(final RaftHAServer raft, final String token, final long timeoutMs) {
     final List<CompletableFuture<HttpResponse<Void>>> pending = new ArrayList<>();
-    for (final RaftPeer peer : raft.getRaftGroup().getPeers()) {
+    // EVERY KNOWN PEER: A PEER THAT JOINED AT RUNTIME HOLDS A COPY TOO, AND THE SERVER LIST DOES NOT NAME IT (issue #10861)
+    for (final RaftPeer peer : raft.knownPeers()) {
       final RaftPeerId peerId = peer.getId();
       if (peerId.equals(raft.getLocalPeerId()))
         continue;

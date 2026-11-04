@@ -88,13 +88,15 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     if (params == null || params.length < 3 || params.length > 4)
       throw new CommandSQLParsingException(getSyntax());
 
+    // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
+    validateNotNull(params[0], NAME + " index name");
     final String indexSpec = params[0].toString();
     final List<Pair> pairs = parsePairs(params[1]);
     if (pairs.isEmpty())
       throw new CommandSQLParsingException(NAME + " requires at least one (positive, negative) pair");
 
-    final int k = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
-    if (k <= 0)
+    final int k = parseNeighborCount(params[2]);
+    if (k == 0)
       return new ArrayList<>(0);
 
     Map<?, ?> rawOpts = null;
@@ -196,11 +198,8 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     for (final Object row : rawList) {
       if (!(row instanceof Map<?, ?> m))
         continue;
-      final Object ridObj = m.get("@rid");
-      final RID rid;
-      if (ridObj instanceof Identifiable id) rid = id.getIdentity();
-      else continue;
-      if (exampleRids.contains(rid))
+      final RID rid = extractRidFromRow(m);
+      if (rid == null || exampleRids.contains(rid))
         continue;
       final float[] cVec = readCandidateEmbedding(db, rid, m, propertyName, expectedDim);
       if (cVec == null)

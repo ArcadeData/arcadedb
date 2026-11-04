@@ -28,6 +28,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -137,11 +138,15 @@ class Issue6201ErrorStatusParityTest {
       // of it ran, so the same request re-issued later can succeed. It extends CommandExecutionException too.
       new MappedFailure("QueryAdmissionException", 503,
           () -> new QueryAdmissionException("Query not started because it waited 30000ms in the queue")),
-      // A permanent DROP/CLOSE DATABASE race (not the transient resync above) that lost the retry-then-reresolve
-      // round trip: allowLoad=false found no open handle for the name. An accurate 404, not the generic 500 the
-      // un-typed DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up).
-      new MappedFailure("DatabaseNotAvailableException", 404,
-          () -> new DatabaseNotAvailableException("Database 'mydb' is not available")),
+      // A permanent DROP DATABASE race (not the transient resync above) that lost the retry-then-reresolve round trip:
+      // allowLoad=false found no database under the name. An accurate 404, not the generic 500 the un-typed
+      // DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up), and since issue #10872 the
+      // resolver says so with its own type.
+      new MappedFailure("DatabaseNotFoundException", 404, () -> new DatabaseNotFoundException("Database 'mydb' does not exist")),
+      // A database that is there and that an operator or the cluster holds (closed by command, being restored or dropped):
+      // 503, not the 404 of a name that is no database (issue #10872).
+      new MappedFailure("DatabaseNotAvailableException", 503,
+          () -> new DatabaseNotAvailableException("Database 'mydb' is not available", DatabaseNotAvailableException.Reason.CLOSED)),
       // The mappings each earlier issue had to add to two or three chains by hand.
       new MappedFailure("DuplicatedKeyException", 409, () -> new DuplicatedKeyException("Idx", "[1]", new RID(1, 1))),
       new MappedFailure("TransactionCommittedRemotelyException", 409,
@@ -255,22 +260,37 @@ class Issue6201ErrorStatusParityTest {
   }
 
   /**
-   * The concrete defect reported in #6778 (a #6770 follow-up): a database dropped/closed permanently by a
-   * concurrent admin action races an in-flight request the same way the transient resync above does, but
-   * {@code ArcadeDBServer.getDatabase(..., allowLoad=false)} - what the client's automatic 503 retry re-resolves
-   * through once it re-hits the database - throws a narrower {@link DatabaseNotAvailableException} rather than
-   * the generic {@link com.arcadedb.exception.DatabaseOperationException}. Before this fix that fell through to
-   * the generic 500 "Internal error", leaving the client with no accurate signal that the database is simply
-   * gone; it now answers the same 404 a client already expects for "the thing you asked for isn't there".
+   * The concrete defect reported in #6778 (a #6770 follow-up): a database dropped permanently by a concurrent admin action
+   * races an in-flight request the same way the transient resync above does, and {@code ArcadeDBServer.getDatabase(...,
+   * allowLoad=false)} - what the client's automatic 503 retry re-resolves through once it re-hits the database - finds no
+   * database under the name. Before #6778 that fell through to the generic 500 "Internal error"; it answers the 404 a client
+   * expects for "the thing you asked for isn't there", raised since issue #10872 as {@link DatabaseNotFoundException}.
    */
   @Test
-  void aPermanentlyUnavailableDatabaseIsReported404NotAGeneric500() {
-    final HandledResponse response = handle(new DatabaseNotAvailableException("Database 'mydb' is not available"));
+  void aDatabaseThatIsGoneIsReported404NotAGeneric500() {
+    final HandledResponse response = handle(new DatabaseNotFoundException("Database 'mydb' does not exist"));
 
     assertThat(response.statusCode).isEqualTo(404);
     final JSONObject json = new JSONObject(response.body);
     assertThat(json.getString("error")).isEqualTo("Database not found");
-    assertThat(json.getString("exception")).isEqualTo(DatabaseNotAvailableException.class.getName());
+    assertThat(json.getString("exception")).isEqualTo(DatabaseNotFoundException.class.getName());
+  }
+
+  /**
+   * Issue #10872: a database that exists and cannot serve the request now is not "not found". It is answered 503 under a label
+   * naming its state, the state is in {@code exceptionArgs}, and no state answers the 404 of a name that is no database.
+   */
+  @Test
+  void anUnavailableDatabaseIsReported503UnderItsState() {
+    for (final DatabaseNotAvailableException.Reason reason : DatabaseNotAvailableException.Reason.values()) {
+      final HandledResponse response = handle(new DatabaseNotAvailableException("Database 'mydb' is not available", reason));
+
+      assertThat(response.statusCode).as("%s", reason).isEqualTo(503);
+      final JSONObject json = new JSONObject(response.body);
+      assertThat(json.getString("error")).as("%s", reason).isEqualTo(reason.label()).isNotEqualTo("Database not found");
+      assertThat(json.getString("exception")).isEqualTo(DatabaseNotAvailableException.class.getName());
+      assertThat(json.getString("exceptionArgs")).isEqualTo(reason.name());
+    }
   }
 
   /**

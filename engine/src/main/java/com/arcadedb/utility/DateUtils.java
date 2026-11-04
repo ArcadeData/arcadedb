@@ -47,6 +47,7 @@ import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalQueries;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
@@ -60,6 +61,13 @@ public class DateUtils {
 
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
   public static final  long                                         MS_IN_A_DAY               = 24 * 60 * 60 * 1000L; // 86_400_000
+  /**
+   * The largest count of epoch days, either side of 1970, that every class a DATE can be held as can hold: a
+   * {@code java.util.Date} and a {@code Calendar} keep a day as the epoch milliseconds of its UTC midnight in a {@code long}, so
+   * this is {@code Long.MAX_VALUE / MS_IN_A_DAY}, the year 292,278,994 (a {@code LocalDate} reaches 3.4 times further). See
+   * {@link #dateNumberToEpochDays(long)}.
+   */
+  public static final  long                                         MAX_DATE_DAY_COUNT        = Math.floorDiv(Long.MAX_VALUE, MS_IN_A_DAY);
   /**
    * The timestamp in every generated file name (backup and export archives). Pinned to {@link Locale#ROOT} so the name
    * is Gregorian with ASCII digits whatever the JVM's default locale: the server's backup retention parses these names
@@ -208,6 +216,54 @@ public class DateUtils {
   }
 
   /**
+   * The count of epoch days a number WRITTEN into a DATE stands for, the same whatever class holds the DATE ({@code LocalDate},
+   * {@code java.util.Date}, {@code Calendar} or {@code LocalDateTime}, issues #10910 and #11025), read in this order:
+   * <ol>
+   *   <li>the epoch MILLISECONDS of a UTC midnight are that day. A DATE is a count of days on disk and on the remote client's
+   *   record wire (#4601), but a {@code LocalDate} travelling as a query parameter, or a date sent by an HTTP client, is written
+   *   as the milliseconds of its UTC midnight ({@code JSONObject}, #9037), and nothing on the way tells the two apart. The only
+   *   day counts this reading takes away are the multiples of 86,400,000 days, all of them more than 236,000 years away from
+   *   1970; zero is the same day either way (issue #10865);</li>
+   *   <li>any other number up to {@link #MAX_DATE_DAY_COUNT} either side of zero is a count of days;</li>
+   *   <li>a number past that is no day count every class of a DATE can hold, so it is the epoch milliseconds it is (a "now" in
+   *   milliseconds is such a number) and stands for the UTC day those milliseconds fall in, as a {@code java.util.Date} written
+   *   into a DATE does (see {@link #isDateNumberMillis(long)}).</li>
+   * </ol>
+   * The reading has a window: a non-midnight milliseconds value small enough to be a day count (below about 1.07e11, that is
+   * before 1973-05-21 as milliseconds) is a day count. The bound of the second rule is the one every class can hold, not the
+   * larger one of {@code LocalDate}: bounding it there let a {@code LocalDate} store as a day of the year 547 million what a
+   * {@code java.util.Date} refused, and what was the milliseconds of a day of 1976 (issue #11025).
+   * {@code Type} applies it to a value WRITTEN into a DATE property only, never to a comparison.
+   *
+   * @param number a count of epoch days, or epoch milliseconds
+   *
+   * @return the count of epoch days, within {@link #MAX_DATE_DAY_COUNT} of zero
+   *
+   * @throws IllegalArgumentException for milliseconds whose day is before the first one a {@code java.util.Date} can hold
+   *                                  (within about 300 days of {@code Long.MIN_VALUE}): refused whatever class holds the DATE
+   */
+  public static long dateNumberToEpochDays(final long number) {
+    // floorMod/floorDiv for the house rule (#7638); on an exact multiple they answer what '%' and '/' would
+    if (number != 0 && Math.floorMod(number, MS_IN_A_DAY) == 0)
+      return Math.floorDiv(number, MS_IN_A_DAY);
+    if (number >= -MAX_DATE_DAY_COUNT && number <= MAX_DATE_DAY_COUNT)
+      return number;
+    final long days = Math.floorDiv(number, MS_IN_A_DAY);
+    if (days < -MAX_DATE_DAY_COUNT)
+      throw new IllegalArgumentException("Date value " + number + " is outside the supported range");
+    return days;
+  }
+
+  /**
+   * True when {@link #dateNumberToEpochDays(long)} reads {@code number} as epoch milliseconds that are not a UTC midnight (its
+   * third rule): a {@code java.util.Date}, {@code Calendar} or {@code LocalDateTime} holding the DATE keeps that instant, time of
+   * day included, as it always did, and what is stored is its day, the one every class reads (issue #11025).
+   */
+  public static boolean isDateNumberMillis(final long number) {
+    return number < -MAX_DATE_DAY_COUNT || number > MAX_DATE_DAY_COUNT;
+  }
+
+  /**
    * Converts a temporal value to the number of days since the epoch, the canonical encoding for the
    * {@link com.arcadedb.schema.Type#DATE} type both on disk and on the remote JSON wire. Mirrors the
    * {@code TYPE_DATE} branch of the binary serializer so the remote path and the embedded binary path
@@ -271,7 +327,7 @@ public class DateUtils {
       }
       case BigDecimal bigDecimal -> {
         try {
-          yield bigDecimal.setScale(0, RoundingMode.FLOOR).longValueExact();
+          yield floorOrBeyondLong(bigDecimal).longValueExact();
         } catch (final ArithmeticException e) {
           throw new IllegalArgumentException("Timestamp value " + bigDecimal + " is outside the supported range");
         }
@@ -609,9 +665,7 @@ public class DateUtils {
    * <ol>
    *   <li>{@link LocalDateTime#parse(CharSequence)} (ISO without zone);</li>
    *   <li>{@link ZonedDateTime#parse(CharSequence)} for ISO inputs ending in {@code Z} or
-   *   with a {@code ±HH:mm} offset - the resulting instant is rebased onto the database's
-   *   configured zone (default {@link ZoneId#systemDefault()}) before stripping the offset,
-   *   so the stored wall-clock follows the database's locale rather than the input's;</li>
+   *   with a {@code ±HH:mm} offset - the instant is converted to UTC before stripping the offset (see below);</li>
    *   <li>the schema's {@code dateTimeFormat};</li>
    *   <li>the schema's {@code dateFormat};</li>
    *   <li>{@link #SPACE_SEPARATED_DATE_TIME}, the SQL-timestamp spelling with an optional fraction and offset
@@ -619,35 +673,51 @@ public class DateUtils {
    *   schema's own patterns already claimed.</li>
    * </ol>
    * When {@code database} is {@code null} the schema patterns are skipped - there is no schema to read them from -
-   * but the ISO and SQL-timestamp formats are still tried, and offset-bearing inputs keep their wall-clock without
-   * rebasing, matching legacy parsing behavior in scopes without a schema.
+   * but the ISO and SQL-timestamp formats are still tried.
+   * <p>
+   * <b>One rule for an offset-bearing input, on every write path (issues #10489, #10498):</b> the instant it names is
+   * stored as the UTC wall clock, the way a {@code LocalDateTime} is stored from a {@link java.util.Date}, a number, an
+   * {@link java.time.Instant}, a {@link ZonedDateTime} or an {@link OffsetDateTime}: the string
+   * {@code 2020-01-02T03:04:05+02:00} gives {@code 2020-01-02T01:04:05}, so a client writing over HTTP or SQL, one writing
+   * over Bolt or Java, and the bulk load ({@code GraphBatch}) store one value for one instant. An input without an offset
+   * has no instant to convert and keeps its wall clock, and so does one in UTC: the {@code Z} Cypher's
+   * {@code datetime('2026-01-01T00:00:00')} renders itself with reads back as the wall clock the query named (issue
+   * #4125). The database's zone plays no part in it: it is how a value is formatted for a reader, not where an instant is
+   * stored, and rebasing onto it (what the bulk path did before #10498) stored a value no other path stores for that
+   * instant, off by the zone's offset, for every database whose zone is not UTC.
    * <p>
    * A step whose format provably cannot match the input is not attempted at all - the order is unchanged, only the
-   * wasted work is gone. See {@link #parseDateTime(Database, String, boolean)}.
+   * wasted work is gone.
    *
    * @throws DateTimeParseException when no format matches. Never answers {@code null}: a datetime that cannot be
    *                                parsed has to fail the write rather than empty the column.
    */
   public static LocalDateTime parseDateTime(final Database database, final String string) {
-    return parseDateTime(database, string, true);
+    return parseDateTime(database, string, OffsetPolicy.CONVERT_TO_UTC);
   }
 
   /**
-   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than rebased: the wall-clock
-   * written is the wall-clock read.
+   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than converted: the wall-clock
+   * written is the wall-clock read. For the callers whose target has no zone to keep, a {@code LocalDate}: the day
+   * written is the day meant.
    * <p>
-   * The two callers of this chain disagree about that, and each disagreement is pinned by its own tests. The bulk
-   * path rebases, so a client in another zone stores the instant it meant. {@code Type.convert} strips, because
-   * Cypher's {@code datetime('2026-01-01T00:00:00')} renders itself as {@code 2026-01-01T00:00Z} and
-   * {@code SET n.t = datetime(...)} has to read back the wall-clock the query named (issue #4125) rather than one
-   * shifted by the server's zone. Reconciling the two changes what existing databases store and is its own issue;
-   * issue #8090 unified only WHICH FORMATS are accepted, which is what was losing data.
+   * A {@code DATETIME} does not read its strings this way: {@link #parseDateTime} stores the instant the text names, as
+   * an {@code OffsetDateTime} value is stored (issues #10489, #10498). Issue #8090 unified WHICH FORMATS the chain
+   * accepts, which is what was losing data.
    */
   public static LocalDateTime parseDateTimeKeepingWallClock(final Database database, final String string) {
-    return parseDateTime(database, string, false);
+    return parseDateTime(database, string, OffsetPolicy.KEEP_WALL_CLOCK);
   }
 
-  private static LocalDateTime parseDateTime(final Database database, final String string, final boolean rebaseOffset) {
+  /** What becomes of the offset of an offset-bearing input once it is parsed into a zone-less {@link LocalDateTime}. */
+  private enum OffsetPolicy {
+    /** Drop the offset: the wall clock written is the wall clock read. */
+    KEEP_WALL_CLOCK,
+    /** Convert the instant to UTC, the way a typed {@code OffsetDateTime} / {@code ZonedDateTime} is stored. */
+    CONVERT_TO_UTC
+  }
+
+  private static LocalDateTime parseDateTime(final Database database, final String string, final OffsetPolicy offsetPolicy) {
     // The order below is the contract; what varies is only whether a step is ATTEMPTED, and a step is skipped only
     // when it provably cannot match. This matters because the chain is now on the hot path: before issue #8090 the
     // literal it exists for never parsed at all, so no client could have been writing at volume through here, and
@@ -662,7 +732,7 @@ public class DateUtils {
         return LocalDateTime.parse(string);
       } catch (final DateTimeParseException e) {
         try {
-          return dropZone(database, ZonedDateTime.parse(string), rebaseOffset);
+          return dropZone(ZonedDateTime.parse(string), offsetPolicy);
         } catch (final DateTimeParseException e2) {
           isoFailure = e2;
         }
@@ -671,7 +741,7 @@ public class DateUtils {
 
     final Temporal parsed = parseSchemaOrSqlTimestamp(database, string, isoFailure);
     return parsed instanceof OffsetDateTime offset ?
-        dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
+        dropZone(offset.toZonedDateTime(), offsetPolicy) :
         (LocalDateTime) parsed;
   }
 
@@ -846,18 +916,13 @@ public class DateUtils {
   }
 
   /**
-   * Turns an offset-bearing value into the local datetime that gets stored. With {@code rebaseOffset} the instant is
-   * moved onto the database's configured zone first, so the stored wall-clock denotes the same moment the client
-   * sent; without it the wall-clock is kept exactly as written. Without a database there is no zone to consult and
-   * the wall-clock is kept either way.
+   * Turns an offset-bearing value into the local datetime that gets stored, as the {@link OffsetPolicy} says. Neither
+   * policy consults the database's zone: an instant is stored as the UTC wall clock or as the wall clock written.
    */
-  private static LocalDateTime dropZone(final Database database, final ZonedDateTime parsed, final boolean rebaseOffset) {
-    if (rebaseOffset && database != null) {
-      final ZoneId zoneId = database.getSchema().getZoneId();
-      if (zoneId != null)
-        return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
-    }
-    return parsed.toLocalDateTime();
+  private static LocalDateTime dropZone(final ZonedDateTime parsed, final OffsetPolicy offsetPolicy) {
+    return offsetPolicy == OffsetPolicy.CONVERT_TO_UTC ?
+        parsed.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime() :
+        parsed.toLocalDateTime();
   }
 
   public static ChronoUnit parsePrecision(final String precision) {
@@ -1025,6 +1090,155 @@ public class DateUtils {
     return value instanceof LocalDate date && !(other instanceof LocalDate) && isDate(other) ? date.atStartOfDay() : value;
   }
 
+  /** A whole number above every {@code long}: what {@link #floorOrBeyondLong} answers for a value of 20 integer digits or more. */
+  public static final BigDecimal ABOVE_EVERY_LONG = BigDecimal.TEN.pow(20);
+
+  /** A whole number below every {@code long}, see {@link #ABOVE_EVERY_LONG}. */
+  public static final BigDecimal BELOW_EVERY_LONG = ABOVE_EVERY_LONG.negate();
+
+  /**
+   * The greatest whole number not above {@code value}, or {@link #ABOVE_EVERY_LONG} / {@link #BELOW_EVERY_LONG} for a value beyond
+   * every {@code long} (20 integer digits or more). {@link BigDecimal#setScale} is not asked for a value whose exponent is far from
+   * zero: {@code 1E+999999999} would make it build a number of a billion digits, and {@code 1E-999999999} the power of ten that
+   * divides it, which a bound or a parameter of a query, sent by a client, must not be able to ask the server for.
+   */
+  public static BigDecimal floorOrBeyondLong(final BigDecimal value) {
+    final int integerDigits = value.precision() - value.scale();
+    if (integerDigits > 19)
+      return value.signum() > 0 ? ABOVE_EVERY_LONG : BELOW_EVERY_LONG;
+    if (integerDigits <= 0)
+      // below 1 in absolute value: 0 for zero and for a positive, -1 for a negative
+      return value.signum() < 0 ? BigDecimal.ONE.negate() : BigDecimal.ZERO;
+    return value.setScale(0, RoundingMode.FLOOR);
+  }
+
+  /** Answer of {@link #compareNumberAndTemporal} for a pair that is not a number against a datetime: the caller keeps its own rule. */
+  public static final int NOT_NUMBER_AND_TEMPORAL = 2;
+
+  /**
+   * Orders a number against a datetime, whichever side each is on, with the number read as a count of epoch milliseconds (what SQL
+   * writes into any datetime, whatever its precision) and compared EXACTLY. The comparison operators used to convert the operand on
+   * the right to the class of the one on the left, which cannot hold a datetime in a number (a number on the left answered "not
+   * equal" and "not below" for every datetime, so {@code 2000 <> ts} was true for the sample at 2000), reads a fractional number as
+   * the millisecond it falls in ({@code ts = 2000.5} was true for the sample at 2000, {@code ts >= 2000.5} too) and has no
+   * datetime for a number outside the range of a long ({@code ts <= 1e19} was false for every sample); issue #10560.
+   * <p>
+   * The datetime is a {@link LocalDateTime}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Date} or
+   * {@link Calendar}, the classes a DATETIME is materialised as. A DATE, a string and the Cypher temporals are left to the caller.
+   * <p>
+   * A NaN is above every datetime, as it is above every number everywhere else in the engine (the order of {@link Double#compare}).
+   *
+   * @return the sign of {@code left - right} (-1, 0 or 1), or {@link #NOT_NUMBER_AND_TEMPORAL} when the pair is not a number against
+   * a datetime
+   */
+  public static int compareNumberAndTemporal(final Object left, final Object right) {
+    if (left instanceof Number number)
+      return compareNumberToDateTime(number, right);
+    if (right instanceof Number number) {
+      final int order = compareNumberToDateTime(number, left);
+      return order == NOT_NUMBER_AND_TEMPORAL ? order : -order;
+    }
+    return NOT_NUMBER_AND_TEMPORAL;
+  }
+
+  /**
+   * The nanoseconds a datetime holds below its millisecond: what a conversion to epoch milliseconds drops. 0 for the classes that hold
+   * milliseconds only, and for anything that is not a datetime. Reads the same classes as {@link #compareNumberToDateTime}, which the
+   * two have to keep in step ({@code DateUtilsCompareNumberAndTemporalTest} compares them class by class).
+   */
+  public static int subMillisecondNanos(final Object value) {
+    final int nanos;
+    if (value instanceof LocalDateTime localDateTime)
+      nanos = localDateTime.getNano();
+    else if (value instanceof ZonedDateTime zonedDateTime)
+      nanos = zonedDateTime.getNano();
+    else if (value instanceof OffsetDateTime offsetDateTime)
+      nanos = offsetDateTime.getNano();
+    else if (value instanceof Instant instant)
+      nanos = instant.getNano();
+    else
+      return 0;
+    return nanos % 1_000_000;
+  }
+
+  /** The sign of {@code number - dateTime} in epoch milliseconds, see {@link #compareNumberAndTemporal}. */
+  private static int compareNumberToDateTime(final Number number, final Object dateTime) {
+    final long millis;
+    // the nanoseconds of the datetime below its millisecond: 0 for every class that holds milliseconds only
+    final int subMillisecondNanos;
+    if (dateTime instanceof Date date) {
+      millis = date.getTime();
+      subMillisecondNanos = 0;
+    } else if (dateTime instanceof Calendar calendar) {
+      millis = calendar.getTimeInMillis();
+      subMillisecondNanos = 0;
+    } else {
+      final long epochSecond;
+      final int nanos;
+      if (dateTime instanceof LocalDateTime localDateTime) {
+        epochSecond = localDateTime.toEpochSecond(ZoneOffset.UTC);
+        nanos = localDateTime.getNano();
+      } else if (dateTime instanceof ZonedDateTime zonedDateTime) {
+        epochSecond = zonedDateTime.toEpochSecond();
+        nanos = zonedDateTime.getNano();
+      } else if (dateTime instanceof OffsetDateTime offsetDateTime) {
+        epochSecond = offsetDateTime.toEpochSecond();
+        nanos = offsetDateTime.getNano();
+      } else if (dateTime instanceof Instant instant) {
+        epochSecond = instant.getEpochSecond();
+        nanos = instant.getNano();
+      } else
+        return NOT_NUMBER_AND_TEMPORAL;
+      try {
+        millis = Math.addExact(Math.multiplyExact(epochSecond, 1_000L), nanos / 1_000_000);
+      } catch (final ArithmeticException e) {
+        // a year no long of milliseconds reaches: not a comparison this class answers
+        return NOT_NUMBER_AND_TEMPORAL;
+      }
+      subMillisecondNanos = nanos % 1_000_000;
+    }
+
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte
+        || number instanceof AtomicLong || number instanceof AtomicInteger) {
+      final int order = Long.compare(number.longValue(), millis);
+      // the number is the millisecond the datetime starts in: the fraction left over makes the datetime the later one
+      return order != 0 ? order : subMillisecondNanos > 0 ? -1 : 0;
+    }
+
+    final BigDecimal exact;
+    if (number instanceof BigDecimal bigDecimal)
+      exact = bigDecimal;
+    else if (number instanceof BigInteger bigInteger) {
+      if (bigInteger.bitLength() > 63)
+        // far outside the milliseconds of any datetime a long can hold
+        return bigInteger.signum();
+      exact = new BigDecimal(bigInteger);
+    } else {
+      final double value = number instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
+      if (Double.isNaN(value))
+        return 1;
+      if (Double.isInfinite(value))
+        return value > 0 ? 1 : -1;
+      if (Math.abs(value) < 9.0e18) {
+        // The common case, a double that is a whole number of milliseconds (1.7E12) or a fraction of one, decided on longs with no
+        // BigDecimal: the number is floor + fraction and the datetime is millis + fraction, both fractions in [0, 1)
+        final double floor = Math.floor(value);
+        final int order = Long.compare((long) floor, millis);
+        if (order != 0)
+          return order;
+        final boolean wholeNumber = floor == value;
+        if (wholeNumber)
+          return subMillisecondNanos > 0 ? -1 : 0;
+        if (subMillisecondNanos == 0)
+          return 1;
+      }
+      exact = new BigDecimal(value);
+    }
+
+    final BigDecimal dateTimeMillis = BigDecimal.valueOf(millis).add(BigDecimal.valueOf(subMillisecondNanos, 6));
+    return Integer.signum(exact.compareTo(dateTimeMillis));
+  }
+
   public static ChronoUnit getHigherPrecision(final Object... objs) {
     if (objs == null || objs.length == 0)
       return null;
@@ -1064,11 +1278,18 @@ public class DateUtils {
     else if (obj instanceof Calendar calendar)
       return getFormatter(format).format(millisToLocalDateTime(calendar.getTimeInMillis(), timeZone));
     else if (obj instanceof LocalDateTime time) {
+      // A DATETIME is held as the UTC wall clock, so it denotes an instant: convert it into the requested zone rather than
+      // attaching the zone to the same wall clock, which rendered UTC fields as if they were local ones (issue #10676)
       if (timeZone != null)
-        return time.atZone(ZoneId.of(timeZone)).format(getFormatter(format));
+        return time.atZone(UTC_ZONE_ID).withZoneSameInstant(ZoneId.of(timeZone)).format(getFormatter(format));
       else
         return getFormatter(format).format(time);
-    } else if (obj instanceof Instant instant)
+    } else if (obj instanceof ZonedDateTime time)
+      // the requested zone used to be ignored here, through the generic TemporalAccessor branch (issue #10676)
+      return getFormatter(format).format(timeZone != null ? time.withZoneSameInstant(ZoneId.of(timeZone)) : time);
+    else if (obj instanceof OffsetDateTime time)
+      return getFormatter(format).format(timeZone != null ? time.atZoneSameInstant(ZoneId.of(timeZone)) : time);
+    else if (obj instanceof Instant instant)
       // An Instant carries no date/time fields on its own, so a pattern like `yyyy-MM-dd HH:mm:ss`
       // throws UnsupportedTemporalTypeException unless it is first anchored to a zone. UTC is the
       // anchor used everywhere else in this class (see dateTime() and dateTimeToTimestamp()), so
@@ -1076,15 +1297,67 @@ public class DateUtils {
       return getFormatter(format).format(LocalDateTime.ofInstant(instant, timeZone != null ? ZoneId.of(timeZone) : UTC_ZONE_ID));
     else if (obj instanceof LocalDate date)
       // A DATE is the day at midnight, as the java.util.Date implementation of the same type always rendered it, so a
-      // time field formats as 00 instead of throwing UnsupportedTemporalTypeException (issue #10206)
-      return format(date.atStartOfDay(), format, timeZone);
+      // time field formats as 00 instead of throwing UnsupportedTemporalTypeException (issue #10206). A day is not an instant, so
+      // the requested zone is attached to its midnight, not converted into: a zone west of UTC must not move it to the day
+      // before (issue #10676)
+      return getFormatter(format).format(timeZone != null ? date.atStartOfDay(ZoneId.of(timeZone)) : date.atStartOfDay());
     else if (obj instanceof TemporalAccessor accessor)
       return getFormatter(format).format(accessor);
     return null;
   }
 
-  public static Object parse(final String text, final String format) {
-    return LocalDateTime.parse(text, getFormatter(format));
+  /**
+   * Reads a text with the pattern the CALLER named, under the one rule of {@link #parseDateTime(Database, String)}: when the text
+   * names an instant - the pattern read an offset ({@code XXX}, {@code Z}, {@code O}) or a zone ({@code VV}, {@code z}) out of it -
+   * the instant is stored as the UTC wall clock, whatever the pattern is and whoever named it (issue #10596). Reading the text with
+   * {@code LocalDateTime.parse(text, formatter)} takes the LOCAL fields of the parse and discards the offset the pattern just read,
+   * which stored the same instant as 03:04:05 from {@code asDateTime('...XXX')} and as 01:04:05 from the schema's own pattern.
+   * <p>
+   * A text that names no zone has no instant to convert: it keeps its wall clock, as one without a pattern does, unless the caller
+   * says where it was written ({@code zoneOfZoneLessText}): {@code date(value, format, timezone)} reads it there, and the instant
+   * is stored as the UTC wall clock of that.
+   *
+   * @param zoneOfZoneLessText where a text that names no zone was written, or {@code null} for the wall clock as it is
+   *
+   * @throws DateTimeParseException when the text does not match the pattern, or does not hold a date
+   */
+  public static LocalDateTime parseDateTimeWithFormat(final String text, final String format, final ZoneId zoneOfZoneLessText) {
+    return parseDateTimeWithFormat(text, getFormatter(format), zoneOfZoneLessText);
+  }
+
+  /** As {@link #parseDateTimeWithFormat(String, String, ZoneId)} for a formatter the caller already holds. */
+  public static LocalDateTime parseDateTimeWithFormat(final String text, final DateTimeFormatter formatter,
+      final ZoneId zoneOfZoneLessText) {
+    return formatter.parse(text, parsed -> {
+      if (parsed.query(TemporalQueries.zone()) != null)
+        return dropZone(ZonedDateTime.from(parsed), OffsetPolicy.CONVERT_TO_UTC);
+
+      final LocalDateTime local = LocalDateTime.from(parsed);
+      return zoneOfZoneLessText != null ? dropZone(local.atZone(zoneOfZoneLessText), OffsetPolicy.CONVERT_TO_UTC) : local;
+    });
+  }
+
+  /**
+   * {@link #parseDateTimeWithFormat} with the offset of an offset-bearing text DROPPED rather than converted, for the callers whose
+   * target has no zone to keep, a {@code LocalDate}: the day written is the day meant. See {@link #parseDateTimeKeepingWallClock}.
+   */
+  public static LocalDateTime parseDateTimeKeepingWallClockWithFormat(final String text, final String format) {
+    return getFormatter(format).parse(text, LocalDateTime::from);
+  }
+
+  /**
+   * Reads a text with a pattern into a {@link ZonedDateTime} that keeps the zone or offset the text names, and is anchored to
+   * {@code zoneOfZoneLessText} when it names none. For the callers that answer an epoch or the fields of a moment rather than a
+   * stored {@code DATETIME}: they need the instant, which {@code LocalDateTime.parse(text, formatter)} lost with the offset
+   * (issue #10596).
+   *
+   * @throws DateTimeParseException when the text does not match the pattern, or does not hold a date
+   */
+  public static ZonedDateTime parseZonedDateTimeWithFormat(final String text, final DateTimeFormatter formatter,
+      final ZoneId zoneOfZoneLessText) {
+    return formatter.parse(text, parsed -> parsed.query(TemporalQueries.zone()) != null ?
+        ZonedDateTime.from(parsed) :
+        LocalDateTime.from(parsed).atZone(zoneOfZoneLessText));
   }
 
   public static DateTimeFormatter getFormatter(final String format) {

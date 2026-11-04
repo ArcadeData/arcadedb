@@ -21,6 +21,7 @@ package com.arcadedb.server.security;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -258,7 +259,7 @@ public class ReplicatedSecurityFingerprintRepository {
         final ByteBuffer buffer = ByteBuffer.wrap(bytes);
         while (buffer.hasRemaining())
           channel.write(buffer);
-        channel.force(true);
+        FileUtils.force(channel, true);
       }
 
       // Owner-only before publishing, the same as every other file in this directory (code review on PR

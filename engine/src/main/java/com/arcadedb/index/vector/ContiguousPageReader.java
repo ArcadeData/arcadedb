@@ -18,14 +18,17 @@
  */
 package com.arcadedb.index.vector;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.CachedPage;
 import com.arcadedb.engine.PageId;
 import io.github.jbellis.jvector.disk.RandomAccessReader;
 
 import java.io.IOException;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * Provides a contiguous logical address space over ArcadeDB pages with headers for reading.
@@ -45,25 +48,37 @@ import java.nio.ByteBuffer;
  * - readInt(position=65526) reads 2 bytes from page 0, 2 bytes from page 1
  * <p>
  * Thread-safe: Each reader should be used by a single thread (JVector creates readers per-thread).
+ * <p>
+ * This is the read path of every graph walk: {@code OnDiskGraphIndex.View} seeks to a node and reads its degree and its
+ * neighbour ids through here for every node a search expands, and the inline vectors of a {@code storeVectorsInGraph}
+ * index come the same way. A value that lies inside the page already held is therefore read straight off that page's
+ * bytes, and the bulk reads ({@link #read(int[], int, int)}, {@link #read(float[], int, int)}, {@link #readFully(long[])})
+ * map the position to a page once per page rather than once per element (issue #11003): the per-element path used to
+ * divide the position by the usable page size twice and copy the bytes through a scratch buffer for every neighbour id of
+ * every expanded node. Only a value that straddles two pages takes the byte-at-a-time path.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ContiguousPageReader implements RandomAccessReader {
+  private static final VarHandle INT_BE   = MethodHandles.byteArrayViewVarHandle(int[].class, ByteOrder.BIG_ENDIAN);
+  private static final VarHandle LONG_BE  = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.BIG_ENDIAN);
+  private static final VarHandle FLOAT_BE = MethodHandles.byteArrayViewVarHandle(float[].class, ByteOrder.BIG_ENDIAN);
+
   private final DatabaseInternal database;
   private final int              fileId;
   private final int              pageSize;
   private final long             totalBytes;  // Total graph data size in contiguous logical space
   private final int              usablePageSize; // pageSize - BasePage.PAGE_HEADER_SIZE
-
-  // Reusable buffer to avoid allocations (max size is 8 bytes for long/double)
-  private final byte[]     buffer;
-  private final ByteBuffer byteBuffer;
-  private final long       offset;
+  private final long             offset;
 
   // Current state
-  private long     logicalPosition;  // Contiguous logical address (no gaps)
-  private BasePage currentPage;
-  private int      currentPageNum;
+  private long   logicalPosition;  // Contiguous logical address (no gaps)
+  // The page held: its bytes, where its content starts in them, and the logical range [pageStart, pageEnd) it covers,
+  // cut at totalBytes. pageEnd is 0 while no page is held, so no position is ever inside it.
+  private byte[] pageBytes;
+  private int    pageBase;
+  private long   pageStart;
+  private long   pageEnd;
 
   public ContiguousPageReader(final DatabaseInternal database, final int fileId, final int pageSize, final long totalBytes,
       final long offset) {
@@ -73,12 +88,7 @@ public class ContiguousPageReader implements RandomAccessReader {
     this.totalBytes = totalBytes;
     this.usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
     this.logicalPosition = 0L;
-    this.currentPageNum = -1;
     this.offset = offset;
-
-    // Allocate reusable buffer once (8 bytes for largest primitive type)
-    this.buffer = new byte[Binary.LONG_SERIALIZED_SIZE];
-    this.byteBuffer = ByteBuffer.wrap(buffer);
   }
 
   @Override
@@ -104,23 +114,32 @@ public class ContiguousPageReader implements RandomAccessReader {
 
   @Override
   public int readInt() throws IOException {
-    readFully(buffer, 0, Binary.INT_SERIALIZED_SIZE);
-    byteBuffer.rewind();
-    return byteBuffer.getInt();
+    final long position = logicalPosition;
+    if (position >= pageStart && position + Integer.BYTES <= pageEnd) {
+      logicalPosition = position + Integer.BYTES;
+      return (int) INT_BE.get(pageBytes, pageIndex(position));
+    }
+    return (int) readStraddling(Integer.BYTES);
   }
 
   @Override
   public float readFloat() throws IOException {
-    readFully(buffer, 0, Binary.FLOAT_SERIALIZED_SIZE);
-    byteBuffer.rewind();
-    return byteBuffer.getFloat();
+    final long position = logicalPosition;
+    if (position >= pageStart && position + Float.BYTES <= pageEnd) {
+      logicalPosition = position + Float.BYTES;
+      return (float) FLOAT_BE.get(pageBytes, pageIndex(position));
+    }
+    return Float.intBitsToFloat((int) readStraddling(Float.BYTES));
   }
 
   @Override
   public long readLong() throws IOException {
-    readFully(buffer, 0, Binary.LONG_SERIALIZED_SIZE);
-    byteBuffer.rewind();
-    return byteBuffer.getLong();
+    final long position = logicalPosition;
+    if (position >= pageStart && position + Long.BYTES <= pageEnd) {
+      logicalPosition = position + Long.BYTES;
+      return (long) LONG_BE.get(pageBytes, pageIndex(position));
+    }
+    return readStraddling(Long.BYTES);
   }
 
   @Override
@@ -131,6 +150,11 @@ public class ContiguousPageReader implements RandomAccessReader {
   @Override
   public void readFully(final ByteBuffer buffer) throws IOException {
     final int length = buffer.remaining();
+    if (buffer.hasArray()) {
+      readFully(buffer.array(), buffer.arrayOffset() + buffer.position(), length);
+      buffer.position(buffer.position() + length);
+      return;
+    }
     final byte[] temp = new byte[length];
     readFully(temp, 0, length);
     buffer.put(temp);
@@ -138,8 +162,18 @@ public class ContiguousPageReader implements RandomAccessReader {
 
   @Override
   public void readFully(final long[] longs) throws IOException {
-    for (int i = 0; i < longs.length; i++) {
-      longs[i] = readLong();
+    checkReadable((long) longs.length * Long.BYTES);
+    int i = 0;
+    while (i < longs.length) {
+      final int inPage = elementsInPage(Long.BYTES, longs.length - i);
+      if (inPage == 0) {
+        longs[i++] = readLong();
+        continue;
+      }
+      int index = pageIndex(logicalPosition);
+      for (final int end = i + inPage; i < end; i++, index += Long.BYTES)
+        longs[i] = (long) LONG_BE.get(pageBytes, index);
+      logicalPosition += (long) inPage * Long.BYTES;
     }
   }
 
@@ -150,22 +184,46 @@ public class ContiguousPageReader implements RandomAccessReader {
           String.format("Read would overflow array: offset=%d, length=%d, array.length=%d, would access index %d", offset, length,
               ints.length, offset + length - 1));
     }
-    for (int i = 0; i < length; i++) {
-      ints[offset + i] = readInt();
+    checkReadable((long) length * Integer.BYTES);
+    int i = offset;
+    final int last = offset + length;
+    while (i < last) {
+      final int inPage = elementsInPage(Integer.BYTES, last - i);
+      if (inPage == 0) {
+        ints[i++] = readInt();
+        continue;
+      }
+      int index = pageIndex(logicalPosition);
+      for (final int end = i + inPage; i < end; i++, index += Integer.BYTES)
+        ints[i] = (int) INT_BE.get(pageBytes, index);
+      logicalPosition += (long) inPage * Integer.BYTES;
     }
   }
 
   @Override
   public void read(final float[] floats, final int offset, final int length) throws IOException {
-    for (int i = 0; i < length; i++) {
-      floats[offset + i] = readFloat();
+    checkReadable((long) length * Float.BYTES);
+    int i = offset;
+    final int last = offset + length;
+    while (i < last) {
+      final int inPage = elementsInPage(Float.BYTES, last - i);
+      if (inPage == 0) {
+        floats[i++] = readFloat();
+        continue;
+      }
+      int index = pageIndex(logicalPosition);
+      for (final int end = i + inPage; i < end; i++, index += Float.BYTES)
+        floats[i] = (float) FLOAT_BE.get(pageBytes, index);
+      logicalPosition += (long) inPage * Float.BYTES;
     }
   }
 
   @Override
   public void close() {
     // No-op: pages are managed by PageManager
-    currentPage = null;
+    pageBytes = null;
+    pageStart = 0L;
+    pageEnd = 0L;
   }
 
   /**
@@ -173,25 +231,16 @@ public class ContiguousPageReader implements RandomAccessReader {
    * reads that span page boundaries.
    */
   private void readFully(final byte[] bytes, int offset, int length) throws IOException {
-    if (logicalPosition + length > totalBytes) {
-      throw new IOException("Read beyond end of graph data");
-    }
+    checkReadable(length);
 
     // Split reads transparently across page boundaries
     while (length > 0) {
-      // Map logical position to physical page (no gaps in logical space)
-      final int pageNum = (int) (logicalPosition / usablePageSize);
-      final int pageOffset = (int) (logicalPosition % usablePageSize);
+      ensurePageHolds(logicalPosition);
 
       // How many bytes can we read from current page?
-      final int availableInPage = usablePageSize - pageOffset;
-      final int toRead = Math.min(length, availableInPage);
+      final int toRead = (int) Math.min(length, pageEnd - logicalPosition);
 
-      // Ensure page is loaded
-      ensurePageLoaded(pageNum);
-
-      // Read from physical page (BasePage API handles the 8-byte header offset)
-      currentPage.readByteArray(pageOffset, bytes, offset, toRead);
+      System.arraycopy(pageBytes, pageIndex(logicalPosition), bytes, offset, toRead);
 
       // Advance logical position (truly contiguous, no gaps)
       logicalPosition += toRead;
@@ -203,19 +252,57 @@ public class ContiguousPageReader implements RandomAccessReader {
   }
 
   /**
-   * Ensures a page is loaded for reading.
+   * How many whole elements of {@code width} bytes, at most {@code wanted}, can be read from the current position without
+   * leaving the page that holds it (loading that page first). 0 when the next element straddles two pages.
    */
-  private void ensurePageLoaded(final int pageNum) throws IOException {
-    if (pageNum != currentPageNum) {
-      final PageId pageId = new PageId(database, fileId, pageNum);
-      // Use PageManager directly to avoid transaction context issues
-      currentPage = database.getPageManager().getImmutablePage(pageId, pageSize, false, false);
+  private int elementsInPage(final int width, final int wanted) throws IOException {
+    ensurePageHolds(logicalPosition);
+    return (int) Math.min(wanted, (pageEnd - logicalPosition) / width);
+  }
 
-      if (currentPage == null) {
-        throw new IOException("Page not found: " + pageId);
-      }
-
-      currentPageNum = pageNum;
+  /** A big-endian value of {@code width} bytes that starts on one page and ends on the next, a byte at a time. */
+  private long readStraddling(final int width) throws IOException {
+    checkReadable(width);
+    long value = 0L;
+    for (int i = 0; i < width; i++) {
+      ensurePageHolds(logicalPosition);
+      value = (value << 8) | (pageBytes[pageIndex(logicalPosition)] & 0xFFL);
+      ++logicalPosition;
     }
+    return value;
+  }
+
+  private void checkReadable(final long length) throws IOException {
+    if (logicalPosition + length > totalBytes)
+      throw new IOException("Read beyond end of graph data");
+  }
+
+  /** Index in {@link #pageBytes} of a logical position inside the page held. */
+  private int pageIndex(final long position) {
+    return pageBase + (int) (position - pageStart);
+  }
+
+  /**
+   * Makes the page that holds the logical {@code position} the current one. The page is read at absolute positions only, so
+   * its bytes are taken from the cached page as they are, without the per-call view {@code getImmutablePage} would build.
+   */
+  private void ensurePageHolds(final long position) throws IOException {
+    if (position >= pageStart && position < pageEnd)
+      return;
+
+    // Map logical position to physical page (no gaps in logical space)
+    final int pageNum = (int) (position / usablePageSize);
+    final PageId pageId = new PageId(database, fileId, pageNum);
+    // Use PageManager directly to avoid transaction context issues
+    final CachedPage page = database.getPageManager().getCachedPageForRead(pageId, pageSize);
+    if (page == null)
+      throw new IOException("Page not found: " + pageId);
+
+    final ByteBuffer buffer = page.getByteBuffer();
+    pageBytes = buffer.array();
+    pageBase = buffer.arrayOffset() + BasePage.PAGE_HEADER_SIZE;
+    pageStart = (long) pageNum * usablePageSize;
+    // Capped at the end of the data, so a fast-path read past it falls to the checked path and fails as before
+    pageEnd = Math.min(pageStart + usablePageSize, totalBytes);
   }
 }

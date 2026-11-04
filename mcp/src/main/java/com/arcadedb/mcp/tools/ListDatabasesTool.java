@@ -35,6 +35,7 @@ public class ListDatabasesTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "list_databases")
+        .put("annotations", MCPToolUtils.annotations("List databases", true, false, true, false))
         .put("description", "List all databases available to the authenticated user on the ArcadeDB server.")
         .put("inputSchema", new JSONObject()
             .put("type", "object")
@@ -47,7 +48,8 @@ public class ListDatabasesTool {
     if (!config.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
-    final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());
+    // Open or not (issue #11068): the next call opens one closed for idleness or not opened at startup
+    final Set<String> installedDatabases = new TreeSet<>(server.getAvailableDatabaseNames());
     installedDatabases.removeIf(databaseName -> !MCPToolUtils.canReadDatabase(user, config, databaseName));
 
     final JSONObject result = new JSONObject();

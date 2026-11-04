@@ -127,6 +127,59 @@ class LockManagerDiagnosticsTest {
     assertThat(lockManager.statsSnapshot()).isEmpty();
   }
 
+  /** Issue #10509: how long the owners hold a resource, the number a commit-lock queue grows on. */
+  @Test
+  void everyReleaseCountsTheTimeTheResourceWasHeld() throws Exception {
+    assertThat(lockManager.tryLock("file-147", "tx-A", 1_000)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    Thread.sleep(5);
+    lockManager.unlock("file-147", "tx-A");
+
+    assertThat(lockManager.getHolds()).isEqualTo(1);
+    assertThat(lockManager.getHoldNanos()).isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(5));
+    assertThat(lockManager.getHandOffs()).isZero();
+  }
+
+  /**
+   * A hand-off to a parked waiter: counted, with the time from the release to the waiter running, and the hold of the new owner
+   * is measured from the moment it runs, so a slow wake-up is the hand-off's time, not the hold's.
+   */
+  @Test
+  void aHandOffIsCountedWithTheTimeUntilTheNewOwnerRuns() throws Exception {
+    assertThat(lockManager.tryLock("file-147", "tx-A", 1_000)).isEqualTo(LockManager.LOCK_STATUS.YES);
+
+    final CountDownLatch acquired = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread waiter = new Thread(() -> {
+      if (lockManager.tryLock("file-147", "tx-B", 5_000) == LockManager.LOCK_STATUS.YES) {
+        acquired.countDown();
+        try {
+          release.await(5, TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        lockManager.unlock("file-147", "tx-B");
+      }
+    });
+    waiter.setDaemon(true);
+    waiter.start();
+    for (int i = 0; i < 500 && !String.valueOf(lockManager.describeOwner("file-147")).contains("1 waiters"); ++i)
+      Thread.sleep(10);
+
+    Thread.sleep(5);
+    lockManager.unlock("file-147", "tx-A");
+    assertThat(acquired.await(5, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(lockManager.getHandOffs()).isEqualTo(1);
+    assertThat(lockManager.getHandOffNanos()).isPositive();
+    // tx-A held it at least 5ms and was the only release so far: the contended resource now averages that
+    assertThat(lockManager.statsSnapshot()).singleElement()
+        .satisfies(s -> assertThat(s.averageHoldMicros()).isGreaterThanOrEqualTo(5_000));
+
+    release.countDown();
+    waiter.join(5_000);
+    assertThat(lockManager.getHolds()).isEqualTo(2);
+  }
+
   @Test
   void snapshotDoesNotRetainTheRequesterObject() {
     // The snapshot is handed to diagnostics code and may outlive the transaction; it must carry a

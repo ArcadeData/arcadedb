@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -29,6 +30,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.Statement;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -146,9 +148,13 @@ public class Issue5290ClientCompatibilityIT extends PostgresWireProtocolTestBase
         catalog.put(resultSet.getInt("oid"), resultSet.getString("typname"));
     }
 
-    assertThat(catalog).hasSize(PostgresType.values().length);
+    // the types this protocol produces, and the row type of every type of the database (issue #10873)
+    final Collection<? extends DocumentType> types = getServerDatabase(0, getDatabaseName()).getSchema().getTypes();
+    assertThat(catalog).hasSize(PostgresType.values().length + types.size());
     for (final PostgresType type : PostgresType.values())
       assertThat(catalog).as(type.name()).containsEntry(type.code, type.typeName);
+    for (final DocumentType type : types)
+      assertThat(catalog).as(type.getName()).containsValue(type.getName());
   }
 
   @Test

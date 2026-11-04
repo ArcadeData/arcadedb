@@ -71,6 +71,11 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
+  protected boolean createsAnIndex() {
+    return unique;
+  }
+
+  @Override
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
     // The refusals of every type (a TIMESERIES super type, issue #10394) and the one only a LIGHTWEIGHT edge has: it has no record,
     // so it cannot honour a MANDATORY or default-valued property of a super type (#9846)

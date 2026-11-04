@@ -21,13 +21,18 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -103,6 +108,48 @@ class Issue9762FollowerRenameFilesTest {
 
     assertThat(database.getFileManager().getFile(first.getFileId()).getComponentName()).isEqualTo(firstNewName);
     assertThat(database.getFileManager().getFile(second.getFileId()).getComponentName()).isEqualTo("R2_extra");
+  }
+
+  /**
+   * Issue #10749: the rename of a TIMESERIES type records the components of its engine, and a follower moves them by file id like
+   * any other. The sealed blocks of a shard are in a file beside its mutable bucket that is not a component, so the move of the
+   * bucket has to carry it: otherwise the follower, loading the schema that names the new type, opens an empty sealed store under
+   * the new name and every sealed sample of the type is gone there. Applied twice, as a replay after a crash would.
+   */
+  @Test
+  void theEngineFilesOfATimeSeriesTypeMoveWithTheirSealedBlocks() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Metric TIMESTAMP ts PRECISION MILLISECOND TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 2");
+    for (int i = 0; i < 6; i++)
+      database.command("sql", "INSERT INTO Metric SET ts = ?, host = ?, v = ?", 1000L * (i + 1), "h" + (i % 2), (double) i);
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Metric")).getEngine();
+    engine.compactAll();
+    database.command("sql", "INSERT INTO Metric SET ts = 9000, host = 'h1', v = 9.0");
+
+    final Map<Integer, String> renames = new LinkedHashMap<>();
+    for (int i = 0; i < engine.getShardCount(); i++)
+      renames.put(engine.getShard(i).getMutableBucket().getFileId(), "Measure_shard_" + i);
+    renames.put(engine.getTagDictionary().getFileId(), "Measure_tags");
+
+    ArcadeStateMachine.renameFiles(database, renames);
+    ArcadeStateMachine.renameFiles(database, renames);
+
+    final File directory = new File(database.getDatabasePath());
+    assertThat(directory.list()).noneMatch(n -> n.startsWith("Metric_"))
+        .contains("Measure_shard_0.ts.sealed", "Measure_shard_1.ts.sealed");
+
+    // the schema the leader published names the type by its new name: loaded as the follower loads it, from the file
+    database.close();
+    final File schemaFile = new File(directory, "schema.json");
+    final JSONObject schema = new JSONObject(Files.readString(schemaFile.toPath()));
+    final JSONObject types = schema.getJSONObject("types");
+    types.put("Measure", types.remove("Metric"));
+    Files.writeString(schemaFile.toPath(), schema.toString());
+    database = (DatabaseInternal) factory.open();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM Measure")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(7);
+    }
   }
 
   @Test

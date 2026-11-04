@@ -20,18 +20,24 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.log.LogManager;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
 
-public class Source {
+/**
+ * A source being imported. Every acquisition of one owns it in a try-with-resources scope: the importer reads several sources in
+ * one run, and a source held in a field that each phase overwrote closed only the last one (issue #10772).
+ */
+public class Source implements Closeable {
   public final  String                                      url;
   public        InputStream                                 inputStream;
   public final  long                                        totalSize;
   public final  boolean                                     compressed;
   private final com.arcadedb.utility.Callable<Void, Source> resetCallback;
   private final Callable<Void>                              closeCallback;
+  private       boolean                                     closed;
 
   public Source(final String url, final InputStream inputStream, final long totalSize, final boolean compressed,
       final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) {
@@ -49,6 +55,10 @@ public class Source {
    * then reported a successful run with zero records instead of an error (issue #6810).
    */
   public void reset() throws IOException {
+    // A CLOSED SOURCE IS OUT OF ITS OWNER'S SCOPE: RE-OPENING IT WOULD CREATE A STREAM THAT NOTHING CLOSES (ISSUE #10772)
+    if (closed)
+      throw new IllegalStateException("Source " + this + " is closed");
+
     if (resetCallback == null)
       return;
 
@@ -63,21 +73,39 @@ public class Source {
     }
   }
 
+  /**
+   * Closes the stream and runs the close callback, which disconnects a remote source. Idempotent, and it never throws: a failure is
+   * logged, so a close in a {@code finally} cannot hide the exception that is leaving the scope.
+   */
+  @Override
   public void close() {
+    if (closed)
+      return;
+    closed = true;
+    // TWO INDEPENDENT STEPS: A STREAM THAT FAILS TO CLOSE MUST NOT SKIP THE CALLBACK, WHICH DISCONNECTS A REMOTE SOURCE, AND THE
+    // closed GUARD ABOVE LEAVES NO SECOND CHANCE TO RUN IT
     try {
       // Close the current inputStream first - this is important when reset() was called,
       // as it creates a new stream that the closeCallback doesn't know about.
       // See GitHub issue #1627.
-      if (inputStream != null) {
+      if (inputStream != null)
         inputStream.close();
-      }
-      // Call the closeCallback for any additional cleanup (e.g., disconnecting HTTP connections)
-      if (closeCallback != null) {
-        closeCallback.call();
-      }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing source %s", e, this);
+    } finally {
+      // Call the closeCallback for any additional cleanup (e.g., disconnecting HTTP connections)
+      if (closeCallback != null) {
+        try {
+          closeCallback.call();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on releasing source %s", e, this);
+        }
+      }
     }
+  }
+
+  public boolean isClosed() {
+    return closed;
   }
 
   @Override

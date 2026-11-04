@@ -29,6 +29,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
+import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
@@ -45,11 +46,13 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
@@ -73,6 +76,7 @@ public class TransactionManager {
    */
   public static final String LAST_TX_ID_FILE_NAME = "last-tx-id.bin";
   private static final long HOUSEKEEPING_PERIOD_MS = 1000;
+  private static final long SLOW_GROUP_COMMIT_FLUSH_MS = 1000;
 
   private final DatabaseInternal             database;
   /**
@@ -96,9 +100,39 @@ public class TransactionManager {
   // Sequence of the transactions that published unidirectional edges, and the last one that did for each target bucket (#8986)
   private final AtomicLong                   unidirectionalEdgeSequence = new AtomicLong();
   private final Map<Integer, Long>           unidirectionalEdgeLastCommit = new ConcurrentHashMap<>();
+  // Sequence of the bucket indexes bound to their type, and the number each of them took (#10588): what a transaction that began
+  // before an index existed asks at its commit to know which indexes it owes entries to
+  private final AtomicLong                   indexRegistrationSequence = new AtomicLong();
+  private final Map<String, Long>            indexRegisteredAt   = new ConcurrentHashMap<>();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
+  /**
+   * Group commit (arcadedb.txWalGroupCommit). A commit queues its WAL record in deferredWALWrites under its file locks and
+   * takes a ticket from walWriteSequence in the same step; the record is written to its file by the next flush pass, after
+   * the locks are released (#10509: a write under the locks waited for the running flush on some systems, and the commits
+   * queued on the locks behind it). A written record's file joins unsyncedWALFiles. walDurableSequence is the highest
+   * ticket every pass so far wrote and flushed. walSyncInProgress lets one pass run at a time, which is what makes the
+   * flushes shared: while one thread writes and flushes, the commits that arrive wait for it, and the first of them to find
+   * no pass running runs the next one for all.
+   */
+  private final AtomicLong                   walWriteSequence    = new AtomicLong();
+  private volatile long                      walDurableSequence  = 0;
+  private final AtomicReference<CountDownLatch> walSyncInProgress = new AtomicReference<>();
+  private final Set<WALFile>                 unsyncedWALFiles    = ConcurrentHashMap.newKeySet();
+  // Guarded by its own monitor, which also covers the ticket a record takes: the records are in ticket order, and the order
+  // of the tickets is the order the commits held their file locks in, so a transaction is never written before one it read.
+  // Not bounded, and it does not need to be: every queued record belongs to a commit still waiting for its flush, so it holds
+  // at most one record per committing thread, and a failed flush fences the database before more can queue
+  private final ArrayDeque<DeferredWALWrite> deferredWALWrites = new ArrayDeque<>();
+  // Writes the queued records one batch at a time, so two batches never interleave in the files
+  private final ReentrantLock                deferredWALWriteLock = new ReentrantLock();
+  // Test hook: runs before each file a group-commit pass flushes, so a test can make the flush fail. Per instance, so tests
+  // running concurrently in one JVM do not see each other's
+  volatile WALSyncFaultInjector              walSyncFaultInjector;
+  private final AtomicLong                   statsGroupCommits   = new AtomicLong();
+  private final AtomicLong                   statsGroupSyncs     = new AtomicLong();
+  private final AtomicLong                   statsGroupCommitPageWaits = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
   /**
    * Serializes the housekeeping pass (rotation and retirement of WAL files) against the code that replaces or
@@ -115,6 +149,12 @@ public class TransactionManager {
    * for a clean close. Only a drop may delete them.
    */
   private volatile boolean                   recoveryInputUnreplayed;
+  /**
+   * Whether a crash recovery of this instance ended without replaying every transaction (issue #11250): a WAL gap
+   * aborted it and preserved the files, or an exception escaped it. The database is then not known to hold what its commits
+   * promised, and a caller with another copy to heal from (an HA node and its leader) has to be able to ask.
+   */
+  private volatile boolean                   lastRecoveryIncomplete;
   /**
    * True once this open has reconstructed {@link #getLastTransactionId()} from real evidence - either the marker
    * persisted at a previous clean close, or WAL replay - rather than falling through to the "no transaction has
@@ -139,6 +179,24 @@ public class TransactionManager {
    * thread at the same time can never be mistaken for the replay.
    */
   private volatile Thread                    ownWALReplayThread;
+  /**
+   * The versions of every page the WAL files being replayed carry an entry for, keyed by file id and page number (see
+   * {@link #pageKey}). Only set while {@link #recoverWALFiles} runs, and read by {@link #applyChangesPages} on the replay
+   * thread to tell whether an entry older than the page on disk can be re-applied safely (#11151).
+   */
+  private volatile Map<Long, IntHashSet>    recoveryPageVersions;
+  /**
+   * The pages (see {@link #pageKey}) the running replay has already applied an entry to. Touched by the replay thread only.
+   * Once a page is in it, its version on disk is the replay's own work, and an entry older than that is not a torn-page
+   * repair candidate but a leftover of another timeline (the transaction ids of the WAL this instance wrote while opening
+   * restart at 1, so they interleave with the crashed run's), which must stay skipped.
+   */
+  private final Set<Long>                   recoveryAppliedPages = new HashSet<>();
+  /**
+   * The pages (see {@link #pageKey}) the running replay already warned about a gap in the WAL chain for (#11152), so a page
+   * with many skipped entries is reported once. Touched by the replay thread only.
+   */
+  private final Set<Long>                   recoveryGapWarnedPages = new HashSet<>();
   /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
@@ -167,6 +225,51 @@ public class TransactionManager {
     final long sequence = unidirectionalEdgeSequence.incrementAndGet();
     // merge(max): with an explicit lock list two commits can reach here out of order
     targetBuckets.forEach(bucketId -> unidirectionalEdgeLastCommit.merge(bucketId, sequence, Math::max));
+  }
+
+  /**
+   * The sequence a transaction takes when it begins, to know at its commit whether an index was bound to its type since (issue
+   * #10588). A volatile read, so it is one compare on the commit path.
+   */
+  public long getIndexRegistrationSequence() {
+    return indexRegistrationSequence.get();
+  }
+
+  /**
+   * Called once a bucket index is bound to its type and so staged by every write that follows, under the schema's write lock. AFTER
+   * the binding and not before: a transaction that began between the two would otherwise hold the new sequence, save its record
+   * without the index there to queue an entry, and never learn at its commit that it owes one.
+   * <p>
+   * Every transaction that began before this call and writes to the index's bucket is owed an entry for it at its commit, because
+   * the build scans the committed state and could not see what it had written (see
+   * {@code LocalSchema#reconcileIndexesRegisteredSince}).
+   */
+  public void indexRegistered(final String indexName) {
+    indexRegisteredAt.put(indexName, indexRegistrationSequence.incrementAndGet());
+  }
+
+  /** Called when an index is renamed (a type rename, a vector index compaction): the registration goes with it. */
+  public void indexRenamed(final String oldName, final String newName) {
+    if (oldName == null || newName == null || oldName.equals(newName))
+      return;
+
+    final Long sequence = indexRegisteredAt.remove(oldName);
+    if (sequence != null)
+      indexRegisteredAt.put(newName, sequence);
+  }
+
+  /** Called when an index is dropped, so the registrations do not outlive the indexes they describe. */
+  public void indexUnregistered(final String indexName) {
+    indexRegisteredAt.remove(indexName);
+  }
+
+  /** The indexes bound to their type after {@code sequence} was taken, and still there, with the sequence each took. */
+  public Map<String, Long> getIndexesRegisteredSince(final long sequence) {
+    final Map<String, Long> registered = new HashMap<>();
+    for (final Map.Entry<String, Long> entry : indexRegisteredAt.entrySet())
+      if (entry.getValue() > sequence)
+        registered.put(entry.getKey(), entry.getValue());
+    return registered;
   }
 
   public TransactionManager(final DatabaseInternal database) {
@@ -348,6 +451,18 @@ public class TransactionManager {
    *     the next open replays them).
    */
   public boolean close(final boolean drop, final boolean preserveWalFiles) {
+    // A group commit's record still queued (its pages never reached a flush that would have written it first) is written and
+    // flushed before the files close. When that fails the WAL is kept, as for unacked pages
+    boolean deferredWALWritesLost = false;
+    if (!drop && getPendingWALSyncTicket() > 0)
+      try {
+        awaitWALDurable(walWriteSequence.get());
+      } catch (final IOException | RuntimeException e) {
+        deferredWALWritesLost = true;
+        LogManager.instance().log(this, Level.SEVERE, "Cannot write the group commits of database '%s' to the WAL on close", e,
+            database.getName());
+      }
+
     stopHousekeeping();
 
     fileIdsLockManager.close();
@@ -358,7 +473,9 @@ public class TransactionManager {
       final File f = lastTxIdFile();
       if (f != null && f.exists())
         f.delete();
-    } else {
+    } else if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+      // Not for a READ_ONLY handle: its lastTxId is the one of its open, so a read-write process that committed since would
+      // have its marker rewound (#10507)
       writePersistedLastTransactionId();
     }
 
@@ -374,7 +491,7 @@ public class TransactionManager {
           pendingAcks = true;
           break;
         }
-    final boolean preserve = preserveWalFiles || (!drop && (pendingAcks || recoveryInputUnreplayed));
+    final boolean preserve = preserveWalFiles || (!drop && (pendingAcks || recoveryInputUnreplayed || deferredWALWritesLost));
 
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
@@ -399,7 +516,9 @@ public class TransactionManager {
           null, database.getName(), recoveryInputUnreplayed ?
               "a replay of this WAL did not complete" :
               preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
-    } else {
+    } else if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
+      // Not for a READ_ONLY handle: it owns no WAL, so a .wal file it finds is a writer's, or a crashed writer's that a read-write
+      // open has to replay, and a handle that does not own the directory must not delete from it (#10507)
       // DELETE ALL THE WAL FILES AT OS-LEVEL. By this point every file THIS instance's own pool tracked
       // has already been dropped one by one above; anything a directory scan still finds here is, under
       // normal single-process operation, a genuine orphan this same database left behind on an earlier
@@ -444,11 +563,209 @@ public class TransactionManager {
 
   public void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
       final Binary bufferChanges) {
+    // A transaction that does not queue its WAL record must not reach the WAL before a group commit's record it may have read:
+    // recovery would find its page versions with the previous one missing, and stop there. A commit that flushes its own WAL
+    // waits for the queued records to be written and flushed, one that does not flush them at least writes them first - in
+    // both cases BEFORE this append, so a failure here leaves no WAL record of this transaction behind. The caller still holds
+    // its file locks, so with group commits pending this commit pays for writing their records (not for flushing them, with
+    // txWalFlush 0): the price of mixing commits that flush the WAL with commits that do not on the same database
+    final long pending = getPendingWALSyncTicket();
+    if (pending > 0)
+      try {
+        if (sync != WALFile.FlushType.NO)
+          awaitWALDurable(pending);
+        else
+          writeDeferredWALWrites();
+      } catch (final IOException e) {
+        throw new TransactionException("Cannot write the WAL of the group commits before writing transaction " + txId, e);
+      }
+    writeTransactionToWAL(pages, sync, txId, bufferChanges, false);
+  }
+
+  /**
+   * The ticket of the last group-commit WAL record when it is not durable yet, 0 when every one is: what a page published
+   * now must wait for before reaching its data file, since its transaction may have read any of those records.
+   * <p>
+   * The two reads are not atomic, and do not need to be because of one ordering this depends on: a group commit takes its ticket
+   * when it queues its WAL record, BEFORE it publishes its pages or releases its file locks ({@link #queueTransactionToWAL}).
+   * A transaction can depend on it only by reading those pages or taking those locks, so it reads a sequence that already
+   * covers it. A change that publishes before taking the ticket breaks this.
+   */
+  public long getPendingWALSyncTicket() {
+    final long written = walWriteSequence.get();
+    return written > walDurableSequence ? written : 0;
+  }
+
+  /**
+   * Queues the transaction's WAL record, which the next flush pass writes and flushes, after the caller released its file locks
+   * (arcadedb.txWalGroupCommit). The caller must call {@link #awaitWALDurable(long)} with the ticket returned before it tells
+   * anybody the transaction is committed, and outside its file locks, which is the point. The pages it publishes must carry
+   * the ticket ({@link MutablePage#setWALSyncTicket(long)}), so none of them reaches its data file before its WAL record is
+   * durable.
+   *
+   * @return the ticket of this record, always greater than 0
+   */
+  public long queueTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
+      final Binary bufferChanges) {
+    final DeferredWALWrite write = new DeferredWALWrite(pages, sync, txId, bufferChanges);
+    synchronized (deferredWALWrites) {
+      deferredWALWrites.add(write);
+      statsGroupCommits.incrementAndGet();
+      return walWriteSequence.incrementAndGet();
+    }
+  }
+
+  /**
+   * Writes the queued WAL records, in the order they were queued, without flushing them. Their files join unsyncedWALFiles.
+   * On a failure the record that failed and the ones after it go back to the head of the queue for the next pass: a record
+   * is never skipped, at worst written twice, and recovery replays the second copy as already applied.
+   *
+   * @return the highest ticket written or flushed so far: every record up to it is written, its file in unsyncedWALFiles or
+   *     flushed by an earlier pass
+   */
+  private long writeDeferredWALWrites() throws IOException {
+    deferredWALWriteLock.lock();
+    try {
+      final long target;
+      final DeferredWALWrite[] writes;
+      synchronized (deferredWALWrites) {
+        target = walWriteSequence.get();
+        if (deferredWALWrites.isEmpty())
+          return target;
+        writes = deferredWALWrites.toArray(new DeferredWALWrite[0]);
+        deferredWALWrites.clear();
+      }
+
+      for (int i = 0; i < writes.length; i++) {
+        final DeferredWALWrite write = writes[i];
+        try {
+          final WALSyncFaultInjector injector = walSyncFaultInjector;
+          if (injector != null)
+            injector.beforeWrite(write.txId);
+          writeTransactionToWAL(write.pages, write.sync, write.txId, write.buffer, true);
+        } catch (final IOException e) {
+          requeueDeferredWALWrites(writes, i);
+          throw e;
+        } catch (final RuntimeException e) {
+          requeueDeferredWALWrites(writes, i);
+          throw new IOException("Cannot write transaction " + write.txId + " to the WAL", e);
+        }
+      }
+      return target;
+    } finally {
+      deferredWALWriteLock.unlock();
+    }
+  }
+
+  /** Puts back the records from {@code from} on, at the head of the queue and in their order, for the next pass. */
+  private void requeueDeferredWALWrites(final DeferredWALWrite[] writes, final int from) {
+    synchronized (deferredWALWrites) {
+      for (int j = writes.length - 1; j >= from; j--)
+        deferredWALWrites.addFirst(writes[j]);
+    }
+  }
+
+  /**
+   * Returns once every WAL write up to {@code ticket} is on disk, flushing the WAL files that hold unflushed writes when
+   * no flush already covers it. Every file with a pending write is flushed, not only the one this ticket wrote to: a
+   * transaction may have read the pages of another, published but still unflushed in a different file, and must not be
+   * durable without it - recovery would find a page version with the one before it missing.
+   * <p>
+   * The flushes are serialized, and that is the group commit: the commits that arrive while a flush runs wait for it, and
+   * the first of them to find none running flushes once for all of them. A write that takes its ticket while a pass runs is
+   * not covered by that pass (its target was read at the start) and waits for the next one: up to two flushes of latency,
+   * the price of sharing them. There is no timeout: a flush that hangs holds every commit waiting for it, as an fsync that
+   * hangs holds a commit without group commit.
+   */
+  public void awaitWALDurable(final long ticket) throws IOException {
+    boolean interrupted = false;
+    try {
+      while (ticket > walDurableSequence) {
+        final CountDownLatch running = walSyncInProgress.get();
+        if (running != null) {
+          // a flush is running: it may cover this ticket, and when it does not, the next pass is started below. Waiting on
+          // the pass rather than on a lock releases every commit it covers at once: a monitor woke them one at a time
+          try {
+            running.await();
+          } catch (final InterruptedException e) {
+            // the WAL write is done and the flush is near: finish waiting, and give the interrupt back afterwards
+            interrupted = true;
+          }
+          continue;
+        }
+
+        final CountDownLatch pass = new CountDownLatch(1);
+        if (!walSyncInProgress.compareAndSet(null, pass))
+          continue;
+        try {
+          if (ticket > walDurableSequence)
+            syncUnsyncedWALFiles();
+        } finally {
+          walSyncInProgress.set(null);
+          pass.countDown();
+        }
+      }
+    } finally {
+      if (interrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * The WAL rule of a page write under group commit: returns once the WAL writes up to {@code ticket} are durable, counting
+   * the page writes that had to wait for them.
+   */
+  public void awaitWALDurableForPageWrite(final long ticket) throws IOException {
+    if (ticket <= walDurableSequence)
+      return;
+    statsGroupCommitPageWaits.incrementAndGet();
+    awaitWALDurable(ticket);
+  }
+
+  /** One pass of the group commit's flush. Only one runs at a time: see {@link #awaitWALDurable(long)}. */
+  private void syncUnsyncedWALFiles() throws IOException {
+    final long start = System.nanoTime();
+    // TAKEN BEFORE THE FILES ARE: every record with a ticket up to here is written, its file in unsyncedWALFiles, or was
+    // flushed by an earlier pass. A file is removed BEFORE its flush, so a write landing meanwhile puts it back for the next
+    // pass
+    final long target = writeDeferredWALWrites();
+    for (final WALFile file : new ArrayList<>(unsyncedWALFiles)) {
+      unsyncedWALFiles.remove(file);
+      try {
+        final WALSyncFaultInjector injector = walSyncFaultInjector;
+        if (injector != null)
+          injector.beforeSync(file);
+        file.syncIfUnsynced();
+      } catch (final IOException | RuntimeException e) {
+        // still owed (syncIfUnsynced raised the file's flags again, metadata request included): a later pass must not move
+        // walDurableSequence past these writes without flushing them. The files after this one in the snapshot are still in
+        // the set, since a file leaves it only right before its own flush. A later pass that succeeds does make them durable
+        // and moves past them: safe, because the commit whose wait failed has fenced the database by then, so nothing new
+        // commits on top and the failed commit itself was reported as failed
+        unsyncedWALFiles.add(file);
+        throw e;
+      }
+    }
+    walDurableSequence = target;
+    statsGroupSyncs.incrementAndGet();
+
+    // every commit waiting for this pass waited this long too: say so when the disk is that slow
+    final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+    if (elapsedMs >= SLOW_GROUP_COMMIT_FLUSH_MS)
+      LogManager.instance().log(this, Level.WARNING, "Group commit: a WAL flush of database '%s' took %dms, every commit waiting for it"
+          + " waited as long", null, database.getName(), elapsedMs);
+  }
+
+  private void writeTransactionToWAL(final List<MutablePage> pages, final WALFile.FlushType sync, final long txId,
+      final Binary bufferChanges, final boolean deferSync) {
     final long begin = System.currentTimeMillis();
 
     while (true) {
       final WALFile[] pool = activeWALFilePool;
-      final int slot = (int) (Thread.currentThread().threadId() % pool.length);
+      // A record whose flush is shared goes to the first file, not to its thread's: a shared flush has to flush every file
+      // holding a pending write, and spreading the writes over the pool made each one flush up to a file per core (on macOS
+      // each a full flush of the drive's cache, ~3.5ms). One pass writes them all, so nothing contends for the file
+      final int slot = deferSync ? 0 : (int) (Thread.currentThread().threadId() % pool.length);
 
       // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE. READ WITHOUT
       // walSlotLock: A FILE SEEN HERE IS SAFELY PUBLISHED, ITS PATH BEING FINAL AND ITS CHANNEL, LOCK AND STATE VOLATILE, AND
@@ -458,7 +775,7 @@ public class TransactionManager {
       if (file == null)
         file = openWALFileForSlot(pool, slot);
 
-      if (tryWriteTransactionToWALFile(file, pages, sync, txId, bufferChanges))
+      if (tryWriteTransactionToWALFile(file, pages, sync, txId, bufferChanges, deferSync))
         break;
 
       // #7768: this thread's own slot refused the write. Before sleeping on it, offer the transaction to the
@@ -470,14 +787,14 @@ public class TransactionManager {
       boolean writtenElsewhere = false;
       for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
         if (i != slot && pool[i] != null)
-          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges);
+          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges, deferSync);
 
       // AN EMPTY SLOT IS OPENED FOR THE FALLBACK TOO (#10234), BUT ONLY WHEN NO FILE ALREADY OPEN TOOK THE WRITE: WITH THE FILES
       // OPENED ON DEMAND, THE OTHER SLOTS ARE OFTEN ALL EMPTY, AND SKIPPING THEM WOULD LEAVE A COMMIT WHOSE OWN SLOT IS UNUSABLE
       // NOTHING TO FALL BACK TO; A TRANSIENT REFUSAL ON A MOSTLY IDLE DATABASE MUST NOT OPEN A FILE IN EVERY SLOT
       for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
         if (i != slot && pool[i] == null)
-          writtenElsewhere = tryWriteTransactionToWALFile(openWALFileForSlot(pool, i), pages, sync, txId, bufferChanges);
+          writtenElsewhere = tryWriteTransactionToWALFile(openWALFileForSlot(pool, i), pages, sync, txId, bufferChanges, deferSync);
 
       if (writtenElsewhere)
         break;
@@ -519,9 +836,15 @@ public class TransactionManager {
    * loud. Only a cleanly refused slot - closed, absent or mid-rotation - is routed elsewhere.
    */
   private boolean tryWriteTransactionToWALFile(final WALFile file, final List<MutablePage> pages,
-      final WALFile.FlushType sync, final long txId, final Binary bufferChanges) {
+      final WALFile.FlushType sync, final long txId, final Binary bufferChanges, final boolean deferSync) {
     return file != null && file.acquire(() -> {
-      file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
+      if (deferSync && sync != WALFile.FlushType.NO) {
+        file.writeTransactionToFile(database, pages, WALFile.FlushType.NO, file, txId, bufferChanges);
+        // under the file's monitor, like the write: a retirement that closes the file flushes what is marked here
+        file.markUnsynced(sync == WALFile.FlushType.YES_FULL);
+        unsyncedWALFiles.add(file);
+      } else
+        file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
       return null;
     });
   }
@@ -675,6 +998,10 @@ public class TransactionManager {
       if (recoveryFiles.length > 0) {
         long lastTxId = -1;
         boolean walGapDetected = false;
+
+        recoveryPageVersions = collectWALPageVersions(recoveryFiles);
+        recoveryAppliedPages.clear();
+        recoveryGapWarnedPages.clear();
 
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
         for (int i = 0; i < recoveryFiles.length; ++i) {
@@ -847,6 +1174,9 @@ public class TransactionManager {
         recoveryInputUnreplayed = true;
       throw e;
     } finally {
+      recoveryPageVersions = null;
+      recoveryAppliedPages.clear();
+      recoveryGapWarnedPages.clear();
       // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
       // not deleted, so the next open replays it again.
       if (recoveryFiles != null && !inputReleased)
@@ -859,6 +1189,9 @@ public class TransactionManager {
             }
 
       if (!completed)
+        // Sticky: a later pass that finds no WAL left to replay says nothing about what the aborted one skipped
+        lastRecoveryIncomplete = true;
+      if (!completed)
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
       else if (walKeptForFsync)
         LogManager.instance().log(this, Level.WARNING,
@@ -867,6 +1200,83 @@ public class TransactionManager {
       else
         LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
+  }
+
+  /**
+   * Whether the latest crash recovery of this instance did not replay every transaction (issue #11250): the WAL had a gap,
+   * so recovery stopped and the files were preserved, or an exception escaped the replay. {@code false} when no recovery ran
+   * or the last one completed.
+   */
+  public boolean isLastRecoveryIncomplete() {
+    return lastRecoveryIncomplete;
+  }
+
+  private static long pageKey(final int fileId, final int pageNumber) {
+    return ((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL);
+  }
+
+  /**
+   * Reads every WAL file once, ahead of the replay, and records which versions of which pages they hold (#11151).
+   * A transaction that cannot be read ends that file's scan: the replay loop owns the handling of corrupt records.
+   */
+  private static Map<Long, IntHashSet> collectWALPageVersions(final WALFile[] files) {
+    final Map<Long, IntHashSet> versions = new HashMap<>();
+    for (final WALFile file : files) {
+      if (file == null)
+        continue;
+      WALFile.WALTransaction tx = file.getFirstTransaction();
+      while (tx != null) {
+        for (final WALFile.WALPage page : tx.pages)
+          versions.computeIfAbsent(pageKey(page.fileId, page.pageNumber), k -> new IntHashSet())
+              .add((int) page.currentPageVersion);
+        tx = file.getTransaction(tx.endPositionInLog);
+      }
+    }
+    return versions;
+  }
+
+  /**
+   * Whether a WAL entry of a page, older than the page found on disk during crash recovery, has to be re-applied as a repair
+   * (#11151). A page flush spans many disk sectors and the version header sits in the first, so a power loss can persist the
+   * version of the LAST flush while the sectors behind it keep older content. Async flush coalesces several committed versions
+   * into one write, so the bytes an intermediate version changed can be among the stale ones, and skipping every entry older
+   * than the disk version (what the replay did) left them stale for good. For the schema dictionary that is a name that no
+   * longer resolves, or resolves to another one.
+   * <br>
+   * It is safe only when the WAL holds EVERY version after this entry up to the one on disk: the replay then ends on the last
+   * writer of each byte, exactly as the commits did. An entry followed by a gap would overwrite bytes that a later version,
+   * whose WAL file was dropped after a successful fsync (so it is durable), had changed.
+   * <br>
+   * Returns the first version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry
+   * of for the page: 0 when the chain is complete (the entry is a repair candidate), -1 when the question does not apply (not a
+   * crash recovery replay, or the replay already applied an entry to the page).
+   */
+  private long firstMissingChainVersion(final int fileId, final int pageNumber, final long entryVersion, final long diskVersion) {
+    final Map<Long, IntHashSet> versions = recoveryPageVersions;
+    if (versions == null || recoveryAppliedPages.contains(pageKey(fileId, pageNumber)))
+      return -1;
+    final IntHashSet pageVersions = versions.get(pageKey(fileId, pageNumber));
+    if (pageVersions == null)
+      return -1;
+    for (long v = entryVersion + 1; v <= diskVersion; ++v)
+      if (!pageVersions.contains((int) v))
+        return v;
+    return 0;
+  }
+
+  /**
+   * Reports, once per page, a skipped older WAL entry whose chain up to the version on disk has a gap (#11152). It is not told
+   * from a benign skip by anything the replay can see: the missing version may have been flushed and its WAL file dropped
+   * after the fsync (nothing to repair), or the page may be torn and now beyond repair from this WAL. Either way somebody
+   * investigating a page whose content disagrees with its neighbours needs to find the page in the log, so it is a WARNING.
+   */
+  private void warnOlderEntryWithGap(final PageId pageId, final long entryVersion, final long diskVersion, final long missing) {
+    if (recoveryGapWarnedPages.add(pageKey(pageId.getFileId(), pageId.getPageNumber())))
+      LogManager.instance().log(this, Level.WARNING,
+          "Crash recovery skipped the WAL entry v.%d of page %s, older than the page on disk (v.%d), and cannot repair the page from the WAL: "
+              + "v.%d of it is not in the WAL. If it was flushed before its WAL file was dropped this is expected; if the page was torn "
+              + "by a power loss, its content can be stale (a per-page checksum, #11157, would tell)", null, entryVersion, pageId,
+          diskVersion, missing);
   }
 
   /**
@@ -934,6 +1344,17 @@ public class TransactionManager {
 
     map.put("pagesWritten", pagesWritten);
     map.put("bytesWritten", bytesWritten);
+    // group commit: how many commits deferred their WAL flush, and how many flushes served them
+    map.put("groupCommits", statsGroupCommits.get());
+    map.put("groupCommitSyncs", statsGroupSyncs.get());
+    // page writes that found their WAL not durable yet and had to wait for, or run, a flush first
+    map.put("groupCommitPageWaits", statsGroupCommitPageWaits.get());
+    // the commit file locks (#10509): releases and the time they were held, hand-offs to a waiting commit and the time from
+    // the release to that commit running. Their averages are what a queue of commits on one type grows on
+    map.put("commitLockHolds", fileIdsLockManager.getHolds());
+    map.put("commitLockHoldNanos", fileIdsLockManager.getHoldNanos());
+    map.put("commitLockHandOffs", fileIdsLockManager.getHandOffs());
+    map.put("commitLockHandOffNanos", fileIdsLockManager.getHandOffNanos());
     return map;
   }
 
@@ -1178,9 +1599,14 @@ public class TransactionManager {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
     final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
+    // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
+    // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
+    final PageManager pageManager = database.getPageManager();
+    pageManager.beginPublication();
     try {
       return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
     } finally {
+      pageManager.endPublication();
       FullTextCorpusDeltas.replicatedApplyFinished(applying);
     }
   }
@@ -1199,6 +1625,7 @@ public class TransactionManager {
     // fold, every page of the entry would already be at or beyond its target version, so nothing could advance.
     boolean versionAdvanced = false;
     boolean involveDictionary = false;
+    List<SparsePostingLog> appliedPostingLogs = null;
 
     final int dictionaryId =
         database.getSchema().getDictionary() != null ? database.getSchema().getDictionary().file.getFileId() : -1;
@@ -1278,24 +1705,52 @@ public class TransactionManager {
           // WAL delta carries absolute bytes for exactly this version) and repairs the torn state; skipping
           // a STRICTLY older entry remains required, because its delta would overwrite newer content.
           //
-          // KNOWN LIMITATION (multi-version accumulation): async flush coalesces several committed versions
-          // into a single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the
-          // v4 flush hitting the platter. If THAT flush tears, only v4's delta region is repaired here; the
-          // regions changed by v2/v3 (skipped as strictly-older) can stay torn. The version header alone
-          // cannot tell a torn page from an intact one, so detecting which pages need the older deltas
-          // re-applied needs a per-page checksum (the longer-term fix noted in #4926, tracked in #5054); an
-          // unconditional
-          // in-order replay of every entry <= disk version would repair it but changes the recovery
-          // semantics that also govern the version-gap/forceApply paths, out of scope here. This fix still
-          // strictly improves on `<=` (which repaired nothing) and fully covers the single-flush case.
+          // MULTI-VERSION ACCUMULATION (#11151): async flush coalesces several committed versions into a single physical page
+          // write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the v4 flush hitting the platter. If THAT flush
+          // tears, the regions changed by v2/v3 can stay stale while the header already says v4 (the schema dictionary then
+          // loses names that records already reference). During crash recovery the older entries are therefore re-applied as a
+          // repair below, when the WAL holds every version up to the one on disk (see firstMissingChainVersion). Where it does
+          // not (a gap in the chain, a page the replay already touched, a replicated apply) the entry is still skipped, and
+          // a torn page stays torn: detecting that without a WAL needs a per-page checksum (#11157).
           LogManager.instance().log(this, Level.FINE,
               "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
+
+          final long missingVersion = recovery ?
+              firstMissingChainVersion(txPage.fileId, txPage.pageNumber, txPage.currentPageVersion, page.getVersion()) :
+              -1;
+          if (missingVersion == 0) {
+            // #11151: THE PAGE MAY BE TORN, SO RE-APPLY THE BYTES THIS VERSION CHANGED. NEITHER THE VERSION NOR THE CONTENT SIZE
+            // MOVES: THEY BELONG TO THE LAST ENTRY OF THE CHAIN, WHICH THIS REPLAY REACHES RIGHT AFTER AND APPLIES AT EQUAL VERSION
+            final MutablePage repaired = page.modify();
+            for (int k = firstSegment; k < lastSegment; ++k) {
+              final WALFile.WALPage segment = tx.pages[k];
+              segment.currentContent.rewind();
+              repaired.writeByteArray(segment.changesFrom - BasePage.PAGE_HEADER_SIZE, segment.currentContent.getContent());
+            }
+            repaired.setContentSize(page.getContentSize());
+            repaired.updateMetadata();
+
+            database.getPageManager().writePageWithLock(file, repaired);
+            database.getPageManager().putPageInReadCache(new CachedPage(repaired, true));
+
+            if (file.getFileId() == dictionaryId)
+              involveDictionary = true;
+            changed = true;
+          } else if (missingVersion > 0)
+            warnOlderEntryWithGap(pageId, txPage.currentPageVersion, page.getVersion(), missingVersion);
           continue;
         }
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
-          if (!tx.forceApply) {
+          // A single segment covering the WHOLE content region is a full image of the page: what the page held before it,
+          // the versions the gap stands for included, is overwritten byte for byte, so it bridges the gap safely (the
+          // #4510 reasoning below). It is how a writer that committed a page WITHOUT the WAL, and could not wait for that
+          // page to reach the disk, makes it durable: LSMVectorIndex.build() writes such pages again through the WAL as
+          // full images (issue #11238). Any other entry over a gap still stops the replay.
+          final boolean fullPageImage = lastSegment - firstSegment == 1 && txPage.changesFrom == BasePage.PAGE_HEADER_SIZE
+              && txPage.changesTo - txPage.changesFrom + 1 == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
+          if (!tx.forceApply && !fullPageImage) {
             LogManager.instance().log(this, Level.WARNING,
                 "Cannot apply changes to the database because modified page %s version in WAL (%d) does not match with existent version (%d) fileId=%d",
                 null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
@@ -1315,13 +1770,10 @@ public class TransactionManager {
           // cluster (issue #4510). A full-page payload (what serializeFilePagesAsWal ships) covers the
           // entire content region, so it is safe regardless of the gap; a partial one is rejected here
           // so the follower recovers via a full snapshot instead.
-          final int deltaSize = txPage.changesTo - txPage.changesFrom + 1;
           // A multi-segment page is by definition a partial delta (the gaps between its intervals were not shipped),
           // so it never qualifies: forceApply entries are built page-at-a-time by the compaction serializer and
           // always carry exactly one full-page segment.
-          final boolean fullPage = lastSegment - firstSegment == 1
-              && txPage.changesFrom == BasePage.PAGE_HEADER_SIZE && deltaSize == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
-          if (!fullPage) {
+          if (!fullPageImage) {
             LogManager.instance().log(this, Level.SEVERE,
                 "Refusing forceApply of partial delta for page %s over a stale baseline (WAL v.%d, db v.%d) fileId=%d: bytes outside the delta range would stay stale while the version is forced forward. A full-page snapshot is required.",
                 null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
@@ -1332,6 +1784,12 @@ public class TransactionManager {
                     + txPage.currentPageVersion + ", db v." + page.getVersion()
                     + "): a full page is required to safely bypass the version gap, fileId=" + txPage.fileId);
           }
+          if (!tx.forceApply)
+            // EXPECTED AFTER A WAL-LESS WRITER SEALED ITS PAGES (#11238), BUT LOGGED: A WRITER SHIPPING A FULL IMAGE WITH A WRONG
+            // VERSION WOULD OTHERWISE BE ACCEPTED WITHOUT A TRACE
+            LogManager.instance().log(this, Level.INFO,
+                "Bridging the version gap of page %s with a full page image (WAL v.%d, db v.%d) fileId=%d txId=%d", null,
+                pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId, tx.txId);
         }
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
@@ -1365,7 +1823,13 @@ public class TransactionManager {
 
           // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
           // to keep in-memory metadata synchronized with replicated pages.
-          if (component instanceof TimeSeriesBucket timeSeriesBucket) {
+          if (component instanceof SparsePostingLog postingLog) {
+            // Decoded once the whole entry is applied, so a commit's postings reach the memtables together (issue #11257)
+            if (appliedPostingLogs == null)
+              appliedPostingLogs = new ArrayList<>(2);
+            if (!appliedPostingLogs.contains(postingLog))
+              appliedPostingLogs.add(postingLog);
+          } else if (component instanceof TimeSeriesBucket timeSeriesBucket) {
             // A replay can rewrite a page at its SAME version (the torn-write repair above), so a tag summary cached
             // for that version may describe bytes the page no longer holds (issue #8574). A strictly newer version
             // needs nothing: the summary is keyed on the version it was built from.
@@ -1392,6 +1856,9 @@ public class TransactionManager {
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
+
+        if (recovery)
+          recoveryAppliedPages.add(pageKey(txPage.fileId, txPage.pageNumber));
 
         changed = true;
         if (txPage.currentPageVersion > page.getVersion())
@@ -1429,6 +1896,10 @@ public class TransactionManager {
       if (corpusDeltas != null && !corpusDeltas.isEmpty())
         FullTextCorpusDeltas.applyReplicated(database.getSchema(), corpusDeltas);
     }
+
+    if (appliedPostingLogs != null)
+      for (final SparsePostingLog postingLog : appliedPostingLogs)
+        postingLog.onPagesApplied();
 
     if (involveDictionary) {
       try {
@@ -2043,11 +2514,19 @@ public class TransactionManager {
 
   /**
    * Package-private test hook: runs one runtime WAL-rotation pass exactly as the background timer
-   * does - retires every active WAL file (ignoring the size threshold) and drops the inactive ones,
-   * fsyncing data first. Lets tests exercise the rotation persistence (issue #5277) without writing
-   * 64MB of log to cross {@link #MAX_LOG_FILE_SIZE}.
+   * does - retires every active WAL file (ignoring the size threshold) and drops the inactive ones
+   * whose pages all reached the disk, fsyncing data first. Lets tests exercise the rotation persistence
+   * (issue #5277) without writing 64MB of log to cross {@link #MAX_LOG_FILE_SIZE}.
+   * <p>
+   * Like the timer it never forces the drop: a retired file still protecting a page the flush thread has
+   * not written yet stays in the inactive pool for a later pass. This hook used to force it, which deleted
+   * the only durable copy of a committed transaction whenever the asynchronous page flush lagged behind the
+   * commit, so a crash right after lost it. A caller that needs the drop to happen waits for the pages
+   * first ({@link PageManager#waitAllPagesOfDatabaseAreFlushed}).
+   *
+   * @return true when every inactive WAL file was dropped
    */
-  void rotateAndDropWALForTesting() throws IOException {
+  boolean rotateAndDropWALForTesting() throws IOException {
     if (activeWALFilePool != null)
       for (int i = 0; i < activeWALFilePool.length; ++i) {
         final WALFile file = activeWALFilePool[i];
@@ -2058,11 +2537,29 @@ public class TransactionManager {
           inactiveWALFilePool.add(file);
         }
       }
-    cleanWALFiles(true, true, true);
+    return cleanWALFiles(true, false, true);
   }
 
   @Override
   public String toString() {
     return "TransactionManager for database '" + database.getName() + "':" + fileIdsLockManager;
+  }
+
+  /**
+   * A group commit's WAL record, queued until a flush pass writes it (see {@link #queueTransactionToWAL}). The bytes written
+   * are {@code buffer}, serialized under the commit's file locks, so a later change to the pages cannot alter the record:
+   * {@code pages} is only used to attach each page to the WAL file the record lands in, for the ack of its flush.
+   */
+  private record DeferredWALWrite(List<MutablePage> pages, WALFile.FlushType sync, long txId, Binary buffer) {
+  }
+
+  /** See {@link #walSyncFaultInjector}. */
+  interface WALSyncFaultInjector {
+    void beforeSync(WALFile file) throws IOException;
+
+    /** Runs before each queued WAL record a group-commit pass writes. */
+    default void beforeWrite(final long txId) throws IOException {
+      // no fault by default: a test overrides it to fail the write of a given transaction
+    }
   }
 }

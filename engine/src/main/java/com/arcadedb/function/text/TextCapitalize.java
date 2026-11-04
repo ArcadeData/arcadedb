@@ -52,6 +52,12 @@ public class TextCapitalize extends AbstractTextFunction {
     if (str == null || str.isEmpty())
       return str;
 
-    return Character.toUpperCase(str.charAt(0)) + str.substring(1);
+    // The first character is a code point (issue #10484): a cased letter outside the BMP (Deseret, Adlam) is two UTF-16 units, and
+    // neither of them has a case
+    final int first = str.codePointAt(0);
+    final int upper = Character.toUpperCase(first);
+    if (upper == first)
+      return str;
+    return new StringBuilder(str.length()).appendCodePoint(upper).append(str, Character.charCount(first), str.length()).toString();
   }
 }

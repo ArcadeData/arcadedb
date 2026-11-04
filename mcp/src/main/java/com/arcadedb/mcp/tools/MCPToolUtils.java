@@ -36,6 +36,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.mcp.MCPConfiguration;
 import com.arcadedb.mcp.MCPPermissions;
+import com.arcadedb.mcp.MCPScopedDatabaseUser;
 import com.arcadedb.server.security.DatabaseUserContext;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -53,6 +54,35 @@ public class MCPToolUtils {
   }
 
   /**
+   * The MCP {@code annotations} of a tool definition (issue #11170): hints a client reads to decide when to ask the
+   * user before a call. They never authorize anything: the MCP configuration and the user's permissions still do.
+   *
+   * @param openWorld whether the tool can reach hosts other than this server, as a query language that fetches a URL
+   *                  ({@code LOAD CSV}, {@code IMPORT DATABASE}) does
+   */
+  public static JSONObject annotations(final String title, final boolean readOnly, final boolean destructive,
+      final boolean idempotent, final boolean openWorld) {
+    return new JSONObject()
+        .put("title", title)
+        .put("readOnlyHint", readOnly)
+        .put("destructiveHint", destructive)
+        .put("idempotentHint", idempotent)
+        .put("openWorldHint", openWorld);
+  }
+
+  /**
+   * The query engine of a tool that runs the caller's query or command text. {@code analyze()} is where the tool decides
+   * whether the text is read-only or allowed by the MCP configuration, so an engine whose analysis evaluates the text
+   * (a scripting language) would run it before either check could refuse it: it is refused here, before analysis.
+   */
+  public static QueryEngine analyzableQueryEngine(final Database database, final String language) {
+    final QueryEngine engine = database.getQueryEngine(language);
+    if (engine.analysisEvaluatesQuery())
+      throw new SecurityException("Language '" + language + "' is not available through MCP: it cannot be checked without running it");
+    return engine;
+  }
+
+  /**
    * Resolves a database by name, throwing an {@link IllegalArgumentException} with the list of databases
    * accessible to the user when the requested database does not exist, so the LLM can self-correct
    * without a separate list_databases round-trip.
@@ -61,27 +91,33 @@ public class MCPToolUtils {
       final String databaseName, final MCPConfiguration config, final RequiredAccess requiredAccess) {
     final boolean requireRead = requiredAccess == RequiredAccess.READ;
     final MCPPermissions permissions = config.getPermissionsForDatabase(databaseName);
-    if (!permissions.isUserAllowed(user.getName()))
-      throw new SecurityException(
-          "User '" + user.getName() + "' is not authorized for MCP access to database '" + databaseName + "'");
+
+    // A database the caller may not reach - not granted to the user, or not open to it over MCP - is answered exactly as one that
+    // does not exist, with the databases it CAN reach so the model can self-correct: two different refusals would tell the
+    // caller which names exist on the server, one guess at a time, which MCPResources.read and the BOLT listener refuse as well.
+    // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened below
+    if (!user.canAccessToDatabase(databaseName) || !permissions.isUserAllowed(user.getName())
+        || !server.isDatabaseAvailable(databaseName))
+      throw unknownDatabase(server, user, databaseName, config, requireRead);
     if (requireRead && !permissions.isAllowReads())
       throw new SecurityException("Read operations are not allowed by MCP configuration");
 
-    if (!server.existsDatabase(databaseName)) {
-      final Set<String> installed = new TreeSet<>(server.getDatabaseNames());
-      installed.removeIf(db -> requireRead
-          ? !canReadDatabase(user, config, db)
-          : !canAccessDatabase(user, config, db));
-      throw new MCPToolArgumentException(
-          "Database '" + databaseName + "' does not exist. Available databases: " + installed
-              + ". Use one of these names or call list_databases to refresh the list.");
-    }
-    if (!user.canAccessToDatabase(databaseName))
-      throw new SecurityException("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
-
-    final ServerDatabase database = server.getDatabase(databaseName);
-    bindCurrentUser(database, user);
+    final ServerDatabase database = server.getDatabaseForClient(databaseName);
+    bindCurrentUser(database, user, permissions);
     return new DatabaseAccess(database, permissions);
+  }
+
+  /**
+   * The refusal for a database name the caller cannot use, the same whether the database does not exist or the caller may not
+   * reach it, listing the databases it can.
+   */
+  public static MCPToolArgumentException unknownDatabase(final ArcadeDBServer server, final ServerSecurityUser user,
+      final String databaseName, final MCPConfiguration config, final boolean requireRead) {
+    final Set<String> installed = new TreeSet<>(server.getAvailableDatabaseNames());
+    installed.removeIf(db -> requireRead ? !canReadDatabase(user, config, db) : !canAccessDatabase(user, config, db));
+    return new MCPToolArgumentException(
+        "Database '" + databaseName + "' does not exist. Available databases: " + installed
+            + ". Use one of these names or call list_databases to refresh the list.");
   }
 
   public static boolean canAccessDatabase(final ServerSecurityUser user, final MCPConfiguration config,
@@ -136,8 +172,11 @@ public class MCPToolUtils {
    * does this in a finally via {@link com.arcadedb.database.DatabaseContext#removeCurrentThreadContexts()} so the
    * principal never leaks onto the pooled worker thread.
    */
-  public static void bindCurrentUser(final DatabaseInternal database, final ServerSecurityUser user) {
-    DatabaseUserContext.bind(database, user);
+  public static void bindCurrentUser(final DatabaseInternal database, final ServerSecurityUser user,
+      final MCPPermissions permissions) {
+    // Narrowed by the MCP configuration (MCPScopedDatabaseUser): a schema change the configuration refuses is refused by the
+    // engine too, whichever tool and statement reach it
+    DatabaseUserContext.bind(database, MCPScopedDatabaseUser.of(user.getDatabaseUser(database), permissions));
   }
 
   /**

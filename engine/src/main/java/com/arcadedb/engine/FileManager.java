@@ -81,6 +81,17 @@ public class FileManager {
    * session opens - see {@link #recordRename}. {@code null} exactly when no session is open.
    */
   private volatile     Map<Integer, String>                      recordedRenames   = null;
+  /**
+   * The file ids the active session created and then dropped again (issue #10569): their create was cancelled, so no other
+   * node is ever told about them, and pages a commit of the session wrote into them describe nothing anybody else holds.
+   * Allocated on the first cancellation only, since an ordinary session drops nothing it created. {@code null} when no
+   * session is open or nothing was cancelled in it.
+   * <p>
+   * Written by the session's own thread only ({@link #dropFile} inside it, and the start and stop of the session), and read
+   * by that thread before it stops the session. Volatile like the fields it sits beside, so a reader on another thread sees
+   * either a session's set or none, never a set from a session that has already stopped.
+   */
+  private volatile     Set<Integer>                              cancelledCreates  = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
   /**
    * Decides whether the physical deletion of a dropped file has to be DEFERRED because a point-in-time snapshot
@@ -211,6 +222,7 @@ public class FileManager {
     recordedChanges = new ArrayList<>();
     unshippedCreates = new LinkedHashMap<>();
     recordedRenames = new LinkedHashMap<>();
+    cancelledCreates = null;
     recordingThread = Thread.currentThread();
     LogManager.instance().log(this, Level.FINE,
         "startRecordingChanges: new session begun on thread '%s'", null, Thread.currentThread().getName());
@@ -232,6 +244,18 @@ public class FileManager {
 
   public List<FileChange> getRecordedChanges() {
     return recordedChanges;
+  }
+
+  /**
+   * The file ids the active session created and dropped again, whose create is therefore no longer among
+   * {@link #getRecordedChanges()} (issue #10569). A replicator uses them to leave out of the session's entry the WAL that
+   * wrote only into such files.
+   *
+   * @return the cancelled creates, or {@code null} when no session is open or none was cancelled
+   */
+  public Set<Integer> getCancelledCreates() {
+    final Set<Integer> cancelled = cancelledCreates;
+    return cancelled != null ? Collections.unmodifiableSet(cancelled) : null;
   }
 
   /**
@@ -276,6 +300,7 @@ public class FileManager {
     recordedChanges = null;
     unshippedCreates = null;
     recordedRenames = null;
+    cancelledCreates = null;
     recordingThread = null;
   }
 
@@ -465,7 +490,17 @@ public class FileManager {
           if (unshippedCreates != null)
             unshippedCreates.remove(fileId);
 
-          if (recordedChanges.remove(entry)) {
+          final int recorded = recordedChanges.indexOf(entry);
+          if (recorded > -1 && !recordedChanges.get(recorded).create) {
+            // ALREADY ANNOUNCED BY recordDeferredDrop (issue #11240): the session's entry carries this drop already
+            LogManager.instance().log(this, Level.FINE,
+                "dropFile fileId=%d was announced ahead of the drop (componentName='%s', fileName='%s')",
+                null, fileId, file.getComponentName(), file.getFileName());
+          } else if (recorded > -1) {
+            recordedChanges.remove(recorded);
+            if (cancelledCreates == null)
+              cancelledCreates = new HashSet<>();
+            cancelledCreates.add(fileId);
             LogManager.instance().log(this, Level.FINE,
                 "dropFile fileId=%d cancels prior CREATE entry (componentName='%s', fileName='%s')",
                 null, fileId, file.getComponentName(), file.getFileName());
@@ -687,6 +722,45 @@ public class FileManager {
     LogManager.instance().log(this, Level.FINE,
         "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
         null, file.getFileId(), file.getFileName(), file.getComponentName());
+  }
+
+  /**
+   * Announces in the active recording session the drop of {@code fileId}, which happens only later (issue #11240): an HA
+   * compaction keeps the file it replaces until the entry publishing the replacement is accepted, so a leader that loses
+   * the entry still has it, while the entry must tell the other nodes to drop it. The later {@link #dropFile} finds the
+   * announcement and records nothing more. A no-op outside a session, or for a file this manager does not hold.
+   */
+  public synchronized void recordDeferredDrop(final int fileId) {
+    if (recordedChanges == null)
+      return;
+    final ComponentFile file = fileIdMap.get(fileId);
+    if (file == null)
+      return;
+    final FileChange entry = new FileChange(false, fileId, file.getFileName());
+    if (!recordedChanges.contains(entry))
+      recordedChanges.add(entry);
+  }
+
+  /**
+   * The id {@link #newFileId()} hands out next when it is past the slot after the highest file this manager holds, i.e.
+   * when the highest ids belong to files dropped in this session, otherwise -1 (issue #11240). The schema persists it, so a
+   * reopen, which rebuilds the slots from the files on disk, does not hand a dropped id out again: a node that still holds
+   * a file under that id would refuse the new file under it.
+   */
+  public synchronized int getNextFileIdPastDroppedFiles() {
+    for (int i = files.size() - 1; i > -1; --i)
+      if (files.get(i) != null)
+        return i == files.size() - 1 ? -1 : files.size();
+    return files.isEmpty() ? -1 : files.size();
+  }
+
+  /**
+   * Reserves every id below {@code nextFileId} as used, so {@link #newFileId()} never hands one out again, whether or not a
+   * file holds it now (issue #11240). Read back from the schema at open, see {@link #getNextFileIdPastDroppedFiles()}.
+   */
+  public synchronized void reserveFileIdsBelow(final int nextFileId) {
+    while (files.size() < nextFileId)
+      files.add(null);
   }
 
   public synchronized int newFileId() {

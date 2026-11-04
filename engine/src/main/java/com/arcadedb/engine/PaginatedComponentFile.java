@@ -136,10 +136,22 @@ public class PaginatedComponentFile extends ComponentFile {
   private static final AtomicIntegerFieldUpdater<PaginatedComponentFile> SYNC_STATE_UPDATER =
       AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "syncState");
 
+  /**
+   * Stands in for the channel's interruptor: an interrupt landing on a thread doing I/O is absorbed and the channel stays
+   * open for every other thread. That is the expected outcome of every cancellation (a closed parallel scan interrupts its
+   * producers, #10747), so it is logged at FINE: nothing failed.
+   */
   public static class InterruptibleInvocationHandler implements InvocationHandler {
     @Override
     public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
-      LogManager.instance().log(this, Level.SEVERE, "Attempt to close channel");
+      // THE PROXY ALSO DISPATCHES THE Object METHODS: hashCode() ANSWERING null WOULD THROW A NullPointerException
+      if (method.getDeclaringClass() == Object.class)
+        return switch (method.getName()) {
+          case "equals" -> proxy == args[0];
+          case "hashCode" -> System.identityHashCode(proxy);
+          default -> "InterruptibleInvocationHandler";
+        };
+      LogManager.instance().log(this, Level.FINE, "Interrupt absorbed: the channel stays open");
       return null;
     }
   }
@@ -335,9 +347,9 @@ public class PaginatedComponentFile extends ComponentFile {
 
       final boolean withMetaData = metaData || claimed == SYNC_METADATA;
       try {
-        channel.force(withMetaData);
+        FileUtils.force(channel, withMetaData);
       } catch (final ClosedChannelException e) {
-        reopenAndRetry("force", () -> channel.force(withMetaData));
+        reopenAndRetry("force", () -> FileUtils.force(channel, withMetaData));
       }
       forced = true;
       return true;

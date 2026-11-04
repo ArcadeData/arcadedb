@@ -119,7 +119,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
       for (final String name : List.of(DB_NAME, OTHER_DB))
         try {
           if (server.existsDatabase(name))
-            ((DatabaseInternal) server.getDatabase(name)).getEmbedded().drop();
+            ((DatabaseInternal) server.getDatabaseForOperator(name)).getEmbedded().drop();
         } catch (final Exception ignore) {
           // best-effort cleanup; the @TempDir is removed regardless
         }
@@ -408,7 +408,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
   /** What {@code close database} does (ServerControlPlane.closeDatabase): close, deregister, leave the files. */
   private void closeLocally(final String name) {
-    final ServerDatabase database = server.getDatabase(name);
+    final ServerDatabase database = server.getDatabaseForOperator(name);
     database.getEmbedded().close();
     server.removeDatabase(name);
     assertThat(server.existsDatabase(name)).isFalse();
@@ -439,7 +439,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
   /** Reopens the database the way the next request would, and counts what it serves. */
   private long liveCount(final String name) {
-    return server.getDatabase(name).countType("Node", true);
+    return server.getDatabaseForOperator(name).countType("Node", true);
   }
 
   private int downloadsOf(final String name) {

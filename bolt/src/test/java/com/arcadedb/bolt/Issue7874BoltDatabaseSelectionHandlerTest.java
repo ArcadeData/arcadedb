@@ -77,7 +77,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
     server.returns("getConfiguration", new ContextConfiguration());
-    server.returns("getDatabase", closed);
+    server.returns("getDatabaseForOperator", closed);
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, "sales");
 
@@ -98,7 +98,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
     server.returns("getConfiguration", new ContextConfiguration());
-    server.fails("getDatabase", new DatabaseNotFoundException("Database '/data/nosuchdb' does not exist"));
+    server.fails("getDatabaseForOperator", new DatabaseNotFoundException("Database '/data/nosuchdb' does not exist"));
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, "nosuchdb");
 
@@ -119,7 +119,7 @@ class Issue7874BoltDatabaseSelectionHandlerTest {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
     BoltHandlerProbe.withPassThroughSecurity(server);
     server.returns("getConfiguration", configuration);
-    server.fails("getDatabase", new DatabaseNotFoundException("Database '/data/configured' does not exist"));
+    server.fails("getDatabaseForOperator", new DatabaseNotFoundException("Database '/data/configured' does not exist"));
 
     final Map<String, Object> failure = BoltHandlerProbe.databaseSelectionFailureOf(server, "neo4j");
 

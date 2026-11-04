@@ -32,6 +32,8 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
 
 import java.util.List;
 
@@ -57,6 +59,17 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   @Override
   public String getAlias() {
     return ALIAS;
+  }
+
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  /** A third argument used to be ignored without a word: it is refused instead (issue #11069). */
+  @Override
+  public int getMaxArgs() {
+    return 2;
   }
 
   @Override
@@ -93,7 +106,13 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (indexName == null)
       return false;
 
-    final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
+    final Schema schema = context.getDatabase().getSchema();
+    // a logical index over several types (issue #11014) is searched through its members; a name that is an index is not a logical
+    // one, so the walk of the types is paid only by a name that is not
+    if (!schema.existsIndex(indexName) && MultiTypeIndexes.find(schema, indexName) != null)
+      return true;
+
+    final Index index = schema.getIndexByName(indexName);
     return index instanceof TypeIndex;
   }
 
@@ -132,6 +151,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       final IndexedFunctionPushdown pushdown) {
     if (oExpressions == null || oExpressions.length < 2)
       return List.of();
+    checkArity(oExpressions);
 
     final String indexName = resolveStringParam(oExpressions[0], context);
     final String queryString = resolveStringParam(oExpressions[1], context);
@@ -161,6 +181,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (indexName == null || queryString == null)
       return null;
 
+    final List<TypeIndex> logical = MultiTypeIndexes.resolve(context.getDatabase().getSchema(), indexName);
+    if (logical != null && !logical.isEmpty())
+      return search(indexName, queryString, context).explainScoring();
+
     final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
     if (!(index instanceof final TypeIndex typeIndex))
       return null;
@@ -176,13 +200,22 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   // ---- Private helpers ----
 
   /**
-   * The search of the named full-text index, which is validated here.
+   * The search of the named full-text index, or of the per-type indexes of the logical index of that name (issue #11014), which
+   * are validated here.
    *
    * @throws SchemaException          if no index carries that name
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   private static FullTextFunctionSearch search(final String indexName, final String queryString, final CommandContext context) {
-    return new FullTextFunctionSearch(FullTextSearch.resolveFullTextIndex(context.getDatabase(), indexName), queryString, null);
+    // Resolved once per statement: the function runs once per row, and the name of a logical index is found by walking the types
+    final String membersKey = "search_index_members:" + indexName;
+    @SuppressWarnings("unchecked")
+    List<TypeIndex> indexes = (List<TypeIndex>) context.getCachedValue(membersKey);
+    if (indexes == null) {
+      indexes = FullTextSearch.resolveFullTextIndexes(context.getDatabase(), indexName);
+      context.setCachedValue(membersKey, indexes);
+    }
+    return new FullTextFunctionSearch(indexes, indexName, queryString, null);
   }
 
   /**

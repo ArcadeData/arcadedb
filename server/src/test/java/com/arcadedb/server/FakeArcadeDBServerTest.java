@@ -46,7 +46,7 @@ class FakeArcadeDBServerTest {
     assertThat(server.getPlugins()).isEmpty();
     assertThat(server.getDatabaseNames()).isEmpty();
     assertThat(server.existsDatabase("db")).isFalse();
-    assertThat(server.getDatabase("db")).isNull();
+    assertThat(server.getDatabaseForOperator("db")).isNull();
   }
 
   @Test
@@ -67,11 +67,11 @@ class FakeArcadeDBServerTest {
       final FakeArcadeDBServer server = FakeArcadeDBServer.create(root, new ContextConfiguration()).database("db", served)
           .databaseNames("listed");
 
-      assertThat(server.getDatabase("db")).isSameAs(served);
+      assertThat(server.getDatabaseForOperator("db")).isSameAs(served);
       assertThat(server.existsDatabase("db")).isTrue();
       assertThat(server.getDatabaseNames()).containsExactly("db", "listed");
       assertThat(server.existsDatabase("listed")).as("listed by name only, not served").isFalse();
-      assertThat(server.getDatabase("listed")).isNull();
+      assertThat(server.getDatabaseForOperator("listed")).isNull();
     } finally {
       database.drop();
     }
@@ -97,18 +97,18 @@ class FakeArcadeDBServerTest {
     final AtomicInteger stops = new AtomicInteger();
 
     server.on("existsDatabase", args -> "present".equals(args[0]));
-    server.fails("getDatabase", new IllegalStateException("closing"));
+    server.fails("getDatabaseForOperator", new IllegalStateException("closing"));
     server.on("stop", args -> stops.incrementAndGet());
     server.returns("getServerName", "renamed");
 
     assertThat(server.existsDatabase("present")).isTrue();
     assertThat(server.existsDatabase("other")).isFalse();
-    assertThatThrownBy(() -> server.getDatabase("present")).isInstanceOf(IllegalStateException.class).hasMessage("closing");
+    assertThatThrownBy(() -> server.getDatabaseForOperator("present")).isInstanceOf(IllegalStateException.class).hasMessage("closing");
     server.stop();
     assertThat(stops.get()).isEqualTo(1);
     assertThat(server.getServerName()).isEqualTo("renamed");
     assertThat(server.calls("existsDatabase")).containsExactly(List.of("present"), List.of("other"));
-    assertThat(server.calls("getDatabase")).as("a refused call is still recorded, so a never-called assertion cannot pass vacuously")
+    assertThat(server.calls("getDatabaseForOperator")).as("a refused call is still recorded, so a never-called assertion cannot pass vacuously")
         .containsExactly(List.of("present"));
   }
 

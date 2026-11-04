@@ -2104,7 +2104,13 @@
         {
           "name": "util.validate",
           "syntax": "util.validate(...)",
-          "description": "Throws an exception with the given message if the predicate is false",
+          "description": "Throws an exception with the given message, formatted with the optional params, if the predicate is true",
+          "since": "cypher"
+        },
+        {
+          "name": "util.validatePredicate",
+          "syntax": "util.validatePredicate(...)",
+          "description": "Throws an exception with the given message, formatted with the optional params, if the predicate is true; returns true otherwise",
           "since": "cypher"
         },
         {
@@ -2767,6 +2773,7 @@
     "util.sha512",
     "util.sleep",
     "util.validate",
+    "util.validatePredicate",
     "uuid",
     "values",
     "variance",

@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the status document simply omitted the rows.
  * <p>
  * The end-to-end half - a follower's {@code /api/v1/cluster} carrying the {@code capabilities} row of a peer
- * that is not itself - is {@code Issue7549FollowerCapabilityReportingIT}. What is pinned here is the lifecycle
+ * that is not itself - is {@code HaSecurityMutationRoutingTwoNodeIT}'s #7549 test. What is pinned here is the lifecycle
  * it rests on, which needs no cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

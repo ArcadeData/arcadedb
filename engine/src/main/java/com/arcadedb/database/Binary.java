@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.logging.Level;
@@ -288,6 +289,66 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     buffer.putFloat(value);
   }
 
+  /**
+   * Writes {@code values} at the current position as raw little-endian IEEE-754 floats, 4 bytes each, in one bulk copy. Little
+   * endian because it is the order of every CPU this runs on, so the copy needs no byte swap (issue #10856).
+   */
+  public void putFloatArray(final float[] values) {
+    final int bytes = arrayBytes(values.length, FLOAT_SERIALIZED_SIZE);
+    final int position = buffer.position();
+    checkForAllocation(position, bytes);
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(values);
+    buffer.position(position + bytes);
+  }
+
+  /** Reads {@code count} floats written by {@link #putFloatArray(float[])}. */
+  public float[] getFloatArray(final int count) {
+    final int bytes = arrayBytes(count, FLOAT_SERIALIZED_SIZE);
+    checkForFetching(bytes);
+    if (readableBytes() < bytes)
+      throw new BufferUnderflowException();
+    final float[] values = new float[count];
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(values);
+    buffer.position(buffer.position() + bytes);
+    return values;
+  }
+
+  /** The double twin of {@link #putFloatArray(float[])}: raw little-endian IEEE-754 doubles, 8 bytes each. */
+  public void putDoubleArray(final double[] values) {
+    final int bytes = arrayBytes(values.length, DOUBLE_SERIALIZED_SIZE);
+    final int position = buffer.position();
+    checkForAllocation(position, bytes);
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().put(values);
+    buffer.position(position + bytes);
+  }
+
+  /** Reads {@code count} doubles written by {@link #putDoubleArray(double[])}. */
+  public double[] getDoubleArray(final int count) {
+    final int bytes = arrayBytes(count, DOUBLE_SERIALIZED_SIZE);
+    checkForFetching(bytes);
+    if (readableBytes() < bytes)
+      throw new BufferUnderflowException();
+    final double[] values = new double[count];
+    buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().get(values);
+    buffer.position(buffer.position() + bytes);
+    return values;
+  }
+
+  private static int arrayBytes(final int count, final int elementSize) {
+    final long bytes = (long) count * elementSize;
+    if (count < 0 || bytes > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("Invalid array length " + count);
+    return (int) bytes;
+  }
+
+  /**
+   * The bytes a bulk read may consume: up to the logical content ({@code size}) as well as the buffer's limit, so a count
+   * read from corrupt content cannot pull in the bytes of a backing array that lie past the content.
+   */
+  private int readableBytes() {
+    return Math.min(size, buffer.limit()) - buffer.position();
+  }
+
   @Override
   public void putDouble(final int index, final double value) {
     checkForAllocation(index, DOUBLE_SERIALIZED_SIZE);
@@ -474,6 +535,62 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     // treating negative results from read unsigned methods as like unsigned values
     // Must re-flip the top bit if the original read value had it set.
     return temp ^ (raw & (1L << 63));
+  }
+
+  /**
+   * Reads a signed number at {@code index} without moving the position: only the bytes of the backing array are read, so
+   * many threads can call it on one instance at once (#10930). The number of bytes it occupies is
+   * {@link #getNumberSizeAt(int)}. Out-of-range bytes throw {@link IllegalArgumentException}, as {@link #position(int)}
+   * does for the relative read.
+   */
+  public long getNumberAt(final int index) {
+    final long raw = getUnsignedNumberAt(index);
+    final long temp = (((raw << 63) >> 63) ^ raw) >> 1;
+    return temp ^ (raw & (1L << 63));
+  }
+
+  /**
+   * Reads an unsigned number at {@code index} without moving the position (see {@link #getNumberAt(int)}).
+   */
+  public long getUnsignedNumberAt(final int index) {
+    try {
+      final long b0 = buffer.get(index);
+      // Fast path: single-byte varint (high bit clear). Dominates in practice.
+      if ((b0 & 0x80L) == 0L)
+        return b0;
+
+      long value = b0 & 0x7FL;
+      int i = 7;
+      int pos = index + 1;
+      long b;
+      while (((b = buffer.get(pos++)) & 0x80L) != 0) {
+        value |= (b & 0x7FL) << i;
+        i += 7;
+        if (i > 63)
+          throw new IllegalArgumentException(
+              "Variable length quantity is too long (must be <= 63) at position " + index + " in buffer of size " + size);
+      }
+      return value | (b << i);
+    } catch (final IndexOutOfBoundsException e) {
+      throw new IllegalArgumentException("Invalid position " + index + " (size=" + buffer.limit() + ")", e);
+    }
+  }
+
+  /**
+   * The number of bytes the variable-length number at {@code index} occupies, without decoding it and without moving the
+   * position (#10930). Bounded like {@link #skipNumber()}: a number longer than 10 bytes cannot be valid.
+   */
+  public int getNumberSizeAt(final int index) {
+    try {
+      int pos = index;
+      while ((buffer.get(pos++) & 0x80) != 0)
+        if (pos - index >= 10)
+          throw new IllegalArgumentException(
+              "Variable length quantity is too long (must be <= 10 bytes) at position " + index + " in buffer of size " + size);
+      return pos - index;
+    } catch (final IndexOutOfBoundsException e) {
+      throw new IllegalArgumentException("Invalid position " + index + " (size=" + buffer.limit() + ")", e);
+    }
   }
 
   /**

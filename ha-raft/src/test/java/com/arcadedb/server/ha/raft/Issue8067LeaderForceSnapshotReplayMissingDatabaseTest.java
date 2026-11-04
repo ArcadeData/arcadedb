@@ -117,7 +117,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     if (server != null) {
       try {
         if (server.existsDatabase(DB_NAME))
-          ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+          ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }
@@ -170,7 +170,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
     sm.awaitLifecycleTasksForTesting(60_000);
 
     assertThat(downloads.get()).as("the missing database was pulled from the new leader").isEqualTo(1);
-    assertThat(server.getDatabase(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
+    assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
     assertThat(sm.isDatabaseDiverged(DB_NAME)).as("the quarantine lifts once the copy is installed").isFalse();
   }
 
@@ -210,7 +210,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
   @Test
   void aLeaderWhoseCopyIsMerelyClosedStillSkips() {
     sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB_NAME);
-    server.getDatabase(DB_NAME).getEmbedded().close();
+    server.getDatabaseForOperator(DB_NAME).getEmbedded().close();
     server.removeDatabase(DB_NAME);
     assertThat(Files.isDirectory(root.resolve("databases").resolve(DB_NAME))).isTrue();
 
@@ -254,7 +254,7 @@ class Issue8067LeaderForceSnapshotReplayMissingDatabaseTest {
 
   /** The operator's wipe: the node restarts with the database directory gone, so nothing registers it. */
   private void wipeTheLocalCopy() {
-    final ServerDatabase database = server.getDatabase(DB_NAME);
+    final ServerDatabase database = server.getDatabaseForOperator(DB_NAME);
     database.getEmbedded().close();
     server.removeDatabase(DB_NAME);
     FileUtils.deleteRecursively(root.resolve("databases").resolve(DB_NAME).toFile());

@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.function.Supplier;
 
 /**
  * Scans one bucket (or a range of its pages) and hands every record to a {@link ParallelRecordScan.RowMapper}, which
@@ -35,19 +36,21 @@ import java.util.NoSuchElementException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MappedScanStep extends AbstractExecutionStep {
-  private final int                          bucketId;
-  private final ParallelRecordScan.RowMapper mapper;
+  private final int                                    bucketId;
+  private final Supplier<ParallelRecordScan.RowMapper> mapperPerUnit;
+  // This unit's own mapper, asked for when the scan starts: only the worker pulling this step calls it (#10818)
+  private       ParallelRecordScan.RowMapper           mapper;
   // The page range [fromPage, toPage) a parallel scan assigned to this step, or -1/-1 for the whole bucket
-  private       int                          fromPage = -1;
-  private       int                          toPage   = -1;
-  private       boolean                      warnedAboutSkippedRecords;
+  private       int                                    fromPage = -1;
+  private       int                                    toPage   = -1;
+  private       boolean                                warnedAboutSkippedRecords;
 
   private Iterator<Record> iterator;
 
-  MappedScanStep(final int bucketId, final ParallelRecordScan.RowMapper mapper, final CommandContext context) {
+  MappedScanStep(final int bucketId, final Supplier<ParallelRecordScan.RowMapper> mapperPerUnit, final CommandContext context) {
     super(context);
     this.bucketId = bucketId;
-    this.mapper = mapper;
+    this.mapperPerUnit = mapperPerUnit;
   }
 
   int getBucketId() {
@@ -68,7 +71,9 @@ final class MappedScanStep extends AbstractExecutionStep {
         iterator = ((LocalBucket) context.getDatabase().getSchema().getBucketById(bucketId)).iterator(fromPage, toPage);
       else
         iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
+      mapper = mapperPerUnit.get();
     }
+    final ParallelRecordScan.RowMapper mapper = this.mapper;
 
     return new ResultSet() {
       int    nFetched = 0;
@@ -119,6 +124,6 @@ final class MappedScanStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new MappedScanStep(bucketId, mapper, context);
+    return new MappedScanStep(bucketId, mapperPerUnit, context);
   }
 }

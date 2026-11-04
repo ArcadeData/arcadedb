@@ -330,11 +330,12 @@ class CypherMergeOnCreateSetSingleWriteIssue8735Test extends TestHelper {
   }
 
   @Test
-  void aLaterRowMatchesOnAValueAnEarlierRowsSetWrote() {
+  void aSetOfTheMergeKeyRunsAfterTheMergeOfEveryRow() {
     database.command("opencypher", "UNWIND [1, 2] AS i MERGE (v:V8735ee {k: 'a'}) SET v.k = 'b'").close();
     try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735ee) RETURN count(v) AS c")) {
-      // row 1 creates {k: 'a'} then sets k = 'b'; row 2 finds no {k: 'a'} and creates another node
-      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(2L);
+      // the SET writes the key the MERGE matches on, so it runs after the MERGE of every row (issue #10889, Neo4j's Eager):
+      // row 1 creates {k: 'a'}, row 2 finds it, then both rows set k = 'b' on that one node
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
     }
   }
 

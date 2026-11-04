@@ -53,7 +53,7 @@ class Issue3993PointSridTest extends TestHelper {
   void cartesian3DDefaultsToSrid9157() {
     final Map<?, ?> p = point("point({x: 2.3, y: 4.5, z: 1.0})");
     assertThat(p.get("srid")).isEqualTo(9157);
-    assertThat(p.get("crs")).isEqualTo("cartesian-3D");
+    assertThat(p.get("crs")).isEqualTo("cartesian-3d");
   }
 
   @Test
@@ -74,7 +74,7 @@ class Issue3993PointSridTest extends TestHelper {
   void crsDerivedFromExplicitSrid() {
     final Map<?, ?> p = point("point({x: 1, y: 2, srid: 4326})");
     assertThat(p.get("srid")).isEqualTo(4326);
-    assertThat(p.get("crs")).isEqualTo("WGS-84");
+    assertThat(p.get("crs")).isEqualTo("wgs-84");
     assertThat(point("point({x: 1, y: 2, srid: 7203})").get("crs")).isEqualTo("cartesian");
   }
 
@@ -126,8 +126,8 @@ class Issue3993PointSridTest extends TestHelper {
   }
 
   @Test
-  void lowerCaseCrsIsStoredCanonicallyAndIsGeographic() {
-    assertThat(point("point({x: 1, y: 2, crs: 'wgs-84'})").get("crs")).isEqualTo("WGS-84");
+  void anyCaseCrsIsStoredCanonicallyAndIsGeographic() {
+    assertThat(point("point({x: 1, y: 2, crs: 'WGS-84'})").get("crs")).isEqualTo("wgs-84");
     try (final ResultSet rs = database.command("opencypher",
         "RETURN point.distance(point({x: 1, y: 2, crs: 'wgs-84'}), point({x: 1, y: 3, crs: 'WGS-84'})) AS d")) {
       // one degree of latitude is about 111 km, only possible when both points are measured geographically
@@ -156,7 +156,7 @@ class Issue3993PointSridTest extends TestHelper {
     final Map<?, ?> unknownCrs = point("point({x: 1, y: 2, z: 3, crs: 'foo'})");
     assertThat(unknownCrs.get("crs")).isEqualTo("foo");
     assertThat(unknownCrs.containsKey("srid")).isFalse();
-    assertThat(point("point({x: 1, y: 2, z: 3, srid: 9999})").get("crs")).isEqualTo("cartesian-3D");
+    assertThat(point("point({x: 1, y: 2, z: 3, srid: 9999})").get("crs")).isEqualTo("cartesian-3d");
   }
 
   @Test
@@ -168,8 +168,8 @@ class Issue3993PointSridTest extends TestHelper {
 
   @Test
   void threeDimensionalSridsAndBounds() {
-    assertThat(point("point({x: 1, y: 2, z: 3, srid: 4979})").get("crs")).isEqualTo("WGS-84-3D");
-    assertThat(point("point({x: 1, y: 2, z: 3, srid: 9157})").get("crs")).isEqualTo("cartesian-3D");
+    assertThat(point("point({x: 1, y: 2, z: 3, srid: 4979})").get("crs")).isEqualTo("wgs-84-3d");
+    assertThat(point("point({x: 1, y: 2, z: 3, srid: 9157})").get("crs")).isEqualTo("cartesian-3d");
     assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 7203})")).isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("dimension");
     assertThat(point("point({x: 1, y: 2, srid: 2147483647})").get("srid")).isEqualTo(Integer.MAX_VALUE);
@@ -185,7 +185,7 @@ class Issue3993PointSridTest extends TestHelper {
   @Test
   void nullZIsTwoDimensional() {
     final Map<?, ?> p = point("point({x: 1, y: 2, z: null, srid: 4326})");
-    assertThat(p.get("crs")).isEqualTo("WGS-84");
+    assertThat(p.get("crs")).isEqualTo("wgs-84");
     assertThat(p.containsKey("z")).isFalse();
   }
 
@@ -199,8 +199,8 @@ class Issue3993PointSridTest extends TestHelper {
 
   @Test
   void mixedCaseCrsWithMatchingSridIsCanonicalized() {
-    final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'wgs-84', srid: 4326})");
-    assertThat(p.get("crs")).isEqualTo("WGS-84");
+    final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'Wgs-84', srid: 4326})");
+    assertThat(p.get("crs")).isEqualTo("wgs-84");
     assertThat(p.get("srid")).isEqualTo(4326);
   }
 

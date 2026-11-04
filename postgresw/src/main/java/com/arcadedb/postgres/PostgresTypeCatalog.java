@@ -25,6 +25,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -54,6 +57,10 @@ import java.util.stream.Collectors;
  * </ul>
  * A shape not recognised here is <b>not</b> guessed at: the caller falls back to an empty result set, which
  * is the long-standing behaviour for the rest of {@code pg_catalog}.
+ * <p>
+ * Besides the built-in types, {@code pg_type} has the row type of every relation of the database, as PostgreSQL gives every
+ * table and materialized view one: {@code typtype = 'c'}, {@code typrelid} naming the relation, and the OID its
+ * {@code pg_class.reltype} names (issue #10873). The caller hands them in, since they are the schema's, not this protocol's.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -73,6 +80,9 @@ public class PostgresTypeCatalog {
    * holds for every collation-sensitive built-in type.
    */
   static final int DEFAULT_COLLATION_OID = 100;
+
+  /** The OID PostgreSQL fixes for the {@code pg_catalog} schema, which is the namespace of every type this protocol produces. */
+  static final int PG_CATALOG_OID = 11;
 
   /** {@code SELECT <projection> FROM [pg_catalog.]pg_type [alias] [WHERE <filter>]} and nothing more. */
   private static final Pattern QUERY = Pattern.compile(
@@ -94,19 +104,17 @@ public class PostgresTypeCatalog {
   private static final Pattern NAME_ONLY_FILTER = Pattern.compile(
       "^(?:[A-Za-z_][A-Za-z0-9_$]*\\s*\\.\\s*)?TYPNAME\\s*=\\s*'([^']*)'$", Pattern.CASE_INSENSITIVE);
 
-  /** {@code t.oid = 1007} anywhere in the query: the array whose element type a driver is resolving. */
-  private static final Pattern OID_FILTER = Pattern.compile("(?:[A-Za-z_][A-Za-z0-9_$]*\\.)?oid\\s*=\\s*(\\d+)",
-      Pattern.CASE_INSENSITIVE);
-
   /**
-   * The correlation {@code t.typelem = e.oid} that marks the driver self-join: it is what says the projected
-   * columns describe the element type rather than the type the OID filter selects.
+   * A necessary condition of the driver self-join, checked on the raw text so that a pg_type query of any other shape does not
+   * pay a tokenizer pass. It decides nothing: a literal or a comment can hold it too, so the self-join is recognised on the
+   * statement's tokens (issue #10882).
    */
-  private static final Pattern ELEMENT_JOIN = Pattern.compile(
-      "typelem\\s*=\\s*[A-Za-z_][A-Za-z0-9_$]*\\s*\\.\\s*oid", Pattern.CASE_INSENSITIVE);
+  private static final Pattern ELEMENT_JOIN_HINT = Pattern.compile("typelem", Pattern.CASE_INSENSITIVE);
 
-  /** The projection list of a self-join query, which {@link #QUERY} cannot match because of the second table. */
-  private static final Pattern JOIN_PROJECTION = Pattern.compile("^SELECT\\s+(.+?)\\s+FROM\\s", Pattern.CASE_INSENSITIVE);
+  /** The words that end a FROM entry rather than alias it, so {@code pg_type LEFT JOIN} is not read as a relation aliased "left". */
+  private static final Set<String> NOT_AN_ALIAS = Set.of("where", "join", "inner", "on", "left", "right", "full", "cross",
+      "natural", "group", "order", "limit", "offset", "union", "intersect", "except", "and", "or", "having", "window", "fetch",
+      "for", "using", "lateral");
 
   /**
    * The types in OID order, so that an enumeration is stable across runs and across JVMs - a client that
@@ -117,6 +125,11 @@ public class PostgresTypeCatalog {
   private static final List<PostgresType> TYPES_BY_OID = Arrays.stream(PostgresType.values())
       .sorted(Comparator.comparingInt(t -> t.code))
       .collect(Collectors.toUnmodifiableList());
+
+  /** {@link #TYPES_BY_OID} as rows, each answering a column by name: built once, read by every enumeration. */
+  private static final List<Function<String, Object>> BUILT_IN_ROWS = TYPES_BY_OID.stream()
+      .<Function<String, Object>>map(type -> column -> columnValue(type, column))
+      .toList();
 
   private PostgresTypeCatalog() {
   }
@@ -129,16 +142,69 @@ public class PostgresTypeCatalog {
     return TYPES_BY_OID;
   }
 
+  /** {@link #resolve(String, Supplier)} for a database with no relation, so with the built-in types alone. */
+  public static List<Map<String, Object>> resolve(final String query) {
+    return resolve(query, List::of);
+  }
+
   /**
    * Answers a pg_type query, or returns null when it is not a shape this catalog can answer. An empty list
    * is a real answer - "no such type" - and is not the same as null.
+   *
+   * @param rowTypes the row types of the database's relations, each the full set of {@link #COLUMNS} as
+   *                 {@link #rowTypeColumns} builds it. Asked for only by a query that reads them
    */
-  public static List<Map<String, Object>> resolve(final String query) {
-    final List<Map<String, Object>> elementRows = resolveElementJoin(query);
-    if (elementRows != null)
-      return elementRows;
+  public static List<Map<String, Object>> resolve(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
+    final PostgresCatalog.Answer answer = resolveAnswer(query, rowTypes);
+    return answer == null ? null : answer.rows;
+  }
 
-    return resolveProjection(query);
+  /**
+   * Answers a pg_type query with the columns to announce as well as the rows, or returns null when it is not a shape this catalog
+   * can answer. The columns are the ones the client projected, typed as {@link PostgresCatalog} types pg_type's columns, whatever
+   * the filter selected (issue #10869): a lookup of a type this protocol does not have answers no row under the same columns a
+   * lookup of int4 answers one row under, rather than a result set with no column a client could read by name.
+   *
+   * @param rowTypes as in {@link #resolve(String, Supplier)}
+   */
+  static PostgresCatalog.Answer resolveAnswer(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
+    final PostgresCatalog.Answer element = resolveElementJoin(query, rowTypes);
+    if (element != null)
+      return element;
+
+    return resolveProjection(query, rowTypes);
+  }
+
+  /**
+   * The {@link #COLUMNS} of the row type of a relation, PostgreSQL's composite type of the same name (issue #10873): what
+   * {@code pg_class.reltype} names, and what {@code typrelid} leads back from. A row type converts with the generic record
+   * functions and has no array type here, since this protocol never produces a value of either.
+   */
+  static Map<String, Object> rowTypeColumns(final int oid, final String name, final int namespaceOid, final int relationOid) {
+    final Map<String, Object> columns = new LinkedHashMap<>(COLUMNS.size() * 2);
+    for (final String column : COLUMNS)
+      columns.put(column, switch (column) {
+        case "oid" -> oid;
+        case "typname" -> name;
+        case "typelem", "typarray", "typbasetype", "typndims", "typcollation" -> 0;
+        case "typdelim" -> ",";
+        case "typtype" -> "c";
+        case "typcategory" -> "C";
+        case "typlen", "typtypmod" -> -1;
+        case "typinput" -> "record_in";
+        case "typoutput" -> "record_out";
+        case "typreceive" -> "record_recv";
+        case "typsend" -> "record_send";
+        case "typnotnull", "typbyval", "typispreferred" -> Boolean.FALSE;
+        case "typnamespace" -> namespaceOid;
+        case "typrelid" -> relationOid;
+        case "typowner" -> PostgresCatalog.OWNER_OID;
+        case "typisdefined" -> Boolean.TRUE;
+        case "typalign" -> "d";
+        case "typstorage" -> "x";
+        default -> null;
+      });
+    return columns;
   }
 
   /**
@@ -147,23 +213,24 @@ public class PostgresTypeCatalog {
    * was given, which is what the join in the client's query asks for. Returns null when the query is not
    * that shape.
    */
-  private static List<Map<String, Object>> resolveElementJoin(final String query) {
-    if (!ELEMENT_JOIN.matcher(query).find())
+  private static PostgresCatalog.Answer resolveElementJoin(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
+    if (!ELEMENT_JOIN_HINT.matcher(query).find())
       return null;
 
-    final Matcher projection = JOIN_PROJECTION.matcher(query.trim());
-    if (!projection.find())
+    final ElementJoin join = ElementJoin.parse(query);
+    if (join == null)
       return null;
 
-    final Matcher matcher = OID_FILTER.matcher(query);
-    if (!matcher.find())
-      return null;
-
-    final int oid = parseOid(matcher.group(1));
+    final int oid = join.oid;
     final PostgresType type = oid < 0 ? null : PostgresType.byCode(oid);
+    final List<String> requested = join.requested;
+    final List<String> aliases = join.aliases;
 
     final PostgresType element;
-    if (type == null)
+    if (type == null && rowTypeOf(oid, rowTypes.get()) != null)
+      // a row type has no element, as a scalar has none - under the columns it projected
+      return answer(requested, aliases, List.of());
+    else if (type == null)
       // An OID this protocol does not produce is still answered as text, as it always has been: a driver
       // that asks about an unknown array is better served by the delimiter and element of the most common
       // one than by an empty result it has no fallback for.
@@ -171,13 +238,8 @@ public class PostgresTypeCatalog {
     else if (type.isArrayType())
       element = PostgresType.byCode(type.elementCode);
     else
-      // A scalar has no element, so the join the client wrote selects nothing.
-      return List.of();
-
-    final List<String> requested = new ArrayList<>();
-    final List<String> aliases = new ArrayList<>();
-    if (!parseProjection(projection.group(1), requested, aliases))
-      return null;
+      // A scalar has no element, so the join the client wrote selects nothing - under the columns it projected.
+      return answer(requested, aliases, List.of());
 
     // Only the columns the client projected, never the ones its WHERE clause happens to mention: the join
     // condition names both oid and typelem, so reading the columns off the whole query would answer with
@@ -186,7 +248,7 @@ public class PostgresTypeCatalog {
     for (int i = 0; i < requested.size(); i++)
       row.put(aliases.get(i), columnValue(element, requested.get(i)));
 
-    return List.of(row);
+    return answer(requested, aliases, List.of(row));
   }
 
   /**
@@ -198,7 +260,7 @@ public class PostgresTypeCatalog {
    * DataRow positionally, so {@code SELECT oid, typname} and {@code SELECT typname, oid} must not come back
    * the same way round.
    */
-  private static List<Map<String, Object>> resolveProjection(final String query) {
+  private static PostgresCatalog.Answer resolveProjection(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
     final Matcher matcher = QUERY.matcher(query.trim());
     if (!matcher.matches())
       return null;
@@ -208,18 +270,27 @@ public class PostgresTypeCatalog {
     if (!parseProjection(matcher.group(1), requested, aliases))
       return null;
 
-    final List<PostgresType> selected = select(matcher.group(2));
+    final List<Function<String, Object>> selected = select(matcher.group(2), rowTypes);
     if (selected == null)
       return null;
 
     final List<Map<String, Object>> rows = new ArrayList<>(selected.size());
-    for (final PostgresType type : selected) {
+    for (final Function<String, Object> type : selected) {
       final Map<String, Object> row = new LinkedHashMap<>(requested.size());
       for (int i = 0; i < requested.size(); i++)
-        row.put(aliases.get(i), columnValue(type, requested.get(i)));
+        row.put(aliases.get(i), type.apply(requested.get(i)));
       rows.add(row);
     }
-    return rows;
+    return answer(requested, aliases, rows);
+  }
+
+  /** The rows under the columns the client projected, each typed as pg_type declares it, whether there is a row or not. */
+  private static PostgresCatalog.Answer answer(final List<String> requested, final List<String> aliases,
+      final List<Map<String, Object>> rows) {
+    final LinkedHashMap<String, PostgresType> columns = new LinkedHashMap<>(requested.size());
+    for (int i = 0; i < requested.size(); i++)
+      columns.put(aliases.get(i), PostgresCatalog.declaredType("pg_type", requested.get(i)));
+    return PostgresCatalog.answer(columns, rows);
   }
 
   /**
@@ -265,12 +336,20 @@ public class PostgresTypeCatalog {
 
   /**
    * The rows a WHERE clause selects: every type when there is none, the one type it names, an empty list
-   * when it names a type this protocol cannot produce, or null when the clause is not one of the two forms
-   * this catalog understands.
+   * when it names no type, or null when the clause is not one of the two forms this catalog understands. The
+   * built-in types first, in OID order, then the row types of the relations.
    */
-  private static List<PostgresType> select(final String filter) {
-    if (filter == null)
-      return TYPES_BY_OID;
+  private static List<Function<String, Object>> select(final String filter, final Supplier<List<Map<String, Object>>> rowTypes) {
+    if (filter == null) {
+      final List<Map<String, Object>> relations = rowTypes.get();
+      if (relations.isEmpty())
+        return BUILT_IN_ROWS;
+      final List<Function<String, Object>> all = new ArrayList<>(BUILT_IN_ROWS.size() + relations.size());
+      all.addAll(BUILT_IN_ROWS);
+      for (final Map<String, Object> rowType : relations)
+        all.add(rowType::get);
+      return all;
+    }
 
     final String trimmed = filter.trim();
 
@@ -278,7 +357,10 @@ public class PostgresTypeCatalog {
     if (byOid.matches()) {
       final int oid = parseOid(byOid.group(1));
       final PostgresType type = oid < 0 ? null : PostgresType.byCode(oid);
-      return type == null ? List.of() : List.of(type);
+      if (type != null)
+        return List.of(column -> columnValue(type, column));
+      final Map<String, Object> rowType = oid < 0 ? null : rowTypeOf(oid, rowTypes.get());
+      return rowType == null ? List.of() : List.of(rowType::get);
     }
 
     final Matcher byName = NAME_ONLY_FILTER.matcher(trimmed);
@@ -286,10 +368,21 @@ public class PostgresTypeCatalog {
       final String typeName = byName.group(1).toLowerCase(Locale.ENGLISH);
       for (final PostgresType type : TYPES_BY_OID)
         if (type.typeName.equals(typeName))
-          return List.of(type);
+          return List.of(column -> columnValue(type, column));
+      // a name is compared as written, as PostgreSQL compares typname: the row type of "Person" is not 'person'
+      for (final Map<String, Object> rowType : rowTypes.get())
+        if (byName.group(1).equals(rowType.get("typname")))
+          return List.of(rowType::get);
       return List.of();
     }
 
+    return null;
+  }
+
+  private static Map<String, Object> rowTypeOf(final int oid, final List<Map<String, Object>> rowTypes) {
+    for (final Map<String, Object> rowType : rowTypes)
+      if (rowType.get("oid") instanceof Integer typeOid && typeOid == oid)
+        return rowType;
     return null;
   }
 
@@ -309,7 +402,7 @@ public class PostgresTypeCatalog {
       case "typsend" -> ioFunction(type, "send");
       case "typnotnull" -> Boolean.FALSE;
       case "typbasetype" -> 0;         // not a domain, so no base type
-      case "typnamespace" -> 11;       // pg_catalog, whose OID is fixed at 11 in PostgreSQL
+      case "typnamespace" -> PG_CATALOG_OID;
       case "typrelid" -> 0;            // not a composite, so no backing relation
       case "typowner" -> PostgresCatalog.OWNER_OID; // the bootstrap superuser owns every built-in type
       case "typbyval" -> type.size > 0 && type.size <= 8;
@@ -375,6 +468,8 @@ public class PostgresTypeCatalog {
   private static String storage(final PostgresType type) {
     if (type == PostgresType.NUMERIC)
       return "m";
+    if (type == PostgresType.INT2VECTOR)
+      return "p";
     return type.size > 0 ? "p" : "x";
   }
 
@@ -389,6 +484,8 @@ public class PostgresTypeCatalog {
       final PostgresType element = PostgresType.byCode(type.elementCode);
       return element != null && "d".equals(align(element)) ? "d" : "i";
     }
+    if (type == PostgresType.NAME)
+      return "c";
     return switch (type.size) {
       case 1 -> "c";
       case 2 -> "s";
@@ -405,7 +502,7 @@ public class PostgresTypeCatalog {
    * for this column, so an auto-generated array type copies its element's value verbatim - which is why
    * {@code _text} carries 100 and not 0, exactly as {@code text} does.
    */
-  private static int collation(final PostgresType type) {
+  static int collation(final PostgresType type) {
     if (type.isArrayType()) {
       final PostgresType element = PostgresType.byCode(type.elementCode);
       return element == null ? 0 : collation(element);
@@ -422,9 +519,10 @@ public class PostgresTypeCatalog {
       return "A";
     return switch (type) {
       case BOOLEAN -> "B";
-      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC -> "N";
+      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC, OID -> "N";
       case DATE, TIMESTAMP -> "D";
-      case CHAR, VARCHAR, TEXT, BPCHAR -> "S";
+      case CHAR, VARCHAR, TEXT, BPCHAR, NAME -> "S";
+      case INT2VECTOR -> "A";
       default -> "U"; // user-defined, which is where PostgreSQL itself files json
     };
   }
@@ -438,6 +536,298 @@ public class PostgresTypeCatalog {
       return Integer.parseInt(text);
     } catch (final NumberFormatException e) {
       return -1;
+    }
+  }
+
+  /**
+   * The driver self-join, read off the statement's tokens (issue #10882) rather than off its text, so that a string literal or a
+   * comment spelling the join out is not taken for it:
+   * <pre>
+   * SELECT a.col [[AS] alias], ... FROM [pg_catalog.]pg_type [[AS] t] , [pg_catalog.]pg_type [[AS] e] WHERE cond AND cond
+   * SELECT a.col [[AS] alias], ... FROM [pg_catalog.]pg_type [[AS] t] [INNER] JOIN [pg_catalog.]pg_type [[AS] e] ON cond [WHERE cond]
+   * </pre>
+   * The conditions, ANDed in any order and each optionally parenthesised, are exactly the correlation {@code t.typelem = e.oid} and
+   * the filter {@code t.oid = N}, either side of the {@code =}. Every projected column must belong to the element alias {@code e}:
+   * a column of {@code t} describes the array, which this recogniser does not answer, and a column of neither is ambiguous in
+   * PostgreSQL. Anything else - another predicate, an OR, an outer join, a third relation, a placeholder - is not this shape, and
+   * is left to {@link PostgresCatalog}, which evaluates a self-join with each alias bound to its own row.
+   */
+  private static final class ElementJoin {
+    private final int          oid;
+    private final List<String> requested = new ArrayList<>();
+    private final List<String> aliases   = new ArrayList<>();
+
+    private ElementJoin(final int oid) {
+      this.oid = oid;
+    }
+
+    static ElementJoin parse(final String query) {
+      final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+      if (tokens == null)
+        return null;
+
+      int end = tokens.size();
+      if (end > 0 && tokens.get(end - 1).isSymbol(";"))
+        --end;
+
+      final Cursor cursor = new Cursor(tokens, end);
+      if (!cursor.keyword("select"))
+        return null;
+
+      // the projection: alias.column [[AS] name], ...
+      final List<String> qualifiers = new ArrayList<>();
+      final List<String> columns = new ArrayList<>();
+      final List<String> names = new ArrayList<>();
+      do {
+        final String qualifier = cursor.name();
+        if (qualifier == null || !cursor.symbol("."))
+          return null;
+        final String column;
+        if (cursor.symbol("*"))
+          column = "*";
+        else {
+          final PostgresCatalogToken word = cursor.next();
+          if (word == null || word.type != PostgresCatalogToken.Type.IDENTIFIER)
+            return null;
+          column = word.text.toLowerCase(Locale.ENGLISH);
+        }
+        String name = null;
+        if (cursor.keyword("as")) {
+          name = cursor.columnAlias();
+          if (name == null)
+            return null;
+        } else if (!cursor.peekKeyword("from"))
+          name = cursor.columnAlias();
+        if ("*".equals(column) && name != null)
+          // "*" takes no alias; a client that wrote one meant something this recogniser is not parsing
+          return null;
+        qualifiers.add(qualifier);
+        columns.add(column);
+        names.add(name);
+      } while (cursor.symbol(","));
+
+      if (!cursor.keyword("from"))
+        return null;
+
+      final String array = cursor.pgTypeEntry();
+      if (array == null)
+        return null;
+
+      final List<List<PostgresCatalogToken>> conditions = new ArrayList<>();
+      final String element;
+      if (cursor.symbol(",")) {
+        element = cursor.pgTypeEntry();
+        if (element == null || !cursor.keyword("where") || !cursor.conditions(conditions))
+          return null;
+      } else {
+        cursor.keyword("inner");
+        if (!cursor.keyword("join"))
+          return null;
+        element = cursor.pgTypeEntry();
+        if (element == null || !cursor.keyword("on") || !cursor.conditions(conditions))
+          return null;
+        if (cursor.keyword("where") && !cursor.conditions(conditions))
+          return null;
+      }
+      if (!cursor.atEnd() || array.equals(element))
+        return null;
+
+      // exactly one correlation and one filter, and they say which of the two entries is the array
+      String arrayAlias = null;
+      String elementAlias = null;
+      String filtered = null;
+      int oid = -1;
+      for (final List<PostgresCatalogToken> condition : conditions) {
+        final Operand left = Operand.of(condition, 0);
+        if (left == null || condition.size() <= left.width || !condition.get(left.width).isSymbol("="))
+          return null;
+        final Operand right = Operand.of(condition, left.width + 1);
+        if (right == null || left.width + 1 + right.width != condition.size())
+          return null;
+
+        final Operand typelem = left.isColumn("typelem") ? left : right.isColumn("typelem") ? right : null;
+        if (typelem != null) {
+          final Operand other = typelem == left ? right : left;
+          if (arrayAlias != null || !other.isColumn("oid"))
+            return null;
+          arrayAlias = typelem.qualifier;
+          elementAlias = other.qualifier;
+          continue;
+        }
+
+        final Operand column = left.isColumn("oid") ? left : right.isColumn("oid") ? right : null;
+        final Operand number = column == left ? right : left;
+        if (column == null || filtered != null || number.number == null)
+          return null;
+        filtered = column.qualifier;
+        oid = parseOid(number.number);
+      }
+
+      if (arrayAlias == null || filtered == null || !arrayAlias.equals(filtered) || arrayAlias.equals(elementAlias)
+          || !(arrayAlias.equals(array) && elementAlias.equals(element) || arrayAlias.equals(element) && elementAlias.equals(array)))
+        return null;
+
+      final ElementJoin join = new ElementJoin(oid);
+      for (int i = 0; i < columns.size(); i++) {
+        if (!elementAlias.equals(qualifiers.get(i)))
+          return null;
+        final String column = columns.get(i);
+        if ("*".equals(column)) {
+          join.requested.addAll(COLUMNS);
+          join.aliases.addAll(COLUMNS);
+          continue;
+        }
+        if (!COLUMNS.contains(column))
+          return null;
+        join.requested.add(column);
+        join.aliases.add(names.get(i) != null ? names.get(i) : column);
+      }
+      return join;
+    }
+  }
+
+  /** One side of an {@code =}: a qualified column, or an unsigned integer. */
+  private static final class Operand {
+    private final String qualifier;
+    private final String column;
+    private final String number;
+    private final int    width;
+
+    private Operand(final String qualifier, final String column, final String number, final int width) {
+      this.qualifier = qualifier;
+      this.column = column;
+      this.number = number;
+      this.width = width;
+    }
+
+    boolean isColumn(final String name) {
+      return name.equals(column);
+    }
+
+    static Operand of(final List<PostgresCatalogToken> tokens, final int from) {
+      if (from >= tokens.size())
+        return null;
+      final PostgresCatalogToken first = tokens.get(from);
+      if (first.type == PostgresCatalogToken.Type.NUMBER)
+        return isDigits(first.text) ? new Operand(null, null, first.text, 1) : null;
+
+      final String qualifier = Cursor.nameOf(first);
+      if (qualifier == null || from + 2 >= tokens.size() || !tokens.get(from + 1).isSymbol(".")
+          || tokens.get(from + 2).type != PostgresCatalogToken.Type.IDENTIFIER)
+        return null;
+      return new Operand(qualifier, tokens.get(from + 2).text.toLowerCase(Locale.ENGLISH), null, 3);
+    }
+
+    /** ASCII digits only: Character.isDigit, and Integer.parseInt after it, would also read other scripts' digits as an OID. */
+    private static boolean isDigits(final String text) {
+      for (int i = 0; i < text.length(); i++)
+        if (text.charAt(i) < '0' || text.charAt(i) > '9')
+          return false;
+      return !text.isEmpty();
+    }
+  }
+
+  /** Reads {@link ElementJoin}'s tokens front to back, up to {@code end}. */
+  private static final class Cursor {
+    private final List<PostgresCatalogToken> tokens;
+    private final int                        end;
+    private       int                        position;
+
+    private Cursor(final List<PostgresCatalogToken> tokens, final int end) {
+      this.tokens = tokens;
+      this.end = end;
+    }
+
+    boolean atEnd() {
+      return position >= end;
+    }
+
+    PostgresCatalogToken next() {
+      return position < end ? tokens.get(position++) : null;
+    }
+
+    boolean keyword(final String keyword) {
+      if (position < end && tokens.get(position).isKeyword(keyword)) {
+        ++position;
+        return true;
+      }
+      return false;
+    }
+
+    boolean peekKeyword(final String keyword) {
+      return position < end && tokens.get(position).isKeyword(keyword);
+    }
+
+    boolean symbol(final String symbol) {
+      if (position < end && tokens.get(position).isSymbol(symbol)) {
+        ++position;
+        return true;
+      }
+      return false;
+    }
+
+    /** An identifier as PostgreSQL resolves it: a bare one folded to lower case, a quoted one as written. */
+    String name() {
+      final String name = position < end ? nameOf(tokens.get(position)) : null;
+      if (name != null)
+        ++position;
+      return name;
+    }
+
+    static String nameOf(final PostgresCatalogToken token) {
+      return switch (token.type) {
+        case IDENTIFIER -> token.text.toLowerCase(Locale.ENGLISH);
+        case QUOTED_IDENTIFIER -> token.text;
+        default -> null;
+      };
+    }
+
+    /** The name a projected column is announced under, if the next token is one: a quoted alias keeps its case. */
+    String columnAlias() {
+      if (position >= end)
+        return null;
+      final PostgresCatalogToken token = tokens.get(position);
+      if (token.type == PostgresCatalogToken.Type.IDENTIFIER && NOT_AN_ALIAS.contains(token.text.toLowerCase(Locale.ENGLISH)))
+        return null;
+      return name();
+    }
+
+    /** {@code [pg_catalog.]pg_type [[AS] alias]}, returning the name its columns are qualified by, or null when it is not that. */
+    String pgTypeEntry() {
+      if (position + 2 < end && tokens.get(position).isKeyword("pg_catalog") && tokens.get(position + 1).isSymbol("."))
+        position += 2;
+      if (!keyword("pg_type"))
+        return null;
+      if (keyword("as"))
+        return columnAlias();
+      final String alias = columnAlias();
+      return alias != null ? alias : "pg_type";
+    }
+
+    /**
+     * {@code cond [AND cond]...} up to the next WHERE or the end, each condition stripped of the parentheses around it. The split
+     * does not track parenthesis depth: {@code (a AND b)} becomes the fragments {@code (a} and {@code b)}, which no operand reads,
+     * so a nested conjunction declines the statement rather than being misread.
+     */
+    boolean conditions(final List<List<PostgresCatalogToken>> conditions) {
+      int start = position;
+      while (true) {
+        if (position == end || tokens.get(position).isKeyword("and") || tokens.get(position).isKeyword("where")) {
+          int from = start;
+          int to = position;
+          while (to - from >= 2 && tokens.get(from).isSymbol("(") && tokens.get(to - 1).isSymbol(")")) {
+            ++from;
+            --to;
+          }
+          if (from == to)
+            return false;
+          conditions.add(tokens.subList(from, to));
+          if (position == end || tokens.get(position).isKeyword("where"))
+            return true;
+          start = ++position;
+        } else
+          ++position;
+      }
     }
   }
 }

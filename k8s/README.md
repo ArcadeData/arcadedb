@@ -4,6 +4,10 @@ The ArcadeDB Helm chart has moved to its own repository:
 
 **https://github.com/ArcadeData/arcadedb-helm**
 
+The chart is the only supported Kubernetes deployment. The plain StatefulSet example that used to ship as
+`config/arcadedb-statefulset.yaml` in the distribution has been removed: render the chart with `helm template` if you
+need plain manifests.
+
 ## Install
 
 ```bash

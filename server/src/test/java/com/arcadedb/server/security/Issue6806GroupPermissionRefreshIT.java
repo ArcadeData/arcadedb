@@ -108,7 +108,7 @@ class Issue6806GroupPermissionRefreshIT extends BaseGraphServerTest {
 
   private long effectiveResultSetLimit(final int serverIndex) {
     return getServer(serverIndex).getSecurity().getUser(USER)
-        .getDatabaseUser(getServer(serverIndex).getDatabase(getDatabaseName())).getResultSetLimit();
+        .getDatabaseUser(getServer(serverIndex).getDatabaseForOperator(getDatabaseName())).getResultSetLimit();
   }
 
   private void saveGroup(final int serverIndex, final JSONArray databaseAccess) throws Exception {

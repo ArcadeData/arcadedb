@@ -74,9 +74,11 @@ test.describe('Studio Chart tab', () => {
     await page.locator('#tab-chart-sel').click();
     await expect(page.locator('#chartX')).toHaveValue('ts');
     await expect(page.locator('#chartSplit')).toHaveValue('host');
-    // ApexCharts also draws each series' hover marker as a path inside .apexcharts-line-series: count the lines only
-    await expect(page.locator('#queryChart .apexcharts-line-series path.apexcharts-line').first()).toBeVisible();
-    await expect(page.locator('#queryChart .apexcharts-line-series path.apexcharts-line')).toHaveCount(2);
+    await expect(page.locator('#queryChart svg').first()).toBeVisible();
+    // one series per host, read from the chart itself: the SVG gives a line no name to count it by
+    const series = await page.evaluate(() =>
+      (window as any).echarts.getInstanceByDom(document.querySelector('#queryChart')).getOption().series.map((s: any) => s.type));
+    expect(series).toEqual(['line', 'line']);
   });
 
   test('a grouped result is charted as categories, and PromQL opens the chart on its own', async ({ page }) => {

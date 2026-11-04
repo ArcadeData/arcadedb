@@ -146,7 +146,7 @@ public class CompositeIndexUpdateTest {
     ContextConfiguration configuration = new ContextConfiguration();
     ArcadeDBServer arcadeDBServer = new ArcadeDBServer(configuration);
     arcadeDBServer.start();
-    Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+    Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
     database.async().onError(exception -> {
       LogManager.instance().log(this, Level.FINE, "database.async() error: " + exception.getMessage());
       exception.printStackTrace();

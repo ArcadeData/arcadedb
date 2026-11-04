@@ -24,6 +24,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -65,6 +66,9 @@ class BucketIteratorPrefetchBytesIssue9404Test extends TestHelper {
       for (int i = 0; i < SMALL_RECORDS; i++)
         database.newDocument("Small").set("id", i).save();
     });
+    // THE TESTS FILL THE BUDGET TO A FEW MEGABYTES FROM ITS LIMIT: A QUERY ANOTHER TEST LEFT, GIVEN BACK MEANWHILE, WOULD FREE
+    // SEVERAL TIMES THAT AND LIFT THE PRESSURE THE TEST APPLIES
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
   }
 
   @Test

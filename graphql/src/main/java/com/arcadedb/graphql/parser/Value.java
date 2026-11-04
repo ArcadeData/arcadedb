@@ -54,6 +54,11 @@ public class Value extends SimpleNode {
     return null;
   }
 
+  /** The list this value node holds, or null for any other production. */
+  public ListValue getListValue() {
+    return listValue;
+  }
+
   @Override
   public String toString() {
     final AbstractValue value = getValue();

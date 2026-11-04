@@ -50,7 +50,7 @@ public class VectorNormFunction implements StatelessFunction {
     if (args[0] == null)
       return null;
 
-    final float[] v = VectorUtils.toFloatArray(args[0]);
+    final float[] v = VectorUtils.toFloatArrayOfCoordinates(args[0]);
     return (double) VectorUtils.magnitude(v);
   }
 }

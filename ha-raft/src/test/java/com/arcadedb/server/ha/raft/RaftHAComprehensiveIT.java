@@ -122,8 +122,8 @@ class RaftHAComprehensiveIT {
     // Write records on leader
     for (int i = 0; i < recordCount; i++) {
       final int idx = i;
-      leader.getDatabase(DB_NAME).transaction(() ->
-          leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "rec-" + idx).save()
+      leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+          leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "rec-" + idx).save()
       );
     }
 
@@ -134,7 +134,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have %d records", s.getServerName(), recordCount).isEqualTo(recordCount);
     }
@@ -145,7 +145,7 @@ class RaftHAComprehensiveIT {
       for (final ArcadeDBServer s : servers) {
         if (s == null || !s.isStarted())
           continue;
-        final ResultSet rs = s.getDatabase(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = ?", (long) id);
+        final ResultSet rs = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = ?", (long) id);
         assertThat(rs.hasNext()).as("Server %s should have record id=%d", s.getServerName(), id).isTrue();
         final Result r = rs.next();
         assertThat((String) r.getProperty("name")).isEqualTo("rec-" + id);
@@ -164,8 +164,8 @@ class RaftHAComprehensiveIT {
     // Write initial data
     for (int i = 0; i < 100; i++) {
       final int idx = i;
-      leader.getDatabase(DB_NAME).transaction(() ->
-          leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "initial-" + idx).save()
+      leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+          leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "initial-" + idx).save()
       );
     }
     CodeUtils.sleep(3000);
@@ -187,8 +187,8 @@ class RaftHAComprehensiveIT {
     // Write more data while follower is down
     for (int i = 100; i < 200; i++) {
       final int idx = i;
-      leader.getDatabase(DB_NAME).transaction(() ->
-          leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "during-down-" + idx).save()
+      leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+          leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "during-down-" + idx).save()
       );
     }
     CodeUtils.sleep(2000);
@@ -200,7 +200,7 @@ class RaftHAComprehensiveIT {
     CodeUtils.sleep(10000); // Give time for catch-up
 
     // Verify follower has all 200 records
-    final long count = servers[followerIdx].getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+    final long count = servers[followerIdx].getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
         .nextIfAvailable().getProperty("cnt", 0L);
     assertThat(count).as("Restarted follower should have all 200 records").isEqualTo(200);
   }
@@ -216,8 +216,8 @@ class RaftHAComprehensiveIT {
     // Write data
     for (int i = 0; i < 50; i++) {
       final int idx = i;
-      leader.getDatabase(DB_NAME).transaction(() ->
-          leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "persist-" + idx).save()
+      leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+          leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "persist-" + idx).save()
       );
     }
     CodeUtils.sleep(3000);
@@ -246,7 +246,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 50 records after full restart", s.getServerName())
           .isEqualTo(50);
@@ -254,15 +254,15 @@ class RaftHAComprehensiveIT {
 
     // Verify cluster is fully functional - write more data
     final ArcadeDBServer newLeader = findLeader();
-    newLeader.getDatabase(DB_NAME).transaction(() ->
-        newLeader.getDatabase(DB_NAME).newVertex("TestV").set("id", 9999L).set("name", "after-restart").save()
+    newLeader.getDatabaseForOperator(DB_NAME).transaction(() ->
+        newLeader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", 9999L).set("name", "after-restart").save()
     );
     CodeUtils.sleep(2000);
 
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 51 records").isEqualTo(51);
     }
@@ -290,8 +290,8 @@ class RaftHAComprehensiveIT {
           for (int i = 0; i < recordsPerThread; i++) {
             final long id = threadId * 10000L + i;
             final int idx = i;
-            leader.getDatabase(DB_NAME).transaction(() ->
-                leader.getDatabase(DB_NAME).newVertex("TestV").set("id", id).set("name", "t" + threadId + "-" + idx).save()
+            leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+                leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", id).set("name", "t" + threadId + "-" + idx).save()
             );
           }
         } catch (final Exception e) {
@@ -313,7 +313,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have %d records", s.getServerName(), expected).isEqualTo(expected);
     }
@@ -326,7 +326,7 @@ class RaftHAComprehensiveIT {
   @Order(5)
   void test05_schemaChangesDuringWrites() {
     final ArcadeDBServer leader = findLeader();
-    final Database leaderDb = leader.getDatabase(DB_NAME);
+    final Database leaderDb = leader.getDatabaseForOperator(DB_NAME);
 
     // Write some data first
     for (int i = 0; i < 20; i++) {
@@ -344,7 +344,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      assertThat(s.getDatabase(DB_NAME).getSchema().existsType("NewType"))
+      assertThat(s.getDatabaseForOperator(DB_NAME).getSchema().existsType("NewType"))
           .as("Server %s should have NewType", s.getServerName()).isTrue();
     }
 
@@ -356,7 +356,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM NewType")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM NewType")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 1 NewType record", s.getServerName()).isEqualTo(1);
     }
@@ -373,8 +373,8 @@ class RaftHAComprehensiveIT {
     // Write records with unique IDs
     for (int i = 0; i < 50; i++) {
       final int idx = i;
-      leader.getDatabase(DB_NAME).transaction(() ->
-          leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "indexed-" + idx).save()
+      leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+          leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) idx).set("name", "indexed-" + idx).save()
       );
     }
     CodeUtils.sleep(3000);
@@ -384,7 +384,7 @@ class RaftHAComprehensiveIT {
       if (s == null || !s.isStarted())
         continue;
       for (int id = 0; id < 50; id++) {
-        final ResultSet rs = s.getDatabase(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = ?", (long) id);
+        final ResultSet rs = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = ?", (long) id);
         assertThat(rs.hasNext()).as("Server " + s.getServerName() + " index lookup for id=" + id).isTrue();
         rs.next();
         assertThat(rs.hasNext()).as("Server " + s.getServerName() + " should have exactly 1 record for id=" + id).isFalse();
@@ -394,8 +394,8 @@ class RaftHAComprehensiveIT {
     // Verify unique constraint - try to insert duplicate on leader
     boolean duplicateRejected = false;
     try {
-      leader.getDatabase(DB_NAME).transaction(() ->
-          leader.getDatabase(DB_NAME).newVertex("TestV").set("id", 0L).set("name", "duplicate").save()
+      leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+          leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", 0L).set("name", "duplicate").save()
       );
     } catch (final Exception e) {
       duplicateRejected = true;
@@ -414,13 +414,13 @@ class RaftHAComprehensiveIT {
     assertThat(follower).isNotNull();
 
     // Write data on leader
-    leader.getDatabase(DB_NAME).transaction(() ->
-        leader.getDatabase(DB_NAME).newVertex("TestV").set("id", 777L).set("name", "routing-test").save()
+    leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+        leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", 777L).set("name", "routing-test").save()
     );
     CodeUtils.sleep(3000);
 
     // SELECT should work on follower (executed locally)
-    final ResultSet rs = follower.getDatabase(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = 777");
+    final ResultSet rs = follower.getDatabaseForOperator(DB_NAME).query("sql", "SELECT FROM TestV WHERE id = 777");
     assertThat(rs.hasNext()).as("SELECT should work on follower").isTrue();
     assertThat((String) rs.next().getProperty("name")).isEqualTo("routing-test");
 
@@ -433,8 +433,8 @@ class RaftHAComprehensiveIT {
     // For now, verify that the write does NOT throw (Raft forwarding works at the protocol level).
     boolean writeSucceeded = false;
     try {
-      follower.getDatabase(DB_NAME).transaction(() ->
-          follower.getDatabase(DB_NAME).newVertex("TestV").set("id", 888L).set("name", "follower-write").save()
+      follower.getDatabaseForOperator(DB_NAME).transaction(() ->
+          follower.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", 888L).set("name", "follower-write").save()
       );
       writeSucceeded = true;
     } catch (final Exception ignored) {
@@ -454,9 +454,9 @@ class RaftHAComprehensiveIT {
     final ArcadeDBServer leader = findLeader();
 
     // Single transaction with 500 records (large WAL buffer)
-    leader.getDatabase(DB_NAME).transaction(() -> {
+    leader.getDatabaseForOperator(DB_NAME).transaction(() -> {
       for (int i = 0; i < 500; i++)
-        leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) i)
+        leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) i)
             .set("name", "bulk-" + i + "-" + "x".repeat(100)).save();
     });
 
@@ -465,7 +465,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have 500 records from bulk tx", s.getServerName()).isEqualTo(500);
     }
@@ -507,15 +507,15 @@ class RaftHAComprehensiveIT {
     final ArcadeDBServer leader = findLeader();
     assertThat(leader).isNotNull();
 
-    leader.getDatabase(DB_NAME).transaction(() ->
-        leader.getDatabase(DB_NAME).newVertex("TestV").set("id", 55555L).set("name", "after-transfers").save()
+    leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+        leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", 55555L).set("name", "after-transfers").save()
     );
     CodeUtils.sleep(3000);
 
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id = 55555")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id = 55555")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).isEqualTo(1);
     }
@@ -538,7 +538,7 @@ class RaftHAComprehensiveIT {
     // Writes might fail due to quorum not being reachable with MAJORITY (needs 2 of 3)
     boolean writeSucceeded = false;
     try {
-      final var db = servers[0].getDatabase(DB_NAME);
+      final var db = servers[0].getDatabaseForOperator(DB_NAME);
       db.transaction(() -> db.newVertex("TestV").set("id", 99999L).set("name", "solo").save());
       writeSucceeded = true;
     } catch (final Exception e) {
@@ -547,7 +547,7 @@ class RaftHAComprehensiveIT {
     }
 
     // Reads should still work (local)
-    final long existingCount = servers[0].getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
+    final long existingCount = servers[0].getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV")
         .nextIfAvailable().getProperty("cnt", 0L);
     assertThat(existingCount).isGreaterThanOrEqualTo(0);
   }
@@ -578,8 +578,8 @@ class RaftHAComprehensiveIT {
     for (int i = 0; i < 20; i++) {
       final int idx = i;
       try {
-        leader.getDatabase(DB_NAME).transaction(() ->
-            leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) (60000 + idx)).set("name", "slow-follower").save()
+        leader.getDatabaseForOperator(DB_NAME).transaction(() ->
+            leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) (60000 + idx)).set("name", "slow-follower").save()
         );
         successes.incrementAndGet();
       } catch (final Exception e) {
@@ -595,7 +595,7 @@ class RaftHAComprehensiveIT {
     CodeUtils.sleep(10000);
 
     // Verify the restarted follower caught up
-    final long count = servers[slowIdx].getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id >= 60000")
+    final long count = servers[slowIdx].getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id >= 60000")
         .nextIfAvailable().getProperty("cnt", 0L);
     assertThat(count).as("Restarted follower should have caught up").isEqualTo(successes.get());
   }
@@ -610,9 +610,9 @@ class RaftHAComprehensiveIT {
 
     // Single transaction with 2000 records, each with 500-byte name (= ~1MB+ WAL)
     final String bigValue = "X".repeat(500);
-    leader.getDatabase(DB_NAME).transaction(() -> {
+    leader.getDatabaseForOperator(DB_NAME).transaction(() -> {
       for (int i = 0; i < 2000; i++)
-        leader.getDatabase(DB_NAME).newVertex("TestV").set("id", (long) (70000 + i)).set("name", bigValue + i).save();
+        leader.getDatabaseForOperator(DB_NAME).newVertex("TestV").set("id", (long) (70000 + i)).set("name", bigValue + i).save();
     });
 
     CodeUtils.sleep(8000);
@@ -620,7 +620,7 @@ class RaftHAComprehensiveIT {
     for (final ArcadeDBServer s : servers) {
       if (s == null || !s.isStarted())
         continue;
-      final long count = s.getDatabase(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id >= 70000")
+      final long count = s.getDatabaseForOperator(DB_NAME).query("sql", "SELECT count(*) as cnt FROM TestV WHERE id >= 70000")
           .nextIfAvailable().getProperty("cnt", 0L);
       assertThat(count).as("Server %s should have all 2000 large records", s.getServerName()).isEqualTo(2000);
     }
@@ -647,8 +647,8 @@ class RaftHAComprehensiveIT {
           final ArcadeDBServer currentLeader = findLeader();
           if (currentLeader != null && currentLeader.isStarted()) {
             final int id = writeCount.incrementAndGet();
-            currentLeader.getDatabase(DB_NAME).transaction(() ->
-                currentLeader.getDatabase(DB_NAME).newVertex("TestV")
+            currentLeader.getDatabaseForOperator(DB_NAME).transaction(() ->
+                currentLeader.getDatabaseForOperator(DB_NAME).newVertex("TestV")
                     .set("id", (long) (100000 + id)).set("name", "shutdown-" + id).save()
             );
           }
@@ -685,7 +685,7 @@ class RaftHAComprehensiveIT {
     // Verify all acknowledged writes are present on the new leader
     final ArcadeDBServer newLeader = findLeader();
     assertThat(newLeader).isNotNull();
-    final long totalRecords = newLeader.getDatabase(DB_NAME).query("sql",
+    final long totalRecords = newLeader.getDatabaseForOperator(DB_NAME).query("sql",
         "SELECT count(*) as cnt FROM TestV WHERE name LIKE 'shutdown-%'").nextIfAvailable().getProperty("cnt", 0L);
     LogManager.instance().log(this, Level.INFO, "TEST: %d writes succeeded, %d errors, %d records found",
         writeCount.get(), errorCount.get(), totalRecords);

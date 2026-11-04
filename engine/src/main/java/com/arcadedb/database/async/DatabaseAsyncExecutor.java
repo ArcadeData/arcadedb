@@ -41,12 +41,17 @@ import java.util.Map;
 @ExcludeFromJacocoGeneratedReport
 public interface DatabaseAsyncExecutor {
   /**
-   * Waits for the completion of all the pending tasks.
+   * Waits for the completion of all the pending tasks: the ones submitted before this call, and the ones those tasks
+   * schedule in turn. Tasks other threads submit while it waits are not guaranteed to be waited for, so a steady producer
+   * cannot keep it from returning.
+   * <p>
+   * When no other thread submits work, the executor is idle by the time this returns: {@link #isProcessing()} asked right
+   * after it answers {@code false}.
    */
   void waitCompletion();
 
   /**
-   * Waits for the completion of all the pending tasks.
+   * Waits for the completion of all the pending tasks, as {@link #waitCompletion()} does.
    *
    * @param timeout timeout in milliseconds
    *
@@ -384,9 +389,11 @@ public interface DatabaseAsyncExecutor {
    * {@link com.arcadedb.engine.timeseries.TimeSeriesBatch} per call, which is what makes this path allocate
    * nothing per sample.
    * <p>
-   * A source holds values its columns can store by construction, so nothing is converted; the constraints the type declares
-   * (MANDATORY, NOTNULL, MIN, MAX, REGEXP) are checked against every row <b>before this method returns</b> (issue #10381), and a
-   * type that declares none pays no read of the source. A refused row refuses the whole source: nothing is appended.
+   * A source is not converted - its numeric and boolean cells are the ones the typed setters wrote - but it is held, <b>before this
+   * method returns</b>, to what its columns can store and to the constraints the type declares: a TAG or STRING text over the
+   * {@link com.arcadedb.engine.timeseries.TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes a row can hold (issue #10487, which failed
+   * inside the worker with the whole batch) and the constraints MANDATORY, NOTNULL, MIN, MAX and REGEXP (issue #10381). A type with
+   * no text column and no constraint pays no read of the source. A refused row refuses the whole source: nothing is appended.
    *
    * @param typeName The name of the TimeSeries type
    * @param source   The samples to append, owned by the executor until the task has run
@@ -533,6 +540,10 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Returns true if there is any asynchronous tasks executing or scheduled.
+   * <p>
+   * A point-in-time answer, while other threads may be submitting: a task a worker is taking off its queue at that very
+   * instant can be missed. It is {@code false} right after {@link #waitCompletion()} returns when nothing else submits work,
+   * and it says nothing about durability: {@code false} means the tasks have run, not that their batch has committed.
    */
   boolean isProcessing();
 

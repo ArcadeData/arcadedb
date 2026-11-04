@@ -160,7 +160,7 @@ class LSMTreeFullTextIndexTest extends TestHelper {
           continue;
 
         // CONTAINSTEXT, not =: since issue #8435 an equality on a FULL_TEXT-indexed property is exact, not a token search
-        final ResultSet result = database.query("sql", "select from Docs where text CONTAINSTEXT '" + toFind + "'", toFind);
+        final ResultSet result = database.query("sql", "select from Docs where text CONTAINSTEXT ?", toFind);
         assertThat(result.hasNext())
             .isTrue()
             .withFailMessage("Cannot find key '" + toFind + "'");

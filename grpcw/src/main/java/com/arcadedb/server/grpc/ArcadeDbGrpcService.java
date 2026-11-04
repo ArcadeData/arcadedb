@@ -802,7 +802,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         // No external transaction - execute on current thread
         Database db = getDatabase(req.getDatabase(), req.getCredentials());
-        response = executeCommandInternal(req, t0, db, false);
+        response = executeCommandWithRetries(req, t0, db);
       }
       resp.onNext(response);
       // Set before onCompleted(), not after: once onNext has handed a response to the observer, the RPC must
@@ -819,7 +819,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (e instanceof ExecutionException && e.getCause() != null) {
         cause = e.getCause();
       }
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
+      GrpcErrorMapper.logFailure(this, "ERROR in executeCommand", cause);
 
       // Every failure now goes through GrpcErrorMapper and a gRPC error status, the same as createRecord,
       // beginTransaction, commitTransaction and graphBatchLoad - not just the leader refusal that needed the
@@ -829,6 +829,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (!responded)
         resp.onError(mapError(cause, "ExecuteCommand"));
     }
+  }
+
+  /**
+   * Runs an executeCommand that is not part of a client-managed transaction. An auto-commit command (no transaction in the
+   * request and none active on the thread) is retried on a transient write conflict up to {@link GlobalConfiguration#TX_RETRIES}
+   * attempts, exactly as the HTTP handler does (issue #10942); {@code ABORTED} reaches the client only once they are used up.
+   * <p>
+   * Re-running is safe for the reason it is safe over HTTP: each failed attempt has rolled its own transaction back before the
+   * exception leaves {@code LocalDatabase.transaction}, so the next one starts from committed state. A command that carries a
+   * transaction in the request, or runs inside one already active, is never retried: the retry would discard work the
+   * client owns.
+   */
+  private ExecuteCommandResponse executeCommandWithRetries(final ExecuteCommandRequest req, final long t0, final Database db) {
+    if (req.hasTransaction() || db.isTransactionActive())
+      return executeCommandInternal(req, t0, db, false);
+
+    // LocalDatabase.transaction() owns the retry loop: the rollback between attempts and the jittered back-off that keeps
+    // contending writers from colliding again in lock step, the same call the HTTP handler makes
+    final int retries = Math.max(1, serverConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    final AtomicReference<ExecuteCommandResponse> response = new AtomicReference<>();
+    ((DatabaseInternal) db).transaction(() -> response.set(executeCommandInternal(req, t0, db, false)), false, retries);
+    return response.get();
   }
 
   /**
@@ -1041,7 +1063,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     } catch (Exception e) {
 
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommandInternal", e);
+      // Not logged here: the exception is rethrown below and executeCommand logs it once, at the level its category earns (issue #10943)
 
       // Best-effort rollback if we began here and failed (only for non-external transactions)
       try {
@@ -1130,7 +1152,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         resp.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
+        GrpcErrorMapper.logFailure(this, "ERROR in createRecord (external tx)", cause);
         // Preserve the engine exception type (e.g. DuplicatedKeyException -> ALREADY_EXISTS with index/keys)
         // so the client can reconstruct it instead of receiving an opaque INTERNAL.
         if (!responded)
@@ -1146,7 +1168,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responded = true;
       resp.onCompleted();
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
+      GrpcErrorMapper.logFailure(this, "ERROR in createRecord", e);
       if (!responded)
         resp.onError(mapError(e, "CreateRecord"));
     }
@@ -1347,7 +1369,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", GrpcErrorMapper.unwrap(e));
+        GrpcErrorMapper.logFailure(this, "ERROR in updateRecord (external tx)", e);
         // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
@@ -1364,7 +1386,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responded = true;
       resp.onCompleted();
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
+      GrpcErrorMapper.logFailure(this, "ERROR in updateRecord", e);
       if (!responded)
         resp.onError(mapError(e, "UpdateRecord"));
     }
@@ -1497,7 +1519,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       throw e;
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
+      // Not logged here: rethrown to updateRecord, which logs it once (issue #10943)
       if (beganHere) {
         try { db.rollback(); } catch (Exception ignore) { }
       }
@@ -1537,7 +1559,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", GrpcErrorMapper.unwrap(e));
+        GrpcErrorMapper.logFailure(this, "ERROR in deleteRecord (external tx)", e);
         // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
@@ -1554,7 +1576,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responded = true;
       resp.onCompleted();
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
+      GrpcErrorMapper.logFailure(this, "ERROR in deleteRecord", e);
       if (!responded)
         resp.onError(mapError(e, "DeleteRecord"));
     }
@@ -1652,7 +1674,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           if (!txResponded)
             responseObserver.onError(sre);
         } else {
-          LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+          GrpcErrorMapper.logFailure(this, "Error executing query", cause);
           if (!txResponded)
             responseObserver.onError(mapError(cause, "Query execution failed"));
         }
@@ -1679,7 +1701,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (!responded)
         responseObserver.onError(e);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
+      GrpcErrorMapper.logFailure(this, "Error executing query", e);
       if (!responded)
         responseObserver.onError(mapError(e, "Query execution failed"));
     }
@@ -5423,55 +5445,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return gsonToGrpc(je);
     }
 
-    GrpcValue.Builder b = GrpcValue.newBuilder();
-
-    if (o == null)
-      return dbgEnc("toGrpcValue", o, b.build(), null);
-
-    if (o instanceof Boolean v)
-      return dbgEnc("toGrpcValue", o, b.setBoolValue(v).build(), null);
-    if (o instanceof Integer v)
-      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
-    if (o instanceof Short v)
-      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
-    if (o instanceof Byte v)
-      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
-    if (o instanceof Long v)
-      return dbgEnc("toGrpcValue", o, b.setInt64Value(v).build(), null);
-    if (o instanceof Float v)
-      return dbgEnc("toGrpcValue", o, b.setFloatValue(v).build(), null);
-    if (o instanceof Double v)
-      return dbgEnc("toGrpcValue", o, b.setDoubleValue(v).build(), null);
-    if (o instanceof CharSequence v)
-      return dbgEnc("toGrpcValue", o, b.setStringValue(v.toString()).build(), null);
-    if (o instanceof byte[] v)
-      return dbgEnc("toGrpcValue", o, b.setBytesValue(ByteString.copyFrom(v)).build(), null);
-
-    // Issue #9969: the encoder GrpcTypeConverter and the client's ProtoUtils share, so a ZonedDateTime keeps its zone and an
-    // OffsetTime/LocalTime arrives typed instead of as an untyped string.
-    final GrpcValue temporal = GrpcTemporalCodec.encode(o);
-    if (temporal != null)
-      return dbgEnc("toGrpcValue", o, temporal, null);
-
-    if (o instanceof RID rid) {
-      return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType(
-              "rid").build(),
-          null);
-    }
-
-    if (o instanceof BigDecimal v) {
-      return dbgEnc("toGrpcValue", o,
-          GrpcValue.newBuilder().setDecimalValue(GrpcTypeConverter.toGrpcDecimal(v)).setLogicalType("decimal").build(),
-          null);
-    }
+    // Null, booleans, numbers, text, bytes, temporals (issue #9969), RIDs and decimals: the arms GrpcTypeConverter shares, so the
+    // search and time series RPCs encode a value exactly as this one does (issue #11207)
+    final GrpcValue scalar = GrpcTypeConverter.toGrpcScalar(o);
+    if (scalar != null)
+      return dbgEnc("toGrpcValue", o, scalar, null);
 
     if (o instanceof Document edoc && edoc.getIdentity() == null) {
       GrpcEmbedded.Builder eb = GrpcEmbedded.newBuilder();
       if (edoc.getType() != null)
         eb.setType(edoc.getTypeName());
       for (String k : edoc.getPropertyNames()) {
-        eb.putFields(k, toGrpcValue(edoc.get(k)));
+        eb.putFields(k, toGrpcValue(edoc.get(k), pc));
       }
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build(), null);
     }
@@ -5593,8 +5578,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           byte[] jsonBytes = json.toString().getBytes(StandardCharsets.UTF_8);
 
-          // Soft limit handling
-          if (pc.softLimitBytes > 0 && jsonBytes.length > pc.softLimitBytes) {
+          // Soft limit handling: against what is LEFT of the request's budget, as the MAP encoding counts it. Each record checked
+          // against the whole budget let a list of them, each under the limit, add up to many times it (issue #11048)
+          if (pc.softLimitBytes > 0 && pc.used.get() + jsonBytes.length > pc.softLimitBytes) {
             pc.truncated = true;
             if (debug)
               LogManager.instance().log(this, Level.FINE, """
@@ -5634,7 +5620,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             mb.putEntries("@type", GrpcValue.newBuilder().setStringValue(doc.getTypeName()).build());
           }
           for (String k : doc.getPropertyNames()) {
-            mb.putEntries(k, toGrpcValue(doc.get(k)));
+            mb.putEntries(k, toGrpcValue(doc.get(k), pc));
           }
 
           return GrpcValue.newBuilder().setMapValue(mb.build()).build();
@@ -5662,29 +5648,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof TraversalPath path)
       return toGrpcValue(path.toMap(), pc);
 
-    if (o instanceof Map<?, ?> m) {
-      GrpcMap.Builder mb = GrpcMap.newBuilder();
-      for (var e : m.entrySet()) {
-        mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
-      }
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setMapValue(mb.build()).build(), null);
-    }
-
-    if (o instanceof Collection<?> c) {
-      GrpcList.Builder lb = GrpcList.newBuilder();
-      for (Object e : c)
-        lb.addValues(toGrpcValue(e));
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
-    }
-
-    if (o.getClass().isArray()) {
-      int len = java.lang.reflect.Array.getLength(o);
-      GrpcList.Builder lb = GrpcList.newBuilder();
-      for (int i = 0; i < len; i++) {
-        lb.addValues(toGrpcValue(java.lang.reflect.Array.get(o, i)));
-      }
-      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setListValue(lb.build()).build(), null);
-    }
+    // Issue #11048: every container arm below recurses WITH the request's projection config, as the document arms above do. A
+    // record reached through a list, a map or an array (SELECT both('E') AS n) is a projected value like a top-level one: without
+    // the config it was sent as a bare link where HTTP answers the record, and soft_limit_bytes never saw its bytes.
+    // Issue #11044: the Iterable arm covers what out(), in(), outE(), inE() and the other graph functions return, a lazy
+    // Iterable that is not a Collection, and the Iterator arm a nested result set: both are lists on the wire, as the HTTP
+    // serializer sends them. The arms are GrpcTypeConverter's (issue #11207), so no container can be added to one encoder only.
+    // Ahead of the Identifiable and Result arms below safely: every record (vertex, edge, document) took a Document arm above,
+    // and neither a RID nor a Result is a Map, an Iterable or an Iterator
+    final GrpcValue container = GrpcTypeConverter.toGrpcContainer(o, e -> toGrpcValue(e, pc));
+    if (container != null)
+      return dbgEnc("toGrpcValue", o, container, null);
 
     // RID/Identifiable string fallback
     if (o instanceof Identifiable id)
@@ -5694,9 +5668,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Support ArcadeDB Result/ResultInternal as structural MAP
     if (o instanceof Result res) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();
+      if (res.isElement()) {
+        final Document element = res.toElement();
+        // A result that is just a record (a sub-query row) is that record, encoded as the request asks for records
+        if (res.getPropertyNames().equals(element.getPropertyNames()))
+          return toGrpcValue(element, pc);
+        // A row with columns of its own besides the record (SELECT *, name AS alias; a Cypher RETURN n row): its columns, with the
+        // record's @rid and @type, as the HTTP serializer sends it
+        if (element.getIdentity() != null && element.getIdentity().isValid())
+          mb.putEntries(Property.RID_PROPERTY, GrpcValue.newBuilder()
+              .setLinkValue(GrpcLink.newBuilder().setRid(element.getIdentity().toString()).build()).setLogicalType("rid").build());
+        if (element.getType() != null)
+          mb.putEntries(Property.TYPE_PROPERTY, GrpcValue.newBuilder().setStringValue(element.getTypeName()).build());
+      }
       try {
         for (String k : res.getPropertyNames()) {
-          mb.putEntries(k, toGrpcValue(res.getProperty(k)));
+          mb.putEntries(k, toGrpcValue(res.getProperty(k), pc));
         }
       } catch (Throwable ignore) {
       }
@@ -5711,7 +5698,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               o.getClass().getName(),
               summarizeJava(o));
 
-    return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder().setStringValue(String.valueOf(o)).build(), null);
+    return dbgEnc("toGrpcValue", o, GrpcTypeConverter.toGrpcString(o), null);
   }
 
   private InsertOptions defaults(InsertOptions in) {
@@ -6186,7 +6173,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (arcadeServer != null) {
 
       // This is how other plugins do it - get the already-open database
-      Database db = arcadeServer.getDatabase(databaseName);
+      Database db = arcadeServer.getDatabaseForClient(databaseName);
 
       LogManager.instance().log(this, Level.FINE, "getDatabase(): db = %s isOpen = %s", db, db.isOpen());
 
@@ -6205,8 +6192,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Below this line the service is running WITHOUT an ArcadeDBServer, which only a standalone or embedded use of
     // this class does - GrpcServerPlugin, the single production construction site, always passes one. The branch
-    // above returns or throws in that case: ArcadeDBServer.getDatabase(name) opens from disk and raises
-    // DatabaseOperationException("... does not exist") rather than returning null, so `db != null` never falls
+    // above returns or throws in that case: ArcadeDBServer.getDatabaseForClient(name) opens from disk and raises
+    // DatabaseNotFoundException (NOT_FOUND, issue #10795), or DatabaseNotAvailableException when a restore holds the name or
+    // a 'close database' closed it (issue #10533), rather than returning null, so `db != null` never falls
     // through on a real server. That is what keeps the raw DatabaseFactory.create() below outside the set of
     // database creators the restore name reservation has to bind (issue #7441).
 
@@ -6544,19 +6532,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue, pc);
-  }
-
-  private GrpcValue convertPropToGrpcValue(String propName, Result result) {
-
-    final Object propValue = result.getProperty(propName);
-
-    if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance()
-          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-              summarizeJava(propValue),
-              propValue == null ? "null" : propValue.getClass());
-
-    return toGrpcValue(propValue);
   }
 
   private Object toJavaForProperty(final Database db, final MutableDocument parent, final DocumentType dtype,

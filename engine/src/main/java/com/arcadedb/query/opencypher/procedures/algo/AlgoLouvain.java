@@ -33,6 +33,7 @@ import com.arcadedb.utility.IntIntHashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -66,6 +67,9 @@ import java.util.stream.Stream;
 public class AlgoLouvain extends AbstractAlgoProcedure {
   public static final String NAME = "algo.louvain";
 
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("maxIterations", "tolerance", "weightProperty");
+
   @Override
   public String getName() {
     return NAME;
@@ -95,7 +99,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         extractInt(n, "maxIterations", 1) : 10;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?

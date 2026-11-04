@@ -48,9 +48,9 @@ class RemoteMutableVertexTest {
   }
 
   @Test
-  void getTypeThrowsUnsupported() {
-    assertThatThrownBy(() -> vertex.getType())
-        .isInstanceOf(UnsupportedOperationException.class);
+  void getTypeAnswersTheTypeItHolds() {
+    // As an immutable vertex does (issue #11053)
+    assertThat(vertex.getType()).isSameAs(mockType);
   }
 
   @Test

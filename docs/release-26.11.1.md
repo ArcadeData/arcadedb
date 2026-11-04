@@ -85,39 +85,41 @@ fills the properties that are null, as that is what it asks for.
 which now refuses an explicit `NULL` ("cannot be null") instead of silently filling it. Leave the column out of the statement,
 or run `UPDATE ... APPLY DEFAULTS` afterwards.
 
-### SQL: a transaction cannot be committed after a statement failed halfway (#10194)
+### A statement that fails inside a transaction is taken back, and the transaction goes on (#10194, #10379, #10346)
 
-A multi-row `INSERT`, `UPDATE` or `DELETE` that fails after part of its records were written, inside a transaction the caller
-keeps (for example `INSERT INTO T (id, k) VALUES (1, 7), (2, 7)` on a unique `k`, whose error the caller catches), used to leave
-the rows written before the error, and the commit published half a statement. The engine has no savepoint to take the statement
-back to, so the transaction is now marked rollback-only: `commit()` throws a `TransactionException` ("Transaction cannot be
-committed: a statement failed after part of its records were written ...") and nothing of the transaction is published. A
-statement that fails having written nothing, which includes every single-row refusal because the refused record retracts
-itself, leaves the transaction usable. A statement that owns its transaction (auto-transaction mode) rolls back whole, as before.
-A `sqlscript` that handles its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) is unchanged; openCypher and a script
-without such a block are covered since #10379, see below.
+A multi-row `INSERT`, `UPDATE`, `DELETE`, `CREATE EDGE`, or an openCypher or `sqlscript` statement, that fails after part of its
+records were written, inside a transaction the caller keeps (for example `INSERT INTO T (id, k) VALUES (1, 7), (2, 7)` on a unique
+`k`, whose error the caller catches), used to leave the rows written before the error in the transaction, and the commit published
+half a statement. #10194 and #10379 refused the commit of such a transaction, in every language. The engine now takes the statement
+back on its own, the way SQLite does, and the transaction goes on as if it had never run: the records it wrote, its unique and plain
+indexes (vector and full-text ones included, with the BM25 counters of the latter), the edges and the edge lists of both vertices,
+the bytes of the pages it wrote to, the record counters and the slots it had reserved. A record an earlier statement of the
+transaction had updated, and the failed one changed again, gets back the content that earlier statement gave it. The rest of the
+transaction commits.
 
-**Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes
-on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+A statement that owns its transaction (auto-transaction mode) pays nothing and rolls back whole, as before. A `sqlscript` that handles
+its own failures (`COMMIT RETRY n ELSE ... AND CONTINUE | FAIL`) is unchanged. The events a statement already fired (listeners,
+triggers, what an external system was told) cannot be taken back, and neither can a schema change: it takes effect at once, outside the
+transaction, as it always did.
 
-### openCypher and SQL scripts: a transaction cannot be committed after a statement failed halfway, whatever the language (#10379)
+**When the statement cannot be taken back exactly it is not taken back at all**, and the transaction is refused its commit as in
+#10194: `commit()` throws a `TransactionException` ("Transaction cannot be committed: a statement failed after part of its records
+were written (...), and could not be taken back: ...") naming the reason. That is the case for:
 
-The rule of #10194 belongs to the transaction, not to SQL. It was enforced by the SQL engine alone, so
-`MATCH (n:T) SET n.v = 1` run in openCypher (or by Bolt inside `BEGIN`), and `UPDATE T SET v = 1;` run as a `sqlscript`, inside a
-transaction the caller keeps, failed after their first row and the caller's commit published that row. The check now sits where
-`database.command()` and `database.query()` dispatch every language, so any engine, including a later one, answers the same:
-`commit()` throws a `TransactionException` and nothing of the transaction is published. A statement that fails having written
-nothing leaves the transaction usable, and so does an openCypher statement whose own existence-constraint check took back every
-record it had created (#7945). A `sqlscript` whose writes are all inside a `BEGIN ... COMMIT RETRY n` block, which rolls back its
-failed attempts and answers the failure in its `ELSE` branch, is unchanged; a write outside such a block is covered. The SQL,
-openCypher and script engines run a write statement to its end inside the call; a Gremlin traversal runs while its result is read,
-so its result carries the same check.
+- a statement that changed more than `arcadedb.txStatementSavepointMaxEntries` entries of the transaction (100,000 by default; `0`
+  disables statement savepoints altogether), so a bulk load pays no memory for a journal it could not use;
+- a statement that changed records a Graph Analytical View follows, or that dropped a file;
+- a record with an `EXTERNAL` property that an earlier statement updated and a later one changed again, or any record an earlier
+  statement updated that cannot be kept or that the statement changed without reading it through the transaction;
+- state that the statement attached to the transaction (other than the full-text counters, which are taken back), a page of the
+  transaction that it replaced or created again, a record that an earlier statement created and that this one retracted, an index lane
+  that it dropped or replaced, or the transaction ending under it;
+- a statement run by another one (a function, a trigger) that failed after writing, whose failure the outer statement swallowed: the
+  outer one succeeded, so there is nothing to take back to;
+- a Gremlin traversal, which runs while its result is read, after the call has returned.
 
-The check runs at every call, so a statement that a function or a procedure runs through the database, whose failure the outer
-statement catches and carries on from, marks the caller's transaction too when it wrote before it failed.
-
-**Who sees a different answer.** A caller that catches the error of a multi-row openCypher or script statement inside its own
-transaction and goes on to commit. Roll the transaction back and retry, or issue the rows as separate statements.
+**Who sees a different answer.** A caller that catches the error of a multi-row statement inside its own transaction and goes on to
+commit: the commit used to throw, and now publishes the rest of the transaction without the failed statement.
 
 ### openCypher: `DISTINCT`, `GROUP BY`, `UNION`, `min()` and `max()` key a `BINARY` or `ARRAY_OF_*` value by its content (#10380)
 
@@ -174,7 +176,153 @@ deprecated `registerAPI(HttpServer, PathHandler)` is held to the same rule.
 **Who sees a different answer.** A third-party plugin that relied on replacing a route. The plugins shipped with ArcadeDB are
 unaffected.
 
+### SQL, HTTP: a `DATETIME` string with an offset is stored as the UTC wall clock of the instant it names (#10489)
+
+`2020-01-02T03:04:05+02:00` written to a `DATETIME` property as a string (an HTTP JSON value, a SQL literal or parameter,
+`Document.set(String)`) is stored as `2020-01-02T01:04:05`, exactly as the same instant is when a client sends it typed (a Java
+`OffsetDateTime` or `ZonedDateTime`, a Bolt `DateTime` with an offset or a zone id). It was stored as `03:04:05`, the offset
+dropped, so an HTTP client and a Bolt client in UTC+2 wrote values two hours apart. A string with no offset, and one in UTC (`Z`,
+`+00:00`: what Cypher's `datetime()` renders), keeps its wall clock. A `DATE` still keeps the day written. `date()` and
+`.asDatetime()` read a string the same way.
+
+**Who sees a different answer.** A client that sends offset-bearing strings with a non-zero offset to a `DATETIME` property. Values
+already stored are not rewritten: those that came from a client in another time zone hold the wall clock of that zone, and need to
+be rewritten if they are to be read as UTC. The bulk path (`GraphBatch`) still rebases onto the database's zone, the same value as
+the rule above for a UTC database (#10498).
+
+### SQL: `asDateTime(format)`, `date(value, format)` and `date.parse()` store the instant a text with an offset names (#10596)
+
+A pattern the caller names is read under the rule of the schema's own, since the instant a text names is what a `DATETIME` holds
+(#10489, #10498): `'2020-01-02T03:04:05+02:00'.asDateTime("yyyy-MM-dd'T'HH:mm:ssXXX")` and
+`date('2020-01-02T03:04:05+02:00', "yyyy-MM-dd'T'HH:mm:ssXXX")` answer `2020-01-02T01:04:05`, as they do without a pattern, and as the
+same pattern does when it is the schema's `dateTimeFormat`. They answered `03:04:05`, the offset the pattern had just read dropped.
+A zone name (`VV`, `z`) is read the same way, and so is the `datetimeFormat` of the importer. `asDate(format)` keeps the day written.
+The `timezone` argument of `date(value, format, timezone)`, which did nothing, is the zone a text that names none was written in:
+`date('2020-01-02 03:04:05', 'yyyy-MM-dd HH:mm:ss', 'Asia/Tokyo')` is `2020-01-01T18:04:05`; without it the text keeps its wall clock,
+and a text that names its own offset ignores it. The functions `date.parse()` and `date.fields()` read the offset of the text too: the
+epoch is the one of the instant it names whatever the JVM's zone, and the fields are those of its own offset (or of the zone asked for).
+
+**Who sees a different answer.** A query that names a pattern with an offset or a zone field and a text that carries a non-zero offset,
+or one that passes a `timezone` to `date()`. Values already stored from such a call are not rewritten.
+
+### SQL: `=`, `<>`, `IN` and `CONTAINS` compare the elements of a list or a map as they compare two scalars (#10595)
+
+Two values `=` reports equal are equal as elements of a list or a map too. `[<java.util.Date>]` is equal to a stored
+`[<LocalDateTime>]` of the same instant, and so are an `Instant`, a `Calendar`, a `java.sql.Timestamp`, an epoch number and an ISO
+string, in a list, a map and a list of lists: they were different values, and `<>` answered the row. A `Timestamp` on the left of `=`
+is equal to the same instant as a `Date` or a `LocalDateTime`, as it already was on the right.
+
+**Who sees a different answer.** A filter that compares a list or a map holding elements of one kind with one holding another kind
+that converts: `[1] = ['1']` is `true`, as `1 = '1'` is. Elements of one kind compare as before.
+
+### Vector search: a `PRODUCT` index walks on its PQ codes and re-ranks, and its graph file is small (#10514)
+
+SQL `vector.neighbors`, the openCypher procedure `db.index.vector.queryNodes` and the fluent `select().nearestTo()` search a
+`PRODUCT` index by walking the graph on the in-memory PQ codes, keeping `k * rerankOversample` candidates and scoring those on the
+stored vectors. They used to score every node the walk visited on the stored vectors, as a `NONE` index does, so the PQ codes built
+the graph and never searched it. The distances returned are still the exact ones. `rerankOversample` is a new index setting
+(default 10; `CREATE INDEX ... METADATA { "rerankOversample": 30 }`), and `vector.neighbors` takes `rerank` per query. `0` returns
+the PQ scores alone, without reading a stored vector, at a recall of about 0.7 on SIFT-1M with 32 subspaces whatever the beam: the
+distances are then PQ estimates. The grouped search (`groupBy`) and the other quantizations keep their exact walk.
+
+The graph file of a `PRODUCT` index no longer stores the PQ codes of every node's neighbours (jvector FusedPQ) unless the new
+`fusedPQ` index setting is `true`: the `.vecgraph` was about 8x a `NONE` index's and nothing read the codes. Files written
+earlier keep them and are searched through them. `pqTrainingLimit` now sets the size of the random sample the PQ codebook is
+trained on; it was accepted and ignored. The Java `findNeighborsFromVectorApproximate(query, k)` and `select().approximate(true)`
+keep the PQ-scores-only answer, and take `rerankOversample` / `.rerank()` to re-rank.
+
+**Who sees a different answer.** A `PRODUCT` index searched through SQL, openCypher or the select: the ranking can differ from the
+exact walk's: jvector alone measured recall@10 0.9873 against 0.9897 at a beam of 100 on SIFT-1M with 32 subspaces (#10514), and
+more is lost at fewer subspaces. Raise `rerank`
+(or `rerankOversample` on the index) and `efSearch` to close the gap; `INT8` is the quantization to pick when the exact walk is
+what matters.
+
+### HA: an index compaction whose publication has an unknown outcome quarantines the leader (#11240)
+
+The leader of an HA cluster now keeps its old index files and schema untouched until the cluster has accepted an index
+compaction, and only then saves the swap and drops the replaced files. When the publication times out, the leader waits up to
+the quorum timeout for the Raft log to settle it: applied, the swap is saved; lost to a leadership change, or still unknown when
+the wait ends, the database is quarantined on that node and resynced from a peer. It used to be left alone, and the old leader's
+index could silently miss entries the next leader wrote.
+
+**Who sees a different behaviour.** An HA cluster whose compaction publication times out (a slow or partitioned quorum): the node
+reports the database as resyncing (`503` on `/api/v1/ready`, the `local-resync-in-progress` alert) until the resync completes.
+
 ## Fixes
+
+- **#11238** A process killed right after `CREATE INDEX` or `REBUILD INDEX` of an `LSM_VECTOR` index no longer reopens with the
+  index empty, nor loses every transaction committed after the build: the build makes its pages durable before reporting the
+  index ready, and WAL recovery applies a full page image over a version gap.
+- **#11239** Committed `LSM_SPARSE_VECTOR` postings survive a crash: each sparse index logs them with the commit in two
+  `.sparselog` files and replays them at open (roughly 5-10% on a sparse-heavy write load).
+- **#11257** HA: every node of a cluster answers a sparse vector search with the postings the leader has not sealed into a
+  segment yet, without waiting for a flush, and they survive the leader going away: each node feeds its memtable from the
+  posting logs it applies.
+- **#11240** A file id freed by a drop is no longer handed out again after a restart, and a schema save that fails is retried at
+  the next transaction end or close instead of being forgotten.
+
+- **#11204** A type can no longer be made a subtype of a materialized view's backing type (`CREATE ... EXTENDS`, `ALTER TYPE ...
+  SUPERTYPE +`, or the Java API): every row of the subtype was answered by `SELECT FROM` the view, which still reported `VALID`,
+  and no refresh removed them. A schema that already holds such a link opens, warns once, and the link can be removed with
+  `ALTER TYPE ... SUPERTYPE -`.
+- **#11202** A vector search row whose record was removed behind the index's back is reported in the log (a throttled WARNING
+  naming `REBUILD INDEX`) instead of silently taking a top-K place with a RID that resolves to nothing.
+- **#11211** openCypher: reading a property of a variable-length relationship list (`MATCH (a)-[r*]->(b) RETURN r.prop`) answers
+  a client type error (HTTP `400`, Bolt `TypeError`) instead of a `500`.
+- **#11206** A record saved with `save(bucketName)` into a bucket another type owns is refused with an `IllegalArgumentException`,
+  and the record listeners always see the record's real type. `MOVE VERTEX` to a bucket of another vertex type moves the vertex
+  to that type (#11235).
+- **#11207** gRPC: a list property of a vector-search or full-text-search hit reaches the client as a list, as on the query path,
+  instead of a JSON string.
+- **#11208** A JSON import whose commit is refused no longer leaves its transaction open on the caller's thread.
+- **#11245** A parallel scan that fails reports the error its unit raised, instead of a generic "Parallel scan failed".
+- **#11248** A user's `resultSetLimit` and `readTimeout` apply to that user's executions only (a cached statement could carry them
+  to another user), and a tighter `LIMIT` or `TIMEOUT` written in the statement is kept.
+- **Studio** The graph GraphML export carries the vertex and edge properties (the old plugin wrote them as `[object Object]`) and
+  follows the server's GraphML layout. The table Excel export no longer needs JSZip, and the PDF export button is removed (#11236,
+  #11237).
+- **Dependencies** Guava pinned to 33.7.2-android (CVE-2026-102554) (#11237).
+
+- **#10588** A `CREATE INDEX` no longer leaves out a record that another session, or an outer transaction of the caller, had written
+  and not committed. The build indexes the committed state; the writer queued no entry for an index that did not exist when it saved
+  the record, so the record was invisible to every index-backed query and a `UNIQUE` index accepted a duplicate of its key, with the
+  statement reporting success. A transaction that began before an index was bound to a type it wrote to now queues the entries it
+  owes that index when it commits (the create, update or delete of each record, committed or rolled back with the transaction), for
+  `CREATE INDEX`, `buildBucketIndex()` and the index a super type propagates. A key the index had meanwhile given to another record
+  is refused at that commit with a `DuplicatedKeyException`. A transaction that wrote to the same bucket both before and after the
+  index was created cannot tell the entries it queued from the ones it owes, and is refused at its commit with a retryable
+  `ConcurrentModificationException`: the retry finds the index there from its first write. An outer transaction that owes entries,
+  committed while a transaction nested inside it is still open, is refused with a `TransactionException` (commit or roll back the
+  innermost first): the entries are queued on the transaction on top of the thread's stack.
+- **#10589** A `DROP INDEX` refused part way (a file of one bucket's sub-index that cannot be deleted) no longer leaves the index half
+  dropped. The files of every sub-index are probed, and their locks taken, before the first is dropped, as `DROP TYPE` and
+  `ALTER TYPE ... BUCKET` / `SUPERTYPE` do (#10421), and `DROP PROPERTY ... FORCE`, `TRUNCATE TYPE`, `REBUILD INDEX`, the
+  withdrawal of an edge type's `UNIQUE` and a `TypeIndex.drop()` from the Java API go through the same door: the statement is refused
+  with "Nothing was changed". The half-dropped index answered 0 rows for every record of a bucket whose sub-index was gone, across a
+  restart, and a wrapper left with no sub-index failed every later schema change.
+- **#10521** A commit cancelled in the WAL write, which sets the interrupt flag of the thread itself before it raises its
+  `TransactionException`, concluded its failed 2nd phase with the flag set: the rollback's file reads (the dictionary, the modified
+  records) then closed the shared channel under every thread of the database, and the failed reload was swallowed. The conclusion
+  of a 2nd phase (the commit, `completeCommit()` and `concludeFailedPhase2()` alike) now clears the flag for its whole duration and
+  hands it back.
+- **#10507** A database opened `READ_ONLY` writes nothing to its directory when it closes. Closing it after another process had
+  committed rewrote `statistics.json` and `last-tx-id.bin` from the state of its open, so `SELECT count(*)` and `countType` under-
+  reported, `CHECK DATABASE` reported an error and `last-tx-id.bin` went backwards. It no longer rewrites the statistics, the
+  recency marker or a dirty schema, sweeps the `.wal` files of a writer, or records a failed vector graph build in a manifest.
+- **#10514** A `PRODUCT` vector index searches with its PQ codes (see the migration note above), its graph file is about the size
+  of a `NONE` index's instead of 8x, `pqTrainingLimit` is honoured, the PQ-only search can re-rank on the stored vectors, and the
+  FusedPQ reader that was switched off for returning a single result is back behind the `fusedPQ` index setting: it was handed a
+  graph view the walk never reads.
+- **#10488** A list nested in a list or in a map HTTP parameter is stored as a list, like the same value written as a literal or
+  from Java, whether the property is declared or not. It was stored as the primitive `long[]` or `double[]` the request parser
+  leaves at any depth, so `=`, `.type()` and `GROUP BY` saw a different value for the same data.
+- **#10490** A `CREATE INDEX` (or a super-type index propagated to a type) inside a transaction that had written to the indexed
+  type no longer loses every committed record when that transaction rolls back. The committed records are indexed in a transaction
+  of their own and only what the caller created, updated or deleted is queued on the caller's transaction. A lookup found nothing
+  and a `UNIQUE` index accepted a duplicate of a committed key.
+- **#10491** A vertex written right after `ALTER TYPE U SUPERTYPE +Base`, `Base` being a vertex type a Graph Analytical View lists
+  and `U` an existing type holding vertices, is no longer missing from the view and from `algo.wcc`. The same loss applied to an
+  update or a delete of such a vertex.
 
 - **#10384** A route a plugin declares `GET` answers `HEAD` too, with the same handler, and its `405` names `GET, HEAD` in `Allow`.
   `HEAD /prometheus` was a `405` since #10157, so the `wget --spider` style healthcheck the core routes were fixed to pass (#8133)

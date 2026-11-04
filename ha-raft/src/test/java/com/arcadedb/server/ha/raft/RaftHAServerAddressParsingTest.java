@@ -140,7 +140,7 @@ class RaftHAServerAddressParsingTest {
   void objectFormNonNumericPortThrows() {
     assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:{raft:abc}", 2434))
         .isInstanceOf(ServerException.class)
-        .hasMessageContaining("Invalid raft value");
+        .hasMessageContaining("Invalid raft port value 'abc'");
   }
 
   @Test

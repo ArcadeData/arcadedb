@@ -24,7 +24,6 @@ import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -115,7 +114,9 @@ public final class IntegralKeyBound {
       return null;
     if (isInfinite(bound))
       return bound.doubleValue() > 0 ? null : minOf(keyType);
-    final BigDecimal rounded = toBigDecimal(bound).setScale(0, RoundingMode.CEILING);
+    // the ceiling is the negated floor of the negated bound, and a bound is the client's: floorOrBeyondLong does not ask BigDecimal
+    // for the digits of a 1E+999999999
+    final BigDecimal rounded = DateUtils.floorOrBeyondLong(toBigDecimal(bound).negate()).negate();
     if (rounded.compareTo(BigDecimal.valueOf(maxOf(keyType).longValue())) > 0)
       return null;
     if (rounded.compareTo(BigDecimal.valueOf(minOf(keyType).longValue())) < 0)
@@ -132,7 +133,7 @@ public final class IntegralKeyBound {
       return maxOf(keyType);
     if (isInfinite(bound))
       return null;
-    final BigDecimal rounded = toBigDecimal(bound).setScale(0, RoundingMode.FLOOR);
+    final BigDecimal rounded = DateUtils.floorOrBeyondLong(toBigDecimal(bound));
     if (rounded.compareTo(BigDecimal.valueOf(minOf(keyType).longValue())) < 0)
       return null;
     if (rounded.compareTo(BigDecimal.valueOf(maxOf(keyType).longValue())) > 0)
@@ -181,6 +182,16 @@ public final class IntegralKeyBound {
     if (bound instanceof LocalDateTime dateTime)
       return dateTime;
     return LocalDateTime.ofInstant(DateUtils.toInstant(bound), ZoneOffset.UTC);
+  }
+
+  /**
+   * The key type a numeric bound of an SQL lookup is mapped by: a DATETIME key is a count of epoch milliseconds, and a number is
+   * epoch milliseconds in SQL, so {@code dt >= 2000.5} maps as {@code >= 2001} on a LONG key (issue #10560). The index would
+   * convert 2000.5 to the datetime at 2000 and answer for another bound than the scan, which compares the number exactly. The other
+   * datetime precisions are not counts of milliseconds and keep the conversion they have.
+   */
+  public static byte boundTypeOf(final byte keyType) {
+    return keyType == BinaryTypes.TYPE_DATETIME ? BinaryTypes.TYPE_LONG : keyType;
   }
 
   /** Maps a {@link Type} to the binary key type {@link #isInexact} takes, or -1 for a type that is not integral. */

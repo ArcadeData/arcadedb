@@ -56,18 +56,21 @@ public class TextCamelCase extends AbstractTextFunction {
     boolean capitalizeNext = false;
     boolean first = true;
 
-    for (int i = 0; i < str.length(); i++) {
-      final char c = str.charAt(i);
+    // By code point (issue #10484): a letter outside the BMP is two UTF-16 units, neither of which is a letter, so it used to be a
+    // word break
+    for (int i = 0; i < str.length(); ) {
+      final int c = str.codePointAt(i);
+      i += Character.charCount(c);
       if (!Character.isLetterOrDigit(c)) {
         capitalizeNext = true;
       } else if (capitalizeNext) {
-        result.append(Character.toUpperCase(c));
+        result.appendCodePoint(Character.toUpperCase(c));
         capitalizeNext = false;
       } else if (first) {
-        result.append(Character.toLowerCase(c));
+        result.appendCodePoint(Character.toLowerCase(c));
         first = false;
       } else {
-        result.append(Character.toLowerCase(c));
+        result.appendCodePoint(Character.toLowerCase(c));
       }
     }
 

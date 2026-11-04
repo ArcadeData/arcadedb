@@ -295,7 +295,7 @@ public class SimpleCypherStatement implements CypherStatement {
    * read-only flag above does or the two disagree about the same statement.
    */
   public static boolean isWriteProcedureCall(final CallClause call) {
-    final CypherProcedure procedure = CypherProcedureRegistry.get(call.getProcedureName());
+    final CypherProcedure procedure = call.resolveProcedure();
     if (procedure != null)
       // A per-call refinement may only narrow, so a procedure that never writes needs no second look.
       return procedure.isWriteProcedure() && procedure.isWriteProcedure(literalArguments(call));

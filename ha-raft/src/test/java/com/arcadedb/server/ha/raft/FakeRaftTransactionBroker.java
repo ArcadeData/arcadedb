@@ -135,9 +135,25 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
     call("replicateInstallDatabase", () -> null, dbName, forceSnapshot);
   }
 
+  // The fenced forms of a restore (issue #10974): recorded under the same names, with the fence when there is one, so a test that
+  // pins the arguments of an unfenced call sees what it always saw
+  @Override
+  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long restoreFenceTerm) {
+    if (restoreFenceTerm < 0)
+      replicateInstallDatabase(dbName, forceSnapshot);
+    else
+      call("replicateInstallDatabase", () -> null, dbName, forceSnapshot, restoreFenceTerm);
+  }
+
   @Override
   public long replicateDropDatabase(final String dbName) {
     return (Long) call("replicateDropDatabase", () -> 0L, dbName);
+  }
+
+  @Override
+  public long replicateDropDatabase(final String dbName, final long restoreFenceTerm) {
+    return restoreFenceTerm < 0 ? replicateDropDatabase(dbName) : (Long) call("replicateDropDatabase", () -> 0L, dbName,
+        restoreFenceTerm);
   }
 
   @Override

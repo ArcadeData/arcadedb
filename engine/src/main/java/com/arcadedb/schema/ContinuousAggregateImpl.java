@@ -20,14 +20,16 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
-public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant {
+public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant, BackingTypeOwner {
   private final Database database;
   private final String   name;
   // volatile, not final: a rename of the source type rewrites them in place (#10096), see retargetSourceType()
@@ -60,9 +62,24 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * the schema is written with the flag this absence stood for.
    */
   private volatile boolean                needsCleanRebuild;
+  /**
+   * The time range samples of the source type were removed from (issue #10428), or appended to behind the watermark (issue #10502),
+   * since the buckets of the aggregate were last computed, or {@code null} when none were. The refresh only recomputes the bucket
+   * open at the watermark and the newer ones, so the buckets behind the watermark keep what they held when they were computed; this
+   * is what tells it which of them no longer match the source. One range, the hull of every change since: recomputing a bucket the
+   * change did not reach gives the rows it already had, so a wider range costs time and never correctness.
+   * <p>
+   * Part of the definition in the schema, unlike {@link #needsCleanRebuild}: a restart must not forget it, and under HA it has to
+   * reach the followers in the replication unit of the delete (a follower promoted to leader would otherwise refresh without it).
+   * The record of a late append is shipped by a schema session of its own, right after the append commits (issue #10634). The
+   * refresh that clears the record does not ship the clearing: a follower keeping a cleared record recomputes those buckets once
+   * more if promoted, which gives the rows they hold, and every compaction, retention or schema change ships the leader's state.
+   */
+  private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
+  private final    AtomicBoolean          refreshRequested  = new AtomicBoolean(false);
 
   // Runtime metrics (not persisted)
   private final AtomicLong refreshCount          = new AtomicLong(0);
@@ -105,6 +122,30 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   public String getBackingTypeName() {
     return backingTypeName;
+  }
+
+  /**
+   * Why every refresh of this aggregate reads every row it ever wrote, with the statements that stop it, or {@code null} when it does
+   * not (issue #10804). The refresh replaces the rows of the buckets at or after the watermark, and the recompute of a range those of
+   * the range: an aggregate created before #10804 has no index on its bucket column, so each read of those rows is a scan of the
+   * backing type, paid by every append that triggers a refresh. Not built at open: under HA that is a schema change every node would make on
+   * its own, so it is named here, for the schema load to report once.
+   */
+  String getUpgradeWarning() {
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(backingTypeName))
+      return null;
+    for (final TypeIndex index : schema.getType(backingTypeName).getAllIndexes(true)) {
+      final List<String> properties = index.getPropertyNames();
+      if (index.getType() == Schema.INDEX_TYPE.LSM_TREE && !properties.isEmpty() && bucketColumn.equals(properties.getFirst()))
+        return null;
+    }
+    final String type = "`" + backingTypeName + "`";
+    final String property = "`" + bucketColumn + "`";
+    return "every refresh of continuous aggregate '" + name + "' reads all its rows, its bucket column '" + bucketColumn
+        + "' has no index. Run: " + (schema.getType(backingTypeName).existsProperty(bucketColumn) ?
+        "" :
+        "CREATE PROPERTY " + type + "." + property + " DATETIME; ") + "CREATE INDEX ON " + type + " (" + property + ") NOTUNIQUE";
   }
 
   @Override
@@ -158,8 +199,24 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
       retargetSourceType(newName, schema.retargetedQuery("continuous aggregate", name, query, oldName, newName));
   }
 
-  private String dropStatement() {
+  @Override
+  public String dropStatement() {
     return "DROP CONTINUOUS AGGREGATE " + name;
+  }
+
+  @Override
+  public Database getDatabase() {
+    return database;
+  }
+
+  @Override
+  public String kind() {
+    return "continuous aggregate";
+  }
+
+  @Override
+  public String refreshStatement() {
+    return "REFRESH CONTINUOUS AGGREGATE " + name;
   }
 
   @Override
@@ -245,6 +302,126 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     static final Watermark UNSET = new Watermark(0, false);
   }
 
+  /**
+   * Samples with a timestamp in {@code [fromTs, toTs]} were removed from the source type (issue #10428), or appended to it behind the
+   * watermark (issue #10502). The bounds need not be bucket boundaries: the refresh finds the buckets they reach on the grid the
+   * watermark is a start of.
+   */
+  public record Invalidation(long fromTs, long toTs) {
+    Invalidation merge(final Invalidation other) {
+      return other == null ? this : new Invalidation(Math.min(fromTs, other.fromTs), Math.max(toTs, other.toTs));
+    }
+  }
+
+  /**
+   * Records that samples in {@code [fromTs, toTs]} of the source type were removed, so the next refresh recomputes the buckets they
+   * were in. The caller persists the schema (inside the replication unit of the delete, under HA) when the answer is {@code true}.
+   *
+   * @return {@code false} when the range was inside the one already recorded, which is then what the schema already holds. It is
+   * recorded all the same, as a new instance: a refresh that read the range before this delete must not clear it
+   */
+  public boolean invalidate(final long fromTs, final long toTs) {
+    final Invalidation added = new Invalidation(fromTs, toTs);
+    final boolean[] widened = new boolean[1];
+    invalidation.updateAndGet(current -> {
+      // assigned on every try of the update: the last one is the one that took effect
+      widened[0] = current == null || fromTs < current.fromTs() || toTs > current.toTs();
+      return added.merge(current);
+    });
+    return widened[0];
+  }
+
+  /**
+   * Records the samples an append has just committed with timestamps in {@code [minTs, maxTs]}, when some of them are behind the
+   * watermark (issue #10502): the incremental refresh reads only the samples at or after the watermark, so those would never reach
+   * their buckets. Called once the append has committed: a refresh that read the source before the commit and cleared the record
+   * would lose the samples. Under HA it is also called before the commit, only to ship the record to the followers ahead of the
+   * samples (issue #10673); the call after the commit is what the leader relies on. The caller persists the schema when the answer
+   * is {@code true}.
+   * <p>
+   * The range recorded is widened to whole buckets on the grid the watermark is a start of, and clipped to before the watermark (the
+   * samples at or after it are read by the refresh anyway). A bucket is recomputed whole whatever part of it the range covers, so
+   * the widening costs nothing, and it makes the later samples of a bucket already recorded change nothing the schema holds: a
+   * stream of late samples saves the schema once per bucket it reaches, not once per batch.
+   *
+   * <p>
+   * While a refresh runs, every sample is recorded, whatever the watermark (issue #10633). The refresh may have read the source
+   * before this commit, and installs a watermark only when it ends: one past the bucket of a sample it did not read would leave that
+   * sample behind it for good. The watermark of before the refresh cannot say which samples those are, so the range is not clipped
+   * to it; the refresh that applies the record recomputes only the buckets behind its own watermark. The refresh in progress clears
+   * only the record it read (by identity), so the next refresh applies this one. The flag is read BEFORE the watermark: a refresh
+   * that is over by then installed its watermark first, and one that begins after it reads the source after this commit.
+   * <p>
+   * The call made before the commit under HA comes after the append registered itself in flight on its shard (issue #10857): a
+   * refresh that this call does not find in progress finds the append, and keeps its watermark at or before the bucket of the oldest
+   * sample, so samples that are not late here do not become late by the time they commit. A refresh found in progress clears the
+   * record this call made only when it did not find the append, which means it read the record before this call added to it.
+   *
+   * @return {@code false} when no sample is behind the watermark, or the buckets were already recorded
+   */
+  public boolean invalidateLateSamples(final long minTs, final long maxTs) {
+    if (minTs > maxTs)
+      return false;
+    final boolean refreshing = refreshInProgress.get();
+    final Watermark current = watermark;
+    if (refreshing) {
+      // no watermark yet (the first refresh is the one running): no grid to widen the range on, the refresh that applies it has one
+      if (!current.set() || bucketIntervalMs <= 0)
+        return invalidate(minTs, maxTs);
+      final long anchor = current.timestamp();
+      final long lastStart = bucketStart(maxTs, anchor, bucketIntervalMs);
+      return invalidate(bucketStart(minTs, anchor, bucketIntervalMs),
+          lastStart > Long.MAX_VALUE - (bucketIntervalMs - 1) ? Long.MAX_VALUE : lastStart + (bucketIntervalMs - 1));
+    }
+    // never refreshed: the first refresh reads every sample
+    if (!current.set() || minTs >= current.timestamp())
+      return false;
+    final long watermarkTs = current.timestamp();
+    final long lastLate = Math.min(maxTs, watermarkTs - 1);
+    if (bucketIntervalMs <= 0)
+      return invalidate(minTs, lastLate);
+    // the start of a bucket of the grid at or before the watermark is at most watermarkTs - bucketIntervalMs, so no overflow
+    return invalidate(bucketStart(minTs, watermarkTs, bucketIntervalMs),
+        Math.min(bucketStart(lastLate, watermarkTs, bucketIntervalMs) + (bucketIntervalMs - 1), watermarkTs - 1));
+  }
+
+  /**
+   * The start of the bucket {@code ts} is in, on the grid of buckets {@code interval} wide that {@code anchor} (a bucket start, the
+   * watermark) is on. {@code ts.timeBucket()} takes fixed units only and refuses a time zone whose offset changes, so every bucket is
+   * {@code interval} wide and the grid is known from any one of its starts, whatever origin, offset or zone the query gives it.
+   * {@link Long#MIN_VALUE} when the start is before the first representable instant.
+   */
+  static long bucketStart(final long ts, final long anchor, final long interval) {
+    final long offset = Math.floorMod(Math.floorMod(ts, interval) - Math.floorMod(anchor, interval), interval);
+    return ts < Long.MIN_VALUE + offset ? Long.MIN_VALUE : ts - offset;
+  }
+
+  /** The range recorded by {@link #invalidate}, or {@code null} when the buckets of the aggregate all match the source. */
+  public Invalidation getInvalidation() {
+    return invalidation.get();
+  }
+
+  /**
+   * Forgets {@code recomputed}, the range a refresh has just recomputed. A no-op when another delete was recorded meanwhile, even
+   * one inside the range, which widens nothing: that delete may have landed after the refresh read the source, so the next refresh
+   * recomputes it. This rests on the {@link AtomicReference} comparing REFERENCES, and on {@link #invalidate} storing a new
+   * instance every time - never an equal record already there - so it is the identity of the record that tells a refresh whether
+   * anything was recorded since it read it.
+   */
+  void clearInvalidation(final Invalidation recomputed) {
+    invalidation.compareAndSet(recomputed, null);
+  }
+
+  /** Puts back a range whose clearing could not be persisted, with whatever was recorded since. */
+  void restoreInvalidation(final Invalidation recomputed) {
+    invalidation.updateAndGet(current -> recomputed.merge(current));
+  }
+
+  /** The width of one bucket, for the refresh to bound the buckets a range reaches. */
+  long bucketIntervalMs() {
+    return bucketIntervalMs;
+  }
+
   public void setLastRefreshTime(final long lastRefreshTime) {
     this.lastRefreshTime = lastRefreshTime;
   }
@@ -255,6 +432,19 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   public boolean tryBeginRefresh() {
     return refreshInProgress.compareAndSet(false, true);
+  }
+
+  /** A refresh was asked for and has not begun: see {@link ContinuousAggregateRefresher#incrementalRefresh}. */
+  void requestRefresh() {
+    refreshRequested.set(true);
+  }
+
+  boolean isRefreshRequested() {
+    return refreshRequested.get();
+  }
+
+  void clearRefreshRequest() {
+    refreshRequested.set(false);
   }
 
   public void endRefresh() {
@@ -336,6 +526,11 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     final Watermark currentWatermark = watermark;
     json.put("watermarkTs", currentWatermark.timestamp());
     json.put("watermarkSet", currentWatermark.set());
+    final Invalidation pending = invalidation.get();
+    if (pending != null) {
+      json.put("invalidatedFromTs", pending.fromTs());
+      json.put("invalidatedToTs", pending.toTs());
+    }
     json.put("lastRefreshTime", lastRefreshTime);
     json.put("status", status.name());
     return json;
@@ -366,6 +561,8 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     // the aggregate per refresh that has run. Resuming normally would add one more, so the next refresh rebuilds
     // from empty instead - which repairs the existing duplication rather than merely declining to add to it.
     ca.needsCleanRebuild = legacy && loadedWatermarkTs == 0;
+    if (json.has("invalidatedFromTs") && json.has("invalidatedToTs"))
+      ca.invalidation.set(new Invalidation(json.getLong("invalidatedFromTs"), json.getLong("invalidatedToTs")));
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return ca;

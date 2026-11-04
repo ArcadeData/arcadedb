@@ -540,13 +540,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * caller passing {@code List.of(1, 2, 3)} gives.
    */
   private static Object numericArrayToList(final Object value) {
-    if (value instanceof long[] longs) {
-      final List<Object> list = new ArrayList<>(longs.length);
-      for (final long v : longs)
-        list.add(v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE ? (Object) (int) v : (Object) v);
-      return list;
-    }
-    return Type.isPrimitiveNumberArray(value) ? Type.primitiveArrayToList(value) : value;
+    return Type.isPrimitiveNumberArray(value) ? Type.primitiveArrayToJsonList(value) : value;
   }
 
   /** A long that fits an int is an int, as the JSON parser answers a scalar number. */

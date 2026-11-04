@@ -24,6 +24,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -468,7 +469,7 @@ final class SecurityCatchUp implements AutoCloseable {
     if (directory == null)
       return;
     try (final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     } catch (final IOException | RuntimeException e) {
       // Not supported here (Windows, some file systems): the marker is written, only its durability is weaker
     }

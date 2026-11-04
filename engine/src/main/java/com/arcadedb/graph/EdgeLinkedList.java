@@ -136,13 +136,15 @@ public class EdgeLinkedList {
   }
 
   /**
-   * {@link #edgeIteratorForRemoval()} that skips the entries reaching {@code skippedNeighbor}, on the pointer read from the
-   * segment (issue #10369): the incoming walk of a vertex being deleted passes the vertex itself, whose self-loops the
-   * outgoing walk already deleted.
+   * {@link #edgeIteratorForRemoval()} that passes over the self-loops {@code deletedSelfLoops} holds, on the pointers read from
+   * the segment: the incoming walk of a vertex being deleted, whose outgoing walk already deleted them (issues #10369, #10520).
+   * Only those: a self-loop entry the outgoing walk did not delete is yielded like any other.
+   *
+   * @param deletedSelfLoops the self-loops to pass over, or {@code null} to yield every entry
    */
-  public Iterator<Edge> edgeIteratorForRemoval(final RID skippedNeighbor) {
+  Iterator<Edge> edgeIteratorForRemoval(final DeletedSelfLoops deletedSelfLoops) {
     final EdgeIterator iterator = withCensus(new EdgeIterator(lastSegment, vertex.getIdentity(), direction));
-    iterator.excludeNeighborVertex(skippedNeighbor);
+    iterator.skipDeletedSelfLoops(deletedSelfLoops);
     return iterator;
   }
 
@@ -806,13 +808,18 @@ public class EdgeLinkedList {
       // #5155: the previous-browsed chunk was only read unanchored during the walk; anchor it now, before its
       // relink write, so the modification lands on a tx-retained page and is MVCC-version-checked at commit.
       final EdgeSegment prevBrowsed = loadChunkForWrite(prevBrowsedRID);
-      prevBrowsed.setPrevious(previousOf(current));
+      final EdgeSegment relinkedTo = previousOf(current);
+      prevBrowsed.setPrevious(relinkedTo);
       // The pages are excluded BEFORE the writes: a write to a segment on an excluded page is replayed by the
       // disjoint-slot merge, which keeps two transactions touching different segments of one page from failing (#9208)
       if (tx != null)
         tx.poisonEdgeAppendPage(current.getIdentity());
       updateRewrittenSegment(database, prevBrowsed);
       current.delete();
+      // A WALK OF THIS LIST STILL GOING MAY HOLD THE SEGMENT IN FRONT AS IT WAS BEFORE THE RELINK: IT GOES ON WHERE THE CHAIN NOW
+      // GOES (#11234)
+      if (tx != null)
+        tx.edgeSegmentDeleted(current.getIdentity(), relinkedTo.getIdentity());
     } else
       updateRewrittenSegment(database, current);
   }
@@ -850,6 +857,9 @@ public class EdgeLinkedList {
       if (tx != null)
         tx.poisonEdgeAppendPage(current.getIdentity());
       current.delete();
+      // THE WHOLE LIST GOES: A WALK OF IT STILL GOING ENDS WHERE IT WOULD HAVE STEPPED ONTO A DELETED SEGMENT (#11234)
+      if (tx != null)
+        tx.edgeSegmentDeleted(current.getIdentity(), null);
       current = prev;
     }
   }

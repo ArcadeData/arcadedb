@@ -425,7 +425,9 @@ public class CreateStep extends AbstractExecutionStep {
    * (e.g., CREATE (n:Person:Developer)), a composite type is automatically
    * created that extends all label types.
    */
-  private Vertex createVertex(final NodePattern nodePattern, final Result currentResult) {
+  private Vertex createVertex(final NodePattern pattern, final Result currentResult) {
+    // Dynamic labels - CREATE (n:$($label)) - are evaluated for this row first (issue #10683)
+    final NodePattern nodePattern = DynamicNodeLabels.resolve(pattern, currentResult, evaluator, context, "CREATE");
     final long startVertex = context.isProfiling() ? System.nanoTime() : 0;
 
     // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - that method's

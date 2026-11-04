@@ -41,6 +41,7 @@ public class HybridSearchTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "hybrid_search")
+        .put("annotations", MCPToolUtils.annotations("Hybrid search", true, false, true, false))
         .put("description",
             """
             Retrieve records by fusing a vector search, an optional full-text search, and an optional \

@@ -751,10 +751,27 @@ public class PluginApiSpec implements OpenApiContributor {
             + "read 0. See the 'follower-stalled-behind-leader' alert for the operator-facing explanation"));
     schema.addProperty("peers", SpecBuilders.arrayOf(peer, "Known peers"));
     schema.addProperty("databases", SpecBuilders.arrayOf(database, "Replicated databases"));
-    schema.addProperty("databasePresence", SpecBuilders.mapOf(
-        SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"), "Peers that hold this database"),
-        "Which peer holds which database, keyed by database name. Present only when this server is the leader "
-            + "and the request set '?presence=true'."));
+    // Issue #10933: the shape the handler writes (it used to be declared as a map of arrays keyed by database name), and the nodes
+    // are every peer this node knows, a pod that joined at runtime included
+    final Schema<Object> presenceRow = SpecBuilders.object("One database of the presence matrix");
+    presenceRow.addProperty("name", SpecBuilders.string("Database name"));
+    presenceRow.addProperty("present", SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"),
+        "Reachable nodes that hold the database"));
+    presenceRow.addProperty("missing", SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"),
+        "Reachable nodes that do not hold it. An unreachable node is in neither list"));
+    final Schema<Object> presence = SpecBuilders.object(
+        "Which node holds which database. Present only when this server is the leader and the request set '?presence=true'.");
+    presence.addProperty("nodes", SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"),
+        "Every peer this node knows: the server list reconciled with the live Raft configuration, so a peer that joined at "
+            + "runtime is one of them"));
+    presence.addProperty("unreachable", SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"),
+        "Nodes of 'nodes' that did not answer, left out of the present/missing accounting so a transient failure is not read "
+            + "as a missing database"));
+    presence.addProperty("notInConfiguration", SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"),
+        "Declared nodes the live Raft configuration does not hold: the leader does not replicate to them, so a database "
+            + "they lack is not a replication gap"));
+    presence.addProperty("databases", SpecBuilders.arrayOf(presenceRow, "One row per database held by any reachable node"));
+    schema.addProperty("databasePresence", presence);
     schema.addProperty("alerts", SpecBuilders.arrayOf(alertSchema(),
         "Conditions worth an operator's attention. Empty when the cluster is healthy: an absent array is not a "
             + "state this endpoint produces"));
@@ -982,9 +999,10 @@ public class PluginApiSpec implements OpenApiContributor {
         which is not a replication fault; 'APPLY_ERROR' an unexpected error while applying a committed entry; \
         'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index; \
         'UNPUBLISHED_SCHEMA_CHANGE' a schema change or compaction this node ran locally whose replication was \
-        refused or could not be published, so no other node holds it.""");
+        refused or could not be published, so no other node holds it; 'LOCAL_RECOVERY_INCOMPLETE' a crash \
+        recovery of this node's own copy that did not replay every transaction.""");
     cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE",
-        "UNPUBLISHED_SCHEMA_CHANGE"));
+        "UNPUBLISHED_SCHEMA_CHANGE", "LOCAL_RECOVERY_INCOMPLETE"));
     // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read
     // from DivergenceCause for the same reason the alert severities are - this module cannot see ha-raft - and
     // Issue7577ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
@@ -1052,7 +1070,7 @@ public class PluginApiSpec implements OpenApiContributor {
         "Why the leader had refused to reopen the copy, when a refusal was standing. Present on accept-copy."));
     schema.addProperty("divergenceCause", SpecBuilders.string(
         "Why the lifted quarantine had been raised (WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY, APPLY_ERROR, "
-            + "SNAPSHOT_INSTALL_INCOMPLETE, UNPUBLISHED_SCHEMA_CHANGE), when one stood. Present on accept-diverged."));
+            + "SNAPSHOT_INSTALL_INCOMPLETE, UNPUBLISHED_SCHEMA_CHANGE, LOCAL_RECOVERY_INCOMPLETE), when one stood. Present on accept-diverged."));
     schema.addProperty("readFloor", SpecBuilders.integer(
         "The read floor that was lifted with the quarantine, when one stood. Present on accept-diverged, and on "
             + "accept-stale-snapshot as the node-wide floor that was lifted."));

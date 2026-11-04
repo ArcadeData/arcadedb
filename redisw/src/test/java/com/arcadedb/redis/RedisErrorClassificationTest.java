@@ -21,6 +21,8 @@ package com.arcadedb.redis;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.TransactionException;
 import org.junit.jupiter.api.Test;
@@ -43,6 +45,17 @@ class RedisErrorClassificationTest {
     assertThat(RedisNetworkExecutor.respErrorPrefix(new LockTimeoutException("lock timeout"))).isEqualTo("TRYAGAIN");
     assertThat(RedisNetworkExecutor.respErrorPrefix(
         new TransactionException("commit failed", new ConcurrentModificationException("conflict")))).isEqualTo("TRYAGAIN");
+  }
+
+  @Test
+  void aDatabaseTheServerHoldsIsLoadingAndANameThatIsNotADatabaseIsNot() {
+    // Issue #10553: the database exists and cannot serve now (a restore holds its name, close database closed it)
+    assertThat(RedisNetworkExecutor.respErrorPrefix(new DatabaseNotAvailableException("Database 'mydb' is not available")))
+        .isEqualTo("LOADING");
+    assertThat(RedisNetworkExecutor.respErrorPrefix(
+        new TransactionException("commit failed", new DatabaseNotAvailableException("held")))).isEqualTo("LOADING");
+    assertThat(RedisNetworkExecutor.respErrorPrefix(new DatabaseNotFoundException("Database 'nope' does not exist")))
+        .isEqualTo("ERR");
   }
 
   @Test

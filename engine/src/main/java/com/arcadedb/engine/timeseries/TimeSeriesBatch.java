@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.schema.Type;
 
 import java.util.Arrays;
@@ -79,6 +80,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   // whose schema predates issue #5475 can still carry one.
   static final byte KIND_TEXT     = 8;
 
+  private final Database           database;
   private final ColumnDefinition[] columns;
   private final byte[]             kinds;
   /** {@link #rawNull} per column, precomputed: the raw bits a column with no value set reads back as. */
@@ -110,6 +112,21 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
    * @param capacity    expected number of samples; the batch grows on demand if exceeded
    */
   public TimeSeriesBatch(final List<ColumnDefinition> typeColumns, final int capacity) {
+    this(typeColumns, capacity, null);
+  }
+
+  /**
+   * Creates a batch for the given type columns, whose {@link #setValue} reads a date or an instant given as text through
+   * {@code database}, with its formats and its time zone, as an {@code INSERT} does.
+   *
+   * @param typeColumns the full column list of the TimeSeries type, timestamp column included
+   * @param capacity    expected number of samples; the batch grows on demand if exceeded
+   * @param database    the database of the type, or {@code null} to read such text with the default formats and the JVM's time zone,
+   *                    which names another instant than an {@code INSERT} does whenever that zone is not UTC. Use
+   *                    {@link TimeSeriesEngine#newBatch(int)}, which passes it
+   */
+  public TimeSeriesBatch(final List<ColumnDefinition> typeColumns, final int capacity, final Database database) {
+    this.database = database;
     int valueColumns = 0;
     for (final ColumnDefinition col : typeColumns)
       if (col.getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
@@ -267,6 +284,12 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     setLong(row, columnIndex, value ? 1L : 0L);
   }
 
+  /**
+   * Sets a text column. The text is stored as given, which keeps this setter free of any per-value work: a text over
+   * {@link TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes is refused where the batch is appended, on the calling thread of
+   * {@code DatabaseAsyncExecutor#appendSamples(String, TimeSeriesRowSource)} and by the engine's own append (issue #10487). Use
+   * {@link #setValue} to have the text checked here.
+   */
   public void setString(final int row, final int columnIndex, final String value) {
     if (kinds[columnIndex] != KIND_STRING && kinds[columnIndex] != KIND_TEXT)
       throw new IllegalArgumentException(
@@ -277,20 +300,29 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
 
   /**
    * Generic setter for callers that already hold a boxed value (SQL, line protocol, JSON payloads).
-   * Applies the same coercion the {@code Object[][]} append path applies, so a batch filled this way
-   * stores exactly what that path would have stored.
+   * Converts the value like {@link ColumnDefinition#storableValue} does, the conversion every surface that takes a boxed value
+   * applies, so a batch filled this way stores exactly what the {@code Object[][]} path and the SQL {@code INSERT} would have
+   * stored (issue #10487):
+   * <ul>
+   * <li>a number must be in the range of an INTEGER, SHORT or BYTE column - a long past it is refused, not stored modulo 2^32 -
+   * and numeric text is parsed for a number column;</li>
+   * <li>a BOOLEAN column takes a boolean or the text {@code true} / {@code false}, and refuses anything else rather than
+   * storing {@code false};</li>
+   * <li>a STRING column takes a text of at most {@link TimeSeriesBucket#MAX_STRING_BYTES} UTF-8 bytes;</li>
+   * <li>a DATE/DATETIME column takes an epoch count in its unit, or a date or an instant in any form the engine reads.</li>
+   * </ul>
+   *
+   * @throws IllegalArgumentException naming the column, when the column cannot store the value. The row is left as it was before
+   *                                  the call for that column, so the caller may set the column again
    */
   public void setValue(final int row, final int columnIndex, final Object value) {
     final byte kind = kinds[columnIndex];
-    if (kind == KIND_STRING) {
-      stringValues[columnIndex][row] = (String) value;
+    final Object stored = columns[columnIndex].storableValue(database, value);
+    if (kind == KIND_STRING || kind == KIND_TEXT) {
+      stringValues[columnIndex][row] = (String) stored;
       return;
     }
-    if (kind == KIND_TEXT) {
-      stringValues[columnIndex][row] = value != null ? value.toString() : null;
-      return;
-    }
-    if (value == null) {
+    if (stored == null) {
       rawValues[columnIndex][row] = rawNull(kind);
       final long[] bits = present[columnIndex];
       if (bits != null)
@@ -299,11 +331,11 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     }
     markPresent(row, columnIndex);
     if (kind == KIND_BOOLEAN) {
-      rawValues[columnIndex][row] = Boolean.TRUE.equals(value) ? 1L : 0L;
+      rawValues[columnIndex][row] = (Boolean) stored ? 1L : 0L;
       return;
     }
 
-    final Number number = (Number) value;
+    final Number number = (Number) stored;
     rawValues[columnIndex][row] = switch (kind) {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(number.doubleValue());
       case KIND_FLOAT -> Float.floatToRawIntBits(number.floatValue());

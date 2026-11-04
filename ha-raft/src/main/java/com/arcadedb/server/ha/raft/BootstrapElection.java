@@ -999,7 +999,7 @@ class BootstrapElection {
       if (!dbFilter.contains(dbName))
         continue;
       try {
-        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabase(dbName),
+        final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabaseForOperator(dbName),
             ArcadeStateMachine.settleBudget(settleDeadline));
         if (local == null)
           continue;

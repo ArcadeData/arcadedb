@@ -69,6 +69,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
@@ -113,6 +114,7 @@ import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.http.handler.LeaderDial;
+import com.arcadedb.utility.CallableNoReturn;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
@@ -133,10 +135,12 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -191,6 +195,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // install the rewritten sealed files atomically with the buffered mutable-bucket clear WAL.
   private static final ThreadLocal<List<RaftLogEntryCodec.TsSealedBlob>> compactionSealedBuffer =
       ThreadLocal.withInitial(ArrayList::new);
+  /**
+   * What the compaction running on this thread persists of its swap - the schema save, the drops of the files it replaced -
+   * held back until the entry publishing it is accepted (issue #11240). Non-null only inside
+   * {@link #runWithCompactionReplication}; per database, unlike the buffers above, because the deferral is asked through
+   * the database the compaction runs on.
+   */
+  private final ThreadLocal<List<CallableNoReturn>> compactionPersistence = new ThreadLocal<>();
   /**
    * Non-null only while a {@code recordFileChanges} session on THIS thread is shipping its buffered WAL in
    * instalments (issue #6136). Thread-local for the same reason the buffers are, and null everywhere else - notably
@@ -456,6 +467,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * write (issue #6191).
    */
   private final AtomicBoolean selfForwardWarned = new AtomicBoolean(false);
+  /** The leader's answer to ensureLabelTypes was "unknown function" (issue #11064): said once per database, as {@link #selfForwardWarned}. */
+  private final AtomicBoolean unknownEnsureLabelTypesWarned = new AtomicBoolean(false);
 
   /**
    * Emits the "a peer forwarded a write here and this node is not the leader either" notice only once per
@@ -570,6 +583,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           : HttpClient.newHttpClient();
     }
     this.proxied.setWrappedDatabaseInstance(this);
+    // A peer of a build that predates the fixed-width float arrays could not read a record holding one (issue #10856)
+    final BinarySerializer serializer = proxied.getSerializer();
+    if (serializer != null)
+      serializer.setFixedWidthFloatArrays(this::fixedWidthFloatArraysAllowed);
+  }
+
+  /**
+   * Whether a record of this database may hold a float or double array in its fixed-width form: only once every peer has
+   * advertised that it reads it (issue #10856). Asked on every write of such an array; the answer is cached for a second.
+   */
+  private boolean fixedWidthFloatArraysAllowed() {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null && raft.canWriteFixedWidthFloatArrays();
   }
 
   @Override
@@ -729,8 +755,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
           // Read before the commit concludes: the accumulator is released with the transaction
           final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
-          return new ReplicationPayload(tx, phase1, walData, bucketDeltas,
+          final ReplicationPayload prepared = new ReplicationPayload(tx, phase1, walData, bucketDeltas,
               corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
+          // Issue #10881: phase 1 checked the write refusal under this lock, and the rest of the commit - quorum, publication,
+          // acknowledgement - runs after it is released. Registered here, still under the lock, so a restore that refuses
+          // writes and then awaits the commits in flight waits for this one too, instead of swapping its target away after
+          // the client has been told the commit succeeded. The last statement of the arm: nothing below can throw past it
+          proxied.beginCommitInFlight();
+          return prepared;
         }
 
         // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
@@ -761,7 +793,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // The state machine publishes this node's own entry at its position in the Raft log (issue #6965): the prepared
     // transaction is registered with it right before the entry is dispatched, and this thread finishes the commit once
     // the entry is acknowledged. Only the leader has a state machine that applies its own entries this way.
-    replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+    try {
+      replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+    } finally {
+      proxied.endCommitInFlight();
+    }
   }
 
   /**
@@ -1172,8 +1208,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         lastTxPreparedAtWithheldLog = now;
         LogManager.instance().log(this, Level.WARNING,
             "Database '%s': transactions do not state the index they were prepared at, so a replica transaction prepared before a "
-                + "schema change is NOT refused. Some peer does not advertise '%s' (older build, not probed yet, or offline)",
-            getName(), PeerCapabilities.TX_PREPARED_AT_INDEX);
+                + "schema change is NOT refused. Some peer does not advertise '%s': %s",
+            getName(), PeerCapabilities.TX_PREPARED_AT_INDEX, raft.explainMissingCapability(PeerCapabilities.TX_PREPARED_AT_INDEX));
       }
       return -1L;
     }
@@ -1195,9 +1231,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         lastCorpusDeltasWithheldLog = now;
         LogManager.instance().log(this, Level.WARNING,
             "Database '%s': transactions do not carry their effect on the BM25 corpus counters, so the other nodes do not count "
-                + "them. Some peer does not advertise '%s' (older build, not probed yet, or offline). Once every peer does, run "
+                + "them. Some peer does not advertise '%s': %s. Once every peer does, run "
                 + "REBUILD INDEX <name> WITH statsOnly = true on the leader to bring the counters of every node back in line",
-            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
+            getName(), PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS, raft.explainMissingCapability(PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS));
       }
       return Collections.emptyList();
     }
@@ -1685,6 +1721,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // so that a statement told to retry for no apparent reason can be explained
         LogManager.instance().log(this, Level.FINE, "The leader's answer to '%s' carries no 'created' flag: a transaction that "
             + "already wrote is not re-based past type '%s'", createStatement, typeName);
+    } catch (final RuntimeException e) {
+      // A leader that predates the function (a mixed-version cluster, issue #11064) answers a SQL error, not the retryable refusal:
+      // nothing was created, so go on as before the function existed and let the caller's own schema change be refused as it was
+      if (!isUnknownFunctionAnswer(e, SQLFunctionEnsureLabelTypes.NAME))
+        throw e;
+      if (unknownEnsureLabelTypesWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING, "The leader does not know the function '%s' (it runs an older version): "
+            + "a multi-label CREATE in a client transaction on this node is refused until the leader is upgraded. This notice is "
+            + "logged only once per database.", SQLFunctionEnsureLabelTypes.NAME);
+      return false;
     }
     awaitTypeApplied(raft, typeName, leaderApplied.get());
 
@@ -1707,6 +1753,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           + "Raft index " + preparedAt + ", and another schema change was applied since), so it could not commit. The type exists "
           + "now: retry the transaction");
     return true;
+  }
+
+  /**
+   * Whether a failed forward is the answer of a leader that has no SQL function of that name, in the message or in a cause (issue
+   * #11064). The SQL engine words it two ways, "Unknown function name 'name'" (the lookup) and "Function not found: name" (the call).
+   */
+  // @VisibleForTesting
+  static boolean isUnknownFunctionAnswer(final Throwable error, final String functionName) {
+    final String lookup = ("Unknown function name '" + functionName + "'").toLowerCase(Locale.ENGLISH);
+    final String call = ("Function not found: " + functionName).toLowerCase(Locale.ENGLISH);
+    for (Throwable t = error; t != null; t = t.getCause()) {
+      final String message = t.getMessage() != null ? t.getMessage().toLowerCase(Locale.ENGLISH) : null;
+      if (message != null && (message.contains(lookup) || message.contains(call)))
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -1808,16 +1870,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.setWrapper(name, instance);
   }
 
-  // Global variables are NOT replicated through Raft: unlike every other mutating method on this class, the five
+  // Global variables are NOT replicated through Raft: unlike every other mutating method on this class, the seven
   // accessors below (getGlobalVariable, setGlobalVariable, setGlobalVariableIfAbsent, setGlobalVariableIfPresent,
-  // getGlobalVariables) all delegate straight to the local node's own database, with no consensus proposal
+  // computeGlobalVariable, getGlobalVariables, and getGlobalVariableStore, the raw map the Redis wrapper keys by the client's
+  // key) all delegate straight to the local node's own database, with no consensus proposal
   // involved at all. A value set on one node of an HA cluster is invisible to every other node, including after a
   // failover, so setGlobalVariableIfAbsent/setGlobalVariableIfPresent's per-node atomicity does NOT make Redis
   // "SET k v NX" (or any other caller) a real cluster-wide distributed lock. A full fix would mean replicating
-  // global variables through Raft, which none of these five methods attempt (issue #6560). Each accessor below
+  // global variables through Raft, which none of these seven methods attempt (issue #6560). Each accessor below
   // carries its own Javadoc pointer to the full caveat on DatabaseInternal, since a Javadoc comment attaches only
   // to the single declaration it precedes and would not otherwise show up in generated docs/IDE hover for the
-  // other four.
+  // other six.
 
   /**
    * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
@@ -1870,6 +1933,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Map<String, Object> getGlobalVariables() {
     return proxied.getGlobalVariables();
+  }
+
+  /**
+   * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
+   */
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return proxied.getGlobalVariableStore();
   }
 
   @Override
@@ -2749,6 +2820,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // failure that stops the final entry leaves the callback's change unpublished here.
     Throwable sessionFailure = null;
     boolean callbackReturned = false;
+    // Set once the session registered itself as a commit in flight (issue #10881), so the finally below ends it exactly once
+    final boolean[] sessionInFlight = { false };
 
     try {
       // Before the callback allocates a single file id (issue #9547): see bindSchemaSessionToTerm. The wait for
@@ -2766,7 +2839,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
       exclusiveOn = beginLeaderExclusive();
-      final RET result = proxied.recordFileChanges(callback);
+      // Issue #10881: the callback runs under the write lock, where LocalDatabase.recordFileChanges has just checked the write
+      // refusal, and the entry that makes the change durable is shipped below, after the lock is released. Registered from
+      // inside the lock, so a restore claiming the database waits for this session to publish rather than swapping its
+      // target away under a schema change the caller is about to be told succeeded. Ended in the finally below.
+      final RET result = proxied.recordFileChanges(() -> {
+        proxied.beginCommitInFlight();
+        sessionInFlight[0] = true;
+        return callback.call();
+      });
       callbackReturned = true;
 
       // Issue #9555: an instalment of this session was definitely refused, and the callback went on as if it had not (it
@@ -2808,6 +2889,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final List<Map<Integer, Integer>> bucketDeltas = new ArrayList<>(schemaBucketDeltaBuffer.get());
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
+      // Issue #10569: the pages of files this session created and dropped again go nowhere - no node is told to create them
+      dropWalOfCancelledFiles(proxied.getFileManager().getCancelledCreates(), walEntries, bucketDeltas);
 
       // Send schema changes via Raft so replicas have the files before WAL pages arrive.
       // Embedded walEntries carry the initial page writes (e.g. index root pages) so
@@ -2938,7 +3021,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           proxied.getFileManager().stopRecordingChanges();
         }
       } finally {
-        endLeaderExclusive(exclusiveOn);
+        try {
+          endLeaderExclusive(exclusiveOn);
+        } finally {
+          // Last: the session's entry is published, or the session failed and was wound down, either way nothing of it is
+          // still on its way to the cluster (issue #10881)
+          if (sessionInFlight[0])
+            proxied.endCommitInFlight();
+        }
       }
     }
   }
@@ -3111,9 +3201,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *   <li>a failure AFTER the callback returned - the final entry refused, too large to split, the broker gone: always,
    *       since the callback's change is complete here and the final entry is the only thing that publishes it;</li>
    *   <li>a failure of the callback itself: only when a commit it made is still sitting unshipped in the buffer with a
-   *       page in a file this node still has. A callback that failed before committing anything, or whose engine code
-   *       dropped what it had built (a failed index build drops its index), left nothing behind, and quarantining it
-   *       would turn every refused DDL into a resync.</li>
+   *       page in a file this node still has, or when it dropped a file the session did not create (issue #10506: a
+   *       replacing index build drops the index it replaces before it fails, and every other node still holds that
+   *       file; since issue #10569 that build puts the index back inside the session and publishes, so this is left to
+   *       a restore that could not run there). A callback that failed before committing anything, or whose engine code
+   *       dropped what it had built (a failed index build drops its index, inside the session), left nothing behind, and
+   *       quarantining it would turn every refused DDL into a resync.</li>
    * </ul>
    */
   private Throwable unpublishedSchemaChange(final SchemaInstalmentState state, final Throwable sessionFailure,
@@ -3124,9 +3217,69 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return state.refusal;
     if (sessionFailure == null || state.indeterminate || isIndeterminatePublishFailure(sessionFailure))
       return null;
-    if (callbackReturned || bufferedWalTouchesFilesStillHere())
+    if (callbackReturned || bufferedWalTouchesFilesStillHere() || droppedAFileFromBeforeTheSession())
       return sessionFailure;
     return null;
+  }
+
+  /**
+   * Whether the failed session dropped a file it did not create (issue #10506): the file is gone here and still on every
+   * other node. The file manager cancels the recorded create of a file the session dropped again, so a DROP still in the
+   * recorded changes names a file that existed before the session started. Asked on the failure path only.
+   */
+  private boolean droppedAFileFromBeforeTheSession() {
+    final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
+    if (changes != null)
+      for (final FileManager.FileChange change : changes)
+        if (!change.create)
+          return true;
+    return false;
+  }
+
+  /**
+   * Leaves out of a session's final entry the buffered WAL that wrote only into files the session created and dropped again
+   * (issue #10569): a refused index build that the session outlives - a replacing build puts the replaced index back inside
+   * it - committed batches into files that are gone, and that no other node is ever told to create. A follower would skip
+   * every such page, one log line each, after carrying them through the log. An entry that also wrote into a file that is
+   * still there is kept whole. Costs nothing on a session that cancelled no create, the usual case; one that did decodes every
+   * buffered WAL image once, which for a large refused build is one pass over pages the leader is about to drop anyway.
+   */
+  // @VisibleForTesting
+  static void dropWalOfCancelledFiles(final Set<Integer> cancelledCreates, final List<byte[]> walEntries,
+      final List<Map<Integer, Integer>> bucketDeltas) {
+    if (cancelledCreates == null || cancelledCreates.isEmpty() || walEntries.isEmpty())
+      return;
+    // The two buffers are filled in step, one delta per WAL image. Lists that disagree are not stripped at all: removing by
+    // index would pair every later delta with the wrong WAL image, where shipping a few useless pages costs only bytes
+    if (bucketDeltas.size() != walEntries.size()) {
+      LogManager.instance().log(RaftReplicatedDatabase.class, Level.WARNING,
+          "Schema session buffered %d WAL entries but %d bucket deltas: shipping them whole", walEntries.size(),
+          bucketDeltas.size());
+      return;
+    }
+
+    for (int i = walEntries.size() - 1; i >= 0; i--) {
+      final WALFile.WALTransaction tx;
+      try {
+        tx = ArcadeStateMachine.deserializeWalTransaction(walEntries.get(i));
+      } catch (final RuntimeException e) {
+        // Unreadable here means unreadable to nobody's benefit: shipped as it is, as before
+        continue;
+      }
+      if (onlyWritesInto(tx, cancelledCreates)) {
+        walEntries.remove(i);
+        bucketDeltas.remove(i);
+      }
+    }
+  }
+
+  private static boolean onlyWritesInto(final WALFile.WALTransaction tx, final Set<Integer> fileIds) {
+    if (tx.pages == null || tx.pages.length == 0)
+      return false;
+    for (final WALFile.WALPage page : tx.pages)
+      if (!fileIds.contains(page.fileId))
+        return false;
+    return true;
   }
 
   /**
@@ -3896,6 +4049,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // to already-existing files can be shipped afterwards (see the loop below).
       final Map<Integer, Integer> pageCountsBefore = snapshotPageCounts();
 
+      // Issue #11240: what the compaction persists of its swap waits for the entry publishing it (see
+      // runOnceCompactionIsPublished), so a leader that crashes before, or loses the entry to a leadership change, still holds
+      // the layout every other node holds
+      final List<CallableNoReturn> persistence = new ArrayList<>();
+      compactionPersistence.set(persistence);
+
       final boolean result;
       try {
         result = invokeCompaction(compaction);
@@ -3906,7 +4065,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
       }
-      if (!result)
+      // A compaction that swapped something and still answered false publishes what it swapped all the same
+      if (!result && persistence.isEmpty())
         return false;
 
       // Issue #9555 / #9558: from here on the compaction has ALREADY run on this node - the file id is allocated, the
@@ -3917,15 +4077,58 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // (ReplicationDispatchedTimeoutException) passes through: its entry may still commit, and then this node's layout
       // is the committed one. Why every NeedRetryException the broker raises is definite is listed on
       // SchemaInstalmentState.refusal.
+      //
+      // Issue #11240: an indeterminate failure of the PUBLISHING entry is no longer let through as if the layout were the
+      // committed one. Its entry is either committed or truncated by a leadership change, and the Raft log tells which: the
+      // state machine applies it, or applies an entry of a later term first. The wait below holds the session, so no other
+      // change on this database can persist the swapped layout while the answer is pending. Committed, the swap is persisted
+      // like a published one; truncated, or still unknown when the wait ends, this node holds a layout no other node has and
+      // is quarantined. An indeterminate failure of anything shipped BEFORE the publishing entry (a sealed-store slice)
+      // means that entry was never sent at all: unpublished, like a definite failure.
       final boolean[] published = { false };
+      final boolean[] dispatched = { false };
+      // Set when what the entry publishes could not be persisted here: the publication is then handed to the held entries, so
+      // the state machine keeps the entry replayable for the restart (see ArcadeStateMachine.holdUnpersistedPublication)
+      final boolean[] unpersisted = { false };
+      final ArcadeStateMachine stateMachine = stateMachineOrNull();
+      final ArcadeStateMachine.PendingPublication pending =
+          stateMachine != null ? stateMachine.expectPublication(getName(), sessionTerm) : null;
       try {
-        return publishCompaction(result, pageCountsBefore, published);
+        final boolean outcome = publishCompaction(result, pageCountsBefore, published, dispatched, pending);
+        unpersisted[0] = !persistPublishedCompaction(persistence);
+        return outcome;
       } catch (final Throwable t) {
-        if (!published[0] && !isIndeterminatePublishFailure(t))
+        if (published[0] || dispatched[0] && isCommittedPublishFailure(t))
+          // In the log: only what came after the publication failed
+          unpersisted[0] = !persistPublishedCompaction(persistence);
+        else if (dispatched[0] && isIndeterminatePublishFailure(t)) {
+          final Boolean committed = awaitPublicationOutcome(pending);
+          if (Boolean.TRUE.equals(committed)) {
+            LogManager.instance().log(this, Level.WARNING,
+                "The compaction on database '%s' timed out on its way to the log, and the log then committed it: the swap is "
+                    + "persisted (issue #11240)", getName());
+            unpersisted[0] = !persistPublishedCompaction(persistence);
+            if (stateMachine != null)
+              stateMachine.clearCompactionHoldOff(getName());
+            return result;
+          }
+          quarantineUnpublishedChange("compaction", new ReplicationException(committed == null ?
+              "the entry publishing the compaction timed out and its outcome was still unknown when the wait for it ended" :
+              "the entry publishing the compaction timed out and was then truncated by a leadership change (issue #11240)", t),
+              true);
+        } else
           quarantineUnpublishedChange("compaction", t, true);
         throw t;
+      } finally {
+        if (pending != null) {
+          if (unpersisted[0])
+            stateMachine.holdUnpersistedPublication(pending);
+          else
+            stateMachine.forgetPublication(pending);
+        }
       }
     } finally {
+      compactionPersistence.remove();
       // A bare remove() is enough here, unlike recordFileChanges: a compaction runs on its own scheduler
       // thread and defers (returns false above) whenever a session is already open, so it never nests
       // inside another session whose mark it could clear.
@@ -3947,13 +4150,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * slices of any sealed store too big for it. Split from {@link #runWithCompactionReplication} so everything that can
    * fail after the compaction ran is in one place for its caller to classify (issue #9558).
    *
-   * @param published set to {@code true} the moment the publishing entry is accepted, so a failure after it - of the
-   *                  bookkeeping or of a diagnostic - is not mistaken for an unpublished change
+   * @param published  set to {@code true} the moment the publishing entry is accepted, so a failure after it - of the
+   *                   bookkeeping or of a diagnostic - is not mistaken for an unpublished change
+   * @param dispatched set to {@code true} right before the publishing entry is handed to the broker, so a failure whose
+   *                   outcome is unknown can be told from one of an entry shipped before it (issue #11240)
+   * @param pending   the publication the state machine settles for a proposer whose wait timed out, told the document the
+   *                   entry carries; null without a state machine
    *
    * @return {@code result}, once the change is published or there was nothing to publish
    */
   private boolean publishCompaction(final boolean result, final Map<Integer, Integer> pageCountsBefore,
-      final boolean[] published) throws IOException {
+      final boolean[] published, final boolean[] dispatched, final ArcadeStateMachine.PendingPublication pending)
+      throws IOException {
     final Map<Integer, String> addFiles = new HashMap<>();
     final Map<Integer, String> removeFiles = new HashMap<>();
     final List<FileManager.FileChange> changes = proxied.getFileManager().getRecordedChanges();
@@ -4055,6 +4263,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     sealedChunksShipped.addAndGet(sealedSlicesShipped);
 
+    if (pending != null)
+      pending.identify(serializedSchema);
+    dispatched[0] = true;
     broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
         sealedBlobs, finalSealedChunks);
     // Published: nothing below may send the caller into a quarantine for a change every node now holds.
@@ -4079,6 +4290,69 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       logSchemaPayloadDiagnostics("compaction", serializedSchema, addFiles, removeFiles);
 
     return result;
+  }
+
+  @Override
+  public void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    final List<CallableNoReturn> persistence = compactionPersistence.get();
+    if (persistence == null) {
+      proxied.runOnceCompactionIsPublished(droppedFileId, action);
+      return;
+    }
+    // The entry announces the drop now, the file goes once the entry is accepted (issue #11240)
+    if (droppedFileId > -1)
+      proxied.getFileManager().recordDeferredDrop(droppedFileId);
+    persistence.add(action);
+  }
+
+  /**
+   * Runs, in order, what a compaction whose entry the log holds deferred of its swap (issue #11240). The first failure ends
+   * the run: the schema save comes first, and the drops after it must not remove files the schema on disk still names. The
+   * change is the committed one and this node already serves it from memory; what it did not persist comes back from the
+   * entry the next restart replays, which the caller keeps replayable for it.
+   *
+   * @return {@code true} when every step succeeded
+   */
+  private boolean persistPublishedCompaction(final List<CallableNoReturn> persistence) {
+    try {
+      for (final CallableNoReturn action : persistence)
+        action.call();
+      return true;
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error on persisting the published compaction of database '%s': the files it replaced stay, the log keeps the entry "
+              + "replayable and the next restart replays it (issue #11240)", e, getName());
+      return false;
+    } finally {
+      persistence.clear();
+    }
+  }
+
+  /**
+   * Waits for the Raft log to settle the entry of a compaction whose publication timed out (issue #11240), at most the
+   * quorum timeout the publication already waited.
+   *
+   * @return {@code TRUE} when the log committed it, {@code FALSE} when it was truncated, {@code null} when this node could
+   * not tell in time (or has no state machine to ask)
+   */
+  private Boolean awaitPublicationOutcome(final ArcadeStateMachine.PendingPublication pending) {
+    if (pending == null)
+      return null;
+    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    try {
+      return pending.awaitOutcome(timeout);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return null;
+    }
+  }
+
+  /**
+   * Whether {@code failure} reports an entry the log committed although the publication failed afterwards
+   * ({@link MajorityCommittedAllFailedException}): the change is published (issue #11240).
+   */
+  static boolean isCommittedPublishFailure(final Throwable failure) {
+    return causeChainContains(failure, MajorityCommittedAllFailedException.class);
   }
 
   private static boolean invokeCompaction(final Callable<Boolean> compaction) throws IOException, InterruptedException {
@@ -4833,7 +5107,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
-      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
+      // The install a restore forces is fenced to the leadership that held the database for it (issue #10974)
+      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot,
+          raft.restoreFenceTerm(getName()));
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -4888,7 +5164,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final LocalDropVerbs localDropVerbs = raft.getLocalDropVerbs();
       final LocalDropVerbs.Registration registration = localDropVerbs.register(getName());
       try {
-        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
+        // The drop of a target a restore replaces is fenced to the leadership that held it for the restore (issue #10974)
+        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName(),
+            raft.restoreFenceTerm(getName()));
         raft.waitForAppliedIndex(getName(), committedLogIndex, true);
       } finally {
         localDropVerbs.release(getName(), registration);

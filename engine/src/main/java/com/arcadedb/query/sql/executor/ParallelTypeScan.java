@@ -27,11 +27,14 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.io.InterruptedIOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -79,7 +82,7 @@ import java.util.logging.Level;
  * in its own copy of the context (#4949), and fetches its rows under the database read lock one batch at a time,
  * never across a blocking hand-off. A failed worker fails the query instead of shrinking its result (#4951), and a
  * result set nobody drains nor closes releases its workers after
- * {@link GlobalConfiguration#PARALLEL_SCAN_ABANDONED_TIMEOUT}.
+ * {@link GlobalConfiguration#PARALLEL_SCAN_ABANDONED_TIMEOUT}, or as soon as its database is closed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -112,6 +115,10 @@ final class ParallelTypeScan {
   private          UnitChannel[]           channels;
   private          List<Future<?>>         futures;
   private volatile Throwable               failure;
+  // Set by close() BEFORE it interrupts the producers: whatever a producer throws from then on is the cancellation the
+  // consumer asked for (an InterruptedIOException out of a page load, a ClosedByInterruptException out of a read), not a
+  // failure of the scan, and nobody is left to report one to (#10747)
+  private volatile boolean                 closed;
   // The consumer's last sign of life. Producers use it to recognize an abandoned (opened, never drained nor closed)
   // result set and free their pool thread instead of parking on a full channel forever. Starts at submission: under a
   // saturated pool a consumer slow to reach its first poll is already on the clock.
@@ -167,7 +174,7 @@ final class ParallelTypeScan {
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
-    if (!isAllowed(db))
+    if (!isAllowed(context))
       return null;
 
     final List<Unit> units = planUnits(db, bucketSteps);
@@ -215,6 +222,15 @@ final class ParallelTypeScan {
     final long unitsWanted = (long) ParallelScanProducerPool.getInstance().getMaxParallelism() * UNITS_PER_WORKER;
     return (int) Math.min(Integer.MAX_VALUE,
         Math.max((long) pagesPerUnit * ENTRIES_PER_UNIT_PAGE, (entries + unitsWanted - 1) / unitsWanted));
+  }
+
+  /**
+   * {@link #isAllowed(DatabaseInternal)} for the command {@code context} belongs to, which also stays sequential when it runs
+   * under a row of an enclosing statement (a correlated subquery, a per-row LET): its workers would read that row, held by
+   * another thread, concurrently (issue #10609).
+   */
+  static boolean isAllowed(final CommandContext context) {
+    return isAllowed(context.getDatabase()) && !context.isUnderEnclosingRow();
   }
 
   static boolean isAllowed(final DatabaseInternal db) {
@@ -438,7 +454,7 @@ final class ParallelTypeScan {
       public boolean hasNext() {
         // A FAILED PRODUCER FAILS THE QUERY: FEWER ROWS REPORTED AS SUCCESS IS THE ANTI-PATTERN #4951 REMOVED
         if (failure != null)
-          throw new CommandExecutionException("Parallel scan failed", failure);
+          throw failureToThrow();
 
         if (dispatched >= nRecords) {
           // PAGE BOUNDARY: THE CONSUMER IS ALIVE, SO A PAUSE OF THE UPSTREAM STEPS BETWEEN PAGES IS NOT ABANDONMENT
@@ -458,8 +474,12 @@ final class ParallelTypeScan {
           }
           consumerBatch = null;
 
-          if (consumerUnit >= channels.length)
+          if (consumerUnit >= channels.length) {
+            // EVERY UNIT IS OVER: A PRODUCER STILL QUEUED HAS NOTHING LEFT TO SCAN, AND WOULD PIN THIS SCAN AND ITS
+            // CONTEXT UNTIL THE POOL GETS TO IT, ALSO FOR A RESULT SET ITS CALLER THEN ABANDONS (#8591)
+            dropQueuedProducers();
             return false;
+          }
 
           if (consumerStep != null) {
             // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
@@ -499,7 +519,7 @@ final class ParallelTypeScan {
             return false;
           }
           if (failure != null)
-            throw new CommandExecutionException("Parallel scan failed", failure);
+            throw failureToThrow();
           if (polled == END_OF_UNIT) {
             channels[consumerUnit] = null;
             ++consumerUnit;
@@ -527,6 +547,21 @@ final class ParallelTypeScan {
         ParallelTypeScan.this.close();
       }
     };
+  }
+
+  /**
+   * The exception a producer's failure fails the consumer with: the failure itself when it is unchecked, as the partial
+   * aggregation mode rethrows it, as the consumer throws the failure of a unit it scans itself (#8594) and as the sequential
+   * scan throws the failure of any unit. Wrapped, the error of a statement depended on which thread happened to scan the unit
+   * that failed: the {@code SEARCH_INDEX_MORE} refusal of #11137 surfaced either as its own error or as "Parallel scan failed".
+   */
+  private RuntimeException failureToThrow() {
+    final Throwable f = failure;
+    if (f instanceof RuntimeException runtime)
+      return runtime;
+    if (f instanceof Error error)
+      throw error;
+    return new CommandExecutionException("Parallel scan failed", f);
   }
 
   private void startProducers(final CommandContext context) {
@@ -561,7 +596,12 @@ final class ParallelTypeScan {
         } catch (final Throwable e) {
           // Throwable, not Exception: an Error that killed this producer must fail the query too, or the consumer
           // would take the missing unit for an empty one
-          recordFailure(e);
+          if (closed && isCancellation(e))
+            // CANCELLED BY close(): THE INTERRUPT LANDED INSIDE A PAGE LOAD OR A READ, WHICH THROWS INSTEAD OF RETURNING (#10747).
+            // ANYTHING ELSE IS STILL REPORTED: A REAL BUG MUST NOT HIDE BEHIND A CLOSE THAT HAPPENED AT THE SAME TIME
+            LogManager.instance().log(this, Level.FINE, "Parallel scan of type '%s' cancelled while a producer was reading", e, typeName);
+          else
+            recordFailure(e);
         } finally {
           DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         }
@@ -596,6 +636,17 @@ final class ParallelTypeScan {
           Thread.currentThread().interrupt();
           return false;
         }
+        if (!database.isOpen()) {
+          // THE DATABASE WAS CLOSED (OR DROPPED) UNDER A RESULT SET LEFT OPEN: NOBODY CAN CONSUME THIS SCAN ANY MORE, AND
+          // WAITING FOR THE ABANDONMENT TIMEOUT WOULD KEEP A THREAD OF THE JVM-WIDE POOL FROM EVERY OTHER DATABASE FOR IT.
+          // A CONSUMER THAT COMES BACK FAILS INSTEAD OF WAITING FOR THE ROWS OF A PRODUCER THAT IS GONE
+          if (failure == null)
+            failure = DatabaseIsClosedException.of(database.getName());
+          LogManager.instance()
+              .log(this, Level.FINE, "Parallel scan of type '%s' left open on a closed database: releasing the producer thread", null,
+                  typeName);
+          return false;
+        }
         if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - lastConsumed > abandonedTimeoutMs) {
           recordFailure(new CommandExecutionException(
               "Parallel scan abandoned: the result set was not consumed nor closed for more than " + abandonedTimeoutMs + " ms (see "
@@ -611,6 +662,22 @@ final class ParallelTypeScan {
     }
   }
 
+  /**
+   * Whether {@code e} is what an interrupt makes a read throw: an {@link InterruptedIOException} (the I/O lock of a page
+   * load, wrapped by the read lock), a {@link ClosedByInterruptException} or an {@link InterruptedException}, anywhere in its
+   * cause chain, or anything thrown by a thread that is interrupted (#10747).
+   */
+  private static boolean isCancellation(final Throwable e) {
+    if (Thread.currentThread().isInterrupted())
+      return true;
+    // BOUNDED: getCause() NEVER ANSWERS THE THROWABLE ITSELF, BUT A LONGER CYCLE IS NOT RULED OUT
+    Throwable t = e;
+    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++)
+      if (t instanceof InterruptedIOException || t instanceof ClosedByInterruptException || t instanceof InterruptedException)
+        return true;
+    return false;
+  }
+
   private void recordFailure(final Throwable e) {
     if (failure == null)
       failure = e;
@@ -618,11 +685,21 @@ final class ParallelTypeScan {
         typeName);
   }
 
+  /** Takes the producers no pool thread has started out of the pool's queue, so they stop referencing this scan. */
+  private void dropQueuedProducers() {
+    ParallelScanProducerPool.getInstance().dropQueuedTasks(futures);
+  }
+
   /** Stops every worker still running and drops what the consumer holds. Idempotent. */
   void close() {
-    if (futures != null)
+    // BEFORE THE INTERRUPTS: A PRODUCER THAT SEES ONE MUST ALREADY SEE THE FLAG
+    closed = true;
+    if (futures != null) {
+      // A CANCELLED TASK STAYS QUEUED, WITH THIS SCAN AND ITS CONTEXT, UNTIL A WORKER DEQUEUES IT: TAKE IT OUT
+      dropQueuedProducers();
       for (final Future<?> f : futures)
         f.cancel(true);
+    }
 
     // A UNIT THE CONSUMER WAS SCANNING ITSELF: A COPY IS THIS SCAN'S TO CLOSE, A WHOLE TEMPLATE IS ITS OWNING STEP'S
     final AbstractExecutionStep step = consumerStep;
@@ -771,6 +848,8 @@ final class ParallelTypeScan {
         throw error;
       throw new CommandExecutionException("Parallel aggregation of type '" + typeName + "' failed", cause);
     } finally {
+      // A SKIPPED HELPER STILL QUEUED PINS THE BODY, AND THROUGH IT THE QUERY'S CONTEXT, UNTIL THE POOL GETS TO IT (#8591)
+      ParallelScanProducerPool.getInstance().dropQueuedTasks(futures);
       // A NO-OP ON SUCCESS; ON A FAILURE (OR A TIMEOUT onWait RAISED) IT STOPS THE HELPERS STILL RUNNING
       for (final Future<T> f : futures)
         f.cancel(true);

@@ -124,19 +124,6 @@ module.exports = {
           from: 'node_modules/datatables.net-buttons/js/buttons.print.min.js',
           to: 'js/buttons.print.min.js',
         },
-        // Excel/PDF Export Dependencies for DataTables
-        {
-          from: 'node_modules/jszip/dist/jszip.min.js',
-          to: 'js/jszip.min.js',
-        },
-        {
-          from: 'node_modules/pdfmake/build/pdfmake.min.js',
-          to: 'js/pdfmake.min.js',
-        },
-        {
-          from: 'node_modules/pdfmake/build/vfs_fonts.js',
-          to: 'js/vfs_fonts.js',
-        },
         {
           from: 'node_modules/sweetalert2/dist/sweetalert2.all.min.js',
           to: 'js/sweetalert2.all.min.js',
@@ -149,13 +136,11 @@ module.exports = {
           from: 'node_modules/cytoscape/dist/cytoscape.min.js',
           to: 'js/cytoscape.min.js',
         },
+        // Apache ECharts, the "common" build: line, bar, pie and scatter charts with the grid, legend, tooltip, toolbox and
+        // dataZoom components, which is every chart Studio draws (issue #10579)
         {
-          from: 'node_modules/apexcharts/dist/apexcharts.min.js',
-          to: 'js/apexcharts.min.js',
-        },
-        {
-          from: 'node_modules/apexcharts/dist/apexcharts.css',
-          to: 'css/apexcharts.css',
+          from: 'node_modules/echarts/dist/echarts.common.min.js',
+          to: 'js/echarts.min.js',
         },
         {
           from: 'node_modules/codemirror/lib/codemirror.js',
@@ -210,9 +195,22 @@ module.exports = {
           from: 'node_modules/cytoscape-fcose/cytoscape-fcose.js',
           to: 'js/cytoscape-fcose.js',
         },
+        // d3-force live physics and its helpers (must load in order: dispatch, quadtree, timer -> force; each registers on the shared `d3` global)
         {
-          from: 'node_modules/cytoscape-graphml/cytoscape-graphml.js',
-          to: 'js/cytoscape-graphml.js',
+          from: 'node_modules/d3-dispatch/dist/d3-dispatch.min.js',
+          to: 'js/d3-dispatch.min.js',
+        },
+        {
+          from: 'node_modules/d3-quadtree/dist/d3-quadtree.min.js',
+          to: 'js/d3-quadtree.min.js',
+        },
+        {
+          from: 'node_modules/d3-timer/dist/d3-timer.min.js',
+          to: 'js/d3-timer.min.js',
+        },
+        {
+          from: 'node_modules/d3-force/dist/d3-force.min.js',
+          to: 'js/d3-force.min.js',
         },
         {
           from: 'node_modules/cytoscape-node-html-label/dist/cytoscape-node-html-label.js',

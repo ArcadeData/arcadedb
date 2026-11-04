@@ -136,7 +136,7 @@ class Issue10074TakenDatabaseNameAnswers409IT extends BaseGraphServerTest {
 
   private void dropIfPresent(final String name) throws Exception {
     if (getServer(0).existsDatabase(name))
-      getServer(0).getDatabase(name).getEmbedded().drop();
+      getServer(0).getDatabaseForOperator(name).getEmbedded().drop();
     getServer(0).removeDatabase(name);
   }
 

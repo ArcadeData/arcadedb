@@ -205,13 +205,13 @@ class Issue7914RemoteIdentifierQuotingTest {
   void existsTriggerBindsTheNameRatherThanInterpolatingIt() {
     final RemoteDatabase db = mock(RemoteDatabase.class);
     final ResultSet empty = mock(ResultSet.class);
-    when(db.command(anyString(), anyString(), any(Map.class))).thenReturn(empty);
+    when(db.commandUncounted(anyString(), anyString(), any(Map.class))).thenReturn(empty);
 
     new RemoteSchema(db).existsTrigger("it's");
 
     final ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     final ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-    verify(db).command(anyString(), sql.capture(), params.capture());
+    verify(db).commandUncounted(anyString(), sql.capture(), params.capture());
 
     assertThat(sql.getValue()).doesNotContain("it's");
     assertThat(params.getValue()).containsEntry("name", "it's");
@@ -227,7 +227,7 @@ class Issue7914RemoteIdentifierQuotingTest {
   void isConnectedToBindsTheEdgeTypeRatherThanInterpolatingIt() {
     final RemoteDatabase db = mock(RemoteDatabase.class);
     final ResultSet empty = mock(ResultSet.class);
-    when(db.query(anyString(), anyString(), any(Map.class))).thenReturn(empty);
+    when(db.queryUncounted(anyString(), anyString(), any(Map.class))).thenReturn(empty);
 
     final Vertex from = mock(Vertex.class);
     when(from.getIdentity()).thenReturn(new RID(1, 2));
@@ -236,7 +236,7 @@ class Issue7914RemoteIdentifierQuotingTest {
 
     final ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     final ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-    verify(db).query(anyString(), sql.capture(), params.capture());
+    verify(db).queryUncounted(anyString(), sql.capture(), params.capture());
 
     assertThat(sql.getValue()).doesNotContain("hostile");
     assertThat(params.getValue()).containsEntry("edgeType", "it's`hostile");
@@ -273,13 +273,13 @@ class Issue7914RemoteIdentifierQuotingTest {
   void getTypeByBucketNameBindsTheBucketRatherThanInterpolatingIt() {
     final RemoteDatabase db = mock(RemoteDatabase.class);
     final ResultSet empty = mock(ResultSet.class);
-    when(db.command(anyString(), anyString(), any(Map.class))).thenReturn(empty);
+    when(db.commandUncounted(anyString(), anyString(), any(Map.class))).thenReturn(empty);
 
     new RemoteSchema(db).getTypeByBucketName("it's");
 
     final ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     final ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-    verify(db).command(anyString(), sql.capture(), params.capture());
+    verify(db).commandUncounted(anyString(), sql.capture(), params.capture());
 
     assertThat(sql.getValue()).doesNotContain("it's");
     assertThat(params.getValue()).containsEntry("bucketName", "it's");

@@ -22,14 +22,18 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexMaintenanceSuspension;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
+import com.arcadedb.integration.importer.CanonicalNumber;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -135,7 +139,7 @@ public class GraphImporter implements AutoCloseable {
    *
    * @see #canonicalLong(String)
    */
-  static final long NOT_CANONICAL_LONG = Long.MIN_VALUE;
+  static final long NOT_CANONICAL_LONG = CanonicalNumber.NOT_CANONICAL_LONG;
 
   /**
    * Rows the vertex pass buffers before committing. The commit is what bounds the transaction's
@@ -361,9 +365,21 @@ public class GraphImporter implements AutoCloseable {
     for (final GraphAnalyticalView gav : GraphAnalyticalViewRegistry.getAll(database).values()) {
       if (gav.getStatus() != GraphAnalyticalView.Status.READY) {
         LogManager.instance().log(GraphImporter.class, Level.INFO, "Waiting for GraphAnalyticalView '%s' to finish building...", gav.getName());
-        gav.awaitReady(10, TimeUnit.MINUTES);
-        LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+        if (gav.awaitReady(10, TimeUnit.MINUTES))
+          LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
+        else
+          // FAILED with its cause, or still building past the wait (issue #11011)
+          LogManager.instance().log(GraphImporter.class, Level.WARNING, "GraphAnalyticalView '%s' is not ready: %s%s", gav.getName(),
+              gav.getStatus(), gav.getBuildError() != null ? " (" + GraphAnalyticalView.describeBuildError(gav.getBuildError()) + ")" : "");
       }
+    }
+    // A view whose build failed before the loop above has left the registry, and only its recorded failure is left to report
+    for (final String name : GraphAnalyticalViewPersistence.getDefinitions(database).keySet()) {
+      final Throwable failure = GraphAnalyticalViewRegistry.get(database, name) == null ?
+          GraphAnalyticalViewRegistry.getFailure(database, name) : null;
+      if (failure != null)
+        LogManager.instance().log(GraphImporter.class, Level.WARNING, "GraphAnalyticalView '%s' is not ready: FAILED (%s)", name,
+            GraphAnalyticalView.describeBuildError(failure));
     }
   }
 
@@ -1438,6 +1454,8 @@ public class GraphImporter implements AutoCloseable {
 
     database.begin();
     txOpen[0] = true;
+    // The transaction just pushed, so a commit that fails without resolving it is told from one that popped it (issue #11046)
+    final TransactionContext[] ownTx = { ImporterTransactions.currentTransaction(database) };
 
     final String filterAttr = vc.filterAttribute;
     final String filterVal = vc.filterValue;
@@ -1507,19 +1525,19 @@ public class GraphImporter implements AutoCloseable {
 
         count[0]++;
         if (count[0] % COMMIT_EVERY_ROWS == 0) {
-          // Cleared before the call, not after: LocalDatabase#commit() pops the transaction in a
-          // finally, so a commit that throws still leaves this method's transaction off the stack
-          txOpen[0] = false;
-          database.commit();
+          // The flag is cleared before the call and restored when the commit fails without resolving the
+          // transaction, which a refusal raised before the commit starts does (issue #11046)
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
           committed[0] = count[0];
           database.begin();
           txOpen[0] = true;
+          ownTx[0] = ImporterTransactions.currentTransaction(database);
           progress.report(count[0]);
         }
       });
 
+      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       txOpen[0] = false;
-      database.commit();
       committed[0] = count[0];
     } catch (final Exception e) {
       // Only when something was committed: below the first COMMIT_EVERY_ROWS the rollback takes the
@@ -1535,8 +1553,9 @@ public class GraphImporter implements AutoCloseable {
     } finally {
       // In the finally rather than in the catch so that an Error - an OutOfMemoryError is the one a
       // large import can realistically raise - resolves the transaction too. txOpen[0] is false on
-      // every path that already committed, which is what keeps this from rolling back the caller's
-      if (txOpen[0]) {
+      // every path that already committed, which is what keeps this from rolling back the caller's, and the
+      // transaction is asked to still be the live one, for a commit that failed and was restored (issue #11046)
+      if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
         txOpen[0] = false;
         try {
           database.rollback();
@@ -1898,7 +1917,10 @@ public class GraphImporter implements AutoCloseable {
           ? DateUtils.getFormatter(pd.datetimeFormat)
           : DEFAULT_DATETIME_FMT;
       try {
-        return LocalDateTime.parse(v, fmt);
+        // The instant a text with an offset or a zone names is stored as the UTC wall clock, as on every other write path
+        // (issues #10498, #10596): parsing straight into a LocalDateTime took the local fields and dropped the offset the pattern
+        // had read
+        return DateUtils.parseDateTimeWithFormat(v, fmt, null);
       } catch (final DateTimeParseException e) {
         throw badValue(pd, "a datetime", "one", e);
       }
@@ -2182,53 +2204,13 @@ public class GraphImporter implements AutoCloseable {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Reads {@code text} as the canonical decimal form of a {@code long}, returning
-   * {@link #NOT_CANONICAL_LONG} when it is not one. Neither allocates nor throws: an identity
-   * column is read once per row, and {@code Long.parseLong} in a {@code try} block would fill in a
-   * stack trace for every row of a string-keyed file.
-   * <p>
-   * "Canonical" is what keeps the primitive fast path from merging keys the source kept apart:
-   * {@code "007"} and {@code "7"} are two different identities, so only the form
-   * {@code Long.toString} would produce is allowed to become a number. Everything else - leading
-   * zeros, a leading {@code +}, {@code "-0"}, surrounding space, anything non-numeric - stays text.
+   * Reads {@code text} as the canonical decimal form of a {@code long}, returning {@link #NOT_CANONICAL_LONG} when it
+   * is not one: {@code "007"} and {@code "7"} are two different identities, so only the form {@code Long.toString}
+   * would produce becomes a number. The grammar is {@link CanonicalNumber}'s, shared with the schema analysis of the
+   * other importers.
    */
   static long canonicalLong(final String text) {
-    if (text == null)
-      return NOT_CANONICAL_LONG;
-    final int len = text.length();
-    if (len == 0)
-      return NOT_CANONICAL_LONG;
-
-    final boolean negative = text.charAt(0) == '-';
-    final int first = negative ? 1 : 0;
-    if (len - first < 1 || len - first > 19)
-      return NOT_CANONICAL_LONG;
-
-    final char firstDigit = text.charAt(first);
-    if (firstDigit < '0' || firstDigit > '9')
-      return NOT_CANONICAL_LONG;
-    // "0" is canonical, "00" and "007" are not, and "-0" is not the canonical form of zero
-    if (firstDigit == '0' && (len - first > 1 || negative))
-      return NOT_CANONICAL_LONG;
-
-    // Accumulate negatively: the negative range is the wider one, so this overflows only on values
-    // that genuinely do not fit, and Long.MIN_VALUE itself is rejected because it is the sentinel
-    long value = 0;
-    for (int i = first; i < len; i++) {
-      final char c = text.charAt(i);
-      if (c < '0' || c > '9')
-        return NOT_CANONICAL_LONG;
-      if (value < -922337203685477580L)
-        return NOT_CANONICAL_LONG;
-      value *= 10;
-      final int digit = c - '0';
-      if (value < Long.MIN_VALUE + digit)
-        return NOT_CANONICAL_LONG;
-      value -= digit;
-    }
-    if (value == NOT_CANONICAL_LONG)
-      return NOT_CANONICAL_LONG;
-    return negative ? value : -value;
+    return CanonicalNumber.parseLong(text);
   }
 
   /**

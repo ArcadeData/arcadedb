@@ -31,8 +31,10 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -40,30 +42,71 @@ import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
+import static org.awaitility.Awaitility.await;
 
 class ServerProfilingIT {
   private static       ArcadeDBServer SERVER;
   private static       ServerSecurity SECURITY;
-  private final static String         DATABASE_NAME = "ServerProfilingIT";
+  private final static String         DATABASE_NAME      = "ServerProfilingIT";
+  private final static String         CONFIG_DIRECTORY   = "./target/config";
+  // The types reloadWhileUsingDatabase creates while the groups file is reloaded under it, hundreds of them
+  private final static String         RELOAD_TYPE_PREFIX = "ReloadTest";
+  private final static Duration       RELOAD_TIMEOUT     = Duration.ofSeconds(30);
+
+  /**
+   * Leaves the database, the users and the groups as the next test expects them, whether this test passed or not. Every test
+   * creates the same schema ({@code Bucket1}, {@code Vertex1}, {@code Edge1}, {@code Document1}) and the same user, and used to
+   * drop them on its last lines only: one failure left them behind, and every later test of the class then failed on
+   * "Cannot create type 'Vertex1' because already exists", which hid the one failure that mattered.
+   */
+  @AfterEach
+  void cleanUp() throws IOException {
+    final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
+    setCurrentUser("root", database);
+
+    final Schema schema = database.getSchema();
+    for (final String typeName : new String[] { "Edge1", "Vertex1", "Document1" })
+      if (schema.existsType(typeName))
+        schema.dropType(typeName);
+    final List<String> reloadTypes = schema.getTypes().stream().map(DocumentType::getName)
+        .filter(name -> name.startsWith(RELOAD_TYPE_PREFIX)).toList();
+    for (final String typeName : reloadTypes)
+      schema.dropType(typeName);
+    if (schema.existsBucket("Bucket1"))
+      schema.dropBucket("Bucket1");
+
+    if (SECURITY.existsUser("albert"))
+      SECURITY.dropUser("albert");
+
+    final JSONObject wildcardGroups = SECURITY.getDatabaseGroupsConfiguration(SecurityManager.ANY);
+    if (wildcardGroups != null && wildcardGroups.has("reloaded")) {
+      editGroupsFile(groups -> groups.remove("reloaded"));
+      awaitWildcardGroups("the clean-up", groups -> !groups.has("reloaded"));
+    }
+  }
 
   @Test
   void userDefaultAccessCannotAccessDatabase() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "albert").put("password", SECURITY.encodePassword("einstein")));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -116,7 +159,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -141,7 +184,7 @@ class ServerProfilingIT {
         new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       setCurrentUser("root", database);
       createSchema(database);
@@ -169,7 +212,7 @@ class ServerProfilingIT {
             new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       setCurrentUser("root", database);
       createSchema(database);
@@ -195,7 +238,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -236,7 +279,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "createOnlyGraph" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -271,7 +314,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -307,7 +350,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -348,7 +391,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "deleter" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       final ServerSecurityUser albert = setCurrentUser("albert", database);
       checkJohnUser(albert);
@@ -390,7 +433,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -428,8 +471,16 @@ class ServerProfilingIT {
 
       assertThat(count).isEqualTo(10);
 
-      // SWITCH TO ROOT TO DROP THE SCHEMA
+      // THE CAP IS ALBERT'S, NOT THE STATEMENT'S: ROOT RUNS THE SAME TEXT, OUT OF THE SAME STATEMENT CACHE, AND READS ALL 15
       setCurrentUser("root", database);
+      count = 0;
+      for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
+        iter.next();
+        ++count;
+      }
+      assertThat(count).isEqualTo(15);
+
+      // SWITCH TO ROOT TO DROP THE SCHEMA
       dropSchema(database);
 
     } finally {
@@ -443,7 +494,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
 
       checkJohnUser(setCurrentUser("albert", database));
 
@@ -466,17 +517,39 @@ class ServerProfilingIT {
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
 
+      // THE READ MUST OUTLIVE THE GROUP'S 1 MS QUOTA, AND 10,000 RECORDS DO NOT GUARANTEE IT: ON A WARM JIT THEY ITERATE IN
+      // ABOUT 1 MS, AND THE DEADLINE IS COMPARED ON A MILLISECOND CLOCK, SO THE LOOP FINISHED BEFORE IT AND NOTHING WAS RAISED.
+      // THE FIRST RECORD IS READ (THE GROUP GRANTS readRecord), THEN THE READ IS HELD PAST THE QUOTA BEFORE IT GOES ON
       assertThatThrownBy(() -> {
-        for (final Iterator<Record> iter = database.iterateType("Document1", true); iter.hasNext(); ) {
+        final Iterator<Record> iter = database.iterateType("Document1", true);
+        assertThat(iter.next()).isNotNull();
+        outliveReadTimeout();
+        while (iter.hasNext())
           iter.next();
-        }
       }).isInstanceOf(TimeoutException.class);
 
       assertThatThrownBy(() -> {
-        for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
-          iter.next();
+        try (final ResultSet iter = database.query("sql", "select from Document1")) {
+          assertThat(iter.next()).isNotNull();
+          outliveReadTimeout();
+          while (iter.hasNext())
+            iter.next();
         }
       }).isInstanceOf(TimeoutException.class);
+
+      // THE 1 MS QUOTA IS ALBERT'S, NOT THE STATEMENT'S: ROOT RUNS THE SAME TEXT, OUT OF THE SAME STATEMENT CACHE, AS SLOWLY, AND
+      // IS NOT TIMED OUT. IT WAS, AND SO WAS THE NEXT TEST TO RUN IT (resultSetLimit, "TIMEOUT clause of 1ms")
+      setCurrentUser("root", database);
+      try (final ResultSet iter = database.query("sql", "select from Document1")) {
+        assertThat(iter.next()).isNotNull();
+        outliveReadTimeout();
+        int count = 1;
+        while (iter.hasNext()) {
+          iter.next();
+          ++count;
+        }
+        assertThat(count).isEqualTo(10_000);
+      }
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);
@@ -489,25 +562,13 @@ class ServerProfilingIT {
 
   @Test
   void groupsReload() throws Throwable {
-    final File file = new File("./target/config/" + SecurityGroupFileRepository.FILE_NAME);
-    assertThat(file.exists()).isTrue();
-
-    final JSONObject json = new JSONObject(FileUtils.readFileAsString(file));
-
-    final byte[] original = json.toString(2).getBytes();
-
-    json.getJSONObject("databases").getJSONObject("*").getJSONObject("groups").put("reloaded", true);
-
     try {
-      FileUtils.writeContentToStream(file, json.toString(2).getBytes());
-
-      Thread.sleep(300);
-
-      assertThat(SECURITY.getDatabaseGroupsConfiguration("*").getBoolean("reloaded")).isTrue();
+      editGroupsFile(groups -> groups.put("reloaded", true));
+      awaitWildcardGroups("the edit", groups -> groups.getBoolean("reloaded", false));
     } finally {
-      // RESTORE THE ORIGINAL FILE AND WAIT FOR TO RELOAD
-      FileUtils.writeContentToStream(file, original);
-      Thread.sleep(200);
+      // RESTORE THE FILE AND WAIT FOR THE RELOAD, SO NO LATER TEST RUNS AGAINST A TICK THAT HAS NOT HAPPENED YET
+      editGroupsFile(groups -> groups.remove("reloaded"));
+      awaitWildcardGroups("the restore", groups -> !groups.has("reloaded"));
       createSecurity();
     }
   }
@@ -518,7 +579,7 @@ class ServerProfilingIT {
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader", "updater" }))));
 
     try {
-      final DatabaseInternal database = SERVER.getDatabase(DATABASE_NAME);
+      final DatabaseInternal database = SERVER.getDatabaseForOperator(DATABASE_NAME);
       checkJohnUser(setCurrentUser("albert", database));
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
       setCurrentUser("root", database);
@@ -527,25 +588,20 @@ class ServerProfilingIT {
 
       final int CYCLES = 30;
       final CountDownLatch semaphore = new CountDownLatch(CYCLES);
+      // AN ASSERTION THAT FAILS ON THE UPDATER THREAD ONLY ENDS THAT THREAD: IT IS HANDED BACK TO THE TEST THREAD BELOW, WHICH
+      // USED TO SEE NOTHING BUT THE CYCLE THE THREAD DIED ON ("expected 29, but was 13")
+      final AtomicReference<Throwable> updaterFailure = new AtomicReference<>();
 
       final Thread cfgUpdaterThread = new Thread(() -> {
-        final File file = new File("./target/config/" + SecurityGroupFileRepository.FILE_NAME);
-        assertThat(file.exists()).isTrue();
-
         try {
           for (int i = 0; i < CYCLES; i++) {
-            final JSONObject json = new JSONObject(FileUtils.readFileAsString(file));
-            json.getJSONObject("databases").getJSONObject("*").getJSONObject("groups").put("reloaded", i);
-            FileUtils.writeContentToStream(file, json.toString(2).getBytes());
-            Thread.sleep(150);
-            assertThat(SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded")).isEqualTo(i);
-
+            final int cycle = i;
+            editGroupsFile(groups -> groups.put("reloaded", cycle));
+            awaitWildcardGroups("the edit of cycle " + cycle, groups -> groups.getInt("reloaded", -1) == cycle);
             semaphore.countDown();
           }
-
-        } catch (Exception e) {
-          e.printStackTrace();
-          fail("", e);
+        } catch (final Throwable e) {
+          updaterFailure.set(e);
         }
       });
 
@@ -553,9 +609,11 @@ class ServerProfilingIT {
 
       int i = 0;
       while (semaphore.getCount() > 0 && cfgUpdaterThread.isAlive())
-        database.getSchema().createVertexType("Test" + (i++));
+        database.getSchema().createVertexType(RELOAD_TYPE_PREFIX + (i++));
 
       cfgUpdaterThread.join();
+      if (updaterFailure.get() != null)
+        throw updaterFailure.get();
 
       assertThat(SECURITY.getDatabaseGroupsConfiguration("*").getInt("reloaded")).isEqualTo(CYCLES - 1);
 
@@ -594,7 +652,7 @@ class ServerProfilingIT {
     assertThat(authJohn).isNotNull();
     assertThat(authJohn.getName()).isEqualTo(albert.getName());
 
-    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository(CONFIG_DIRECTORY);
     // Assert WHICH principals were persisted, not which line each landed on: the order of
     // server-users.jsonl is whatever order ServerSecurity happens to serialize its user store in, and
     // that is not part of any contract. It used to come out of a ConcurrentHashMap, whose hash order put
@@ -644,12 +702,15 @@ class ServerProfilingIT {
 
   @BeforeAll
   static void beforeAll() {
-    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File(CONFIG_DIRECTORY));
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY.setValue(100);
+    // As the fixtures do: on the default 0.0.0.0 the port can be shared with a server of another JVM listening on localhost,
+    // which then answers this test's localhost clients
+    GlobalConfiguration.SERVER_HTTP_INCOMING_HOST.setValue("localhost");
 
     SERVER = new ArcadeDBServer();
     SERVER.start();
@@ -662,51 +723,83 @@ class ServerProfilingIT {
   static void afterAll() {
     SERVER.stop();
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+    GlobalConfiguration.SERVER_HTTP_INCOMING_HOST.reset();
 
-    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File(CONFIG_DIRECTORY));
     TestServerHelper.deleteDatabaseFolders(1);
 
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
   }
 
+  /**
+   * Defines the groups the tests use, in the wildcard database entry. Through {@link ServerSecurity#saveGroup}, which persists
+   * each group and publishes it in one step under the group store's lock, and NOT by mutating the document
+   * {@code getDatabaseGroupsConfiguration()} returns and saving it afterwards: that document is the live one, and the 100 ms
+   * reload tick this class configures replaces it with a fresh parse of the file. A tick landing between the mutation and the
+   * save (the first tick after start reloads the default document the start just wrote) took every group put before it away.
+   */
   private static void createSecurity() {
     SECURITY = SERVER.getSecurity();
 
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("reader",//
-        new JSONObject().put("types",
-            new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creator", new JSONObject().put("types",
-        new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updater", new JSONObject().put("types",
-        new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleter", new JSONObject().put("types",
-        new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
+    saveTestGroup("reader", new JSONObject().put("types", accessOn("*", "readRecord")));
+    saveTestGroup("creator", new JSONObject().put("types", accessOn("*", "createRecord")));
+    saveTestGroup("updater", new JSONObject().put("types", accessOn("*", "updateRecord")));
+    saveTestGroup("deleter", new JSONObject().put("types", accessOn("*", "deleteRecord")));
 
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocuments",//
-        new JSONObject().put("types",
-            new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creatorOfDocuments", new JSONObject().put("types",
-        new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updaterOfDocuments", new JSONObject().put("types",
-        new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleterOfDocuments", new JSONObject().put("types",
-        new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
+    saveTestGroup("readerOfDocuments", new JSONObject().put("types", accessOn("Document1", "readRecord")));
+    saveTestGroup("creatorOfDocuments", new JSONObject().put("types", accessOn("Document1", "createRecord")));
+    saveTestGroup("updaterOfDocuments", new JSONObject().put("types", accessOn("Document1", "updateRecord")));
+    saveTestGroup("deleterOfDocuments", new JSONObject().put("types", accessOn("Document1", "deleteRecord")));
 
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("createOnlyGraph",//
-        new JSONObject().put("types", new JSONObject()//
-            .put("Vertex1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord", "updateRecord" })))//
-            .put("Edge1", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))//
-        ));
+    saveTestGroup("createOnlyGraph", new JSONObject().put("types",
+        accessOn("Vertex1", "createRecord", "updateRecord").put("Edge1",
+            new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
 
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsCapped",//
-        new JSONObject().put("resultSetLimit", 10)//
-            .put("types",
-                new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    saveTestGroup("readerOfDocumentsCapped",
+        new JSONObject().put("resultSetLimit", 10).put("types", accessOn("Document1", "readRecord")));
 
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsShortTimeout",//
-        new JSONObject().put("readTimeout", 1).put("types",
-            new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-    SECURITY.saveGroups();
+    saveTestGroup("readerOfDocumentsShortTimeout",
+        new JSONObject().put("readTimeout", 1).put("types", accessOn("Document1", "readRecord")));
+  }
+
+  private static void saveTestGroup(final String name, final JSONObject group) {
+    SECURITY.saveGroup(SecurityManager.ANY, name, group);
+  }
+
+  private static JSONObject accessOn(final String typeName, final String... access) {
+    return new JSONObject().put(typeName, new JSONObject().put("access", new JSONArray(access)));
+  }
+
+  /**
+   * Edits the wildcard groups of {@link SecurityGroupFileRepository#FILE_NAME} the way an operator would, outside the server.
+   * Atomically (temp file and rename), so the reload tick never reads a half-written file: a torn read is preserved as
+   * {@code server-groups-error.json} and logged at SEVERE, and the rest of the write can land in the same millisecond the tick
+   * stamped, which the next tick does not see as a change.
+   */
+  private static void editGroupsFile(final Consumer<JSONObject> edit) throws IOException {
+    final File file = new File(CONFIG_DIRECTORY, SecurityGroupFileRepository.FILE_NAME);
+    assertThat(file.exists()).isTrue();
+
+    final JSONObject json = new JSONObject(FileUtils.readFileAsString(file));
+    edit.accept(json.getJSONObject("databases").getJSONObject(SecurityManager.ANY).getJSONObject("groups"));
+    FileUtils.atomicWriteFile(file, json.toString(2));
+  }
+
+  /**
+   * Waits for the reload tick to publish an edit of the file. The watcher promises the NEXT tick, not a latency: it is a
+   * fixed-delay {@code java.util.Timer} whose tick also re-derives the cached permissions of every open database, so the
+   * delay is a period plus whatever the previous tick, the scheduler and the collector took. The old 150 ms sleep left 50 ms
+   * for all of that and failed on a loaded runner. The bound only separates "reloaded later" from "never reloaded", so it is
+   * generous.
+   */
+  private static void awaitWildcardGroups(final String what, final Predicate<JSONObject> reloaded) {
+    await("the reload of " + what + " of '" + SecurityGroupFileRepository.FILE_NAME + "'").atMost(RELOAD_TIMEOUT)
+        .pollInterval(Duration.ofMillis(10)).until(() -> reloaded.test(SECURITY.getDatabaseGroupsConfiguration(SecurityManager.ANY)));
+  }
+
+  /** Holds the current read past the 1 ms {@code readTimeout} of {@code readerOfDocumentsShortTimeout}. */
+  private static void outliveReadTimeout() throws InterruptedException {
+    Thread.sleep(20);
   }
 }

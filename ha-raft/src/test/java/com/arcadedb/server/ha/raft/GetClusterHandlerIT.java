@@ -18,20 +18,30 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Exercises the {@code /api/v1/cluster} endpoint on a live 2-node cluster: status, per-follower replication health,
+ * leader readiness, per-node resync state, and (issue #5314) the measured replication RTT behind the CLUSTER
+ * CONFIGURATION table.
+ */
 class GetClusterHandlerIT extends BaseRaftHATest {
+
+  private static final String RTT_TYPE = "Issue5314";
 
   @Override
   protected int getServerCount() {
@@ -197,6 +207,59 @@ class GetClusterHandlerIT extends BaseRaftHATest {
       assertThat(restarts.getInt("recovered", -1)).as("never restarted in place").isZero();
       assertThat(restarts.getInt("reformatted", -1)).as("never reformatted").isZero();
     }
+  }
+
+  /**
+   * Issue #5314, from {@code Issue5314ReplicationRttIT}: the {@code LATENCY} column reported the follower's time since the last RPC;
+   * the leader must expose a real sub-second RTT, and the table must use the {@code LAST CONTACT} and {@code RTT} headers.
+   */
+  @Test
+  @Tag("slow")
+  void exposesRealReplicationRttDistinctFromLastContact() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
+
+    // Generate a handful of appendEntries RPCs carrying real entries so the append-latency timer (not
+    // only the heartbeat one) has samples; the fix works idle-only too, this just makes the assertion
+    // robust regardless of whether a heartbeat happened to land during the window.
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType(RTT_TYPE))
+        leaderDb.getSchema().createVertexType(RTT_TYPE);
+    });
+    for (int i = 0; i < 20; i++) {
+      final int idx = i;
+      leaderDb.transaction(() -> leaderDb.newVertex(RTT_TYPE).set("idx", idx).save());
+    }
+    assertClusterConsistency();
+
+    final String followerPeerId = peerIdForIndex((leaderIndex + 1) % getServerCount());
+
+    // The Ratis timers populate asynchronously once the first RPCs complete; give them a moment.
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).until(() -> {
+      final Map<String, RaftHAServer.ReplicationLatency> rtt = leader.getReplicationLatencies();
+      final RaftHAServer.ReplicationLatency sample = rtt.get(followerPeerId);
+      return sample != null && sample.meanMs() > 0d;
+    });
+
+    final Map<String, RaftHAServer.ReplicationLatency> latencies = leader.getReplicationLatencies();
+    final RaftHAServer.ReplicationLatency followerRtt = latencies.get(followerPeerId);
+    assertThat(followerRtt).as("leader must expose a measured RTT for the follower").isNotNull();
+    assertThat(followerRtt.meanMs()).as("mean RTT must be a real positive figure").isGreaterThan(0d);
+    // Loopback replication RTT is well under a second; the old column reported multi-second heartbeat age.
+    assertThat(followerRtt.meanMs()).as("loopback RTT must be sub-second").isLessThan(1000d);
+    assertThat(followerRtt.p99Ms()).as("p99 RTT is a valid percentile").isGreaterThanOrEqualTo(0d);
+
+    // The rendered table must use the honest headers and drop the misleading one.
+    final String table = leader.getClusterConfigurationTable();
+    assertThat(table).as("table present on leader").isNotNull();
+    assertThat(table).contains("RTT");
+    assertThat(table).contains("LAST CONTACT");
+    assertThat(table).doesNotContain("LATENCY");
+
+    leaderDb.transaction(() -> leaderDb.command("sql", "DELETE FROM " + RTT_TYPE));
   }
 
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {

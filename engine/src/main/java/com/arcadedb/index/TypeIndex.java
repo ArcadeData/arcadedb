@@ -29,6 +29,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -51,7 +52,11 @@ import java.util.logging.Level;
  * @author Luca Garulli
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
-  private       String              logicName;
+  // Assigned only by rename(), which re-keys the schema's index map in the same step (issue #10751). The rename runs under the
+  // schema change of the type rename, and a query reads the name without a lock: volatile so it sees the new name once it is set
+  private volatile String           logicName;
+  // A name the user chose (CREATE INDEX <name> ON ...): it is not derived from the type, so a type rename leaves it alone
+  private final    boolean          manualName;
   // Copy-on-write: a query plans and reads while DDL on the same type adds, removes or clears sub-indexes
   private final List<IndexInternal> indexesOnBuckets = new CopyOnWriteArrayList<>();
   private final DocumentType        type;
@@ -64,15 +69,37 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   // DDL, which runs under the schema's write lock, so one writer at a time; the before/after comparison alone would still catch
   // overlapping writers, only the "odd means under way" shortcut relies on there being one
   private final AtomicLong          subIndexChanges  = new AtomicLong();
+  // moved by refreshCompleteness(): an awaitingFill flip does not move subIndexChanges, so a refresh racing a reader's store
+  // would otherwise be lost and the reader's stale answer cached
+  private final AtomicLong          completenessEpoch = new AtomicLong();
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
+  // The last answer of isComplete(), with what it was computed on: the type's bucket list (replaced, never mutated, on every
+  // change) and the sub-index change counter. Asked by isValid(), which the planners call per candidate index
+  private volatile Completeness     completeness;
+
+  private record Completeness(List<Bucket> buckets, long subIndexChanges, boolean complete) {
+  }
 
   // #8153: CACHED BY keyedCursor(), SEE THERE
   private BinaryComparator comparator;
 
   public TypeIndex(final String logicName, final DocumentType type) {
+    this(logicName, type, false);
+  }
+
+  /**
+   * @param manualName whether {@code logicName} is a name the user chose rather than the one derived from the type and its properties
+   */
+  public TypeIndex(final String logicName, final DocumentType type, final boolean manualName) {
     this.logicName = logicName;
     this.type = type;
+    this.manualName = manualName;
+  }
+
+  /** Whether this index answers to a name the user chose, which a rename of its type does not touch. */
+  public boolean hasManualName() {
+    return manualName;
   }
 
   @Override
@@ -460,6 +487,15 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // Throwing here would surface a confusing "is not valid" error for an idempotent operation.
       return;
 
+    // issue #10589: reached from the Java API as well as from LocalSchema#dropIndex, so the files of every sub-index are probed here
+    // too, before the first one is dropped - a refusal from the Nth left the N-1 before it dropped and saved
+    type.getSchema().getEmbedded().executeDroppingFiles("drop the index '" + getName() + "'", getFileIds(), () -> {
+      dropSubIndexes();
+      return null;
+    });
+  }
+
+  private void dropSubIndexes() {
     dropping = true;
     final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
     try {
@@ -513,8 +549,21 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public Map<String, Long> getStats() {
     checkIsValid();
     final Map<String, Long> stats = new HashMap<>();
-    for (final Index index : indexesOnBuckets)
-      stats.putAll(((IndexInternal) index).getStats());
+    // the records the last vector index build left out are a count over the whole type, as the CREATE / REBUILD INDEX result
+    // reports it, not the value of whichever bucket comes last (issue #10938)
+    long skipped = 0;
+    boolean vector = false;
+    for (final Index index : indexesOnBuckets) {
+      final Map<String, Long> bucketStats = ((IndexInternal) index).getStats();
+      stats.putAll(bucketStats);
+      final Long bucketSkipped = bucketStats.get(LSMVectorIndex.LAST_BUILD_SKIPPED_RECORDS_STAT);
+      if (bucketSkipped != null) {
+        skipped += bucketSkipped;
+        vector = true;
+      }
+    }
+    if (vector)
+      stats.put(LSMVectorIndex.LAST_BUILD_SKIPPED_RECORDS_STAT, skipped);
     return stats;
   }
 
@@ -721,13 +770,39 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
-   * The type this index is declared on has been renamed: its logic name follows, and so do the sub-indexes on its own buckets. The
-   * sub-indexes on the buckets of its sub types name those sub types, which the rename did not touch (issue #10317).
+   * The type this index is declared on has been renamed: a derived logic name follows (a manual one is the user's and stays, issue
+   * #10751), and so do the sub-indexes on its own buckets. The sub-indexes on the buckets of its sub types name those sub types,
+   * which the rename did not touch (issue #10317).
    */
   @Override
   public void updateTypeName(final String newTypeName) {
-    logicName = getTypeName() + getPropertyNames().toString().replace(" ", "");
+    if (!manualName)
+      rename(nameUnderType(newTypeName));
     updateTypeNameOfSubIndexesOn(type, newTypeName);
+  }
+
+  /** The name this index answers to once its type is named {@code typeName}: unchanged for a manual name, derived otherwise. */
+  public String nameUnderType(final String typeName) {
+    return manualName ? logicName : typeName + getPropertyNames().toString().replace(" ", "");
+  }
+
+  /**
+   * The only assignment of the name this index answers to, and the schema's index map follows it in the same step: an index whose
+   * name changed while the map kept the old key answered to a name nothing resolved, so DROP INDEX and REBUILD INDEX with the
+   * name the catalog printed failed and the retired name still reached it (issue #10751).
+   */
+  private void rename(final String newName) {
+    final String oldName = logicName;
+    if (newName.equals(oldName))
+      return;
+    // indexRenamed() reads the new name from this index, so it is assigned first and given back if the map could not follow
+    logicName = newName;
+    try {
+      type.getSchema().getEmbedded().indexRenamed(oldName, this);
+    } catch (final RuntimeException | Error e) {
+      logicName = oldName;
+      throw e;
+    }
   }
 
   /**
@@ -867,9 +942,93 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return indexesOnBuckets;
   }
 
+  /**
+   * False once the index was dropped or replaced, AND while it lacks the bucket index of a bucket of its type
+   * ({@link #isComplete()}): such an index misses every record of that bucket, so a lookup through it answers short, a unique
+   * constraint does not hold for that bucket and it must not be reported as usable. The index still serves the calls that
+   * repair it (REBUILD INDEX reads its definition through it), which check {@link #isDropped()} only.
+   */
   @Override
   public boolean isValid() {
-    return valid;
+    return valid && isComplete();
+  }
+
+  /** Whether the index was dropped or replaced, whatever its bucket indexes: the state its own methods refuse to work in. */
+  public boolean isDropped() {
+    return !valid;
+  }
+
+  /**
+   * Whether every bucket the index covers has its bucket index in this index, filled: the buckets of the type AND of its sub types,
+   * whose bucket indexes are attached to the index of the type that declares it ({@code LocalDocumentType#addIndexInternal}). An index built and kept by this version always
+   * is, outside the instants a DDL statement adds or removes a bucket index; one a rebuild interrupted by an earlier version left
+   * behind is not, and stays so until {@code REBUILD INDEX} has given the missing buckets their index and filled it (a bucket index
+   * it created and has not filled yet, {@link IndexInternal#isAwaitingFill()}, does not count).
+   */
+  public boolean isComplete() {
+    if (type == null)
+      return true;
+    final List<Bucket> buckets = type.getBuckets(true);
+    final long changes = subIndexChanges.get();
+    final long epoch = completenessEpoch.get();
+    final Completeness cached = completeness;
+    // identity, not equals(): the type's polymorphic bucket list is copy-on-write (CollectionUtils.addToUnmodifiableList/removeFrom...,
+    // LocalDocumentType.rebuildPolymorphicBucketsCache replaces it too), so a
+    // different instance is exactly "the buckets changed", and comparing by identity keeps this planner hot path allocation-free
+    if (cached != null && cached.buckets == buckets && cached.subIndexChanges == changes)
+      return cached.complete;
+
+    final boolean complete = findBucketsWithoutIndex(buckets, true, true).isEmpty();
+    // odd: a change of the sub-indexes is under way, answered without being remembered
+    if ((changes & 1) == 0 && subIndexChanges.get() == changes && completenessEpoch.get() == epoch) {
+      completeness = new Completeness(buckets, changes, complete);
+      // a refresh that ran after the check above clears what was just stored
+      if (completenessEpoch.get() != epoch)
+        completeness = null;
+    }
+    return complete;
+  }
+
+  /**
+   * The buckets the index covers (its type's and its sub types') that have no bucket index in this index, empty when every bucket
+   * has one. A bucket index created and
+   * not filled yet counts as there: this answers which buckets need one created.
+   */
+  public List<Bucket> getBucketsWithoutIndex() {
+    return type == null ? List.of() : findBucketsWithoutIndex(type.getBuckets(true), false, false);
+  }
+
+  /** A type index is never filled itself: its bucket indexes are, each one flagged on its own. */
+  @Override
+  public void setAwaitingFill(final boolean awaitingFill) {
+    throw new UnsupportedOperationException("Index '" + getName() + "' is a type index: only its bucket indexes await a fill");
+  }
+
+  /** Forgets the cached answer of {@link #isComplete()}: a bucket index of this index was created or filled. */
+  public void refreshCompleteness() {
+    completenessEpoch.incrementAndGet();
+    completeness = null;
+  }
+
+  private List<Bucket> findBucketsWithoutIndex(final List<Bucket> buckets, final boolean firstOnly, final boolean filledOnly) {
+    List<Bucket> missing = null;
+    for (int i = 0; i < buckets.size(); i++) {
+      final int bucketId = buckets.get(i).getFileId();
+      boolean found = false;
+      for (final IndexInternal onBucket : indexesOnBuckets)
+        if (onBucket.getAssociatedBucketId() == bucketId && !(filledOnly && onBucket.isAwaitingFill())) {
+          found = true;
+          break;
+        }
+      if (!found) {
+        if (missing == null)
+          missing = new ArrayList<>(firstOnly ? 1 : 4);
+        missing.add(buckets.get(i));
+        if (firstOnly)
+          break;
+      }
+    }
+    return missing == null ? List.of() : missing;
   }
 
   /**
@@ -944,7 +1103,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       return true;
     // a drop under way removes the sub-index files while the index still answers as valid
     return e instanceof IllegalArgumentException iae && isFileNotFound(iae) && !(index instanceof TypeIndex typeIndex
-        && typeIndex.isValid() && !typeIndex.dropping);
+        && !typeIndex.isDropped() && !typeIndex.dropping);
   }
 
   /**

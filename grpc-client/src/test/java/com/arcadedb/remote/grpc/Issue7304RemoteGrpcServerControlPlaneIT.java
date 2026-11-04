@@ -83,7 +83,7 @@ class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGrpcClientServerTest {
       assertThat(getServer(0).getConfiguration().getValueAsInteger(setting)).isEqualTo(9);
 
       server.setDatabaseSetting(getDatabaseName(), setting.getKey(), "5");
-      assertThat(getServer(0).getDatabase(getDatabaseName()).getConfiguration().getValueAsInteger(setting)).isEqualTo(5);
+      assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).getConfiguration().getValueAsInteger(setting)).isEqualTo(5);
     } finally {
       getServer(0).getConfiguration().setValue(setting.getKey(), previous);
     }

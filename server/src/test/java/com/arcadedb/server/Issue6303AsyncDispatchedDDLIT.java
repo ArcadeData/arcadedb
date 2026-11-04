@@ -58,7 +58,7 @@ class Issue6303AsyncDispatchedDDLIT extends BaseGraphServerTest {
   @Test
   void createIndexWithAwaitResponseFalseBuildsAnIndexThatCoversEveryRecord() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
       final String typeName = TYPE_NAME + serverIndex;
 
       database.transaction(() -> {

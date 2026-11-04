@@ -150,8 +150,8 @@ class MCPDatabaseScopingTest extends BaseGraphServerTest {
         .put("database", getDatabaseName())
         .put("language", "sql")
         .put("query", "SELECT 1"), config))
-        .isInstanceOf(SecurityException.class)
-        .hasMessageContaining("not authorized for MCP access");
+        .isInstanceOf(MCPToolArgumentException.class)
+        .hasMessageContaining("Database '" + getDatabaseName() + "' does not exist");
     assertThat(contains(ListDatabasesTool.execute(getServer(0), user, new JSONObject(), config)
         .getJSONArray("databases"), getDatabaseName())).isFalse();
     assertThat(containsResource(MCPResources.list(getServer(0), user, config)

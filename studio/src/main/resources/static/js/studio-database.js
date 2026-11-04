@@ -3047,6 +3047,11 @@ function populateSettingsPanel() {
   let nodeSizeVal = globalGraphSettings ? (globalGraphSettings.nodeSize || 25) : 25;
   let defaultLabelVal = globalGraphSettings ? (globalGraphSettings.defaultLabel != null ? globalGraphSettings.defaultLabel : "") : "";
   let maxLabelVal = globalGraphSettings ? (globalGraphSettings.maxLabelLength || 45) : 45;
+  let physicsChecked = physicsEnabled() ? "checked" : "";
+  let physicsRepulsionVal = physicsRepulsionSetting();
+  let physicsGravityVal = physicsGravitySetting();
+  let physicsEdgeLengthVal = physicsEdgeLengthSetting();
+  let physicsPaddingVal = physicsPaddingSetting();
 
   html += "<div class='settings-section'>";
   html += "<div class='settings-section-header'>Graph Settings</div>";
@@ -3062,6 +3067,16 @@ function populateSettingsPanel() {
   html += "<input type='range' class='form-range' id='settingMaxLabel' min='0' max='100' step='5' value='" + maxLabelVal + "'" + studioAction("applyMaxLabelLength", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Graph Spacing: <span id='settingGraphSpacingVal'>" + spacingVal + "</span></label>";
   html += "<input type='range' class='form-range' id='settingGraphSpacing' min='10' max='150' step='10' value='" + spacingVal + "'" + studioAction("applyGraphSpacing", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<div class='settings-row'><label>Live Physics</label>";
+  html += "<input type='checkbox' class='form-check-input' id='settingPhysics' " + physicsChecked + studioAction("physicsSetEnabled", [STUDIO_ARG_CHECKED], "change") + "></div>";
+  html += "<div class='settings-row'><label>Repulsion: <span id='settingPhysicsRepulsionVal'>" + physicsRepulsionVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingPhysicsRepulsion' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsRepulsionVal + "'" + studioAction("applyPhysicsRepulsion", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<div class='settings-row'><label>Gravity: <span id='settingPhysicsGravityVal'>" + physicsGravityVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingPhysicsGravity' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsGravityVal + "'" + studioAction("applyPhysicsGravity", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<div class='settings-row'><label>Edge Length: <span id='settingPhysicsEdgeLengthVal'>" + physicsEdgeLengthVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingPhysicsEdgeLength' min='1' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsEdgeLengthVal + "'" + studioAction("applyPhysicsEdgeLength", [STUDIO_ARG_VALUE], "change") + "></div>";
+  html += "<div class='settings-row'><label>Node Padding: <span id='settingPhysicsPaddingVal'>" + physicsPaddingVal + "</span></label>";
+  html += "<input type='range' class='form-range' id='settingPhysicsPadding' min='0' max='" + PHYSICS_MAX_LEVEL + "' step='1' value='" + physicsPaddingVal + "'" + studioAction("applyPhysicsPadding", [STUDIO_ARG_VALUE], "change") + "></div>";
   html += "<div class='settings-row'><label>Cumulative Selection</label>";
   html += "<input type='checkbox' class='form-check-input' id='settingCumulativeSelection' " + cumulativeChecked + studioAction("applyCumulativeSelection", [STUDIO_ARG_CHECKED], "change") + "></div>";
   html += "</div>";
@@ -3102,6 +3117,33 @@ function applyGraphSpacing(value) {
 function applyCumulativeSelection(checked) {
   globalGraphSettings.cumulativeSelection = checked;
   saveGraphGlobalSettings();
+}
+
+function applyPhysicsRepulsion(value) {
+  applyPhysicsLevel("physicsRepulsion", value, "#settingPhysicsRepulsionVal");
+}
+
+function applyPhysicsGravity(value) {
+  applyPhysicsLevel("physicsGravity", value, "#settingPhysicsGravityVal");
+}
+
+function applyPhysicsEdgeLength(value) {
+  applyPhysicsLevel("physicsEdgeLength", value, "#settingPhysicsEdgeLengthVal");
+}
+
+function applyPhysicsPadding(value) {
+  applyPhysicsLevel("physicsPadding", value, "#settingPhysicsPaddingVal");
+}
+
+/**
+ * A live physics slider: the value is stored, shown and handed to the simulation, which starts moving again with
+ * the new forces.
+ */
+function applyPhysicsLevel(setting, value, labelSelector) {
+  globalGraphSettings[setting] = parseInt(value);
+  $(labelSelector).text(value);
+  saveGraphGlobalSettings();
+  physicsReheat();
 }
 
 function applyNodeSize(value) {
@@ -4697,6 +4739,9 @@ function showGavDetail(gavName) {
   // Status badge
   let statusClass = mvStatusBadgeClass(gav.status);
   html += "<p><span class='mv-status-badge " + statusClass + "'>" + escapeHtml(gav.status || "UNKNOWN") + "</span></p>";
+  // Why the last build failed: the view holds nothing (FAILED) or serves its previous snapshot (STALE)
+  if (gav.buildError)
+    html += "<div class='mv-info-row text-danger'><span class='mv-info-label'>Build Error:</span> " + escapeHtml(gav.buildError) + "</div>";
 
   // Configuration info
   html += "<div class='mv-info-row'><span class='mv-info-label'>Vertex Types:</span> ";
@@ -5298,7 +5343,8 @@ function mvStatusDotClass(status) {
   if (s == "VALID" || s == "READY") return "mv-status-dot-valid";
   if (s == "BUILDING") return "mv-status-dot-building";
   if (s == "STALE") return "mv-status-dot-stale";
-  if (s == "ERROR") return "mv-status-dot-error";
+  // FAILED: a Graph Analytical View whose build threw and that has nothing to serve (issue #11011)
+  if (s == "ERROR" || s == "FAILED") return "mv-status-dot-error";
   return "mv-status-dot-valid";
 }
 
@@ -5307,7 +5353,7 @@ function mvStatusBadgeClass(status) {
   if (s == "VALID" || s == "READY") return "mv-status-badge-valid";
   if (s == "BUILDING") return "mv-status-badge-building";
   if (s == "STALE") return "mv-status-badge-stale";
-  if (s == "ERROR") return "mv-status-badge-error";
+  if (s == "ERROR" || s == "FAILED") return "mv-status-badge-error";
   return "mv-status-badge-valid";
 }
 
@@ -5978,21 +6024,43 @@ function displayDatabaseStats(stats) {
     stats.deleteRecord || 0
   ];
 
-  if (_dbMetricsCrudChart) {
-    _dbMetricsCrudChart.updateSeries(crudData);
-  } else {
-    _dbMetricsCrudChart = new ApexCharts(document.querySelector("#dbStatCrudChart"), {
-      chart: { type: "donut", height: 200 },
-      series: crudData,
-      labels: ["Create", "Read", "Update", "Delete"],
-      colors: ["#28a745", "#00aeee", "#ffc107", "#dc3545"],
-      legend: { position: "bottom", fontSize: "11px" },
-      plotOptions: { pie: { donut: { size: "50%" } } },
-      dataLabels: { enabled: true, formatter: function (val) { return val.toFixed(0) + "%"; } },
-      noData: { text: "No CRUD operations yet" }
-    });
-    _dbMetricsCrudChart.render();
-  }
+  _dbMetricsCrudChart = studioChartDraw(document.querySelector("#dbStatCrudChart"), dbCrudChartOption(crudData), 200, _dbMetricsCrudChart);
+}
+
+/**
+ * The ECharts option of the CRUD donut: `counts` are the create, read, update and delete operations, each slice labelled
+ * with its share. With no operation at all there is nothing to divide, so the chart says so instead of drawing a ring.
+ */
+function dbCrudChartOption(counts) {
+  var total = 0;
+  for (var i = 0; i < counts.length; i++) total += counts[i];
+  if (total === 0)
+    return { title: { text: "No CRUD operations yet", left: "center", top: "middle", textStyle: { fontSize: 13, fontWeight: "normal" } }, series: [] };
+  var names = ["Create", "Read", "Update", "Delete"];
+  return {
+    animation: false,
+    color: ["#28a745", "#00aeee", "#ffc107", "#dc3545"],
+    tooltip: { trigger: "item" },
+    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    series: [
+      {
+        name: "CRUD",
+        type: "pie",
+        radius: ["35%", "70%"],
+        center: ["50%", "42%"],
+        stillShowZeroSum: false,
+        label: {
+          position: "inside",
+          formatter: function (params) {
+            return params.percent > 0 ? Math.round(params.percent) + "%" : "";
+          }
+        },
+        data: names.map(function (name, index) {
+          return { name: name, value: counts[index] };
+        })
+      }
+    ]
+  };
 }
 
 function mvStatusBadge(status) {
@@ -6211,6 +6279,8 @@ function renderIndexesDataTable(indexes) {
         "'></i>" +
         name;
     }
+    // an index that is a member of a multi-label index (CREATE FULLTEXT/VECTOR INDEX ... FOR (n:A|B)) is queried by that name
+    if (idx.multiTypeIndex) name += " <span class='text-muted small'>(" + escapeHtml(idx.multiTypeIndex) + ")</span>";
     tableData.push([
       name,
       escapeHtml(idx.indexType || "-"),

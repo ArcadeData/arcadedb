@@ -121,7 +121,7 @@ class Issue5413DenseVectorServerLatencyIT extends BaseGraphServerTest {
       for (int d = 0; d < DIMENSIONS; d++)
         queries[i][d] = rnd.nextFloat();
 
-    final Database serverDb = getServer(0).getDatabase(getDatabaseName());
+    final Database serverDb = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     // Sanity: the index must really answer with K neighbours, otherwise the numbers below are meaningless.
     final Map<String, Object> probeParams = new HashMap<>();

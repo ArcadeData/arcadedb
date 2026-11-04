@@ -134,7 +134,7 @@ class Issue9949SetDatabaseSettingRederivesTest {
 
   private static ServerControlPlane controlPlane(final ServerDatabase database) {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? database : null);
     return new ServerControlPlane(server);
   }
 }

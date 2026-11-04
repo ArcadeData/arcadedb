@@ -44,7 +44,7 @@ import static org.mockito.Mockito.when;
  * Every database the server opens or creates goes through one step (issue #8270) that wraps it for replication when
  * the HA wrapper is installed and refuses writes while that wrapper is still expected; a plain {@link LocalDatabase}
  * registered this way skipped it, and served every protocol committing locally without replication. It now goes
- * through the same step. The replication end to end is {@code Issue8281RegisteredDatabaseReplicatesIT} in ha-raft.
+ * through the same step. The replication end to end is {@code HaStaleHandleIT} in ha-raft.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -103,7 +103,7 @@ class Issue8281RegisterDatabaseHAWrapTest {
 
     assertThat(wrappedInstances).containsExactly(local);
     assertThat(local.getWriteRefusal()).isNull();
-    assertThat(server.getDatabase(DB).getWrappedDatabaseInstance().getEmbedded()).isSameAs(local);
+    assertThat(server.getDatabaseForOperator(DB).getWrappedDatabaseInstance().getEmbedded()).isSameAs(local);
   }
 
   @Test

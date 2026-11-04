@@ -19,8 +19,10 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 
 import java.util.Iterator;
@@ -181,7 +183,17 @@ public final class SelfLoops {
           return true;
         while (edges.hasNext()) {
           final Edge candidate = edges.next();
-          if (candidate.getOut().equals(candidate.getIn())) {
+          final boolean selfLoop;
+          try {
+            selfLoop = candidate.getOut().equals(candidate.getIn());
+          } catch (final RecordNotFoundException e) {
+            // A ghost: the entry names an edge whose record is gone, and the endpoints of an edge that was not read off its entry are
+            // read from the record. It cannot be told from a self-loop, nor followed: skipped and reported, as every walk that loads
+            // the edge does, instead of failing the walk that asked for the next one (issue #10463)
+            GhostEdgeReporter.reportSkipped(e);
+            continue;
+          }
+          if (selfLoop) {
             // A self-loop sits in both the outgoing and the incoming list of its vertex, so walking
             // both lists reaches the very same relationship twice. Not a Set<RID>: two parallel lightweight
             // self-loops share their RID and are still two relationships (issue #9983)

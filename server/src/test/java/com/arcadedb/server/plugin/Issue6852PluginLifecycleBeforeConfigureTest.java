@@ -88,7 +88,7 @@ class Issue6852PluginLifecycleBeforeConfigureTest extends StaticBaseServerTest {
       assertThat(plugin.getCallbacks()).anyMatch(c -> c.event().equals("registered")
           && c.databaseName().equals(RUNTIME_DATABASE) && c.hadServer() && c.hadStarted());
 
-      server.getDatabase(RUNTIME_DATABASE).getEmbedded().drop();
+      server.getDatabaseForOperator(RUNTIME_DATABASE).getEmbedded().drop();
       server.removeDatabase(RUNTIME_DATABASE);
       assertThat(plugin.getCallbacks()).anyMatch(c -> c.event().equals("unregistered")
           && c.databaseName().equals(RUNTIME_DATABASE) && c.hadServer() && c.hadStarted());

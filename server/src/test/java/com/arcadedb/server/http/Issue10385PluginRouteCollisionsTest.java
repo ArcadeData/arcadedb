@@ -168,15 +168,16 @@ class Issue10385PluginRouteCollisionsTest {
     // one segment more or fewer than the core route is another path
     plugin("PluginA", routes -> routes.get("/api/v1/server/extra", say("deeper")));
     plugin("PluginA", routes -> routes.get("/api/v1/serve", say("shorter")));
-    // a prefix longer than the core route cannot take a request the core route answers
-    plugin("PluginB", routes -> routes.prefix(Methods.GET, "/api/v1/server/extra/", say("prefix beyond the route")));
+    // a prefix longer than the core route cannot take a request the core route answers (on a path of its own: an exact path of
+    // another plugin on the same one would take the prefix's root away, issue #10532)
+    plugin("PluginB", routes -> routes.prefix(Methods.GET, "/api/v1/server/beyond/", say("prefix beyond the route")));
     // a prefix shorter than the core mount loses to the mount, which is the more specific of the two
     plugin("PluginC", routes -> routes.prefix(Methods.GET, "/api", say("prefix above the mount")));
     startListener();
 
     assertThat(send("GET", "/api/v1/server/extra").body()).isEqualTo("deeper");
     assertThat(send("GET", "/api/v1/serve").body()).isEqualTo("shorter");
-    assertThat(send("GET", "/api/v1/server/extra/x").body()).isEqualTo("prefix beyond the route");
+    assertThat(send("GET", "/api/v1/server/beyond/x").body()).isEqualTo("prefix beyond the route");
     assertThat(send("GET", "/api/other").body()).isEqualTo("prefix above the mount");
     assertThat(send("GET", "/api/v1/server").body()).as("the core route is still the core's").isEqualTo("CORE GET /api/v1/server");
     assertThat(send("GET", "/api/v1/databases").body()).as("so is a core route under the same mount")

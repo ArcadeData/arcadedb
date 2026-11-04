@@ -90,9 +90,9 @@ class Issue9568BootstrapFingerprintApplyDuringShutdownTest {
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
     server = new ArcadeDBServer(config) {
       @Override
-      public ServerDatabase getDatabase(final String databaseName) {
+      public ServerDatabase getDatabaseForOperator(final String databaseName) {
         reopenAttempts.incrementAndGet();
-        return super.getDatabase(databaseName);
+        return super.getDatabaseForOperator(databaseName);
       }
 
       @Override

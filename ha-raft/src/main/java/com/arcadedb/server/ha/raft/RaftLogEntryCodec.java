@@ -156,6 +156,12 @@ public final class RaftLogEntryCodec {
   static final String TX_FULLTEXT_CORPUS_SECTION = "tx-fulltext-corpus-deltas";
 
   /**
+   * Name of the extension section of a {@code DROP_DATABASE_ENTRY} or an {@code INSTALL_DATABASE_ENTRY} written by a restore that
+   * carries the Raft term in which its leader held the database (issue #10974), see {@link PeerCapabilities#RESTORE_FENCE}.
+   */
+  static final String RESTORE_FENCE_SECTION = "restore-fence-term";
+
+  /**
    * Appends one self-describing extension section to an entry being encoded. Call this AFTER the type's own
    * fields have been written, so a decoder that predates the section stops cleanly at the end of what it knows.
    * Sections may be repeated; a decoder skips every one it does not recognise.
@@ -376,8 +382,29 @@ public final class RaftLogEntryCodec {
        * Empty on every other entry type, on a transaction that wrote no full-text index, and on one written by a node that
        * predates the section.
        */
-      List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas
+      List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas,
+      /**
+       * The Raft term in which the leader running a restore held the database a {@code DROP_DATABASE_ENTRY} or an
+       * {@code INSTALL_DATABASE_ENTRY} of that restore targets (issue #10974), or {@code -1}: every other entry, an entry no
+       * restore wrote, and one written by a node that predates the section. A leader refuses a fenced entry of another node, or
+       * of another term.
+       */
+      long restoreFenceTerm
   ) {
+
+    /** Every entry no restore fenced. */
+    public DecodedEntry(final RaftLogEntryType type, final String databaseName, final byte[] walData,
+        final Map<Integer, Integer> bucketRecordDelta, final String schemaJson, final Map<Integer, String> filesToAdd,
+        final Map<Integer, String> filesToRemove, final List<byte[]> walEntries,
+        final List<Map<Integer, Integer>> bucketDeltas, final String usersJson, final boolean forceSnapshot,
+        final String bootstrapFingerprint, final long bootstrapLastTxId, final List<TsSealedBlob> sealedFileBlobs,
+        final boolean moreChunksFollow, final List<TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
+        final String securityPrecondition, final long txPreparedAtIndex, final Map<Integer, String> filesToRename,
+        final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas) {
+      this(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+          usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId, sealedFileBlobs, moreChunksFollow,
+          sealedFileChunks, schemaDelta, securityPrecondition, txPreparedAtIndex, filesToRename, corpusDeltas, -1L);
+    }
 
     /** Every entry but a {@code TX_ENTRY} carrying corpus deltas: nothing to apply to the counters. */
     public DecodedEntry(final RaftLogEntryType type, final String databaseName, final byte[] walData,
@@ -413,7 +440,7 @@ public final class RaftLogEntryCodec {
           new DecodedEntry(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove,
               walEntries, bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId,
               sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta, sections.securityPrecondition(),
-              sections.txPreparedAtIndex(), filesToRename, sections.corpusDeltas());
+              sections.txPreparedAtIndex(), filesToRename, sections.corpusDeltas(), sections.restoreFenceTerm());
     }
   }
 
@@ -426,11 +453,11 @@ public final class RaftLogEntryCodec {
 
   /** What the framed extension sections of one entry carried; a field an entry did not carry stays at its "absent" value. */
   record TrailingSections(String securityPrecondition, long txPreparedAtIndex,
-                          List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas) {
-    static final TrailingSections NONE = new TrailingSections(null, -1L, Collections.emptyList());
+                          List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, long restoreFenceTerm) {
+    static final TrailingSections NONE = new TrailingSections(null, -1L, Collections.emptyList(), -1L);
 
     boolean isEmpty() {
-      return securityPrecondition == null && txPreparedAtIndex < 0 && corpusDeltas.isEmpty();
+      return securityPrecondition == null && txPreparedAtIndex < 0 && corpusDeltas.isEmpty() && restoreFenceTerm < 0;
     }
   }
 
@@ -836,6 +863,16 @@ public final class RaftLogEntryCodec {
    * leader even if the database already exists locally (used for restore).
    */
   public static ByteString encodeInstallDatabaseEntry(final String databaseName, final boolean forceSnapshot) {
+    return encodeInstallDatabaseEntry(databaseName, forceSnapshot, -1L);
+  }
+
+  /**
+   * As {@link #encodeInstallDatabaseEntry(String, boolean)}, fenced to the term in which the leader running a restore held the
+   * database (issue #10974) when {@code restoreFenceTerm} is not negative. Only to be written once every peer advertises
+   * {@link PeerCapabilities#RESTORE_FENCE}.
+   */
+  public static ByteString encodeInstallDatabaseEntry(final String databaseName, final boolean forceSnapshot,
+      final long restoreFenceTerm) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -843,6 +880,7 @@ public final class RaftLogEntryCodec {
       dos.writeByte(RaftLogEntryType.INSTALL_DATABASE_ENTRY.getId());
       dos.writeUTF(databaseName);
       dos.writeBoolean(forceSnapshot);
+      writeRestoreFenceSection(dos, restoreFenceTerm);
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
@@ -1005,12 +1043,22 @@ public final class RaftLogEntryCodec {
    * Binary format: type byte, databaseName (UTF).
    */
   public static ByteString encodeDropDatabaseEntry(final String databaseName) {
+    return encodeDropDatabaseEntry(databaseName, -1L);
+  }
+
+  /**
+   * As {@link #encodeDropDatabaseEntry(String)}, fenced to the term in which the leader running a restore held the database
+   * (issue #10974) when {@code restoreFenceTerm} is not negative. Only to be written once every peer advertises
+   * {@link PeerCapabilities#RESTORE_FENCE}.
+   */
+  public static ByteString encodeDropDatabaseEntry(final String databaseName, final long restoreFenceTerm) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
 
       dos.writeByte(RaftLogEntryType.DROP_DATABASE_ENTRY.getId());
       dos.writeUTF(databaseName);
+      writeRestoreFenceSection(dos, restoreFenceTerm);
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
@@ -1115,6 +1163,7 @@ public final class RaftLogEntryCodec {
     String securityPrecondition = null;
     long txPreparedAtIndex = -1L;
     List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas = Collections.emptyList();
+    long restoreFenceTerm = -1L;
     while (dis.available() > 0) {
       if (dis.available() < EXTENSION_HEADER_BYTES)
         throw new IllegalStateException("Corrupted Raft log entry: " + dis.available()
@@ -1142,8 +1191,44 @@ public final class RaftLogEntryCodec {
       final List<FullTextCorpusDeltas.CorpusDelta> deltas = readFullTextCorpusDeltas(section);
       if (deltas != null)
         corpusDeltas = deltas;
+
+      final long fenceTerm = readRestoreFenceTerm(section);
+      if (fenceTerm >= 0)
+        restoreFenceTerm = fenceTerm;
     }
-    return new TrailingSections(securityPrecondition, txPreparedAtIndex, corpusDeltas);
+    return new TrailingSections(securityPrecondition, txPreparedAtIndex, corpusDeltas, restoreFenceTerm);
+  }
+
+  /**
+   * Reads the restore fence term out of one extension section, or returns {@code -1} when the section is something else (issue
+   * #10974). A section that IS ours and cannot be read is corruption: refused rather than applied unfenced.
+   */
+  private static long readRestoreFenceTerm(final byte[] section) {
+    final DataInputStream dis = new DataInputStream(new ByteArrayInputStream(section));
+    try {
+      if (!RESTORE_FENCE_SECTION.equals(dis.readUTF()))
+        return -1L;
+    } catch (final IOException e) {
+      return -1L;
+    }
+    try {
+      return dis.readLong();
+    } catch (final IOException e) {
+      throw new IllegalStateException(
+          "Corrupted Raft log entry: the '" + RESTORE_FENCE_SECTION + "' extension section carries no readable term", e);
+    }
+  }
+
+  /** Appends the restore fence section (issue #10974) when {@code restoreFenceTerm} is a term, nothing otherwise. */
+  private static void writeRestoreFenceSection(final DataOutputStream dos, final long restoreFenceTerm) throws IOException {
+    if (restoreFenceTerm < 0)
+      return;
+    final ByteArrayOutputStream section = new ByteArrayOutputStream(RESTORE_FENCE_SECTION.length() + 10);
+    final DataOutputStream sectionOut = new DataOutputStream(section);
+    sectionOut.writeUTF(RESTORE_FENCE_SECTION);
+    sectionOut.writeLong(restoreFenceTerm);
+    sectionOut.flush();
+    writeExtensionSection(dos, section.toByteArray());
   }
 
   /**

@@ -100,7 +100,7 @@ class Issue9430ServerOnlySealedCeilingHATest extends BaseRaftHATest {
   }
 
   private TimeSeriesEngine timeSeriesEngine(final int serverIndex) {
-    final DatabaseInternal db = (DatabaseInternal) getServer(serverIndex).getDatabase(getDatabaseName());
+    final DatabaseInternal db = (DatabaseInternal) getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
     return ((LocalTimeSeriesType) db.getSchema().getType("weather")).getEngine();
   }
 

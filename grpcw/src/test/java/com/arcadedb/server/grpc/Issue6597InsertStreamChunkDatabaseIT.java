@@ -60,7 +60,7 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
   void insertStreamMustHonorChunkLevelDatabaseWhenOptionsDatabaseIsUnset() throws Exception {
     final String typeName = "Issue6597ChunkDbType_" + System.currentTimeMillis();
 
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -100,12 +100,12 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
       assertThat(summary.getFailed()).isEqualTo(0);
       assertThat(summary.getErrorsList()).isEmpty();
 
-      final long total = getServer(0).getDatabase(getDatabaseName())
+      final long total = getServer(0).getDatabaseForOperator(getDatabaseName())
           .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
       assertThat(total).isEqualTo(1L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -113,7 +113,7 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
   void insertStreamMustStillHonorOptionsDatabaseWhenChunkDatabaseIsUnset() throws Exception {
     final String typeName = "Issue6597OptionsDbType_" + System.currentTimeMillis();
 
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -152,7 +152,7 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
       assertThat(summary.getFailed()).isEqualTo(0);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 
@@ -160,7 +160,7 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
   void insertStreamMustPreferChunkDatabaseOverOptionsDatabaseWhenBothAreSet() throws Exception {
     final String typeName = "Issue6597PrecedenceType_" + System.currentTimeMillis();
 
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
 
     final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
     try {
@@ -204,12 +204,12 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
       assertThat(summary.getFailed()).isEqualTo(0);
       assertThat(summary.getErrorsList()).isEmpty();
 
-      final long total = getServer(0).getDatabase(getDatabaseName())
+      final long total = getServer(0).getDatabaseForOperator(getDatabaseName())
           .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
       assertThat(total).isEqualTo(1L);
     } finally {
       service.close();
-      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+      getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 

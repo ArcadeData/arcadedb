@@ -63,7 +63,8 @@ public class PageId implements Comparable<PageId> {
   @Override
   public int hashCode() {
     if (cachedHashCode == 0)
-      cachedHashCode = Objects.hash(database, fileId, pageNumber);
+      // THE VALUE OF Objects.hash(database, fileId, pageNumber), WITHOUT ITS VARARGS Object[] AND BOXED INTS (A PAGEID IS BUILT PER PAGE VISITED)
+      cachedHashCode = 31 * (31 * (31 + Objects.hashCode(database)) + fileId) + pageNumber;
     return cachedHashCode;
   }
 

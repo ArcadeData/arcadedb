@@ -306,8 +306,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       }
     }
 
-    if (opts.containsKey("maxDepth"))
-      ctx.maxDepth = opts.getInt("maxDepth", 0);
+    // a null maxDepth is no bound, as it is for astar() and dijkstra(), and a negative one is refused (issue #10788)
+    if (opts.get("maxDepth") != null)
+      ctx.maxDepth = opts.getNonNegativeInt("maxDepth", 0);
     if (opts.containsKey("edge"))
       ctx.edge = opts.getBoolean("edge", false);
     else if (ctx.edge == null)

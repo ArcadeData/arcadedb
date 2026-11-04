@@ -103,7 +103,7 @@ class BatchInsertUpdateTest {
 
       ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
       arcadeDBServer.start();
-      Database database = arcadeDBServer.getDatabase(DATABASE_NAME);
+      Database database = arcadeDBServer.getDatabaseForOperator(DATABASE_NAME);
 
       try {
         int TOTAL = 100_000;

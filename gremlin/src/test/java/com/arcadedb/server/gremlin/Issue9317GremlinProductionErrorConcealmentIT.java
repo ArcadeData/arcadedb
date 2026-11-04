@@ -52,7 +52,7 @@ class Issue9317GremlinProductionErrorConcealmentIT extends AbstractGremlinServer
 
   @Test
   void aDuplicatedKeyIsConcealedOnTheWire() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     database.command("sql", "CREATE VERTEX TYPE Dup9317");
     database.command("sql", "CREATE PROPERTY Dup9317.k STRING");
     database.command("sql", "CREATE INDEX ON Dup9317 (k) UNIQUE");

@@ -81,6 +81,12 @@ public class BinaryTypes {
   public final static byte TYPE_LOCAL_TIME               = 33; // @SINCE 26.10.2 - LocalTime: nanoOfDay (Cypher localtime())
   public final static byte TYPE_ZONED_DATETIME           = 34; // @SINCE 26.10.2 - ZonedDateTime: epochSecond, nano, zone (Cypher datetime())
   public final static byte TYPE_DURATION                 = 35; // @SINCE 26.10.2 - months, days, seconds, nanos (Cypher duration())
+  // @SINCE 26.11.1 - float[] / double[] as the element count (unsigned varint) then the raw little-endian IEEE-754 elements,
+  // 4 / 8 bytes each. TYPE_ARRAY_OF_FLOATS/DOUBLES varint-encode each element's BIT PATTERN, which for any ordinary non-zero
+  // value is a large integer: 5 bytes per float and 9-10 per double, plus one varint decode per element on every read
+  // (issue #10856). Those two are still read, so existing records need no migration; an update rewrites a value in this form.
+  public final static byte TYPE_ARRAY_OF_FLOATS_FIXED    = 36;
+  public final static byte TYPE_ARRAY_OF_DOUBLES_FIXED   = 37;
   public final static byte TYPE_EXTERNAL_COMPRESSED_MAX  = 31; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL_COMPRESSED_FAST but compressed with LZ4 HC (high compression, ~10pp smaller output, 8-20x slower compress; decompression is identical to FAST since LZ4 HC uses the same format).
 
   // Geometry subtypes for TYPE_COMPRESSED_GEOMETRY
@@ -133,6 +139,19 @@ public class BinaryTypes {
       case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> propertyType.getType().getBinaryType();
       default -> fallback;
     };
+  }
+
+  /**
+   * What a {@link Result} coming from a query is stored as: the record it wraps - {@link #TYPE_RID} when it has an identity,
+   * {@link #TYPE_EMBEDDED} when it is an element nobody has saved - or, for a row that is not a record, its map
+   * ({@link #TYPE_MAP}). It is the single definition of that rule: {@link #getTypeFromValue} picks the label from it and
+   * {@code BinarySerializer.serializeValue} hands the same value to the label's branch, so a branch always receives the
+   * thing it expects and a new label cannot forget to unwrap (issues #10264, #10607).
+   *
+   * @return a {@link Document} for an element, the row's map otherwise
+   */
+  public static Object unwrapResult(final Result result) {
+    return result.isElement() ? result.getElement().get() : result.toMap();
   }
 
   public static byte getTypeFromValue(final Object value, final Property propertyType) {
@@ -209,13 +228,9 @@ public class BinaryTypes {
     else if (value instanceof Document document)
       type = document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
     else if (value instanceof Result result) {
-      // COMING FROM A QUERY
-      if (result.isElement()) {
-        final Document document = result.getElement().get();
-        type = document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED;
-      } else
-        // SERIALIZE THE RESULT AS A MAP
-        type = TYPE_MAP;
+      // COMING FROM A QUERY: THE LABEL IS THE ONE OF WHAT unwrapResult() HANDS TO THE SERIALIZER, SO THE TWO CANNOT DISAGREE
+      final Object unwrapped = unwrapResult(result);
+      type = unwrapped instanceof Document document ? document.getIdentity() != null ? TYPE_RID : TYPE_EMBEDDED : TYPE_MAP;
     } else if (value.getClass().isArray()) {
       // DECIDE THE BINARY TYPE FROM THE ARRAY'S DECLARED COMPONENT TYPE, NOT FROM ITS FIRST ELEMENT: SNIFFING THE
       // FIRST ELEMENT MADE AN EMPTY PRIMITIVE ARRAY (WHOSE "FIRST ELEMENT" IS null) FALL BACK TO TYPE_LIST, SO THE
@@ -339,8 +354,8 @@ public class BinaryTypes {
       case BinaryTypes.TYPE_ARRAY_OF_SHORTS -> short[].class;
       case BinaryTypes.TYPE_ARRAY_OF_INTEGERS -> int[].class;
       case BinaryTypes.TYPE_ARRAY_OF_LONGS -> long[].class;
-      case BinaryTypes.TYPE_ARRAY_OF_FLOATS -> float[].class;
-      case BinaryTypes.TYPE_ARRAY_OF_DOUBLES -> double[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_FLOATS, BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED -> float[].class;
+      case BinaryTypes.TYPE_ARRAY_OF_DOUBLES, BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED -> double[].class;
       case BinaryTypes.TYPE_COMPRESSED_GEOMETRY -> Shape.class;
       case BinaryTypes.TYPE_BINARY -> byte[].class;
       // UNKNOWN

@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Unit tests for issue #7040 (follow-up to #5275): the reconciliation of the declared peer list against the live
  * Raft configuration, and the alert built from their divergence. The end-to-end shape of {@code /api/v1/cluster}
- * after a peer removal is covered by {@link Issue7040RemovedPeerStatusIT}.
+ * after a peer removal is covered by {@link HaRemovedNodeIT}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

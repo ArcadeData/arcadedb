@@ -90,8 +90,17 @@ public final class BM25Scorer {
     // (only leaf postings are returned for a token lookup), their tf=0 would zero out any contribution anyway.
     if (tf <= 0)
       return 0.0;
-    final double safeAvgdl = avgdl > 0 ? avgdl : 1.0;
-    final double norm = 1.0 - b + b * (docLen / safeAvgdl);
+    final double norm = 1.0 - b + b * (docLen / lengthNormalizer(avgdl));
     return idf * (tf * (k1 + 1.0)) / (tf + k1 * norm);
+  }
+
+  /**
+   * The average document length BM25 normalizes by: the corpus average when it is a positive number, otherwise the neutral 1.0
+   * (a corpus whose documents analyze to no token, or counters that hold no length). The one rule every path applies - the scoring
+   * here, the type-wide scoring context and what {@code EXPLAIN} reports - so none of them normalizes by a value another one does
+   * not (issue #10735).
+   */
+  public static double lengthNormalizer(final double avgdl) {
+    return avgdl > 0 && Double.isFinite(avgdl) ? avgdl : 1.0;
   }
 }

@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -86,8 +87,11 @@ class Issue7889NullArgumentPositionTest extends TestHelper {
   void anUpdateWithALeadingNullParameterStillWritesTheRemainingRemovals() {
     database.getSchema().createDocumentType("T7889");
     database.transaction(() -> database.command("sql", "INSERT INTO T7889 SET tags = ['a','b','c']"));
-    database.transaction(() -> database.command("sql", "UPDATE T7889 SET tags = tags.remove(:a, :b)",
-        Map.of("b", "b")));
+    // :a is bound to an explicit null: a parameter with no key at all is refused since issue #11098
+    final Map<String, Object> parameters = new HashMap<>();
+    parameters.put("a", null);
+    parameters.put("b", "b");
+    database.transaction(() -> database.command("sql", "UPDATE T7889 SET tags = tags.remove(:a, :b)", parameters));
 
     try (final ResultSet rs = database.query("sql", "SELECT tags FROM T7889")) {
       assertThat(rs.next().<List<Object>>getProperty("tags")).containsExactly("a", "c");

@@ -233,29 +233,53 @@ function displayServerSummary() {
     series.push({ name: metricName, data: array });
   }
 
-  var serverCommandsOptions = {
-    series: series,
-    chart: { type: "line", height: 300, animations: { enabled: false } },
-    legend: { show: true, position: "bottom", horizontalAlign: "center", fontSize: "11px" },
-    tooltip: { enabled: true },
-    fill: { opacity: [0.24, 1, 1] },
-    dataLabels: { enabled: false },
-    stroke: { curve: "smooth", width: 2 },
-    grid: {
-      borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border-ddd').trim() || "#e7e7e7",
-      row: {
-        colors: [getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim() || "#f3f3f3", "transparent"],
-        opacity: 0.5,
+  var style = getComputedStyle(document.documentElement);
+  var option = serverCommandsChartOption(series,
+    style.getPropertyValue("--border-ddd").trim() || "#e7e7e7",
+    style.getPropertyValue("--bg-sidebar").trim() || "#f3f3f3");
+  serverChartCommands = studioChartDraw(document.querySelector("#serverChartCommands"), option, 300, serverChartCommands);
+}
+
+/**
+ * The ECharts option of the Database Operations chart: one line per operation, ops/min against the time each refresh
+ * read them (`series` is `[{name, data: [{x: time text, y}]}]`, every series over the same times). `gridColor` draws the
+ * grid lines and `stripeColor` every other row of the grid, as the theme defines them.
+ */
+function serverCommandsChartOption(series, gridColor, stripeColor) {
+  var times = series.length > 0 ? series[0].data.map(function (point) {
+    return point.x;
+  }) : [];
+  return {
+    animation: false,
+    tooltip: { trigger: "axis" },
+    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 16, right: 24, top: 36, bottom: 40 },
+    xAxis: { type: "category", data: times, boundaryGap: false },
+    yAxis: {
+      type: "value",
+      name: "Ops/Min",
+      minInterval: 1,
+      axisLabel: {
+        formatter: function (val) {
+          return Math.round(val);
+        }
       },
+      splitLine: { lineStyle: { color: gridColor } },
+      splitArea: { show: true, areaStyle: { color: [stripeColor, "transparent"], opacity: 0.5 } }
     },
-    markers: { size: 1 },
-    yaxis: { title: { text: "Ops/Min" }, labels: { formatter: function(val) { return Math.round(val); } } },
+    series: series.map(function (serie) {
+      return {
+        name: serie.name,
+        type: "line",
+        smooth: true,
+        symbolSize: 2,
+        lineStyle: { width: 2 },
+        data: serie.data.map(function (point) {
+          return point.y;
+        })
+      };
+    })
   };
-
-  if (serverChartCommands != null) serverChartCommands.destroy();
-
-  serverChartCommands = new ApexCharts(document.querySelector("#serverChartCommands"), serverCommandsOptions);
-  serverChartCommands.render();
 }
 
 function displayMetrics() {

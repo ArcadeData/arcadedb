@@ -19,8 +19,10 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
@@ -843,6 +845,61 @@ public final class Labels {
 
     final String compositeTypeName = String.join(LABEL_SEPARATOR, uniqueLabels);
 
+    // ONE SCHEMA PUBLICATION FOR THE WHOLE LABEL SET (issue #10537): every label that is missing and then the composite used to be a
+    // frame of their own, so CREATE (n:A:B) on two new labels shipped three schema entries under Raft, which a follower asking the
+    // leader for the type in a transaction that had already written reads as somebody else's schema change. The frame is opened only
+    // when something is missing: on labels that all exist and whose composite is complete this runs on every CREATE and MERGE, and
+    // must not take the database write lock, nor ask for the right to change the schema, to find that out.
+    if (isCompositeInPlace(schema, uniqueLabels, compositeTypeName)) {
+      createCompositeType(schema, uniqueLabels, compositeTypeName);
+      return compositeTypeName;
+    }
+
+    // A replica in a transaction its client opened cannot make the types itself, and a local frame would be refused before the builder
+    // below could ask the leader (issue #11063): the leader makes them all in one frame, and what is left here finds them in place.
+    // Asked also for a composite that exists but is incomplete, a label type missing or not linked (issue #11064): the leader completes it
+    if (((DatabaseInternal) schema.getEmbedded().getDatabase()).getWrappedDatabaseInstance()
+        .createMissingTypeOnTheLeader(compositeTypeName, () -> ensureLabelTypesStatement(uniqueLabels))
+        && isCompositeInPlace(schema, uniqueLabels, compositeTypeName)) {
+      createCompositeType(schema, uniqueLabels, compositeTypeName);
+      return compositeTypeName;
+    }
+
+    // The async quiescence OUTSIDE the frame, which holds the database write lock the workers need to commit their batch: linking a
+    // super type that has indexes waits for them to drain. Reentrant, so the builder inside rides on it
+    try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) schema.getEmbedded().getDatabase()).quiesceAsync()) {
+      schema.bulkChange(() -> createCompositeType(schema, uniqueLabels, compositeTypeName));
+    }
+
+    return compositeTypeName;
+  }
+
+  /** The statement that has the leader make the types of a label set in one schema frame, see {@code SQLFunctionEnsureLabelTypes}. */
+  public static String ensureLabelTypesStatement(final Set<String> uniqueLabels) {
+    final StringBuilder sql = new StringBuilder("SELECT ensureLabelTypes([");
+    boolean first = true;
+    for (final String label : uniqueLabels) {
+      if (!first)
+        sql.append(", ");
+      first = false;
+      sql.append('\'').append(label.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")).append('\'');
+    }
+    return sql.append("]) AS created").toString();
+  }
+
+  /** True when every label is a type, and so is the composite, which already inherits each of them: nothing to create or link. */
+  private static boolean isCompositeInPlace(final Schema schema, final Set<String> uniqueLabels, final String compositeTypeName) {
+    if (!schema.existsType(compositeTypeName))
+      return false;
+
+    final DocumentType composite = schema.getType(compositeTypeName);
+    for (final String label : uniqueLabels)
+      if (!schema.existsType(label) || !composite.instanceOf(label))
+        return false;
+    return true;
+  }
+
+  private static void createCompositeType(final Schema schema, final Set<String> uniqueLabels, final String compositeTypeName) {
     // Always ensure all base types exist first, regardless of whether
     // the composite type already exists. This fixes GitHub issue #3266
     // where pre-existing composite types would prevent label type creation.
@@ -862,8 +919,6 @@ public final class Labels {
       if (existing == null || !existing.instanceOf(label))
         builder = builder.withSuperType(label);
     builder.create();
-
-    return compositeTypeName;
   }
 
   /**

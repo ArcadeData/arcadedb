@@ -67,6 +67,21 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     return new MutableEdgeSegment(database, rid, buffer.copyOfContent());
   }
 
+  /** A copy of what this segment holds, to give back with {@link #restoreContent} (issue #10346). */
+  public Binary snapshotContent() {
+    return buffer.copyOfContent();
+  }
+
+  /**
+   * Gives this segment back, in place, the content {@link #snapshotContent} copied: a statement that appended to the object the
+   * transaction queued for its commit, and was taken back, leaves it holding edges that exist no more.
+   */
+  public void restoreContent(final Binary snapshot) {
+    final Binary restored = snapshot.copyOfContent();
+    restored.setAutoResizable(false);
+    this.buffer = restored;
+  }
+
   @Override
   public byte getRecordType() {
     return RECORD_TYPE;
@@ -518,10 +533,38 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     }
   }
 
+  /**
+   * Hands every entry of this segment to {@code visitor} as the four numbers it is stored as, newest first like every walk,
+   * decoding no RID (issue #11012).
+   */
+  public void forEachEntry(final EdgeListScanner.EntryVisitor visitor) {
+    final int used = getUsed();
+    int position = CONTENT_START_POSITION;
+    while (position < used) {
+      final long edgeBucketId = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      final long edgePosition = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      final long vertexBucketId = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      final long vertexPosition = buffer.getNumberAt(position);
+      position += buffer.getNumberSizeAt(position);
+      visitor.visit((int) edgeBucketId, edgePosition, (int) vertexBucketId, vertexPosition);
+    }
+  }
+
+  /**
+   * The segment before this one in the chain as the open transaction has it NOW, which is not always the one the pointer of this
+   * instance names (issue #11234). A walk reads a segment as it stood when it reached it, and the transaction can then delete the
+   * segment it points at: a removal that empties a segment deletes it and relinks the one in front around it, on the transaction's
+   * copy of that one, not on the walk's. The pointer then names a segment that is gone, and the walk goes on with the one the chain
+   * was relinked to, or ends when the transaction deleted the whole list (see {@link TransactionContext#edgeSegmentDeleted}).
+   */
   @Override
   public EdgeSegment getPrevious() {
-    final RID nextRID = getPreviousRID();
-    return nextRID == null ? null : (EdgeSegment) database.lookupByRID(nextRID, true);
+    final TransactionContext tx = database.getTransactionIfExists();
+    final RID previousRID = tx != null ? tx.resolveDeletedEdgeSegment(getPreviousRID()) : getPreviousRID();
+    return previousRID == null ? null : (EdgeSegment) database.lookupByRID(previousRID, true);
   }
 
   @Override

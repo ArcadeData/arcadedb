@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code saveConfiguration()} instead of going through a schema recording session ({@code recordFileChanges}), so
  * under HA no {@code SCHEMA_ENTRY} was ever proposed and followers never saw the function. The recording session is
  * observable without a cluster: {@code SCHEMA_AFTER_FILE_CHANGES} fires once at the end of every outermost session,
- * and only there. The cluster-level proof is {@code Issue8404FunctionDdlReplicationIT} in the ha-raft module.
+ * and only there. The cluster-level proof is {@code HaSchemaDdlReplicationThreeNodeIT} in the ha-raft module.
  */
 class Issue8404FunctionDdlRecordsSchemaChangeTest extends TestHelper {
 

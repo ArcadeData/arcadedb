@@ -101,7 +101,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
   void httpAsyncCommandsRunInParallel() throws Exception {
     testEachServer(serverIndex -> {
       // Verify the server has at least 2 async worker threads by default (fix for issue #3122)
-      final Database database = getServer(0).getDatabase(getDatabaseName());
+      final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
       final int parallelLevel = database.async().getParallelLevel();
       LogManager.instance().log(this, Level.INFO, "Async parallel level: %d", parallelLevel);
       assertThat(parallelLevel)
@@ -139,7 +139,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    */
   @Test
   void databaseAsyncCommandsRunInParallel() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     // Ensure we have at least 2 async worker threads
     final int originalParallelLevel = database.async().getParallelLevel();
@@ -159,7 +159,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    */
   @Test
   void simpleSqlAsyncCommandsRunInParallel() throws Exception {
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
 
     // Ensure we have at least 2 async worker threads
     final int originalParallelLevel = database.async().getParallelLevel();

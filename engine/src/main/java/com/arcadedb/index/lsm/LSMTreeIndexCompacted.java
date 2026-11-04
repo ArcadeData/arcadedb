@@ -117,6 +117,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   private volatile boolean bloomFilterEnabled = true;
 
   /**
+   * Entries (one per key, per data page a key's values span) of the PUBLISHED series, or -1 while unknown: what a full
+   * compaction has to read on top of the incremental round it replaces (#10919). Kept up to date by the compactions
+   * that write this file and counted from the page headers the first time it is asked for otherwise (a file loaded
+   * from disk, or filled by the bulk loader). Only the compaction of the owning index writes it, and only after the
+   * series it accounts for are published, so a failed round never reaches it. It only times the full compaction: a
+   * count that drifted could make one start early or late, never lose an entry.
+   */
+  private volatile long entryCount = -1;
+
+  /**
    * Scratch buffer for the bloom key hash, one per THREAD and shared by every index - deliberately static.
    * <p>
    * A per-instance ThreadLocal would leave one Binary pinned in every worker thread's map for every compacted index
@@ -431,9 +441,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     if (mainPageCount == 0) {
-      // NO PAGES. THIS SHOULD NEVER HAPPEN
-      LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
+      // NO SERIES. A REBUILD IN PLACE OF AN INDEX WHOSE BUCKET HOLDS NO RECORD (InPlaceIndexRebuild) ATTACHES A COMPACTED FILE OF
+      // ONLY ITS MAIN PAGE, WHICH IS EMPTY BY DESIGN. ANYTHING LARGER SHOULD NEVER HAPPEN
+      if (totalPages > 1)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
       return Collections.emptyList();
     }
 
@@ -644,15 +656,17 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       final Set<IndexCursorEntry> set,
       final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
-    final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
 
     if (mainPageCount == 0) {
-      // NO PAGES. THIS SHOULD NEVER HAPPEN
-      LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
+      // NO SERIES. A REBUILD IN PLACE OF AN INDEX WHOSE BUCKET HOLDS NO RECORD (InPlaceIndexRebuild) ATTACHES A COMPACTED FILE OF
+      // ONLY ITS MAIN PAGE, WHICH IS EMPTY BY DESIGN. ANYTHING LARGER SHOULD NEVER HAPPEN
+      if (totalPages > 1)
+        LogManager.instance()
+            .log(this, Level.WARNING, "Compacted index '%s' main page 0 has totalPages=%d", null, getName(), totalPages);
       return;
     }
 
@@ -702,7 +716,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
 
     for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
-      final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
+      final BasePage lastPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
 
@@ -727,7 +741,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       }
 
       final PageId pageId = new PageId(database, file.getFileId(), pageNumber);
-      final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
+      final BasePage rootPage = database.getTransaction().getPageForAbsoluteReads(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);
@@ -774,7 +788,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
               continue;
 
             final BasePage currentPage = database.getTransaction()
-                .getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
+                .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
             final Binary currentPageBuffer = new Binary(currentPage.slice());
             final int count = getCount(currentPage);
 
@@ -784,7 +798,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           }
         } else {
           final int pageNum = rootPage.getPageId().getPageNumber() + 1 + pageInSeries;
-          final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNum), pageSize);
+          final BasePage currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
           final Binary currentPageBuffer = new Binary(currentPage.slice());
           final int count = getCount(currentPage);
 
@@ -799,7 +813,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         if (firstMatchingRootEntry > 0) {
           final int precedingPageNum = rootPage.getPageId().getPageNumber() + firstMatchingRootEntry;
           final BasePage precedingPage = database.getTransaction()
-              .getPage(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
+              .getPageForAbsoluteReads(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
           final Binary precedingPageBuffer = new Binary(precedingPage.slice());
           final int precedingCount = getCount(precedingPage);
 
@@ -1081,6 +1095,48 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       LogManager.instance().log(this, Level.WARNING,
           "Reclaimed %d cursor(s) on compacted index '%s' that were garbage collected without being closed: the file "
               + "could not be dropped until now. Please report this, the scan that opened them is leaking.", leaked, getName());
+  }
+
+  /**
+   * Number of entries held by the data pages of the published series, counted from the page headers the first time it
+   * is asked for when no compaction has kept it up to date.
+   */
+  long getEntryCount() {
+    long count = entryCount;
+    if (count > -1)
+      return count;
+
+    final int totalPages = getTotalPages();
+    count = 0;
+    if (totalPages > 0) {
+      try {
+        final BasePage mainPage = database.getPageManager()
+            .getImmutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);
+        final int effectivePageCount = Math.min(getCompactedPageNumberOfSeries(mainPage), totalPages);
+        // page 0 is the root of the first series; past it a root page carries 0 where a data page carries its position
+        for (int pageNumber = 1; pageNumber < effectivePageCount; ++pageNumber) {
+          final BasePage page = database.getPageManager()
+              .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+          if (getCompactedPageNumberOfSeries(page) > 0)
+            count += getCount(page);
+        }
+      } catch (final IOException e) {
+        throw new IndexException("Error on counting the entries of compacted index '" + getName() + "'", e);
+      }
+    }
+    entryCount = count;
+    return count;
+  }
+
+  /** Sets the entry count of a file whose whole content the caller has just written. */
+  void setEntryCount(final long entryCount) {
+    this.entryCount = entryCount;
+  }
+
+  /** Adds the entries of a series just published, unless the count is still unknown (it is then counted in full). */
+  void addEntries(final long entries) {
+    if (entryCount > -1)
+      entryCount += entries;
   }
 
   /**

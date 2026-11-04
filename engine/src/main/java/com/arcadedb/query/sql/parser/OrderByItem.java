@@ -27,8 +27,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.logging.Level;
 
-import static com.arcadedb.schema.Property.RID_PROPERTY;
-
 /**
  * Created by luigidellaquila on 06/02/15.
  */
@@ -106,17 +104,15 @@ public class OrderByItem {
 
     int result = 0;
     if (recordAttr != null) {
-      aVal = a.getProperty(recordAttr);
-      if (aVal == null) {
-        if (RID_PROPERTY.equalsIgnoreCase(recordAttr)) {
-          aVal = a.getIdentity().orElse(null);
-        } //TODO check other attributes
-      }
-      bVal = b.getProperty(recordAttr);
-      if (bVal == null) {
-        if (RID_PROPERTY.equalsIgnoreCase(recordAttr)) {
-          bVal = b.getIdentity().orElse(null);
-        } //TODO check other attributes
+      // a column of the attribute's name the row carries first, a null one included, then the attribute of the row itself, as
+      // the projection reads it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows
+      // unordered). Not @this: a whole record has no order of its own
+      if (RecordAttribute.isRowAttribute(recordAttr)) {
+        aVal = RecordAttribute.resolve(a, recordAttr);
+        bVal = RecordAttribute.resolve(b, recordAttr);
+      } else {
+        aVal = a.getProperty(recordAttr);
+        bVal = b.getProperty(recordAttr);
       }
     } else if (alias != null) {
       aVal = a.getProperty(alias);
@@ -125,6 +121,13 @@ public class OrderByItem {
         aVal = a.getMetadata(alias);
         bVal = b.getMetadata(alias);
       }
+      // On an edge, `out` / `in` with no property of that name are its endpoints, as in the projection (issue #10684). A
+      // null here can also be a property present with a null value: the helper asks hasProperty() first and leaves that
+      // null alone, so only a name the row does not carry at all is replaced
+      if (aVal == null)
+        aVal = SuffixIdentifier.edgeEndpointIfUnshadowed(a, alias);
+      if (bVal == null)
+        bVal = SuffixIdentifier.edgeEndpointIfUnshadowed(b, alias);
     } else if (expression != null) {
       aVal = expression.execute(a, context);
       bVal = expression.execute(b, context);

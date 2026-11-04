@@ -107,6 +107,15 @@ grep -qi "arcadedb" <<<"$OUT" || {
   exit 1
 }
 
+# Jackson serializes the swagger OpenAPI models by introspecting their getters, so without the reflection registration
+# of OpenApiModelReflectionFeature every model came out as an empty bean and this answered 200 {} (#10573)
+echo "[exercise] OpenAPI document"
+OUT="$(req "http://$HOST:$HTTP/api/v1/openapi.json")" || true
+grep -q '"openapi":"3.0.3"' <<<"$OUT" && grep -q '"/api/v1/query/{database}"' <<<"$OUT" || {
+  echo "[exercise] FAIL: OpenAPI document, got $(head -c 300 <<<"$OUT")"
+  exit 1
+}
+
 echo "[exercise] create DB"
 req -X POST "http://$HOST:$HTTP/api/v1/server" -d "{\"command\":\"create database $DB\"}" >/dev/null
 
@@ -118,6 +127,39 @@ req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
 OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/query/$DB" -d '{"language":"sql","command":"SELECT n FROM T"}')" || true
 grep -q '42' <<<"$OUT" || {
   echo "[exercise] FAIL: SQL, got $OUT"
+  exit 1
+}
+
+# The read-only query door must see a write nested anywhere in a statement. The classification walks the parse tree by
+# reflection, which the native image allows only for the classes in its reachability metadata: without them it saw the
+# root alone and served every one of these as a read.
+query_refused() {
+  local label="$1" command="$2" code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -u "$DB_USER:$PASS" -H 'Content-Type: application/json' \
+    -X POST "http://$HOST:$HTTP/api/v1/query/$DB" -d "{\"language\":\"sql\",\"command\":\"$command\"}")" || true
+  [ "$code" = "400" ] || {
+    echo "[exercise] FAIL: the read-only query door accepted a $label (HTTP $code)"
+    exit 1
+  }
+}
+
+echo "[exercise] read-only query door"
+query_refused "projection INSERT" "SELECT (INSERT INTO T SET n = 900) AS r FROM T LIMIT 1"
+query_refused "LET INSERT" "SELECT FROM T LET \$y = (INSERT INTO T SET n = 901)"
+query_refused "FROM INSERT" "SELECT FROM (INSERT INTO T SET n = 902)"
+query_refused "WHERE INSERT" "SELECT FROM T WHERE n IN (SELECT n FROM (INSERT INTO T SET n = 903))"
+query_refused "PROFILE INSERT" "PROFILE INSERT INTO T SET n = 904"
+OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/command/$DB" \
+  -d '{"language":"sql","command":"SELECT count(*) AS c FROM T WHERE n >= 900"}')" || true
+grep -q '"c":0' <<<"$OUT" || {
+  echo "[exercise] FAIL: a write sent to the read-only query door persisted, got $OUT"
+  exit 1
+}
+# A READ nested the same way is still served
+OUT="$(req -X POST "http://$HOST:$HTTP/api/v1/query/$DB" \
+  -d '{"language":"sql","command":"SELECT $a AS a LET $a = (SELECT n FROM T)"}')" || true
+grep -q '42' <<<"$OUT" || {
+  echo "[exercise] FAIL: a nested read was refused by the read-only query door, got $OUT"
   exit 1
 }
 

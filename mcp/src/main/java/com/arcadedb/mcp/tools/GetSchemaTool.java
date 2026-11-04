@@ -33,6 +33,7 @@ public class GetSchemaTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "get_schema")
+        .put("annotations", MCPToolUtils.annotations("Get database schema", true, false, true, false))
         .put("description",
             "Get the full schema of a database including types (vertex, edge, document), their properties, indexes, and inheritance hierarchy.")
         .put("inputSchema", new JSONObject()

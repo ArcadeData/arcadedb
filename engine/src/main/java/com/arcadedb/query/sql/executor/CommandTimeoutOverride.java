@@ -71,7 +71,17 @@ public final class CommandTimeoutOverride {
    * that runs it resolve the same number.
    */
   public static long effectiveTimeout(final DatabaseInternal database) {
-    final long forwarded = get();
+    return effectiveTimeout(database, get());
+  }
+
+  /**
+   * {@link #effectiveTimeout(DatabaseInternal)} for a budget already read, which is how a command context resolves it: the
+   * context is resolved lazily, possibly by a parallel-scan worker that carries no budget of its own, so it reads the budget
+   * published on the thread that BUILT it and hands it here (issue #10609).
+   *
+   * @param forwarded the budget published on the thread that serves the request, or {@code -1} for none
+   */
+  public static long effectiveTimeout(final DatabaseInternal database, final long forwarded) {
     if (forwarded > 0)
       return forwarded;
     if (database == null)

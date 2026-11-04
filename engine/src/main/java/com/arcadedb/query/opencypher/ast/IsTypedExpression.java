@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.lang.reflect.Array;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
@@ -56,13 +57,54 @@ public class IsTypedExpression implements BooleanExpression {
   @Override
   public boolean evaluate(final Result result, final CommandContext context) {
     final Object value = valueExpression.evaluate(result, context);
-    final boolean conforms = conforms(value, type.name(), type.nonNull(), type.elementName(), type.elementNonNull());
-    return isNot != conforms;
+    return isNot != conforms(value, type);
   }
 
   /** Whether the value conforms to the type, as {@code value IS :: type} answers it. */
   public static boolean conforms(final Object value, final CypherTypeName type) {
+    if (value != null && type.isVector())
+      return isVectorMatch(value, type.elementName(), type.dimension());
     return conforms(value, type.name(), type.nonNull(), type.elementName(), type.elementNonNull());
+  }
+
+  /**
+   * A vector is what ArcadeDB holds one as: an array of numbers ({@code vector()} builds a {@code float[]}, an
+   * {@code ARRAY_OF_*} property reads back as the primitive array and a {@code BINARY} one as a {@code byte[]}), never a list
+   * (#10862). Its coordinates conform to the coordinate type by the same numeric subtype hierarchy as a single number, and its
+   * length is the dimension when one is written.
+   */
+  private static boolean isVectorMatch(final Object value, final String coordinateType, final int dimension) {
+    final Class<?> component = value.getClass().getComponentType();
+    if (component == null)
+      return false;
+    final int length = Array.getLength(value);
+    if (dimension != CypherTypeName.NO_DIMENSION && length != dimension)
+      return false;
+
+    final Object sample;
+    if (component == byte.class)
+      sample = (byte) 0;
+    else if (component == short.class)
+      sample = (short) 0;
+    else if (component == int.class)
+      sample = 0;
+    else if (component == long.class)
+      sample = 0L;
+    else if (component == float.class)
+      sample = 0F;
+    else if (component == double.class)
+      sample = 0D;
+    else if (Number.class.isAssignableFrom(component)) {
+      // a boxed array: every coordinate must be there and be a number of the coordinate type
+      for (int i = 0; i < length; i++) {
+        final Object coordinate = Array.get(value, i);
+        if (!(coordinate instanceof Number) || (coordinateType != null && !conforms(coordinate, coordinateType, true, null, false)))
+          return false;
+      }
+      return true;
+    } else
+      return false;
+    return coordinateType == null || conforms(sample, coordinateType, true, null, false);
   }
 
   /**

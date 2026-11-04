@@ -19,10 +19,13 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -37,14 +40,19 @@ public class PostgresPortal {
   public List<Result>              cachedResultSet;
   public Map<String, PostgresType> columns;
   public boolean                   ignoreExecution      = false;
+  /**
+   * True for a statement whose text is empty (or only whitespace and ';'): a valid statement that runs nothing, as PostgreSQL
+   * registers it. Describe answers it {@code NoData} and Execute {@code EmptyQueryResponse} instead of a command tag (issue
+   * #11028). It is also {@link #ignoreExecution}, so nothing reaches an engine.
+   */
+  public boolean                   emptyQuery           = false;
   public boolean                   isExpectingResult;
   public boolean                   executed             = false;
   /**
    * True only when a {@code Describe('S')} for this exact statement text already sent the client a real
    * RowDescription (schema-sampled column OIDs, since no row has run yet) - as opposed to {@link #columns}
-   * being non-null for some other reason (a catalog answer recomputed fresh on every Bind, or a stale value
-   * inherited via {@code bindFrom()} from an already-executed portal picked up by {@code bindCommand()}'s
-   * unknown-source-statement fallback). Statement-level Describe is a per-connection contract a client is
+   * being non-null for some other reason (a catalog, SHOW or system-query answer PARSE precomputed, or one
+   * recomputed fresh on every Bind). Statement-level Describe is a per-connection contract a client is
    * entitled to rely on for every later Bind+Execute of the same statement with different parameters (issue
    * #6725): once set, {@code executeCommand()} must keep serializing under that exact promised shape instead
    * of silently re-deriving and re-announcing a different one from whatever row this particular Execute
@@ -87,6 +95,12 @@ public class PostgresPortal {
    * its filters are bound parameters, whose values only arrive with the Bind message (issue #6412).
    */
   public boolean                   catalogQuery         = false;
+  /**
+   * True when the query is about the emulated system catalog, has no bound parameters and was therefore answered at
+   * Parse. The schema can change between that Parse and an Execute of the same prepared statement, so Execute
+   * recomputes the answer before the first row goes out, the way SHOW does (issue #10922).
+   */
+  public boolean                   catalogAnsweredAtParse = false;
   /**
    * Which transaction-control statement this portal carries, or null for everything else. Parse only RECORDS it here
    * (the keyword is recognized there because it must never reach the SQL grammar, issue #6543); the session flag and
@@ -140,16 +154,27 @@ public class PostgresPortal {
    * reader of that field already expects; this field is what makes a second slice possible without re-running
    * the statement or losing the rows a Describe already had to materialize to discover the row's columns.
    * <p>
-   * <b>Known limitation</b> (tracked as issue #6659): this is eager, in-memory pagination over a fully
-   * materialized list, not a true streaming cursor - the whole result is pulled into memory (and retained for
-   * the portal's whole lifetime) before the first row goes out, regardless of the client's row-limit. A client
-   * that always Describes first (pgjdbc, notably) already got this treatment before #6458, since
-   * {@code describeCommand()} has to read every row to discover a sparse document's full column set - but a
-   * raw wire-protocol client that skips Describe and relies on Execute's row-limit to bound server-side memory
-   * over a large result no longer gets that bound. Real streaming would need the source {@code ResultSet} kept
-   * open across Execute calls instead of closed immediately by {@code browseAndCacheResultSet}.
+   * Only for a portal whose rows alone can name its columns - a wildcard, an expression, an undeclared property, a
+   * language this server does not parse - since a document can carry a property no earlier row had. A portal whose
+   * columns are fixed before its first row is read is served from {@link #cursor} instead (issue #6659).
    */
   public List<Result>              fullResultSet;
+  /**
+   * The live result set an Execute pulls this portal's rows from, when its columns were fixed before its first row was
+   * read (issue #6659): kept open across Execute calls, so each one pulls only the rows it asks for instead of the whole
+   * result being held before the first row goes out. Null before it is opened and once it is closed: after its last
+   * row, or with the portal - a Close, a Bind of the same name, the end of its transaction block or of the connection.
+   */
+  public ResultSet                 cursor;
+  /** The registry entry of the statement {@link #cursor} runs (issue #9689): listed, cancellable and terminable until it is closed. */
+  public RunningQuery              cursorStatement;
+  /** True once this portal's rows come from {@link #cursor}, and still once it is drained: a drained portal sends no row again. */
+  public boolean                   streamed             = false;
+  /**
+   * How many rows {@link #cursor} has sent across every Execute so far, the count its CommandComplete is tagged with. A
+   * long, unlike {@link #resultCursor}: nothing caps a stream at what a list can index.
+   */
+  public long                      cursorRows           = 0;
   /**
    * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
    * far (issue #6458). The next Execute's slice starts here.
@@ -177,29 +202,25 @@ public class PostgresPortal {
    * portal name silently reset or overwrite another already-bound (possibly suspended) portal from the same
    * statement, since both names pointed at the same object.
    * <p>
-   * This copies only what PARSE already fixed for the statement for good (query text/language/parameter
-   * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers,
-   * and - for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
-   * {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
-   * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended}, ...) at
-   * its fresh default, so each returned portal starts its own independent
-   * lifecycle.
+   * This copies only what PARSE already fixed for the statement for good: the query text/language/parameter types, the
+   * parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers, and -
+   * for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
+   * {@code executed}/{@code fullResultSet}/{@code cachedResultSet}/{@code columns}. Every portal bound from the template
+   * therefore starts from the SAME precomputed answer: an Execute only slices it or replaces the field with a list of its
+   * own, and the inherited lists are handed out read-only, so a portal that ever wrote into one in place would fail
+   * instead of changing the answer of every other portal of the statement (issue #10934). The per-Bind state (parameter
+   * formats and values, result formats, {@code resultCursor}, {@code cursor}, {@code suspended}, {@code rowsDescribed},
+   * ...) is left at its fresh default, so each returned portal starts its own independent lifecycle.
    */
-  /**
-   * True when this portal's statement promised, through a {@code Describe('S')} answered with {@code NoData}, that no
-   * result set follows, and no {@code Describe('P')} of the portal itself has announced one since (issue #8379).
-   */
-  public boolean promisedNoData() {
-    return !rowsDescribed && (describedNoData || statement != null && statement.describedNoData);
-  }
-
   public static PostgresPortal bindFrom(final PostgresPortal template) {
     final PostgresPortal portal = new PostgresPortal(template.query, template.language);
     portal.sqlStatement = template.sqlStatement;
     portal.parameterTypes = template.parameterTypes;
     portal.ignoreExecution = template.ignoreExecution;
+    portal.emptyQuery = template.emptyQuery;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
+    portal.catalogAnsweredAtParse = template.catalogAnsweredAtParse;
     portal.transactionControl = template.transactionControl;
     portal.isolationLevel = template.isolationLevel;
     portal.setting = template.setting;
@@ -207,9 +228,10 @@ public class PostgresPortal {
     portal.copyStatement = template.copyStatement;
     portal.showName = template.showName;
     portal.executed = template.executed;
-    portal.cachedResultSet = template.cachedResultSet;
-    // The answer PARSE materialized (SHOW, system and catalog queries). Read-only: a slice is copied out of it
-    portal.fullResultSet = template.fullResultSet;
+    // The answer PARSE materialized (SHOW, system and catalog queries), shared by every portal of the statement:
+    // read-only, a slice is copied out of it
+    portal.cachedResultSet = readOnly(template.cachedResultSet);
+    portal.fullResultSet = readOnly(template.fullResultSet);
     portal.columns = template.columns;
     portal.columnsDescribed = template.columnsDescribed;
     portal.statement = template;
@@ -218,6 +240,19 @@ public class PostgresPortal {
     portal.aliasToSourceProperty = template.aliasToSourceProperty;
     portal.aliasToSourcePropertyResolved = template.aliasToSourcePropertyResolved;
     return portal;
+  }
+
+  /**
+   * True when this portal's statement promised, through a {@code Describe('S')} answered with {@code NoData}, that no
+   * result set follows, and no {@code Describe('P')} of the portal itself has announced one since (issue #8379).
+   */
+  public boolean promisedNoData() {
+    return !rowsDescribed && (describedNoData || statement != null && statement.describedNoData);
+  }
+
+  /** A read-only view of a list portals share, without copying it (the JDK hands back a list that already is one as is). */
+  private static List<Result> readOnly(final List<Result> list) {
+    return list != null ? Collections.unmodifiableList(list) : null;
   }
 
   @Override

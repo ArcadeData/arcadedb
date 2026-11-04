@@ -47,9 +47,14 @@ CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
 NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 GRAALVMPIN="$SCRIPTS/check-native-graalvm-pin.py"
+NATIVEMARCH="$SCRIPTS/check-native-march.py"
+NATIVEMARCHDEFAULT="$SCRIPTS/check-native-march-builder-default.py"
 RELEASEASSETS="$SCRIPTS/check-release-upload-assets.py"
 CREDSCOPE="$SCRIPTS/check-deploy-credential-scope.py"
 WRAPPER="$SCRIPTS/check-maven-wrapper.py"
+PROMPTMUT="$SCRIPTS/check-claude-prompt-mutations.py"
+PINCOMMENTS="$SCRIPTS/check-action-pin-comments.py"
+CHAOSSUMMARY="$SCRIPTS/chaos-run-summary.sh"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -580,6 +585,60 @@ skipped="$work/results/skipped"
 suite_report "$skipped/engine/target/surefire-reports/TEST-com.arcadedb.SkippedTest.xml" com.arcadedb.SkippedTest 0 0 0
 expect "accepts a suite whose tests were all skipped" 0 "0 failure(s)" \
     "$RESULTS" surefire-reports --root "$skipped"
+
+# Writes a report with one test case per argument: "pass", "abort" (a failed assumption, which surefire
+# records as a skipped case naming the exception) or "disable" (a test disabled in the source, whose
+# skipped case carries a message only). The shapes are copied from real surefire 3 reports.
+case_report() {
+    local path="$1" name="$2"
+    shift 2
+    local tests=$# skipped_count=0 kind body=""
+    for kind in "$@"; do
+        case "$kind" in
+            pass) body+="  <testcase name=\"passes$tests\" classname=\"$name\" time=\"0.1\"/>"$'\n' ;;
+            abort)
+                skipped_count=$((skipped_count + 1))
+                body+="  <testcase name=\"aborts$skipped_count\" classname=\"$name\" time=\"0.1\"><skipped type=\"org.opentest4j.TestAbortedException\"><![CDATA[org.opentest4j.TestAbortedException: Assumption failed: the heap is too busy here"$'\n'"	at org.junit.jupiter.api.Assumptions.throwAssumptionFailed(Assumptions.java:328)]]></skipped></testcase>"$'\n' ;;
+            disable)
+                skipped_count=$((skipped_count + 1))
+                body+="  <testcase name=\"disabled$skipped_count\" classname=\"$name\" time=\"0\"><skipped message=\"void $name.disabled$skipped_count() is @Disabled\"/></testcase>"$'\n' ;;
+        esac
+    done
+    mkdir -p "$(dirname "$path")"
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="%s" time="0.5" tests="%d" errors="0" skipped="%d" failures="0">\n%s</testsuite>\n' \
+        "$name" "$tests" "$skipped_count" "$body" >"$path"
+}
+
+# #11209: an assumption that aborts SOME tests of a class is reported, with its reason, and is not a
+# failure - the rest of the class ran, and assumptions are often deliberate.
+partly="$work/results/partly-aborted"
+case_report "$partly/engine/target/surefire-reports/TEST-com.arcadedb.PartlyTest.xml" com.arcadedb.PartlyTest pass abort pass
+expect "accepts a suite in which only some tests aborted" 0 "1 skipped (1 aborted by an assumption)" \
+    "$RESULTS" surefire-reports --root "$partly"
+expect "names the aborted test and why it aborted" 0 "aborts1: Assumption failed: the heap is too busy here" \
+    "$RESULTS" surefire-reports --root "$partly"
+
+# The false green #11209 is about: every test of the class aborted, so it counted towards the tests and
+# towards nothing else, and the lane used to report clean over a class that asserted nothing.
+whole="$work/results/wholly-aborted"
+suite_report "$whole/engine/target/surefire-reports/TEST-com.arcadedb.GreenTest.xml" com.arcadedb.GreenTest 7 0 0
+case_report "$whole/engine/target/surefire-reports/TEST-com.arcadedb.Issue1Test.xml" com.arcadedb.Issue1Test abort abort
+expect "rejects a suite whose every test aborted" 1 "TEST-com.arcadedb.Issue1Test.xml: every one of its 2 test(s) aborted" \
+    "$RESULTS" surefire-reports --root "$whole"
+
+# A disabled test is a decision taken in the source, not evidence that went missing on this runner.
+disabled="$work/results/disabled"
+case_report "$disabled/engine/target/surefire-reports/TEST-com.arcadedb.DisabledTest.xml" com.arcadedb.DisabledTest disable disable
+expect "accepts a suite whose every test is disabled" 0 "2 skipped (0 aborted by an assumption)" \
+    "$RESULTS" surefire-reports --root "$disabled"
+
+# JUnit 4's assumption, which the TinkerPop suites gate on graph features with, is an abort too.
+junit4="$work/results/junit4-aborted"
+case_report "$junit4/gremlin-it/target/failsafe-reports/TEST-com.arcadedb.FeatureIT.xml" com.arcadedb.FeatureIT abort
+sed -i.bak 's/org.opentest4j.TestAbortedException/org.junit.AssumptionViolatedException/g' \
+    "$junit4/gremlin-it/target/failsafe-reports/TEST-com.arcadedb.FeatureIT.xml"
+expect "rejects a suite whose every test failed a JUnit 4 assumption" 1 "every one of its 1 test(s) aborted" \
+    "$RESULTS" failsafe-reports --root "$junit4"
 
 echo
 echo "check-test-reporter-guards.py"
@@ -1573,6 +1632,214 @@ expect "the repository's own native pin matches its own workflow" 0 "consistent"
     "$GRAALVMPIN"
 
 echo
+echo "check-native-march.py"
+
+# Writes a native pom whose base native-maven-plugin passes $2 as its -march build arg (none when
+# empty), with $3 as the native.march default and the per-arch profiles of the real pom unless $4
+# is "no-profiles". Extra profile XML can be passed as $5. The recorded expected baselines
+# (native.march.expected.<arch>, #10715) come from $MARCH_EXPECTED_* and default to the real pom's;
+# MARCH_EXPECTED_NONE=1 leaves them out.
+march_pom() {
+    local path="$1" arg="$2" default="$3" profiles="${4:-}" extra="${5:-}"
+    local arg_xml="" profile_xml="" expected_xml=""
+    if [[ -z ${MARCH_EXPECTED_NONE:-} ]]; then
+        expected_xml="
+        <native.march.expected.amd64>${MARCH_EXPECTED_AMD64:-x86-64-v3}</native.march.expected.amd64>
+        <native.march.expected.x86_64>${MARCH_EXPECTED_X86_64:-x86-64-v3}</native.march.expected.x86_64>
+        <native.march.expected.aarch64>${MARCH_EXPECTED_AARCH64:-armv8-a}</native.march.expected.aarch64>"
+    fi
+    if [[ -z ${MARCH_PINS_NONE:-} ]]; then
+        expected_xml="$expected_xml
+        <native.march.pins-builder-default.amd64>${MARCH_PINS_AMD64:-true}</native.march.pins-builder-default.amd64>
+        <native.march.pins-builder-default.x86_64>${MARCH_PINS_X86_64:-true}</native.march.pins-builder-default.x86_64>
+        <native.march.pins-builder-default.aarch64>${MARCH_PINS_AARCH64:-false}</native.march.pins-builder-default.aarch64>"
+    fi
+    [[ -n $arg ]] && arg_xml="<buildArg>$arg</buildArg>"
+    if [[ $profiles != no-profiles ]]; then
+        profile_xml='
+        <profile><id>native-march-amd64</id><activation><os><arch>amd64</arch></os></activation>
+            <properties><native.march>x86-64-v3</native.march></properties></profile>
+        <profile><id>native-march-x86_64</id><activation><os><arch>x86_64</arch></os></activation>
+            <properties><native.march>x86-64-v3</native.march></properties></profile>
+        <profile><id>native-march-aarch64</id><activation><os><arch>aarch64</arch></os></activation>
+            <properties><native.march>armv8-a</native.march></properties></profile>'
+    fi
+    cat >"$path" <<XML
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <properties>
+        <native.march>$default</native.march>$expected_xml
+    </properties>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.graalvm.buildtools</groupId>
+                <artifactId>native-maven-plugin</artifactId>
+                <configuration>
+                    <buildArgs>
+                        <buildArg>--no-fallback</buildArg>
+                        $arg_xml
+                    </buildArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    <profiles>$profile_xml
+        $extra
+    </profiles>
+</project>
+XML
+}
+
+mkdir -p "$work/march"
+printf '## CPU requirements\n\n| Arch | -march |\n|---|---|\n| amd64 | `x86-64-v3` |\n| arm64 | `armv8-a` |\n\nOverride: `-Dnative.march=x86-64-v2`.\n\n## Next\n\n| `x86-64-v4` |\n' >"$work/march/docs.md"
+printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.static=true package\n' >"$work/march/clean.yml"
+
+march_pom "$work/march/ok-pom.xml" '-march=${native.march}' compatibility
+expect "accepts a per-arch -march that the docs name" 0 "amd64=x86-64-v3, x86_64=x86-64-v3, aarch64=armv8-a" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# The #10581 shape: no -march at all, so the binary silently inherits GraalVM's x86-64-v3 default.
+march_pom "$work/march/none-pom.xml" "" compatibility
+expect "rejects a native pom that passes no -march (#10581)" 1 "passes no -march build arg" \
+    "$NATIVEMARCH" "$work/march/none-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# -march=native ties a CI-built binary to the runner's CPU, whichever way it gets in.
+march_pom "$work/march/native-pom.xml" '-march=${native.march}' native no-profiles
+expect "rejects a native.march that resolves to native" 1 "targets the CPU of the machine" \
+    "$NATIVEMARCH" "$work/march/native-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.march=native package\n' >"$work/march/native.yml"
+expect "rejects a workflow that builds with -Dnative.march=native" 1 "native.yml:4" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/native.yml"
+printf 'jobs:\n  build:\n    steps:\n      - run: ./mvnw -Pnative -Dnative.march=compatibility package\n' >"$work/march/compat.yml"
+expect "accepts a workflow that builds the amd64 compatibility variant with -Dnative.march=compatibility (#11253)" 0 "" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/docs.md" "$work/march/compat.yml"
+
+# A profile's buildArgs are appended after the base ones, so a second -march there silently wins.
+march_pom "$work/march/profile-arg-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>sneaky</id><build><plugins><plugin><artifactId>native-maven-plugin</artifactId>
+     <configuration><buildArgs combine.children="append"><buildArg>-march=x86-64-v4</buildArg></buildArgs>
+     </configuration></plugin></plugins></build></profile>'
+expect "rejects a -march passed from a profile" 1 "profile 'sneaky' passes -march=x86-64-v4" \
+    "$NATIVEMARCH" "$work/march/profile-arg-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# An x86 baseline on aarch64 cannot build, and means the profiles were mixed up.
+march_pom "$work/march/wrong-family-pom.xml" '-march=${native.march}' x86-64-v3 no-profiles
+expect "rejects a baseline from the wrong architecture" 1 "not a baseline for that architecture" \
+    "$NATIVEMARCH" "$work/march/wrong-family-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# Raising the baseline without telling users is the drift this guards: docs must follow the pom.
+march_pom "$work/march/v4-pom.xml" '-march=${native.march}' compatibility no-profiles \
+    '<profile><id>a</id><activation><os><arch>amd64</arch></os></activation><properties><native.march>x86-64-v4</native.march></properties></profile>'
+expect "rejects a baseline the docs do not name" 1 'does not name `x86-64-v4`' \
+    "$NATIVEMARCH" "$work/march/v4-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# A baseline the section names only in an override example, or a table under another heading,
+# states no requirement: lowering the pom to x86-64-v2 must not pass on the strength of an example.
+march_pom "$work/march/v2-pom.xml" '-march=${native.march}' compatibility no-profiles \
+    '<profile><id>a</id><activation><os><arch>amd64</arch></os></activation><properties><native.march>x86-64-v2</native.march></properties></profile>'
+expect "rejects a baseline the docs name only outside the CPU requirements table" 1 "table does not name \`x86-64-v2\`" \
+    "$NATIVEMARCH" "$work/march/v2-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+expect "rejects a baseline only a table under another heading names" 1 "table does not name \`x86-64-v4\`" \
+    "$NATIVEMARCH" "$work/march/v4-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+printf '# Native\n\nno table here\n' >"$work/march/no-section.md"
+expect "reports docs without a CPU requirements table" 1 "has no table under a 'CPU requirements' heading" \
+    "$NATIVEMARCH" "$work/march/ok-pom.xml" "$work/march/no-section.md" "$work/march/clean.yml"
+
+# The #10715 shape: the arm64 profile raised to armv8.1-a (drops every ARMv8.0 core) while the docs
+# table was edited in the same change, so the docs check is satisfied by the change it should question.
+# Only the recorded expected baseline catches it.
+printf '## CPU requirements\n\n| Arch | -march |\n|---|---|\n| amd64 | `x86-64-v3` |\n| arm64 | `armv8.1-a` |\n' >"$work/march/docs-raised.md"
+march_pom "$work/march/raised-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>a</id><activation><os><arch>aarch64</arch></os></activation><properties><native.march>armv8.1-a</native.march></properties></profile>'
+expect "rejects a baseline raised above the recorded one even when the docs were edited to match (#10715)" 1 \
+    "on aarch64 -march resolves to 'armv8.1-a' but the recorded baseline" \
+    "$NATIVEMARCH" "$work/march/raised-pom.xml" "$work/march/docs-raised.md" "$work/march/clean.yml"
+
+# Raising it deliberately is a two-line change: the profile and the recorded value, in one reviewed diff.
+MARCH_EXPECTED_AARCH64=armv8.1-a march_pom "$work/march/raised-ok-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>a</id><activation><os><arch>aarch64</arch></os></activation><properties><native.march>armv8.1-a</native.march></properties></profile>'
+expect "accepts a raised baseline once the recorded value is raised with it" 0 "aarch64=armv8.1-a" \
+    "$NATIVEMARCH" "$work/march/raised-ok-pom.xml" "$work/march/docs-raised.md" "$work/march/clean.yml"
+
+# The record is read from the top-level properties only: a profile that sets it too cannot launder a raise.
+march_pom "$work/march/laundered-pom.xml" '-march=${native.march}' compatibility "" \
+    '<profile><id>a</id><activation><os><arch>aarch64</arch></os></activation><properties><native.march>armv8.1-a</native.march><native.march.expected.aarch64>armv8.1-a</native.march.expected.aarch64></properties></profile>'
+expect "does not let a profile override the recorded baseline" 1 "but the recorded baseline" \
+    "$NATIVEMARCH" "$work/march/laundered-pom.xml" "$work/march/docs-raised.md" "$work/march/clean.yml"
+
+# Fail closed: a pom that records no expected baseline leaves nothing to compare against.
+MARCH_EXPECTED_NONE=1 march_pom "$work/march/no-expected-pom.xml" '-march=${native.march}' compatibility
+expect "reports a pom that records no expected baseline" 1 "records no expected baseline for aarch64" \
+    "$NATIVEMARCH" "$work/march/no-expected-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# The record of whether a baseline claims to be the builder's default is required, so the native job has a claim to check.
+MARCH_PINS_NONE=1 march_pom "$work/march/no-pins-pom.xml" '-march=${native.march}' compatibility
+expect "reports a pom that does not say whether its baseline is the builder's default (#11254)" 1 \
+    "<native.march.pins-builder-default.aarch64> must be true or false" \
+    "$NATIVEMARCH" "$work/march/no-pins-pom.xml" "$work/march/docs.md" "$work/march/clean.yml"
+
+# The repository's own pom, docs, workflow and scripts must pass.
+expect "the repository's own native CPU baseline is explicit and documented" 0 "explicit and documented" \
+    "$NATIVEMARCH"
+
+echo
+echo "check-native-march-builder-default.py"
+
+# A stand-in builder: prints what `native-image --expert-options-all` prints about -H:MicroArchitecture
+# (wrapped over lines, as the real one is) with $2 as the AMD64 default and $3 as the AArch64 one.
+fake_builder() {
+    local path="$1" amd64="$2" aarch64="$3"
+    cat >"$path" <<SH
+#!/bin/sh
+echo "  -H:MicroArchitecture=...     Generate instructions for a specific machine type. Defaults to '$amd64' on AMD64"
+echo "                               and '$aarch64' on AArch64. Use -march=compatibility for best compatibility."
+SH
+    chmod +x "$path"
+}
+
+mkdir -p "$work/marchdefault"
+D="$work/marchdefault"
+march_pom "$D/pom.xml" '-march=${native.march}' compatibility
+fake_builder "$D/builder" x86-64-v3 armv8.1-a
+
+expect "accepts amd64 pinning the builder's default" 0 "builder default 'x86-64-v3', pom baseline 'x86-64-v3'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" amd64
+expect "accepts a macOS Intel build (x86_64) the same way" 0 "builder default 'x86-64-v3'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" x86_64
+expect "accepts aarch64 recorded as a deliberate departure from the builder's default" 0 \
+    "builder default 'armv8.1-a', pom baseline 'armv8-a'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" arm64
+
+# The #10715 shape: the pom claims it pins the builder's default, and the builder's default is another value.
+MARCH_PINS_AARCH64=true march_pom "$D/claims-pom.xml" '-march=${native.march}' compatibility
+expect "rejects a pom that claims armv8-a is the builder's default when it is armv8.1-a (#10715, #11254)" 1 \
+    "this builder defaults to 'armv8.1-a'" \
+    "$NATIVEMARCHDEFAULT" "$D/claims-pom.xml" "$D/builder" aarch64
+
+# The builder moved its default: a baseline recorded as deliberate that now equals it is a stale record.
+fake_builder "$D/builder-moved" x86-64-v3 armv8-a
+expect "rejects a deliberate-departure record the builder's default has caught up with" 1 \
+    "departs from the builder's default, but this builder defaults to 'armv8-a' too" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder-moved" aarch64
+fake_builder "$D/builder-v4" x86-64-v4 armv8.1-a
+expect "rejects amd64 claiming the default when the builder's default is another level" 1 \
+    "this builder defaults to 'x86-64-v4'" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder-v4" amd64
+
+# Fail closed: an unreadable default leaves the claim unverified, which is what this check exists to end.
+printf '#!/bin/sh\necho "no such sentence"\n' >"$D/builder-silent"
+chmod +x "$D/builder-silent"
+expect "fails when the builder's help no longer states its default" 1 "claim about it is unverified" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder-silent" amd64
+expect "fails when there is no native-image to ask" 1 "claim about it is unverified" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/no-such-builder" amd64
+MARCH_PINS_NONE=1 march_pom "$D/no-pins-pom.xml" '-march=${native.march}' compatibility
+expect "fails when the pom records no claim" 1 "is '', not true or false" \
+    "$NATIVEMARCHDEFAULT" "$D/no-pins-pom.xml" "$D/builder" amd64
+expect "skips an architecture the pom records no baseline for" 0 "nothing to verify" \
+    "$NATIVEMARCHDEFAULT" "$D/pom.xml" "$D/builder" riscv64
+
+echo
 echo "check-release-upload-assets.py"
 
 # These cases vary only the asset arguments of a `gh release upload` step, so the workflow around
@@ -2104,6 +2371,294 @@ expect "reports a workflow it cannot find" 1 "not found" \
 # The repository's own workflows must pass - this is the case that would have caught #10134.
 expect "the repository's own workflows invoke Maven through the wrapper" 0 "Maven wrapper" \
     "$WRAPPER"
+
+echo "check-action-pin-comments.py"
+
+# Tag listings stand in for `git ls-remote --tags`, so these cases do not move with upstream tags.
+# The #10602 shape: codeql-action's SHA is v4.39.0 (and the moving `v4`), commented `# v3.29.5`.
+mkdir -p "$work/pins/tags/github" "$work/pins/tags/actions" "$work/pins/tags/graalvm"
+cat >"$work/pins/tags/github/codeql-action.txt" <<'TXT'
+1111111111111111111111111111111111111111	refs/tags/v3.29.5
+6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee	refs/tags/v4
+6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee	refs/tags/v4.39.0
+TXT
+# An annotated tag: the plain ref names the tag object, the peeled `^{}` ref names the commit.
+cat >"$work/pins/tags/actions/checkout.txt" <<'TXT'
+2222222222222222222222222222222222222222	refs/tags/v7.0.1
+3d3c42e5aac5ba805825da76410c181273ba90b1	refs/tags/v7.0.1^{}
+TXT
+cat >"$work/pins/tags/graalvm/setup-graalvm.txt" <<'TXT'
+27b360dbb857524eaf0b4c4cef364d38e5b4f173	refs/tags/v1.6.7
+TXT
+pin_workflow() {
+    cat >"$work/pins/$1.yml" <<YAML
+name: pins
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Analyze
+        uses: $2
+      - uses: ./.github/actions/local
+      - uses: docker://alpine:3
+YAML
+}
+pin_workflow drifted 'github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee          # v3.29.5'
+expect "rejects a comment naming a release that is not at the SHA" 1 "commented \`# v3.29.5\` but the tags at that SHA are [v4, v4.39.0]" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/drifted.yml"
+pin_workflow graalvm 'graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.1'
+expect "rejects a stale patch release in the comment" 1 "graalvm/setup-graalvm@27b360dbb857 is commented \`# v1.6.1\`" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/graalvm.yml"
+pin_workflow correct 'github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0'
+expect "accepts a comment naming a tag at the SHA, direct or peeled, and skips local and docker refs" 0 "2 SHA-pinned action references across 2 repositories" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/correct.yml"
+pin_workflow uncommented 'github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee'
+expect "rejects a SHA pin with no version comment" 1 "has no version comment; append \`# <tag>\` naming the release at that SHA (v4, v4.39.0)" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/uncommented.yml"
+pin_workflow unlisted 'nobody/missing@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v1.0.0'
+expect "fails closed when the tags of an action cannot be listed" 1 "no tag listing at" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/unlisted.yml"
+expect "reports a workflow it cannot find" 1 "not found" \
+    "$PINCOMMENTS" --tags-dir "$work/pins/tags" "$work/pins/missing.yml"
+expect "accepts --tags-dir after the workflow arguments" 1 "commented \`# v3.29.5\`" \
+    "$PINCOMMENTS" "$work/pins/drifted.yml" --tags-dir "$work/pins/tags"
+
+echo
+echo "chaos-run-summary.sh (#10603)"
+
+# The run page of the HA chaos workflow is rendered from summary.json. It used to print seven
+# hand-picked keys, so the reformat counters, the late commits and the whole ledger never reached
+# it. The renderer now walks every leaf, so a key reaches the page by existing in the report.
+mkdir -p "$work/chaos/run1"
+cat >"$work/chaos/run1/summary.json" <<'JSON'
+{
+  "seed": 42,
+  "nodes": 3,
+  "duration": "PT1H",
+  "writers": 4,
+  "faults": "kill:3,pause",
+  "result": "PASS",
+  "message": "Completed 12 steps\nsecond line",
+  "steps": 12,
+  "ledger": { "acked": 100, "ackedLate": 1, "failed": 2, "unknown": 0, "lostUnknown": 0, "inFlight": 0 },
+  "lateCommits": 5,
+  "reformats": 7,
+  "stepsWithUnreadReformats": 1,
+  "replay": "./mvnw verify -Dchaos.seed=42",
+  "addedLater": [],
+  "nothing": null
+}
+JSON
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/run1/summary.json" 2>&1)" || true
+
+if grep -qxF '### HA chaos: PASS' <<<"$chaos_out"; then
+    pass "renders the result as the heading"
+else
+    fail "renders the result as the heading" "$chaos_out"
+fi
+for leaf in seed nodes duration writers faults message steps ledger.acked ledger.ackedLate ledger.failed ledger.unknown \
+    ledger.lostUnknown ledger.inFlight lateCommits reformats stepsWithUnreadReformats replay addedLater nothing; do
+    if grep -qE "^- ${leaf//./\\.}: " <<<"$chaos_out"; then
+        pass "prints the '$leaf' field"
+    else
+        fail "prints the '$leaf' field" "$chaos_out"
+    fi
+done
+if grep -qxF -- '- reformats: `` 7 ``' <<<"$chaos_out" && grep -qxF -- '- ledger.acked: `` 100 ``' <<<"$chaos_out"; then
+    pass "prints the value next to its key"
+else
+    fail "prints the value next to its key" "$chaos_out"
+fi
+if grep -qxF -- '- message: `` Completed 12 steps second line ``' <<<"$chaos_out"; then
+    pass "keeps a multi-line message on its own bullet"
+else
+    fail "keeps a multi-line message on its own bullet" "$chaos_out"
+fi
+if grep -qE '^- result: ' <<<"$chaos_out"; then
+    fail "does not repeat the result below the heading" "$chaos_out"
+else
+    pass "does not repeat the result below the heading"
+fi
+
+# The fixture above must keep covering every key the harness writes, or the cases above stop
+# proving that the real summary reaches the page.
+chaos_keys="$(sed -n '/public void summary(/,/Files.writeString/p' \
+    e2e-ha/src/test/java/com/arcadedb/containers/ha/chaos/ChaosReport.java | grep -oE '\.put\("[a-zA-Z]+"' | sed -E 's/\.put\("(.*)"/\1/')"
+if [[ -z $chaos_keys ]]; then
+    fail "reads the keys ChaosReport.summary writes" "no .put(\"...\") found in ChaosReport.summary"
+else
+    missing_keys=""
+    for key in $chaos_keys; do
+        jq -e --arg k "$key" '[paths | map(tostring) | last] | index($k) != null' "$work/chaos/run1/summary.json" >/dev/null \
+            || missing_keys="$missing_keys $key"
+    done
+    if [[ -z $missing_keys ]]; then
+        pass "the fixture covers every key ChaosReport.summary writes"
+    else
+        fail "the fixture covers every key ChaosReport.summary writes" "missing:$missing_keys"
+    fi
+fi
+
+expect "says so when no summary was written" 0 "no summary written" \
+    "$CHAOSSUMMARY" "$work/chaos/absent/summary.json"
+if "$CHAOSSUMMARY" "$work/chaos/run1/summary.json" "$work/chaos/run1/summary.json" | grep -c '^### HA chaos: PASS$' | grep -qx 2; then
+    pass "renders one section per summary file"
+else
+    fail "renders one section per summary file"
+fi
+
+printf '{ "result": "PASS", "message": "a``b`" }' >"$work/chaos/ticks.json"
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/ticks.json" 2>&1)" || true
+if grep -qxF -- '- message: ``` a``b` ```' <<<"$chaos_out"; then
+    pass "fences a value longer than any backtick run inside it"
+else
+    fail "fences a value longer than any backtick run inside it" "$chaos_out"
+fi
+
+printf '{ "result": ' >"$work/chaos/broken.json"
+chaos_out="$("$CHAOSSUMMARY" "$work/chaos/broken.json" "$work/chaos/run1/summary.json" 2>&1)" && chaos_status=0 || chaos_status=$?
+if [[ $chaos_status -eq 0 ]] && grep -qF 'unreadable summary' <<<"$chaos_out" && grep -qxF '### HA chaos: PASS' <<<"$chaos_out"; then
+    pass "an unreadable summary does not hide the ones after it"
+else
+    fail "an unreadable summary does not hide the ones after it" "$chaos_out"
+fi
+
+# The workflow must render through the script, not through a hand-written key list again.
+if grep -q 'chaos-run-summary.sh' .github/workflows/ha-chaos-tests.yml && ! grep -qF '\(.seed)' .github/workflows/ha-chaos-tests.yml; then
+    pass "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
+else
+    fail "the HA chaos workflow renders its run summary through chaos-run-summary.sh"
+fi
+
+echo
+echo "check-claude-prompt-mutations.py"
+
+mkdir -p "$work/promptmut"
+# Writes a claude-code-action workflow: $1 file, $2 job permissions block, $3 allowed tools, $4 prompt line.
+promptmut_workflow() {
+    cat >"$work/promptmut/$1" <<YAML
+name: Review
+on: [ pull_request ]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+$2
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Please review this pull request.
+            $4
+          claude_args: '--model m --allowed-tools "$3"'
+YAML
+}
+READ_PERMS=$'    permissions:\n      contents: read\n      pull-requests: read'
+WRITE_PERMS=$'    permissions:\n      contents: read\n      pull-requests: write'
+READ_TOOLS='Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)'
+LABEL_TOOLS='Bash(gh pr comment:*),Bash(gh pr edit:*)'
+
+# The #10600 shape: read scope, read-only allowlist, and an instruction to label the PR.
+promptmut_workflow issue10600.yml "$READ_PERMS" "$READ_TOOLS" '- If a security hazard is added then add the label "do to not merge" to he pr'
+expect "rejects a label instruction with neither the scope nor the tool (#10600)" 1 "asks the model to label" \
+    "$PROMPTMUT" "$work/promptmut/issue10600.yml"
+promptmut_workflow scope-only.yml "$WRITE_PERMS" "$READ_TOOLS" '- If a security hazard is added then add the label "do not merge".'
+expect "rejects a label instruction whose allowlist has no labelling tool" 1 "a tool in --allowed-tools" \
+    "$PROMPTMUT" "$work/promptmut/scope-only.yml"
+promptmut_workflow tool-only.yml "$READ_PERMS" "$LABEL_TOOLS" '- If a security hazard is added then add the label "do not merge".'
+expect "rejects a label instruction whose job holds only read scope" 1 "a \`write\` permission on pull-requests or issues" \
+    "$PROMPTMUT" "$work/promptmut/tool-only.yml"
+promptmut_workflow both.yml "$WRITE_PERMS" "$LABEL_TOOLS" '- If a security hazard is added then add the label "do not merge".'
+expect "accepts a label instruction backed by both the scope and the tool" 0 "1 prompt(s)" \
+    "$PROMPTMUT" "$work/promptmut/both.yml"
+promptmut_workflow broad-tool.yml "$WRITE_PERMS" 'Bash(gh:*)' '- Then add a label to the pull request.'
+expect "accepts a broader Bash pattern that covers the labelling command" 0 "" \
+    "$PROMPTMUT" "$work/promptmut/broad-tool.yml"
+promptmut_workflow negated.yml "$READ_PERMS" "$READ_TOOLS" '- Do not try to add a label yourself: a later step does that from your verdict.'
+expect "does not read a prohibition as an instruction" 0 "" \
+    "$PROMPTMUT" "$work/promptmut/negated.yml"
+promptmut_workflow merge.yml "$WRITE_PERMS" "$READ_TOOLS" '- When everything is green, merge the PR.'
+expect "rejects a merge instruction with no merge tool and no contents scope" 1 "asks the model to merge" \
+    "$PROMPTMUT" "$work/promptmut/merge.yml"
+promptmut_workflow close.yml "$READ_PERMS" "$READ_TOOLS" '- If it is spam, close this issue.'
+expect "rejects a close instruction on a read-only job" 1 "asks the model to close" \
+    "$PROMPTMUT" "$work/promptmut/close.yml"
+
+# A job with no permissions block inherits the workflow's.
+cat >"$work/promptmut/inherited.yml" <<'YAML'
+name: Review
+on: [ pull_request ]
+permissions:
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Add the label "reviewed" to the PR.
+          claude_args: '--allowed-tools "Bash(gh pr edit:*)"'
+YAML
+expect "falls back to the workflow's permissions when the job sets none" 0 "" \
+    "$PROMPTMUT" "$work/promptmut/inherited.yml"
+
+cat >"$work/promptmut/broken.yml" <<'YAML'
+name: broken
+on: [workflow_dispatch
+jobs:
+  build:
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$PROMPTMUT" "$work/promptmut/broken.yml"
+expect "reports a workflow it cannot find" 1 "not found" \
+    "$PROMPTMUT" "$work/promptmut/missing.yml"
+
+# The repository's own workflows must pass - this is the case that would have caught #10600.
+expect "the repository's own claude-code-action prompts are executable" 0 "prompts are executable" \
+    "$PROMPTMUT"
+
+# The label the review flags with must be the one the repository has: `do not merge`, with spaces.
+# #10600's instruction named "do to not merge", and its own report then named `do-not-merge`.
+if grep -qF "labels[]=do not merge'" .github/workflows/claude-code-review.yml; then
+    pass "the review flags a hazardous PR with the repository's 'do not merge' label"
+else
+    fail "the review flags a hazardous PR with the repository's 'do not merge' label"
+fi
+
+# The linux/amd64 -march=compatibility leg (#11253) shares os_name and arch with the default
+# linux/amd64 leg, so it must carry a `suffix` that keeps its workflow artifact and its release
+# archive apart: without it both upload `arcadedb-native-linux-amd64` and the `docker` job would
+# take whichever finished last, publishing the slow compat binary as the default image.
+NATIVEWF=".github/workflows/native-image.yml"
+if grep -qF '"suffix":"-compat","march":"compatibility"' "$NATIVEWF" \
+    && grep -qF 'name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}${{ matrix.suffix }}' "$NATIVEWF" \
+    && grep -qF 'ARCHIVE="$BIN${{ matrix.suffix }}.tar.gz"' "$NATIVEWF"; then
+    pass "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
+else
+    fail "the native amd64 compatibility leg names its artifact and archive apart from the default leg"
+fi
+
+# #11001: a `*Test` class outside the engine tagged slow/vector ran in no lane. The engine-only tag lanes never
+# build it and the unit-tests shards exclude the tag, so the tag must have a lane for the module or must not be there.
+echo
+echo "tag lanes cover every module"
+# Captured first: `git grep | grep -q` under pipefail reports SIGPIPE as "no match".
+vector_outside=$(git grep -lE '@Tag\("vector"\)' -- ':!engine' '*.java' || true)
+slow_outside=$(git grep -lE '@Tag\("slow"\)' -- ':!engine' '*Test.java' || true)
+if [[ -n $vector_outside ]]; then
+    fail "no test outside the engine carries @Tag(\"vector\") (the vector lane builds only the engine)" "$vector_outside"
+else
+    pass "no test outside the engine carries @Tag(\"vector\") (the vector lane builds only the engine)"
+fi
+if [[ -z $slow_outside ]]; then
+    pass "no slow *Test class outside the engine needs a lane"
+elif grep -E 'mvnw .*-pl .!engine[^ ]*. .*-Dgroups=slow' .github/workflows/mvn-test.yml | grep -qF -- '-Dsurefire.includes=**/*Test.java'; then
+    pass "slow *Test classes outside the engine have a lane in mvn-test.yml"
+else
+    fail "slow *Test classes outside the engine have a lane in mvn-test.yml" "$slow_outside"
+fi
 
 echo
 if [[ $failures -gt 0 ]]; then

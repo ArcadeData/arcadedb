@@ -405,10 +405,10 @@ public class StripedEdgeList extends EdgeLinkedList {
    * stripe's worth of edges pointing at a record that is gone - the same reasoning as {@code chainsForNeighbour}.
    */
   @Override
-  public Iterator<Edge> edgeIteratorForRemoval(final RID skippedNeighbor) {
+  Iterator<Edge> edgeIteratorForRemoval(final DeletedSelfLoops deletedSelfLoops) {
     final MultiIterator<Edge> iterator = new MultiIterator<>();
     for (final EdgeLinkedList chain : allChains(true))
-      iterator.addIterator(chain.edgeIteratorForRemoval(skippedNeighbor));
+      iterator.addIterator(chain.edgeIteratorForRemoval(deletedSelfLoops));
     return iterator;
   }
 

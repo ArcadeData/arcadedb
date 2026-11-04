@@ -38,6 +38,24 @@ public interface SecurityManager {
    */
   void updateSchema(DatabaseInternal database);
 
+  /**
+   * Refuses, by throwing, the rename of the type {@code oldName} to {@code newName} when the security configuration does not
+   * grant the two names the same access: per-type permissions are keyed by type name, so the rename would hand the type's
+   * records to whatever the configuration grants under the new name. Called before anything moves. Embedded use has no
+   * per-type permissions and refuses nothing.
+   */
+  default void checkTypeRename(final DatabaseInternal database, final String oldName, final String newName) {
+  }
+
+  /**
+   * Refuses, by throwing, detaching the bucket {@code bucketName}, which holds records, from the type {@code typeName} when the
+   * security configuration restricts the type: per-bucket permissions follow the type that owns the bucket, and a bucket of no
+   * type is restricted by none, so the detach would open the records to everybody. Called before the bucket is detached.
+   * Embedded use has no per-type permissions and refuses nothing.
+   */
+  default void checkBucketDetach(final DatabaseInternal database, final String bucketName, final String typeName) {
+  }
+
   default Set<String> getUsers() {
     throw new UnsupportedOperationException("User management requires server mode");
   }

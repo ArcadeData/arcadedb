@@ -97,6 +97,8 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
     if (params == null || params.length < 4 || params.length > 5)
       throw new CommandSQLParsingException(getSyntax());
 
+    // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
+    validateNotNull(params[0], NAME + " index name");
     final String indexSpec = params[0].toString();
 
     final List<RID> positives = parseRidList(params[1], "positives");
@@ -105,8 +107,8 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
 
     final List<RID> negatives = parseRidList(params[2], "negatives");
 
-    final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
-    if (k <= 0)
+    final int k = parseNeighborCount(params[3]);
+    if (k == 0)
       return new ArrayList<>(0);
 
     // Index spec must be in {@code Type[property]} form so we know which property to read off
@@ -154,9 +156,8 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
     if (!(rawResult instanceof List<?> rawList))
       return rawResult;
 
-    // Post-filter: drop the example RIDs and truncate to k. {@code vector.neighbors} returns a
-    // list of LinkedHashMaps with an {@code @rid} entry; we read it directly rather than
-    // resolving the record again to keep this hop cheap.
+    // Post-filter: drop the example RIDs and truncate to k. The RID is read off the row by the shared
+    // extractor rather than by resolving the record again, to keep this hop cheap.
     final HashSet<RID> exclude = new HashSet<>(totalExamples);
     exclude.addAll(positives);
     exclude.addAll(negatives);
@@ -165,14 +166,9 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
     for (final Object row : rawList) {
       if (filtered.size() >= k)
         break;
-      if (row instanceof Map<?, ?> m) {
-        // RID extends Identifiable, so a single instanceof check covers both the
-        // {@code RID r -> exclude.contains(r)} fast path and the rarer
-        // {@code Identifiable id -> exclude.contains(id.getIdentity())} indirection. The
-        // earlier two-branch version had unreachable second branch on a {@code RID} value.
-        if (m.get("@rid") instanceof Identifiable id && exclude.contains(id.getIdentity()))
-          continue;
-      }
+      final RID rid = extractRidFromRow(row);
+      if (rid != null && exclude.contains(rid))
+        continue;
       filtered.add(row);
     }
     return filtered;

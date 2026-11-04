@@ -49,7 +49,7 @@ public class SQLFunctionVectorDotProduct extends SQLFunctionVectorAbstract {
     final Object vector2 = params[1];
 
     if (vector1 == null || vector2 == null)
-      throw new CommandSQLParsingException("Vectors cannot be null");
+      return null;
 
     final float[] v1 = toFloatArray(vector1);
     final float[] v2 = toFloatArray(vector2);

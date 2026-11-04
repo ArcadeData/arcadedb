@@ -275,7 +275,7 @@ class Issue7129PendingSnapshotStartupTest {
       // The marker says the directory is mid-install, and nothing about the server reaching ONLINE reconciled it.
       // A guard scoped to STATUS.STARTING would have expired here and served the torn directory to the first
       // request that named it, which is the very failure mode issue #7129 describes.
-      assertThatThrownBy(() -> server.getDatabase("Universe"))
+      assertThatThrownBy(() -> server.getDatabaseForOperator("Universe"))
           .as("an unrecovered pending directory must stay closed for the whole server lifetime, not just startup")
           .isInstanceOf(DatabaseNotAvailableException.class)
           .hasMessageContaining(".snapshot-pending");
@@ -398,7 +398,7 @@ class Issue7129PendingSnapshotStartupTest {
   }
 
   private static void assertValue(final ArcadeDBServer server, final String name, final String expected) {
-    try (final var result = server.getDatabase(name).query("sql", "select value from Item")) {
+    try (final var result = server.getDatabaseForOperator(name).query("sql", "select value from Item")) {
       assertThat(result.hasNext()).isTrue();
       assertThat((String) result.next().getProperty("value")).isEqualTo(expected);
       assertThat(result.hasNext()).isFalse();

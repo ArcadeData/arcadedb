@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
@@ -446,6 +447,28 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Called when a request carrying a cluster token that does not match this node's is refused, so the HA implementation
+   * can log, rate-limited, where this node's token came from and why the two may differ (issue #10601). {@code caller}
+   * is the remote address, for the log line only. The default does nothing.
+   */
+  default void onClusterTokenRefused(final String caller) {
+  }
+
+  /**
+   * Reports a refused cluster-token hop to {@code server}'s HA plugin, looked up as {@link #effectiveClusterToken}
+   * looks it up (issue #10601).
+   */
+  static void reportClusterTokenRefusal(final ArcadeDBServer server, final String caller) {
+    if (server == null)
+      return;
+    HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      ha = registeredHAPlugin(server);
+    if (ha != null)
+      ha.onClusterTokenRefused(caller);
+  }
+
+  /**
    * The token {@code server}'s peers actually accept: the HA plugin's own, and the raw
    * {@link GlobalConfiguration#HA_CLUSTER_TOKEN} setting only when the plugin has none (HA not active, or a
    * non-Raft implementation that does not derive one).
@@ -860,6 +883,37 @@ public interface HAServerPlugin extends ServerPlugin {
    * has one more chance to lose. Default is a no-op for non-HA setups.
    */
   default void awaitLocalApply() {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Holds {@code databaseName} for a restore that has claimed it on this server (issue #10974): from now until
+   * {@link #releaseReplicatedWritesForRestore}, writes other nodes replicate to it through this one are refused with a
+   * retryable error, and the call returns once the ones already accepted - which no local commit wait sees - are applied here,
+   * so none of them is acknowledged during the download and destroyed by the swap. Called by
+   * {@link ArcadeDBServer#awaitCommitsInFlightOn}. Default is a no-op for non-HA setups.
+   *
+   * @throws NeedRetryException when writes accepted before the hold are still in flight once the bounded wait gives up; the
+   *                            hold stands until the release
+   */
+  default void holdReplicatedWritesForRestore(final String databaseName) {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /**
+   * Refuses a restore that replaces a database cluster-wide when the hold {@link #holdReplicatedWritesForRestore} took does not
+   * stand (issue #10974): this node was not the leader when it took it, or the leadership has moved since, so another leader may
+   * have accepted writes the swap would destroy. Asked right after the claim and again right before the swap. Default is a no-op
+   * for non-HA setups.
+   *
+   * @throws NeedRetryException when the hold no longer stands
+   */
+  default void ensureReplicatedWritesHeldForRestore(final String databaseName) {
+    // No-op by default; Raft implementation overrides.
+  }
+
+  /** Ends the hold {@link #holdReplicatedWritesForRestore} took, if any. Default is a no-op for non-HA setups. */
+  default void releaseReplicatedWritesForRestore(final String databaseName) {
     // No-op by default; Raft implementation overrides.
   }
 

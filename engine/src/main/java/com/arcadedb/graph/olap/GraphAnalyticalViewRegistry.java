@@ -53,6 +53,10 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class GraphAnalyticalViewRegistry {
   private static final ConcurrentHashMap<Database, HashMap<String, GraphAnalyticalView>> REGISTRY = new ConcurrentHashMap<>();
+  // Why the background build of a view failed, kept after the view left the registry (which frees its name for a new build)
+  // so the schema:graphAnalyticalViews row can say FAILED and why, instead of NOT_BUILT or nothing (issue #11011). Guarded by
+  // REGISTRY, like the inner maps, and cleaned up with them
+  private static final HashMap<Database, HashMap<String, Throwable>>                    FAILURES = new HashMap<>();
 
   /**
    * Registers a named GAV for a database.
@@ -67,6 +71,33 @@ public class GraphAnalyticalViewRegistry {
       if (existing != null)
         throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW,
             "GraphAnalyticalView '" + name + "' is already registered");
+      // A new build under the name replaces what the failed one left
+      clearFailure(database, name);
+    }
+  }
+
+  /** Records why the background build of the view {@code name}, no longer registered, failed. */
+  public static void recordFailure(final Database database, final String name, final Throwable error) {
+    synchronized (REGISTRY) {
+      FAILURES.computeIfAbsent(unwrap(database), k -> new HashMap<>()).put(name, error);
+    }
+  }
+
+  /** Why the background build of the view {@code name} failed, or null when it did not or the view was built since. */
+  public static Throwable getFailure(final Database database, final String name) {
+    synchronized (REGISTRY) {
+      final HashMap<String, Throwable> failures = FAILURES.get(unwrap(database));
+      return failures != null ? failures.get(name) : null;
+    }
+  }
+
+  /** Forgets the failure of the view {@code name}: it is built again, or its definition is gone. */
+  public static void clearFailure(final Database database, final String name) {
+    synchronized (REGISTRY) {
+      final Database unwrapped = unwrap(database);
+      final HashMap<String, Throwable> failures = FAILURES.get(unwrapped);
+      if (failures != null && failures.remove(name) != null && failures.isEmpty())
+        FAILURES.remove(unwrapped);
     }
   }
 
@@ -129,6 +160,26 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
+   * Frees {@code name} from a view whose background work failed and records why, in one step under the registry lock, and only
+   * while {@code view} is the view registered there (issue #11032). Answers whether it was. The view that replaced it under the
+   * same name keeps the name, and a registration or a {@code shutdownAll()} cannot slip between the removal and the record: the
+   * first would inherit the old failure, the second would see a closed database pinned in the failure map again.
+   */
+  public static boolean unregisterFailed(final Database database, final String name, final GraphAnalyticalView view,
+      final Throwable error) {
+    synchronized (REGISTRY) {
+      final Database unwrapped = unwrap(database);
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
+      if (views == null || !views.remove(name, view))
+        return false;
+      if (views.isEmpty())
+        REGISTRY.remove(unwrapped);
+      FAILURES.computeIfAbsent(unwrapped, k -> new HashMap<>()).put(name, error);
+      return true;
+    }
+  }
+
+  /**
    * Shuts down all GAVs for a database without removing schema definitions.
    * Called during database close to release resources while preserving persistence for next open.
    */
@@ -136,6 +187,7 @@ public class GraphAnalyticalViewRegistry {
     final HashMap<String, GraphAnalyticalView> views;
     synchronized (REGISTRY) {
       views = REGISTRY.remove(unwrap(database));
+      FAILURES.remove(unwrap(database));
     }
     if (views != null)
       for (final GraphAnalyticalView view : views.values())
@@ -149,6 +201,7 @@ public class GraphAnalyticalViewRegistry {
     final HashMap<String, GraphAnalyticalView> views;
     synchronized (REGISTRY) {
       views = REGISTRY.remove(unwrap(database));
+      FAILURES.remove(unwrap(database));
     }
     if (views != null)
       for (final GraphAnalyticalView view : views.values())
@@ -162,6 +215,7 @@ public class GraphAnalyticalViewRegistry {
   public static void clearAll(final Database database) {
     synchronized (REGISTRY) {
       REGISTRY.remove(unwrap(database));
+      FAILURES.remove(unwrap(database));
     }
   }
 

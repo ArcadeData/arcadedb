@@ -152,11 +152,14 @@ public class PageManager extends LockContext {
   // ConcurrentHashMap barriers already on these paths, and it removes the reliance on the external
   // database-publication happens-before for cross-thread visibility of the startup() writes.
   private volatile PageManagerFlushThread             flushThread;
-  // Written under the page-manager lock only, hence the plain increments: no other writer may be added without making the
-  // increments atomic. A reader's two samples bracket its reads: the volatile write of the first increment is ordered before the
-  // page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
+  // Written only through beginPublication()/endPublication(), which serialize the increments on publicationGate: the page-manager
+  // lock does not cover the replicated apply (#10941), so the two kinds of publisher can overlap. A reader's two samples bracket
+  // its reads: the volatile write of the first increment is ordered before the page-cache writes it guards (ConcurrentHashMap puts), and the volatile read of the second sample after the reads' own
   // volatile cache reads, which is the ordering a seqlock needs without an explicit fence.
   private volatile long                               publicationSequence;
+  private final    Object                             publicationGate = new Object();
+  // Publications in flight, guarded by publicationGate: the sequence is odd exactly while this is above zero
+  private          int                                publicationsInFlight;
   private volatile int                                freePageRAM;
 
   /**
@@ -189,6 +192,14 @@ public class PageManager extends LockContext {
   private final    Set<PageSnapshot> releasingSnapshots = new HashSet<>();
   /** How long {@link #beginDatabaseClose} waits between re-checks of the open windows; also its logging cadence. */
   private static final long CLOSE_WAIT_POLL_MILLIS = 10_000L;
+  /**
+   * #10657: how long {@link #beginDatabaseClose} waits before it reports, once, every window it is still waiting for -
+   * who opened it, when, in which state, and the opening stack when {@code arcadedb.pageSnapshotTrackOpeners} is on. A
+   * backup legitimately keeps a close waiting for as long as it runs, so this is not an error, but a window that is
+   * never released keeps the close waiting forever, and without the report nothing says which one it is. Not final so
+   * a test can lower it.
+   */
+  volatile long closeWaitReportMillis = 60_000L;
   /** Serializes the t0 barrier per database (NOT the windows themselves, which may overlap freely). */
   private final ConcurrentHashMap<Database, Object>              snapshotBarrierLocks = new ConcurrentHashMap<>();
   /**
@@ -203,6 +214,8 @@ public class PageManager extends LockContext {
    * allocates nothing after the first one; {@link PageShadow#store} copies out of it, so it can be recycled at once.
    */
   private static final ThreadLocal<byte[]> PRE_IMAGE_BUFFER = ThreadLocal.withInitial(() -> new byte[0]);
+  // The bulk scan open on the thread (issue #11011), see beginBulkScan()
+  private static final ThreadLocal<BulkScan> BULK_SCAN = new ThreadLocal<>();
 
   /**
    * Hard wall-clock budget for EVERYTHING the t0 barrier does with the JVM-wide page-manager lock held (#6125): the
@@ -579,6 +592,49 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Makes the pages a writer committed WITHOUT the WAL durable, for a writer that must not report its work done before it
+   * is (issue #11238): such a commit only hands its pages to the asynchronous flush, so a process killed before the flush
+   * wrote them leaves the file without them, and the first WAL-logged change of one of those pages then leaves recovery a
+   * version gap it cannot bridge.
+   * <p>
+   * Waits up to {@code maxWaitMillis} for the pages pending at the call to reach the disk (not at all while the flush of
+   * the database is suspended: a backup holds the files still, the pages are deferred until it ends), forces the files of
+   * the database, and answers the pages of {@code fileId} that are still not on the disk: queued, in flight, deferred by
+   * a suspension or refused by the disk. The caller writes those through the WAL instead. The pending pages are
+   * collected BEFORE the files are forced, so a page the flush writes in between is either forced or answered.
+   *
+   * @param totalPages the pages of the file to look at, {@code [0, totalPages)}
+   *
+   * @return the page numbers of the file whose committed image is not durable yet, empty when every one is
+   */
+  public int[] flushAndSyncWithoutWAL(final DatabaseInternal database, final int fileId, final int totalPages,
+      final long maxWaitMillis) {
+    final PageManagerFlushThread thread = flushThread;
+    if (thread != null && !thread.isSuspended(database))
+      waitPagesPendingNowOfDatabaseAreFlushed(database, maxWaitMillis);
+
+    int[] notOnDisk = new int[0];
+    int count = 0;
+    if (thread != null)
+      for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber)
+        if (thread.getCachedPageFromMutablePageInQueue(new PageId(database, fileId, pageNumber)) != null) {
+          if (count == notOnDisk.length)
+            notOnDisk = Arrays.copyOf(notOnDisk, Math.max(16, count * 2));
+          notOnDisk[count++] = pageNumber;
+        }
+
+    if (!database.getFileManager().syncFiles()) {
+      // WRITTEN BUT NOT FORCED: NONE OF THE PAGES OF THE FILE CAN BE TAKEN FOR DURABLE
+      notOnDisk = new int[totalPages];
+      for (int pageNumber = 0; pageNumber < totalPages; ++pageNumber)
+        notOnDisk[pageNumber] = pageNumber;
+      return notOnDisk;
+    }
+
+    return count == notOnDisk.length ? notOnDisk : Arrays.copyOf(notOnDisk, count);
+  }
+
+  /**
    * @param dropped {@code true} when the database's files are about to be deleted: only then are the WAL acks of the
    *                pages deferred by a suspension released (issue #9881, see
    *                {@link PageManagerFlushThread#removeAllPagesOfDatabase(Database, boolean)}).
@@ -902,6 +958,7 @@ public class PageManager extends LockContext {
       // SUSPENSION DEFERRED, WHICH IS PART OF WHAT OPENING THE WINDOW COSTS
       final long beginTime = System.currentTimeMillis();
       boolean suspended = false;
+      PageSnapshot published = null;
       try {
         // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK. IT IS THE LONG PART, AND MAKING COMMITTERS WAIT
         // FOR IT WOULD BE THE STALL THIS DESIGN EXISTS TO REMOVE
@@ -972,8 +1029,9 @@ public class PageManager extends LockContext {
             // file dropped in the gap - which index compaction can do at any moment, taking no database lock - would
             // be physically deleted, because deferFileDrop only protects windows that are already published, and the
             // snapshot would then be holding a closed channel
-            return database.getFileManager().executeWithFileSetLocked(
+            published = database.getFileManager().executeWithFileSetLocked(
                 () -> registerSnapshot(buildSnapshot(database, spillDirectory, spillVolumeUsableSpace)));
+            return published;
           } finally {
             unlock();
           }
@@ -991,12 +1049,44 @@ public class PageManager extends LockContext {
         recordSnapshotBarrierFailure(PageSnapshotException.Reason.OTHER);
         throw e;
       } finally {
-        if (suspended)
-          thread.setSuspended(database, false);
-        // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS
-        // ONE THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
-        recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
+        try {
+          if (suspended)
+            resumeAfterBarrier(thread, database, published);
+        } finally {
+          // #6125: TIMED EVEN WHEN THE BARRIER THROWS - A BARRIER THAT FAILS SLOWLY IS EXACTLY AS MUCH OF A STALL AS
+          // ONE THAT SUCCEEDS SLOWLY, AND ITS CONSUMER STILL FALLS BACK TO THE PATH THAT THROTTLES WRITERS
+          recordSnapshotBarrier(System.currentTimeMillis() - beginTime);
+        }
       }
+    }
+  }
+
+  /**
+   * Lifts the flush suspension the t0 barrier took. Its last step, so it runs AFTER the window may already have been
+   * published: when it throws, the exception replaces {@code openSnapshot}'s return value and the caller never receives
+   * the window. Nobody else can ever close it then, and every later close or drop of the database would wait for it
+   * forever in {@link #beginDatabaseClose} (#10657). So the window is released here before the failure propagates, and
+   * the barrier is counted as failed. A {@link RuntimeException} leaves {@link #openSnapshot} wrapped in a
+   * {@link PageSnapshotException}, so its consumer falls back exactly as for any other failed barrier. An {@link Error}
+   * propagates as itself, as it does from every other step of the barrier: it is not a reason to fall back to
+   * suspend-and-freeze, but the window is released before it leaves all the same.
+   */
+  private void resumeAfterBarrier(final PageManagerFlushThread thread, final Database database,
+      final PageSnapshot published) {
+    try {
+      thread.setSuspended(database, false);
+    } catch (final RuntimeException | Error e) {
+      // WITH NO WINDOW PUBLISHED THE BARRIER ITSELF THREW FIRST, AND ITS catch ALREADY COUNTED THE FAILURE: COUNTING
+      // IT AGAIN HERE WOULD REPORT ONE FAILED BARRIER TWICE
+      if (published != null) {
+        try {
+          published.close();
+        } catch (final RuntimeException | Error closeFailure) {
+          e.addSuppressed(closeFailure);
+        }
+        recordSnapshotBarrierFailure(PageSnapshotException.Reason.OTHER);
+      }
+      throw e;
     }
   }
 
@@ -1340,11 +1430,22 @@ public class PageManager extends LockContext {
       closingDatabases.merge(database, 1, Integer::sum);
 
       boolean logged = false;
+      boolean reported = false;
+      final long waitStart = System.currentTimeMillis();
       for (int open; (open = countSnapshotWindows(database)) > 0; ) {
+        // #10657: TERMINATED BY A LINE SEPARATOR. THE FORMATTER STARTS EVERY RECORD WITH ONE INSTEAD OF ENDING WITH IT,
+        // SO THE LAST RECORD BEFORE A HANG STAYS A PARTIAL LINE THAT A CONSOLE READER (SUREFIRE) HOLDS BACK FOREVER
         LogManager.instance().log(this, logged ? Level.FINE : Level.INFO,
-            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup is reading them)",
+            "Close of database '%s' is waiting for %d open snapshot window(s) to be released (a backup may still be reading them)%n",
             null, database.getName(), open);
         logged = true;
+        final long waited = System.currentTimeMillis() - waitStart;
+        if (!reported && waited >= closeWaitReportMillis) {
+          reported = true;
+          LogManager.instance().log(this, Level.WARNING,
+              "Close of database '%s' has waited %d ms for %d snapshot window(s) still open; it goes on waiting until they are released:%n%s",
+              null, database.getName(), waited, open, describeSnapshotWindows(database));
+        }
         try {
           snapshotRegistryLock.wait(CLOSE_WAIT_POLL_MILLIS);
         } catch (final InterruptedException e) {
@@ -1389,18 +1490,41 @@ public class PageManager extends LockContext {
     }
   }
 
-  /** Windows still open on the database, plus the ones whose release is in progress. Under the registry lock. */
-  private int countSnapshotWindows(final Database database) {
-    int count = 0;
-    final PageSnapshot[] snapshots = activeSnapshots;
-    if (snapshots != null)
-      for (final PageSnapshot snapshot : snapshots)
+  /** Windows still open on the database, plus the ones whose release is in progress. */
+  int countSnapshotWindows(final Database database) {
+    synchronized (snapshotRegistryLock) {
+      int count = 0;
+      final PageSnapshot[] snapshots = activeSnapshots;
+      if (snapshots != null)
+        for (final PageSnapshot snapshot : snapshots)
+          if (snapshot.isFor(database))
+            ++count;
+      for (final PageSnapshot snapshot : releasingSnapshots)
         if (snapshot.isFor(database))
           ++count;
-    for (final PageSnapshot snapshot : releasingSnapshots)
-      if (snapshot.isFor(database))
-        ++count;
-    return count;
+      return count;
+    }
+  }
+
+  /**
+   * #10657: one entry per window {@link #countSnapshotWindows} counts, each ending with a line separator - the
+   * opening thread, the window's age and status and, when it was recorded, the stack that opened it. Built only when a
+   * close has waited past {@link #closeWaitReportMillis}, so it costs nothing on any other path.
+   */
+  String describeSnapshotWindows(final Database database) {
+    final String eol = System.lineSeparator();
+    final StringBuilder buffer = new StringBuilder(512);
+    synchronized (snapshotRegistryLock) {
+      final PageSnapshot[] snapshots = activeSnapshots;
+      if (snapshots != null)
+        for (final PageSnapshot snapshot : snapshots)
+          if (snapshot.isFor(database))
+            snapshot.describeOpener(buffer.append("- open window: "), eol);
+      for (final PageSnapshot snapshot : releasingSnapshots)
+        if (snapshot.isFor(database))
+          snapshot.describeOpener(buffer.append("- window still releasing: "), eol);
+    }
+    return buffer.toString();
   }
 
   void unregisterSnapshot(final PageSnapshot snapshot) {
@@ -1590,6 +1714,25 @@ public class PageManager extends LockContext {
       // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENTS CONCURRENCY ON THE BUFFER POSITION
       return page.useAsImmutable();
     return null;
+  }
+
+  /**
+   * The shared {@link CachedPage} itself, through the same funnel as {@link #getImmutablePage}, for a reader that only reads single
+   * values at absolute positions ({@link CachedPage#readByte}) and so does not need the per-call view that builds an
+   * {@link ImmutablePage}, its Binary and the buffer around it (#10654). {@code null} when the page is not there.
+   */
+  public CachedPage getCachedPageForRead(final PageId pageId, final int pageSize) throws IOException {
+    return getCachedPage(pageId, pageSize, false, false);
+  }
+
+  /**
+   * {@link #getImmutablePage(PageId, int, boolean, boolean) getImmutablePage(pageId, pageSize, false, true)}, through the same
+   * funnel, but answered with the cached page's shared view ({@link CachedPage#getSharedImmutableView()}) instead of a new one per
+   * call: for a reader that reads the page at absolute positions only (#10654).
+   */
+  public ImmutablePage getSharedImmutablePage(final PageId pageId, final int pageSize) throws IOException {
+    final CachedPage page = getCachedPage(pageId, pageSize, false, true);
+    return page != null ? page.getSharedImmutableView() : null;
   }
 
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
@@ -1785,6 +1928,16 @@ public class PageManager extends LockContext {
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    publishPages(pagesToWrite, newPages, asyncFlush, null);
+  }
+
+  /**
+   * @param onPublicationStart run under the page-manager lock right before the first page is handed over, after the waits that
+   *                           can block or be interrupted with nothing published (#10768): from that call on a failure can leave
+   *                           part of the pages visible. {@code null} for none
+   */
+  public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
+      final boolean asyncFlush, final Runnable onPublicationStart) throws IOException, InterruptedException {
     // BOTH WAITS ARE OUTSIDE THE LOCK, AND THAT IS THE ENTIRE POINT (issues #6200 and #6259). Publication holds the
     // JVM-wide page-manager lock across BOTH of its halves - the page write and the flush enqueue - because the
     // snapshot t0 barrier (#6075/#6125) rests on exactly that, so the enqueue cannot move out; what can, and must, is
@@ -1811,11 +1964,12 @@ public class PageManager extends LockContext {
       // ODD WHILE THE PAGES OF ONE TRANSACTION ARE BEING PUBLISHED (#9369): they reach the read cache one by one, so a reader
       // can see the index page of the commit and the record page of the previous one. See getPublicationSequence().
       // Only the outermost publication moves the counter: the lock is reentrant, and an inner call that turned it even again while the
-      // outer one is still publishing would let a reader accept a torn state
-      final boolean outermost = (publicationSequence & 1) == 0;
-      if (outermost)
-        ++publicationSequence;
+      // outer one is still publishing would let a reader accept a torn state. beginPublication() counts the nesting, and it also
+      // keeps the counter odd while a replicated apply (#10941), which does not hold this lock, publishes at the same time
+      beginPublication();
       try {
+        if (onPublicationStart != null)
+          onPublicationStart.run();
         writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
 
         if (newPages != null)
@@ -1829,8 +1983,7 @@ public class PageManager extends LockContext {
       } finally {
         // Even again also when the publication failed midway: the cache then holds a partial publish, a failure path in which
         // the database is fenced anyway, and a sequence left odd would stall every lookup that waits for it
-        if (outermost)
-          ++publicationSequence;
+        endPublication();
       }
 
     } finally {
@@ -2057,6 +2210,87 @@ public class PageManager extends LockContext {
       totalSnapshotWindowsFailed.incrementAndGet();
   }
 
+  /**
+   * Opens a bulk scan on the calling thread, to be closed in a {@code finally} or try-with-resources (issue #11011). The pages
+   * the thread reads from disk while it is open are put in the read cache as usual, so the scan itself gets every hit it
+   * would, but they belong to the scan: they are the first ones evicted, and the ones no other reader used meanwhile leave the
+   * cache when the scan closes. A scan that reads a whole graph to build a structure answering for it (a Graph Analytical
+   * View) would otherwise fill the cache with pages nobody reads again and push out the ones queries use. Pages the cache held
+   * before, and pages another reader touches, are left to the cache's own policy. A scan opened inside another on the same
+   * thread joins it.
+   * <p>
+   * The scan belongs to the calling thread: pages read by other threads, a scan fanned out to workers included, are not its
+   * own and stay in the cache. It must be closed on the thread that opened it.
+   */
+  public BulkScan beginBulkScan() {
+    final BulkScan current = BULK_SCAN.get();
+    if (current != null) {
+      ++current.depth;
+      return current;
+    }
+    final BulkScan scan = new BulkScan(this);
+    BULK_SCAN.set(scan);
+    return scan;
+  }
+
+  /** The scope opened by {@link #beginBulkScan()}. */
+  public static final class BulkScan implements AutoCloseable {
+    private final PageManager manager;
+    private       int         depth = 1;
+    private       long        releasedPages;
+    private       long        releasedBytes;
+
+    private BulkScan(final PageManager manager) {
+      this.manager = manager;
+    }
+
+    /** Pages, and their bytes, this scan loaded that left the cache when it closed. */
+    public long getReleasedPages() {
+      return releasedPages;
+    }
+
+    public long getReleasedBytes() {
+      return releasedBytes;
+    }
+
+    @Override
+    public void close() {
+      if (--depth > 0)
+        return;
+      BULK_SCAN.remove();
+      manager.releaseBulkScanPages(this);
+    }
+  }
+
+  /**
+   * Walks the whole read cache once, so its cost is the cache's size, which a scan rare enough to be worth one (a view build)
+   * affords: keeping the scan's own list of the pages it loaded instead would hold an entry per page read, the graph's size.
+   */
+  private void releaseBulkScanPages(final BulkScan scan) {
+    final ConcurrentMap<PageId, CachedPage> cache = readCache;
+    if (cache == null)
+      return;
+    final boolean[] removed = new boolean[1];
+    for (final CachedPage page : cache.values()) {
+      if (page.getLoadedByBulkScan() != scan)
+        continue;
+      // Conditional on the instance, not on equals(), which matches any instance of the same version: a page another reader
+      // loaded and cached in its place is not the scan's, and neither is a newer version a commit put there
+      removed[0] = false;
+      cache.computeIfPresent(page.getPageId(), (id, current) -> {
+        if (current != page || current.getLoadedByBulkScan() != scan)
+          return current;
+        removed[0] = true;
+        return null;
+      });
+      if (removed[0]) {
+        totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
+        ++scan.releasedPages;
+        scan.releasedBytes += page.getPhysicalSize();
+      }
+    }
+  }
+
   public void removePageFromCache(final PageId pageId) {
     final CachedPage page = readCache.remove(pageId);
     if (page != null)
@@ -2124,8 +2358,31 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * A counter that moves twice for every transaction published by {@link #publishPages}: it is odd while the pages of one are
-   * being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
+   * Opens a publication: the pages of one transaction are about to reach the read cache one by one. The counter turns odd on the
+   * first one in flight, nested or concurrent ones only count. Every call must be paired with {@link #endPublication()} in a
+   * {@code finally}. {@link #publishPages} does it under the page-manager lock, the replicated apply (#10941) without it.
+   * Package-private: {@link TransactionManager} is the only other caller.
+   */
+  void beginPublication() {
+    synchronized (publicationGate) {
+      if (publicationsInFlight++ == 0)
+        ++publicationSequence;
+    }
+  }
+
+  /**
+   * Closes a publication opened by {@link #beginPublication()}: the counter turns even again when the last one in flight ends.
+   */
+  void endPublication() {
+    synchronized (publicationGate) {
+      if (--publicationsInFlight == 0)
+        ++publicationSequence;
+    }
+  }
+
+  /**
+   * A counter that moves twice for every transaction published by {@link #publishPages} or applied from the log of a replica: it
+   * is odd while the pages of one are being put in the read cache and even otherwise. A transaction's pages become visible one at a time, so a reader that
    * touches two of them - an index page and the record page it points to - can see them at different commits. Sampling this
    * before the first read and again after the last tells whether a commit overlapped: the two samples must be equal and even
    * for the reads to have seen one state (#9369). Reading it costs a volatile load and takes no lock. It does not cover
@@ -2215,16 +2472,29 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Whether the recovery of a fenced database can bring the page back, so that the flush can drop it: a WAL record describes
+   * it (its WAL file is attached), or it waits for a group-commit WAL write that may never become durable (its ticket), which
+   * the WAL rule forbids writing it before. Neither holds for the page of a transaction with no WAL (txWAL=false, a bulk load),
+   * including the one whose failed publication fenced the database (#10768): nothing can replay it, so dropping it lost a
+   * record the caller was told it holds, or the work of transactions that had committed, depending on whether this thread
+   * reached the page before the fence or after it.
+   */
+  private static boolean isReplayedByRecovery(final MutablePage page) {
+    return page.getWALSyncTicket() > 0 || page.getWALFile() != null;
+  }
+
+  /**
    * @return {@code true} when the page reached its file, {@code false} when there was nothing to write it to (a closed,
    * fenced or dropped database or file) and it was released instead.
    */
   protected boolean flushPage(final MutablePage page) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
 
-    if (!database.isOpen() || database.isFencedForRecovery()) {
+    if (!database.isOpen() || (database.isFencedForRecovery() && isReplayedByRecovery(page))) {
       // A fenced database (#5053) is a "close and reopen to run recovery" state: isOpen() is still true, but
-      // every page still queued here will be replayed from the WAL on the mandatory reopen anyway, so writing
-      // it now through this async pipeline is moot - handled exactly like the closed/dropped case below.
+      // every page still queued here that a WAL record describes will be replayed from the WAL on the mandatory
+      // reopen anyway, so writing it now through this async pipeline is moot - handled exactly like the
+      // closed/dropped case below. A page NO record describes is written instead (see isReplayedByRecovery).
       LogManager.instance()
           .log(this, Level.SEVERE, "Cannot flush page %s because the database is closed or fenced for recovery", page);
       // The page will never be flushed and its content is irrelevant (the database is closed, being dropped,
@@ -2240,7 +2510,10 @@ public class PageManager extends LockContext {
       return false;
     }
 
-    final FileManager fileManager = database.getFileManager();
+    // getFileManager() refuses a fenced database, and the page of one that gets here is a page recovery could not replay
+    final FileManager fileManager = database.isFencedForRecovery() && database.getEmbedded() instanceof LocalDatabase localDatabase ?
+        localDatabase.getFileManagerWhileFenced() :
+        database.getFileManager();
     final int fileId = page.pageId.getFileId();
 
     // ONE lookup, not an existsFile() followed by a get: they hit the same map, and the second answering null is
@@ -2263,6 +2536,20 @@ public class PageManager extends LockContext {
       if (LogManager.instance().isLoggable(this, Level.FINE))
         LogManager.instance()
             .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().threadId());
+
+      // The WAL rule under group commit (arcadedb.txWalGroupCommit): the commit published this page before flushing the WAL
+      // that describes it, so the page waits for that flush - or runs it - before it reaches the data file. A page on disk
+      // with no durable WAL behind it would be a partial transaction after a power loss, with nothing for recovery to replay
+      final long walSyncTicket = page.getWALSyncTicket();
+      if (walSyncTicket > 0)
+        try {
+          database.getTransactionManager().awaitWALDurableForPageWrite(walSyncTicket);
+        } catch (final IOException e) {
+          // the same verdict as a committer whose wait fails: published pages whose WAL may not be durable
+          if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+            localDatabase.fenceForRecovery("the WAL flush a page flush waited for failed", e);
+          throw e;
+        }
 
       final PageWriteFaultInjector faultInjector = pageWriteFaultInjector;
       if (faultInjector != null)
@@ -2386,6 +2673,9 @@ public class PageManager extends LockContext {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
         final CachedPage finalPage = page;
         concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+        // A page read for a bulk scan is its until another reader wants it (issue #11011)
+        if (cache)
+          page.setLoadedByBulkScan(BULK_SCAN.get());
       }
 
       page.loadMetadata();
@@ -2457,6 +2747,28 @@ public class PageManager extends LockContext {
     evictOldestPages(ramToFree, totalRAM);
   }
 
+  /** A cached page with the eviction keys it had when an eviction run read them. */
+  private record EvictionCandidate(CachedPage page, boolean bulkScan, long lastAccessed, long size) {
+  }
+
+  private static final Comparator<EvictionCandidate> EVICTION_ORDER = (o1, o2) -> {
+    // PAGES ONLY A BULK SCAN READ GO FIRST (ISSUE #11011)
+    final int bulkScan = Boolean.compare(o2.bulkScan(), o1.bulkScan());
+    if (bulkScan != 0)
+      return bulkScan;
+
+    final int lastAccessed = Long.compare(o1.lastAccessed(), o2.lastAccessed());
+    if (lastAccessed != 0)
+      return lastAccessed;
+
+    // SAME TIMESTAMP, CHECK THE PAGE SIZE: LARGER PAGE SHOULD BE REMOVED FIRST THAN OTHERS
+    final int pageSize = -Long.compare(o1.size(), o2.size());
+    if (pageSize != 0)
+      return pageSize;
+
+    return o1.page().getPageId().compareTo(o2.page().getPageId());
+  };
+
   private synchronized void evictOldestPages(final long ramToFree, final long totalRAM) {
     evictionRuns.incrementAndGet();
 
@@ -2466,25 +2778,18 @@ public class PageManager extends LockContext {
               null, ramToFree, totalRAM, maxRAM, Thread.currentThread().threadId());
 
     // GET THE <DISPOSE_PAGES_PER_CYCLE> OLDEST PAGES
-    // ORDER PAGES BY LAST ACCESS + SIZE
-    final TreeSet<CachedPage> pagesOrderedByAge = new TreeSet<>((o1, o2) -> {
-      final int lastAccessed = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
-      if (lastAccessed != 0)
-        return lastAccessed;
-
-      // SAME TIMESTAMP, CHECK THE PAGE SIZE: LARGER PAGE SHOULD BE REMOVED FIRST THAN OTHERS
-      final int pageSize = -Long.compare(o1.getPhysicalSize(), o2.getPhysicalSize());
-      if (pageSize != 0)
-        return pageSize;
-
-      return o1.getPageId().compareTo(o2.getPageId());
-    });
-
-    pagesOrderedByAge.addAll(readCache.values());
+    // ORDER PAGES BY BULK SCAN FIRST (ISSUE #11011: NO OTHER READER WANTED THEM), THEN LAST ACCESS + SIZE. THE KEYS ARE READ ONCE
+    // PER PAGE BEFORE THE SORT: READERS MOVE THEM CONCURRENTLY, AND A KEY THAT CHANGES WHILE THE SORT COMPARES IT WOULD BREAK THE
+    // ORDER'S CONTRACT
+    final List<EvictionCandidate> candidates = new ArrayList<>(readCache.size());
+    for (final CachedPage page : readCache.values())
+      candidates.add(new EvictionCandidate(page, page.getLoadedByBulkScan() != null, page.getLastAccessed(), page.getPhysicalSize()));
+    candidates.sort(EVICTION_ORDER);
 
     // REMOVE OLDEST PAGES FROM RAM
     long freedRAM = 0;
-    for (final CachedPage page : pagesOrderedByAge) {
+    for (final EvictionCandidate candidate : candidates) {
+      final CachedPage page = candidate.page();
       final CachedPage removedPage = readCache.remove(page.getPageId());
       if (removedPage != null) {
         // Account the entry ACTUALLY removed, not the TreeSet snapshot: the version-monotonic put can swap
@@ -2585,6 +2890,10 @@ public class PageManager extends LockContext {
     } else {
       cacheHits.increment();
       page.updateLastAccesses();
+      // Another reader wants a page a bulk scan loaded: from now on it is an ordinary page, kept by the cache's own policy
+      final BulkScan loadedBy = page.getLoadedByBulkScan();
+      if (loadedBy != null && loadedBy != BULK_SCAN.get())
+        page.setLoadedByBulkScan(null);
     }
 
     if (page == null)

@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.IndexBuildMode;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeGeoIndexBuilder;
@@ -312,6 +313,12 @@ public class CreateIndexStatement extends DDLStatement {
     // whether or not the index it asks for already exists.
     final IndexBuildMode buildMode = readBuildMode(context, indexType);
 
+    // The name of a logical index over several types (issue #11014) is taken, and by an index that is not the one asked for: answering
+    // "already exists" on IF NOT EXISTS would leave the requested index uncreated
+    if (!database.getSchema().existsIndex(indexName) && MultiTypeIndexes.find(database.getSchema(), indexName) != null)
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+          "Index '" + indexName + "' already exists as a multi-type index");
+
     if (database.getSchema().existsIndex(indexName)) {
       if (ifNotExists) {
         // The name this matched on is derived from the indexed property set alone, so it says nothing about what the
@@ -545,6 +552,15 @@ public class CreateIndexStatement extends DDLStatement {
     result.setProperty("type", indexType);
     result.setProperty("created", created);
     result.setProperty("totalIndexed", total.get());
+    // the records a vector index build left out, holding no vector of its dimensions: a build that did not index every
+    // record says so to the caller, not only in the server log (issue #10938)
+    if (created && indexType == Schema.INDEX_TYPE.LSM_VECTOR) {
+      long skipped = 0;
+      for (final Index idx : resultingIndex.getIndexesOnBuckets())
+        if (idx instanceof LSMVectorIndex vectorIndex)
+          skipped += vectorIndex.getLastBuildSkippedRecords();
+      result.setProperty("skipped", skipped);
+    }
 
     rs.add(result);
     return rs;

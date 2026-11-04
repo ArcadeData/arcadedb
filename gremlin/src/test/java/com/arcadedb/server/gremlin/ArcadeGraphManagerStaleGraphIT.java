@@ -59,10 +59,10 @@ class ArcadeGraphManagerStaleGraphIT extends BaseGraphServerTest {
     // Simulate the real-world close/reopen: something (e.g. a batch of CREATE INDEX IF NOT EXISTS)
     // closes the underlying LocalDatabase; the next getDatabase() reopens it and swaps in a brand
     // new ServerDatabase instance in the server's databases map.
-    final ServerDatabase before = getServer(0).getDatabase(dbName);
+    final ServerDatabase before = getServer(0).getDatabaseForOperator(dbName);
     before.getEmbedded().close();
 
-    final ServerDatabase after = getServer(0).getDatabase(dbName);
+    final ServerDatabase after = getServer(0).getDatabaseForOperator(dbName);
     assertThat(after.isOpen()).as("server must have reopened the database").isTrue();
     assertThat(after).as("server must have swapped in a new ServerDatabase").isNotSameAs(before);
 

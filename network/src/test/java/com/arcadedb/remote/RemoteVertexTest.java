@@ -151,7 +151,7 @@ class RemoteVertexTest {
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
     final ResultSet emptyRs = mock(ResultSet.class);
     when(emptyRs.hasNext()).thenReturn(false);
-    when(mockDatabase.query(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(emptyRs);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(emptyRs);
 
     remoteVertex.getVertices(Vertex.DIRECTION.OUT, 100, 50, "Knows");
 
@@ -166,7 +166,7 @@ class RemoteVertexTest {
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
     final ResultSet emptyRs = mock(ResultSet.class);
     when(emptyRs.hasNext()).thenReturn(false);
-    when(mockDatabase.query(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(emptyRs);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(emptyRs);
 
     // iterator is lazy - must consume it to trigger the first page fetch
     remoteVertex.getVertices(Vertex.DIRECTION.OUT, "Knows").iterator().hasNext();
@@ -190,7 +190,7 @@ class RemoteVertexTest {
     final ResultSet page3 = resultSetOf(r5);
 
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
-    when(mockDatabase.query(eq("sql"), sqlCaptor.capture(), any(Map.class)))
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class)))
         .thenReturn(page1)
         .thenReturn(page2)
         .thenReturn(page3);
@@ -214,7 +214,7 @@ class RemoteVertexTest {
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
     final ResultSet emptyRs = mock(ResultSet.class);
     when(emptyRs.hasNext()).thenReturn(false);
-    when(mockDatabase.query(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(emptyRs);
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(emptyRs);
 
     remoteVertex.getEdges(Vertex.DIRECTION.BOTH, 200, 0, "Knows");
 
@@ -233,7 +233,7 @@ class RemoteVertexTest {
     final ResultSet page2 = edgeResultSetOf();
 
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
-    when(mockDatabase.query(eq("sql"), sqlCaptor.capture(), any(Map.class)))
+    when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class)))
         .thenReturn(page1)
         .thenReturn(page2);
 

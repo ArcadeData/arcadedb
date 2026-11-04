@@ -52,6 +52,7 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -82,6 +83,7 @@ import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
@@ -143,8 +145,11 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -166,16 +171,39 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
   private volatile PageVersionReservations pageVersionReservations;
   /**
-   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
+   * Why this database refuses writes right now, empty when it accepts them (issue #8270). Never mutated: replaced as a whole
+   * under {@link #writeRefusalLock}, so the commit path reads it with one volatile load and no lock.
    * <p>
    * Set by a server that has opened the database before it can replicate it: on a node configured for high
    * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
    * database for replication. A commit or a schema change reaching this instance in that window would be applied
    * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
-   * at the same page versions. Unlike the recovery fence it does not block reads, and it is lifted as soon as the
-   * database is wrapped.
+   * at the same page versions. And by a server restoring a backup over it (issue #10689): every write made until the
+   * restore swaps the backup in would be acknowledged and then destroyed. Unlike the recovery fence it does not block
+   * reads. Several refusals can stand at once, and each is lifted by whoever put it, so ending one never ends another.
    */
-  private volatile String                  writeRefusal = null;
+  private volatile WriteRefusal[]          writeRefusals     = NO_WRITE_REFUSAL;
+  private final    Object                  writeRefusalLock  = new Object();
+  private static final WriteRefusal[]      NO_WRITE_REFUSAL  = new WriteRefusal[0];
+  /**
+   * The commits that passed the write refusal's check under this database's lock and go on completing after they left it (issue
+   * #10881): an HA leader replicates between its two commit phases with no lock held, and a schema session ships its entry after
+   * the write lock is released. {@link #awaitCommitsInFlight()} waits for them as well as for the holders of the shared lock. One
+   * atomic increment and decrement per replicated commit, a quorum round trip, and nothing at all on a standalone commit.
+   */
+  private final    AtomicInteger           commitsInFlightOutsideLock = new AtomicInteger();
+  private final    Object                  commitsInFlightDrained     = new Object();
+  // Changed only under commitsInFlightDrained; read without it by endCommitInFlight(), so a decrement that finds no waiter skips
+  // the monitor. A waiter arriving just after that read re-checks the counter under the monitor, and waits timed anyway
+  private volatile int                     commitsInFlightWaiters;
+  private static final long                COMMITS_IN_FLIGHT_WARNING_NANOS = TimeUnit.SECONDS.toNanos(10);
+
+  /**
+   * @param unavailable {@code true} when the refusal lasts as long as an operator's operation (a restore), and so is answered
+   *                    as a database not available rather than as a conflict a retry resolves at once
+   */
+  private record WriteRefusal(String reason, boolean unavailable) {
+  }
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -209,6 +237,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMVectorIndex.FILE_EXT,
       LSMVectorIndexGraphFile.FILE_EXT,
       SparseSegmentComponent.FILE_EXT,
+      SparsePostingLog.FILE_EXT,
       TimeSeriesBucket.BUCKET_EXT,
       TimeSeriesTagDictionary.DICT_EXT,
       HashIndexBucket.UNIQUE_INDEX_EXT,
@@ -257,6 +286,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   // so nothing may ever wait for the async workers while holding it.
   protected final    Lock                                      asyncLock                 = new ReentrantLock();
   protected          boolean                                   autoTransaction           = false;
+  private            boolean                                   replicatedNode            = false;
   protected volatile boolean                                   open                      = false;
   /**
    * Set by {@link #closeForReopen()}: this instance was closed so that the same database could be reopened (#8199). Never
@@ -587,20 +617,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           "Cannot wait for the asynchronous executor of database '" + name + "' from one of its own worker threads: "
               + "the wait would never end. Run this command synchronously (awaitResponse=true) instead");
 
+    // ALREADY QUIESCED BY THIS THREAD (issue #10537): the quiescence committed every worker's batch before it parked the worker, which
+    // is all this barrier asks for, and the park holds the workers until it is released - after this call returns. The marker the
+    // barrier would enqueue on each of them is therefore never dequeued, and a builder reached from under a frame that took its
+    // quiescence before the write lock (the CREATE ... TYPE statement, TypeBuilder, Labels.ensureCompositeType) waited here until its
+    // timeout. A nested quiescence rides on the outer one for the same reason (see quiesceWorkers).
+    if (executor.isQuiescedByCurrentThread())
+      return;
+
     // Unconditional, and that is the whole point (issue #6281). isProcessing() is not a precondition that can be
     // tested first: a worker keeps ONE transaction open across up to ASYNC_TX_BATCH_SIZE tasks, so an executor whose
     // queues are drained and whose workers are parked can still be holding thousands of uncommitted records.
     // waitCompletion() is the only operation that closes that batch - it enqueues a marker BEHIND everything already
     // submitted on every worker and that marker commits - so it has to run even when the executor looks idle.
-    // The loop then covers what a single pass cannot: tasks submitted by OTHER threads while this one was waiting.
-    do {
-      executor.waitCompletion();
-      // waitCompletion() answers an interrupt by restoring the flag and returning, so without this the loop would
-      // spin: every further pass would be interrupted at its first queue offer and come straight back. The caller's
-      // cancellation is left on the thread for it to observe.
-      if (Thread.currentThread().isInterrupted())
-        return;
-    } while (isAsyncProcessing());
+    //
+    // ONE call, not a loop while isAsyncProcessing() (issue #11155). waitCompletion() already goes around again for
+    // what a single pass can miss, the cascades a worker schedules (#6462). What the loop added on top was waiting for
+    // the tasks OTHER threads submit after this call began, which a steady async producer never stops doing, so the
+    // build waited for ever. Those tasks race the build whether it waits for them or not: quiesceAsync() is what keeps
+    // them out of a scan. An interrupt makes waitCompletion() restore the flag and return, left for the caller.
+    executor.waitCompletion();
   }
 
   @Override
@@ -672,6 +708,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   public void markModified() {
     modificationCount.incrementAndGet();
+  }
+
+  /**
+   * A number that moves whenever this instance is used - a query, a command, a transaction ended, a record read or written, a
+   * scan, a count, a write of any kind - and only then: two equal samples mean nothing used the database in between. What a
+   * server samples to tell an idle database from a used one (issue #11068), read without allocating or taking a lock.
+   */
+  public long getActivityCount() {
+    return stats.total() + modificationCount.get();
+  }
+
+  /**
+   * Whether any thread, not only the calling one, has a transaction open on this database (issue #11068): what a server asks
+   * before closing a database nobody is using. The asynchronous workers' batch transactions do not count, since a close drains
+   * and commits them; ask {@link #isAsyncProcessing()} for the work they still have queued.
+   */
+  public boolean hasActiveTransactionOnAnyThread() {
+    final DatabaseAsyncExecutorImpl executor = async;
+    return DatabaseContext.INSTANCE.hasActiveTransaction(databasePath, executor != null ? executor::isOneOfMyWorkers : null);
   }
 
   @Override
@@ -783,11 +838,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     executeInReadLock(() -> {
       checkDatabaseIsOpen();
+      // A CLOSE FOR REOPEN HAS STARTED (AN IDLE CLOSE, issue #11068; AN HA REINSTALL): THE INSTANCE IS STILL OPEN WHILE IT DRAINS
+      // ITS ASYNCHRONOUS WORK, BUT ITS TEARDOWN WOULD ROLL BACK A TRANSACTION BEGUN NOW. REFUSED AS RETRYABLE: THE RETRY FINDS THE
+      // DATABASE REOPENED. NOT TO THE ASYNCHRONOUS WORKERS, WHOSE BATCHES ARE WHAT THE DRAIN WAITS FOR
+      if (closedForReopen) {
+        final DatabaseAsyncExecutorImpl executor = async;
+        if (executor == null || !executor.isCurrentThreadOneOfMyWorkers())
+          throw new DatabaseIsReopeningException(name);
+      }
 
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(databasePath);
       TransactionContext tx = current.getLastTransaction();
-      if (tx.isActive()) {
+      // NOT ONE WHOSE TRANSACTION IS STILL CONCLUDING EITHER (#10687): ITS COMMIT COUNT IS ABOUT TO BE READ BY THE CALLER OF THE
+      // COMMIT THAT ENDED IT, SEE TransactionContext.isRunningAfterCompletionCallbacks()
+      if (tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
         // CREATE A NESTED TX
         tx = new TransactionContext(getWrappedDatabaseInstance());
         current.pushTransaction(tx);
@@ -815,7 +880,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void commit() {
     executeInReadLock(() -> {
-      checkTransactionIsActive(false);
+      checkTransactionToEnd();
 
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
@@ -851,7 +916,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     executeInReadLock(() -> {
       try {
-        checkTransactionIsActive(false);
+        checkTransactionToEnd();
 
         final DatabaseContext.DatabaseContextTL current =
             DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
@@ -959,8 +1024,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         final AtomicBoolean continueScan = new AtomicBoolean(true);
 
         for (final Bucket b : type.getBuckets(polymorphic)) {
+          // A record is of the type that owns its bucket, not of the type the scan was asked for (#11066): the
+          // delete events and every getType() read are dispatched off it. Resolved once per bucket, not per record.
+          final DocumentType bucketType = polymorphic ? schema.getTypeByBucketId(b.getFileId()) : type;
+          final DocumentType recordType = bucketType != null ? bucketType : type;
           b.scan((rid, view) -> {
-            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid,
+            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
                 view, null);
             continueScan.set(callback.onRecord(record));
             return continueScan.get();
@@ -1381,6 +1450,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
 
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    if (record instanceof Document doc)
+      schema.checkBackingTypeWrite(doc.getTypeName(), "insert into");
+    if (bucketName != null) {
+      // and the bucket named explicitly, which can belong to another type than the document's (INSERT INTO BUCKET:...)
+      final Bucket target = schema.getBucketByNameIfExists(bucketName);
+      if (target != null) {
+        schema.checkBackingTypeWrite(target.getFileId(), "insert into");
+        // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
+        // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
+        // record by the bucket's owner; this is the same rule for the API.
+        if (record instanceof Document doc) {
+          final DocumentType owner = schema.getTypeByBucketId(target.getFileId());
+          if (owner != null && !owner.getName().equals(doc.getTypeName()))
+            throw new IllegalArgumentException(
+                "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName + "', which belongs to type '"
+                    + owner.getName() + "'");
+        }
+      }
+    }
+
     setDefaultValues(record);
 
     if (record instanceof MutableDocument doc)
@@ -1461,6 +1551,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       success = true;
       countCreatedRecord(record);
       transaction.countCompletedRecordWrite();
+      if (DeferredExistenceChecks.anyScopeArmed())
+        DeferredExistenceChecks.createCounted(this, record.getIdentity());
 
       // INVOKE EVENT CALLBACKS
       events.onAfterCreate(record);
@@ -1565,6 +1657,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (bucket.getPurpose() != LocalBucket.Purpose.PRIMARY)
       throw new IllegalArgumentException(
           "Bucket '" + bucket.getName() + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be restored into");
+
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    schema.checkBackingTypeWrite(bucket.getFileId(), "restore a record into");
 
     // Auto-transaction parity with createRecordNoLock: on a database opened with setAutoTransaction(true) a plain
     // INSERT wraps itself in a transaction, and RESTORE must not be the one statement that throws instead. Without
@@ -1738,16 +1833,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
-    if (record instanceof MutableDocument document)
-      document.validate();
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "update a record of");
 
-    // INVOKE EVENT CALLBACKS
-    if (fireEvents) {
-      if (!events.onBeforeUpdate(record))
-        return false;
-      if (record instanceof Document document)
-        if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
-          return false;
+    try {
+      if (record instanceof MutableDocument document) {
+        // #10955: NEVER SAVE BACK A RECORD THAT LOST A PROPERTY IT COULD NOT DECODE
+        document.checkContentIsComplete();
+        document.validate();
+      }
+
+      // INVOKE EVENT CALLBACKS
+      if (fireEvents) {
+        if (!events.onBeforeUpdate(record))
+          return refusedUpdateOfQueuedRecordDoomsCommit(record);
+        if (record instanceof Document document)
+          if (!((LocalDocumentType) document.getType()).fireBeforeUpdate(record))
+            return refusedUpdateOfQueuedRecordDoomsCommit(record);
+      }
+    } catch (final RuntimeException | Error e) {
+      // Whatever refused the update, a validation, a listener, even an Error: the values are on the queued instance, and over-refusing
+      // the commit is the safe side of not knowing why it failed. Counting changes nothing for an exception that is rethrown as is
+      countRefusedUpdateOfQueuedRecord(record);
+      throw e;
     }
 
     if (writeNow)
@@ -1760,6 +1868,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   private boolean applyUpdate(final Record record, final boolean writeNow, final boolean discardRecordAfter,
       final boolean fireEvents) {
+    // Whether the update is an edge-list write only, read ONCE here, before either arm writes anything (issue #11024): the write-now
+    // arm reaches the page before it counts the write, and a page write that keeps the instance (discardRecordAfter false) hands it
+    // the new buffer through setBuffer(), which clears the flags. Read after it, every property write of that arm was property-less.
+    // Known positively, not from the absence of an assignment: a list or map changed in place assigns no property either, and it
+    // is content all the same.
+    final boolean structural = isEdgeListWriteOnly(record);
     if (!writeNow && isTransactionActive()) {
       // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
       // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -1820,14 +1934,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
         }
-        countCompletedUpdate(tx, record);
+        countCompletedUpdate(tx, record, structural);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
             "transaction", e);
       }
     } else {
       updateRecordNoLock(record, discardRecordAfter);
-      countCompletedUpdate(getTransaction(), record);
+      countCompletedUpdate(getTransaction(), record, structural);
     }
 
     // Counted HERE rather than before the branch (#7149): the statistic reports records this database actually
@@ -1849,11 +1963,54 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return true;
   }
 
-  /** Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it. */
-  private void countCompletedUpdate(final TransactionContext tx, final Record record) {
+  /**
+   * A refusal of an update (a constraint, a before-update listener) comes after the caller set the new values on the record, and for
+   * a record the transaction has not updated yet that instance is thrown away with the statement. For one it HAS already updated the
+   * instance is the one queued for the commit (the transaction's own copy answers the lookup), so the refused values stay on it and
+   * the commit would store them: a {@code w} above its {@code MAX}, an update a listener vetoed (issue #10482). The statement that raised
+   * the refusal is taken back to the content its savepoint kept of that instance (issue #10346); when it cannot be, the refusal is
+   * counted as a write that stands, so the transaction is refused its commit, as for any other half-applied statement (see
+   * {@link #takeBackFailedStatement}).
+   */
+  private void countRefusedUpdateOfQueuedRecord(final Record record) {
+    final TransactionContext tx = getTransactionIfExists();
+    if (tx != null && tx.isActive() && tx.isQueuedInstance(record))
+      tx.countCompletedRecordWrite();
+  }
+
+  /**
+   * The same refusal answered by a listener that returns {@code false} instead of throwing: nothing is raised, so no statement fails
+   * and the guard above never looks. The refused values are on the queued instance all the same, so the commit is refused here, directly,
+   * where a refusal that throws is only counted: counting leaves the decision to the guard, which does not refuse a script that handles
+   * its own failures ({@code COMMIT RETRY ... ELSE}).
+   *
+   * @return false, the answer of an update that was not made
+   */
+  private boolean refusedUpdateOfQueuedRecordDoomsCommit(final Record record) {
+    final TransactionContext tx = getTransactionIfExists();
+    if (tx != null && tx.isActive() && tx.isQueuedInstance(record))
+      tx.setRollbackOnly("a before-update listener refused the update of record " + record.getIdentity()
+          + ", which the transaction had already updated, and the transaction has no savepoint to take it back to");
+    return false;
+  }
+
+  /**
+   * Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it.
+   *
+   * @param structural true when the update assigned no property, as the caller observed it BEFORE the write: the record cannot be
+   *                   asked here, since a write that reached the page already cleared what it would answer (issue #11024)
+   */
+  private static boolean isEdgeListWriteOnly(final Record record) {
+    if (!(record instanceof MutableDocument document))
+      // an edge segment, or any other record that holds no properties
+      return true;
+    return document instanceof MutableVertex vertex && vertex.areEdgeListHeadsAssigned() && !document.arePropertiesAssigned();
+  }
+
+  private void countCompletedUpdate(final TransactionContext tx, final Record record, final boolean structural) {
     tx.countCompletedRecordWrite();
     if (DeferredExistenceChecks.anyScopeArmed())
-      DeferredExistenceChecks.updateCounted(this, record.getIdentity());
+      DeferredExistenceChecks.updateCounted(this, record.getIdentity(), structural);
   }
 
   public Document getOriginalDocument(final Record record) {
@@ -1993,6 +2150,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
+    // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
+    schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "delete from");
+
     // REFUSE UP FRONT (issue #9305). LocalBucket.deleteRecord checks DELETE_RECORD too, but it is the LAST thing a delete
     // does: by then the index entries, the EXTERNAL values and the edges are already gone, and a caller that owns its
     // transaction and carries on after the refusal would commit that half-applied delete.
@@ -2117,18 +2277,22 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       success = true;
       stats.deleteRecord.incrementAndGet();
 
-      // INVOKE EVENT CALLBACKS
-      events.onAfterDelete(record);
-      if (record instanceof Document document)
-        ((LocalDocumentType) document.getType()).fireAfterDelete(record);
-
+      // COUNTED BEFORE THE LISTENERS THAT RUN ONCE THE DELETE IS APPLIED, as a create and an update are: a listener that fails leaves a
+      // delete in the transaction, and the guard of a failed statement (issues #10194, #10346) has to see it
       final TransactionContext transaction = getTransaction();
       transaction.countCompletedRecordWrite();
+      if (DeferredExistenceChecks.anyScopeArmed())
+        DeferredExistenceChecks.deleteCounted(this, record.getIdentity());
       if (record.getIdentity().getPosition() >= 0)
         // A record-less RID (a lightweight edge) never allocated a record in the bucket, so there is nothing to
         // subtract. Folding a -1 anyway drifts the cached counter behind count(*), and the drift is persisted in
         // statistics.json, so it survives a reopen.
         transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
+
+      // INVOKE EVENT CALLBACKS
+      events.onAfterDelete(record);
+      if (record instanceof Document document)
+        ((LocalDocumentType) document.getType()).fireAfterDelete(record);
 
     } finally {
       if (implicitTransaction) {
@@ -2271,7 +2435,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final int retryDelay = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY);
     final int retryDelayBase = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE);
 
-    boolean duplicatedKeyRetried = false;
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
 
     // #10135: how many transaction levels belong to the CALLER. On failure only the levels above it are rolled back.
     // Sampled once: every failed attempt rolls back to exactly this depth, so it is the same before each attempt
@@ -2346,24 +2510,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work
         // and naming the leader - fails every attempt the same way, so the caller gets it now instead of after every
-        // retry delay
-        if (e instanceof NeedRetryException retryable && !retryable.isRetryableOnThisNode())
+        // retry delay. #4959: a genuine duplicate is deterministic and fails identically on every attempt, so a
+        // duplicated key gets one retry, which covers the only nondeterministic case: racing a COMMIT that lands between
+        // attempts (#5061: a transient duplicate from an in-flight sibling transaction is unreachable - checkUniqueIndexKeys
+        // reads committed pages plus THIS transaction's own overlay). Both rules live in TransactionRetryPolicy, shared by
+        // every retry loop (#10759)
+        if (!retryPolicy.mayRetry(e))
           throw e;
-
-        if (e instanceof DuplicatedKeyException) {
-          // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
-          // concurrency-induced duplicate can succeed on retry, and one retry is enough to disambiguate:
-          // fail fast instead of burning all the remaining attempts plus their retry delays.
-          //
-          // #5061: a TRANSIENT duplicate from an in-flight sibling transaction that later rolls back
-          // is unreachable - checkUniqueIndexKeys reads committed pages plus THIS transaction's own overlay
-          // (TransactionIndexContext is per-transaction), so uncommitted sibling entries are invisible and a
-          // detected duplicate is always against durable state (or this same transaction). The one retry
-          // covers the only nondeterministic case: racing a COMMIT that lands between attempts.
-          if (duplicatedKeyRetried)
-            throw e;
-          duplicatedKeyRetried = true;
-        }
 
         if (retry < attempts - 1)
           delayBetweenRetries(retry, retryDelayBase, retryDelay);
@@ -2596,9 +2749,30 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     this.autoTransaction = autoTransaction;
   }
 
+  /** See {@link DatabaseFactory#setReplicatedNode(boolean)}. */
+  void setReplicatedNode(final boolean replicatedNode) {
+    this.replicatedNode = replicatedNode;
+  }
+
+  /**
+   * Whether this database is opened as a node of an HA cluster (issue #11240), known from the open on, before the replicated
+   * wrapper is installed.
+   */
+  public boolean isReplicatedNode() {
+    return replicatedNode;
+  }
+
   @Override
   public FileManager getFileManager() {
     checkDatabaseIsOpen();
+    return fileManager;
+  }
+
+  /**
+   * The file manager also while the database is fenced for recovery, which {@link #getFileManager()} refuses: the page flush
+   * still writes the pages no WAL record describes, because the reopen could not replay them (see {@code PageManager.flushPage}).
+   */
+  public FileManager getFileManagerWhileFenced() {
     return fileManager;
   }
 
@@ -2618,6 +2792,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public ComponentFile.MODE getMode() {
     return mode;
+  }
+
+  /**
+   * What {@link #commit()} and {@link #rollback()} check: the database is open and a transaction is active. Not
+   * {@link #checkTransactionIsActive(boolean)}, which asserts a WRITE intent: on a read-only database it raised
+   * {@code DatabaseIsReadOnlyException} before looking for a transaction, so the read transaction {@link #begin()} opens there
+   * could be neither committed nor rolled back, and an idle {@code rollback()} threw instead of being the no-op
+   * {@code BasicDatabase.rollback()} promises (issue #11057). A write inside that transaction is still refused where it is made.
+   */
+  private void checkTransactionToEnd() {
+    checkDatabaseIsOpen();
+    if (!isTransactionActive())
+      throw new TransactionException("Transaction not begun");
   }
 
   @Override
@@ -2658,7 +2845,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /**
    * The transaction the caller has open on this thread, or {@code null}: what a statement joins instead of owning one. Every
    * {@code command()} and {@code query()} overload carries the check built on it, see
-   * {@link #refuseCommitOfHalfAppliedStatement}: a new overload has to as well. It covers what the call runs, and the engines of this
+   * {@link #takeBackFailedStatement}: a new overload has to as well. It covers what the call runs, and the engines of this
    * module run a write statement to its end inside the call; an engine whose result runs the statement while it is read (a Gremlin
    * traversal) carries the check on its result. {@link #execute} routes a script through {@code command()}.
    */
@@ -2669,16 +2856,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * A statement of any language that fails inside the caller's transaction after part of its records were written leaves that part
-   * behind, and a caller that catches the error and commits publishes half a statement (issues #10194, #10379). The engine has no
-   * savepoint to take the statement back to, so the transaction cannot be committed any more, see
+   * behind, and a caller that catches the error and commits publishes half a statement (issues #10194, #10379). The statement is taken
+   * back to its savepoint, and the transaction goes on as if it had never run (issue #10346). When the engine cannot take it back
+   * exactly (see {@link StatementSavepoint}) the transaction can no longer be committed, see
    * {@link TransactionContext#refuseCommitIfWrittenSince}. It is asked here, where every engine is dispatched, so a language cannot
    * opt out by not asking, except through {@link QueryEngine#handlesItsOwnFailures}. A transaction the statement itself concluded (a
    * script's own {@code ROLLBACK}) is not touched: there is nothing of the statement left in it, and a reason set now would outlive
    * it into the next transaction of the context.
+   * <p>
+   * A statement run by another statement of the transaction (a function, a trigger) has no savepoint of its own: the statement that runs
+   * it answers for it, see {@link StatementSavepoint#nestedStatementFailed}.
    */
-  private void refuseCommitOfHalfAppliedStatement(final String language, final String query, final TransactionContext tx,
-      final long writesBefore, final Throwable cause) {
-    if (tx == null || !tx.isActive() || tx.getCompletedRecordWrites() == writesBefore)
+  private void takeBackFailedStatement(final String language, final String query, final TransactionContext tx,
+      final StatementSavepoint savepoint, final long writesBefore, final Throwable cause) {
+    if (tx == null || !tx.isActive())
+      return;
+    // A statement that wrote nothing and changed nothing the savepoint holds leaves the transaction as it found it
+    if (tx.getCompletedRecordWrites() == writesBefore && (savepoint == null || !savepoint.hasChanges()))
       return;
 
     // The engine is asked last: it may parse the statement again, and only a statement that wrote before it failed needs the answer.
@@ -2692,7 +2886,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       cause.addSuppressed(e);
     }
     if (!ownFailures)
-      tx.refuseCommitIfWrittenSince(writesBefore, cause);
+      tx.statementFailed(savepoint, writesBefore, cause);
   }
 
   /**
@@ -2705,13 +2899,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
   }
@@ -2723,13 +2920,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
   }
@@ -2742,13 +2942,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
   }
@@ -2766,13 +2969,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
     }
   }
@@ -2802,13 +3008,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     stats.queries.incrementAndGet();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration());
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
     }
   }
@@ -2819,13 +3028,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     stats.queries.incrementAndGet();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
     }
   }
@@ -2836,13 +3048,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     stats.queries.incrementAndGet();
     final TransactionContext callerTx = activeTransaction();
     final long writesBefore = callerTx != null ? callerTx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = callerTx != null ? callerTx.beginStatement() : null;
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(language, query, callerTx, writesBefore, e);
+      takeBackFailedStatement(language, query, callerTx, savepoint, writesBefore, e);
       throw e;
     } finally {
+      if (callerTx != null)
+        callerTx.endStatement(savepoint);
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
     }
   }
@@ -3009,7 +3224,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
     // A schema change is a write too (issue #8270): refused before anything is created or saved.
     checkWritesAccepted();
-    return (RET) executeInWriteLock(callback);
+    return (RET) executeInWriteLock(() -> {
+      // Again under the lock (issue #10881): a refusal raised while this caller waited for the lock was followed by an
+      // awaitCommitsInFlight() that took the lock first and returned, so the check above is all that would have stood between
+      // this schema change and a restore that has already stopped waiting for writers
+      checkWritesAccepted();
+      return callback.call();
+    });
   }
 
   @Override
@@ -3130,6 +3351,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return null;
     if (name.startsWith("$"))
       name = name.substring(1);
+    // A name SQL reserves is the context's ($parent, $depth...): SQL cannot set it as a global, and an entry another key space put
+    // in the store under it (a Redis key, issue #10790) must not answer for it where the context has none
+    if (SQLQueryEngine.RESERVED_VARIABLE_NAMES.contains(name))
+      return null;
     return globalVariables.get(name);
   }
 
@@ -3188,6 +3413,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return CollectionUtils.immutableMap(globalVariables);
+  }
+
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return globalVariables;
   }
 
   public QueryEngineManager getQueryEngineManager() {
@@ -3447,8 +3677,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /** Re-derives what {@link #open()} derives from the configuration, after it changed in memory (issue #9763). */
   private void configurationChanged() {
-    serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
-    serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+    serializer.readConfiguration(configuration);
 
     // ALL FOUR QUERY CACHES, THE PLAN CACHES TOO: A SETTING READ AT PLANNING TIME IS BAKED INTO THE PLAN (issue #10155). ONE
     // SETTING SIZES BOTH SQL CACHES, AS IN THE CONSTRUCTOR
@@ -3987,6 +4216,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         dataSafeOnDisk = false;
       }
 
+      // A fenced database (#5053) is waiting for exactly this close and the reopen's recovery: the flush pipeline discards its
+      // queued pages, and acks their WAL entries, precisely because recovery is to replay them. Deleting the WAL here would
+      // leave nothing to replay - the case of a group commit whose shared WAL flush failed after its pages were published
+      if (fenceReason != null)
+        dataSafeOnDisk = false;
+
       final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
 
       if (!drop)
@@ -4319,8 +4554,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // THE WAL REPLAY, NOT FROM THE STALE PAGES THE SCHEMA LOAD FINDS ON DISK (ISSUE #9452)
           schema.load(mode, true, recoveryPending);
 
-        serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
-        serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+        serializer.readConfiguration(configuration);
 
         // The configuration this open read may hold dates as another class than the one a REGEXP was declared against, and the
         // schema load does not search the text forms (that is paid at the declaration, not at every open). An open must not fail
@@ -4497,27 +4731,134 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /**
    * Refuses every commit carrying changes, and every schema change, with a retryable {@link NeedRetryException}
-   * naming {@code reason}, until {@link #acceptWrites()} is called. Reads are unaffected.
+   * naming {@code reason}, until {@link #acceptWrites(String)} lifts it. Reads are unaffected.
    */
   public void refuseWrites(final String reason) {
-    writeRefusal = reason;
+    refuseWrites(reason, false);
   }
 
-  /** Lifts a {@link #refuseWrites(String)} refusal. */
-  public void acceptWrites() {
-    writeRefusal = null;
+  /**
+   * As {@link #refuseWrites(String)}, and with {@code unavailable} set the refusal is a {@link DatabaseNotAvailableException}
+   * instead: the database is taken away for as long as an operator's operation lasts (a restore replacing it, issue #10689), which
+   * a client must read as "not available", not as a conflict to retry at once. A refusal already standing for the same reason is
+   * not added twice, and keeps the {@code unavailable} it was first given: a reason is one refusal, owned by whoever lifts it with
+   * {@link #acceptWrites(String)}, so callers pass a constant.
+   */
+  public void refuseWrites(final String reason, final boolean unavailable) {
+    synchronized (writeRefusalLock) {
+      final WriteRefusal[] current = writeRefusals;
+      for (final WriteRefusal refusal : current)
+        if (refusal.reason().equals(reason))
+          return;
+      final WriteRefusal[] updated = Arrays.copyOf(current, current.length + 1);
+      updated[current.length] = new WriteRefusal(reason, unavailable);
+      writeRefusals = updated;
+    }
   }
 
-  /** The reason {@link #refuseWrites(String)} was given, or {@code null} when this database accepts writes. */
+  /**
+   * Lifts the refusal given for {@code reason} only, leaving any other in place: a server that stops waiting for its HA plugin
+   * must not end the refusal a restore in progress put on the same database, nor the other way round.
+   */
+  public void acceptWrites(final String reason) {
+    synchronized (writeRefusalLock) {
+      final WriteRefusal[] current = writeRefusals;
+      for (int i = 0; i < current.length; i++)
+        if (current[i].reason().equals(reason)) {
+          final WriteRefusal[] updated = new WriteRefusal[current.length - 1];
+          System.arraycopy(current, 0, updated, 0, i);
+          System.arraycopy(current, i + 1, updated, i, current.length - i - 1);
+          writeRefusals = updated.length == 0 ? NO_WRITE_REFUSAL : updated;
+          return;
+        }
+    }
+  }
+
+  /**
+   * Returns once every commit that was already running has ended. A commit checks the write refusal and writes its pages under
+   * the shared lock, so taking the exclusive one waits exactly for the commits that may have passed the check before a
+   * {@link #refuseWrites} and are still writing: after this, no commit can complete that did not see the refusal (issue
+   * #10689). A commit that goes on after leaving the lock - an HA leader replicating between its two commit phases, a schema
+   * session shipping its entry - is registered with {@link #beginCommitInFlight()} before it leaves, and waited for too (issue
+   * #10881). Must not be called holding the shared lock.
+   *
+   * @throws DatabaseOperationException when interrupted while a commit is still in flight; the interrupt flag is set again
+   */
+  public void awaitCommitsInFlight() {
+    executeInWriteLock(() -> null);
+    // Every commit that passed the refusal's check under the lock and goes on outside it registered itself before releasing the
+    // lock, so after the exclusive section above the counter holds all of them, and any commit registering later saw the refusal
+    if (commitsInFlightOutsideLock.get() == 0)
+      return;
+    synchronized (commitsInFlightDrained) {
+      commitsInFlightWaiters++;
+      try {
+        // Normally bounded by the quorum timeout of the commits waited for. Said at WARNING while it lasts, so a wait that does not
+        // end (a commit wedged on its way to the cluster) is visible to the operator whose restore it is holding up
+        long nextWarning = System.nanoTime() + COMMITS_IN_FLIGHT_WARNING_NANOS;
+        // Timed only as a backstop: endCommitInFlight() notifies as the counter reaches zero
+        while (commitsInFlightOutsideLock.get() > 0) {
+          commitsInFlightDrained.wait(100);
+          if (System.nanoTime() - nextWarning >= 0 && commitsInFlightOutsideLock.get() > 0) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Still waiting for %d commit(s) in flight on database '%s' to reach the cluster and end before going on", null,
+                commitsInFlightOutsideLock.get(), name);
+            nextWarning = System.nanoTime() + COMMITS_IN_FLIGHT_WARNING_NANOS;
+          }
+        }
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new DatabaseOperationException(
+            "Interrupted while waiting for " + commitsInFlightOutsideLock.get() + " commit(s) in flight on database '" + name
+                + "' to end", e);
+      } finally {
+        commitsInFlightWaiters--;
+      }
+    }
+  }
+
+  /**
+   * Registers a commit that has passed the write refusal's check and will go on after it releases this database's lock (issue
+   * #10881), so {@link #awaitCommitsInFlight()} waits for it to end. Must be called holding this database's lock (shared or
+   * exclusive), after the check, and paired with exactly one {@link #endCommitInFlight()} in a {@code finally}.
+   */
+  public void beginCommitInFlight() {
+    commitsInFlightOutsideLock.incrementAndGet();
+  }
+
+  /** Ends what {@link #beginCommitInFlight()} registered, whatever the outcome of the commit. */
+  public void endCommitInFlight() {
+    if (commitsInFlightOutsideLock.decrementAndGet() == 0 && commitsInFlightWaiters > 0)
+      synchronized (commitsInFlightDrained) {
+        commitsInFlightDrained.notifyAll();
+      }
+  }
+
+  /** The commits registered with {@link #beginCommitInFlight()} that have not ended yet. */
+  public int getCommitsInFlight() {
+    return commitsInFlightOutsideLock.get();
+  }
+
+  /** The reason of the first refusal {@link #refuseWrites(String)} put in place, or {@code null} when this database accepts writes. */
   public String getWriteRefusal() {
-    return writeRefusal;
+    final WriteRefusal[] current = writeRefusals;
+    return current.length == 0 ? null : current[0].reason();
   }
 
-  /** Throws the retryable refusal of {@link #refuseWrites(String)}, if one is in place. */
+  /**
+   * Throws the refusal of {@link #refuseWrites(String)}, if one is in place: retryable, or not available when it was given so. A
+   * not-available refusal wins over a retryable one standing beside it, so a client is not told to retry at once into an outage
+   * that lasts as long as an operator's operation.
+   */
   public void checkWritesAccepted() {
-    final String refusal = writeRefusal;
-    if (refusal != null)
-      throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + refusal);
+    final WriteRefusal[] current = writeRefusals;
+    if (current.length == 0)
+      return;
+    for (final WriteRefusal refusal : current)
+      if (refusal.unavailable())
+        throw new DatabaseNotAvailableException("Database '" + name + "' does not accept writes: " + refusal.reason(),
+            DatabaseNotAvailableException.Reason.WRITES_REFUSED);
+    throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + current[0].reason());
   }
 
   protected void checkDatabaseIsOpen() {
@@ -4526,7 +4867,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
-      throw closedForReopen ? new DatabaseIsReopeningException(name) : new DatabaseIsClosedException(name);
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
     if (fenceReason != null)
       // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
       // published, so the live in-memory state diverges from what recovery will reconstruct. Every further

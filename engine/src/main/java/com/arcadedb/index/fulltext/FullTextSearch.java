@@ -32,6 +32,7 @@ import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -101,6 +102,43 @@ public class FullTextSearch {
   }
 
   /**
+   * Resolves the full-text indexes a name designates, at least one: the one {@code Type[property]} index, or the per-type indexes
+   * a {@code CREATE FULLTEXT INDEX ... FOR (n:A|B)} spans, which SQL and openCypher resolve alike (issues #10914 and #11014).
+   *
+   * @throws com.arcadedb.exception.SchemaException if no index carries that name
+   * @throws CommandExecutionException              if the index exists but is not a full-text type index, or is a logical index
+   *                                                none of whose per-type indexes is left
+   */
+  public static List<TypeIndex> resolveFullTextIndexes(final Database database, final String indexName) {
+    // An index name is unique across the database, so a name that is an index is not a logical one: the lookup of the logical
+    // records walks the types, and is paid only by a name that is not an index
+    final Schema schema = database.getSchema();
+    final List<TypeIndex> logical = schema.existsIndex(indexName) ? null : MultiTypeIndexes.resolve(schema, indexName);
+    if (logical == null)
+      return List.of(resolveFullTextIndex(database, indexName));
+    if (logical.isEmpty())
+      throw new CommandExecutionException("Index '" + indexName + "' has no full-text index left");
+    for (final TypeIndex typeIndex : logical)
+      resolveFullTextIndex(database, typeIndex.getName());
+    return logical;
+  }
+
+  /**
+   * Searches every index of a logical index over several types (issue #11137) and merges the matches. A record belongs to one type, so
+   * no two indexes match the same RID and the merge never overwrites; each index brings up to {@code limit} matches, whose union
+   * contains the global best {@code limit}, and the caller ranks and trims it. BM25 statistics are those of each index, so a score is
+   * relative to the index of its own type.
+   */
+  public static Map<RID, Float> search(final List<TypeIndex> typeIndexes, final String queryText, final int limit) {
+    if (typeIndexes.size() == 1)
+      return search(typeIndexes.getFirst(), queryText, limit);
+    final Map<RID, Float> merged = new HashMap<>();
+    for (final TypeIndex member : typeIndexes)
+      merged.putAll(search(member, queryText, limit));
+    return merged;
+  }
+
+  /**
    * Resolves the named full-text index and searches it for every match, unbounded. Kept for callers that only have an
    * index name on hand, such as the SEARCH_INDEX SQL function, whose per-row boolean semantics need the full match set.
    *
@@ -148,7 +186,9 @@ public class FullTextSearch {
    * <p>
    * With a {@code ridFilter} the matches it rejects are dropped before they are scored and before the limit picks the best
    * ones, and a bucket it rejects as a whole is not scored at all (issue #9909). The corpus statistics are still those of
-   * every match, so a match scores the same with and without the filter.
+   * every match, so a match scores the same with and without the filter. A filter with a predicate on the records lists each
+   * bucket's candidates once its matches are known (issue #11069): a bucket it cannot decide exactly that way is answered
+   * without the limit, all of its matches the listing keeps, for the caller to test on the records it loads.
    *
    * @param restrictedFields the properties an unqualified clause is searched in, or null for every indexed property
    * @param ridFilter        the filter the matches' RIDs must pass, or null to keep every match
@@ -210,14 +250,21 @@ public class FullTextSearch {
     for (int i = 0; i < bucketIndexes.size(); i++) {
       final LSMTreeFullTextIndex ftIndex = bucketIndexes.get(i);
       Set<RID> candidates = matches.get(i).candidates();
+      int bucketLimit = limit;
       if (ridFilter != null) {
-        if (!ridFilter.acceptsBucket(ftIndex.getAssociatedBucketId()))
+        final int bucketId = ftIndex.getAssociatedBucketId();
+        if (!ridFilter.acceptsBucket(bucketId))
           continue;
+        // A predicate on the records is decided through an index listing no longer than the matches (issue #11069)
+        ridFilter.listBucket(bucketId, candidates.size());
         candidates = acceptedBy(ridFilter, candidates, guard);
         if (candidates.isEmpty())
           continue;
+        if (!ridFilter.decidesBucket(bucketId))
+          // the predicate is left to the records once loaded: the best matches of this bucket could all fail it
+          bucketLimit = -1;
       }
-      mergeCursor(allResults, ftIndex.scoreBM25WithContext(candidates, scoringTokens, NO_KEYS, limit, scoringContext, guard),
+      mergeCursor(allResults, ftIndex.scoreBM25WithContext(candidates, scoringTokens, NO_KEYS, bucketLimit, scoringContext, guard),
           guard);
     }
 
@@ -417,9 +464,11 @@ public class FullTextSearch {
 
     // Both counters are clamped to the neutral values BM25 uses when no statistics are available. A type whose indexed
     // properties analyze to no tokens counts every document but sums a zero length, leaving a zero average that would
-    // otherwise be rejected by BM25ScoringContext; length normalization is meaningless for such a corpus anyway.
+    // otherwise be rejected by BM25ScoringContext; length normalization is meaningless for such a corpus anyway. The average
+    // goes through the scorer's own rule and not a floor of 1.0: a corpus averaging less than one token per document (most of
+    // them empty) normalizes by its real average here exactly as on the bucket-level path (issue #10735).
     return new BM25ScoringContext(Math.max(1L, first.getTypeWideDocumentCount()),
-        Math.max(1.0, first.getTypeWideAverageDocumentLength()), documentFrequencies);
+        BM25Scorer.lengthNormalizer(first.getTypeWideAverageDocumentLength()), documentFrequencies);
   }
 
   /**

@@ -24,11 +24,13 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
 
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -150,6 +152,65 @@ class Issue6144SchemaInstalmentMetricsTest {
     assertThat(laterRefreshRan[0])
         .as("the refreshes after a failing one must still run, and the failure must not leave the tick")
         .isTrue();
+  }
+
+  /**
+   * Issue #10969: a refresh must UPDATE the meter of a database it already publishes, not remove and re-register it.
+   * Re-registering swaps the meter inside the registry while {@code GET /prometheus} may be iterating it, and the
+   * scrape then sees one label set twice and answers 400 {@code DuplicateLabelsException} for the whole node. The
+   * observable contract is that the meter of a database that stays open is the SAME instance across refreshes
+   * while its value follows the new sample, and that a database that disappears loses its meter.
+   */
+  @Test
+  void aRefreshKeepsTheMeterOfADatabaseThatStaysAndOnlyChangesItsValue() {
+    final List<SchemaInstalmentSample> instalments = new ArrayList<>(List.of(new SchemaInstalmentSample("busy", 1, 10, 10),
+        new SchemaInstalmentSample("gone", 2, 20, 20)));
+    final List<UnreferencedFilesSample> unreferenced = new ArrayList<>(List.of(new UnreferencedFilesSample("busy", 3)));
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(instalments, unreferenced));
+
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
+
+      final Gauge instalmentsBefore = registry.get("arcadedb.ha.schema.instalments").tag("database", "busy").gauge();
+      final Gauge unreferencedBefore = registry.get("arcadedb.ha.schema.unreferenced_files").tag("database", "busy").gauge();
+
+      instalments.set(0, new SchemaInstalmentSample("busy", 5, 50, 30));
+      instalments.remove(1);
+      unreferenced.set(0, new UnreferencedFilesSample("busy", 7));
+      metrics.refreshMultiGauges();
+
+      assertThat(registry.get("arcadedb.ha.schema.instalments").tag("database", "busy").gauge())
+          .as("re-registering the meter of a database that stayed is what races a concurrent scrape")
+          .isSameAs(instalmentsBefore);
+      assertThat(registry.get("arcadedb.ha.schema.unreferenced_files").tag("database", "busy").gauge())
+          .isSameAs(unreferencedBefore);
+      assertThat(instalmentsBefore.value()).isEqualTo(5.0);
+      assertThat(gauge(registry, "arcadedb.ha.schema.instalment_max_time_ms", "busy")).isEqualTo(30.0);
+      assertThat(unreferencedBefore.value()).isEqualTo(7.0);
+      assertThat(registry.find("arcadedb.ha.schema.instalments").tag("database", "gone").gauge())
+          .as("a database no longer reported must not keep a stale meter").isNull();
+
+      instalments.add(new SchemaInstalmentSample("fresh", 9, 90, 90));
+      metrics.refreshMultiGauges();
+      assertThat(gauge(registry, "arcadedb.ha.schema.instalments", "fresh")).isEqualTo(9.0);
+      assertThat(registry.get("arcadedb.ha.schema.instalments").tag("database", "busy").gauge()).isSameAs(instalmentsBefore);
+    }
+  }
+
+  /** The same database listed twice in one sample set must publish one meter, not fail the refresh. */
+  @Test
+  void aDatabaseListedTwiceInOneRefreshPublishesOneMeter() {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create().plugins(new FakeHAPlugin(
+        List.of(new SchemaInstalmentSample("dup", 1, 1, 1), new SchemaInstalmentSample("dup", 4, 4, 4)), List.of()));
+
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
+      metrics.bindTo(registry);
+
+      assertThat(registry.find("arcadedb.ha.schema.instalments").tag("database", "dup").gauges()).hasSize(1);
+      assertThat(gauge(registry, "arcadedb.ha.schema.instalments", "dup")).isEqualTo(4.0);
+    }
   }
 
   private static double gauge(final SimpleMeterRegistry registry, final String name, final String database) {

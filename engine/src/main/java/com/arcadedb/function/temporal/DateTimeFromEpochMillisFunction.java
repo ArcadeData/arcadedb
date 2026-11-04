@@ -19,6 +19,7 @@
 package com.arcadedb.function.temporal;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -44,7 +45,10 @@ public class DateTimeFromEpochMillisFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    final long millis = ((Number) args[0]).longValue();
+    if (args[0] == null)
+      return null;
+    // Issue #10850: a whole number or a type error - longValue() read 1.9 as 1, and a non-number was a ClassCastException
+    final long millis = CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "millis");
     return CypherDateTime.fromEpochMillis(millis);
   }
 }

@@ -100,6 +100,21 @@ final class ClusterMembership {
   }
 
   /**
+   * The {@link #peers()} of {@link #of}, without the rest of the reconciliation: for a caller that only iterates the
+   * peers, on a path asked per request (the cluster-status endpoint, the unambiguous-address check) where the shared
+   * address scan of {@link #of} would be quadratic work thrown away (issue #10861).
+   */
+  static List<RaftPeer> knownPeers(final Collection<RaftPeer> staticPeers, final Collection<RaftPeer> livePeers) {
+    final Map<RaftPeerId, RaftPeer> byId = new LinkedHashMap<>();
+    for (final RaftPeer peer : staticPeers)
+      byId.put(peer.getId(), peer);
+    // put() keeps the declared position (LinkedHashMap does not reorder on replace) and takes the live entry.
+    for (final RaftPeer peer : livePeers)
+      byId.put(peer.getId(), peer);
+    return new ArrayList<>(byId.values());
+  }
+
+  /**
    * The groups of committed members that sit on one Raft address (issue #7802), each group as its member ids in
    * configuration order. Empty on every healthy cluster. Compared with {@link RaftHAServer#isSameHttpEndpoint}, the
    * comparison the add-peer guard refuses new duplicates with, so what is reported here is exactly what that guard

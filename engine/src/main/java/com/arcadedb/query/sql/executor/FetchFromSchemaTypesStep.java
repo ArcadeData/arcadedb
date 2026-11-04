@@ -58,17 +58,14 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
 
     final SecurityDatabaseUser currentUser = currentUser(context);
 
-    final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
-        .collect(Collectors.toList());
+    // Issue #4238: hide types the current user cannot read at all instead of throwing.
+    // RemoteSchema.reload() lists every type on its first command and aborted the whole
+    // listing the first time it hit a restricted type, locking the remote driver out
+    // even from types the user was allowed to read.
+    final List<String> orderedTypes = SecurityHelper.readableTypes(context.getDatabase()).stream().map(x -> x.getName())
+        .sorted(String::compareToIgnoreCase).collect(Collectors.toList());
     for (final String typeName : orderedTypes) {
       final DocumentType type = schema.getType(typeName);
-
-      // Issue #4238: hide types the current user cannot read at all instead of throwing.
-      // RemoteSchema.reload() lists every type on its first command and aborted the whole
-      // listing the first time it hit a restricted type, locking the remote driver out
-      // even from types the user was allowed to read.
-      if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-        continue;
 
       final ResultInternal r = new ResultInternal(context.getDatabase());
       result.add(r);

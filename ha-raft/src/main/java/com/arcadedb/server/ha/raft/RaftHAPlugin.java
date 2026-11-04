@@ -472,7 +472,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * keeps current on every node (issue #7549). The direction that costs is the safe one: a cache that is not a full
    * "yes" withholds the precondition, which is the pre-#7509 behaviour, never a divergence.
    */
-  // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
+  // @VisibleForTesting - HaSecurityMutationRoutingIT (#7559) drives this decision on a real follower
   String preconditionEveryPeerCanRead(final String expectedFingerprint) {
     if (expectedFingerprint == null)
       return null;
@@ -548,6 +548,27 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final RaftHAServer raft = raftHAServer;
     if (raft != null)
       raft.waitForLocalApply();
+  }
+
+  @Override
+  public void holdReplicatedWritesForRestore(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.holdForRestore(databaseName);
+  }
+
+  @Override
+  public void ensureReplicatedWritesHeldForRestore(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.ensureRestoreHoldStands(databaseName);
+  }
+
+  @Override
+  public void releaseReplicatedWritesForRestore(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null)
+      raft.releaseRestoreHold(databaseName);
   }
 
   @Override
@@ -1038,6 +1059,13 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public void onClusterTokenRefused(final String caller) {
+    final RaftHAServer s = raftHAServer;
+    if (s != null)
+      s.reportClusterTokenRefusal(caller);
+  }
+
+  @Override
   public String getClusterName() {
     return raftHAServer != null ? raftHAServer.getClusterName() : null;
   }
@@ -1117,7 +1145,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (raftHAServer == null)
       return List.of();
     final List<ClusterPeer> peers = new ArrayList<>();
-    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+    for (final RaftPeer peer : raftHAServer.knownPeers()) {
       if (peer.getId().equals(raftHAServer.getLocalPeerId()))
         continue;
       // The guard that every other peer-to-peer dial in the cluster goes through (issues #6191, #6202, #6221): an address that

@@ -46,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue8859SaveElementStepIndexDdlTest extends TestHelper {
   private static final int WRITERS = 4;
   private static final int ROUNDS  = 120;
+  private static final int RETRIES = 50;
 
   @Test
   void isUniqueIfPresentAnswersFalseForAnIndexThatWentAwayInsteadOfFailing() {
@@ -77,9 +78,12 @@ class Issue8859SaveElementStepIndexDdlTest extends TestHelper {
           try {
             // a key no other writer and no earlier round ever uses: nothing can clash, so every failure is a race
             final String sku = "w" + writer + "-" + sequence++;
+            // A CREATE INDEX that lands on a type this transaction is writing to refuses it with a retryable
+            // ConcurrentModificationException (LocalSchema.reconcileIndexesRegisteredSince, #10903), the documented outcome of DDL
+            // racing a writer, so the transaction is retried as that message asks. Any other failure still fails the test.
             database.transaction(() -> database.command("sql",
                 "INSERT INTO Product CONTENT [ {\"sku\":\"" + sku + "\"}, {\"sku\":\"" + sku + "-b\"} ] ON DUPLICATE KEY SKIP")
-                .close());
+                .close(), false, RETRIES);
             inserted.addAndGet(2);
           } catch (final Throwable e) {
             failures.computeIfAbsent(describe(e), k -> new AtomicLong()).incrementAndGet();

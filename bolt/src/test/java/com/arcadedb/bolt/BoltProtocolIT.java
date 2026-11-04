@@ -1827,6 +1827,43 @@ public class BoltProtocolIT extends BaseBoltServerTest {
   }
 
   /**
+   * Issue #10678: a Neo4j client creates its vector and full-text indexes with Neo4j 5 DDL over Bolt, writes its rows with
+   * MERGE, and reads them back through db.index.vector.queryNodes and db.index.fulltext.queryNodes.
+   */
+  @Test
+  void neo4jVectorAndFulltextIndexDdlOverBolt() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE VECTOR INDEX bolt_v10678 IF NOT EXISTS FOR (n:`Chunk10678`) ON n.`e` OPTIONS { indexConfig: { "
+            + "`vector.dimensions`: 3, `vector.similarity_function`: 'cosine' } }").consume();
+        session.run("CREATE FULLTEXT INDEX bolt_f10678 IF NOT EXISTS FOR (n:`Chunk10678`) ON EACH [n.`text`]").consume();
+        // a second run of the schema setup is a no-op, as the connector does on every start
+        session.run("CREATE VECTOR INDEX bolt_v10678 IF NOT EXISTS FOR (n:`Chunk10678`) ON n.`e` OPTIONS { indexConfig: { "
+            + "`vector.dimensions`: 3, `vector.similarity_function`: 'cosine' } }").consume();
+
+        session.run("MERGE (n:Chunk10678 {id: $id}) SET n += $props",
+            Map.of("id", "a", "props", Map.of("e", List.of(1.0, 0.0, 0.0), "text", "the quick brown fox"))).consume();
+        session.run("MERGE (n:Chunk10678 {id: $id}) SET n += $props",
+            Map.of("id", "b", "props", Map.of("e", List.of(0.0, 1.0, 0.0), "text", "a lazy dog"))).consume();
+
+        final List<Record> nearest = session.run(
+            "CALL db.index.vector.queryNodes('bolt_v10678', 1, $v) YIELD node RETURN node.id AS id",
+            Map.of("v", List.of(0.0, 1.0, 0.0))).list();
+        assertThat(nearest).hasSize(1);
+        assertThat(nearest.getFirst().get("id").asString()).isEqualTo("b");
+
+        final List<Record> matching = session.run(
+            "CALL db.index.fulltext.queryNodes('bolt_f10678', 'fox') YIELD node RETURN node.id AS id").list();
+        assertThat(matching).hasSize(1);
+        assertThat(matching.getFirst().get("id").asString()).isEqualTo("a");
+
+        session.run("DROP INDEX bolt_v10678 IF EXISTS").consume();
+        session.run("DROP INDEX bolt_f10678 IF EXISTS").consume();
+      }
+    }
+  }
+
+  /**
    * Regression for #4129: EXPLAIN <cypher> over Bolt must populate ResultSummary#plan().
    * Before the fix, the engine returned the plan as a synthetic record and never set it
    * in the PULL SUCCESS metadata, so {@code summary.plan()} was always null and tools like

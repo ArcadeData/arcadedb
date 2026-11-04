@@ -177,6 +177,30 @@ class Issue10148PathReachabilityGhostEdgeTest extends TestHelper {
     });
   }
 
+  /** A ghost made by the open transaction is a ghost to the walk: the bucket is asked through the transaction, not the committed pages. */
+  @Test
+  void aGhostMadeInTheOpenTransactionIsSkipped() {
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("G").set("name", "ga").save();
+      final MutableVertex b = database.newVertex("G").set("name", "gb").save();
+      final MutableVertex c = database.newVertex("G").set("name", "gc").save();
+      a.newEdge("LINK", b).set("tag", "ghost").save();
+      a.newEdge("LINK", c).set("tag", "live-ac").save();
+    });
+
+    final RID ghost;
+    try (final ResultSet rs = database.query("opencypher", "MATCH (:G {name: 'ga'})-[r:LINK {tag: 'ghost'}]->(:G {name: 'gb'}) RETURN r")) {
+      ghost = ((Edge) rs.next().getProperty("r")).getIdentity();
+    }
+
+    database.transaction(() -> {
+      assertThat(subgraphNodes("ga", "{relationshipFilter: 'LINK>'}")).containsExactly("ga", "gb", "gc");
+      TestHelper.deleteRecordAtLowLevel(database, ghost);
+      assertThat(subgraphNodes("ga", "{relationshipFilter: 'LINK>'}")).containsExactly("ga", "gc");
+      assertThat(spanningTreeNodes("ga", "{relationshipFilter: 'LINK>'}")).containsExactly("ga", "gc");
+    });
+  }
+
   /**
    * The graph of the issue: {@code ga -LINK-> gb} and {@code ga -LINK-> gc}, with the record of the first edge removed and both
    * adjacency entries left behind. With {@code liveRouteToB} there is also a live {@code gc -LINK-> gb}.

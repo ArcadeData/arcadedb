@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -189,6 +192,111 @@ class TraverseStatementExecutionTest extends TestHelper {
           .as("d-hop ball sizes at MAXDEPTH 3,4,5 must all be 16; a dip means raising the bound dropped reachable nodes")
           .containsExactly(16, 16, 16);
     });
+  }
+
+  @Test
+  void depthMeaningPerStrategyOnMultiPathGraph() {
+    // Contract: the SET a depth-bounded TRAVERSE returns does not depend on the strategy, but what $depth and $path describe does. BREADTH_FIRST reaches every
+    // node first by a shortest path, so $depth is the hop distance from the root. DEPTH_FIRST reports the path its walk took, which on a multi-path graph can
+    // be longer than the shortest one. In both, $path is the walk that produced $depth: it starts at the root, ends at the node and has $depth + 1 elements.
+    //
+    // Same DAG as maxDepthReturnsMonotonicBallOnMultiPathGraph: X is at distance 2 via R->a->X and at 4 via R->b->c->d->X, and fans out to s1..s10.
+    database.transaction(() -> {
+      final String v = "DepthMeaningV";
+      final String e = "DepthMeaningE";
+      database.getSchema().createVertexType(v);
+      database.getSchema().createEdgeType(e);
+
+      final Map<String, RID> ids = new HashMap<>();
+      final Map<RID, String> namesById = new HashMap<>();
+      final String[] names = { "R", "a", "b", "c", "d", "X", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10" };
+      for (final String name : names) {
+        final RID rid = database.command("sql", "create vertex " + v + " set name = '" + name + "'").next().getIdentity().get();
+        ids.put(name, rid);
+        namesById.put(rid, name);
+      }
+
+      final String[][] edges = { { "R", "b" }, { "R", "a" }, { "a", "X" }, { "b", "c" }, { "c", "d" }, { "d", "X" }, //
+          { "X", "s1" }, { "X", "s2" }, { "X", "s3" }, { "X", "s4" }, { "X", "s5" }, { "X", "s6" }, { "X", "s7" }, { "X", "s8" }, { "X", "s9" }, { "X", "s10" } };
+      final Map<String, Object> params = new HashMap<>();
+      for (final String[] edge : edges) {
+        params.put("from", ids.get(edge[0]));
+        params.put("to", ids.get(edge[1]));
+        database.command("sql", "create edge " + e + " from :from to :to", params).close();
+      }
+
+      final Map<String, Integer> distance = new HashMap<>(Map.of("R", 0, "a", 1, "b", 1, "X", 2, "c", 2, "d", 3));
+      for (int i = 1; i <= 10; i++)
+        distance.put("s" + i, 3);
+
+      params.clear();
+      params.put("root", ids.get("R"));
+
+      final Map<String, Integer> depthFirstDepths = new HashMap<>();
+      for (final String strategy : new String[] { "BREADTH_FIRST", "DEPTH_FIRST" }) {
+        final String traverse = "traverse out('" + e + "') from :root STRATEGY " + strategy;
+
+        final List<String> visited = new ArrayList<>();
+        try (final ResultSet rs = database.query("sql", traverse, params)) {
+          while (rs.hasNext()) {
+            final Result row = rs.next();
+            final String name = row.getProperty("name");
+            final int depth = (Integer) row.getMetadata("$depth");
+            final List<String> path = new ArrayList<>();
+            for (final Object step : (List<?>) row.getMetadata("$path"))
+              path.add(namesById.get(((Identifiable) step).getIdentity()));
+            visited.add(name);
+
+            assertThat(path).as("%s: $path of %s", strategy, name).hasSize(depth + 1).startsWith("R").endsWith(name);
+            if (strategy.equals("BREADTH_FIRST"))
+              assertThat(depth).as("BREADTH_FIRST: $depth of %s is its distance from the root", name).isEqualTo(distance.get(name));
+            else {
+              assertThat(depth).as("DEPTH_FIRST: $depth of %s is the length of a real walk, never shorter than the distance", name)
+                  .isGreaterThanOrEqualTo(distance.get(name));
+              depthFirstDepths.put(name, depth);
+            }
+          }
+        }
+        assertThat(visited).as("%s visits every node once", strategy).containsExactlyInAnyOrder(names);
+
+        // The 2-hop ball is the same whichever way it is bounded and whichever strategy walks it.
+        assertThat(namesOf("traverse out('" + e + "') from :root MAXDEPTH 2 STRATEGY " + strategy, params)).as("%s MAXDEPTH 2", strategy)
+            .containsExactlyInAnyOrder("R", "a", "b", "c", "X");
+        assertThat(namesOf("traverse out('" + e + "') from :root WHILE $depth <= 2 STRATEGY " + strategy, params)).as("%s WHILE $depth <= 2", strategy)
+            .containsExactlyInAnyOrder("R", "a", "b", "c", "X");
+      }
+
+      // The edges are created long-branch-first, so the depth-first walk reaches X through R->b->c->d->X: without this the DEPTH_FIRST half above would pin
+      // nothing, since on a tree the two strategies report the same depths.
+      assertThat(depthFirstDepths.get("X")).as("DEPTH_FIRST reports X at the depth of the long branch it walked").isEqualTo(4);
+
+      // Filtering the emitted rows by $depth therefore gives the ball only where $depth is the distance, that is under BREADTH_FIRST. Under DEPTH_FIRST the same
+      // filter drops X (and does not bound the walk either): MAXDEPTH or WHILE is the way to bound a depth-first traversal.
+      assertThat(namesOf("select name from (traverse out('" + e + "') from :root STRATEGY BREADTH_FIRST) where $depth <= 2", params))
+          .containsExactlyInAnyOrder("R", "a", "b", "c", "X");
+      assertThat(namesOf("select name from (traverse out('" + e + "') from :root STRATEGY DEPTH_FIRST) where $depth <= 2", params))
+          .containsExactlyInAnyOrder("R", "a", "b", "c");
+    });
+  }
+
+  @Test
+  void historyIsAnOrdinaryVariableName() {
+    // TRAVERSE never set a $history variable, so reserving the name only refused it to users. The context variables TRAVERSE does set stay reserved.
+    try (final ResultSet rs = database.command("sqlscript", "LET $history = 42; RETURN $history;")) {
+      assertThat(rs.next().<Object>getProperty("value")).isEqualTo(42);
+    }
+    for (final String reserved : new String[] { "depth", "path", "stack" })
+      assertThatThrownBy(() -> database.command("sqlscript", "LET $" + reserved + " = 1; RETURN $" + reserved + ";").close())
+          .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("reserved");
+  }
+
+  private List<String> namesOf(final String query, final Map<String, Object> params) {
+    final List<String> names = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", query, params)) {
+      while (rs.hasNext())
+        names.add(rs.next().getProperty("name"));
+    }
+    return names;
   }
 
   private int countWithinDepth(final RID root, final String edgeType, final int maxDepth) {

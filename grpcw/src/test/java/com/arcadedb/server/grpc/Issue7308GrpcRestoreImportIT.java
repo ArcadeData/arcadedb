@@ -138,7 +138,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
     for (final String database : databasesToDrop) {
       try {
         if (server.existsDatabase(database))
-          server.getDatabase(database).getEmbedded().drop();
+          server.getDatabaseForOperator(database).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort
       }
@@ -166,7 +166,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
     databasesToDrop.add(target);
 
     final String archive = triggerBackupAndGetFileName();
-    final long sourceCount = getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
 
     final List<RestoreProgress> events = drain(adminStub.restoreBackup(
         RestoreBackupRequest.newBuilder().setCredentials(root()).setDatabase(getDatabaseName()).setFileName(archive)
@@ -174,7 +174,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
 
     assertCompletedLast(events, target + " restored successfully");
     assertThat(getServer(0).existsDatabase(target)).isTrue();
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   /**
@@ -242,7 +242,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
     databasesToDrop.add(target);
 
     final Path archive = backupPath(triggerBackupAndGetFileName());
-    final long sourceCount = getServer(0).getDatabase(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
+    final long sourceCount = getServer(0).getDatabaseForOperator(getDatabaseName()).countType(VERTEX1_TYPE_NAME, false);
 
     final List<RestoreProgress> events = drain(adminStub.restoreDatabase(
         RestoreDatabaseRequest.newBuilder().setCredentials(root()).setDatabase(target)
@@ -254,7 +254,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
     assertThat(events.getFirst().getCompleted()).isFalse();
     assertCompletedLast(events, target + " restored successfully");
 
-    assertThat(getServer(0).getDatabase(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
+    assertThat(getServer(0).getDatabaseForOperator(target).countType(VERTEX1_TYPE_NAME, false)).isEqualTo(sourceCount);
   }
 
   @Test

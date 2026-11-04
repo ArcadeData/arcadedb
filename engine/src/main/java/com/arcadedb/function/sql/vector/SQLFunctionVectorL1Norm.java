@@ -52,10 +52,7 @@ public class SQLFunctionVectorL1Norm extends SQLFunctionVectorAbstract {
 
     final float[] vector = toFloatArray(vectorObj);
 
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
-
-    // Calculate L1 norm: sum of absolute values
+    // Calculate L1 norm: sum of absolute values. An empty vector folds to 0, as vector.l2Norm answers (issue #11052)
     float norm = 0.0f;
     for (final float value : vector) {
       norm += Math.abs(value);

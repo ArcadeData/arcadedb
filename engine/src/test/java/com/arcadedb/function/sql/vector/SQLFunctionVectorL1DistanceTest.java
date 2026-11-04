@@ -71,14 +71,14 @@ class SQLFunctionVectorL1DistanceTest extends TestHelper {
   }
 
   @Test
-  void rejectsNullInputs() {
+  void nullInputsAnswerNull() {
     final SQLFunctionVectorL1Distance function = new SQLFunctionVectorL1Distance();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
-    assertThatThrownBy(() -> function.execute(null, null, null,
-        new Object[] { null, new float[] { 1.0f } }, context))
-        .isInstanceOf(CommandSQLParsingException.class);
+    // A NULL vector answers NULL instead of failing the whole query (issue #11052)
+    assertThat(function.execute(null, null, null, new Object[] { null, new float[] { 1.0f } }, context)).isNull();
+    assertThat(function.execute(null, null, null, new Object[] { new float[] { 1.0f }, null }, context)).isNull();
   }
 
   @Test

@@ -155,6 +155,22 @@ public class ImporterSettings {
     return v != null ? (T) v : defaultValue;
   }
 
+  /**
+   * A setting that names a property, read with the default it falls back to when absent. Every such setting is read
+   * through here so none can be read without a default: one that was ({@code vectorProperty}) reached the schema as a
+   * null map key. A value that is present but blank is refused with a message naming the setting: taken as a name it
+   * fails later, far from the setting, as a malformed SQL statement (issue #10767).
+   */
+  public String getPropertyNameValue(final String name, final String defaultValue) {
+    final Object v = options.get(name);
+    if (v == null)
+      return defaultValue;
+    final String value = v.toString().trim();
+    if (value.isEmpty())
+      throw new IllegalArgumentException("Invalid empty value for -" + name + ": it must name a property");
+    return value;
+  }
+
   public int getIntValue(final String name, final int defaultValue) {
     final Object v = options.get(name);
     if (v != null) {

@@ -302,7 +302,7 @@ class Issue8363DirectoryReplacementClientGateTest {
     server.on("existsDatabase", args -> Objects.equals(args[0], DB_NAME));
     final RaftReplicatedDatabase wrapper = new RaftReplicatedDatabase(server, localDb, raft);
     final ServerDatabase servedDb = new ServerDatabase(null, localDb);
-    server.on("getDatabase", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? servedDb : null);
 
     final AtomicReference<Throwable> clientOutcome = new AtomicReference<>();
     final AtomicReference<Throwable> installThreadOutcome = new AtomicReference<>();

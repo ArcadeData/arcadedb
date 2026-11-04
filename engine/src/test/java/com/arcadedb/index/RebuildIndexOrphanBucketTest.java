@@ -62,12 +62,16 @@ class RebuildIndexOrphanBucketTest extends TestHelper {
     final String expectedBucketName = subIndex.getName().substring(0, subIndex.getName().lastIndexOf('_'));
 
     // Break the association: toJSON() used to call getBucketById(-1) here and crash the whole schema save.
+    final int associatedBucketId = subIndex.getMetadata().associatedBucketId;
     subIndex.getMetadata().associatedBucketId = -1;
 
     final JSONObject[] json = new JSONObject[1];
     assertThatCode(() -> json[0] = subIndex.toJSON()).as("serializing an orphaned sub-index must not throw").doesNotThrowAnyException();
     // and it must still emit the bucket name (recovered from the naming convention) so the loader can relink it
     assertThat(json[0].getString("bucket")).isEqualTo(expectedBucketName);
+
+    // put back, or the CHECK DATABASE run after every test reports the type index as lacking the bucket index of that bucket
+    subIndex.getMetadata().associatedBucketId = associatedBucketId;
   }
 
   @Test

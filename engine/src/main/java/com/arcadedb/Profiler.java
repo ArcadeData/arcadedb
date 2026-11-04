@@ -36,6 +36,7 @@ import javax.management.ObjectName;
 import java.io.*;
 import java.lang.management.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.*;
 
 public class Profiler {
@@ -80,16 +81,25 @@ public class Profiler {
   // caller (a bulk load through GraphBatch) that opens a database, does its work and closes it, so a counter that
   // went back to zero on that close would be zero every time anybody looked at it.
   private static final int STAT_ASYNC_BOUNDARY_COMMITS = 20;
-  private static final int MONOTONIC_STATS        = 21;
-  private static final int STAT_WAL_TOTAL_FILES   = 21;
-  private static final int STAT_OPEN_FILES        = 22;
-  private static final int STAT_MAX_OPEN_FILES    = 23;
-  private static final int STAT_ASYNC_QUEUE       = 24;
-  private static final int STAT_ASYNC_PARALLEL    = 25;
+  // #10509: the group commit (commits that shared a WAL flush, and the flushes) and the commit file locks (releases and their
+  // hold time, hand-offs to a waiting commit and their time). Monotonic, the times in microseconds: their rates divide into
+  // the average hold and hand-off, which is what a queue of commits on one type grows on
+  private static final int STAT_WAL_GROUP_COMMITS = 21;
+  private static final int STAT_WAL_GROUP_COMMIT_SYNCS = 22;
+  private static final int STAT_COMMIT_LOCK_HOLDS = 23;
+  private static final int STAT_COMMIT_LOCK_HOLD_MICROS = 24;
+  private static final int STAT_COMMIT_LOCK_HAND_OFFS = 25;
+  private static final int STAT_COMMIT_LOCK_HAND_OFF_MICROS = 26;
+  private static final int MONOTONIC_STATS        = 27;
+  private static final int STAT_WAL_TOTAL_FILES   = 27;
+  private static final int STAT_OPEN_FILES        = 28;
+  private static final int STAT_MAX_OPEN_FILES    = 29;
+  private static final int STAT_ASYNC_QUEUE       = 30;
+  private static final int STAT_ASYNC_PARALLEL    = 31;
   // #6526 review round 4: instantaneous, and firmly on this side of MONOTONIC_STATS - it returns to zero as the
   // retired workers finish, so carrying it across a close would make a gauge that only ever grows.
-  private static final int STAT_ASYNC_RETIRING    = 26;
-  private static final int STATS_COUNT            = 27;
+  private static final int STAT_ASYNC_RETIRING    = 32;
+  private static final int STATS_COUNT            = 33;
 
   /**
    * Registered database INSTANCES, compared by identity.
@@ -264,6 +274,12 @@ public class Profiler {
     final Map<String, Object> walStats = db.getTransactionManager().getStats();
     acc[STAT_WAL_PAGES_WRITTEN] += statOf(walStats, "pagesWritten");
     acc[STAT_WAL_BYTES_WRITTEN] += statOf(walStats, "bytesWritten");
+    acc[STAT_WAL_GROUP_COMMITS] += statOf(walStats, "groupCommits");
+    acc[STAT_WAL_GROUP_COMMIT_SYNCS] += statOf(walStats, "groupCommitSyncs");
+    acc[STAT_COMMIT_LOCK_HOLDS] += statOf(walStats, "commitLockHolds");
+    acc[STAT_COMMIT_LOCK_HOLD_MICROS] += TimeUnit.NANOSECONDS.toMicros(statOf(walStats, "commitLockHoldNanos"));
+    acc[STAT_COMMIT_LOCK_HAND_OFFS] += statOf(walStats, "commitLockHandOffs");
+    acc[STAT_COMMIT_LOCK_HAND_OFF_MICROS] += TimeUnit.NANOSECONDS.toMicros(statOf(walStats, "commitLockHandOffNanos"));
 
     // #6526: DatabaseAsyncExecutorImpl.getStats() is lock-free and documented to stay callable on a shut-down
     // executor, which is the property this method requires of every source it reads - unregisterDatabase() calls it
@@ -378,6 +394,13 @@ public class Profiler {
     json.put("walPagesWritten", new JSONObject().put("count", walPagesWritten));
     json.put("walBytesWritten", new JSONObject().put("space", walBytesWritten));
     json.put("walTotalFiles", walTotalFiles);
+    // #10509: commits per shared WAL flush (arcadedb.txWalGroupCommit), and the average hold and hand-off of the commit locks
+    json.put("walGroupCommits", new JSONObject().put("count", dbStats[STAT_WAL_GROUP_COMMITS]));
+    json.put("walGroupCommitSyncs", new JSONObject().put("count", dbStats[STAT_WAL_GROUP_COMMIT_SYNCS]));
+    json.put("commitLockHolds", new JSONObject().put("count", dbStats[STAT_COMMIT_LOCK_HOLDS]));
+    json.put("commitLockHoldTime", new JSONObject().put("count", dbStats[STAT_COMMIT_LOCK_HOLD_MICROS]));
+    json.put("commitLockHandOffs", new JSONObject().put("count", dbStats[STAT_COMMIT_LOCK_HAND_OFFS]));
+    json.put("commitLockHandOffTime", new JSONObject().put("count", dbStats[STAT_COMMIT_LOCK_HAND_OFF_MICROS]));
     json.put("concurrentModificationExceptions", new JSONObject().put("count", concurrentModificationExceptions));
     // #5608: the three page-merge counters travel WITH concurrentModificationExceptions on purpose - a merge that
     // stops firing shows up as conflicts here and declines there, and neither half means anything alone.
@@ -804,6 +827,16 @@ public class Profiler {
       buffer.append(
         "%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s".formatted(walTotalFiles, walPagesWritten,
           FileUtils.getSizeAsString(walBytesWritten)));
+
+      // #10509: the averages, which is what the counters are for
+      final long groupSyncs = dbStats[STAT_WAL_GROUP_COMMIT_SYNCS];
+      final long lockHolds = dbStats[STAT_COMMIT_LOCK_HOLDS];
+      final long lockHandOffs = dbStats[STAT_COMMIT_LOCK_HAND_OFFS];
+      buffer.append(
+        "%n    groupCommits=%d syncs=%d commitsPerSync=%d commitLocks holds=%d avgHold=%,dus handOffs=%d avgHandOff=%,dus".formatted(
+          dbStats[STAT_WAL_GROUP_COMMITS], groupSyncs, groupSyncs > 0 ? dbStats[STAT_WAL_GROUP_COMMITS] / groupSyncs : 0L,
+          lockHolds, lockHolds > 0 ? dbStats[STAT_COMMIT_LOCK_HOLD_MICROS] / lockHolds : 0L, lockHandOffs,
+          lockHandOffs > 0 ? dbStats[STAT_COMMIT_LOCK_HAND_OFF_MICROS] / lockHandOffs : 0L));
 
       buffer.append("%n FILE-MANAGER FS=%s/%s on '%s' openFiles=%d maxFilesOpened=%d".formatted(
         FileUtils.getSizeAsString(freeSpaceInMB), FileUtils.getSizeAsString(totalSpaceInMB), diskDir.getPath(),

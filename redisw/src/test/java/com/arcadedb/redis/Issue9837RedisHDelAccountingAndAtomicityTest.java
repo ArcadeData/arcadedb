@@ -203,7 +203,7 @@ public class Issue9837RedisHDelAccountingAndAtomicityTest extends BaseRedisServe
 
   @Test
   void wireTransientHSetWithAMalformedElementStoresNothing() {
-    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName());
     try (final Jedis jedis = newClient()) {
       assertThatThrownBy(() -> hSet(jedis, "{\"id\":\"v1\",\"n\":1}", "{\"id\":\"v2\",\"n\":2}", "{\"n\":3}")).isInstanceOf(
           JedisDataException.class).hasMessageContaining("'id' field");
@@ -218,7 +218,7 @@ public class Issue9837RedisHDelAccountingAndAtomicityTest extends BaseRedisServe
 
   @Test
   void wireTransientHSetOfValidElementsStoresAllAndRepliesTheirCount() {
-    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName());
     try (final Jedis jedis = newClient()) {
       assertThat(hSet(jedis, "{\"id\":\"v1\",\"n\":1}", "{\"id\":\"v2\",\"n\":2}", "{\"id\":\"v3\",\"n\":3}")).isEqualTo(3L);
       assertThat(database.getGlobalVariable("v1")).isNotNull();

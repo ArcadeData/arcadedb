@@ -88,7 +88,7 @@ class Issue7444SnapshotInstallExcludesBackupTest {
     if (server != null) {
       try {
         if (server.existsDatabase(DB_NAME))
-          ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+          ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }
@@ -161,7 +161,7 @@ class Issue7444SnapshotInstallExcludesBackupTest {
     assertThat(server.getBackupCoordinator().begin(DB_NAME, BackupCoordinator.Operation.BACKUP)).isNull();
     server.getBackupCoordinator().end(DB_NAME, BackupCoordinator.Operation.BACKUP);
 
-    assertThat(server.getDatabase(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
+    assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
   }
 
   /**
@@ -193,7 +193,7 @@ class Issue7444SnapshotInstallExcludesBackupTest {
     // The install must not have replaced anything yet: the live database is still the one the backup is reading.
     installer.join(2_000);
     assertThat(installDone.get()).as("the install waited instead of replacing the files under a running backup").isFalse();
-    assertThat(server.getDatabase(DB_NAME).countType("Node", true))
+    assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true))
         .as("the database the backup is reading is untouched while the install waits").isEqualTo(LIVE_COUNT);
 
     coordinator.end(DB_NAME, BackupCoordinator.Operation.BACKUP);
@@ -201,7 +201,7 @@ class Issue7444SnapshotInstallExcludesBackupTest {
     installer.join(60_000);
     assertThat(installError.get()).as("the install completed without error once the backup released the slot").isNull();
     assertThat(installDone.get()).isTrue();
-    assertThat(server.getDatabase(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
+    assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true)).isEqualTo(SNAPSHOT_COUNT);
   }
 
   /**
@@ -221,7 +221,7 @@ class Issue7444SnapshotInstallExcludesBackupTest {
     try {
       SnapshotInstaller.install(DB_NAME, dbPath.toString(), "localhost:" + leaderPort, null, null, server);
 
-      assertThat(server.getDatabase(DB_NAME).countType("Node", true))
+      assertThat(server.getDatabaseForOperator(DB_NAME).countType("Node", true))
           .as("the committed entry was applied even though the wait expired").isEqualTo(SNAPSHOT_COUNT);
       // The install never took the slot, so it must not have released the backup's reservation either.
       assertThat(coordinator.isInProgress(DB_NAME, BackupCoordinator.Operation.BACKUP))

@@ -48,6 +48,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code SQLQueryEngine} alone, so the same statement written in openCypher or run as an SQL script, inside the caller's own
  * transaction, failed after its first row and the caller's commit published that row. The rule belongs to the transaction, not to
  * a language: every engine answers it now.
+ * <p>
+ * Since statement savepoints (#10346) the answer is no longer to refuse the commit: the failed statement is taken back to its
+ * savepoint, in every language, and the transaction goes on. The commit is still refused where the engine cannot take a statement back
+ * exactly (see {@code StatementSavepoint}), which {@link #aFailureAfterTheCallersOwnEarlierWritesIsRefusedToo} pins.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -78,24 +82,27 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
 
   @ParameterizedTest
   @ValueSource(strings = { "sql", "opencypher", "sqlscript" })
-  void aCaughtHalfAppliedStatementCannotBeCommitted(final String language) {
+  void aCaughtHalfAppliedStatementIsTakenBackAndTheTransactionGoesOn(final String language) {
     final AtomicReference<Throwable> caught = new AtomicReference<>();
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         database.command(language, statement(MULTI_ROW_UPDATE, language)).close();
       } catch (final RuntimeException e) {
         caught.set(e);
       }
-    }, false, 0)).as(language).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+      // the rows the statement wrote before its error are gone from the transaction too
+      assertThat(values()).as(language + " read in the transaction").containsExactly(100, 101, 102);
+      database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close();
+    }, false, 0);
 
     assertThat(caught.get()).as(language + " failed").isNotNull();
-    assertThat(values()).as(language + " published").containsExactly(100, 101, 102);
+    assertThat(values()).as(language + " published").containsExactly(100, 101, 500);
   }
 
   @ParameterizedTest
   @ValueSource(strings = { "sql", "opencypher", "sqlscript" })
-  void theBeginAndCommitOfTheCallerRefuseTheSameWay(final String language) {
+  void theBeginAndCommitOfTheCallerWorkTheSameWay(final String language) {
     // the reproducer of the report, with the caller driving begin() and commit() itself
     database.begin();
     try {
@@ -104,9 +111,7 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
       // an application retrying on a duplicate key catches it and goes on
     }
 
-    assertThatThrownBy(() -> database.commit()).as(language).isInstanceOf(TransactionException.class)
-        .hasMessageContaining("cannot be committed");
-    database.rollback();
+    database.commit();
     assertThat(values()).as(language + " published").containsExactly(100, 101, 102);
   }
 
@@ -185,50 +190,50 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
   }
 
   @Test
-  void aStatementThatTookBackItsProvisionalRecordsButKeptAnotherWriteStillRefusesTheCommit() {
+  void aStatementThatTookBackItsProvisionalRecordsIsTakenBackWithTheWriteThatWouldStand() {
     database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
-        // the update of an existing record stands when the existence check of the created one fails at the end of the statement
+        // the update of an existing record would stand when the existence check of the created one fails at the end of the statement
         database.command("opencypher", "MATCH (n:T) WHERE n.n = 0 SET n.v = 900 CREATE (:Req {id: 'c'})").close();
       } catch (final RuntimeException ignored) {
         // caught by the caller
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(values()).containsExactly(100, 101, 102);
   }
 
   @Test
-  void aProvisionalRecordCreatedAndUpdatedByTheStatementDoesNotHideAWriteThatStays() {
+  void aProvisionalRecordCreatedAndUpdatedByTheStatementIsTakenBackWithTheWriteThatWouldStand() {
     database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
-        // the Req is created, updated while provisional and taken back; the update of the T stays and is what the commit must refuse
+        // the Req is created, updated while provisional and taken back; the update of the T would stand
         database.command("opencypher", "MATCH (n:T) WHERE n.n = 0 SET n.v = 900 CREATE (m:Req {id: 'd'}) SET m.note = 'x'").close();
       } catch (final RuntimeException ignored) {
         // caught by the caller
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(values()).containsExactly(100, 101, 102);
   }
 
   @Test
-  void anUpdateVetoedOnAProvisionalRecordIsNotCountedSoItCannotCancelAWriteThatStays() {
+  void anUpdateVetoedOnAProvisionalRecordIsTakenBackWithTheWriteThatWouldStand() {
     database.command("opencypher", "CREATE CONSTRAINT req_org_exists IF NOT EXISTS FOR (n:Req) REQUIRE n.orgId IS NOT NULL");
     // the listener refuses the update of the provisional record: the write is not made, so it is not counted either
     database.getSchema().getType("Req").getEvents().registerListener((BeforeRecordUpdateListener) record -> false);
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         database.command("opencypher", "MATCH (n:T) WHERE n.n = 0 SET n.v = 900 CREATE (m:Req {id: 'f'}) WITH m SET m.note = 'x'").close();
       } catch (final RuntimeException ignored) {
         // caught by the caller
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(values()).containsExactly(100, 101, 102);
   }
@@ -240,16 +245,16 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
    */
   @ParameterizedTest
   @ValueSource(ints = { 0, 1, 2, 3, 4 })
-  void everyCommandOverloadRefusesTheCommit(final int overload) {
+  void everyCommandOverloadTakesTheStatementBack(final int overload) {
     final AtomicReference<Throwable> caught = new AtomicReference<>();
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         runThroughOverload(overload).close();
       } catch (final RuntimeException e) {
         caught.set(e);
       }
-    }, false, 0)).as("overload " + overload).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(caught.get()).as("overload " + overload + " failed").isNotNull();
     assertThat(values()).as("overload " + overload).containsExactly(100, 101, 102);
@@ -276,9 +281,14 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
     };
   }
 
+  /**
+   * The statement reads the record the caller updated before it started, which is not written yet: the object the transaction holds
+   * for it is the only copy of that update. The statement is taken back to the content the record had when it began, so the update
+   * of the caller stands and nothing of the statement does.
+   */
   @Test
-  void aFailureAfterTheCallersOwnEarlierWritesIsRefusedToo() {
-    assertThatThrownBy(() -> database.transaction(() -> {
+  void aFailureAfterTheCallersOwnEarlierWritesIsTakenBackAndTheEarlierWritesStand() {
+    database.transaction(() -> {
       // the caller's own write, made before the statement starts, is not what the statement is judged by
       database.command("sql", "UPDATE T SET v = 500 WHERE n = 2").close();
       try {
@@ -286,9 +296,9 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
       } catch (final RuntimeException ignored) {
         // caught by the caller
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
-    assertThat(values()).containsExactly(100, 101, 102);
+    assertThat(values()).containsExactly(100, 101, 500);
   }
 
   @Test
@@ -302,10 +312,10 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
         .isInstanceOf(RuntimeException.class);
     assertThat(((DatabaseInternal) database).getTransaction().getCompletedRecordWrites()).isEqualTo(before);
 
-    // and a statement that really fails after writing is still refused afterwards
+    // and a statement that really fails after writing is taken back, whole
     assertThatThrownBy(() -> database.command("opencypher", "MATCH (n:T) SET n.v = 1").close()).isInstanceOf(RuntimeException.class);
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    assertThat(((DatabaseInternal) database).getTransaction().getCompletedRecordWrites()).isEqualTo(before);
+    database.commit();
 
     assertThat(values()).containsExactly(100, 101, 102);
   }
@@ -333,19 +343,19 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
   }
 
   @Test
-  void aTopLevelWriteBesideARetryBlockIsRefusedWhenTheScriptFails() {
+  void aTopLevelWriteBesideARetryBlockIsTakenBackWhenTheScriptFails() {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionThrowCME());
     // row 0 is written outside the block, which stays in the caller's transaction; the block then fails on every attempt
     final String script = "UPDATE T SET v = 1 WHERE n = 0; BEGIN; SELECT throwCME(#-1:-1, 1, 1, 1); COMMIT RETRY 2;";
 
     final AtomicReference<Throwable> caught = new AtomicReference<>();
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try {
         database.command("sqlscript", script).close();
       } catch (final RuntimeException e) {
         caught.set(e);
       }
-    }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(caught.get()).as("the script failed").isInstanceOf(ConcurrentModificationException.class);
     assertThat(values()).containsExactly(100, 101, 102);
@@ -365,20 +375,37 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
   }
 
   /**
-   * The check runs at every call, so a statement a function runs through the database, whose failure the outer statement catches and
-   * carries on from, marks the caller's transaction like any other: its first rows are in the transaction and nothing takes them back.
+   * The check runs at every call. The projection of a SELECT runs when the row is read, after {@code command()} returned: the
+   * statement a function runs there through the database is a statement of the caller's transaction like any other, and it is taken
+   * back on its own when it fails, whatever the function does with the failure.
    */
   @Test
-  void aNestedStatementThatFailedAfterWritingAndWasCaughtStillRefusesTheCommit() {
+  void aStatementAFunctionRunsWhileTheResultIsReadIsTakenBackOnItsOwn() {
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionNestedUpdate());
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       // the outer statement succeeds: its function caught the failure of the multi-row update it ran
       try (final ResultSet rs = database.command("sql", "SELECT nestedUpdate() AS r")) {
         // the projection runs when the row is read
         assertThat(rs.hasNext()).isTrue();
         rs.next();
       }
+    }, false, 0);
+
+    assertThat(values()).containsExactly(100, 101, 102);
+  }
+
+  /**
+   * A statement run by another one that failed after writing, which the outer statement swallowed, leaves its half in the transaction
+   * with nothing to take it back: it is part of the outer statement, which succeeded.
+   */
+  @Test
+  void aNestedStatementThatFailedAfterWritingAndWasSwallowedStillRefusesTheCommit() {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionNestedUpdate());
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      // the function runs while the statement is: an UPDATE ... SET calls it for every row it writes
+      database.command("sql", "UPDATE T SET v = v + 1000 WHERE n = 0 AND nestedUpdate() IS NULL").close();
     }, false, 0)).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
 
     assertThat(values()).containsExactly(100, 101, 102);
@@ -438,17 +465,17 @@ class Issue10379FailedStatementInCallerTransactionTest extends TestHelper {
   /** The write engines run a statement to the end inside command(), so the failure of a row is raised there and not while the rows are read. */
   @ParameterizedTest
   @ValueSource(strings = { "sql", "opencypher" })
-  void aFailureWhileTheResultIsReadIsStillRefused(final String language) {
+  void aFailureWhileTheResultIsReadIsStillTakenBack(final String language) {
     final String statement = language.equals("sql") ? "UPDATE T SET v = 1 RETURN AFTER" : "MATCH (n:T) SET n.v = 1 RETURN n";
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    database.transaction(() -> {
       try (final ResultSet rs = database.command(language, statement)) {
         while (rs.hasNext())
           rs.next();
       } catch (final RuntimeException ignored) {
         // caught by the caller
       }
-    }, false, 0)).as(language).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
+    }, false, 0);
 
     assertThat(values()).as(language).containsExactly(100, 101, 102);
   }

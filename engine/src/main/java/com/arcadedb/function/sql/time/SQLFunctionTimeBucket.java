@@ -193,7 +193,8 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
   /** An instant a bucket starts at: a date/time, an ISO-8601 string, or a number of epoch milliseconds. */
   private static long originToEpochMs(final Object origin) {
     if (origin instanceof Number number)
-      return number.longValue();
+      // issue #10850: a whole number of epoch milliseconds - longValue() read 1.9 as 1
+      return requireWholeLongArgument(NAME, number, "origin");
     try {
       return DateUtils.toEpochMillis(origin);
     } catch (final IllegalArgumentException | DateTimeParseException e) {
@@ -204,7 +205,8 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
   /** A signed duration: {@code '-8h'}, {@code '+30m'}, or a number of milliseconds. */
   private static long offsetToMs(final Object offset) {
     if (offset instanceof Number number)
-      return number.longValue();
+      // issue #10850: a whole number of milliseconds - longValue() read 1.9 as 1
+      return requireWholeLongArgument(NAME, number, "offset");
     final String text = offset.toString().trim();
     if (!text.isEmpty() && (text.charAt(0) == '-' || text.charAt(0) == '+')) {
       final long magnitude = parseInterval(text.substring(1));

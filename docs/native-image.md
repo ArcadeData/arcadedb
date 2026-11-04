@@ -214,6 +214,79 @@ wants roughly 80% of system RAM and this build's image heap is ~630 MB. Build th
 locally instead - it is fast on a real Mac (`mvn -Pnative -pl native -am -DskipTests package`, a few
 minutes). There is likewise no free Windows-on-ARM runner.
 
+## Optimization level
+
+The image is built at `-O3` (the `native.opt` property in `native/pom.xml`), which inlines more than
+GraalVM's default `-O2`: faster code, a larger binary and a longer image build. The measurement is in
+[#11070](https://github.com/ArcadeData/arcadedb/issues/11070). Build at the default level with
+`-Dnative.opt=-O2`, or a smaller binary with `-Dnative.opt=-Os`.
+
+## CPU requirements
+
+`native-image` compiles for one CPU baseline, set with `-march`, and a binary only starts on a CPU
+that has every feature of that baseline. `native/pom.xml` states the baseline explicitly through the
+`native.march` property, which a profile sets per build architecture:
+
+| Architecture | `-march` | Required CPU features | Excludes, for example |
+|---|---|---|---|
+| amd64 (Linux, Windows, macOS Intel) | `x86-64-v3` | AVX, AVX2, BMI1, BMI2, FMA, F16C, LZCNT, MOVBE | Intel before Haswell (2013), AMD before Excavator, Intel Atom/Celeron/Pentium parts without AVX, VMs whose CPU model hides AVX2 (QEMU's default `qemu64`, Proxmox's default `x86-64-v2-AES` and older `kvm64`) |
+| arm64 (Linux, macOS Apple silicon) | `armv8-a` | ASIMD (the ARMv8.0 baseline) | None: runs on every 64-bit ARM core, including the Cortex-A53/A72 (Raspberry Pi 3/4) and Graviton1 |
+
+`x86-64-v3` is GraalVM 25's own default on x64. On AArch64 the builder's default is `armv8.1-a` (CRC32 and LSE atomics), and `armv8-a`
+is a deliberate choice below it, so that ARMv8.0 cores keep working. The native workflow checks both claims against the builder before it builds
+(`.github/scripts/check-native-march-builder-default.py`, #11254). The published images
+(`<version>-native-amd64` / `-native-arm64`) carry exactly these requirements. On a CPU below them
+the binary exits immediately with:
+
+```
+The current machine does not support all of the following CPU features that are required by the image: [...].
+Please rebuild the executable with an appropriate setting of the -march option.
+```
+
+To see whether a Linux amd64 host qualifies, `/lib64/ld-linux-x86-64.so.2 --help` lists
+`x86-64-v3 (supported, searched)` on glibc 2.33+; otherwise check `/proc/cpuinfo` for the `avx2`,
+`bmi2` and `fma` flags. In a VM, expose the host CPU (`-cpu host` in QEMU, CPU type `host` in
+Proxmox) or a v3-capable model.
+
+Release archives include a second linux/amd64 binary built with `-march=compatibility`:
+`arcadedb-<version>-linux-x86_64-compat.tar.gz` (the default one is `...-linux-x86_64.tar.gz`). It
+starts on any x86-64 CPU, including pre-Haswell hardware, QEMU's `qemu64` and Proxmox's
+`x86-64-v2-AES` (#11253). It is an archive only: there is no `-native-compat-amd64` Docker image, and
+the default images keep the baseline in the table above. To run it in a container, build the image
+yourself with `./native/scripts/build-native-docker.sh --march compatibility`. The workflow builds
+this leg on every published release, and on a manual dispatch that ticks `include_compat`; the
+nightly does not build it.
+
+The default baseline was kept, rather than lowered to `compatibility`, because what lowering it
+costs is only partly measured. The one measurement (#11070: the embedded engine under Python-driven
+point lookups, aggregation, Cypher and ingest, `x86-64-v3` against `compatibility`, both `-O2`) found
+no gain from v3, a geometric mean of 0.996 on the warm figures. It did not exercise the Vector API
+that JVector uses (see [JVector and SIMD](#jvector-and-simd)), the code most likely to depend on
+AVX2, and it did not run the HTTP server. Until a vector-search run under `compatibility` shows the
+same, the default stays at v3 and the compatible build is a separate download.
+
+On an older CPU, use the compat archive above, the JVM image (`arcadedata/arcadedb:<version>`), whose JIT compiles for the
+CPU it actually runs on, or build a native binary for a lower baseline by overriding the property:
+
+```bash
+# runs on any x86-64 / any ARMv8 CPU
+./native/scripts/build-native.sh -- -Dnative.march=compatibility
+./native/scripts/build-native-docker.sh --march compatibility
+mvn -Pnative -pl native -am -DskipTests -Dnative.march=compatibility package
+
+# amd64 only: SSE4.2 and POPCNT, no AVX
+mvn -Pnative -pl native -am -DskipTests -Dnative.march=x86-64-v2 package
+```
+
+`native-image -march=list` prints every baseline the builder supports. A lower baseline gives up
+the AVX2/FMA/BMI2 code the default amd64 build uses; what that costs has not been measured here.
+Do not ship a binary built with `-march=native`: it targets the CPU of the machine that ran the build,
+so a binary built on a CI runner requires whatever that runner had. The lint job's
+`.github/scripts/check-native-march.py` fails on that, on `native/pom.xml` losing its `-march`, and
+on this section naming a baseline other than the one the pom builds for. Each baseline is also
+recorded in the pom as `native.march.expected.<arch>`; the lint fails when a profile resolves to a
+different value, so raising a baseline (which drops CPUs) cannot happen without editing the record.
+
 ## Docker images
 
 Only the two required Linux targets are packaged into Docker images, because only those two produce

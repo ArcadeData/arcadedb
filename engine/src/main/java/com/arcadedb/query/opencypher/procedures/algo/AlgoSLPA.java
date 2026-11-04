@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -63,6 +64,9 @@ import java.util.stream.Stream;
 public class AlgoSLPA extends AbstractAlgoProcedure {
   public static final String NAME = "algo.slpa";
 
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("iterations", "relTypes", "seed", "threshold");
+
   @Override
   public String getName() {
     return NAME;
@@ -92,7 +96,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
 
     final int iterations = config != null && config.get("iterations") instanceof Number num ?
         extractInt(num, "iterations", 1) : 20;
@@ -189,8 +193,8 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     // Outside the propagation rounds, so the checkpoint inside them never sees this: nodeCount x (iterations + 1)
     // boxed map merges, which is the same product the label memory is priced on. The budget bounds the heap that
     // product costs and says nothing about the time, so at a raised arcadedb.cypher.algoMaxWorkingMemory this
-    // grows without any checkpoint behind it (issue #6295). The counter spans both loops for the same reason it
-    // does in algo.hashgnn: a per-node check is too coarse when one node remembers a million labels.
+    // grows without any checkpoint behind it (issue #6295). The counter spans both loops: a per-node check is too
+    // coarse when one node remembers a million labels.
     @SuppressWarnings("unchecked")
     final List<Long>[] allCommunities = new List[n];
     int postStep = 0;

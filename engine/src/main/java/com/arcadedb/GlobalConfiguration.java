@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
@@ -35,6 +36,9 @@ import java.io.PrintStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
 
 /**
@@ -55,21 +59,17 @@ public enum GlobalConfiguration {
         return value;
       }),
 
+  // Issue #11119: the timer thread exists only while a positive period is set. It used to be started by the static
+  // initializer whatever the value, and nothing cancelled it: one idle thread on the JVM, and in a native image an
+  // isolate that could never be torn down, since java.util.TimerThread ignores interrupts.
   DUMP_METRICS_EVERY("arcadedb.dumpMetricsEvery", SCOPE.JVM,
       "Dumps the metrics at startup, shutdown and every configurable amount of time (in seconds)", Long.class, 0, new Callable<>() {
     @Override
     public Object call(final Object value) {
       final long time = (long) value * 1000;
-      if (time > 0) {
+      if (time > 0)
         Profiler.INSTANCE.dumpMetrics(System.out);
-
-        TIMER.schedule(new TimerTask() {
-          @Override
-          public void run() {
-            Profiler.INSTANCE.dumpMetrics(System.out);
-          }
-        }, time, time);
-      }
+      MetricsDumpTimer.reschedule(time);
       return value;
     }
   }),
@@ -134,7 +134,11 @@ public enum GlobalConfiguration {
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
-        PageManager.INSTANCE.configure();
+        // THE STARTUP PASS IS NOT A LIVE CHANGE: THE FIRST ContextConfiguration OF AN EMBEDDED JVM IS CREATED BY
+        // PageManager.startup(), AFTER ITS REFERENCE COUNT WENT UP FOR THE DATABASE BEING OPENED, SO configure() WOULD
+        // WARN THAT THE PROFILE WAS "PARTIALLY applied" FOR A DATABASE THAT WAS OPENED AFTER IT (#10446)
+        if (!readingConfiguration)
+          PageManager.INSTANCE.configure();
 
       } else if ("low-cpu".equalsIgnoreCase(v)) {
         ASYNC_WORKER_THREADS.setValue(1);
@@ -204,6 +208,10 @@ public enum GlobalConfiguration {
       "Default date implementation to use on deserialization. By default java.time.LocalDate is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDate, java.time.LocalDateTime",
       Class.class, LocalDate.class),
 
+  SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS("arcadedb.serializer.fixedWidthFloatArrays", SCOPE.DATABASE,
+      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so set it to false to keep the files readable by such a build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
+      Boolean.class, true),
+
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
       "yyyy-MM-dd"),
 
@@ -221,6 +229,31 @@ public enum GlobalConfiguration {
   TX_WAL_FLUSH("arcadedb.txWalFlush", SCOPE.DATABASE,
       "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",
       Integer.class, 0),
+
+  FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """
+      FOR TESTING ONLY. Set it to false to skip every fsync ArcadeDB issues: data and WAL files, the directory \
+      entries of created and renamed files, schema and configuration saves, security files, backups, restores and \
+      HA snapshots. Data then survives a process crash, because the operating system still writes it, but not a \
+      power failure or an OS crash. Only the exact text false turns it off, so a typo keeps the fsync. The default \
+      follows the JVM system property of the same name, so a test run that sets it keeps it across \
+      GlobalConfiguration.resetAll()""",
+      Boolean.class, true, null, value -> !"false".equalsIgnoreCase(System.getProperty("arcadedb.fileSync"))),
+
+  TX_WAL_GROUP_COMMIT("arcadedb.txWalGroupCommit", SCOPE.DATABASE, """
+      With arcadedb.txWalFlush 1 or 2, moves the write and the flush of the WAL out of the commit's file locks and shares \
+      the flush between the transactions committing at the same time: a commit still returns only once its WAL is on \
+      disk, but one flush covers every commit that was waiting for one, instead of each commit flushing on its own while \
+      holding the locks of the files it wrote, which serialized every commit on the same type behind the disk's flush \
+      time. A page never reaches its data file before the WAL that describes it. The transaction is visible to other \
+      transactions from the moment it is published, a few milliseconds before its WAL is on disk: a crash in that window \
+      loses a transaction other clients may already have read, while the client that committed it has not been answered \
+      yet. Set it to false to make a transaction visible only once its WAL is on disk, at the cost of serializing the \
+      commits on the same type behind the flush. Applies to the commits of a database that is not replicated (embedded, \
+      or served by a single server) with the asynchronous page flush (the default), and to the internal commits of a \
+      replicated database (compaction, schema saves): the replicated commits of an HA cluster go through the \
+      replication log and are not affected. The background page flush may wait for, or run, a WAL flush \
+      before it writes a page, so on a slow disk the page flush follows the WAL flush latency""",
+      Boolean.class, true),
 
   TX_WAL_FILES("arcadedb.txWalFiles", SCOPE.DATABASE,
       "Number of concurrent files to use for tx log. 0 or a negative value = available cores, which is also the default",
@@ -245,15 +278,16 @@ public enum GlobalConfiguration {
       1),
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for buckets. Default is 64KB", Integer.class, 65_536),
+      "Default page size in bytes for buckets. Existing buckets keep their page size. Minimum is 8216 bytes, the room a page needs for its header, its slot table and one record. Default is 64KB",
+      Integer.class, 65_536, () -> LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)),
 
   INDEX_DEFAULT_PAGE_SIZE("arcadedb.indexDefaultPageSize", SCOPE.DATABASE,
       "Default page size in bytes for new plain LSM-tree indexes (not full-text, geo or vector ones) created without an explicit page size (SQL CREATE INDEX has no page-size clause). A transaction that changes an index page works on a private copy of the whole page, so a smaller page makes small write transactions cheaper while a larger one makes lookups slightly faster. Existing indexes keep their page size. Minimum is 8KB. Default is 256KB. In a cluster, keep it identical on all the servers",
       Integer.class, 262_144),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Matches the LSM-index default (256KB)",
-      Integer.class, 262_144),
+      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Existing buckets keep their page size. Minimum is 1048 bytes. Matches the LSM-index default (256KB)",
+      Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
 
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
       "Filesystem directory where new paired external-property buckets are created. If empty (default), external buckets sit alongside primary buckets in the database directory. Set to a path on cheaper/slower storage (HDD, network mount) to tier the heavy payloads away from the topology files. The directory must exist and be writable. Existing external buckets are not relocated when this changes.",
@@ -303,6 +337,10 @@ public enum GlobalConfiguration {
   BUCKET_WIPEOUT_ONDELETE("arcadedb.bucketWipeOutOnDelete", SCOPE.DATABASE,
       "Wipe out record content on delete. If enabled, assures deleted records cannot be analyzed by parsing the raw files and backups will be more compressed, but it also makes deletes a little bit slower",
       Boolean.class, true),
+
+  BUCKET_SELF_DESCRIBING_CHUNK_LINKS("arcadedb.bucketSelfDescribingChunkLinks", SCOPE.DATABASE,
+      "Store the next-chunk link of a multi-page record in the self-describing form -(position + 1) instead of the absolute position, which lets a continuation chunk live at position 0 of a bucket (issues #10948/#10949). Every release from 26.11.1 reads both forms, but a release older than that cannot read a record whose chain holds a new-form link: enable it only once no node, replica or backup restore target runs an older release, and note that already written links keep their form until their chunk is rewritten. Disabled by default",
+      Boolean.class, false),
 
   ASYNC_WORKER_THREADS("arcadedb.asyncWorkerThreads", SCOPE.DATABASE,
       "Number of asynchronous worker threads. 0 (default) = available cores minus 1", Integer.class,
@@ -622,6 +660,15 @@ public enum GlobalConfiguration {
       never read by recovery.""",
       String.class, ""),
 
+  PAGE_SNAPSHOT_TRACK_OPENERS("arcadedb.pageSnapshotTrackOpeners", SCOPE.JVM,
+      """
+      Debug aid (issue #10657): record the stack of the code that opens each point-in-time snapshot window, so that a \
+      database close still waiting for a window after a minute names the code path that opened it and never released \
+      it. Off by default: the window is still reported with its opening thread and age, only the stack is skipped. The \
+      default follows the JVM system property of the same name, so a test run that sets it keeps it across \
+      GlobalConfiguration.resetAll().""",
+      Boolean.class, false, null, value -> Boolean.getBoolean("arcadedb.pageSnapshotTrackOpeners")),
+
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
 
@@ -654,8 +701,16 @@ public enum GlobalConfiguration {
       "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_PAGE_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
       Long.class, 16L * 1024 * 1024),
 
+  TX_STATEMENT_SAVEPOINT_MAX_ENTRIES("arcadedb.txStatementSavepointMaxEntries", SCOPE.DATABASE,
+      "A statement that fails inside a transaction the caller keeps is undone on its own, and the transaction goes on (issue #10346). To undo it the engine journals what the statement changes in the transaction, up to this many entries: a statement that changes more is not journaled past it, and when it fails the transaction can no longer be committed, as it was before statement savepoints existed. A bulk statement thus pays no memory for a journal it could never use, while the many small statements of an interactive transaction are all undone exactly. 0 disables statement savepoints: a statement that fails after writing part of its records leaves the transaction uncommittable",
+      Integer.class, 100_000),
+
   TX_STALE_READ_CHECK("arcadedb.txStaleReadCheck", SCOPE.DATABASE,
       "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Only direct property assignment and removal is checked: an in-place change to a list, map or embedded document got from the record is not. Set to false to restore the previous last-writer-wins behavior",
+      Boolean.class, true),
+
+  GRAPH_GHOST_EDGE_PROBE("arcadedb.graph.ghostEdgeProbe", SCOPE.DATABASE,
+      "Whether the walks that follow adjacency entries without loading the edge record (the openCypher variable-length hops and the reachability of path.subgraphNodes and path.subgraphAll) ask the edge bucket, once per vertex reached, whether the edge of the entry still has its record, and skip and report a ghost (a dangling entry left by a data-integrity anomaly) as the walks that load the edge do (issues #10148, #10149). The question costs one edge-bucket page read per vertex reached, which on a variable-length hop that reaches many vertices is about a quarter to a third of the query time (issue #10658). Set to false on a database known to hold no dangling entries (for example after CHECK DATABASE FIX pruned them) to follow every entry instead, as a fixed-length hop and SQL out()/in() always do: a ghost is then answered as a neighbour and not reported",
       Boolean.class, true),
 
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
@@ -1137,33 +1192,29 @@ public enum GlobalConfiguration {
 
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
-      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the dense \
-      working set it builds beside the graph: the random-walk buffers of algo.node2vec (walksPerNode x nodeCount \
-      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory \
-      (one row of iterations entries per node), the nodeCount x dimension embedding matrices of algo.node2vec, \
-      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, \
-      algo.simRank, algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and \
-      terminal-pair arrays of algo.steinerTree. None of these has a graph-derived ceiling to clamp against - \
-      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int, a \
-      terminal list of any length, or simply a large graph, would otherwise reach the allocator unchecked, or \
-      wrap the int product on the way there and surface as a NegativeArraySizeException from inside the \
-      algorithm. Every estimate is computed in saturating long arithmetic and reserved BEFORE anything is \
-      allocated, and reservations accumulate over the call, so what is bounded is the working set of the whole \
-      call rather than one allocation of it: a call over the budget is rejected as a client error naming the \
-      component and the knobs that produced the estimate, together with this setting. Negative number means no \
-      limit. When left at the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), \
-      so the working set of a legitimate large run stays a fraction of the heap it shares with the rest of the \
-      query.""",
-      Long.class, 64 * 1024 * 1024L, null, value -> {
-        // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
-        // typical run (a few million walk entries, or a mid-sized graph at the default embedding dimension)
-        // keeps working on small footprints.
-        final long maxHeap = Runtime.getRuntime().maxMemory();
-        if (maxHeap == Long.MAX_VALUE)
-          // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
-          return 64 * 1024 * 1024L;
-        return Math.max(64 * 1024 * 1024L, maxHeap / 8);
-      }),
+      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the working \
+      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (one record per \
+      vertex and the RID index over them), the adjacency lists, weighted adjacency lists and degree buffers it \
+      materialises from the records or from a view, the edge arrays of algo.mst and algo.msa, the visited sets and \
+      traversal state of the walks (algo.bfs, algo.dfs, the path searches), the neighbour bitsets of the clique, \
+      triangle and truss algorithms, the random-walk buffers of algo.node2vec (walksPerNode x nodeCount walks of \
+      walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory (one row of \
+      iterations entries per node), the nodeCount x dimension embedding and feature matrices of algo.node2vec, \
+      algo.fastrp and algo.graphsage, the nodeCount x embeddingDensity sample and race-time matrices of \
+      algo.hashgnn, the nodeCount x nodeCount matrices of algo.apsp, algo.simRank, \
+      algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and terminal-pair arrays of \
+      algo.steinerTree. Most of these have no graph-derived ceiling to clamp against - unlike a top-k bound, which \
+      is capped by the node count - so a large but perfectly in-range int, a terminal list of any length, or simply \
+      a large graph, would otherwise reach the allocator unchecked, or wrap the int product on the way there and \
+      surface as a NegativeArraySizeException from inside the algorithm. Every estimate is computed in saturating \
+      long arithmetic and reserved BEFORE anything is allocated, and reservations accumulate over the call, so what \
+      is bounded is the working set of the whole call rather than one allocation of it: a call over the budget is \
+      rejected as a client error naming the component and the knobs that produced the estimate, together with this \
+      setting. Negative number means no limit. 0 (the default) sizes the budget at each call from the heap the call \
+      can actually get: half of what is free after the last collection plus the page cache, which the call takes \
+      back from the cache before it allocates, and never less than one eighth of the maximum heap (64MB at least), \
+      the fixed budget it replaces (issue #11011). A positive number is a fixed budget.""",
+      Long.class, 0L),
 
   // GRAPHQL
   GRAPHQL_MAX_NESTING_DEPTH("arcadedb.graphql.maxNestingDepth", SCOPE.DATABASE,
@@ -1194,9 +1245,13 @@ public enum GlobalConfiguration {
       with the sorted build instead of the record-at-a-time one (issue #10334). The record-at-a-time build checks every \
       key it adds against the index being built, and that lookup reads every page written so far, so its time grows \
       with the square of the record count. The sorted build sorts the keys externally, within a bounded memory budget, \
-      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes and on replicated \
-      databases keep the record-at-a-time build whatever the record count; an empty transaction (such as the auto-commit \
-      one of an HTTP command) does not stop the switch. 0 disables the switch.""",
+      and refuses a duplicate key in the stream. Builds inside a transaction with pending changes to the indexed type's \
+      buckets and on replicated databases keep the record-at-a-time build whatever the record count, but from this many \
+      records on it no longer checks every key against the index it is filling (issue #10349): it checks the keys once, \
+      over the finished index, and refuses the first duplicate then, so a duplicate costs the whole build before it is \
+      reported, where the check of every batch refused it at the first batch that held one. An empty transaction (such as \
+      the auto-commit one of an HTTP command), or one that wrote only to other types, does not stop the switch. 0 \
+      disables the switch and that deferred check with it.""",
       Long.class, 10_000L),
 
   INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS("arcadedb.index.buildSortedNonUniqueMinRecords", SCOPE.DATABASE,
@@ -1207,8 +1262,8 @@ public enum GlobalConfiguration {
       build sorts the keys and writes the index pages directly, and when the keys fit its memory budget it takes about \
       two thirds of the time. Unlike the UNIQUE case (arcadedb.index.buildSortedUniqueMinRecords) the record-at-a-time \
       build is not quadratic here, so the switch is left to the sizes where the saving is felt. The same conditions apply: \
-      builds inside a transaction with pending changes and on replicated databases keep the record-at-a-time build. \
-      0 disables the switch.""",
+      builds inside a transaction with pending changes to the indexed type's buckets and on replicated databases keep the \
+      record-at-a-time build. 0 disables the switch.""",
       Long.class, 1_000_000L),
 
   INDEX_BUILD_COMMIT_LOCK_TIMEOUT("arcadedb.index.buildCommitLockTimeout", SCOPE.DATABASE,
@@ -1233,8 +1288,27 @@ public enum GlobalConfiguration {
       "Minimum number of mutable pages for an index to be schedule for automatic compaction. 0 = disabled", Integer.class, 10),
 
   INDEX_COMPACTION_FULL_SERIES("arcadedb.indexCompactionFullSeriesThreshold", SCOPE.DATABASE,
-      "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. 0 = disabled",
+      "Number of compacted series at which an index compaction runs as a full compaction: every existing series is merged together with the mutable pages into a single fresh series, deletions are resolved and dead entries dropped. Keeps delete-heavy indexes from accumulating unbounded tombstone runs and series. A full compaction can also start earlier, see arcadedb.indexCompactionFullDeadEntriesRatio. 0 = disabled",
       Integer.class, 10),
+
+  INDEX_COMPACTION_FULL_DEAD_ENTRIES_RATIO("arcadedb.indexCompactionFullDeadEntriesRatio", SCOPE.DATABASE,
+      """
+      Starts a full compaction of an LSM index (see arcadedb.indexCompactionFullSeriesThreshold) as soon as the dead \
+      keys its range scans have skipped since the last full compaction reach this multiple of the entries held by its \
+      compacted sub-index, whatever the series count. \
+      WHY. Incremental compactions keep every tombstone and the entry it kills, so under a delete-heavy workload \
+      (a time-ordered sliding window: insert the newest ids, delete the oldest with 'WHERE id < ?') each scan from the \
+      low end walks every key deleted since the last full compaction, and that run grows until the series count \
+      reaches its threshold (issue #10919). The skipped keys are what the dead entries actually cost; the entries of \
+      the compacted sub-index are what a full compaction costs on top of the incremental round it replaces. Starting it \
+      once the first has paid for the second bounds the scans to about twice the cost of compacting at the ideal moment, \
+      without knowing the workload in advance. \
+      An index whose deleted keys are never scanned (point lookups only) does not pay for them and is left to the \
+      series threshold, so an insert-mostly index is never rewritten for a handful of deletions. In a cluster the \
+      leader compacts and ships the result, so the scans counted are the ones the leader served. \
+      Lower values compact sooner (shorter dead runs, more rewriting), higher values later. Default 1. 0 = disabled \
+      (only the series threshold applies). Watch 'deadEntriesSkippedSinceFullCompaction' in the index statistics.""",
+      Float.class, 1f),
 
   INDEX_BLOOM_FILTER_RATE("arcadedb.indexBloomFilterRate", SCOPE.DATABASE,
       """
@@ -1305,14 +1379,17 @@ public enum GlobalConfiguration {
       RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
       0 (default) sizes it automatically: the cache holds the whole corpus when it fits \
       arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent, for document-backed indexes (no quantization, or \
-      PRODUCT) and for inline-quantized indexes (INT8/BINARY). An explicit positive size still wins.""",
+      PRODUCT) and for inline-quantized indexes (INT8/BINARY). An explicit positive size still wins. \
+      An INT8/BINARY corpus that does not fit is not cached as float vectors: the build keeps the quantized rows \
+      themselves, spending the same RAM on 4 times (INT8) to 30 times (BINARY) as many vectors, and reads the others \
+      from the index pages.""",
       Integer.class, 0),
 
   VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.graphBuildCacheMaxHeapPercent", SCOPE.DATABASE,
       """
       Maximum share of the JVM heap ceiling (percentage) the auto-sized graph-build cache may use. Only applies \
       when arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
-      the cache evicts instead of holding everything. Taken as this percent of -Xmx, then capped at 90% of the \
+      the build holds what fits and reads the rest from the index pages. Taken as this percent of -Xmx, then capped at 90% of the \
       heap currently AVAILABLE: a served ingest that already holds the corpus in this JVM must not get a third \
       of the cache an embedded build of the same corpus would get (issue #7146), and an online rebuild that is \
       holding the old graph must still ask for less (issue #6503). Applies to INT8/BINARY as well as fp32. \
@@ -1324,9 +1401,13 @@ public enum GlobalConfiguration {
       Maximum number of vectors kept in the per-index search cache. The cache is shared by every query on the \
       index and survives across queries, so a working set that fits stays resident instead of being re-read from \
       the documents (or from the quantized index pages) on every beam-search hop. \
-      RAM usage = cacheSize * (dimensions * 4 + 64) bytes. \
-      0 (default) sizes it automatically from the number of indexed vectors, capped by \
-      arcadedb.vectorIndex.searchCacheMaxHeapPercent. -1 disables the cache entirely.""",
+      The vectors are held in flat float storage, allocated in chunks of at most 4 MB as they are loaded, plus one \
+      8-byte slot per entry: RAM usage = cacheSize times 8 bytes, plus \
+      (dimensions * 4) bytes per vector cached. A BINARY index caches the one-bit codes its searches are \
+      scored on instead: cacheSize times (ceil(dimensions / 64) * 8 + 8) bytes, the code \
+      held in whole 64-bit words plus two ints per slot (about 200 MB for 1M slots of 1536 dimensions). \
+      0 (default) sizes it automatically from the range of vector ids, rounded up to a power of two for growth, \
+      capped by arcadedb.vectorIndex.searchCacheMaxHeapPercent. -1 disables the cache entirely.""",
       Integer.class, 0),
 
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
@@ -1419,6 +1500,24 @@ public enum GlobalConfiguration {
       clamped rather than failing the build.""",
       Integer.class, 0),
 
+  VECTOR_INDEX_PQ_RETRAIN_GROWTH_FACTOR("arcadedb.vectorIndex.pqRetrainGrowthFactor", SCOPE.DATABASE,
+      """
+      A graph rebuild of a PRODUCT-quantized vector index keeps the PQ codebook it has and encodes only the vectors added \
+      since, as long as the codebook still fits the data (issue #10847). This is the first of the two tests of that fit: \
+      the codebook is trained again, and every vector encoded again, once the index holds more than this many times the \
+      vectors it held when the codebook was trained. 0 or less retrains on every rebuild, as before #10847. \
+      REBUILD INDEX always trains a new codebook.""",
+      Float.class, 2.0f),
+
+  VECTOR_INDEX_PQ_RETRAIN_ERROR_RATIO("arcadedb.vectorIndex.pqRetrainErrorRatio", SCOPE.DATABASE,
+      """
+      The second test of whether a PRODUCT-quantized vector index keeps its PQ codebook across a graph rebuild (issue \
+      #10847): the mean relative reconstruction error of a sample of the vectors added since the codebook was trained, \
+      against the same error measured on the vectors it was trained on. Once the new vectors are encoded more than this \
+      many times worse, their distribution has drifted away from the codebook, and it is trained again. 0 or less \
+      disables the test, leaving the growth factor alone to decide.""",
+      Float.class, 1.25f),
+
   VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD("arcadedb.vectorIndex.mutationsBeforeRebuild", SCOPE.DATABASE,
       """
       Number of mutations (inserts/updates/deletes) before rebuilding the HNSW graph index. \
@@ -1506,6 +1605,23 @@ public enum GlobalConfiguration {
       Concurrent rebuilds are memory-intensive; running too many in parallel can cause OOM kills. \
       Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
       Integer.class, 1),
+
+  VECTOR_INDEX_NATIVE_VECTORIZATION("arcadedb.vectorIndex.nativeVectorization", SCOPE.JVM,
+      """
+      Lets jvector (4.0.2 and later) run its distance math in its native Highway library, called through the Java \
+      foreign function API, instead of the Java Vector API. Off by default: on some CPUs the per-call cost of the \
+      native calls made building an index of short vectors was higher than the Vector API's. Turn it on to try it \
+      on your hardware. It needs Java 22 or later, Linux on x86_64 or aarch64, \
+      '--add-modules jdk.incubator.vector' and '--enable-native-access=ALL-UNNAMED' (without the last, Java prints a \
+      warning and still loads it). jvector copies the library from its jar to the directory 'java.io.tmpdir' and loads \
+      it from there; if that fails (for example a read-only or noexec directory) it logs a warning and uses the Java \
+      Vector API. jvector chooses once per JVM, when the first database is opened, so set this before that. An explicit \
+      '-Djvector.enable_native_vectorization=true|false' (or its deprecated alias \
+      'jvector.experimental.enable_native_vectorization') wins over this setting, and so does \
+      '-Djvector.vectorization_provider'. When you have not set the jvector property, this setting writes the system \
+      property 'jvector.enable_native_vectorization' (true or false) at startup, so other jvector users in the same JVM \
+      see its value. A GraalVM native image never uses the native library.""",
+      Boolean.class, false),
 
   VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT("arcadedb.vectorIndex.rebuildMaxHeapPercent", SCOPE.DATABASE,
       """
@@ -1626,6 +1742,15 @@ public enum GlobalConfiguration {
       immediately and goes back to accepting. The cap is per listener, so a flood against one protocol cannot use
       up the budget that lets clients of another log in. 0 means unlimited.""", Integer.class, 500),
 
+  NETWORK_PREAUTH_TIMEOUT("arcadedb.network.preAuthTimeout", SCOPE.SERVER, """
+      Maximum time, in milliseconds, a binary wire-protocol connection (Postgres, Redis, BOLT) may stay in the phase
+      before authentication, counted from the moment it is accepted: past it the connection is closed whatever it is
+      doing. The handshake timeout (arcadedb.network.socketTimeout) closes a connection that sends NOTHING for that
+      long, so a client that keeps sending a few bytes, or a command it is refused for, would otherwise hold its
+      pre-authentication slot (arcadedb.network.maxPreAuthConnections) for ever, and enough of them lock every other
+      client out of the listener. The deadline is checked once a second, so a connection is closed up to about one
+      second after it. 0 disables the limit.""", Long.class, 30_000L),
+
   NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
 
   NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),
@@ -1682,7 +1807,8 @@ public enum GlobalConfiguration {
       String.class, null),
 
   SERVER_ROOT_PASSWORD_PATH("arcadedb.server.rootPasswordPath", SCOPE.SERVER,
-      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
+      "Path to file with password for root user to use at first startup of the server. Set this to avoid asking the password to the user. "
+          + "With HA enabled and no arcadedb.ha.clusterToken or arcadedb.ha.clusterTokenPath, the cluster token is derived from this password",
       String.class, null),
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
@@ -1832,6 +1958,32 @@ public enum GlobalConfiguration {
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", SCOPE.SERVER,
       "Open all the available databases at server startup", Boolean.class, true),
 
+  SERVER_DATABASE_IDLE_TIMEOUT("arcadedb.server.databaseIdleTimeout", SCOPE.SERVER, """
+      Closes a database no client has used for this long, in milliseconds (0 = never). Used means any query, command, \
+      transaction or record operation, from any protocol; a database with a transaction open, a statement running or \
+      asynchronous work queued is never closed, however long it has been quiet. The files stay where they are and the \
+      next request of any protocol reopens the database, as one not opened at startup is. A replicated (HA) database is \
+      never closed, nor one listed in arcadedb.server.databaseIdleExclude""", Long.class, 0L),
+
+  SERVER_DATABASE_IDLE_CHECK_INTERVAL("arcadedb.server.databaseIdleCheckInterval", SCOPE.SERVER, """
+      How often, in milliseconds, the server looks for databases to close for idleness \
+      (arcadedb.server.databaseIdleTimeout) or beyond the cap on open databases (arcadedb.server.maxOpenDatabases). \
+      Idleness is measured at this resolution""", Long.class, 60_000L),
+
+  SERVER_DATABASE_IDLE_MAX_CLOSES_PER_CHECK("arcadedb.server.databaseIdleMaxClosesPerCheck", SCOPE.SERVER, """
+      The most databases one check closes, for idleness and for the cap on open databases together, so that a burst \
+      of databases going idle at once is closed over several checks (0 = no bound)""", Integer.class, 10),
+
+  SERVER_DATABASE_IDLE_EXCLUDE("arcadedb.server.databaseIdleExclude", SCOPE.SERVER, """
+      Comma-separated names of the databases never closed for idleness or for the cap on open databases""", String.class,
+      ""),
+
+  SERVER_MAX_OPEN_DATABASES("arcadedb.server.maxOpenDatabases", SCOPE.SERVER, """
+      The most databases kept open at once (0 = no cap). Beyond it, each idle check closes the least recently used \
+      databases that are not in use, idle timeout or not, until the count is back under the cap. A database in use is \
+      never closed, so the cap can be exceeded while more databases than that are busy. The same exclusions as the idle \
+      timeout apply""", Integer.class, 0),
+
   SERVER_QUERY_WARM_UP("arcadedb.server.queryWarmUp", SCOPE.SERVER, """
       Once the server is online, warms the query stack in the background: parses a SQL statement and runs a trivial \
       statement in SQL and OpenCypher on a database the server holds open, so the first client request does not pay for \
@@ -1871,7 +2023,9 @@ public enum GlobalConfiguration {
       "TCP/IP port number used for incoming HTTPS connections. Specify a single port or a range `<from-<to>`. Default is 2490-2499 to accept a range of ports in case they are occupied.",
       String.class, "2490-2499"),
 
-  SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", SCOPE.SERVER,
+  // Declared "httpsIoThreads" until issue #10599, which named an HTTP-server setting after the HTTPS-only one above it: the old
+  // spelling is still read, see FORMER_KEYS
+  SERVER_HTTP_IO_THREADS("arcadedb.server.httpIoThreads", SCOPE.SERVER,
       "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
       Integer.class, 0, null, value -> Runtime.getRuntime().availableProcessors()),
 
@@ -2473,11 +2627,13 @@ public enum GlobalConfiguration {
       """
       Shared secret for inter-node request forwarding authentication. \
       Must be identical on all cluster nodes. \
-      If empty, a random token is auto-generated and stored in raft-storage at startup. \
-      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
-      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
-      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
-      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
+      If empty (and arcadedb.ha.clusterTokenPath is not set either), every node derives the token at each start from \
+      arcadedb.ha.clusterName and the root password (arcadedb.server.rootPassword, or the content of the file at \
+      arcadedb.server.rootPasswordPath); the derived token is never stored, so changing either input changes the token \
+      at the next start of each node, and nodes holding different tokens refuse each other's requests. \
+      SECURITY: set an explicit high-entropy value in production. The derivation uses a fixed public salt, so a weak \
+      root password plus a reachable replication HTTP port could let an attacker forge the token and impersonate the \
+      root user via forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
@@ -2486,6 +2642,18 @@ public enum GlobalConfiguration {
       Used to keep the secret off the command line (e.g. a Kubernetes Secret mounted on tmpfs). \
       Read only when arcadedb.ha.clusterToken is not set; the file content is trimmed of surrounding whitespace.""",
       String.class, ""),
+
+  HA_CLUSTER_TOKEN_ALLOW_ROTATION("arcadedb.ha.clusterTokenAllowRotation", SCOPE.SERVER,
+      """
+      Allows a node whose cluster token is derived from the root password file (arcadedb.server.rootPasswordPath, with \
+      neither arcadedb.ha.clusterToken nor arcadedb.ha.clusterTokenPath set) to start with a token that differs from \
+      the one it last ran with. A node records a fingerprint of that derived token beside its Raft storage and, by \
+      default, refuses to start when the file now derives a different one: the file was rewritten in place (e.g. a \
+      rotated Kubernetes Secret), and a node starting with the new token is refused by every peer still on the old one. \
+      Set to true on every node only to rotate the token deliberately, with a full-cluster restart, then remove it. \
+      The check needs persisted Raft storage (arcadedb.ha.raftPersistStorage): a node that discards its storage at every \
+      start keeps no record and is not protected.""",
+      Boolean.class, false),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
@@ -2638,9 +2806,10 @@ public enum GlobalConfiguration {
       already-upgraded node halt every node still on the old build: a routine admin action turning a routine \
       upgrade into a partial outage. With this on, the operation is refused instead, with HTTP 409 / gRPC \
       FAILED_PRECONDITION naming the peer that is holding the cluster back. Nothing is submitted, so nothing \
-      halts, and the change succeeds unchanged once the last node is up - no sequencing by hand. The same \
-      interlock covers a database setting changed with ALTER DATABASE or 'set database setting', replicated as a \
-      DATABASE_CONFIGURATION_ENTRY since issue #9763. \
+      halts, and the change succeeds unchanged once the last node is up - no sequencing by hand. A database \
+      setting changed with ALTER DATABASE or 'set database setting' is replicated as a DATABASE_CONFIGURATION_ENTRY \
+      (issue #9763) and is refused by the same interlock, but this setting does NOT switch that refusal off \
+      (issue #11195): it can wait for the peer. \
       \
       The peer is asked over POST /api/v1/cluster/capabilities, the #7219 handshake. Every unknown counts as a \
       no: a peer that is unreachable, whose address identifies no single node, or that runs a build without that \
@@ -3135,7 +3304,7 @@ public enum GlobalConfiguration {
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
   POSTGRES_SSL("arcadedb.postgres.ssl", SCOPE.SERVER,
-      "TLS mode for Postgres wire protocol connections, negotiated through the protocol's own SSLRequest handshake and using the shared SSL key/trust store settings (arcadedb.ssl.*): DISABLED (no TLS, default), OPTIONAL (TLS or plaintext, the client chooses), REQUIRED (TLS only, plaintext startup is refused)",
+      "TLS mode for Postgres wire protocol connections, negotiated through the protocol's own SSLRequest handshake and using the shared SSL key/trust store settings (arcadedb.ssl.*): DISABLED (no TLS, default), OPTIONAL (TLS or plaintext, the client chooses: a client that falls back to plaintext sends its password in the clear), REQUIRED (TLS only, plaintext startup is refused; recommended once certificates are in place)",
       String.class, "DISABLED"),
 
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
@@ -3158,6 +3327,11 @@ public enum GlobalConfiguration {
       whole result before it can announce it: on the extended protocol the portal's row limit bounds what each \
       Execute sends, not what the server holds. A statement whose result exceeds this limit is refused with an \
       error instead of risking an OutOfMemoryError; narrow it with a WHERE or LIMIT clause or raise the limit. \
+      An extended-protocol SELECT whose columns are known before its first row - one that projects only declared \
+      properties of its type, or one whose statement was already described to the client - is fetched from a live \
+      cursor, each Execute reading only the rows it asks for, and is not subject to this limit. Its \
+      arcadedb.command.timeout (or statement_timeout) runs from when the query starts to its last fetch, the time \
+      the client takes between two fetches included. \
       0 means unlimited. Default is 1000000""", Integer.class, 1_000_000),
 
   // BOLT (Neo4j)
@@ -3180,7 +3354,7 @@ public enum GlobalConfiguration {
       "Maximum number of concurrent BOLT connections. 0 means unlimited. Default is 0", Integer.class, 0),
 
   BOLT_SSL("arcadedb.bolt.ssl", SCOPE.SERVER,
-      "TLS mode for BOLT connections: DISABLED (no TLS, default), OPTIONAL (auto-detect TLS or plaintext), REQUIRED (TLS only)",
+      "TLS mode for BOLT connections, using the shared SSL key/trust store settings (arcadedb.ssl.*). There is no in-band upgrade: the listener reads the first bytes of a connection and starts a direct TLS handshake when they are a TLS record header. DISABLED (no TLS, default), OPTIONAL (TLS and plaintext on the same port, detected per connection: a client that falls back to plaintext sends its LOGON credentials in the clear), REQUIRED (TLS only, a plaintext connection is closed; recommended once certificates are in place)",
       String.class, "DISABLED"),
 
   BOLT_WEBSOCKET_MAX_FRAME_SIZE("arcadedb.bolt.websocket.maxFrameSize", SCOPE.SERVER,
@@ -3413,6 +3587,16 @@ public enum GlobalConfiguration {
       (e.g. to avoid its disk footprint or the extra write at close)""",
       Boolean.class, true),
 
+  GAV_BUILD_RELEASES_PAGES("arcadedb.gavBuildReleasesPages", SCOPE.DATABASE,
+      """
+      When true (default), the pages a Graph Analytical View build reads from disk leave the page cache when the build \
+      ends, unless another reader used them meanwhile: the view answers what they hold, so keeping them would hold the \
+      graph twice, and the page cache is on the heap (arcadedb.maxPageRAM, a quarter of it by default). While the \
+      build runs they are the first pages evicted, so a build does not push the pages queries are using out of the \
+      cache either. Pages the cache held before the build stay. Set to false to keep the pages a build read, for a \
+      workload that reads the same records through the record API right after (issue #11011)""",
+      Boolean.class, true),
+
   GAV_CCH_MAX_ARCS_PER_EDGE("arcadedb.gavCchMaxArcsPerEdge", SCOPE.DATABASE,
       """
       Upper bound on the size of a Customizable Contraction Hierarchy (CCH) attached to a Graph Analytical View, as \
@@ -3453,8 +3637,13 @@ public enum GlobalConfiguration {
    * nothing enforces it and the failure is total and silent-looking.
    */
   private final        Set<Object>              allowed;
+  /**
+   * The smallest value a numeric setting accepts, or {@code null} when it has no floor. A supplier because a floor is DERIVED from
+   * what the setting sizes (a bucket page from its slot table, issue #10876), and is read only when a value is checked: resolving
+   * it here would load that class while this enum is still initializing.
+   */
+  private final        IntSupplier              minimum;
   public final static  String                   PREFIX = "arcadedb.";
-  private static final Timer                    TIMER;
   // Issue #7281: set for the duration of readConfiguration(), so DUMP_CONFIG_AT_STARTUP's callback can tell a
   // startup pass that has not finished applying the other settings from a later write it can dump straight away.
   // Left without an initializer on purpose: an enum's constants are constructed before any static field
@@ -3463,6 +3652,10 @@ public enum GlobalConfiguration {
   // class, which already carries the happens-before edge.
   private static boolean                        readingConfiguration;
   private static boolean                        dumpPending;
+  // Issue #10446: the settings written since the startup pass began, so the pass can tell a value an earlier setting's
+  // callback chose (the profile's) from the compiled-in default. Only non-null while readConfiguration() runs, and
+  // created there rather than here for the reason above.
+  private static Set<GlobalConfiguration>       assignedDuringPass;
 
   public enum SCOPE {JVM, SERVER, DATABASE}
 
@@ -3477,13 +3670,41 @@ public enum GlobalConfiguration {
    */
   private static final Map<String, GlobalConfiguration> BY_KEY;
 
-  static {
-    TIMER = new Timer(true);
+  /**
+   * The key a setting was declared with before it was renamed (issue #10599), so a deployment that found the old spelling does not
+   * lose its value on upgrade. A setting's key has to name the setting, because the key is the only handle a user has: the old
+   * {@code arcadedb.server.httpsIoThreads} named the HTTP server's IO threads after the HTTPS-only setting declared above it.
+   * <p>
+   * The former key is read from a system property or an environment variable when the current one is absent, resolved by
+   * {@link #findByKey(String)} for every route that names a setting by its key (the server configuration file, the settings
+   * commands), and reported once. Never use it for a new setting: a key that was never declared needs no alias.
+   * <p>
+   * Built in the static block, before {@link #readConfiguration()}, which is itself a reader.
+   */
+  private static final Map<GlobalConfiguration, String> FORMER_KEYS;
 
+  /** {@link #FORMER_KEYS} the other way round, by the lower-cased former key. */
+  private static final Map<String, GlobalConfiguration> BY_FORMER_KEY;
+
+  /** The former keys already reported, so each is reported once however many routes resolve it. */
+  private static final Set<String> FORMER_KEYS_REPORTED;
+
+  static {
     final Map<String, GlobalConfiguration> byKey = new HashMap<>(values().length * 2);
     for (final GlobalConfiguration v : values())
       byKey.put(v.key.toLowerCase(Locale.ENGLISH), v);
     BY_KEY = Collections.unmodifiableMap(byKey);
+
+    final Map<GlobalConfiguration, String> formerKeys = new EnumMap<>(GlobalConfiguration.class);
+    formerKeys.put(SERVER_HTTP_IO_THREADS, "arcadedb.server.httpsIoThreads");
+    FORMER_KEYS = Collections.unmodifiableMap(formerKeys);
+
+    final Map<String, GlobalConfiguration> byFormerKey = new HashMap<>();
+    for (final Map.Entry<GlobalConfiguration, String> former : formerKeys.entrySet())
+      byFormerKey.put(former.getValue().toLowerCase(Locale.ENGLISH), former.getKey());
+    BY_FORMER_KEY = Collections.unmodifiableMap(byFormerKey);
+
+    FORMER_KEYS_REPORTED = ConcurrentHashMap.newKeySet();
 
     readConfiguration();
   }
@@ -3509,7 +3730,18 @@ public enum GlobalConfiguration {
   }
 
   GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+                      final IntSupplier minimum) {
+    this(iKey, scope, iDescription, iType, iDefValue, null, null, null, minimum);
+  }
+
+  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
                       final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
+    this(iKey, scope, iDescription, iType, iDefValue, callback, callbackIfNoSet, allowed, null);
+  }
+
+  GlobalConfiguration(final String iKey, final SCOPE scope, final String iDescription, final Class<?> iType, final Object iDefValue,
+                      final Callable<Object, Object> callback, final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed,
+                      final IntSupplier minimum) {
     this.key = iKey;
     this.scope = scope;
     this.description = iDescription;
@@ -3520,6 +3752,7 @@ public enum GlobalConfiguration {
     this.callback = callback;
     this.callbackIfNoSet = callbackIfNoSet;
     this.allowed = allowed;
+    this.minimum = minimum;
   }
 
   /**
@@ -3755,7 +3988,73 @@ public enum GlobalConfiguration {
     String key = iKey.toLowerCase(Locale.ENGLISH);
     if (!key.startsWith(PREFIX))
       key = PREFIX + key;
-    return BY_KEY.get(key);
+    final GlobalConfiguration setting = BY_KEY.get(key);
+    if (setting != null)
+      return setting;
+
+    // the key a setting was renamed from (issue #10599) still names it
+    final GlobalConfiguration renamed = BY_FORMER_KEY.get(key);
+    if (renamed != null)
+      reportFormerKey(renamed);
+    return renamed;
+  }
+
+  /**
+   * Says once that {@code setting} is being named by the key it was renamed from (issue #10599).
+   */
+  private static void reportFormerKey(final GlobalConfiguration setting) {
+    final String formerKey = FORMER_KEYS.get(setting);
+    // the logger first: a key marked reported while no logger was up would never be reported
+    final LogManager logManager = LogManager.instance();
+    if (logManager != null && FORMER_KEYS_REPORTED.add(formerKey))
+      logManager.log(setting, Level.WARNING, "The setting '%s' was renamed '%s': the old name is still read, switch to the new one",
+          formerKey, setting.key);
+  }
+
+  /**
+   * The key this setting was declared with before it was renamed (issue #10599), or {@code null} when it never was.
+   */
+  public String getFormerKey() {
+    return FORMER_KEYS.get(this);
+  }
+
+  /**
+   * A value the process supplied for a setting: the key that carried it, which is the former key when the setting was given under
+   * the spelling it was renamed from, and whether it came from an environment variable rather than a system property.
+   */
+  public record ProcessSuppliedValue(String key, String value, boolean fromEnvironment) {
+  }
+
+  /**
+   * The value the process supplies for this setting through a system property or an environment variable, looked up the way
+   * {@link #readConfiguration()} applies it: the current key (property, then variable), then the key the setting was renamed from,
+   * only when the current one carries nothing (issue #10599).
+   * <p>
+   * The one answer to "did the operator give this setting on the command line or in the environment, and under which spelling"
+   * (issue #10738): a reader that asked with the current key alone filed a value given under the former key as one the server
+   * computed, while {@link #readConfiguration()} had applied it.
+   *
+   * @param systemProperties the system property of a key, {@code System::getProperty} outside a test
+   * @param environment      the environment variable of a key, {@code System::getenv} outside a test
+   *
+   * @return the value and the key that carried it, or {@code null} when no key of the setting carries one
+   */
+  public ProcessSuppliedValue processSuppliedValue(final Function<String, String> systemProperties,
+      final Function<String, String> environment) {
+    final ProcessSuppliedValue current = processSuppliedValue(key, systemProperties, environment);
+    if (current != null)
+      return current;
+    final String formerKey = FORMER_KEYS.get(this);
+    return formerKey != null ? processSuppliedValue(formerKey, systemProperties, environment) : null;
+  }
+
+  private static ProcessSuppliedValue processSuppliedValue(final String key, final Function<String, String> systemProperties,
+      final Function<String, String> environment) {
+    final String property = systemProperties.apply(key);
+    if (property != null)
+      return new ProcessSuppliedValue(key, property, false);
+    final String variable = environment.apply(key);
+    return variable != null ? new ProcessSuppliedValue(key, variable, true) : null;
   }
 
   /**
@@ -3891,8 +4190,8 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Changes the configuration values in one shot by passing a Map of values. Keys can be the Java ENUM names or the string
-   * representation of configuration values
+   * Changes the configuration values in one shot by passing a Map of values. Keys can be the Java ENUM names, the string
+   * representation of configuration values, or the key a setting was renamed from (issue #10599)
    */
   public static void setConfiguration(final Map<String, Object> iConfig) {
     for (final Map.Entry<String, Object> config : iConfig.entrySet()) {
@@ -3901,6 +4200,16 @@ public enum GlobalConfiguration {
           v.setValue(config.getValue());
           break;
         } else if (BinaryComparator.equalsString(v.name(), config.getKey())) {
+          v.setValue(config.getValue());
+          break;
+        }
+
+        final String formerKey = FORMER_KEYS.get(v);
+        if (formerKey != null && BinaryComparator.equalsString(formerKey, config.getKey())) {
+          // the current key wins when both are given, whatever the order of the map, as in readConfiguration()
+          if (iConfig.containsKey(v.getKey()) || iConfig.containsKey(v.name()))
+            break;
+          reportFormerKey(v);
           v.setValue(config.getValue());
           break;
         }
@@ -3916,27 +4225,27 @@ public enum GlobalConfiguration {
    * type's permissive parse makes of it - which for a {@code Boolean} was {@code false}, for every input (#7222).
    */
   public static synchronized void readConfiguration() {
-    String prop;
-
     // Synchronized because the pass has state that spans it: readingConfiguration/dumpPending are JVM-wide, so two
     // interleaved passes could clear the flag while the other is still walking values() and dump mid-pass - the very
     // thing #7281 fixed. Today the only callers are this class's static initializer (single-threaded by class-init
     // semantics) and tests, but a future "reload configuration" entry point must not have to rediscover that.
     readingConfiguration = true;
+    assignedDuringPass = EnumSet.noneOf(GlobalConfiguration.class);
     try {
       for (final GlobalConfiguration config : values()) {
-        String source = "system property";
-
-        prop = System.getProperty(config.key);
-        if (prop == null) {
-          prop = System.getenv(config.key);
-          source = "environment variable";
+        // the key the setting was renamed from (issue #10599) is read only where the current one carries nothing
+        final ProcessSuppliedValue supplied = config.processSuppliedValue(System::getProperty, System::getenv);
+        if (supplied == null) {
+          config.applyConfigurationSource(null, "environment variable");
+          continue;
         }
-
-        config.applyConfigurationSource(prop, source);
+        if (!supplied.key().equals(config.key))
+          reportFormerKey(config);
+        config.applyConfigurationSource(supplied.value(), supplied.fromEnvironment() ? "environment variable" : "system property");
       }
     } finally {
       readingConfiguration = false;
+      assignedDuringPass = null;
     }
 
     // Issue #7281: the dump describes the configuration this pass PRODUCED. Firing it from the callback, as the
@@ -4004,8 +4313,21 @@ public enum GlobalConfiguration {
    * @param source what to name as its origin when reporting a value that cannot be read
    */
   void applyConfigurationSource(final String prop, final String source) {
-    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null)
+    if ((prop == null || !setValueFromConfigurationSource(prop, source)) && callbackIfNoSet != null
+        && !assignedEarlierInPass())
       setValue(callbackIfNoSet.call(null));
+  }
+
+  /**
+   * Issue #10446: whether an earlier setting of the startup pass already chose this one's value. The profile does, for
+   * the settings it lists, and they come after {@code PROFILE} in the enum: without this the computed default of
+   * {@code arcadedb.maxPageRAM} (a quarter of the heap) overwrote the profile's 16 MB under {@code -Darcadedb.profile=low-ram}.
+   * The precedence is an explicit property or variable, then the profile, then the computed default. The first needs no
+   * test here, since a value that was read is applied after the profile and so replaces it.
+   */
+  private boolean assignedEarlierInPass() {
+    final Set<GlobalConfiguration> assigned = assignedDuringPass;
+    return readingConfiguration && assigned != null && assigned.contains(this);
   }
 
   /**
@@ -4117,6 +4439,16 @@ public enum GlobalConfiguration {
     if (allowed != null && coerced != null && !allowed.contains(coerced.toString().toLowerCase(Locale.ENGLISH)))
       throw new IllegalArgumentException(
           "Global setting '" + key + "=" + coerced + "' is not valid. Allowed values are " + allowed);
+    // The floor is checked by the same two writers for the same reason (issue #10876): `ALTER DATABASE` stored a bucket page size no
+    // bucket could write a record into, and the refusal came at the first insert into a type created afterwards
+    if (minimum != null && coerced instanceof Number number && number.longValue() < minimum.getAsInt())
+      throw new IllegalArgumentException(
+          "Global setting '" + key + "=" + coerced + "' is not valid. Minimum is " + minimum.getAsInt());
+  }
+
+  /** The smallest value this setting accepts, or {@code null} when it has no floor. */
+  public Integer getMinimum() {
+    return minimum != null ? minimum.getAsInt() : null;
   }
 
   /**
@@ -4470,6 +4802,10 @@ public enum GlobalConfiguration {
 
       checkAllowed(value);
 
+      final Set<GlobalConfiguration> assigned = assignedDuringPass;
+      if (readingConfiguration && assigned != null)
+        assigned.add(this);
+
     } catch (final Exception e) {
       // RESTORE THE PREVIOUS VALUE - INCLUDING WHETHER THERE WAS ONE. A WRITE THAT WAS ROLLED BACK IS NOT A CHOICE
       // ANYONE MADE, AND LEAVING explicitlySet ON AFTER ONE MADE isChanged() REPORT A SETTING AS CONFIGURED WHILE IT
@@ -4522,6 +4858,9 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
+    // A plain flag whose key happens to contain "clusterToken": an operator must be able to see it is on (issue #10601).
+    if (this == HA_CLUSTER_TOKEN_ALLOW_ROTATION)
+      return hidden;
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 
@@ -4715,5 +5054,41 @@ public enum GlobalConfiguration {
            OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES -> true;
       default -> false;
     };
+  }
+
+  /**
+   * The timer behind {@link #DUMP_METRICS_EVERY} (issue #11119). A nested class so nothing about it is initialized before
+   * the setting asks for it: the enum's constants are constructed, and their callbacks can run, before any static field of
+   * the enum is assigned. Every write of the setting replaces the schedule instead of adding to it, and a period that is not
+   * positive cancels the timer, which ends its thread.
+   */
+  private static final class MetricsDumpTimer {
+    static final String THREAD_NAME = "ArcadeDB-DumpMetrics";
+    private static Timer timer;
+
+    private static synchronized void reschedule(final long periodMs) {
+      if (timer != null) {
+        timer.cancel();
+        timer = null;
+      }
+      if (periodMs <= 0)
+        return;
+
+      timer = new Timer(THREAD_NAME, true);
+      timer.schedule(new TimerTask() {
+        @Override
+        public void run() {
+          // Two concurrent writes can leave this schedule behind a value it does not match: the callback of one runs before
+          // the other stores its value. The schedule follows the stored value, so a timer left running for a period that is
+          // no longer set ends itself here instead of dumping forever
+          final long current = DUMP_METRICS_EVERY.getValueAsLong() * 1000;
+          if (current != periodMs) {
+            reschedule(current);
+            return;
+          }
+          Profiler.INSTANCE.dumpMetrics(System.out);
+        }
+      }, periodMs, periodMs);
+    }
   }
 }

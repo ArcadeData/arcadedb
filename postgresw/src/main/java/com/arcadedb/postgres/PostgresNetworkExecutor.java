@@ -79,6 +79,8 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.monitor.QueryProfile;
@@ -140,6 +142,16 @@ public class PostgresNetworkExecutor extends Thread {
 
   public static final String PG_SERVER_VERSION = "12.0";
 
+  /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
+  static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
+  /**
+   * admin_shutdown: what PostgreSQL terminates a backend with when an administrator takes its database away under it - here, a
+   * database closed, restored or dropped under a transaction the connection had open (issue #10692).
+   */
+  static final String SQLSTATE_ADMIN_SHUTDOWN       = "57P01";
+  /** invalid_catalog_name: what PostgreSQL answers a connection to a database that does not exist (issue #10795). */
+  static final String SQLSTATE_INVALID_CATALOG_NAME = "3D000";
+
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
   /**
    * The cap PostgreSQL itself puts on a startup packet ({@code PQ_STARTUP_MSG_LIMIT} in {@code pqcomm.c}).
@@ -162,7 +174,7 @@ public class PostgresNetworkExecutor extends Thread {
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
   /** PostgreSQL itself caps a statement at 65535 parameters. */
-  private static final int                                            MAX_STATEMENT_PARAMETERS = 65535;
+  static final int                                                    MAX_STATEMENT_PARAMETERS = 65535;
   /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
   private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
       "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
@@ -489,7 +501,7 @@ public class PostgresNetworkExecutor extends Thread {
               consecutiveErrors = 0;
               currentMessageType = type;
 
-              if (type != 'X' && !revalidateUser())
+              if (type != 'X' && (!revalidateUser() || !rebindReplacedDatabase()))
                 return;
 
               switch (type) {
@@ -542,6 +554,8 @@ public class PostgresNetworkExecutor extends Thread {
         }
       } finally {
         ACTIVE_SESSIONS.remove(processId, this);
+        // A client that drops the connection in the middle of a fetch leaves its cursors open (issue #6659)
+        dropPortals();
         rollbackPendingTransaction();
       }
 
@@ -618,8 +632,11 @@ public class PostgresNetworkExecutor extends Thread {
     // recovers is owed the CloseComplete it is waiting for.
 
     if (closeType == 'P')
-      getPortal(prepStatementOrPortal, true);
+      closePortalCursor(getPortal(prepStatementOrPortal, true));
     else if (closeType == 'S')
+      // The portals bound from the statement stay executable (issue #11034). The protocol documentation says closing a statement
+      // closes them, but PostgreSQL does not: DropPreparedStatement() only releases the plan source, each portal holds its own
+      // reference to the plan, and its Execute keeps answering. A portal here is likewise a copy of the statement (bindFrom())
       preparedStatements.remove(prepStatementOrPortal);
 
     if (DEBUG)
@@ -697,24 +714,38 @@ public class PostgresNetworkExecutor extends Thread {
         // Execute(s) depend on this same fullResultSet being run exactly once.
         try {
           beginImplicitTransactionBlock(portal);
-          // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
-          // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
-          // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
-          // re-running the statement or losing what Describe already had to read. Bounded by the same cap as
-          // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
-          // what is held here. Marked executed only once the rows are held, so a refused portal is not left
-          // looking like a drained one.
-          // The query admission slot (issue #9518) covers the query and its column resolution, which may replay the query for an
-          // empty result, and goes back before anything is written to the client
-          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
-              final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
-            portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
-            portal.executed = true;
-            resolvePortalColumns(portal, true);
+          final Map<String, PostgresType> fixedColumns = fixedColumnsOf(portal, true);
+          if (fixedColumns != null)
+            // A projection of declared properties names its columns from the schema (issue #6659): the statement is
+            // run, as a Describe('P') always runs it, but no row is read until an Execute asks for it
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+              openPortalCursor(portal, fixedColumns);
+            }
+          else
+            // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
+            // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
+            // portal keeps this list so the Execute(s) that follow slice it by their own row-limit instead of
+            // re-running the statement or losing what Describe already had to read. Bounded by the same cap as
+            // the simple-query path (issue #7034): the portal's row limit bounds what each Execute SENDS, not
+            // what is held here. Marked executed only once the rows are held, so a refused portal is not left
+            // looking like a drained one.
+            // The query admission slot (issue #9518) covers the query and its column resolution, which may replay the query for an
+            // empty result, and goes back before anything is written to the client
+            try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+                final RunningStatement ignoredStatement = startStatement(portal.language, portal.query)) {
+              portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
+              portal.executed = true;
+              if (!isRowlessWrite(portal.sqlStatement))
+                resolvePortalColumns(portal, true);
+            }
+          if (isRowlessWrite(portal.sqlStatement))
+            // PostgreSQL describes a write with no RETURN as NoData, and Execute answers it with a bare tag (issue #11017)
+            writeNoData();
+          else {
+            answerWithColumns(portal);
+            portal.rowsDescribed = true;
+            rememberDescribedLayout(portal);
           }
-          answerWithColumns(portal);
-          portal.rowsDescribed = true;
-          rememberDescribedLayout(portal);
         } catch (final CommandParsingException e) {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
@@ -730,7 +761,7 @@ public class PostgresNetworkExecutor extends Thread {
         } finally {
           CommandTimeoutOverride.clear();
         }
-      } else if (portal.isExpectingResult && portal.columns != null) {
+      } else if (portal.isExpectingResult && portal.columns != null && !isRowlessWrite(portal.sqlStatement)) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
         // previous Describe/Execute already ran. Its columns are answered as they stand rather than
         // re-derived: the rows they came from cannot have changed - the portal is run exactly once - so a
@@ -844,7 +875,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (portal.sqlStatement == null)
       // No parsed statement: a non-"sql" language (cypher/gremlin/graphql) goes straight to its own engine.
-      return database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
+      return database.command(portal.language, toEngineText(portal.language, portal.query), server.getConfiguration(),
+          getParams(portal));
 
     final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
     final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
@@ -867,7 +899,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (mustForwardToTheLeader(statement))
       // The text is parsed again there, out of the engine's statement cache, a cost only a follower's write pays. The
       // replicated command() re-checks leadership itself, so a node that became the leader meanwhile runs it locally.
-      return database.command(language, text, server.getConfiguration(), parameters);
+      return database.command(language, toEngineText(language, text), server.getConfiguration(), parameters);
     return statement.execute(database, parameters, createCommandContext());
   }
 
@@ -931,6 +963,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (!portal.catalogQuery || portal.columns == null)
       portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
           announced && portal.statement != null && portal.statement.namedStatement);
+    if (!portal.catalogQuery)
+      applyDeclaredColumns(portal.sqlStatement, rows, portal.columns);
     if (announced && portal.statement != null && portal.statement.namedStatement && !portal.catalogQuery)
       stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
@@ -1005,7 +1039,10 @@ public class PostgresNetworkExecutor extends Thread {
         portal.sessionCommand = null;
       }
 
-      if (portal.ignoreExecution)
+      if (portal.emptyQuery)
+        // An empty statement has no command tag: EmptyQueryResponse takes the place of CommandComplete (issue #11028)
+        emptyQueryResponse();
+      else if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
         // CommandComplete, not NoData - NoData ('n') is a Describe-only reply and is never a legal answer to
         // Execute (issue #6930). The tag comes from portal.query, so getTag() spells it BEGIN/COMMIT/ROLLBACK
@@ -1029,7 +1066,25 @@ public class PostgresNetworkExecutor extends Thread {
           // until its first row has gone out: a fetch-size cursor continuing a suspended SHOW ALL must keep slicing
           // the answer it started on, and a drained one must stay drained (issue #8708)
           portal.fullResultSet = showResultSet(portal.showName);
-        if (!portal.executed) {
+        else if (portal.catalogAnsweredAtParse && portal.resultCursor == 0) {
+          // The same for a catalog query answered at Parse: the schema as it stands at THIS Execute, not the one a named
+          // prepared statement saw at Parse, in both directions (a type created or dropped since). The columns are those
+          // of the emulated relation whatever the rows are, so the ones Parse (or a Describe) fixed stay (issue #10922)
+          final CatalogAnswer fresh = handleCatalogQuery(portal.query);
+          // A query that is no longer recognised keeps the answer Parse gave it, as before this refresh existed
+          if (fresh != null)
+            portal.fullResultSet = fresh.rows();
+        }
+        final Map<String, PostgresType> fixedColumns = portal.executed || !portal.isExpectingResult ? null : fixedColumnsOf(portal, false);
+        if (fixedColumns != null) {
+          // Its columns are known before its rows (issue #6659): run as a live cursor that each Execute pulls only the
+          // rows it asks for from, rather than read whole now
+          final long engineStart = System.nanoTime();
+          try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit()) {
+            openPortalCursor(portal, fixedColumns);
+          }
+          profile.addEngineNanos(System.nanoTime() - engineStart);
+        } else if (!portal.executed) {
           final long engineStart = System.nanoTime();
           if (portal.isExpectingResult) {
             // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
@@ -1066,6 +1121,18 @@ public class PostgresNetworkExecutor extends Thread {
             portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
           }
+        }
+
+        if (portal.streamed) {
+          executeFromCursor(portal, limit, profile);
+          return;
+        }
+
+        // A write with no RETURN is answered as PostgreSQL does on every path, whatever Describe preceded this Execute
+        // (issue #11017): no DataRow, and a tag carrying the number of records it changed
+        if (portal.isExpectingResult && portal.fullResultSet != null && isRowlessWrite(portal.sqlStatement)) {
+          answerRowlessWrite(portal);
+          return;
         }
 
         if (portal.promisedNoData() && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
@@ -1163,31 +1230,35 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * Answers an Execute of a write with no RETURN clause (issues #8379, #11017): PostgreSQL's own exchange, a
+   * CommandComplete tagged with the number of records the statement changed and no DataRow. ArcadeDB answers such a
+   * write with the records (or the count) it wrote, which only echo the write: a client that described the statement
+   * rather than the portal - asyncpg, npgsql, pgx - has no column list to decode them with, and one that described the
+   * portal or nothing at all (pgjdbc) reads them as a result set where {@code executeUpdate()} expects none.
+   */
+  private void answerRowlessWrite(final PostgresPortal portal) {
+    portal.resultCursor = portal.fullResultSet.size();
+    portal.suspended = false;
+    writeCommandComplete(portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
+  }
+
+  /**
    * Answers an Execute whose statement a {@code Describe('S')} announced with {@code NoData}, but which produced rows
-   * (issue #8379). A DataRow is only legal after a RowDescription, Execute never sends one (issue #8244), and a client
-   * that described the statement rather than the portal - asyncpg, npgsql, pgx - has no column list or type OIDs to
-   * decode them with, so the rows cannot be sent as they are:
-   * <ul>
-   *   <li>a write with no RETURN clause is what PostgreSQL itself answers with NoData, and its rows are only ArcadeDB
-   *       echoing the records it wrote: the exchange is PostgreSQL's own, CommandComplete tagged with the row count
-   *       and no DataRow;</li>
-   *   <li>anything else really returns a result set its Describe could not name: refused with an error rather than
-   *       answered with rows no RowDescription announced, which no client can decode. Describing the portal instead
-   *       ({@code Describe('P')}, what pgjdbc and libpq send) runs it first and names the columns it produced.</li>
-   * </ul>
+   * (issue #8379) and is not a write with no RETURN clause, which {@link #answerRowlessWrite} answers. A DataRow is only
+   * legal after a RowDescription, Execute never sends one (issue #8244), and a client that described the statement
+   * rather than the portal has no column list or type OIDs to decode them with, so the statement really returns a result
+   * set its Describe could not name: refused with an error rather than answered with rows no RowDescription announced,
+   * which no client can decode. Describing the portal instead ({@code Describe('P')}, what pgjdbc and libpq send) runs
+   * it first and names the columns it produced.
    */
   private void answerDescribedNoData(final PostgresPortal portal) {
     final int rows = portal.fullResultSet.size();
     portal.resultCursor = rows;
     portal.suspended = false;
-    if (isRowlessWrite(portal.sqlStatement))
-      writeCommandComplete(portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
-    else {
-      setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
-          + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
-          "0A000"); // feature_not_supported
-    }
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
+        + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
+        "0A000"); // feature_not_supported
   }
 
   /**
@@ -1262,7 +1333,7 @@ public class PostgresNetworkExecutor extends Thread {
           endTransactionBlockState();
           // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
           writeCommandComplete("ROLLBACK", 0);
-        } else if (queryText.isEmpty()) {
+        } else if (isEmptyStatement(queryText)) {
           emptyQueryResponse();
         } else {
           // Every other statement is refused, not silently swallowed (issue #6457): the client needs an
@@ -1273,7 +1344,7 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      if (queryText.isEmpty()) {
+      if (isEmptyStatement(queryText)) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
         // PostgreSQL closes the transaction even for an empty query string (issue #8214)
         commitSimpleQueryTransaction();
@@ -1386,7 +1457,7 @@ public class PostgresNetworkExecutor extends Thread {
           } else {
             admission = QueryAdmissionGate.getInstance().admit();
             statement = startStatement(query.language, query.query);
-            resultSet = database.command(query.language, query.query, server.getConfiguration());
+            resultSet = database.command(query.language, toEngineText(query.language, query.query), server.getConfiguration());
           }
         }
       }
@@ -1397,9 +1468,13 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      if (!answersNoRows) {
+      // A write with no RETURN is answered with the bare tag PostgreSQL gives it, whichever path it arrives on (issue #11017)
+      final boolean rowlessWrite = isRowlessWrite(parsedStatement);
+      if (!answersNoRows && !rowlessWrite) {
         Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
             : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
+        if (catalogAnswer == null)
+          applyDeclaredColumns(parsedStatement, cachedResultSet, columns);
         if (columns.isEmpty() && cachedResultSet.isEmpty()) {
           final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
               parsedStatement);
@@ -1417,7 +1492,7 @@ public class PostgresNetworkExecutor extends Thread {
       // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
       // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
       // with an empty command tag instead of e.g. "BEGIN".
-      writeCommandComplete(commandTag, cachedResultSet.size());
+      writeCommandComplete(commandTag, rowlessWrite ? affectedRecords(parsedStatement, cachedResultSet) : cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
@@ -1575,10 +1650,10 @@ public class PostgresNetworkExecutor extends Thread {
    * it just connected to.
    * <p>
    * Two recognisers share the work: {@link PostgresTypeCatalog} for {@code pg_type}, whose element-type
-   * self-join is a shape no plain projection can express, and {@link PostgresCatalog} for the rest. A shape
-   * neither of them will answer gets the empty result set that a pg_catalog query it did not understand has
-   * always been given, rather than being handed to ArcadeDB's SQL engine, which has no such tables and would
-   * answer with a syntax error.
+   * self-join is a shape no plain projection can express, and {@link PostgresCatalog} for the rest. A catalog
+   * query neither of them can answer is refused with {@code feature_not_supported} (issue #10371); a FROM-less
+   * session probe naming pg_catalog is answered by {@link PostgresCatalog#resolveProbe} (issue #10695); anything
+   * else, whatever words its text holds, is executed normally.
    *
    * @param parameters the values bound to the query's placeholders, empty at Parse time and supplied at
    *                   Execute time, when the client has sent them
@@ -1594,19 +1669,49 @@ public class PostgresNetworkExecutor extends Thread {
           Thread.currentThread().threadId());
 
     // A set operation naming no catalog relation (issue #10228) is never a pg_type lookup.
-    final List<Result> types = PostgresCatalog.mightBeCatalogQuery(query) ? toResults(PostgresTypeCatalog.resolve(query)) : null;
+    // The columns come from the recogniser, not from the rows: a lookup of a type that does not exist still announces the columns
+    // it projected (issue #10869)
+    final PostgresCatalog.Answer types = PostgresCatalog.mightBeCatalogQuery(query) ?
+        PostgresTypeCatalog.resolveAnswer(query, () -> PostgresCatalog.rowTypes(database)) : null;
     if (types != null)
-      return new CatalogAnswer(types, getColumns(types));
+      return new CatalogAnswer(toResults(types.rows), types.columns);
 
-    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, userName, parameters);
-    if (answer != null && answer.rows != null)
-      return new CatalogAnswer(toResults(answer.rows), answer.columns);
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolveForSession(query, database, userName, sessionSettings, parameters);
+    if (answer != null) {
+      if (answer.rows != null)
+        return new CatalogAnswer(toResults(answer.rows), answer.columns);
 
-    if (answer == PostgresCatalog.DECLINED || PostgresCatalog.containsIgnoreCase(query, "pg_catalog")
-        || PostgresCatalog.containsIgnoreCase(query, "pg_type"))
-      return new CatalogAnswer(Collections.emptyList(), Map.of());
+      // An answer with no rows to send is a refusal, whatever the reason: a new reason cannot fall into the empty result set by
+      // default, which would read as an empty catalog and lose the one row of an ungrouped count (issue #10371)
+      return refuseCatalogQuery(query, parameters, false);
+    }
+
+    // The session probes pg_dump and friends send - SELECT pg_catalog.set_config(...), a FROM-less SELECT naming pg_catalog or
+    // pg_type - are answered here rather than handed to ArcadeDB's SQL engine, which reads pg_catalog.f() as a method call. The
+    // test is on the tokens, never on the text: a statement that merely CONTAINS those words - in a string literal, in a column
+    // name, in an INSERT - goes to the engine like any other (issue #10695)
+    // A probe this catalog cannot evaluate is refused like a declined catalog query, not answered with no row: PostgreSQL answers
+    // a FROM-less SELECT with exactly one row or an error (issue #10883)
+    final PostgresCatalog.Answer probe = PostgresCatalog.resolveProbe(query, database, userName, sessionSettings, parameters);
+    if (probe == PostgresCatalog.DECLINED)
+      return refuseCatalogQuery(query, parameters, true);
+    if (probe != null)
+      return new CatalogAnswer(toResults(probe.rows), probe.columns);
 
     return null;
+  }
+
+  /**
+   * Refuses a catalog query the resolver declined, with {@code feature_not_supported} (issue #10371). Not while its placeholders
+   * are unbound: a Parse, or a Describe of a statement, sees the query before the values of its filters arrive, and a shape whose
+   * resolver needs a value to recognise it declines until they do (issue #8562). That is not the answer yet, so it is deferred as
+   * an empty one and asked again at Execute, where the same refusal is final. The lookups a driver sends to name a type it does not
+   * know are answered from {@link PostgresType} like any other catalog query (issue #10495): there is no exemption for them.
+   */
+  private static CatalogAnswer refuseCatalogQuery(final String query, final Object[] parameters, final boolean probe) {
+    if (parameters.length < PostgresCatalog.countPlaceholders(query))
+      return new CatalogAnswer(Collections.emptyList(), Map.of());
+    throw probe ? PostgresCatalog.refusalOfProbe() : PostgresCatalog.refusalOf(query);
   }
 
   private static List<Result> toResults(final List<Map<String, Object>> rows) {
@@ -1635,6 +1740,83 @@ public class PostgresNetworkExecutor extends Thread {
       names.addAll(row.getElement().get().getPropertyNames());
     names.addAll(row.getPropertyNames());
     return names;
+  }
+
+  /**
+   * Holds the columns sampled from {@code rows} to the schema when the statement is a SELECT over a schema type (issue
+   * #11026): the announced columns are a property of the declaration, not of which rows matched and whether any carried a
+   * value, which is what {@code Describe('S')} already answers. A declared property the statement projects but no row
+   * carries is added, typed from the schema; one that is announced as the varchar placeholder of a NULL on every row takes
+   * its declared type. A column a row does carry keeps its sampled type (issue #6447), and undeclared properties stay
+   * as sampled. Nothing is done for a result with no row: that is answered from the schema already.
+   *
+   * @param columns the columns {@link #getColumns} sampled, completed in place
+   */
+  private void applyDeclaredColumns(final Statement parsed, final List<Result> rows, final Map<String, PostgresType> columns) {
+    if (rows == null || rows.isEmpty() || columns == null || !(parsed instanceof SelectStatement select))
+      return;
+
+    final DocumentType type = resolveQueryTargetType(parsed);
+    if (type == null)
+      return;
+
+    final Map<String, PostgresType> declared = new LinkedHashMap<>();
+    collectDeclaredColumns(type, declared);
+    if (declared.isEmpty())
+      return;
+
+    final Map<String, PostgresType> expected = applyProjection(select.getProjection(), declared);
+    if (expected == null)
+      return;
+
+    // an aliased bare property (SELECT n AS x) is typed from the property it reads, as Describe('S') does (issue #11164)
+    final Map<String, String> aliasToSourceProperty = resolveAliasToSourceProperty(parsed);
+    final Set<String> computed = computedOutputNames(select.getProjection());
+
+    boolean added = false;
+    for (final Map.Entry<String, PostgresType> entry : expected.entrySet()) {
+      final String name = entry.getKey();
+      final String sourceProperty = aliasToSourceProperty.get(name);
+      final PostgresType declaredType = declared.get(sourceProperty != null ? sourceProperty : name);
+      // a computed item is not a declared property, even when its output name repeats one: its type is the sampled one
+      if (declaredType == null || declaredType != entry.getValue() || computed.contains(name))
+        continue;
+
+      final PostgresType sampled = columns.get(name);
+      if (sampled == null) {
+        columns.put(name, declaredType);
+        added = true;
+      } else if (sampled == PostgresType.VARCHAR && declaredType != PostgresType.VARCHAR && isNullOnEveryRow(rows, name))
+        columns.put(name, declaredType);
+    }
+
+    if (added)
+      moveSystemColumnsLast(columns);
+  }
+
+  /**
+   * The output names of the projection items that are neither {@code *} nor a bare property reference: their type does
+   * not come from the schema, whatever declared property their name happens to repeat.
+   */
+  private static Set<String> computedOutputNames(final Projection projection) {
+    if (projection == null || projection.getItems() == null)
+      return Set.of();
+
+    final Set<String> names = new HashSet<>();
+    for (final ProjectionItem item : projection.getItems())
+      if (!item.isAll() && !item.exclude && item.getExpression() != null && !item.getExpression().isBaseIdentifier()) {
+        final String alias = item.getProjectionAliasAsString();
+        if (alias != null)
+          names.add(alias);
+      }
+    return names;
+  }
+
+  private static boolean isNullOnEveryRow(final List<Result> rows, final String property) {
+    for (final Result row : rows)
+      if (row.getProperty(property) != null)
+        return false;
+    return true;
   }
 
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
@@ -2102,7 +2284,7 @@ public class PostgresNetworkExecutor extends Thread {
    * Returns null as soon as an item does not name a column on its own - a {@code *} or an exclusion, which both
    * need the row source, or an {@code expand()}, which replaces the row with whatever it expands.
    */
-  private Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
+  private static Map<String, PostgresType> getColumnsFromProjection(final Projection projection) {
     if (projection == null || projection.getItems() == null || projection.getItems().isEmpty())
       return null;
 
@@ -2233,6 +2415,21 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * The columns a SELECT projects, named and typed as a statement Describe names and types them, from {@code sourceColumns} - the
+   * declared columns of the type it reads, empty when it reads none - and never from a row: the columns of a materialized view are
+   * the ones its query projects (issue #10799), and the catalog that describes them reads no record. Null when the projection does
+   * not name its columns on its own ({@code expand()}, or a {@code *} over a source with no declared column).
+   */
+  static Map<String, PostgresType> columnsProjectedBy(final SelectStatement select, final Map<String, PostgresType> sourceColumns) {
+    if (!sourceColumns.isEmpty()) {
+      final Map<String, PostgresType> projected = applyProjection(select.getProjection(), sourceColumns);
+      if (projected != null && !projected.isEmpty())
+        return projected;
+    }
+    return getColumnsFromProjection(select.getProjection());
+  }
+
+  /**
    * Narrows the columns discovered for the queried target down to what the query really projects. The
    * discovery always looks at the whole target (a sample row or the declared properties), so without this
    * step a probe like {@code SELECT name FROM Character WHERE 1=0} would advertise every property plus the
@@ -2240,7 +2437,7 @@ public class PostgresNetworkExecutor extends Thread {
    * aliases, functions and expressions are handled the same way the executor handles them. When the query has
    * no projection ({@code SELECT FROM Type}), the full column set is returned unchanged.
    */
-  private Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
+  private static Map<String, PostgresType> applyProjection(final Projection projection, final Map<String, PostgresType> columns) {
     if (columns == null || columns.isEmpty())
       return columns;
 
@@ -2278,7 +2475,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (type == null)
         type = inferComputedColumnType(itemExpression, columns);
       if (type == null)
-        type = columns.getOrDefault(alias, PostgresType.VARCHAR);
+        // a computed item is not the declared property its output name happens to repeat (issue #11164)
+        type = itemExpression != null && !itemExpression.isBaseIdentifier() ? PostgresType.VARCHAR : columns.getOrDefault(alias, PostgresType.VARCHAR);
 
       projected.put(alias, type);
     }
@@ -2463,7 +2661,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     try {
       final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-      return sqlEngine.parse(query, (DatabaseInternal) database);
+      return sqlEngine.parse(toEngineText("sql", query), (DatabaseInternal) database);
     } catch (final Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: cannot parse query '%s': %s", query, e.getMessage());
@@ -2717,45 +2915,53 @@ public class PostgresNetworkExecutor extends Thread {
     final Binary bufferData = new Binary();
     final Binary bufferValues = new Binary();
 
-    for (final Result row : resultSet) {
-      bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
-
-      int colIndex = 0;
-      for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
-        final String propertyName = postgresTypeEntry.getKey();
-        final Object value = columnValue(row, propertyName);
-
-        final PostgresType columnType = postgresTypeEntry.getValue();
-        if (resolveResultFormat(resultFormats, colIndex++) == 1)
-          columnType.serializeAsBinary(columnType, bufferValues, value);
-        else
-          columnType.serializeAsText(columnType, bufferValues, value);
-      }
-
-      bufferValues.flip();
-      final int dataRowLength = 4 + bufferValues.getByteBuffer().limit();
-      bufferData.putByte((byte) 'D');
-      bufferData.putInt(dataRowLength);
-      bufferData.putBuffer(bufferValues.getByteBuffer());
-
-      if (DEBUG)
-        LogManager.instance().log(this, Level.INFO,
-            "PSQL:-> DataRow: cols=%d, bufferValues=%d, dataRowLength=%d, bufferData=%d (thread=%s)",
-            columns.size(), bufferValues.getByteBuffer().limit(), dataRowLength,
-            bufferData.position(), Thread.currentThread().threadId());
-
-      bufferData.flip();
-      channel.writeBuffer(bufferData.getByteBuffer());
-
-      bufferData.clear();
-      bufferValues.clear();
-    }
+    for (final Result row : resultSet)
+      writeDataRow(row, columns, resultFormats, bufferData, bufferValues);
 
     channel.flush();
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) data written (thread=%s)", resultSet.size(),
           Thread.currentThread().threadId());
+  }
+
+  /**
+   * Writes one DataRow without flushing it, through two buffers the caller hands to every row it writes: a live cursor
+   * writes its rows one by one as it pulls them (issue #6659).
+   */
+  private void writeDataRow(final Result row, final Map<String, PostgresType> columns, final List<Integer> resultFormats,
+      final Binary bufferData, final Binary bufferValues) throws IOException {
+    bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
+
+    int colIndex = 0;
+    for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
+      final String propertyName = postgresTypeEntry.getKey();
+      final Object value = columnValue(row, propertyName);
+
+      final PostgresType columnType = postgresTypeEntry.getValue();
+      if (resolveResultFormat(resultFormats, colIndex++) == 1)
+        columnType.serializeAsBinary(columnType, bufferValues, value);
+      else
+        columnType.serializeAsText(columnType, bufferValues, value);
+    }
+
+    bufferValues.flip();
+    final int dataRowLength = 4 + bufferValues.getByteBuffer().limit();
+    bufferData.putByte((byte) 'D');
+    bufferData.putInt(dataRowLength);
+    bufferData.putBuffer(bufferValues.getByteBuffer());
+
+    if (DEBUG)
+      LogManager.instance().log(this, Level.INFO,
+          "PSQL:-> DataRow: cols=%d, bufferValues=%d, dataRowLength=%d, bufferData=%d (thread=%s)",
+          columns.size(), bufferValues.getByteBuffer().limit(), dataRowLength,
+          bufferData.position(), Thread.currentThread().threadId());
+
+    bufferData.flip();
+    channel.writeBuffer(bufferData.getByteBuffer());
+
+    bufferData.clear();
+    bufferValues.clear();
   }
 
   /**
@@ -2868,7 +3074,7 @@ public class PostgresNetworkExecutor extends Thread {
         QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), language, "command");
       }
     } else
-      resultSet = database.command(language, queryText, server.getConfiguration(), parameters);
+      resultSet = database.command(language, toEngineText(language, queryText), server.getConfiguration(), parameters);
 
     // From here to the end the result set is owned by this method and closed on every exit - a refusal below, a
     // failure while streaming - and NOT closed twice: browseAndCacheBoundedResultSet closes what it materializes.
@@ -2879,6 +3085,7 @@ public class PostgresNetworkExecutor extends Thread {
         resultSetOpen = false;
         buffered = browseAndCacheBoundedResultSet(resultSet);
         columns = getColumns(buffered, resolveQueryTargetType(parsed), resolveAliasToSourceProperty(parsed));
+        applyDeclaredColumns(parsed, buffered, columns);
         if (columns.isEmpty() && buffered.isEmpty()) {
           final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(queryText, language, parameters, parsed);
           if (schemaColumns != null)
@@ -3085,17 +3292,21 @@ public class PostgresNetworkExecutor extends Thread {
       // failed one leaves no portal under it; the only exception is skip-until-Sync, where PostgreSQL DISCARDS
       // the message unread and it must leave the name exactly as it found it - the same boundary parseCommand()
       // draws. skipUntilSync cannot change while the rest of this message is read, so it is safe to test here.
-      if (!skipUntilSync)
-        portals.remove(portalName);
+      // A NAMED portal is not replaced at all (issue #11034): a Bind naming a live one is refused with 42P03 below and the
+      // portal is left alone. That failure, like any other, aborts the block the portal lives in, so it cannot answer again:
+      // an implicit block drops it at Sync, an explicit one refuses its Execute until COMMIT/ROLLBACK drops it.
+      if (!skipUntilSync && portalName.isEmpty())
+        closePortalCursor(portals.remove(portalName));
 
       // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
       // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
       // from here on - bindFrom() copies what PARSE already fixed for the statement (query, sqlStatement,
-      // parameter types, and any response PARSE precomputed for BEGIN/COMMIT/ROLLBACK or a resolved catalog
-      // answer) into a fresh object, so that two portal names bound from the same statement - or the same
-      // portal name re-bound without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching
-      // does for a repeated query - never share mutable execution state (parameterValues, fullResultSet,
-      // resultCursor, suspended...). Without this, a later Bind on one portal name could
+      // parameter types, and any response PARSE precomputed for BEGIN/COMMIT/ROLLBACK or a resolved catalog,
+      // SHOW or system-query answer, whose rows every portal of the statement shares read-only) into a fresh
+      // object, so that two portal names bound from the same statement - or the same portal name re-bound
+      // without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching does for a repeated
+      // query - never share mutable execution state (parameterValues, resultCursor, cursor, suspended...).
+      // Without this, a later Bind on one portal name could
       // silently reset or overwrite another already-bound (possibly suspended) portal from the same statement,
       // since both names used to point at the very same object.
       // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters
@@ -3108,7 +3319,7 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
                 Thread.currentThread().threadId());
 
-      final int paramFormatCount = channel.readShort();
+      final int paramFormatCount = channel.readUnsignedShort();
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
             paramFormatCount, Thread.currentThread().threadId());
@@ -3120,11 +3331,24 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
-      final int paramValuesCount = channel.readShort();
+      final int paramValuesCount = channel.readUnsignedShort();
       totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
             paramValuesCount, Thread.currentThread().threadId());
+
+      // PostgreSQL's exec_bind_message() refuses both mismatches with 08P01 before anything runs (issue #11018). A Bind short of
+      // a value left its $N to the engine, which reads a $N with nothing bound at its position as the variable of that name:
+      // an UPDATE wrote NULL and answered success. The values are still read off the wire, but not deserialized.
+      final String bindViolation;
+      if (paramFormatCount > 1 && paramFormatCount != paramValuesCount)
+        bindViolation = "bind message has " + paramFormatCount + " parameter formats but " + paramValuesCount + " parameters";
+      else if (preparedStatement != null && paramValuesCount != requiredParameters(preparedStatement))
+        bindViolation = "bind message supplies " + paramValuesCount + " parameters, but prepared statement \"" + sourcePreparedStatement
+            + "\" requires " + requiredParameters(preparedStatement);
+      else
+        bindViolation = null;
+
       if (paramValuesCount > 0) {
         portal.parameterValues = new ArrayList<>(paramValuesCount);
         for (int i = 0; i < paramValuesCount; i++) {
@@ -3164,6 +3388,10 @@ public class PostgresNetworkExecutor extends Thread {
           paramsConsumed = i + 1;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().threadId());
+
+          if (bindViolation != null)
+            // Refused once the message is consumed: converting a value that will never be bound could only fail differently
+            continue;
 
           // Determine format code according to PostgreSQL protocol:
           // - If paramFormatCount == 0: all parameters use text format (0)
@@ -3216,6 +3444,13 @@ public class PostgresNetworkExecutor extends Thread {
         // pipelined behind the failing message gets no second ErrorResponse of its own.
         return;
 
+      if (bindViolation != null && preparedStatement != null) {
+        // Ahead of the aborted-block refusal, in PostgreSQL's order. A Bind from a missing statement is refused for that below
+        setExtendedProtocolError();
+        writeError(ERROR_SEVERITY.ERROR, bindViolation, "08P01");
+        return;
+      }
+
       if (errorInTransaction && !endsTransactionBlock(preparedStatement)) {
         // A prepared COMMIT/ROLLBACK/END is let through (issue #8029): it is the statement that ends the block, and
         // executeCommand() runs it as the rollback it has to be. Refusing it here left a client that reuses a cached
@@ -3243,6 +3478,9 @@ public class PostgresNetworkExecutor extends Thread {
         refuseMissingPreparedStatement(sourcePreparedStatement);
         return;
       }
+
+      if (refuseLiveNamedPortal(portalName))
+        return;
 
       portals.put(portalName, portal);
       if (DEBUG)
@@ -3302,26 +3540,30 @@ public class PostgresNetworkExecutor extends Thread {
       final Query query = getLanguageAndQuery(normalizeStatementText(readString()));
 
       final PostgresPortal portal = new PostgresPortal(query.query, query.language);
-      final int paramCount = channel.readShort();
+      final int paramCount = channel.readUnsignedShort();
+      // Counted on the text the engine lexes, where a $N is resolved: the wire text still carries PostgreSQL's literals, whose
+      // backslashes mean something else under standard_conforming_strings (issue #11018 review). Reused for the parse below
+      final String engineText = toEngineText(query.language, query.query);
+      final int highestPlaceholder = highestParameterPlaceholder(engineText);
 
       if (paramCount > 0) {
-        portal.parameterTypes = new ArrayList<>(paramCount);
+        portal.parameterTypes = new ArrayList<>(Math.max(paramCount, Math.min(highestPlaceholder, MAX_STATEMENT_PARAMETERS)));
         for (int i = 0; i < paramCount; i++) {
           final long param = channel.readUnsignedInt();
           portal.parameterTypes.add(param);
         }
-      } else {
-        // Client sent paramCount=0 (e.g., asyncpg, node-postgres)
-        // Detect $N placeholders in the query to determine actual parameter count
-        final int detectedParams = detectParameterPlaceholders(query.query);
-        if (detectedParams > 0) {
-          portal.parameterTypes = new ArrayList<>(detectedParams);
-          for (int i = 0; i < detectedParams; i++) {
-            // Use VARCHAR (OID 1043) as default type instead of 0 (unspecified)
-            // This prevents asyncpg from trying to introspect unknown types via pg_type
-            portal.parameterTypes.add((long) PostgresType.VARCHAR.code);
-          }
-        }
+        // The statement requires a value for every $N up to the highest its text references, declared or not (issue #11018):
+        // PostgreSQL infers the type of the ones the client left out, and bindCommand() checks the count against this list.
+        // UNSPECIFIED is what bindCommand() already deserialized those values as.
+        if (highestPlaceholder <= MAX_STATEMENT_PARAMETERS)
+          for (int i = paramCount; i < highestPlaceholder; i++)
+            portal.parameterTypes.add(0L);
+      } else if (highestPlaceholder > 0 && highestPlaceholder <= MAX_STATEMENT_PARAMETERS) {
+        // Client sent paramCount=0 (e.g., asyncpg, node-postgres): the $N placeholders in the query are the parameter count.
+        // VARCHAR (OID 1043) rather than 0 (unspecified) keeps asyncpg from introspecting unknown types via pg_type.
+        portal.parameterTypes = new ArrayList<>(highestPlaceholder);
+        for (int i = 0; i < highestPlaceholder; i++)
+          portal.parameterTypes.add((long) PostgresType.VARCHAR.code);
       }
 
       final int actualParamCount = portal.parameterTypes != null ? portal.parameterTypes.size() : 0;
@@ -3349,6 +3591,9 @@ public class PostgresNetworkExecutor extends Thread {
         // follow-up).
         final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
         if (isTransactionEndStatement(abortedUpperCaseText) || endsTransactionBlock(parsedTransactionControl(portal))) {
+          if (refuseLiveNamedStatement(portalName))
+            // Refused like any other redefinition of a live statement, before it recovers anything
+            return;
           rollbackActiveTransaction();
           sessionSettings.rollback();
           // Clears skipUntilSync as well, so the Bind/Execute the client pipelines behind this Parse (that is
@@ -3402,8 +3647,11 @@ public class PostgresNetworkExecutor extends Thread {
       // Bind that followed resurrected it: the client received, for the statement this server had just refused,
       // a complete successful answer built from a DIFFERENT statement - BindComplete, RowDescription, the old
       // statement's rows and a success tag (issue #7906). Two round trips apart, so skip-until-Sync (#7775) does
-      // not reach it. Only the prepared statement is dropped, not the portals already bound from it: PostgreSQL
-      // keeps those alive too, each holding the plan it was bound with.
+      // not reach it. Only the prepared statement is dropped, not the portals already bound from it: each holds the
+      // plan it was bound with, as a PostgreSQL portal holds its own reference to the cached plan.
+      //
+      // Only the UNNAMED statement can be replaced this way (issue #11034): a Parse naming a live statement is refused
+      // with 42P05, as StorePreparedStatement() refuses it, and the statement keeps its text. The client closes it first.
       //
       // "ANYTHING THAT CAN FAIL" MEANS ANYTHING THAT CAN FAIL AND LEAVE THE CONNECTION USABLE, which is where
       // this sits rather than immediately after readString() reads the name. The reads above it - the query
@@ -3412,17 +3660,31 @@ public class PostgresNetworkExecutor extends Thread {
       // cannot matter to anybody. The two early returns above it are the deliberate half of the boundary: an
       // aborted block and a skip-until-Sync discard are PostgreSQL DISCARDING this message, not refusing it, and
       // a discarded Parse must leave the name exactly as it found it.
+      if (refuseLiveNamedStatement(portalName))
+        return;
       preparedStatements.remove(portalName);
 
-      if (portal.query.isEmpty()) {
-        emptyQueryResponse();
+      if (highestPlaceholder > MAX_STATEMENT_PARAMETERS) {
+        // No Bind can carry that many values (its count is an int16), so the statement could never run: refused here rather
+        // than registered with a parameter list sized by a number the client chose
+        setExtendedProtocolError();
+        writeError(ERROR_SEVERITY.ERROR, "there is no parameter $" + highestPlaceholder, "42P02");
         return;
       }
 
       final String upperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
-      if (upperCaseText.startsWith("SAVEPOINT ") ||
+      if (isEmptyStatement(portal.query)) {
+        // An empty statement is a statement (issue #11028): PostgreSQL's exec_parse_message registers it and answers
+        // ParseComplete, its Describe answers NoData and its Execute EmptyQueryResponse. Answering EmptyQueryResponse HERE gave
+        // the Parse a reply that belongs to Execute and left the name unregistered, so the Bind/Describe/Execute pipelined
+        // behind it failed with "prepared statement does not exist" (pgjdbc's prepareStatement("") among them)
+        portal.query = "";
+        portal.emptyQuery = true;
+        portal.isExpectingResult = false;
+        portal.ignoreExecution = true;
+      } else if (upperCaseText.startsWith("SAVEPOINT ") ||
           upperCaseText.startsWith("RELEASE ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
@@ -3474,7 +3736,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.copyStatement = PostgresCopyStatement.parse(portal.query);
         if ("sql".equalsIgnoreCase(portal.language)) {
           final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-          portal.sqlStatement = sqlEngine.parse(portal.copyStatement.getQuery(), (DatabaseInternal) database);
+          portal.sqlStatement = sqlEngine.parse(toEngineText("sql", portal.copyStatement.getQuery()), (DatabaseInternal) database);
         }
 
       } else {
@@ -3492,6 +3754,8 @@ public class PostgresNetworkExecutor extends Thread {
           portal.catalogQuery = true;
         } else if (catalogAnswer != null) {
           portal.executed = true;
+          // Re-read at Execute: the schema may change between this Parse and the Execute of a prepared statement (issue #10922)
+          portal.catalogAnsweredAtParse = true;
           // Sliced by the Execute row limit exactly like the same catalog query with bound parameters (issue #8708)
           portal.fullResultSet = catalogAnswer.rows();
           portal.columns = catalogAnswer.columns();
@@ -3533,7 +3797,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-              portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
+              portal.sqlStatement = sqlEngine.parse(engineText, (DatabaseInternal) database);
               final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
               if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
@@ -3821,17 +4085,20 @@ public class PostgresNetworkExecutor extends Thread {
         throw new PostgresSessionSettings.SettingException("DISCARD ALL cannot run inside a transaction block", "25001");
       sessionSettings.resetAll();
       preparedStatements.clear();
-      portals.clear();
+      dropPortals();
     }
+    // The portals bound from a deallocated statement stay executable, as after a Close('S'): see closeCommand() (issue #11034)
     case DEALLOCATE_ALL -> preparedStatements.clear();
     case DEALLOCATE -> {
       if (preparedStatements.remove(command.name()) == null)
         throw new PostgresSessionSettings.SettingException("prepared statement \"" + command.name() + "\" does not exist", "26000");
     }
-    case CLOSE_ALL -> portals.clear();
+    case CLOSE_ALL -> dropPortals();
     case CLOSE -> {
-      if (portals.remove(command.name()) == null)
+      final PostgresPortal closed = portals.remove(command.name());
+      if (closed == null)
         throw new PostgresSessionSettings.SettingException("cursor \"" + command.name() + "\" does not exist", "34000");
+      closePortalCursor(closed);
     }
     case DISCARD_PLANS, DISCARD_SEQUENCES, DISCARD_TEMP -> {
       // Nothing to discard on this server
@@ -3971,7 +4238,7 @@ public class PostgresNetworkExecutor extends Thread {
       final ServerSecurityUser dbUser = server.getSecurity().authenticate(userName, userPassword, databaseName);
       authenticatedUser = dbUser;
 
-      database = server.getDatabase(databaseName);
+      database = server.getDatabaseForClient(databaseName);
 
       DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
       sessionSettings.setSuperuser(ServerSecurityUser.ROOT_USER.equals(dbUser.getName()));
@@ -3985,10 +4252,98 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (final DatabaseOperationException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+      refuseDatabase(e);
       return false;
     }
 
+    return true;
+  }
+
+  /**
+   * Answers a connection whose database the server refused to resolve, with a FATAL error: the caller closes the connection.
+   * A database the server HAS but does not serve now (a restore holds its name, a close database closed it, it is being
+   * dropped) is not a database that does not exist: the advice differs, the client retries one and corrects the name of the
+   * other. The name that is no database is answered as PostgreSQL answers it, 3D000 invalid_catalog_name (issue #10795): HV00Q
+   * is an FDW code (fdw_schema_not_found) no driver associates with a database name.
+   */
+  private void refuseDatabase(final DatabaseOperationException e) {
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (category == ErrorCategory.UNAVAILABLE)
+      writeError(ERROR_SEVERITY.FATAL, "Database is not available", SQLSTATE_CANNOT_CONNECT_NOW);
+    else if (category == ErrorCategory.DATABASE_NOT_FOUND)
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", SQLSTATE_INVALID_CATALOG_NAME);
+    else
+      // Deliberately unchanged: any other failure to open the database (an I/O error, a corrupted directory) keeps the answer it
+      // always had. It is neither a held database nor a missing name, and giving it a code of its own is not this branch's call
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
+  }
+
+  /**
+   * Re-resolves the database this connection serves when the instance it holds has been closed, before each message (issue
+   * #10692). {@link #openDatabase()} resolves the name once, at connect, while the server replaces the instance behind a name on
+   * a {@code close database} followed by {@code open database}, on a restore with {@code overwrite} and on a {@code drop database}
+   * followed by a {@code create database}. A connection that kept the closed instance answered every later statement with
+   * {@code XX000} internal_error for the rest of its life, which for a pooled connection is hours, while a fresh connection worked.
+   * <p>
+   * Three outcomes:
+   * <ul>
+   *   <li>the name resolves again: the connection serves the new instance from this message on, as a fresh connection would;</li>
+   *   <li>it does not ({@code close database} not yet followed by {@code open database}, a restore still running, a drop): the
+   *   connection is closed with the FATAL error the connect path gives for the same name - {@code 57P03} cannot_connect_now for a
+   *   database the server holds, {@code 3D000} invalid_catalog_name for one that is gone - which is how PostgreSQL treats the
+   *   backends of a database taken away under them. A pool replaces the connection, and the new one is refused at connect until
+   *   the name is served again;</li>
+   *   <li>a transaction was open on the closed instance - an explicit {@code BEGIN} block, or an extended-protocol pipeline whose
+   *   portals a Sync has not ended yet: its work went with the instance, so carrying on against the new one would let the client
+   *   commit a block of which only the later statements exist. The connection is closed with {@code 57P01} admin_shutdown, as
+   *   PostgreSQL terminates a backend whose database an administrator took away.</li>
+   * </ul>
+   * Costs one {@code isOpen()} read when nothing changed.
+   *
+   * @return false when the connection was refused and is closing
+   */
+  private boolean rebindReplacedDatabase() {
+    if (database == null || database.isOpen())
+      return true;
+
+    // Every refusal below is FATAL: shutdown ends the message loop once this message returns, as revalidateUser() does, so the
+    // connection is closed after the error instead of reading the next message against a closed instance
+    if (explicitTransactionStarted || !portals.isEmpty()) {
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL,
+          "terminating connection because database '" + databaseName + "' was closed under its open transaction",
+          SQLSTATE_ADMIN_SHUTDOWN);
+      return false;
+    }
+
+    final Database live;
+    try {
+      live = server.getDatabaseForClient(databaseName);
+      // The thread's context for the path was removed when the old instance closed: this one belongs to the new instance. The
+      // user is the one revalidateUser() has just re-resolved and checked against this database name; a user the new instance
+      // does not grant gets the engine's deny-all database user, as at connect
+      DatabaseContext.INSTANCE.init((DatabaseInternal) live).setCurrentUser(authenticatedUser.getDatabaseUser(live));
+    } catch (final DatabaseOperationException e) {
+      shutdown = true;
+      refuseDatabase(e);
+      return false;
+    } catch (final RuntimeException e) {
+      // Answered rather than left to escape: the main loop would log it and answer nothing, and the client would wait for good
+      shutdown = true;
+      writeError(ERROR_SEVERITY.FATAL, clientMessage("Error on reopening database '" + databaseName + "': " + e.getMessage(), e),
+          sqlStateFor(e));
+      return false;
+    }
+
+    database = live;
+    sessionSettings.setIsolationLevels(this::currentIsolationLevel, live::getTransactionIsolationLevel);
+    live.setAutoTransaction(true);
+    // The schema types memoized on the prepared statements are the closed instance's: re-resolved against the new schema on next
+    // use, and the closed instance's schema is no longer reachable from this connection
+    for (final PostgresPortal statement : preparedStatements.values()) {
+      statement.queryTargetType = null;
+      statement.queryTargetTypeResolved = false;
+    }
     return true;
   }
 
@@ -4129,7 +4484,8 @@ public class PostgresNetworkExecutor extends Thread {
         databaseName = paramValue;
         break;
       case "options":
-        // DEPRECATED, IGNORE IT
+        // libpq's PGOPTIONS / pgjdbc's "options": the run-time parameters it names with -c are set like the ones above
+        sessionSettings.setFromStartupOptions(paramValue);
         break;
       case "replication":
         // NOT SUPPORTED, IGNORE IT
@@ -4168,8 +4524,8 @@ public class PostgresNetworkExecutor extends Thread {
       return copy.sqlState;
     if (error instanceof PostgresSessionSettings.SettingException setting)
       return setting.sqlState;
-    if (error instanceof PostgresCatalog.WorkLimitExceeded)
-      return PostgresCatalog.WorkLimitExceeded.SQLSTATE; // program_limit_exceeded (issue #10228)
+    if (error instanceof PostgresCatalog.Refusal refusal)
+      return refusal.sqlState; // program_limit_exceeded (issue #10228), feature_not_supported (issue #10371)
     return switch (ErrorCategory.of(error)) {
       // serialization_failure - the code drivers auto-retry on. Also a follower's refusal naming the leader (issue
       // #9845): the wire has no redirect code, so the leader is named in the message instead (see withLeaderRedirect)
@@ -4184,6 +4540,8 @@ public class PostgresNetworkExecutor extends Thread {
       case PARSING -> "42601";        // syntax_error
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
+      case UNAVAILABLE -> SQLSTATE_CANNOT_CONNECT_NOW; // cannot_connect_now - a database that is held, not one that does not exist
+      case DATABASE_NOT_FOUND -> SQLSTATE_INVALID_CATALOG_NAME; // invalid_catalog_name - one that does not exist (issue #10795)
       case SERVER -> "XX000";         // internal_error
     };
   }
@@ -4248,8 +4606,10 @@ public class PostgresNetworkExecutor extends Thread {
   /** {@link #clientMessage} without the leader redirect: the message, or the placeholder in production mode. */
   private String concealableMessage(final String message, final Throwable cause) {
     // A refused SET/DISCARD is text the protocol layer wrote, with no user data in it, and the explanation is what the
-    // client is owed; it is also a client mistake, never a server fault (issue #9327)
-    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException)
+    // client is owed; it is also a client mistake, never a server fault (issue #9327). A refused catalog query is the same: text
+    // this server wrote, with at most the relation the client named in it (issue #10371)
+    if (!server.isProductionMode() || cause instanceof PostgresSessionSettings.SettingException
+        || cause instanceof PostgresCatalog.Refusal)
       return message;
     // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
     // failure (syntax error, duplicated key, ...) is not an incident: the message alone, no stack trace. Anything the
@@ -4418,14 +4778,14 @@ public class PostgresNetworkExecutor extends Thread {
       readNextByte();
   }
 
-  private void writeCommandComplete(final String queryText, final int resultSetCount) {
+  private void writeCommandComplete(final String queryText, final long resultSetCount) {
     final String upperCaseText = queryText.toUpperCase(Locale.ENGLISH);
     final String tag = getTag(upperCaseText, resultSetCount);
     writeMessage("command complete",
         () -> writeString(tag), 'C', 4 + tag.length() + 1);
   }
 
-  private String getTag(String upperCaseText, int resultSetCount) {
+  private String getTag(String upperCaseText, long resultSetCount) {
     if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO")) {
       return "INSERT 0 " + resultSetCount;
     } else if (upperCaseText.startsWith("COPY")) {
@@ -4499,21 +4859,76 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Detects $N style parameter placeholders in a query and returns the count.
-   * PostgreSQL uses $1, $2, etc. for positional parameters.
-   * Returns the highest parameter number found (e.g., "$3" returns 3).
+   * How many values a Bind of {@code statement} must supply: one per entry of its parameter list, which Parse sized to the highest
+   * {@code $N} the text references or to the types the client declared, whichever is larger (issue #11018).
    */
-  private int detectParameterPlaceholders(final String query) {
-    int maxParam = 0;
-    final Pattern pattern = Pattern.compile("\\$(\\d+)");
-    final Matcher matcher = pattern.matcher(query);
-    while (matcher.find()) {
-      final int paramNum = Integer.parseInt(matcher.group(1));
-      if (paramNum > maxParam) {
-        maxParam = paramNum;
-      }
+  private static int requiredParameters(final PostgresPortal statement) {
+    return statement.parameterTypes != null ? statement.parameterTypes.size() : 0;
+  }
+
+  /**
+   * The highest {@code $N} placeholder {@code query} references (e.g. 3 for a text that mentions {@code $3}), 0 for none, and a
+   * number above {@link #MAX_STATEMENT_PARAMETERS} for one no Bind could ever supply.
+   * <p>
+   * Read the way the ArcadeDB SQL lexer reads the text, because a value is now refused when the count is wrong (issue #11018), so
+   * {@code query} is the ENGINE text ({@link #toEngineText}), whose string literals are already in the lexer's form: a {@code $N}
+   * inside a single- or double-quoted string, a back-tick quoted name, a line comment ({@code -- } to the end of the line) or a
+   * block comment is not a placeholder, and a backslash escapes the character after it in all three quoted forms. A PostgreSQL
+   * dollar-quoted literal ({@code $$...$$}, {@code $tag$...$tag$}), which the engine text keeps as it was, is skipped too. A
+   * {@code $N} followed by a letter or digit is part of an identifier, as {@code $1abc} is. It used to be a regular expression over
+   * the raw text, which counted {@code '$5'} as a fifth parameter.
+   */
+  static int highestParameterPlaceholder(final String query) {
+    int highest = 0;
+    final int length = query.length();
+    int i = 0;
+    while (i < length) {
+      final char c = query.charAt(i);
+      if (c == '\'' || c == '"' || c == '`') {
+        // A quoted string or name: skip to the matching quote, stepping over every escaped character
+        ++i;
+        while (i < length && query.charAt(i) != c)
+          i += query.charAt(i) == '\\' ? 2 : 1;
+        ++i;
+      } else if (c == '-' && i + 2 < length && query.charAt(i + 1) == '-' && query.charAt(i + 2) == ' ') {
+        while (i < length && query.charAt(i) != '\n')
+          ++i;
+      } else if (c == '/' && i + 1 < length && query.charAt(i + 1) == '*') {
+        final int end = query.indexOf("*/", i + 2);
+        i = end < 0 ? length : end + 2;
+      } else if (c == '$' && i + 1 < length && query.charAt(i + 1) >= '0' && query.charAt(i + 1) <= '9') {
+        long position = 0;
+        int j = i + 1;
+        for (; j < length && query.charAt(j) >= '0' && query.charAt(j) <= '9'; ++j)
+          position = Math.min(position * 10 + (query.charAt(j) - '0'), Integer.MAX_VALUE);
+        final boolean partOfIdentifier = j < length && (Character.isLetterOrDigit(query.charAt(j)) || query.charAt(j) == '_');
+        if (!partOfIdentifier && position > highest)
+          highest = (int) position;
+        i = j;
+      } else if (c == '$') {
+        final int end = endOfDollarQuotedLiteral(query, i);
+        i = end > 0 ? end : i + 1;
+      } else
+        ++i;
     }
-    return maxParam;
+    return highest;
+  }
+
+  /**
+   * The index right after the PostgreSQL dollar-quoted literal opened at {@code start} ({@code $$...$$} or
+   * {@code $tag$...$tag$}, a tag not starting with a digit), or -1 when none opens there or it is not closed.
+   */
+  private static int endOfDollarQuotedLiteral(final String query, final int start) {
+    final int length = query.length();
+    int i = start + 1;
+    if (i < length && (Character.isLetter(query.charAt(i)) || query.charAt(i) == '_'))
+      while (i < length && (Character.isLetterOrDigit(query.charAt(i)) || query.charAt(i) == '_'))
+        ++i;
+    if (i >= length || query.charAt(i) != '$')
+      return -1;
+    final String tag = query.substring(start, i + 1);
+    final int close = query.indexOf(tag, i + 1);
+    return close < 0 ? -1 : close + tag.length();
   }
 
   private PostgresPortal getPortal(final String name, final boolean remove) {
@@ -4555,6 +4970,20 @@ public class PostgresNetworkExecutor extends Thread {
     return normalized;
   }
 
+  /**
+   * True for a statement text made only of {@code ;} and whitespace, empty included: PostgreSQL's parser finds no statement in
+   * it, so it is the empty query on both protocols (issue #11028). {@link #normalizeStatementText} strips one {@code ;} only,
+   * so {@code ";;"} reaches here as {@code ";"}.
+   */
+  static boolean isEmptyStatement(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c != ';' && !Character.isWhitespace(c))
+        return false;
+    }
+    return true;
+  }
+
   private Query getLanguageAndQuery(final String query) {
     String language = "sql";
     String queryText = query;
@@ -4570,9 +4999,21 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (QUOTED_IDENTIFIERS && ("sql".equals(language) || "sqlscript".equals(language)) && !isSessionCommand(queryText))
       // POSTGRES CLIENTS QUOTE IDENTIFIERS WITH DOUBLE QUOTES, WHILE ARCADEDB SQL USES BACK-TICKS (ISSUE #5369)
-      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText);
+      queryText = PostgresQuotedIdentifierRewriter.rewrite(queryText, sessionSettings.standardConformingStrings());
 
     return new Query(language, queryText);
+  }
+
+  /**
+   * The text the engine of {@code language} is handed for {@code text}: for SQL, every string literal written in the form
+   * the ArcadeDB lexer decodes to the value PostgreSQL reads, under this connection's {@code standard_conforming_strings}
+   * (issue #10871). Applied where the engine is called and not in {@link #getLanguageAndQuery}: the catalog, {@code COPY}
+   * and transaction-control parsers of this module read the statement with PostgreSQL's own literal rules.
+   */
+  private String toEngineText(final String language, final String text) {
+    return "sql".equalsIgnoreCase(language) || "sqlscript".equalsIgnoreCase(language) ?
+        PostgresQuotedIdentifierRewriter.toEngineLiterals(text, sessionSettings.standardConformingStrings()) :
+        text;
   }
 
   /**
@@ -4964,8 +5405,217 @@ public class PostgresNetworkExecutor extends Thread {
    * abandoned in memory until the connection closed. Prepared statements are session-scoped and are not touched.
    */
   private void dropPortals() {
-    if (!portals.isEmpty())
+    if (!portals.isEmpty()) {
+      for (final PostgresPortal portal : portals.values())
+        closePortalCursor(portal);
       portals.clear();
+    }
+  }
+
+  /**
+   * Closes the live cursor of a portal, if it has one, and ends the statement it runs (issue #6659). Never throws: it runs
+   * on every way out of a portal - the end of its rows, a Close, a Bind of its name, the end of its transaction block, of
+   * the connection - and a cursor that fails to close must neither keep the others open nor skip what follows it (the
+   * rollback of a dropped connection, the ReadyForQuery a Sync owes).
+   */
+  private static void closePortalCursor(final PostgresPortal portal) {
+    if (portal == null || portal.cursorStatement == null)
+      return;
+    final ResultSet cursor = portal.cursor;
+    final RunningQuery statement = portal.cursorStatement;
+    portal.cursor = null;
+    portal.cursorStatement = null;
+    try {
+      if (cursor != null)
+        cursor.close();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(PostgresNetworkExecutor.class, Level.WARNING, "PSQL: error on closing the cursor of statement '%s'", e,
+          portal.query);
+    } finally {
+      statement.close();
+    }
+  }
+
+  /**
+   * The columns a portal's rows can be sent under before any of them is read, or null when only its rows can name them
+   * (issue #6659): a portal answered from its columns is served from a live cursor, every other one is read whole first.
+   *
+   * @param describing true for a {@code Describe('P')}, which announces the columns it answers with: only the schema can
+   *                   name them then ({@link #declaredProjectionColumns}). An Execute announces nothing, and a portal of a
+   *                   statement whose layout a Describe was promised for (issue #6725, #9009) has its rows encoded under
+   *                   that layout whichever rows they are, so the layout fixes them too.
+   */
+  private Map<String, PostgresType> fixedColumnsOf(final PostgresPortal portal, final boolean describing) {
+    if (portal.catalogQuery || portal.showName != null || portal.copyStatement != null || portal.promisedNoData()
+        || !(portal.sqlStatement instanceof SelectStatement || portal.sqlStatement instanceof MatchStatement))
+      return null;
+    if (!describing && portal.columnsDescribed && portal.columns != null && !portal.columns.isEmpty())
+      return portal.columns;
+    return portal.sqlStatement instanceof SelectStatement select ? declaredProjectionColumns(select, resolveQueryTargetType(portal)) : null;
+  }
+
+  /**
+   * The columns of a SELECT that projects nothing but properties its FROM type declares, named and typed from the schema
+   * alone (issue #6659). A record holds a declared property under its declared type, so these are the columns its rows
+   * would produce - {@link PostgresType#getTypeFromArcade} agrees with {@link PostgresType#getTypeForValue} by design -
+   * and they are known before the first row is read. Null for every other projection - a wildcard, an expression, an
+   * undeclared property, an UNWIND, a target that is not a type, a type whose values do not decide one Postgres type -
+   * and for a type the user may not read, whose schema a listing would not show them either: such a statement is run
+   * and read whole first, and refused the way it always was.
+   */
+  private Map<String, PostgresType> declaredProjectionColumns(final SelectStatement select, final DocumentType targetType) {
+    final Projection projection = select.getProjection();
+    if (targetType == null || select.getUnwind() != null || projection == null || projection.isExpand() || projection.getItems() == null
+        || projection.getItems().isEmpty()
+        || !SecurityHelper.canAccessType((DatabaseInternal) database, targetType, SecurityDatabaseUser.ACCESS.READ_RECORD))
+      return null;
+
+    final Map<String, PostgresType> columns = new LinkedHashMap<>();
+    for (final ProjectionItem item : projection.getItems()) {
+      final Expression expression = item.getExpression();
+      if (item.isAll() || item.exclude || expression == null || !expression.isBaseIdentifier())
+        return null;
+      final String alias = item.getProjectionAliasAsString();
+      final Property property = alias != null ? targetType.getPolymorphicPropertyIfExists(expression.getDefaultAlias().getStringValue()) : null;
+      if (property == null || !hasRowIndependentColumnType(property)
+          || columns.put(alias, PostgresType.getTypeFromArcade(property.getType(), property.getOfType())) != null)
+        return null;
+    }
+    return columns;
+  }
+
+  /**
+   * True for a declared type whose values all travel under the one Postgres type the schema names for it. Not for a LIST
+   * without a scalar element type, which is typed by the elements each list holds, nor for a LINK or an EMBEDDED, whose
+   * value is a RID or a record depending on how it was loaded.
+   */
+  private static boolean hasRowIndependentColumnType(final Property property) {
+    return switch (property.getType()) {
+      case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, STRING, DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS,
+           DATETIME_NANOS, BINARY, MAP -> true;
+      case LIST -> {
+        final Type elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+        yield elementType != null && switch (elementType) {
+          case BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL, STRING, BINARY -> true;
+          default -> false;
+        };
+      }
+      default -> false;
+    };
+  }
+
+  /**
+   * Runs a portal's statement as a live cursor whose rows are sent under {@code columns} (issue #6659). The statement is
+   * listed from now until the cursor is closed (issue #9689) and is bound to this thread only while its work runs - here
+   * and in each Execute that pulls from it - so a cancel or a termination stops it there, while between two fetches the
+   * thread serves the connection's other statements without carrying it. The caller holds the admission slot.
+   */
+  private void openPortalCursor(final PostgresPortal portal, final Map<String, PostgresType> columns) {
+    final RunningQuery statement = server.getRunningQueries()
+        .open(database != null ? database.getName() : databaseName, userName, "postgres", null, null,
+            RunningQuery.Client.of(String.valueOf(processId), clientSocketAddress()));
+    statement.setStatement(portal.language, portal.query);
+    final RunningQuery previous = runningStatement;
+    boolean opened = false;
+    try (final RunningQuery.Binding ignored = statement.bind()) {
+      runningStatement = statement;
+      portal.cursor = runPortalQuery(portal);
+      opened = true;
+    } finally {
+      runningStatement = previous;
+      if (!opened)
+        statement.close();
+    }
+    portal.cursorStatement = statement;
+    portal.columns = columns;
+    portal.streamed = true;
+    portal.executed = true;
+  }
+
+  /**
+   * Answers an Execute of a portal served from its live cursor (issue #6659): writes the next {@code limit} rows, or every
+   * row left for 0, as they are pulled, then PortalSuspended while rows remain, or CommandComplete once the cursor is
+   * drained - tagged with the rows of every Execute of the portal, as PostgreSQL tags it - which closes it. No row is held
+   * meanwhile, so {@link GlobalConfiguration#POSTGRES_QUERY_MAX_ROWS} does not apply: it bounds the results that have to
+   * be read whole before their columns can be announced, and this one is not.
+   * <p>
+   * Each fetch is admitted on its own (issue #9518) and runs as the cursor's statement (issue #9689): a cursor the client
+   * leaves idle holds no admission slot, and a cancel reaches a fetch as it reaches any statement. The command timeout is
+   * the statement's own, taken once when it starts, as {@code arcadedb.command.timeout} documents: it keeps running while
+   * the client waits between two fetches, where PostgreSQL's {@code statement_timeout} restarts with each Execute.
+   */
+  private void executeFromCursor(final PostgresPortal portal, final int limit, final QueryProfile profile) throws IOException {
+    final ResultSet cursor = portal.cursor;
+    if (cursor == null) {
+      // Drained by an earlier Execute: no row is sent twice, exactly as for a drained materialized portal
+      writeCommandComplete(portal.query, 0);
+      return;
+    }
+
+    final long serStart = System.nanoTime();
+    final RunningQuery statement = portal.cursorStatement;
+    final RunningQuery previous = runningStatement;
+    int sent = 0;
+    final boolean more;
+    try (final QueryAdmissionGate.Ticket ignored = QueryAdmissionGate.getInstance().admit();
+        final RunningQuery.Binding ignoredBinding = statement.bind()) {
+      runningStatement = statement;
+      final Binary bufferData = new Binary();
+      final Binary bufferValues = new Binary();
+      while ((limit <= 0 || sent < limit) && cursor.hasNext()) {
+        // The engine checks a termination where it does work, and a cursor past a blocking step (an ORDER BY sorts on the
+        // first fetch) only hands out rows it already holds: checked here too, so a cancel or a termination - one that
+        // came while the client was between two fetches included - stops the rows as well as the work
+        statement.checkNotTerminated("the fetch");
+        final Result row = cursor.next();
+        if (row == null)
+          continue;
+        writeDataRow(row, portal.columns, portal.resultFormats, bufferData, bufferValues);
+        ++sent;
+      }
+      more = cursor.hasNext();
+    } catch (final RuntimeException | IOException e) {
+      // The rows already written stand, the ErrorResponse follows them, and the portal has nothing more to give
+      closePortalCursor(portal);
+      throw e;
+    } finally {
+      runningStatement = previous;
+    }
+    channel.flush();
+
+    portal.cursorRows += sent;
+    if (more)
+      portalSuspendedResponse();
+    else {
+      closePortalCursor(portal);
+      writeCommandComplete(portal.query, portal.cursorRows);
+    }
+    profile.addSerializationNanos(System.nanoTime() - serStart);
+  }
+
+  /**
+   * Refuses a Parse naming a prepared statement that already exists with PostgreSQL's {@code 42P05} (issue #11034) and answers
+   * true, or answers false when the name is free. Only a named statement must be closed before it is redefined: the unnamed one is
+   * replaced by every Parse that names it.
+   */
+  private boolean refuseLiveNamedStatement(final String name) {
+    if (name.isEmpty() || !preparedStatements.containsKey(name))
+      return false;
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "prepared statement \"" + name + "\" already exists", "42P05");
+    return true;
+  }
+
+  /**
+   * The Bind-side twin of {@link #refuseLiveNamedStatement(String)}: a Bind naming a portal that already exists is refused with
+   * {@code 42P03}, as {@code CreatePortal()} refuses it, and the portal is left as it was. Only the unnamed portal is replaced.
+   */
+  private boolean refuseLiveNamedPortal(final String name) {
+    if (name.isEmpty() || !portals.containsKey(name))
+      return false;
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "cursor \"" + name + "\" already exists", "42P03");
+    return true;
   }
 
   /**

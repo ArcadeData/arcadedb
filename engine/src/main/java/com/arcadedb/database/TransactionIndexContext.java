@@ -30,6 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
@@ -136,8 +137,20 @@ public class TransactionIndexContext {
    * that is about to have to undo.
    */
   private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
-  /** How many of {@link #recordUndo} belong to the record being indexed right now; -1 when disarmed. */
+  /** How many entries {@link #recordUndo} holds right now; -1 when nothing is journalled. */
   private       int                                                          recordUndoSize   = -1;
+  /** Where the entries of the record being indexed right now begin: the ones before it belong to the statement (issue #10346). */
+  private       int                                                          recordUndoMark;
+  /**
+   * Whether a statement of the caller's transaction journals what it queues, to take it back if it fails (issue #10346). The journal is
+   * the one {@link #armRecordUndo()} fills for a single record, kept across the records of the statement: the record's slice is the
+   * tail of it, and taking the record back pops its slice without touching what the earlier records of the statement queued.
+   */
+  private       boolean                                                      statementJournal;
+  /** A lane the journal points at was dropped or replaced, so taking the statement back would leave the lanes wrong. */
+  private       boolean                                                      statementJournalBroken;
+  /** The journal is dropped, and the statement can no longer be taken back, past this many entries: a bulk statement must not hold one holder per key. */
+  private       int                                                          statementJournalLimit;
 
   /**
    * One journalled index-map mutation. Mutable and reused: {@link #recordUndo} hands the same holders back out
@@ -362,6 +375,8 @@ public class TransactionIndexContext {
   }
 
   public void removeIndex(final String indexName) {
+    // The lane goes with the entries a statement journal may point at (issue #10346)
+    statementJournalBroken = statementJournal;
     final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> ordered = indexEntries.remove(indexName);
     unorderedEntries.remove(indexName);
     final IndexInternal owner = indexPerLane.remove(indexName);
@@ -646,6 +661,30 @@ public class TransactionIndexContext {
     return winners;
   }
 
+  /**
+   * Whether an entry is queued for an index with a component file among {@code indexFileIds} (issue #10588). Exactly that index's
+   * entries: {@link #addFilesToLock} adds the files of the siblings of a UNIQUE index too, for the cross-bucket check, so it cannot
+   * tell the entries of one sub-index from those of the next.
+   */
+  public boolean hasEntriesInFiles(final Collection<Integer> indexFileIds) {
+    for (final String indexName : indexEntries.keySet())
+      if (laneHasFiles(indexName, indexFileIds))
+        return true;
+    for (final String indexName : unorderedEntries.keySet())
+      if (laneHasFiles(indexName, indexFileIds))
+        return true;
+    return false;
+  }
+
+  private boolean laneHasFiles(final String indexName, final Collection<Integer> indexFileIds) {
+    if (!laneIndexStillExists(indexName))
+      return false;
+    for (final int fileId : resolveIndex(indexName).getFileIds())
+      if (indexFileIds.contains(fileId))
+        return true;
+    return false;
+  }
+
   public void addFilesToLock(final IntHashSet modifiedFiles) {
     final Schema schema = database.getSchema();
 
@@ -713,6 +752,7 @@ public class TransactionIndexContext {
   }
 
   public void setKeys(final Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> keysTx) {
+    statementJournalBroken = statementJournal;
     indexEntries = keysTx;
     // These lanes carry no index reference, so they cannot be resolved by identity: getIndexKeyLanes falls back to
     // the by-name walk while any of them is present (issue #7967).
@@ -723,6 +763,16 @@ public class TransactionIndexContext {
 
   public boolean isEmpty() {
     return indexEntries.isEmpty() && unorderedEntries.isEmpty();
+  }
+
+  /**
+   * The entries of ONE key of an ordered lane. Most keys hold a single entry (always on a unique index, and on a
+   * non-unique one unless several records share the key in the same transaction), and the map lives until commit, so it
+   * is sized for that: a 2-slot table instead of the default 16, which a young collection would copy again and again
+   * for every pending key of a large transaction (#10661). A second entry grows it as usual.
+   */
+  private static Map<IndexKey, IndexKey> newKeyEntries() {
+    return new HashMap<>(2);
   }
 
   public void addIndexKeyLock(final IndexInternal index, IndexKey.IndexKeyOperation operation, final Object[] keysValues,
@@ -769,12 +819,12 @@ public class TransactionIndexContext {
       // ...and the same lane reachable by the index itself, which is how a reader finds it in O(1) (issue #7967).
       orderedLanesPerIndex.computeIfAbsent(index, i -> new ArrayList<>(2)).add(keys);
 
-      values = new HashMap<>();
+      values = newKeyEntries();
       keys.put(k, values);
     } else {
       values = keys.get(k);
       if (values == null) {
-        values = new HashMap<>();
+        values = newKeyEntries();
         keys.put(k, values);
       } else {
         if (v.operation == IndexKey.IndexKeyOperation.ADD) {
@@ -870,12 +920,17 @@ public class TransactionIndexContext {
    * thread the transaction is bound to, and nothing it invokes indexes another.
    */
   public void armRecordUndo() {
-    recordUndoSize = 0;
+    if (recordUndoSize < 0)
+      recordUndoSize = 0;
+    recordUndoMark = recordUndoSize;
   }
 
-  /** Stops journalling and drops what was journalled. Idempotent. */
+  /** Stops journalling and drops what was journalled, unless a statement journals too: its entries stay. Idempotent. */
   public void disarmRecordUndo() {
-    recordUndoSize = -1;
+    if (statementJournal)
+      recordUndoMark = recordUndoSize;
+    else
+      recordUndoSize = -1;
   }
 
   /**
@@ -884,7 +939,57 @@ public class TransactionIndexContext {
    * {@code addFilesToLock} answer as though the record had never been indexed.
    */
   public void undoRecordChanges() {
-    for (int i = recordUndoSize - 1; i >= 0; i--) {
+    undoJournalDownTo(recordUndoMark);
+  }
+
+  /**
+   * Starts journalling what the statement that begins now queues, so {@link #undoStatementChanges(int)} can take it back (issue
+   * #10346). One statement at a time, like the transaction's savepoint it belongs to.
+   *
+   * @param limit how many entries the journal may hold: past it the journal is dropped and {@link #isStatementJournalIntact()} turns
+   *              false, so a bulk statement does not hold an entry per key
+   * @return the position of the journal to hand back to {@link #undoStatementChanges(int)}
+   */
+  public int beginStatementJournal(final int limit) {
+    statementJournalLimit = limit;
+    statementJournal = true;
+    statementJournalBroken = false;
+    if (recordUndoSize < 0)
+      recordUndoSize = 0;
+    recordUndoMark = recordUndoSize;
+    return recordUndoSize;
+  }
+
+  /** How many entries the statement has journalled since {@link #beginStatementJournal()} returned {@code mark}. */
+  public int getStatementJournalSize(final int mark) {
+    return recordUndoSize - mark;
+  }
+
+  /** Whether the statement journal still describes the lanes: false once a lane it points at was dropped or replaced. */
+  public boolean isStatementJournalIntact() {
+    return !statementJournalBroken;
+  }
+
+  /**
+   * Takes back every index entry the statement queued since {@link #beginStatementJournal()} returned {@code mark}, exactly as the
+   * entries of one record are taken back by {@link #undoRecordChanges()}.
+   */
+  public void undoStatementChanges(final int mark) {
+    undoJournalDownTo(mark);
+  }
+
+  /** The statement is over, taken back or not: its journal is dropped, and with it the references to the lanes it held. */
+  public void endStatementJournal() {
+    statementJournal = false;
+    statementJournalBroken = false;
+    if (recordUndoSize > 0)
+      for (int i = 0; i < recordUndoSize; i++)
+        recordUndo.get(i).clear();
+    recordUndoSize = -1;
+  }
+
+  private void undoJournalDownTo(final int mark) {
+    for (int i = recordUndoSize - 1; i >= mark; i--) {
       final RecordUndoEntry undo = recordUndo.get(i);
 
       if (undo.lane != null) {
@@ -894,11 +999,7 @@ public class TransactionIndexContext {
           unorderedEntries.remove(undo.indexName);
           indexPerLane.remove(undo.indexName);
         }
-        continue;
-
-      }
-
-      if (undo.displaced != null)
+      } else if (undo.displaced != null)
         undo.values.put(undo.displaced, undo.displaced);
       else {
         undo.values.remove(undo.added);
@@ -910,8 +1011,10 @@ public class TransactionIndexContext {
           }
         }
       }
+      undo.clear();
     }
-    recordUndoSize = 0;
+    recordUndoSize = Math.max(mark, 0);
+    recordUndoMark = recordUndoSize;
     // Entries went away, so any view cached over them describes lanes that no longer exist. sequence does not move
     // on this path - nothing was queued - which is exactly why the cache is keyed on laneVersion and not on it.
     ++laneVersion;
@@ -930,9 +1033,28 @@ public class TransactionIndexContext {
 
   /** The next holder of the reused journal, growing the list only the first time that depth is reached. */
   private RecordUndoEntry nextUndoEntry() {
+    if (statementJournal && recordUndoSize >= statementJournalLimit)
+      abandonStatementJournal();
     if (recordUndoSize == recordUndo.size())
       recordUndo.add(new RecordUndoEntry());
     return recordUndo.get(recordUndoSize++);
+  }
+
+  /**
+   * The statement queued more than the journal may hold: the entries of the records already indexed are dropped, and the statement
+   * can no longer be taken back. What the record being indexed right now queued is kept, because a duplicated key takes that back
+   * on its own.
+   */
+  private void abandonStatementJournal() {
+    for (int i = 0; i < recordUndoMark; i++)
+      recordUndo.get(i).clear();
+    if (recordUndoMark > 0) {
+      recordUndo.subList(0, recordUndoMark).clear();
+      recordUndoSize -= recordUndoMark;
+      recordUndoMark = 0;
+    }
+    statementJournal = false;
+    statementJournalBroken = true;
   }
 
   public void reset() {
@@ -950,6 +1072,8 @@ public class TransactionIndexContext {
     for (int i = 0; i < recordUndo.size(); i++)
       recordUndo.get(i).clear();
     recordUndoSize = -1;
+    statementJournal = false;
+    statementJournalBroken = false;
   }
 
   /** Looks a lane up by its KEY, with the same caveat as {@link #getTotalEntriesByIndex}. */
@@ -1146,7 +1270,7 @@ public class TransactionIndexContext {
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
-      if (index.isUnique()) {
+      if (index.isUnique() && !isUniqueCheckDeferred(index)) {
         final TypeIndex typeIndex = index.getTypeIndex();
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
@@ -1166,6 +1290,18 @@ public class TransactionIndexContext {
         }
       }
     }
+  }
+
+  /**
+   * Whether the build that is populating this index checks it once, when it has finished, instead of every commit looking each key
+   * up in the index it is filling (issue #10349). That lookup walks every page written so far and nothing compacts an index while it
+   * is built, so a build of a large type took time with the square of its record count. The build owns the database write lock, so
+   * no other transaction commits to the index until its own pass has run.
+   */
+  private boolean isUniqueCheckDeferred(final IndexInternal index) {
+    final String typeName = index.getTypeName();
+    return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
+        && type.isUniqueCheckDeferred(index.getPropertyNames());
   }
 
   private Map<TypeIndex, Map<ComparableKey, Set<RID>>> getTxDeletedEntries() {

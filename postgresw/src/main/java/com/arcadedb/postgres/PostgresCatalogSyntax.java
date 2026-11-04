@@ -486,7 +486,10 @@ final class PostgresCatalogSyntax {
     FIRST, COMMA, CROSS, INNER, LEFT, RIGHT, FULL
   }
 
-  /** One item of the FROM clause: an emulated relation, or a derived table with the tokens of its SELECT. */
+  /**
+   * One item of the FROM clause: an emulated relation, a derived table with the tokens of its SELECT, or a table function
+   * ({@code generate_series(1, 3) AS s(r)}) with the tokens of its arguments, which {@link #relation} then names by its alias.
+   */
   static final class FromEntry {
     final String                     relation;
     /** The name as the client wrote it, which is what a case-sensitive type lookup has to be given. */
@@ -496,6 +499,14 @@ final class PostgresCatalogSyntax {
     final Join                       join;
     /** The ON condition the entry was joined with, null without one. */
     List<PostgresCatalogToken>       on;
+    /** The columns named by USING, lower case, null for an entry joined with ON or with neither. */
+    List<String>                     using;
+    /** The name of the table function this entry calls, lower case, null for a relation and a derived table. */
+    String                           function;
+    /** The tokens between the parentheses of the table function's call. */
+    List<PostgresCatalogToken>       functionArguments;
+    /** The names an alias list gave the columns, as in {@code AS s(r)}, null without one. */
+    List<String>                     columnAliases;
 
     FromEntry(final String relation, final String writtenAs, final String alias,
         final List<PostgresCatalogToken> derived, final Join join) {
@@ -564,8 +575,17 @@ final class PostgresCatalogSyntax {
             derivedAlias = tokens.get(i).text.toLowerCase(Locale.ENGLISH);
             ++i;
           }
-          entries.add(new FromEntry(derivedAlias == null ? "" : derivedAlias, null, derivedAlias, new ArrayList<>(inside),
-              join));
+          final FromEntry derived = new FromEntry(derivedAlias == null ? "" : derivedAlias, null, derivedAlias,
+              new ArrayList<>(inside), join);
+          if (derivedAlias != null && i < tokens.size() && tokens.get(i).isSymbol("(")) {
+            // an alias list, as in AS sp(nspoid, nspname): the names its columns go by
+            final int[] end = new int[1];
+            derived.columnAliases = readNames(tokens, i, end);
+            if (derived.columnAliases == null)
+              return false;
+            i = end[0];
+          }
+          entries.add(derived);
         } else {
           // A parenthesised join - (a JOIN b ON ...) - which psqlodbc writes its column list with, three deep
           // (issue #10228). Inner joins associate, so its relations join the outer ones as written. An outer
@@ -598,6 +618,15 @@ final class PostgresCatalogSyntax {
         if (name.startsWith("pg_catalog."))
           name = name.substring("pg_catalog.".length());
 
+        // A table function, generate_series(1, 3) or unnest(array): the name is called rather than read
+        final boolean called = i < tokens.size() && tokens.get(i).isSymbol("(");
+        final int close = called ? matchingParenthesis(tokens, i) : -1;
+        if (called && close < 0)
+          return false;
+        final List<PostgresCatalogToken> arguments = called ? new ArrayList<>(tokens.subList(i + 1, close)) : null;
+        if (called)
+          i = close + 1;
+
         String alias = null;
         if (i < tokens.size() && tokens.get(i).isKeyword("AS")) {
           ++i;
@@ -610,9 +639,24 @@ final class PostgresCatalogSyntax {
           ++i;
         }
 
-        entries.add(new FromEntry(name, written.toString(), alias, null, join));
+        if (called) {
+          final String function = written.toString().toLowerCase(Locale.ENGLISH);
+          final FromEntry entry = new FromEntry(alias != null ? alias : function, null, alias != null ? alias : function, null,
+              join);
+          entry.function = function;
+          entry.functionArguments = arguments;
+          if (alias != null && i < tokens.size() && tokens.get(i).isSymbol("(")) {
+            final int[] end = new int[1];
+            entry.columnAliases = readNames(tokens, i, end);
+            if (entry.columnAliases == null)
+              return false;
+            i = end[0];
+          }
+          entries.add(entry);
+        } else
+          entries.add(new FromEntry(name, written.toString(), alias, null, join));
       } else
-        // A function call, a VALUES list: not a shape this catalog reads.
+        // A VALUES list: not a shape this catalog reads.
         return false;
 
       // An ON or USING condition, up to the next comma or join at this level.
@@ -628,8 +672,16 @@ final class PostgresCatalogSyntax {
             break;
           ++i;
         }
-        // USING names columns both sides share, which every emulated row satisfies by construction.
-        if (!using)
+        if (using) {
+          // USING (a, b) joins on the columns both sides have under those names
+          if (start >= i || !tokens.get(start).isSymbol("("))
+            return false;
+          final int[] end = new int[1];
+          final List<String> columns = readNames(tokens.subList(0, i), start, end);
+          if (columns == null || end[0] != i)
+            return false;
+          entries.get(item).using = columns;
+        } else
           entries.get(item).on = new ArrayList<>(tokens.subList(start, i));
       }
 
@@ -643,6 +695,34 @@ final class PostgresCatalogSyntax {
     }
 
     return true;
+  }
+
+  /**
+   * The names in the parenthesised list that opens at {@code open}: an unquoted name is folded to lower case, a quoted one is kept.
+   *
+   * @param end receives the position just after the closing parenthesis
+   *
+   * @return the names, or null when the list holds anything but names separated by commas, or none
+   */
+  private static List<String> readNames(final List<PostgresCatalogToken> tokens, final int open, final int[] end) {
+    final int close = matchingParenthesis(tokens, open);
+    if (close < 0)
+      return null;
+
+    final List<String> names = new ArrayList<>();
+    int i = open + 1;
+    while (i < close) {
+      final PostgresCatalogToken token = tokens.get(i++);
+      if (!isName(token))
+        return null;
+      names.add(token.type == PostgresCatalogToken.Type.QUOTED_IDENTIFIER ? token.text : token.text.toLowerCase(Locale.ENGLISH));
+      if (i < close && (!tokens.get(i++).isSymbol(",") || i >= close))
+        return null;
+    }
+    if (names.isEmpty())
+      return null;
+    end[0] = close + 1;
+    return names;
   }
 
   /** The index of the {@code )} closing the {@code (} at {@code open}, or -1. */

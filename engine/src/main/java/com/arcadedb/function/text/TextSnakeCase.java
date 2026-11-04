@@ -55,8 +55,11 @@ public class TextSnakeCase extends AbstractTextFunction {
     final StringBuilder result = new StringBuilder(str.length() + 10);
     boolean lastWasUnderscore = false;
 
-    for (int i = 0; i < str.length(); i++) {
-      final char c = str.charAt(i);
+    // By code point (issue #10484): a letter outside the BMP is two UTF-16 units, neither of which is a letter, so it used to be a
+    // word break
+    for (int i = 0; i < str.length(); ) {
+      final int c = str.codePointAt(i);
+      i += Character.charCount(c);
       if (!Character.isLetterOrDigit(c)) {
         if (!lastWasUnderscore && result.length() > 0) {
           result.append('_');
@@ -66,10 +69,10 @@ public class TextSnakeCase extends AbstractTextFunction {
         if (!lastWasUnderscore && result.length() > 0) {
           result.append('_');
         }
-        result.append(Character.toLowerCase(c));
+        result.appendCodePoint(Character.toLowerCase(c));
         lastWasUnderscore = false;
       } else {
-        result.append(c);
+        result.appendCodePoint(c);
         lastWasUnderscore = false;
       }
     }

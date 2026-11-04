@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -70,6 +71,9 @@ import java.util.stream.Stream;
 public class AlgoPageRank extends AbstractAlgoProcedure {
   public static final String NAME = "algo.pagerank";
 
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("dampingFactor", "direction", "maxIterations", "tolerance", "weightProperty");
+
   /** Starting size of the per-node adjacency buffer the OLTP fallback reuses; it doubles on demand. */
   private static final int INITIAL_ADJACENCY_CAPACITY = 16;
 
@@ -102,7 +106,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
 
     final double dampingFactor = config != null && config.get("dampingFactor") instanceof Number n ?
         n.doubleValue() : 0.85;
@@ -111,7 +115,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
-    final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null);
+    // OUT, not the BOTH most algorithms default to: rank is pushed along the stored edges
+    final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.OUT);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -128,40 +133,6 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
     // Fall back to OLTP path
     return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction, guard, context);
-  }
-
-  /**
-   * Resolves the {@code direction} config value, rejecting anything that is neither absent nor one of the three
-   * supported values.
-   * <p>
-   * The three directions answer genuinely different questions - OUT pushes rank along stored edges, IN along
-   * their reverse, BOTH along both - so coercing an unrecognised value to OUT, as this did before, answers a
-   * question the caller did not ask and returns a plausible-looking result rather than an error. {@code
-   * 'INCOMING'} is the case that matters: it is what someone reaching for {@code IN} types, and it used to
-   * silently produce OUT's scores. That was harmless only while IN was broken anyway (see the direction fix in
-   * PR #6956); now that IN works, the silence is the bug.
-   * <p>
-   * Absent and explicitly null both mean "use the default", which is OUT - not BOTH, whatever the shared
-   * {@code direction} note in the docs says about most algorithms.
-   * <p>
-   * Deliberately local rather than routed through {@link com.arcadedb.graph.GraphEngine#parseDirection}: that
-   * helper now rejects an unrecognised value too (issue #6976), but its default for absent/null is BOTH, not
-   * this procedure's OUT - two genuinely different defaults, not one shared behaviour with a wrapper around it.
-   */
-  private Vertex.DIRECTION extractDirection(final Object value) {
-    if (value == null)
-      return Vertex.DIRECTION.OUT;
-    if (!(value instanceof String s))
-      throw new IllegalArgumentException(
-          getName() + "(): direction must be a string, one of OUT, IN or BOTH, got " + value);
-    if ("OUT".equalsIgnoreCase(s))
-      return Vertex.DIRECTION.OUT;
-    if ("IN".equalsIgnoreCase(s))
-      return Vertex.DIRECTION.IN;
-    if ("BOTH".equalsIgnoreCase(s))
-      return Vertex.DIRECTION.BOTH;
-    throw new IllegalArgumentException(
-        getName() + "(): unknown direction '" + s + "', expected one of OUT, IN or BOTH");
   }
 
   private Stream<Result> executeWithCSR(final GraphAnalyticalView.Pinned gav,

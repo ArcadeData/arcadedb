@@ -35,6 +35,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
@@ -55,6 +56,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private             LSMTreeIndexCompacted subIndex            = null;
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
+  private final       PageIdCache           pageIds             = new PageIdCache(this);
+
+  // Why the last onAfterLoad() of a schema load could not attach the sub-index, reported once the schema entries are read
+  private String subIndexLoadError;
 
   /**
    * Called at creation time.
@@ -121,6 +126,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   @Override
   public void onAfterLoad() {
     // RELOAD THE PAGE. THIS CAN BE CALLED AT CREATION OF THE OBJECT (CONSTRUCTOR) OR IN A TX WHEN DATABASE STRUCTURE CHANGES
+    subIndexLoadError = null;
     try {
       final BasePage currentPage = this.database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
 
@@ -190,11 +196,33 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // in-memory instance - the sub-index file id is persisted only when page 0 of a NEW file is
       // created, so nothing on disk is rewritten here.
       subIndex = null;
-      LogManager.instance().log(this, Level.SEVERE,
-          "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. "
-              + "Run 'REBUILD INDEX `%s`' to repair it (error=%s)",
-          null, componentName, componentName, e.getMessage());
+      // During a schema load the report waits for onAfterSchemaLoad(): this runs twice before the schema entries are read, so it
+      // could neither name the index to rebuild nor tell a file the load is about to drop as a leftover no schema entry references
+      // (LocalSchema.sweepOrphanBucketIndexFiles), which it reported as an index to rebuild under a name
+      // no statement can reach
+      if (database.getSchema().getEmbedded().isLoadingOnCurrentThread())
+        subIndexLoadError = e.getMessage();
+      else
+        reportInvalidSubIndex(e.getMessage());
     }
+  }
+
+  @Override
+  public void onAfterSchemaLoad() {
+    super.onAfterSchemaLoad();
+    if (subIndexLoadError != null) {
+      reportInvalidSubIndex(subIndexLoadError);
+      subIndexLoadError = null;
+    }
+  }
+
+  /** Names the type index to rebuild when there is one: the bucket index's own name is not one a REBUILD INDEX can be given. */
+  private void reportInvalidSubIndex(final String error) {
+    final TypeIndex typeIndex = mainIndex != null ? mainIndex.getTypeIndex() : null;
+    final String toRebuild = typeIndex != null ? typeIndex.getName() : componentName;
+    LogManager.instance().log(this, Level.SEVERE,
+        "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. "
+            + "Run 'REBUILD INDEX `%s`' to repair it (error=%s)", null, componentName, toRebuild, error);
   }
 
   @Override
@@ -413,12 +441,14 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final int totalPages = getTotalPages();
 
     for (int p = totalPages - 1; p > -1; --p) {
-      final BasePage currentPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), p), pageSize);
-      final Binary currentPageBuffer = new Binary(currentPage.slice());
+      // #10654: the PageId is the one this index handed out before, and the buffer is built only for a page that has entries
+      final BasePage currentPage = database.getTransaction().getPageForAbsoluteReads(pageIds.get(p), pageSize);
       final int count = getCount(currentPage);
 
       if (count < 1)
         continue;
+
+      final Binary currentPageBuffer = new Binary(currentPage.slice());
 
       if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
           removedKeys, deletedRIDs))

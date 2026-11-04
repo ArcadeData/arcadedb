@@ -41,7 +41,10 @@ import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
 
 import java.io.Closeable;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -65,6 +68,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
   private final ArcadeDBServer server;
 
   private volatile ScheduledExecutorService followerMetricsScheduler;
+  private volatile Runnable[]                refreshes = new Runnable[0];
 
   public HAReplicationMetrics(final ArcadeDBServer server) {
     this.server = server;
@@ -315,30 +319,35 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * the leader's lag monitor, so the per-peer gauges and the cluster status table stay in step.
    */
   private Runnable bindPerFollowerGauges(final MeterRegistry registry) {
-    final MultiGauge lastContact = MultiGauge.builder("arcadedb.ha.follower.last_contact_ms")
+    final LabeledGauges lastContact = new LabeledGauges("peer", MultiGauge.builder("arcadedb.ha.follower.last_contact_ms")
         .description("Per-follower ms since the leader last exchanged an RPC with it (tag peer=<id>). "
             + "Approaching arcadedb.ha.electionTimeoutMin means that node is about to trigger an election.")
         .baseUnit("milliseconds")
-        .register(registry);
-    final MultiGauge replicationLag = MultiGauge.builder("arcadedb.ha.follower.replication_lag")
+        .register(registry));
+    final LabeledGauges replicationLag = new LabeledGauges("peer", MultiGauge.builder("arcadedb.ha.follower.replication_lag")
         .description("Per-follower committed-entry lag behind the leader (tag peer=<id>). "
             + "Sustained growth on one node identifies the cluster's replication bottleneck.")
-        .register(registry);
-    final MultiGauge laggingFor = MultiGauge.builder("arcadedb.ha.follower.lagging_for_ms")
+        .register(registry));
+    final LabeledGauges laggingFor = new LabeledGauges("peer", MultiGauge.builder("arcadedb.ha.follower.lagging_for_ms")
         .description("Per-follower ms it has been continuously non-HEALTHY (tag peer=<id>); 0 when healthy. "
             + "Distinguishes a constantly-slow node from a transient blip.")
         .baseUnit("milliseconds")
-        .register(registry);
+        .register(registry));
 
     final Runnable refresh = () -> {
       try {
         final List<FollowerSample> samples = followerSamples();
-        lastContact.register(samples.stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("peer", s.peerId()), s.lastContactMs())).toList(), true);
-        replicationLag.register(samples.stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("peer", s.peerId()), s.replicationLag())).toList(), true);
-        laggingFor.register(samples.stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("peer", s.peerId()), s.laggingForMs())).toList(), true);
+        final Map<String, Double> lastContactValues = new HashMap<>();
+        final Map<String, Double> replicationLagValues = new HashMap<>();
+        final Map<String, Double> laggingForValues = new HashMap<>();
+        for (final FollowerSample s : samples) {
+          lastContactValues.put(s.peerId(), (double) s.lastContactMs());
+          replicationLagValues.put(s.peerId(), (double) s.replicationLag());
+          laggingForValues.put(s.peerId(), (double) s.laggingForMs());
+        }
+        lastContact.update(lastContactValues);
+        replicationLag.update(replicationLagValues);
+        laggingFor.update(laggingForValues);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Failed to refresh per-follower HA gauges: %s", e.getMessage());
       }
@@ -357,42 +366,49 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * per scrape: the unreferenced-files count walks the file list, and a scrape is not the place to pay for that.
    */
   private Runnable bindPerDatabaseGauges(final MeterRegistry registry) {
-    final MultiGauge instalments = MultiGauge.builder("arcadedb.ha.schema.instalments")
+    final LabeledGauges instalments = new LabeledGauges("database", MultiGauge.builder("arcadedb.ha.schema.instalments")
         .description("Schema-WAL instalments this database has shipped since it opened (tag database=<name>). "
             + "Non-zero means a schema session - typically an index rebuild, including the one CHECK DATABASE FIX "
             + "performs - was too large for one Raft entry and shipped incrementally.")
-        .register(registry);
-    final MultiGauge instalmentTime = MultiGauge.builder("arcadedb.ha.schema.instalment_time_ms")
+        .register(registry));
+    final LabeledGauges instalmentTime = new LabeledGauges("database", MultiGauge.builder("arcadedb.ha.schema.instalment_time_ms")
         .description("Total ms this database spent shipping schema-WAL instalments (tag database=<name>). Each one "
             + "is a quorum round trip taken with the database write lock held, so this is write-lock time every "
             + "other writer on the database waited out.")
         .baseUnit("milliseconds")
-        .register(registry);
-    final MultiGauge instalmentMaxTime = MultiGauge.builder("arcadedb.ha.schema.instalment_max_time_ms")
+        .register(registry));
+    final LabeledGauges instalmentMaxTime = new LabeledGauges("database", MultiGauge.builder("arcadedb.ha.schema.instalment_max_time_ms")
         .description("Longest single schema-WAL instalment for this database (tag database=<name>). Separates many "
             + "fast round trips from a few that each waited on a slow quorum member; approaching "
             + "arcadedb.ha.quorumTimeout means one of them nearly timed out.")
         .baseUnit("milliseconds")
-        .register(registry);
-    final MultiGauge unreferencedFiles = MultiGauge.builder("arcadedb.ha.schema.unreferenced_files")
+        .register(registry));
+    final LabeledGauges unreferencedFiles = new LabeledGauges("database", MultiGauge.builder("arcadedb.ha.schema.unreferenced_files")
         .description("Paginated files this node holds that no schema component claims (tag database=<name>). "
             + "Nothing reads them, so this is wasted disk rather than a correctness problem; the usual cause is a "
             + "schema session that shipped instalments and lost leadership before it could retire them. "
             + "CHECK DATABASE names them.")
-        .register(registry);
+        .register(registry));
 
     return () -> {
       try {
         final List<SchemaInstalmentSample> schemaSamples = schemaInstalmentSamples();
-        instalments.register(schemaSamples.stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.instalments())).toList(), true);
-        instalmentTime.register(schemaSamples.stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.totalTimeMs())).toList(), true);
-        instalmentMaxTime.register(schemaSamples.stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.maxTimeMs())).toList(), true);
+        final Map<String, Double> count = new HashMap<>();
+        final Map<String, Double> time = new HashMap<>();
+        final Map<String, Double> maxTime = new HashMap<>();
+        for (final SchemaInstalmentSample sample : schemaSamples) {
+          count.put(sample.database(), (double) sample.instalments());
+          time.put(sample.database(), (double) sample.totalTimeMs());
+          maxTime.put(sample.database(), (double) sample.maxTimeMs());
+        }
+        instalments.update(count);
+        instalmentTime.update(time);
+        instalmentMaxTime.update(maxTime);
 
-        unreferencedFiles.register(unreferencedFilesSamples().stream()
-            .map(s -> MultiGauge.Row.of(Tags.of("database", s.database()), s.unreferencedFiles())).toList(), true);
+        final Map<String, Double> unreferenced = new HashMap<>();
+        for (final UnreferencedFilesSample sample : unreferencedFilesSamples())
+          unreferenced.put(sample.database(), (double) sample.unreferencedFiles());
+        unreferencedFiles.update(unreferenced);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Failed to refresh per-database HA gauges: %s", e.getMessage());
       }
@@ -415,6 +431,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     // the life of the process. Nothing calls it twice today - the binder is created per plugin start - but the leak
     // was silent and this costs one line.
     close();
+    this.refreshes = refreshes;
 
     for (final Runnable refresh : refreshes)
       refresh.run(); // publish an initial (possibly empty) set immediately
@@ -429,6 +446,42 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     });
     scheduler.scheduleAtFixedRate(() -> runGuarded(refreshes), 5, 5, TimeUnit.SECONDS);
     followerMetricsScheduler = scheduler;
+  }
+
+  /** Runs every registered refresh once, as a tick would. */
+  // @VisibleForTesting
+  void refreshMultiGauges() {
+    runGuarded(refreshes);
+  }
+
+  /**
+   * A {@link MultiGauge} whose rows are published ONCE per label value and then only have their value changed.
+   * <p>
+   * The obvious use, re-registering every row with {@code overwrite=true} on each tick, removes each meter from the
+   * registry and adds a new one. A {@code GET /prometheus} scrape iterating the registry at that moment can see the
+   * same label set twice, and the Prometheus registry then refuses the WHOLE scrape with
+   * {@code DuplicateLabelsException}, so every metric of the node is lost for it (issue #10969). Here the row's
+   * value is read from a map the refresh writes, and the rows are registered with {@code overwrite=false}, which
+   * leaves a row that is already published alone and still adds new label values and drops vanished ones.
+   */
+  private static final class LabeledGauges {
+    private final MultiGauge                    gauge;
+    private final String                        tagKey;
+    private final ConcurrentHashMap<String, Double> values = new ConcurrentHashMap<>();
+
+    private LabeledGauges(final String tagKey, final MultiGauge gauge) {
+      this.tagKey = tagKey;
+      this.gauge = gauge;
+    }
+
+    private void update(final Map<String, Double> latest) {
+      // values first, so a row registered below never reads a missing one; stale values last, so a row about to be
+      // dropped is not read as NaN in between.
+      values.putAll(latest);
+      gauge.register(latest.keySet().stream()
+          .map(key -> MultiGauge.Row.of(Tags.of(tagKey, key), () -> values.getOrDefault(key, Double.NaN))).toList(), false);
+      values.keySet().retainAll(latest.keySet());
+    }
   }
 
   /**

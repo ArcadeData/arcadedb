@@ -21,7 +21,10 @@ package com.arcadedb.query.opencypher.query;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -32,10 +35,11 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -277,7 +281,7 @@ public final class CypherSchemaCommands {
         + " REQUIRE " + props + " " + requirement;
   }
 
-  private static String quote(final String name) {
+  static String quote(final String name) {
     return "`" + name.replace("`", "``") + "`";
   }
 
@@ -375,11 +379,22 @@ public final class CypherSchemaCommands {
       final boolean allColumns) {
     final List<Object[]> found = new ArrayList<>();
     final Set<String> visited = new HashSet<>();
-    for (final DocumentType type : readableTypes(database)) {
+    final List<DocumentType> readable = readableTypes(database);
+    // the indexes a vector or full-text index over several labels built are listed once, under its name (issue #10914). Only
+    // the ones whose name is listed are left out of the per-type rows: a user who cannot read every label sees the others
+    final List<String> readableNames = readable.stream().map(DocumentType::getName).toList();
+    final List<MultiTypeIndexes.Entry> logicalEntries = new ArrayList<>();
+    final Set<String> spanned = new HashSet<>();
+    for (final MultiTypeIndexes.Entry entry : MultiTypeIndexes.entries(database.getSchema()))
+      if (readableNames.containsAll(entry.labels()) && !MultiTypeIndexes.resolve(database.getSchema(), entry.name()).isEmpty()) {
+        logicalEntries.add(entry);
+        spanned.addAll(entry.owned());
+      }
+    for (final DocumentType type : readable) {
       final boolean edge = type instanceof EdgeType;
       final Map<String, String> owners = indexOwners(type);
       for (final TypeIndex index : type.getAllIndexes(false)) {
-        if (!visited.add(index.getName()))
+        if (spanned.contains(index.getName()) || !visited.add(index.getName()))
           continue;
         final String neoType = indexType(index.getType());
         if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
@@ -388,10 +403,17 @@ public final class CypherSchemaCommands {
         if (owner == null && index.isUnique())
           // listed by SHOW CONSTRAINTS under its own name
           owner = index.getName();
-        found.add(new Object[] { index, neoType, edge, type.getName(), owner });
+        found.add(new Object[] { index, neoType, edge, List.of(type.getName()), owner, index.getName() });
       }
     }
-    found.sort(Comparator.comparing(o -> ((TypeIndex) o[0]).getName()));
+    for (final MultiTypeIndexes.Entry entry : logicalEntries) {
+      final List<TypeIndex> members = MultiTypeIndexes.resolve(database.getSchema(), entry.name());
+      final String neoType = indexType(members.getFirst().getType());
+      if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
+        continue;
+      found.add(new Object[] { members.getFirst(), neoType, entry.relationship(), entry.labels(), null, entry.name() });
+    }
+    found.sort(Comparator.comparing(o -> (String) o[5]));
 
     final List<List<Object>> rows = new ArrayList<>(found.size());
     long id = 1;
@@ -399,17 +421,19 @@ public final class CypherSchemaCommands {
       final TypeIndex index = (TypeIndex) o[0];
       final String neoType = (String) o[1];
       final boolean edge = (Boolean) o[2];
-      final String label = (String) o[3];
+      @SuppressWarnings("unchecked") final List<String> labels = (List<String>) o[3];
       final String owner = (String) o[4];
+      final String name = (String) o[5];
       final boolean ready = index.isReadyForQueries();
-      final List<Object> row = new ArrayList<>(Arrays.asList(id++, index.getName(), ready ? "ONLINE" : "POPULATING", ready ? 100.0 : 0.0,
-          neoType, edge ? "RELATIONSHIP" : "NODE", List.of(label), new ArrayList<>(index.getPropertyNames()),
+      final List<Object> row = new ArrayList<>(Arrays.asList(id++, name, ready ? "ONLINE" : "POPULATING", ready ? 100.0 : 0.0,
+          neoType, edge ? "RELATIONSHIP" : "NODE", labels, new ArrayList<>(index.getPropertyNames()),
           indexProvider(index.getType()), owner, null, null));
       if (allColumns) {
+        final Map<String, Object> indexConfig = indexConfig(index);
         row.add(null);
-        row.add(Map.of());
+        row.add(Map.of("indexProvider", indexProvider(index.getType()), "indexConfig", indexConfig != null ? indexConfig : Map.of()));
         row.add("");
-        row.add(indexCreateStatement(index, neoType, edge, label));
+        row.add(indexCreateStatement(index, name, neoType, edge, labels, indexConfig));
       }
       rows.add(row);
     }
@@ -428,14 +452,47 @@ public final class CypherSchemaCommands {
     return owners;
   }
 
-  private static String indexCreateStatement(final TypeIndex index, final String neoType, final boolean edge, final String label) {
+  /**
+   * The {@code indexConfig} of a vector or a full-text index, the settings its OPTIONS name to create it again (discussion
+   * #10893), or null for an index Cypher creates with no OPTIONS.
+   */
+  private static Map<String, Object> indexConfig(final TypeIndex index) {
+    final IndexInternal[] bucketIndexes = index.getIndexesOnBuckets();
+    final IndexInternal first = bucketIndexes.length > 0 ? bucketIndexes[0] : null;
+    if (index.getType() == Schema.INDEX_TYPE.LSM_VECTOR && first instanceof LSMVectorIndex vector)
+      return CypherIndexOptions.vectorIndexConfig(vector.getMetadata());
+    if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT && first instanceof LSMTreeFullTextIndex fullText) {
+      final FullTextIndexMetadata metadata = fullText.getFullTextMetadata();
+      return metadata != null ? CypherIndexOptions.fullTextIndexConfig(metadata) : Map.of();
+    }
+    return null;
+  }
+
+  /**
+   * The statement that creates the index again. A vector and a full-text index are written in the syntax Cypher accepts for
+   * them since #10678, with every setting of their {@code indexConfig}, so the statement SHOW INDEXES lists runs as it is and
+   * builds the same index.
+   */
+  private static String indexCreateStatement(final TypeIndex index, final String name, final String neoType, final boolean edge,
+      final List<String> labels, final Map<String, Object> indexConfig) {
     final String variable = edge ? "r" : "n";
     final StringJoiner props = new StringJoiner(", ");
     for (final String property : index.getPropertyNames())
       props.add(variable + "." + quote(property));
-    return "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(index.getName()) + " FOR " + (edge ?
-        "()-[r:" + quote(label) + "]-()" :
-        "(n:" + quote(label) + ")") + " ON (" + props + ")";
+    final StringJoiner pattern = new StringJoiner("|");
+    for (final String label : labels)
+      pattern.add(quote(label));
+    final String head = "CREATE " + ("RANGE".equals(neoType) ? "" : neoType + " ") + "INDEX " + quote(name) + " FOR " + (
+        edge ? "()-[r:" + pattern + "]-()" : "(n:" + pattern + ")");
+
+    final String options = indexConfig != null && !indexConfig.isEmpty() ?
+        " OPTIONS " + CypherIndexOptions.indexConfigLiteral(indexConfig) :
+        "";
+    if (index.getType() == Schema.INDEX_TYPE.LSM_VECTOR && indexConfig != null)
+      return head + " ON " + props + options;
+    if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT && indexConfig != null)
+      return head + " ON EACH [" + props + "]" + options;
+    return head + " ON (" + props + ")";
   }
 
   private static String indexType(final Schema.INDEX_TYPE type) {
@@ -470,10 +527,9 @@ public final class CypherSchemaCommands {
    * statement can name.
    */
   private static List<DocumentType> readableTypes(final DatabaseInternal database) {
-    final SecurityDatabaseUser reader = SecurityHelper.currentUser(database);
     final List<DocumentType> types = new ArrayList<>();
-    for (final DocumentType type : database.getSchema().getTypes())
-      if (!type.getName().contains("~") && SecurityHelper.canAccessType(reader, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+    for (final DocumentType type : SecurityHelper.readableTypes(database))
+      if (!type.getName().contains("~"))
         types.add(type);
     return types;
   }

@@ -77,7 +77,7 @@ public class LocalDatabaseBenchmark {
 //    database.command("sql", "create index on User (id) notunique");
     database.command("sql", "alter type User BucketSelectionStrategy `thread`");
 
-    //System.out.println("BEGIN SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+    //System.out.println("BEGIN SERVER " + getServer(0).getDatabaseForOperator(DATABASE_NAME).getStats());
 
     final Timer timer = spawnStatThread();
     final long beginTime = System.currentTimeMillis();
@@ -102,7 +102,7 @@ public class LocalDatabaseBenchmark {
       timer.cancel();
       printStats(0L);
       System.out.println("END CLIENT " + globalStats);
-      //System.out.println("END SERVER " + getServer(0).getDatabase(DATABASE_NAME).getStats());
+      //System.out.println("END SERVER " + getServer(0).getDatabaseForOperator(DATABASE_NAME).getStats());
     }
 
     final double deltaInSecs = (System.currentTimeMillis() - beginTime) / 1000;

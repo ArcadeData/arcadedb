@@ -46,6 +46,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
 
 import java.lang.ref.SoftReference;
@@ -65,6 +66,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.function.Supplier;
@@ -183,8 +185,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
   }
 
+  /**
+   * The state of a view. {@code FAILED} is a view whose build or restore threw and that has no snapshot to serve:
+   * {@link #getBuildError()} says why (issue #11011). A view that fails to REBUILD keeps the snapshot it had and reads
+   * {@code STALE}, with the same error.
+   */
   public enum Status {
-    NOT_BUILT, BUILDING, READY, STALE
+    NOT_BUILT, BUILDING, READY, STALE, FAILED
   }
 
   /**
@@ -255,6 +262,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
     final Map<String, SoftReference<NeighborView>> mergedNeighborViews = new ConcurrentHashMap<>();
+    // The entries the reads that did not take a neighbour view of this snapshot visited per node instead, by the key of the view
+    // (issue #10471): the view that was never built is built once they add up to what it costs, see neighborViewForVisits(). Like
+    // the views, it lives and dies with the snapshot: a commit replaces the snapshot and the reads start from nothing
+    final Map<String, LongAdder> neighborViewDemand = new ConcurrentHashMap<>();
+    // Every edge type this snapshot answers for, as the array the views are asked with (see slicesOf): built on first use. Two
+    // threads may both build it; either array is right
+    volatile String[] allEdgeTypeSlices;
     // This snapshot's ids renumbered onto a gapless range, built on first request for the same reason (issue #10411): the
     // renumbering and the views it translates depend on nothing but the snapshot. Two threads may both build it; either is right
     volatile SoftReference<GraphTraversalProvider> denseIds;
@@ -477,9 +491,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // transaction committed during the scan can be delivered after the build published (issue #8378). Accessed
   // only under synchronized(this).
   private BuildWatch             baseWatch;
+  // The watch of the compaction in flight, opened at its dispatch, before its scan starts. A transaction's pages are readable
+  // before its after-commit callback delivers its change, so a change the compaction scan read can reach the view after the
+  // swap: it is checked against what the scan read, as a full build's is, by keeping this watch as the base watch of the
+  // CSR the compaction publishes. Written under synchronized(this), read without it by the record listeners.
+  private volatile BuildWatch    compactionWatch;
   // Test-only: see setBeforeBuildScanForTest() and setAfterBuildWatchOpenedForTest()
   private volatile Runnable      beforeBuildScanForTest;
   private volatile Runnable      afterBuildWatchOpenedForTest;
+  // Test-only: see setBeforeDiskRestoreForTest()
+  private volatile Runnable      beforeDiskRestoreForTest;
   // SHUTDOWN_AWAIT_MS, shortened only by setShutdownAwaitMsForTest()
   private volatile long          shutdownAwaitMs    = SHUTDOWN_AWAIT_MS;
   // Raised by shutdown(): a build() that learns the outcome of the build that superseded it must not report success
@@ -642,10 +663,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         closeBuildWatch(watch);
         if (myGeneration == generation) {
           this.buildError = e;
-          this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+          this.status = snapshot != null ? Status.STALE : Status.FAILED;
           // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
           if (snapshot == null)
             unregisterChangeListeners();
+          // The caller hears the exception, the server log hears which view failed, as for a build in the background
+          logBuildFailure("Build", e);
         } else if (readyLatch != latch && !shutDown)
           // Not once shut down: a build dispatched on the view since then is not the one this call was superseded by
           newer = readyLatch;
@@ -731,7 +754,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (opened != null)
       closeBuildWatch(opened);
     buildError = e;
-    status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+    status = snapshot != null ? Status.STALE : Status.FAILED;
     if (snapshot == null)
       unregisterChangeListeners();
     latch.countDown();
@@ -916,29 +939,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             if (database.isTransactionActive())
               database.rollback();
           }
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
+          // An Error too, OutOfMemoryError first: a build that dies of one without this would leave the view BUILDING for
+          // good, its latch counted down and nothing on the way, so a waiter could not tell it from a slow one (issue #11011)
           synchronized (GraphAnalyticalView.this) {
             closeBuildWatch(watch);
-            if (myGeneration == generation) {
-              this.buildError = e;
-              if (snapshot != null) {
-                this.status = Status.STALE;
-              } else {
-                this.status = Status.NOT_BUILT;
-                unregisterChangeListeners();
-                // Unregister failed GAV so the name can be reused for a fresh build
-                GraphTraversalProviderRegistry.unregister(database, this);
-                if (name != null)
-                  GraphAnalyticalViewRegistry.unregister(database, name);
-              }
-            }
+            if (myGeneration == generation)
+              failBackgroundWork(e);
             GraphAnalyticalView.this.notifyAll();
           }
-          if (isBenignShutdownError(e))
-            LogManager.instance().log(this, Level.FINE,
-                "Async build of GraphAnalyticalView '%s' aborted because the database is closing", name);
-          else
-            LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
+          logBuildFailure("Async build", e);
         } finally {
           // #4956: this virtual thread dies right after the task, but its DatabaseContext entry (pinning Binary
           // temp buffers) would otherwise linger until the next periodic sweep. Remove it before the latch is
@@ -956,17 +966,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       });
     } catch (final RejectedExecutionException e) {
       closeBuildWatch(watch);
-      this.buildError = e;
-      if (snapshot != null)
-        this.status = Status.STALE;
-      else {
-        // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
-        this.status = Status.NOT_BUILT;
-        unregisterChangeListeners();
-        GraphTraversalProviderRegistry.unregister(database, this);
-        if (name != null)
-          GraphAnalyticalViewRegistry.unregister(database, name);
-      }
+      // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
+      failBackgroundWork(e);
       this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
@@ -1181,6 +1182,54 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return false;
   }
 
+  /**
+   * The one answer to "what happens to a view whose background work failed" (issue #11032), given by every handler of an
+   * asynchronous build and of a deferred restore from disk, whether the task ran and failed or the executor refused it. Called
+   * holding this view's monitor, by the generation the failure belongs to.
+   * <p>
+   * With a snapshot the view keeps serving it, STALE. With nothing to serve it goes FAILED and leaves: its change listeners and
+   * its traversal provider are unregistered, and so is its name, so a CREATE of the same name builds it afresh, while the reason
+   * stays in the registry for the schema row until the view is built again or dropped. A restore failing does not say the
+   * definition is bad, but neither does a build failing of an {@link OutOfMemoryError}: both leave a view with nothing to
+   * serve, and the definition stays persisted either way.
+   * <p>
+   * The name is freed only while this is still the view registered under it. A view dropped and re-created meanwhile must not
+   * lose its successor to the old one's failure, and a database closing empties the registry first, where recording the
+   * failure would pin the closed database in it.
+   */
+  private void failBackgroundWork(final Throwable e) {
+    buildError = e;
+    if (snapshot != null) {
+      status = Status.STALE;
+      return;
+    }
+    status = Status.FAILED;
+    unregisterChangeListeners();
+    GraphTraversalProviderRegistry.unregister(database, this);
+    if (name != null)
+      GraphAnalyticalViewRegistry.unregisterFailed(database, name, this, e);
+  }
+
+  /**
+   * Logs a build or restore that failed in the background, at SEVERE with the view's name unless the database was closing.
+   * An {@link OutOfMemoryError} says what to change, since the stack trace of an allocation says nothing useful.
+   */
+  private void logBuildFailure(final String what, final Throwable e) {
+    // Quiet only when the view or the database is really going away: a transaction failure of a live build is a failure
+    if (isBenignShutdownError(e) && (shutDown || !database.isOpen()))
+      LogManager.instance().log(this, Level.FINE, "%s of GraphAnalyticalView '%s' aborted because the database is closing", what,
+          name);
+    else if (e instanceof OutOfMemoryError)
+      LogManager.instance().log(this, Level.SEVERE,
+          "%s of GraphAnalyticalView '%s' failed: it ran out of heap (max heap %s, page cache %s). The view is %s. Raise the heap "
+              + "(-Xmx) or lower %s, then rebuild it with REBUILD GRAPH ANALYTICAL VIEW", what, name,
+          FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()),
+          FileUtils.getSizeAsString(database.getConfiguration().getValueAsLong(GlobalConfiguration.MAX_PAGE_RAM) * 1024 * 1024),
+          status, GlobalConfiguration.MAX_PAGE_RAM.getKey());
+    else
+      LogManager.instance().log(this, Level.SEVERE, "%s of GraphAnalyticalView '%s' failed", e, what, name);
+  }
+
   // --- GraphTraversalProvider SPI ---
 
   @Override
@@ -1213,6 +1262,40 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return true; // we include all vertex types, or this one is listed
     final DocumentType type = database.getSchema().getTypeOrNull(typeName);
     return type != null && coversVertexTypeByFilter(type) && holdsJoinedVertexType(type);
+  }
+
+  /**
+   * Whether a vertex of {@code typeName} that is being written is one the view is built over: the type is listed, or sits under
+   * a listed one (issue #10208). It is what the commit listeners route the vertex by, and it is decided by the schema alone,
+   * like {@link #coversEdgeType}.
+   * <p>
+   * Not by {@link #coversVertexType}, which also asks whether the base CSR HOLDS the type's vertices. A listener that routed by
+   * that lost the vertex of a type attached to a listed one after the scan (issue #10491): the type held committed vertices the
+   * scan never read, so the answer was no, the listener dropped the vertex, and the rebuild that answer dispatches - from inside
+   * the writing transaction - scanned before it committed and read the vertex from nowhere, while the delta that would have
+   * carried it had never been collected. Routed by the filter, the vertex reaches the overlay and the rebuild's watch like any
+   * other, and whether the view is SERVED for the type stays {@link #coversVertexType}'s call.
+   */
+  boolean routesVertexType(final String typeName) {
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return true;
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    return type != null && coversVertexTypeByFilter(type);
+  }
+
+  /**
+   * The view meets a vertex type the first time one of its vertices is written, and takes its verdict on the type then:
+   * whether the base CSR holds it (issue #10208). Taken at that moment because it is what tells a type created after the scan
+   * (empty, every vertex heard since) from one attached to the family with vertices the scan never read, which no later question
+   * can: by then both hold vertices. A type listed by name, or outside the family, has no verdict to take. Decided once per base
+   * CSR and schema version, so a repeat write to the type costs a map lookup.
+   */
+  void meetWrittenVertexType(final String typeName) {
+    if (vertexTypes == null || containsType(vertexTypes, typeName))
+      return;
+    final DocumentType type = database.getSchema().getTypeOrNull(typeName);
+    if (type != null && coversVertexTypeByFilter(type))
+      holdsJoinedVertexType(type);
   }
 
   private boolean holdsAllJoinedVertexTypes(final DocumentType[] joinedTypes, final long version) {
@@ -1710,14 +1793,39 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return getNeighborView(checkBuilt(), direction, requestedEdgeTypes);
   }
 
+  @Override
+  public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    return neighborViewBuildCost(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+    return neighborViewOfSliceBuildCost(checkBuilt(), direction, edgeType);
+  }
+
+  @Override
+  public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
+    return neighborViewForVisits(checkBuilt(), expectedVisits, direction, requestedEdgeTypes);
+  }
+
+  @Override
+  public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    return neighborViewOfSliceForVisits(checkBuilt(), expectedVisits, direction, edgeType);
+  }
+
+  @Override
+  public double getMeanDegree(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    return meanDegree(checkBuilt(), direction, requestedEdgeTypes);
+  }
+
   private NeighborView getNeighborView(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     // The overlay changes the topology: the view is the base with the overlay applied, built once per snapshot (issue #10411)
     if (hasActiveOverlay(snap))
-      return overlayNeighborView(snap, direction,
-          edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : allEdgeTypes(snap).toArray(new String[0]),
-          neighborViewKey(direction, edgeTypes));
+      return overlayNeighborView(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
 
     final int n = snap.nodeMapping.size();
 
@@ -1811,14 +1919,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final String key) {
     final DeltaOverlay ov = snap.overlay;
     final int n = ov.getNodeIdUpperBound();
-    final int baseNodes = snap.nodeMapping.size();
-    if (slices.length == 1 && direction != Vertex.DIRECTION.BOTH && n == baseNodes) {
-      final CSRAdjacencyIndex csr = snap.csrPerType.get(slices[0]);
-      final BitSet changed = new BitSet();
-      ov.markChangedNodes(slices[0], direction == Vertex.DIRECTION.OUT, changed);
-      if (csr != null && changed.isEmpty())
-        return buildNeighborViewFromCSR(csr, n, direction);
-    }
+    final CSRAdjacencyIndex unchanged = unchangedBaseCsr(snap, direction, slices);
+    if (unchanged != null)
+      return buildNeighborViewFromCSR(unchanged, n, direction);
     return cachedNeighborView(snap, key, () -> {
       final List<NeighborView> parts = new ArrayList<>(slices.length * 2);
       for (final String slice : slices) {
@@ -1831,6 +1934,137 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return new NeighborView(n, new int[n + 1], EMPTY_INT);
       return parts.size() == 1 ? parts.getFirst() : mergeNeighborViews(parts, n);
     });
+  }
+
+  /**
+   * The base CSR of the one slice a view of {@code direction} reads when the overlay changes none of it and adds no vertex: the
+   * view is then the CSR's own arrays, built from nothing. Null in every other case.
+   */
+  private static CSRAdjacencyIndex unchangedBaseCsr(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices) {
+    final DeltaOverlay ov = snap.overlay;
+    if (slices.length != 1 || direction == Vertex.DIRECTION.BOTH || ov.getNodeIdUpperBound() != snap.nodeMapping.size())
+      return null;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(slices[0]);
+    if (csr == null)
+      return null;
+    return ov.changesNodes(slices[0], direction == Vertex.DIRECTION.OUT) ? null : csr;
+  }
+
+  /**
+   * What {@link #getNeighborView(Snapshot, Vertex.DIRECTION, String...)} would have to write for this snapshot (issue #10471):
+   * nothing when the view is the base CSR's own arrays or was built before, and otherwise one offset per node plus every entry of
+   * the adjacency it packs, which is what a build copies whatever the read that asked for it. Without an overlay the views are
+   * the CSR's arrays, or a merge kept for the life of the base, which no commit invalidates.
+   */
+  private long neighborViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    if (!hasActiveOverlay(snap))
+      return 0L;
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+    return overlayViewBuildCost(snap, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes));
+  }
+
+  /** {@link #neighborViewBuildCost} of the slice of {@code edgeType} alone, see {@link #getNeighborViewOfSlice}. */
+  private static long neighborViewOfSliceBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String edgeType) {
+    if (!hasActiveOverlay(snap))
+      return 0L;
+    final String[] slice = { edgeType };
+    return overlayViewBuildCost(snap, direction, slice, neighborViewKey(direction, slice));
+  }
+
+  /**
+   * The edge types a view reads: the resolved ones, every type of the snapshot when none were asked for. The array of every type
+   * is made once per snapshot, which never changes: a read with no edge type is a hot path and must not allocate one per call.
+   * The caller reads it and does not change it.
+   */
+  private static String[] slicesOf(final Snapshot snap, final String[] edgeTypes) {
+    if (edgeTypes != null && edgeTypes.length > 0)
+      return edgeTypes;
+    String[] all = snap.allEdgeTypeSlices;
+    if (all == null) {
+      all = allEdgeTypes(snap).toArray(new String[0]);
+      snap.allEdgeTypeSlices = all;
+    }
+    return all;
+  }
+
+  private static long overlayViewBuildCost(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices,
+      final String key) {
+    if (unchangedBaseCsr(snap, direction, slices) != null)
+      return 0L;
+    final SoftReference<NeighborView> cached = snap.mergedNeighborViews.get(key);
+    if (cached != null && cached.get() != null)
+      return 0L;
+    return (long) snap.overlay.getNodeIdUpperBound() + adjacencyEntries(snap, direction, slices);
+  }
+
+  /**
+   * Whether a read that visits {@code expectedVisits} entries of this snapshot per node, if it gets no view, should have one built
+   * (issue #10471). A view packs the adjacency of the whole graph, and the snapshot of a view with an overlay is replaced by every
+   * commit, so it is a cost of the snapshot, not of one read. Renting or buying: the reads that went without a view are added up
+   * for the snapshot, and the view is built by the read that brings the sum to what the build costs. A single read that visits as
+   * much as the build writes (a whole-graph count) builds it at once; point reads, thousands of them between two commits, build it
+   * when they have spent as much as it costs and never when the next commit comes first. Whatever the reads, the work wasted on
+   * per-node reads or on a view nobody read again is bounded by the cost of the view.
+   */
+  private static boolean neighborViewPaysFor(final Snapshot snap, final long requestedVisits, final Vertex.DIRECTION direction,
+      final String[] slices, final String key) {
+    // an estimate is not negative: a caller that overflowed one must not take away what the other reads spent
+    final long expectedVisits = Math.max(0L, requestedVisits);
+    final long cost = overlayViewBuildCost(snap, direction, slices, key);
+    if (cost == 0L || expectedVisits >= cost)
+      return true;
+
+    // A view that costs something although one was built for this key was given back under memory pressure (it is held softly):
+    // what the reads spent on it is gone with it, and they earn it again, instead of the first small read after the eviction
+    // finding the demand already spent and rebuilding the whole view for itself, which is what this accounting exists to prevent
+    // (the cost is not zero here, so an entry for the key is a reference that was cleared: a held view would have made it zero)
+    final SoftReference<NeighborView> evicted = snap.mergedNeighborViews.get(key);
+    final LongAdder demand = snap.neighborViewDemand.computeIfAbsent(key, k -> new LongAdder());
+    if (evicted != null && snap.mergedNeighborViews.remove(key, evicted))
+      demand.reset();
+
+    // The add and the sum are not one atomic step, on purpose: readers racing at the threshold may overshoot it by a read or ask for
+    // the view together, and the build is one per snapshot and key whoever asks (cachedNeighborView), so the race costs at most the
+    // few reads that could have been served by it. The sum stays below twice the cost: the read that reaches the cost builds the
+    // view, and a read that finds it built returns above without adding
+    demand.add(expectedVisits);
+    return demand.sum() >= cost;
+  }
+
+  private NeighborView neighborViewForVisits(final Snapshot snap, final long expectedVisits, final Vertex.DIRECTION direction,
+      final String... requestedEdgeTypes) {
+    if (hasActiveOverlay(snap)) {
+      final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+      if (!neighborViewPaysFor(snap, expectedVisits, direction, slicesOf(snap, edgeTypes), neighborViewKey(direction, edgeTypes)))
+        return null;
+    }
+    return getNeighborView(snap, direction, requestedEdgeTypes);
+  }
+
+  private static NeighborView neighborViewOfSliceForVisits(final Snapshot snap, final long expectedVisits,
+      final Vertex.DIRECTION direction, final String edgeType) {
+    if (hasActiveOverlay(snap)) {
+      final String[] slice = { edgeType };
+      if (!neighborViewPaysFor(snap, expectedVisits, direction, slice, neighborViewKey(direction, slice)))
+        return null;
+    }
+    return getNeighborViewOfSlice(snap, direction, edgeType);
+  }
+
+  /** The entries of the base adjacency of {@code slices} in {@code direction}: both lists of an edge for {@code BOTH}. */
+  private static long adjacencyEntries(final Snapshot snap, final Vertex.DIRECTION direction, final String[] slices) {
+    long entries = 0L;
+    for (final String slice : slices) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(slice);
+      if (csr != null)
+        entries += csr.getEdgeCount();
+    }
+    return direction == Vertex.DIRECTION.BOTH ? entries * 2 : entries;
+  }
+
+  private double meanDegree(final Snapshot snap, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
+    final String[] slices = slicesOf(snap, resolveEdgeTypes(requestedEdgeTypes));
+    return (double) adjacencyEntries(snap, direction, slices) / Math.max(1, nodeCountOf(snap));
   }
 
   /**
@@ -2696,6 +2930,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     @Override
+    public long getNeighborViewBuildCost(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.neighborViewBuildCost(snap, direction, edgeTypes);
+    }
+
+    @Override
+    public long getNeighborViewOfSliceBuildCost(final Vertex.DIRECTION direction, final String edgeType) {
+      return GraphAnalyticalView.neighborViewOfSliceBuildCost(snap, direction, edgeType);
+    }
+
+    @Override
+    public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+        final String... edgeTypes) {
+      return view.neighborViewForVisits(snap, expectedVisits, direction, edgeTypes);
+    }
+
+    @Override
+    public NeighborView getNeighborViewOfSliceForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
+        final String edgeType) {
+      return GraphAnalyticalView.neighborViewOfSliceForVisits(snap, expectedVisits, direction, edgeType);
+    }
+
+    @Override
+    public double getMeanDegree(final Vertex.DIRECTION direction, final String... edgeTypes) {
+      return view.meanDegree(snap, direction, edgeTypes);
+    }
+
+    @Override
     public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
       view.getDegrees(snap, degrees, direction, edgeType);
     }
@@ -3128,6 +3389,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return buildError;
   }
 
+  /**
+   * The text a status row shows for a build error: its class and message, since the message of an
+   * {@link OutOfMemoryError} ("Java heap space") does not say what it is on its own.
+   */
+  public static String describeBuildError(final Throwable error) {
+    if (error == null)
+      return null;
+    final String message = error.getMessage();
+    return message != null ? error.getClass().getSimpleName() + ": " + message : error.getClass().getSimpleName();
+  }
+
   public long getBuildTimestamp() {
     final Snapshot snap = this.snapshot;
     return snap != null ? snap.buildTimestamp : 0;
@@ -3154,12 +3426,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * Registers, before its transaction commits, that an edge leaving {@code source} is being created or deleted, so
-   * a full build in flight can tell whether its scan read the change (issue #8378).
+   * a full build or a compaction in flight can tell whether its scan read the change (issue #8378).
    */
   void watchEdgeSource(final RID source) {
     final BuildWatch watch = buildWatch;
     if (watch != null)
       watch.watchSource(source);
+    final BuildWatch compaction = compactionWatch;
+    if (compaction != null)
+      compaction.watchSource(source);
   }
 
   /**
@@ -3681,8 +3956,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Returns detailed statistics about this view as a map.
    * Includes vertex/edge counts, memory breakdown, edge types, and overlay state.
+   * <p>
+   * Asking for the statistics of a view whose restore-from-disk is still pending starts it, as the
+   * {@code schema:graphAnalyticalViews} row does ({@link #startPendingRestore}): the view reports BUILDING, with no counts yet,
+   * until the restore settles, and never READY with nothing behind it (issue #10575).
    */
   public Map<String, Object> getStats() {
+    startPendingRestore();
     final Map<String, Object> stats = new HashMap<>();
     stats.put("name", name);
     stats.put("status", getStatus().name());
@@ -3693,6 +3973,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       stats.put("nodeCount", 0);
       stats.put("edgeCount", 0);
       stats.put("memoryUsageBytes", 0L);
+      // A view that never built says why, which is all it has to say (issue #11011)
+      final Throwable err = buildError;
+      if (err != null)
+        stats.put("buildError", describeBuildError(err));
       return stats;
     }
 
@@ -3771,7 +4055,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     stats.put("compactionThreshold", compactionThreshold);
     final Throwable err = buildError;
     if (err != null)
-      stats.put("buildError", err.getMessage());
+      stats.put("buildError", describeBuildError(err));
 
     final ContractionHierarchy[] hierarchies = contractionHierarchies;
     if (hierarchies.length > 0) {
@@ -3833,8 +4117,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // how much further replicated data has landed since - the same failure shape as the lost-recency-marker case,
     // but permanent rather than self-healing. Leader-only mirrors the existing precedent for HA-unsafe derived
     // state (see TimeSeriesMaintenanceScheduler.runMaintenance()) with no compile dependency on the HA module.
+    // isFollower() and not this reference's own flags (issue #11021): a view restored at open holds the raw LocalDatabase,
+    // built before the server wrapped it for HA, whose isReplicated() is false forever. The same holds for the three below.
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return;
     final Snapshot snap = this.snapshot;
     if (snap == null || snap.asOfTransactionId < 0)
@@ -3879,7 +4165,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (name == null || status != Status.READY || contractionHierarchies.length == 0)
       return;
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return;
     final Snapshot snap = this.snapshot;
     if (snap == null || snap.asOfTransactionId < 0 || (snap.overlay != null && snap.overlay.hasChanges()))
@@ -3946,7 +4232,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
       return false;
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return false;
     if (!dbInternal.getTransactionManager().isRecencySignalReliable())
       return false;
@@ -3962,6 +4248,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private void triggerDeferredDiskRestoreIfPending() {
     if (pendingDiskRestore)
       dispatchDeferredRestore();
+  }
+
+  /**
+   * Starts the deferred restore-from-disk (see #6632) if one is pending, and returns at once: the view is BUILDING until it
+   * settles, READY with its counts once it has. A no-op for a view that is not waiting for one (a single volatile read).
+   * <p>
+   * For a caller that reads the state of the view rather than using it, such as the {@code schema:graphAnalyticalViews} row
+   * (issue #10575): a pending restore reports {@code status == READY} before a byte is read, with no snapshot behind it, and
+   * nothing else would ever resolve it for a caller that only looks. Asking for the state is an explicit wait, like
+   * {@link #awaitReady}, so it dispatches what that dispatches.
+   */
+  public void startPendingRestore() {
+    triggerDeferredDiskRestoreIfPending();
   }
 
   /**
@@ -4003,6 +4302,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           BUILD_PERMITS.acquireUninterruptibly();
           final boolean restored;
           try {
+            final Runnable beforeRestore = beforeDiskRestoreForTest;
+            if (beforeRestore != null)
+              beforeRestore.run();
             restored = tryRestoreFromPersistedCsr(myGeneration);
           } finally {
             BUILD_PERMITS.release();
@@ -4016,24 +4318,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             buildAsync();
             awaitDeferredDiskRestoreSettled();
           }
-        } catch (final Exception e) {
+        } catch (final Exception | Error e) {
           // tryRestoreFromPersistedCsr() only catches around its own load() call, so anything else
-          // unexpected (e.g. the database closing mid-check) would otherwise leave status stuck at
+          // unexpected (e.g. the database closing mid-check, or the heap running out) would otherwise leave status stuck at
           // BUILDING forever - awaitDeferredDiskRestoreSettled()'s loop would then busy-spin on every
           // future checkBuilt() call (its latch is already counted down, so await() returns instantly,
-          // and status never leaves BUILDING to end the loop). Mirrors buildAsync()'s own catch exactly.
+          // and status never leaves BUILDING to end the loop). The same failBackgroundWork() as buildAsync()'s own catch
+          // (issue #11032): a restore that dies with nothing to serve frees the name exactly as a failed build does.
           synchronized (this) {
-            if (myGeneration == generation) {
-              buildError = e;
-              status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
-            }
+            if (myGeneration == generation)
+              failBackgroundWork(e);
             notifyAll();
           }
-          if (isBenignShutdownError(e))
-            LogManager.instance().log(this, Level.FINE,
-                "Deferred restore of GraphAnalyticalView '%s' aborted because the database is closing", name);
-          else
-            LogManager.instance().log(this, Level.WARNING, "Failed to resolve deferred restore for GraphAnalyticalView '%s'", e, name);
+          logBuildFailure("Deferred restore", e);
         } finally {
           deferredRestoreInFlight = false;
           latch.countDown();
@@ -4041,14 +4338,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       });
     } catch (final RejectedExecutionException e) {
-      // Mirrors buildAsync()'s equivalent handler exactly (review on PR #6633): buildError/notifyAll()
-      // were missing here, and status was unconditionally NOT_BUILT even when a prior snapshot exists
-      // (e.g. a rebuild superseded by this same dispatch, or a stale-but-still-served one) - both quietly
-      // made getBuildError()/isReady()'s STALE+useWhenStale path less reliable for this rejection path
-      // than for every other one in this class.
+      // The same failBackgroundWork() as buildAsync()'s equivalent handler (review on PR #6633, issue #11032): buildError and
+      // notifyAll() were missing here once, then the teardown that frees the name, so getBuildError(), isReady()'s
+      // STALE+useWhenStale path and a CREATE of the same name answered differently for this rejection path.
       deferredRestoreInFlight = false;
-      buildError = e;
-      status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      failBackgroundWork(e);
       notifyAll();
       latch.countDown();
       taskCompleted();
@@ -4113,7 +4407,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // e.g. left over from a promotion/demotion - must never be restored on this node either. Checked before
     // isRecencySignalReliable() purely because it is the cheaper of the two disqualifying checks.
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
-    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+    if (dbInternal.isFollower())
       return false;
     // The certificate is a plain equality check against the database's last committed transaction id, which is
     // only sound while that counter's own history is verifiably continuous. If this open couldn't reconstruct it
@@ -4657,14 +4951,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
-
-      // The view as of this instant - after the triggering delta was merged above, before the first BUFFERED
-      // one arrives. It is the reference the deletion side of the re-application below needs: the fresh CSR
-      // scan is read-committed and non-atomic, so the drop from a pair's multiplicity HERE to its
-      // multiplicity in the fresh base is exactly the number of that pair's buffered deletions the scan
-      // already swallowed (issue #7042). Immutable, so holding the reference across the rebuild is free and
-      // safe from the compaction thread.
-      final Snapshot preCompaction = this.snapshot;
+      // Before the scan: what it reads of every change that may race it, buffered or delivered after the swap
+      final BuildWatch compactionScan = openCompactionWatch();
 
       // See the `generation` field javadoc (issue #6636): captured at dispatch time, deliberately NOT
       // bumped by the synchronous overlay merge just above (or by any applyDelta() call re-entering while
@@ -4683,17 +4971,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             try {
               final long buildStart = System.currentTimeMillis();
               final CSRBuilder builder = newCSRBuilder();
+              builder.setScanObserver(compactionScan);
               final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
               final long durationMs = System.currentTimeMillis() - buildStart;
 
               // Synchronized swap: capture buffered deltas and re-apply against the new mapping
               synchronized (GraphAnalyticalView.this) {
                 // A change committed before the swap and still queued for the asynchronous merge joins the buffered ones
-                // now (issue #10189): merged after the swap, it would be applied to the fresh base unchecked against the
-                // scan, which may already hold it
+                // now (issue #10189)
                 mergeQueuedAsyncDeltas();
                 final List<TxDelta> buffered = pendingDeltas;
                 pendingDeltas = null;
+                closeCompactionWatch(compactionScan);
 
                 if (buffered == null) {
                   // Buffer was aborted (overflow) — keep the current snapshot with its overlay.
@@ -4709,25 +4998,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                       "GraphAnalyticalView '%s': compaction result discarded (superseded by a newer build/restore)", name);
                 } else {
                   Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
+                  // Bound to the fresh CSR, the watch answers for the buffered deltas and for the ones delivered after this
+                  // swap, whose transactions may have committed before the scan read them: merged unchecked, an edge the
+                  // scan read was counted twice for as long as this base is served
+                  final BuildWatch scanWatch = compactionScan.hasWatchedSources() ? compactionScan : null;
+                  if (scanWatch != null)
+                    scanWatch.bindTo(result.getCsrPerType());
 
                   // Re-apply any deltas that arrived during the rebuild.
                   // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
                   // Merging against the new mapping resolves RIDs to correct dense IDs.
                   if (!buffered.isEmpty()) {
-                    // Asked of the pre-compaction snapshot rather than of the fresh one: it answers "how many
-                    // of this pair did the view hold before any buffered delta", which is what tells a
-                    // deletion the scan already swallowed apart from one that committed behind it (#7042).
-                    final DeltaOverlay.PreCompactionPairCount preCount =
-                        (type, src, tgt) -> preCompactionPairCount(preCompaction, type, src, tgt);
                     DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-                    for (final TxDelta d : buffered) {
-                      // Dedup against the fresh base CSR: a buffered delta committed before the scan
-                      // crossed its bucket is already in the new base, so re-merging it blindly would
-                      // create duplicate neighbours (adds, issue #4588) or spend an exclusion budget the
-                      // fresh run cannot pay without hiding a live parallel edge (deletions, issue #7042).
-                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType(), preCount,
-                          result.getCsrPerType());
-                    }
+                    // Dedup against what the scan read, edge by edge: a buffered delta committed before the scan
+                    // crossed its source is already in the new base, so re-merging it blindly would create duplicate
+                    // neighbours (adds, issue #4588) or spend an exclusion budget the fresh run cannot pay without
+                    // hiding a live parallel edge (deletions, issue #7042)
+                    for (final TxDelta d : buffered)
+                      overlay = mergeAgainstBase(overlay, d, result.getMapping(), scanWatch, result.getCsrPerType());
                     // A change to a base edge's properties has no overlay representation, so a delta buffered
                     // during this rebuild may not be reflected in the fresh CSR (if it committed after the
                     // relevant bucket was scanned): flag a follow-up rebuild (#4513). Asked of the overlay the
@@ -4742,8 +5030,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   }
 
                   this.snapshot = fresh;
-                  baseWatch = null;
+                  baseWatch = scanWatch;
                   notifyContractionHierarchies();
+                  // The lightweight pairs the re-application reconciled by counting are checked against the graph, as the
+                  // ones a full build raced on are (issue #9572)
+                  if (scanWatch != null) {
+                    final Set<BuildWatch.RacedLightPair> raced = scanWatch.takeRacedLightPairs();
+                    if (!raced.isEmpty())
+                      checkLightEdgesAgainstGraphLater(raced);
+                  }
                 }
               }
 
@@ -4751,9 +5046,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               if (database.isTransactionActive())
                 database.rollback();
             }
-          } catch (final Exception e) {
+          } catch (final Exception | Error e) {
+            // An Error too: the deltas would otherwise keep buffering for a swap that never comes (issue #11011). The view
+            // keeps serving its snapshot and overlay, which hold every delta merged so far
             synchronized (GraphAnalyticalView.this) {
               pendingDeltas = null;
+              closeCompactionWatch(compactionScan);
             }
             if (isBenignShutdownError(e))
               LogManager.instance().log(this, Level.FINE,
@@ -4783,6 +5081,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         });
       } catch (final RejectedExecutionException e) {
         pendingDeltas = null;
+        closeCompactionWatch(compactionScan);
         compacting.set(false);
         taskCompleted();
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': compaction rejected (executor shut down)", name);
@@ -4791,22 +5090,33 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * How many times the pair {@code source -> target} was visible for {@code edgeType} in {@code snap}, asked by
-   * RID so it can be answered against a mapping other than the current one.
-   * <p>
-   * Backs the {@link DeltaOverlay.PreCompactionPairCount} the post-compaction delta re-application hands to
-   * {@link DeltaOverlay#merge}: the buffered deltas carry RIDs, and the dense ids of the pre-compaction
-   * mapping have nothing to do with the ones the freshly built mapping assigns. Zero when either endpoint was
-   * not part of the view at that point - it then held none of the pair, which is what the caller needs to
-   * know. See issue #7042.
+   * Opens the watch of a compaction being dispatched, before its scan starts, as {@link #openBuildWatch} opens a full build's:
+   * every change that may race the scan then has its edge sources registered, so the scan reports what it read of them. The
+   * transactions still open registered theirs before the watch existed, and so did the ones whose change is queued for the
+   * asynchronous merge, which no longer report them as in flight: both are registered here. Must be called under this
+   * instance's monitor, which the asynchronous merge holds while it polls.
    */
-  private int preCompactionPairCount(final Snapshot snap, final String edgeType, final RID source, final RID target) {
-    final DeltaOverlay ov = snap.overlay;
-    final int src = ov != null ? ov.resolveNodeId(source, snap.nodeMapping) : snap.nodeMapping.getGlobalId(source);
-    final int tgt = ov != null ? ov.resolveNodeId(target, snap.nodeMapping) : snap.nodeMapping.getGlobalId(target);
-    if (src < 0 || tgt < 0)
-      return 0;
-    return (int) countBetweenForType(snap, src, tgt, Vertex.DIRECTION.OUT, edgeType);
+  private BuildWatch openCompactionWatch() {
+    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS);
+    compactionWatch = watch;
+    if (deltaCollector != null)
+      // Read after publishing the watch, the reverse of the order a transaction writes them in (see openBuildWatch())
+      deltaCollector.registerInFlightEdgeSources(watch);
+    // Read after the in-flight sources: a transaction queues its change before it stops reporting its sources as in flight
+    for (final QueuedDelta queued : asyncDeltas) {
+      for (final TxDelta.EdgeDelta ed : queued.delta().addedEdges)
+        watch.watchSource(ed.source);
+      for (final TxDelta.EdgeDelta ed : queued.delta().deletedEdges)
+        watch.watchSource(ed.source);
+    }
+    return watch;
+  }
+
+  /** Stops the registrations of a compaction's watch. Must be called under this instance's monitor. */
+  private void closeCompactionWatch(final BuildWatch watch) {
+    watch.close();
+    if (compactionWatch == watch)
+      compactionWatch = null;
   }
 
   private boolean isConnectedForType(final Snapshot snap, final int nodeA, final int nodeB,
@@ -5244,8 +5554,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         awaitDeferredDiskRestoreSettled();
       snap = this.snapshot;
     }
-    if (snap == null)
+    if (snap == null) {
+      final Throwable failure = buildError;
+      if (failure != null)
+        // A FAILED view says why, rather than that nobody built it (issue #11011)
+        throw new IllegalStateException(
+            "GraphAnalyticalView '" + name + "' failed to build (" + describeBuildError(failure) + "). Rebuild it", failure);
       throw new IllegalStateException("GraphAnalyticalView has not been built yet. Call build() first.");
+    }
     return snap;
   }
 
@@ -5277,6 +5593,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /** Test-only hook: run as a build's watch is published, before its listeners are armed, which may throw from there. */
+  /**
+   * Test-only hook: runs in the deferred restore's task right before the persisted file is read, where a {@link Error} it
+   * throws reaches the task's own handler as a failure inside the read would (issue #11032).
+   */
+  void setBeforeDiskRestoreForTest(final Runnable hook) {
+    this.beforeDiskRestoreForTest = hook;
+  }
+
   void setAfterBuildWatchOpenedForTest(final Runnable hook) {
     this.afterBuildWatchOpenedForTest = hook;
   }

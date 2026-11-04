@@ -24,12 +24,17 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * Regression tests for the second half of issue #6412: the catalog answers a client needs to render a
@@ -169,11 +174,13 @@ class Issue6412CatalogIT extends PostgresWireProtocolTestBase {
           "select NSPNAME as SCHEMA_NAME, case when lower(NSPNAME)='pg_catalog' then 'Y' else 'N' end as IS_PUBLIC, "
               + "case when lower(NSPNAME)='information_schema' then 'Y' else 'N' end as IS_SYSTEM, 'N' as IS_EMPTY "
               + "from PG_CATALOG.PG_NAMESPACE order by NSPNAME asc")) {
-        assertThat(resultSet.next()).isTrue();
-        assertThat(resultSet.getString("SCHEMA_NAME")).isEqualTo(getDatabaseName());
-        assertThat(resultSet.getString("IS_PUBLIC")).isEqualTo("N");
-        assertThat(resultSet.getString("IS_SYSTEM")).isEqualTo("N");
-        assertThat(resultSet.next()).isFalse();
+        // the database's schema and pg_catalog, the schema of the built-in types (issue #10745), each as the client's CASE reads it
+        final Map<String, String> isPublic = new TreeMap<>();
+        while (resultSet.next()) {
+          isPublic.put(resultSet.getString("SCHEMA_NAME"), resultSet.getString("IS_PUBLIC"));
+          assertThat(resultSet.getString("IS_SYSTEM")).isEqualTo("N");
+        }
+        assertThat(isPublic).containsOnly(entry(getDatabaseName(), "N"), entry("pg_catalog", "Y"));
       }
     }
   }
@@ -181,10 +188,15 @@ class Issue6412CatalogIT extends PostgresWireProtocolTestBase {
   @Test
   void anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt() throws Exception {
     try (final Connection connection = openJdbcConnection(); final Statement statement = connection.createStatement()) {
-      // pg_index has no ArcadeDB equivalent this catalog models. The client gets the empty answer the rest of
-      // pg_catalog has always given, not an error and not an invented row.
-      try (final ResultSet resultSet = statement.executeQuery("SELECT indexrelid FROM pg_catalog.pg_index")) {
-        assertThat(resultSet.next()).isFalse();
+      // pg_extension has rows in every PostgreSQL, and this catalog models none of them. The client is told so, with
+      // feature_not_supported (issue #10371), and not handed an empty answer that reads as "no extension here" nor an invented row.
+      assertThatThrownBy(() -> statement.executeQuery("SELECT oid FROM pg_catalog.pg_extension")).isInstanceOf(SQLException.class)
+          .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("0A000"))
+          .hasMessageContaining("pg_extension");
+
+      // and the connection goes on
+      try (final ResultSet resultSet = statement.executeQuery("SELECT 1")) {
+        assertThat(resultSet.next()).isTrue();
       }
     }
   }

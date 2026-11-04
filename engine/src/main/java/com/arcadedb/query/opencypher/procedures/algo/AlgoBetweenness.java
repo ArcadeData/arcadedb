@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -61,6 +62,9 @@ import java.util.stream.Stream;
 public class AlgoBetweenness extends AbstractAlgoProcedure {
   public static final String NAME = "algo.betweenness";
 
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("normalized");
+
   @Override
   public String getName() {
     return NAME;
@@ -90,7 +94,7 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final boolean normalized = config == null || !Boolean.FALSE.equals(config.get("normalized"));
 
     final Database db = context.getDatabase();

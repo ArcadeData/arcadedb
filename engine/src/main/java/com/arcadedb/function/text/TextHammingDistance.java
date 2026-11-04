@@ -54,15 +54,19 @@ public class TextHammingDistance extends AbstractTextFunction {
     if (str1 == null || str2 == null)
       return null;
 
-    if (str1.length() != str2.length()) {
+    // characters, not UTF-16 units: a character outside the BMP is one position, whichever half of its pair differs
+    final int[] chars1 = codePointsOf(str1);
+    final int[] chars2 = codePointsOf(str2);
+
+    if (chars1.length != chars2.length) {
       throw new IllegalArgumentException(
           "text.hammingDistance() requires strings of equal length, got " +
-              str1.length() + " and " + str2.length());
+              chars1.length + " and " + chars2.length);
     }
 
     int distance = 0;
-    for (int i = 0; i < str1.length(); i++) {
-      if (str1.charAt(i) != str2.charAt(i)) {
+    for (int i = 0; i < chars1.length; i++) {
+      if (chars1[i] != chars2[i]) {
         distance++;
       }
     }

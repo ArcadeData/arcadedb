@@ -313,8 +313,8 @@ class Issue9680ListTerminateQueriesTest extends BaseGraphServerTest {
     while (System.currentTimeMillis() < deadline) {
       final JSONArray entries = listQueries(user, tag);
       // Listed once the statement is known too: the entry is registered when the request is admitted and its text recorded
-      // once the handler has parsed it, so a listing in between shows an entry without a language yet
-      if (!entries.isEmpty() && entries.getJSONObject(0).has("language")) {
+      // once the handler has parsed it, so a listing in between shows an entry whose language is absent or null yet
+      if (!entries.isEmpty() && entries.getJSONObject(0).getString("language", null) != null) {
         assertThat(entries.length()).isEqualTo(1);
         assertThat(entries.getJSONObject(0).getString("tag")).isEqualTo(tag);
         return entries.getJSONObject(0);

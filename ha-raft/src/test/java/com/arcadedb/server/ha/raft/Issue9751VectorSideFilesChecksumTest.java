@@ -183,9 +183,8 @@ class Issue9751VectorSideFilesChecksumTest {
   }
 
   /**
-   * Two indexes, because no single one writes every side file: PRODUCT quantization writes the {@code .vecpq} and, by
-   * design, no {@code .vecordmap} (see {@code LSMVectorIndex.writeGraphManifest}); every other quantization writes the
-   * map and no PQ.
+   * Two indexes, because no single one writes every side file: PRODUCT quantization writes the {@code .vecpq} and, like
+   * every other quantization, the {@code .vecordmap}; only it writes a PQ.
    */
   private static Database createVectorDatabase(final String path) {
     final Database database = new DatabaseFactory(path).create();

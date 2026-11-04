@@ -19,14 +19,18 @@ General design principles:
 - don't include a new dependency unless is strictly necessary, and they MUST be Apache 2.0 compatible:
   - ✅ ALLOWED: Apache 2.0, MIT, BSD (2/3-Clause), ISC, EPL 1.0/2.0, UPL 1.0, EDL 1.0, LGPL 2.1+ (for libraries only),
     MPL-2.0 (for libraries only, unmodified), CDDL 1.0/1.1 (for libraries only, unmodified), GPL-2.0 WITH the Classpath
-    Exception specifically (never a bare GPL), CC0/Public Domain
+    Exception specifically (never a bare GPL), CC0/Public Domain, Zlib, BlueOak-1.0.0, OFL-1.1 (fonts only, unmodified),
+    CC-BY-4.0 (icons and other non-code assets only, unmodified, with the attribution it requires in ATTRIBUTIONS.md)
   - ❌ FORBIDDEN: GPL, AGPL, proprietary licenses without explicit permission, SSPL, Commons Clause, BUSL-1.1, Elastic-2.0
   - This is an allow-list: a license in neither row above is not permitted by default. Get explicit maintainer sign-off
     and add it to the ALLOWED row before depending on it. "For libraries only" / "unmodified" means: depending on the
     unmodified jar as-is is fine, but do not vendor or patch its source under this project without revisiting the
     license implications. CI enforces this allow-list on the Maven graph
-    (`.github/scripts/check-license-allowlist.py`, run from `license-compliance.yml`) and on the npm graph
-    (`license-checker --onlyAllow` in `studio-security-audit.yml`)
+    (`.github/scripts/check-license-allowlist.py`, run from `license-compliance.yml`) and on the npm packages Studio
+    ships (`studio/test/dependency-licenses.test.js`, run by `npm test` in the Maven build and by
+    `studio-security-audit.yml`). Zlib, BlueOak-1.0.0, OFL-1.1 and CC-BY-4.0 are so far only in the npm check: the
+    Maven script matches exact clause spellings and fails closed, so the first Maven dependency under one of them
+    adds its spelling to `ALLOWED_CLAUSES`
   - When adding a dependency, you MUST update ATTRIBUTIONS.md and, if Apache-licensed with a NOTICE file, incorporate required notices into the main NOTICE file
 - for Studio (webapp), limit to jquery and bootstrap 5. If necessary use 3rd party libs, but they must be Apache 2.0 compatible (see allowed licenses above)
 - always bear in mind PERFORMANCE. It must be always your mantra: performance and lightweight on garbage collector. If you can, prefer using arrays of primitives to List of Objects
@@ -66,6 +70,15 @@ General design principles:
     makes those more true
   - `@Timeout` is plain wall clock and cannot be discounted, so size it as a hang detector, not as a latency bound
 - don't add Claude as author of any source code
+- **Census tests enumerate from the authority they protect** (#11199). A test shipped as "the next offender is a red
+  build" must range over the thing that defines an offender, and must assert that it reached it:
+  - if the authority is a method, scan the compiled call sites of that method (see
+    `Issue10850NoNarrowingReadsInFunctionsTest`, `SchemaPresentationReadableWalkCensusTest`); if it is a table or
+    registry, read its key set (see `Issue11170MCPToolAnnotationsTest`, `RemoteExceptionRebuilder.names()`)
+  - a census rooted in a directory, a module list, a package or a source spelling can be left by writing the offender
+    somewhere else, and a reviewer reading it cannot tell
+  - every census carries at least one assertion of the form "the scan still reaches X", where X names the authority and
+    the failure message names it too
 - **Test server ports** - never address or bind a hand-picked port in a test. Parallel builds (other worktrees,
   other agents, an IDE's server) share the machine, and a collision reads as `403` / "Too many failed authentication
   attempts" or "Address already in use" in some other test, never as a port conflict:

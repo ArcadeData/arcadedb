@@ -49,9 +49,9 @@ class RemoteMutableDocumentTest {
   }
 
   @Test
-  void getTypeThrowsUnsupported() {
-    assertThatThrownBy(() -> document.getType())
-        .isInstanceOf(UnsupportedOperationException.class);
+  void getTypeAnswersTheTypeItHolds() {
+    // As an immutable document does (issue #11053)
+    assertThat(document.getType()).isSameAs(mockType);
   }
 
   @Test

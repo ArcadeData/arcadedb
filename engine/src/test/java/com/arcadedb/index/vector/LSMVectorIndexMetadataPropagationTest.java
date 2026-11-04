@@ -72,6 +72,8 @@ class LSMVectorIndexMetadataPropagationTest extends TestHelper {
     source.pqClusters = 128;
     source.pqCenterGlobally = false;
     source.pqTrainingLimit = 4096;
+    source.fusedPQ = true;
+    source.rerankOversample = 7;
     source.buildState = "BUILDING";
 
     final LSMVectorIndexMetadata copy = source.copy("Other", new String[] { "vector" }, -1);
@@ -99,6 +101,8 @@ class LSMVectorIndexMetadataPropagationTest extends TestHelper {
     assertThat(copy.pqClusters).isEqualTo(128);
     assertThat(copy.pqCenterGlobally).isFalse();
     assertThat(copy.pqTrainingLimit).isEqualTo(4096);
+    assertThat(copy.fusedPQ).isTrue();
+    assertThat(copy.rerankOversample).isEqualTo(7);
     // buildState is per-index lifecycle state, not a setting: a rebuilt index must start from its own default.
     assertThat(copy.buildState).isEqualTo("READY");
   }

@@ -47,8 +47,6 @@ import org.apache.tinkerpop.gremlin.jsr223.Customizer;
 import org.apache.tinkerpop.gremlin.jsr223.DefaultGremlinScriptEngineManager;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
-import org.apache.tinkerpop.gremlin.jsr223.VariableResolverCustomizer;
-import org.apache.tinkerpop.gremlin.language.grammar.VariableResolver;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
@@ -97,7 +95,6 @@ public class ArcadeGraph implements Graph, Closeable {
   private final static Iterator<Edge>              EMPTY_EDGES    = Collections.emptyIterator();
   protected            Features                    features       = new ArcadeGraphFeatures();
   private              GremlinLangScriptEngine     gremlinJavaEngine;
-  private              GremlinLangScriptEngine     gremlinJavaAnalysisEngine;
   private              GremlinGroovyScriptEngine   gremlinGroovyEngine;
   private              ServiceRegistry             serviceRegistry;
   private volatile     GraphTraversalSource        traversal;
@@ -320,18 +317,10 @@ public class ArcadeGraph implements Graph, Closeable {
       throw Vertex.Exceptions.userSuppliedIdsNotSupported();
     this.tx().readWrite();
 
-    String typeName = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
-
-    final String bucketName;
-    if (typeName.startsWith("bucket:")) {
-      bucketName = typeName.substring("bucket:".length());
-      final DocumentType type = database.getSchema().getTypeByBucketName(bucketName);
-      if (type == null)
-        typeName = null;
-      else
-        typeName = type.getName();
-    } else
-      bucketName = null;
+    final String label = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
+    // A 'bucket:' LABEL NAMING A BUCKET THAT DOES NOT EXIST, OR THAT NO TYPE OWNS, IS REFUSED BY NAME (#10763)
+    final String bucketName = ArcadeLabels.bucketName(label);
+    final String typeName = ArcadeLabels.typeNameForWrite(database.getSchema(), label);
 
     // getOrCreate: two traversals adding the first vertex of a label concurrently both end with the type (issue #10145)
     if (!this.database.getSchema().existsType(typeName))
@@ -756,30 +745,6 @@ public class ArcadeGraph implements Graph, Closeable {
 
   public GremlinLangScriptEngine getGremlinJavaEngine() {
     return gremlinJavaEngine;
-  }
-
-  /**
-   * Returns a Java Gremlin engine used only for idempotency analysis ({@link com.arcadedb.query.QueryEngine#analyze}).
-   * Unlike the execution engine, it tolerates unbound parameters (e.g. {@code has('id', p0)} with no bindings) by
-   * resolving every variable to {@code null} via TinkerPop's {@link VariableResolver.NullVariableResolver}. The
-   * traversal shape is preserved, which is all that is needed to classify a query as read/write. See issue #5187:
-   * on an HA follower {@code RaftReplicatedDatabase.command()} analyzes the statement without the parameter bindings,
-   * so a strict resolver would throw {@code VariableResolverException} before the command could run or be forwarded.
-   */
-  public GremlinLangScriptEngine getGremlinJavaAnalysisEngine() {
-    if (gremlinJavaAnalysisEngine == null) {
-      synchronized (this) {
-        if (gremlinJavaAnalysisEngine == null) {
-          final Customizer[] importCustomizers = importPlugin.create().getCustomizers().orElse(new Customizer[0]);
-          final Customizer[] customizers = Arrays.copyOf(importCustomizers, importCustomizers.length + 1);
-          customizers[importCustomizers.length] = new VariableResolverCustomizer(
-              params -> VariableResolver.NullVariableResolver.instance());
-          gremlinJavaAnalysisEngine = new GremlinLangScriptEngine(customizers);
-          gremlinJavaAnalysisEngine.getFactory().setCustomizerManager(new DefaultGremlinScriptEngineManager());
-        }
-      }
-    }
-    return gremlinJavaAnalysisEngine;
   }
 
   public boolean isGremlinGroovyEngineUsed() {

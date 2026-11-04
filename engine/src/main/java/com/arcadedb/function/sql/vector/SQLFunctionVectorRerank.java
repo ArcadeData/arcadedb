@@ -92,8 +92,8 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     if (!(params[2] instanceof String embeddingProperty) || embeddingProperty.isEmpty())
       throw new CommandSQLParsingException(NAME + " 3rd argument must be the embedding property name");
 
-    final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
-    if (k <= 0)
+    final int k = parseNeighborCount(params[3]);
+    if (k == 0)
       return new ArrayList<>(0);
 
     if (!(source instanceof Iterable<?> iter))

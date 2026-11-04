@@ -70,6 +70,7 @@ public class DeleteFromTimeSeriesStep extends AbstractExecutionStep {
       final TimeSeriesEngine engine = tsType.requireEngine(SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       final long deleted;
       try {
+        // the engine tells the continuous aggregates over the type which range changed (issue #10428) and refreshes them (#10686)
         deleted = engine.deleteSamples(fromTs, toTs, tagFilter);
       } catch (final IOException e) {
         // the shards before the one that failed are deleted: say so, and that running the statement again finishes the job

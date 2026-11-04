@@ -259,4 +259,28 @@ public class HttpSessionManager extends RWLockContext {
   public int getActiveSessions() {
     return executeInReadLock(sessions::size);
   }
+
+  /**
+   * Whether a transaction session is open on {@code databaseName}. Its transaction lives in the session between two requests,
+   * attached to no thread, so a server closing idle databases asks here before it closes one (issue #11068).
+   */
+  public boolean hasSessionOnDatabase(final String databaseName) {
+    return executeInReadLock(() -> {
+      for (final HttpSession session : sessions.values())
+        if (session.transaction != null && databaseName.equals(session.transaction.getDatabase().getName()))
+          return true;
+      return false;
+    });
+  }
+
+  /** The names of the databases a transaction session is open on, read once for a whole idle check (issue #11068). */
+  public Set<String> getSessionDatabaseNames() {
+    return executeInReadLock(() -> {
+      final Set<String> names = new HashSet<>();
+      for (final HttpSession session : sessions.values())
+        if (session.transaction != null)
+          names.add(session.transaction.getDatabase().getName());
+      return names;
+    });
+  }
 }

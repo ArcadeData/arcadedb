@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 
 /**
  * Abstract base class for text functions.
@@ -47,15 +48,28 @@ public abstract class AbstractTextFunction implements StatelessFunction {
   }
 
   /**
-   * Safely converts an argument to int, with default value for null.
+   * The characters of a string, one {@code int} each: a character outside the BMP is one element, not the two UTF-16 units of its
+   * surrogate pair. A lone surrogate is a character of its own.
    */
-  protected int asInt(final Object arg, final int defaultValue) {
-    if (arg == null) {
+  protected static int[] codePointsOf(final String s) {
+    final int length = s.length();
+    final int[] codePoints = new int[s.codePointCount(0, length)];
+    for (int i = 0, n = 0; i < length; n++) {
+      final int codePoint = s.codePointAt(i);
+      codePoints[n] = codePoint;
+      i += Character.charCount(codePoint);
+    }
+    return codePoints;
+  }
+
+  /**
+   * Reads an int argument, with a default value for null. A number has to be a whole one in the int range: intValue()
+   * read 2.9 as 2 and wrapped 4294967298 to 2, so a wrong argument answered as a plausible one (issue #10850). A text is
+   * parsed as a whole number too, and one that is not is the same client error (issue #10954).
+   */
+  protected int asInt(final Object arg, final int defaultValue, final String argumentName) {
+    if (arg == null)
       return defaultValue;
-    }
-    if (arg instanceof Number) {
-      return ((Number) arg).intValue();
-    }
-    return Integer.parseInt(arg.toString());
+    return CypherFunctionHelper.requireWholeIntOrTextArgument(arg, getName(), argumentName);
   }
 }

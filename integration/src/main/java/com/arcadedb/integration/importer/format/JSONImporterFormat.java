@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -33,6 +34,7 @@ import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
@@ -41,6 +43,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
@@ -89,6 +92,15 @@ public class JSONImporterFormat implements FormatImporter {
       while (reader.hasNext()) {
         JsonToken token = reader.peek();
 
+        if (mapping == null && token == BEGIN_ARRAY) {
+          // A TOP-LEVEL ARRAY WITH NO MAPPING: EVERY OBJECT IN IT IS A RECORD, IMPORTED AS AN ANONYMOUS DOCUMENT LIKE THE
+          // SINGLE TOP-LEVEL OBJECT BELOW, EACH IN ITS OWN TRANSACTION SO -onRowError skip CAN DISCARD ONE. IT USED TO
+          // REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID NOT
+          // KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
+          parseRecords(reader, parser, database, settings, context, null, false);
+          return;
+        }
+
         if (mapping == null) {
           // A single top-level object: there is no sibling record to continue with on failure, so -onRowError skip
           // has no recovery to do here - any error still aborts the import.
@@ -97,11 +109,16 @@ public class JSONImporterFormat implements FormatImporter {
                 .log(this, Level.INFO,
                     "-onRowError skip has no effect on a single top-level JSON object (no -mapping set): there is no "
                         + "sibling record to continue with, so any error still aborts the import");
-          // Discarded rather than checked here: safe because createRecord() returns null immediately whenever
-          // mapping is null, before any type conversion that could actually throw.
-          final Object record = parseRecord(reader, settings, context, database, mapping, false, new AtomicBoolean());
+          // Checked, not discarded: createRecord() returns null at once without a mapping, but a value parseRecord() reads
+          // can still fail on its own (a number token only a hostile payload writes, issue #10756), and under -onRowError
+          // skip that failure is recorded here instead of thrown. Saving the record with the value as null would be the
+          // silent skip the message above says this path does not do.
+          final AtomicBoolean recordFailed = new AtomicBoolean();
+          final Object record = parseRecord(reader, settings, context, database, mapping, false, recordFailed);
+          if (recordFailed.get())
+            throw new ImportException("A value of the single top-level JSON object failed to import, aborting the import", null);
           if (record instanceof Map)
-            saveAnonymousRecord(database, settings, (Map<String, Object>) record);
+            saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
           return;
         }
 
@@ -157,8 +174,12 @@ public class JSONImporterFormat implements FormatImporter {
     // that threw: LocalDatabase#commit() pops in a finally whether or not the commit succeeded, so the transaction
     // database.isTransactionActive() then reports is the CALLER's, and rolling it back silently discarded their
     // unrelated pending work (issue #7860, the mechanism #7732 fixed for the TimeSeries append and #7272 for the RDF
-    // loop). Cleared right before every commit, set right after every begin.
-    final AtomicBoolean txOpen = new AtomicBoolean();
+    // loop). Set right after every begin, and resolved only through ImporterTransactions, which clears it before a
+    // commit and restores it when the commit is refused without popping the transaction (issue #11208): the flag
+    // alone, cleared by hand, stranded a rollback-only transaction on the caller's thread.
+    final boolean[] txOpen = { false };
+    // The transaction the last begin() below pushed, which tells a refused commit from one that popped it
+    final TransactionContext[] ownTx = { null };
 
     // Whether the transaction the records land in belongs to the import, as opposed to the caller's, and so whether
     // the loop may commit it per record and at the end. A nested commit() is independently durable, so beginning and
@@ -168,27 +189,35 @@ public class JSONImporterFormat implements FormatImporter {
     // whether, to commit - exactly as JsonlImporterFormat, CSVImporterFormat and RDFImporterFormat do.
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
-    if (ownsTransaction) {
-      database.begin();
-      txOpen.set(true);
-    }
+    if (ownsTransaction)
+      beginOwnTransaction(database, txOpen, ownTx);
     try {
-      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen, ownsTransaction);
+      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen, ownTx, ownsTransaction);
     } catch (final IOException | RuntimeException e) {
-      // Gated on txOpen rather than on database.isTransactionActive() alone: a failure that left our own level on
-      // the stack still has to discard it, and one that did not - a throw out of commit() - must not reach past it
-      // for whatever is underneath.
-      if (txOpen.get() && database.isTransactionActive()) {
-        txOpen.set(false);
-        database.rollback();
-      }
+      // Gated on the loop's own transaction being the live one rather than on database.isTransactionActive() alone: a
+      // failure that left our own level on the stack still has to discard it, and one that did not - a commit() that
+      // popped it - must not reach past it for whatever is underneath.
+      rollbackOwnTransaction(database, txOpen, ownTx);
       throw e;
     }
   }
 
+  private static void beginOwnTransaction(final Database database, final boolean[] txOpen, final TransactionContext[] ownTx) {
+    database.begin();
+    txOpen[0] = true;
+    ownTx[0] = ImporterTransactions.currentTransaction(database);
+  }
+
+  private static void rollbackOwnTransaction(final Database database, final boolean[] txOpen, final TransactionContext[] ownTx) {
+    if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
+      txOpen[0] = false;
+      database.rollback();
+    }
+  }
+
   private void parseRecordsArray(final JsonReader reader, final Parser parser, final Database database, final ImporterSettings settings,
-      final ImporterContext context, final JSONArray mapping, boolean ignore, final AtomicBoolean txOpen,
-      final boolean ownsTransaction) throws IOException {
+      final ImporterContext context, final JSONArray mapping, boolean ignore, final boolean[] txOpen,
+      final TransactionContext[] ownTx, final boolean ownsTransaction) throws IOException {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
@@ -202,14 +231,17 @@ public class JSONImporterFormat implements FormatImporter {
         // else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the end of
         // the previous iteration), so rolling it back is right - txOpen says so and is true on every path that
         // reaches this line.
-        if (txOpen.get() && database.isTransactionActive()) {
-          txOpen.set(false);
-          database.rollback();
-        }
+        rollbackOwnTransaction(database, txOpen, ownTx);
         throw e;
       }
-      if (next != BEGIN_OBJECT)
+      if (next != BEGIN_OBJECT) {
+        if (next != END_ARRAY)
+          // NAMED HERE: reader.endArray() BELOW WOULD REFUSE IT TOO, BUT AS "Expected END_ARRAY but was NUMBER". THE
+          // TRANSACTION THIS LOOP HOLDS IS ROLLED BACK BY parseRecords()'s CATCH
+          throw new ImportException(
+              "Cannot import the JSON array entry at " + reader.getPath() + ": it is a " + next + ", only an object is a record");
         break;
+      }
       ++recordIndex;
 
       if (mappingValue instanceof JSONObject object) {
@@ -240,20 +272,15 @@ public class JSONImporterFormat implements FormatImporter {
         // THE MAPPING PHASE) - MATERIALIZING IT INTO settings.documentTypeName SAVED EXACTLY WHAT THE IMPORTER HAD
         // JUST LOGGED AS SKIPPED (ISSUE #6812)
         if (record instanceof Map && mappingObject == null)
-          saveAnonymousRecord(database, settings, (Map<String, Object>) record);
+          saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
 
-        // Cleared BEFORE the call, not after it: commit() pops the transaction in a finally, so a commit that throws
-        // has already taken our level off the stack and whatever isTransactionActive() reports below belongs to
-        // somebody else (issue #7860).
-        if (ownsTransaction) {
-          txOpen.set(false);
-          database.commit();
-        }
+        // The flag is cleared BEFORE the call (a commit that pops our nested level leaves somebody else's transaction
+        // on top, issue #7860) and restored when the commit is refused without popping it, so the catch below still
+        // rolls it back (issue #11208)
+        if (ownsTransaction)
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       } catch (final RuntimeException e) {
-        if (txOpen.get() && database.isTransactionActive()) {
-          txOpen.set(false);
-          database.rollback();
-        }
+        rollbackOwnTransaction(database, txOpen, ownTx);
 
         context.createdDocuments.set(createdDocumentsBefore);
         context.createdVertices.set(createdVerticesBefore);
@@ -268,10 +295,8 @@ public class JSONImporterFormat implements FormatImporter {
         context.errors.incrementAndGet();
       }
 
-      if (ownsTransaction) {
-        database.begin();
-        txOpen.set(true);
-      }
+      if (ownsTransaction)
+        beginOwnTransaction(database, txOpen, ownTx);
 
       // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
       // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
@@ -291,19 +316,63 @@ public class JSONImporterFormat implements FormatImporter {
       }
     }
 
-    if (ownsTransaction) {
-      txOpen.set(false);
-      database.commit();
-    }
+    // Outside any try: a refusal here reaches parseRecords()'s catch, which finds the flag restored and rolls back
+    if (ownsTransaction)
+      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
 
     reader.endArray();
   }
 
+  /**
+   * A JSON number as the value it spells, decoded by {@link JSONObject#parseNumber(String)}, the same decoder the HTTP API
+   * and every other JSON reader of the project use: an {@code Integer} or a {@code Long} for an integer, a {@code Double}
+   * when a double holds the token, a {@code BigDecimal} otherwise. Every number used to be read as a {@code double}, so
+   * {@code 42} was stored as {@code 42.0} and {@code 9007199254740993} as {@code 9007199254740992} (issues #10754, #10756),
+   * and a second decoder here then disagreed with that one on decimals of more than 17 digits and on hostile tokens.
+   */
+  private Object readNumber(final JsonReader reader, final ImporterSettings settings, final AtomicBoolean recordFailed)
+      throws IOException {
+    final String path = reader.getPath();
+    final String token = reader.nextString();
+    try {
+      return JSONObject.parseNumber(token);
+    } catch (final JSONException e) {
+      // A TOKEN ONLY A HOSTILE PAYLOAD WRITES (1e999999999). THE TOKEN IS CONSUMED, SO THE READER STAYS IN STEP: THE
+      // ENCLOSING TOP-LEVEL RECORD IS DISCARDED THE WAY A FAILED NESTED OBJECT DISCARDS IT, NOT BY UNWINDING MID-OBJECT
+      if (!settings.isSkipOnRowError())
+        throw e;
+      logSkippedRecord("JSON number at " + path, e);
+      recordFailed.set(true);
+      return null;
+    }
+  }
+
+  /**
+   * The type of the unique {@code @id} property, declared from the first record's value when the mapping names no
+   * {@code @idType}. The first value is one sample of a whole column, so a number declares the widest type of its kind
+   * rather than its own: an INTEGER id column refuses the first id past 2^31, and a DOUBLE one rounds two decimal ids
+   * that differ past the 17th digit into one key of the unique index, which then discards the second record as an
+   * already imported one (issue #10756).
+   */
+  static Type idTypeOf(final Object idValue) {
+    return switch (idValue) {
+      case Integer i -> Type.LONG;
+      case Long l -> Type.LONG;
+      case Short s -> Type.LONG;
+      case Byte b -> Type.LONG;
+      case Number n -> Type.DECIMAL;
+      default -> Type.getTypeByValue(idValue);
+    };
+  }
+
   private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,
-      final Map<String, Object> map) {
-    // NO MAPPING, SAVE THE RECORD AS A DOCUMENT
+      final ImporterContext context, final Map<String, Object> map) {
+    // NO MAPPING, SAVE THE RECORD AS A DOCUMENT. COUNTED LIKE EVERY MAPPED ONE, OR THE IMPORT REPORTS 0 DOCUMENTS FOR A
+    // SOURCE IT IMPORTED (ISSUE #10754)
     database.getSchema().getOrCreateDocumentType(settings.documentTypeName);
-    return database.newDocument(settings.documentTypeName).set(map).save();
+    final MutableDocument document = database.newDocument(settings.documentTypeName).set(map).save();
+    context.createdDocuments.incrementAndGet();
+    return document;
   }
 
   /**
@@ -333,7 +402,7 @@ public class JSONImporterFormat implements FormatImporter {
         attributeValue = reader.nextString();
         break;
       case NUMBER:
-        attributeValue = reader.nextDouble();
+        attributeValue = readNumber(reader, settings, recordFailed);
         break;
       case BOOLEAN:
         attributeValue = reader.nextBoolean();
@@ -510,7 +579,7 @@ public class JSONImporterFormat implements FormatImporter {
           return null;
         }
 
-        Type propType = Type.getTypeByValue(idValue);
+        Type propType = idTypeOf(idValue);
         if (mapping.has("@idType"))
           propType = Type.getTypeByName(mapping.getString("@idType").toUpperCase(Locale.ENGLISH));
 
@@ -620,7 +689,7 @@ public class JSONImporterFormat implements FormatImporter {
         entryValue = reader.nextString();
         break;
       case NUMBER:
-        entryValue = reader.nextDouble();
+        entryValue = readNumber(reader, settings, recordFailed);
         break;
       case BOOLEAN:
         entryValue = reader.nextBoolean();

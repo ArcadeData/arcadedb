@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
+import com.arcadedb.database.StatementSavepoint;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -43,7 +44,6 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
-import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
@@ -60,7 +60,7 @@ public class SQLQueryEngine implements QueryEngine {
   public static final String                    ENGINE_NAME             = "sql";
   public static final Set<String>               RESERVED_VARIABLE_NAMES = Set.of(
       "parent", "current", "depth",
-      "path", "stack", "history");
+      "path", "stack");
   protected final     DatabaseInternal          database;
   protected final     DefaultSQLFunctionFactory functions;
   protected final     DefaultSQLMethodFactory   methods;
@@ -104,32 +104,41 @@ public class SQLQueryEngine implements QueryEngine {
 
   // The overloads without a context serve query() and analyze().execute(), which the MCP command tool runs writes through: a
   // write there is a statement of the caller's transaction like one of command() (issue #10194). writeScope() answers null for
-  // an idempotent statement, so the read path pays one virtual call.
+  // an idempotent statement, so the read path pays one virtual call. The four overloads below are the same block around different
+  // execute calls (no lambda, see above): a change to one is a change to all of them.
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Map<String, Object> parameters) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
   private static ResultSet executeGuarded(final Statement statement, final Database database, final Object[] parameters) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
@@ -137,14 +146,18 @@ public class SQLQueryEngine implements QueryEngine {
       final CommandContext context) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
@@ -152,14 +165,18 @@ public class SQLQueryEngine implements QueryEngine {
       final CommandContext context) {
     final TransactionContext tx = writeScope(statement, database);
     final long writesBefore = tx != null ? tx.getCompletedRecordWrites() : 0L;
+    final StatementSavepoint savepoint = tx != null ? tx.beginStatement() : null;
     try {
       return statement.execute(database, parameters, context);
     } catch (final StackOverflowError e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw tooDeep(e);
     } catch (final RuntimeException | Error e) {
-      refuseCommitOfHalfAppliedStatement(tx, writesBefore, e);
+      refuseCommitOfHalfAppliedStatement(tx, savepoint, writesBefore, e);
       throw e;
+    } finally {
+      if (tx != null)
+        tx.endStatement(savepoint);
     }
   }
 
@@ -173,11 +190,11 @@ public class SQLQueryEngine implements QueryEngine {
     return internal.getTransaction();
   }
 
-  /** See {@link TransactionContext#refuseCommitIfWrittenSince}: a statement failed in the caller's transaction (issue #10194). */
-  private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final long writesBefore,
-      final Throwable cause) {
+  /** See {@link TransactionContext#statementFailed}: a statement failed in the caller's transaction (issues #10194, #10346). */
+  private static void refuseCommitOfHalfAppliedStatement(final TransactionContext tx, final StatementSavepoint savepoint,
+      final long writesBefore, final Throwable cause) {
     if (tx != null)
-      tx.refuseCommitIfWrittenSince(writesBefore, cause);
+      tx.statementFailed(savepoint, writesBefore, cause);
   }
 
   @Override
@@ -187,8 +204,10 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    return executeGuarded(statement, database, lookup.mergeParameters(parameters));
+    final Map<String, Object> bound = lookup.mergeParameters(parameters);
+    statement.checkParametersBound(bound);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
+    return executeGuarded(executed, database, bound);
   }
 
   @Override
@@ -198,24 +217,27 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-    if (lookup.parameters() != null)
-      return executeGuarded(statement, database, lookup.mergeParameters(positionalParameters(parameters)));
-    return executeGuarded(statement, database, parameters);
+    statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
+    if (lookup.parameters() != null) {
+      final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), database, bound);
+    }
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), database, parameters);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
+    statement.checkParametersBound(bound);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
+
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
 
-    return executeGuarded(statement, executionDatabase(), bound, context);
+    return executeGuarded(executed, executionDatabase(), bound, context);
   }
 
   /**
@@ -231,9 +253,10 @@ public class SQLQueryEngine implements QueryEngine {
       final Map<String, Object> variables) {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
-
     final Map<String, Object> bound = lookup.mergeParameters(parameters);
+    statement.checkParametersBound(bound);
+    final Statement executed = statement.withProfiledResultSetLimit(database, bound);
+
     final CommandContext context = new BasicCommandContext();
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
@@ -241,22 +264,22 @@ public class SQLQueryEngine implements QueryEngine {
       for (final Map.Entry<String, Object> entry : variables.entrySet())
         context.setVariable(entry.getKey(), entry.getValue());
 
-    return executeGuarded(statement, executionDatabase(), bound, context);
+    return executeGuarded(executed, executionDatabase(), bound, context);
   }
 
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
-    statement.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+    statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
     final CommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
     if (lookup.parameters() != null) {
       final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
       context.setInputParameters(bound);
-      return executeGuarded(statement, executionDatabase(), bound, context);
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), executionDatabase(), bound, context);
     }
-    return executeGuarded(statement, executionDatabase(), parameters, context);
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), executionDatabase(), parameters, context);
   }
 
   /**
@@ -331,9 +354,6 @@ public class SQLQueryEngine implements QueryEngine {
 
       @Override
       public ResultSet execute(final Map<String, Object> parameters) {
-        final long resultSetLimit = database.getResultSetLimit();
-        if (resultSetLimit > 0)
-          statement.setLimit(new Limit().setValue((int) resultSetLimit));
         // Same resolution as command(): this is a third execution entry point, not an analysis-only one.
         // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
         // database.command() fallback is only reached by engines whose execute() returns null), so leaving
@@ -348,9 +368,12 @@ public class SQLQueryEngine implements QueryEngine {
         // statement: idempotent statements as "query", everything else as "command".
         final String type = statement.isIdempotent() ? "query" : "command";
         final String databaseName = database.getName();
+        final Map<String, Object> bound = lookup.mergeParameters(parameters);
+        statement.checkParametersBound(bound);
+        final Statement executed = statement.withProfiledResultSetLimit(database, bound);
         final long start = QueryMetricsRecorder.Holder.startNanos();
         try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
-          return executeGuarded(statement, executionDatabase(), lookup.mergeParameters(parameters));
+          return executeGuarded(executed, executionDatabase(), bound);
         } finally {
           QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
         }

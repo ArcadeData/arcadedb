@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * address that names the wrong <em>peer</em> rather than this node, which no local self-check can see.
  * <p>
  * The ambiguity is injected by emptying the leader's resolved HTTP address map for the duration of one test,
- * exactly as {@link Issue6191FollowerForwardLoopIT} does, rather than by configuring the cluster without HTTP
+ * exactly as {@link HaForwardedWriteMisaddressedLeaderIT}'s #6191 tests do, rather than by configuring the cluster without HTTP
  * ports: it reproduces the production condition at the point where it matters without making cluster startup
  * part of what is under test.
  *

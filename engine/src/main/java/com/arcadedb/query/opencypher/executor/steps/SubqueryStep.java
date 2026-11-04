@@ -80,6 +80,10 @@ public class SubqueryStep extends AbstractExecutionStep {
   private final Set<String> importedVariables;
   private final boolean importAllVariables;
   private final boolean innerMayWrite;
+  // SET BY THE PLANNER FOR A STATEMENT THAT CANNOT WRITE: THE BODY'S ROWS ARE THEN HANDED ON AS THEY ARE READ
+  private boolean streamBody;
+  // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
+  private ResultSet streamedBody;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -115,7 +119,7 @@ public class SubqueryStep extends AbstractExecutionStep {
    *   clause of the body; that clause may only reference outer variables (no expressions, no aggregations).
    *   Without such an importing WITH, no outer variable is visible inside the subquery.</li>
    * </ul>
-   * Returning {@code null} signals "import all" (used for {@code CALL (*)}).
+   * Returning {@code null} signals "import all" (used for {@code CALL (*)} and an importing {@code WITH *}).
    *
    * @return set of imported variable names, or {@code null} to import all outer variables
    */
@@ -135,8 +139,9 @@ public class SubqueryStep extends AbstractExecutionStep {
       final Set<String> combined = new LinkedHashSet<>();
       for (final CypherStatement branch : union.getQueries()) {
         final Set<String> branchImports = collectImportingWithVariables(branch);
-        if (branchImports != null)
-          combined.addAll(branchImports);
+        if (branchImports == null)
+          return null; // a branch importing with WITH * needs every outer variable
+        combined.addAll(branchImports);
       }
       return combined;
     }
@@ -152,17 +157,29 @@ public class SubqueryStep extends AbstractExecutionStep {
     final WithClause withClause = first.getTypedClause();
     final Set<String> imports = new LinkedHashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      // An importing WITH * imports every outer variable, exactly like CALL (*) (issue #10891). Before, it imported none,
+      // so a predicate on an outer variable read null and the subquery silently returned no row.
+      if (item.isStar())
+        return null;
       if (!(item.getExpression() instanceof VariableExpression var))
         continue;
       final String name = var.getVariableName();
-      if (STAR_SCOPE.equals(name))
-        continue; // WITH * handled by caller if desired; treat as non-importing here
       final String alias = item.getAlias();
       if (alias != null && !alias.equals(name))
         continue; // aliased projection, not a pure import
       imports.add(name);
     }
     return imports;
+  }
+
+  /**
+   * Hands the body's rows on as they are read instead of collecting them all first, so a consumer that stops early (a
+   * {@code LIMIT}) stops the body too (issue #11082). Only for a statement that cannot write: collecting is what runs a
+   * body's reads to completion before a write that follows the {@code CALL} sees the graph, and what lets the refresh of
+   * the outer bindings run after a writing body is done. A body that returns nothing is collected either way.
+   */
+  public void setStreamBody(final boolean streamBody) {
+    this.streamBody = streamBody && !innerMayWrite && subqueryClause.getInnerStatement().getReturnClause() != null;
   }
 
   @Override
@@ -248,6 +265,8 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
             continue;
           }
+          closeStreamedBody();
+          currentInnerResults = null;
 
           // Need a new outer row
           if (!prevResults.hasNext()) {
@@ -261,8 +280,24 @@ public class SubqueryStep extends AbstractExecutionStep {
             if (context.isProfiling())
               rowCount++;
 
+            if (streamBody) {
+              // The body reads as many rows at a time as this step was asked for, so a LIMIT after it bounds the body too
+              final ResultSet body = executeBody(currentOuterRow, context,
+                  Math.max(1, Math.min(nRecords, CypherExecutionPlan.SEEDED_BATCH_SIZE)));
+              if (body.hasNext()) {
+                streamedBody = body;
+                currentInnerResults = body;
+              } else {
+                body.close();
+                if (subqueryClause.isOptional())
+                  buffer.add(currentOuterRow);
+              }
+              continue;
+            }
+
             // Execute the inner query seeded with the outer row
             final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
+            refreshOuterBindings(currentOuterRow, context);
 
             if (innerResults.isEmpty()) {
               if (subqueryClause.isOptional()) {
@@ -306,12 +341,14 @@ public class SubqueryStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (bufferIndex < buffer.size())
-          return true;
-        if (finished)
-          return false;
-        fetchMore(nRecords);
-        return bufferIndex < buffer.size();
+        // A batch whose rows all produced no inner row leaves the buffer empty while input remains: run the next batch
+        // instead of reporting the end, or every later batch is silently skipped (issue #10886)
+        while (bufferIndex >= buffer.size()) {
+          if (finished)
+            return false;
+          fetchMore();
+        }
+        return true;
       }
 
       @Override
@@ -321,7 +358,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
-      private void fetchMore(final int n) {
+      private void fetchMore() {
         buffer.clear();
         bufferIndex = 0;
 
@@ -363,6 +400,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         }
 
         // Execute the batch in its own transaction
+        final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         database.begin();
         try {
           for (final Result outerRow : batch) {
@@ -371,15 +409,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
-              final List<Result> innerResults = executeInnerQuery(outerRow, context);
-
-              if (innerResults.isEmpty()) {
-                if (subqueryClause.isOptional())
-                  buffer.add(outerRow);
-              } else {
-                for (final Result innerRow : innerResults)
-                  buffer.add(mergeResults(outerRow, innerRow));
-              }
+              innerResultsPerRow.add(executeInnerQuery(outerRow, context));
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - begin;
@@ -389,6 +419,23 @@ public class SubqueryStep extends AbstractExecutionStep {
         } catch (final Exception e) {
           database.rollbackAllNested();
           throw e;
+        }
+
+        // The outer bindings are refreshed only now, back in the transaction the outer rows belong to: the batch's own
+        // transaction does not see what the outer one wrote and has not committed, so a refresh from inside it replaced
+        // the record a SET before the CALL had written with the committed one, and RETURN n.k answered the old value
+        // (issue #11004)
+        for (int i = 0; i < batch.size(); i++) {
+          final Result outerRow = batch.get(i);
+          refreshOuterBindings(outerRow, context);
+          final List<Result> innerResults = innerResultsPerRow.get(i);
+          if (innerResults.isEmpty()) {
+            if (subqueryClause.isOptional())
+              buffer.add(outerRow);
+          } else {
+            for (final Result innerRow : innerResults)
+              buffer.add(mergeResults(outerRow, innerRow));
+          }
         }
 
         // If no more input, mark finished
@@ -423,21 +470,14 @@ public class SubqueryStep extends AbstractExecutionStep {
    * for side effects (e.g. CREATE, DELETE) and a single empty result is returned
    * so the outer row count is preserved exactly once per input row.
    * <p>
-   * After the inner query has fully executed, any {@link Document} bindings in the
-   * outer row are refreshed against the transaction cache so that mutations applied
-   * inside the subquery (e.g. {@code SET n.score = 2}) are visible through the outer
-   * variable. This matches Neo4j semantics where node references expose the current
-   * record state rather than the snapshot captured at MATCH time. See issue #4182.
+   * The caller then refreshes the outer row's bindings with {@link #refreshOuterBindings}, in the transaction the outer
+   * row belongs to.
    */
   private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context) {
     final CypherStatement innerStatement = subqueryClause.getInnerStatement();
+    final ResultSet resultSet = executeBody(outerRow, context, CypherExecutionPlan.SEEDED_BATCH_SIZE);
 
-    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
-        database, innerStatement, parameters, database.getConfiguration(), null, expressionEvaluator);
-
-    final ResultSet resultSet = innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context);
-
-    try {
+    try (resultSet) {
       // Unit subquery: no RETURN clause — consume all inner rows for side effects only.
       // The outer row count must be preserved (one output row per outer row).
       if (innerStatement.getReturnClause() == null) {
@@ -451,22 +491,50 @@ public class SubqueryStep extends AbstractExecutionStep {
         results.add(resultSet.next());
 
       return results;
-    } finally {
-      // Only a subquery that can write has anything to refresh. A read-only one cannot have invalidated a binding,
-      // and re-reading it is not free of consequence: lookupByRID answers from the transaction cache, so the
-      // snapshot the outer row was carrying is replaced by the live, shared record instance - and a write performed
-      // for a LATER row then shows through the binding of an EARLIER one. That is issue #6362: inserting the
-      // identity subquery CALL (*) { RETURN 0 AS barrier } after MERGE ... ON MATCH SET turned [10, 99] into
-      // [99, 99]. The refresh itself is still required for the writing case it was added for (issue #4182).
-      if (innerMayWrite) {
-        // A label write inside the body rewrote the node under a new type, which means a new record and a new RID:
-        // the outer row is still holding the one the body deleted, and refreshing it by RID can only fail. Point it
-        // at the replacement first, so the merged output row - and every clause reading through it - answers with a
-        // live record instead of a gone one (issue #6977).
-        LabelReplacements.of(context).redirect(outerRow);
-        refreshDocumentBindings(outerRow);
-      }
     }
+  }
+
+  /**
+   * After the body ran for the outer row, its {@link Document} bindings are refreshed against the transaction cache so
+   * that mutations applied inside the subquery (e.g. {@code SET n.score = 2}) are visible through the outer variable.
+   * This matches Neo4j semantics where node references expose the current record state rather than the snapshot captured
+   * at MATCH time. See issue #4182.
+   * <p>
+   * Only a subquery that can write has anything to refresh. A read-only one cannot have invalidated a binding, and
+   * re-reading it is not free of consequence: lookupByRID answers from the transaction cache, so the snapshot the outer
+   * row was carrying is replaced by the live, shared record instance - and a write performed for a LATER row then shows
+   * through the binding of an EARLIER one. That is issue #6362: inserting the identity subquery
+   * {@code CALL (*) { RETURN 0 AS barrier }} after {@code MERGE ... ON MATCH SET} turned [10, 99] into [99, 99].
+   */
+  private void refreshOuterBindings(final Result outerRow, final CommandContext context) {
+    if (!innerMayWrite)
+      return;
+    // A label write inside the body rewrote the node under a new type, which means a new record and a new RID: the outer
+    // row is still holding the one the body deleted, and refreshing it by RID can only fail. Point it at the replacement
+    // first, so the merged output row - and every clause reading through it - answers with a live record instead of a
+    // gone one (issue #6977).
+    LabelReplacements.of(context).redirect(outerRow);
+    refreshDocumentBindings(outerRow);
+  }
+
+  /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */
+  private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
+    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
+        database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(), null, expressionEvaluator);
+    return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
+  }
+
+  private void closeStreamedBody() {
+    if (streamedBody != null) {
+      streamedBody.close();
+      streamedBody = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    closeStreamedBody();
+    super.close();
   }
 
   /**

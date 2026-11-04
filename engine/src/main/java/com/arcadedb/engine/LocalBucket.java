@@ -57,7 +57,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -96,6 +98,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
+  /** The reason a chain walk gives when a continuation slot was freed; the chunk index it left follows it (#10987). */
+  private static final   String                    CHUNK_SLOT_CLEANED_REASON        = "chunk slot cleaned at chunk ";
+  private static final   long                      HEAD_FREE_RECHECK_NANOS          = 50_000L;
+  /**
+   * What {@link #decodeNextChunkLink} answers for a chunk that is the last of its chain. Not a value the next-chunk field
+   * stores (that is 0): the decoded link is a bucket position, where 0 is a real chunk (#10853).
+   */
+  static final           long                      NO_NEXT_CHUNK                    = -1L;
   /**
    * The head chunk of a placeholder CONTENT record - same on-page layout as {@link #FIRST_CHUNK}, and reached through a
    * {@link #RECORD_PLACEHOLDER_POINTER} on another page instead of standing for a record of its own (#6196).
@@ -157,6 +167,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * more byte of content; it can never make the two sides disagree.
    */
   private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = chunkFootprint(CHUNK_MARKER_BUDGET, 0);
+  /**
+   * Bytes a {@link #RECORD_PLACEHOLDER_POINTER} takes in its slot: the marker plus the 8-byte position of the content
+   * record. The same 1 + 8 every page walk charges a pointer slot ({@code getPageOccupiedInBytes}), and more than the
+   * smallest slot holds, which is why the spill that writes one has to make room for it first (#10617).
+   */
+  private static final   int                       PLACEHOLDER_POINTER_FOOTPRINT    =
+          Binary.getNumberSpace(RECORD_PLACEHOLDER_POINTER) + LONG_SERIALIZED_SIZE;
+  /**
+   * The content size every record of its own is padded to when it is written (#10859): with its one-byte size marker
+   * it takes exactly a {@link #PLACEHOLDER_POINTER_FOOTPRINT}, so the day it outgrows its page the slot turns into a
+   * pointer IN PLACE, without asking any other record of the page for the bytes it misses (#10617, #10637, #10669).
+   * Padding is what the reader already tolerates below {@link #MINIMUM_RECORD_SIZE}: a record's deserializer stops at
+   * the property count it reads, not at the end of the slot. A placeholder's CONTENT record is not padded to it: its
+   * slot is referenced from another page and never becomes a pointer itself.
+   */
+  private static final   int                       MINIMUM_PADDED_RECORD_SIZE       = PLACEHOLDER_POINTER_FOOTPRINT - 1;
+  /**
+   * Bytes the smallest head chunk of a placeholder's content takes: its marker, the chunk header and one byte of
+   * content. A content record holding more than this can give the rest to its page by becoming one (#10859).
+   */
+  private static final   int                       PLACEHOLDER_CONTENT_HEAD_MINIMUM_FOOTPRINT =
+          chunkFootprint(Binary.getNumberSpace(FIRST_CHUNK_PLACEHOLDER_CONTENT), 1);
   /**
    * No fingerprint could be taken of the part of a record that lives off its own page: see
    * {@link #offPageContentFingerprint(RID, BasePage, boolean)}.
@@ -310,6 +342,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // one slice per timeout, which is the bound it is held to either way. Guarded by the `freeSpaceInPages` monitor (also read
   // outside it, hence volatile).
   private volatile       int                       gatherPagesLeftInLap             = 0;
+  // #10709: the lowest page whose room the full map turned away since the last gather, -1 for none. That room is known to exist
+  // and known to nothing else, so like a scan cut short by the full map (#8660) it makes the next gather due whatever the clock
+  // says, and the gather starts there. It takes a full map to set it, so it cannot ask for a scan per allocation. Guarded by the
+  // `freeSpaceInPages` monitor (also read outside it, hence volatile).
+  private volatile       int                       unlistedRoomFrom                 = -1;
   // GATHER_STATS_MAX_PAGES_PER_SCAN, changed only by setGatherPagesPerScanForTesting (volatile: from the test's thread)
   private volatile       int                       gatherPagesPerScan               = GATHER_STATS_MAX_PAGES_PER_SCAN;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
@@ -317,6 +354,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private final          AtomicLong                gatherScans                      = new AtomicLong();
   // how many pages those scans read: what a scan costs is the pages it reads, which a count of scans cannot show (#9575)
   private final          AtomicLong                gatherPagesRead                  = new AtomicLong();
+  // how many slots of a page's record table the inserts read to find where the next record goes: what an insert costs is the slots it
+  // reads, which lets a test pin that a page with holes is not walked slot by slot for every record (#10612)
+  private final          AtomicLong                insertSlotsRead                  = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
     LOW, MEDIUM, HIGH
@@ -467,24 +507,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     private boolean incomplete;
     /**
      * Where the walk broke: the index of the chunk whose continuation pointer could not be resolved, and the value
-     * of that pointer. {@code -1}/{@code 0} while the walk has proved nothing.
+     * of that pointer, decoded ({@link #decodeNextChunkLink}). {@code -1}/{@link #NO_NEXT_CHUNK} while the walk has
+     * proved nothing.
      * <p>
      * This is what lets a SECOND walk be compared against a first one rather than merely agreed with (#6282): the
      * delete path meets a break in the transaction's view and asks the newest committed image whether the same hop,
      * to the same target, still fails. A committed image that breaks somewhere else is a record that MOVED under the
      * delete, which is contention and must keep its retry - not the permanent corruption verdict.
      * <p>
-     * Set exactly when {@link #findBrokenChunkChain} returns a reason, and back to {@code -1}/{@code 0} on every exit
-     * that proves nothing - the clean walk included.
+     * Set exactly when {@link #findBrokenChunkChain} returns a reason, and back to {@code -1}/{@link #NO_NEXT_CHUNK} on
+     * every exit that proves nothing - the clean walk included.
      */
-    private int  brokenAtChunk = -1;
-    private long brokenAtPointer;
+    private int  brokenAtChunk   = -1;
+    private long brokenAtPointer = NO_NEXT_CHUNK;
 
     private void reset() {
       chunks.clear();
       incomplete = false;
       brokenAtChunk = -1;
-      brokenAtPointer = 0;
+      brokenAtPointer = NO_NEXT_CHUNK;
     }
   }
 
@@ -527,7 +568,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                      final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
-    this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
+    this.contentHeaderSize = contentHeaderSizeForVersion(version);
     this.cachedRecordCount.set(0);
     this.reuseSpaceMode = reuseSpaceModeOf(database);
     this.purpose = purposeForVersion(version);
@@ -548,7 +589,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
-    contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
+    contentHeaderSize = contentHeaderSizeForVersion(version);
     this.reuseSpaceMode = reuseSpaceModeOf(database);
     // Derive purpose from the bucket file version - the version itself is persisted in the on-disk file name
     // (e.g. Doc_0_ext.<id>.<pageSize>.v1.bucket), so this assignment is reliable as soon as the LocalBucket
@@ -602,6 +643,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     gatherTruncated = false;
     gatherResumePage = 0;
     gatherPagesLeftInLap = 0;
+    unlistedRoomFrom = -1;
     insertReservations.clear();
     inFlightNewPages.clear();
     pagesToRelist.clear();
@@ -614,6 +656,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** Slot-table sizing for the bucket file format version. v0=2048 (legacy), v1=256 (paired external buckets). */
   private static int maxRecordsInPageForVersion(final int version) {
     return version >= EXTERNAL_BUCKET_VERSION ? DEF_MAX_RECORDS_IN_PAGE_V1 : DEF_MAX_RECORDS_IN_PAGE;
+  }
+
+  /** The content header of a page of the bucket file format version: the record count and the slot table. */
+  private static int contentHeaderSizeForVersion(final int version) {
+    return PAGE_RECORD_TABLE_OFFSET + maxRecordsInPageForVersion(version) * INT_SERIALIZED_SIZE;
+  }
+
+  /**
+   * The smallest page a bucket of the file format {@code version} can write a record into: the page header, the content header
+   * (whose slot table does not shrink with the page) and the head chunk of a record, since a record a page cannot host whole is
+   * written as a chunk chain whose head has to fit ({@link #MINIMUM_SPACE_FOR_FIRST_CHUNK}). 8216 bytes at {@link #CURRENT_VERSION},
+   * 1048 at {@link #EXTERNAL_BUCKET_VERSION}. A bucket created with a smaller page accepted the creation and then failed every
+   * insert inside the page writer (issue #10876).
+   */
+  public static int minimumPageSize(final int version) {
+    return BasePage.PAGE_HEADER_SIZE + contentHeaderSizeForVersion(version) + MINIMUM_SPACE_FOR_FIRST_CHUNK;
   }
 
   public Purpose getPurpose() {
@@ -675,9 +733,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #6196: FIRST_CHUNK and not isChunkHead(), deliberately. A record EXISTS at this RID when the slot holds one of
       // its own; the head chunk of a placeholder's CONTENT holds somebody else's bytes and answers false here exactly
       // as the negated size marker of a content record that fitted its page always has.
-      final long[] recordSize = readRecordSizeMarker(rid);
-      return recordSize != null && (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER
-          || recordSize[0] == FIRST_CHUNK);
+      final long recordSize = readRecordSizeMarker(rid);
+      return recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on checking record existence for " + rid, e);
@@ -699,8 +756,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
 
     try {
-      final long[] recordSize = readRecordSizeMarker(rid);
-      return recordSize != null && recordSize[0] > 0;
+      return readRecordSizeMarker(rid) > 0;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on checking record layout for " + rid, e);
@@ -710,30 +766,31 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * Reads the raw size marker of the record's slot on its page through the transaction (positive = in-place
    * record, {@link #RECORD_PLACEHOLDER_POINTER}, {@link #FIRST_CHUNK}, {@link #NEXT_CHUNK}, negative =
-   * placeholder content), or {@code null} when the page or slot does not exist or the record was deleted.
+   * placeholder content), or {@code 0} (the deleted marker) when the page or slot does not exist or the record was
+   * deleted. A plain long rather than the {size, bytes} pair: no caller needs the size of the marker (#10656).
    */
-  private long[] readRecordSizeMarker(final RID rid) throws IOException {
+  private long readRecordSizeMarker(final RID rid) throws IOException {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
     if (pageId >= pageCount.get()) {
       final int txPageCount = getTotalPages();
       if (pageId >= txPageCount)
-        return null;
+        return 0L;
     }
 
     final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
 
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     if (positionInPage >= recordCountInPage)
-      return null;
+      return 0L;
 
     final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
     if (recordPositionInPage == 0)
       // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
-      return null;
+      return 0L;
 
-    return page.readNumberAndSize(recordPositionInPage);
+    return page.readNumber(recordPositionInPage);
   }
 
   /**
@@ -853,29 +910,31 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
                 continue;
 
-              final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+              // ALLOCATION-FREE: ONCE PER SLOT OF THE SCAN (#10656)
+              final long recordSize = page.readNumber(recordPositionInPage);
+              final int recordHeaderSize = page.readNumberSize(recordPositionInPage);
 
-              if (recordSize[0] > 0) {
+              if (recordSize > 0) {
                 // NOT DELETED
-                final int recordContentPositionInPage = recordPositionInPage + (int) recordSize[1];
+                final int recordContentPositionInPage = recordPositionInPage + recordHeaderSize;
 
-                final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize[0]);
+                final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
                 if (!callback.onRecord(rid, view))
                   return;
 
-              } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+              } else if (recordSize == RECORD_PLACEHOLDER_POINTER) {
                 // LOAD PLACEHOLDER CONTENT
                 final RID placeHolderPointer = new RID(fileId,
-                        page.readLong((int) (recordPositionInPage + recordSize[1])));
+                        page.readLong(recordPositionInPage + recordHeaderSize));
                 final Binary view = getRecordInternal(placeHolderPointer, true, false);
                 if (view != null && !callback.onRecord(rid, view))
                   return;
-              } else if (recordSize[0] == FIRST_CHUNK) {
+              } else if (recordSize == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
                 // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
                 // through the pointer branch above, under the RID the user knows, and exactly once.
-                final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
+                final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize);
                 if (!callback.onRecord(rid, view))
                   return;
               }
@@ -965,16 +1024,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recordPositionInPage == 0)
         return NO_OFF_PAGE_FINGERPRINT;
 
-      final long[] recordSize = recordPage.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
-        return placeholderContentFingerprint(
-                new RID(fileId, recordPage.readLong((int) (recordPositionInPage + recordSize[1]))));
+      // ALLOCATION-FREE: ONCE PER RECORD TAKEN FOR UPDATE (#10656)
+      final long recordSize = recordPage.readNumber(recordPositionInPage);
+      final int recordHeaderSize = recordPage.readNumberSize(recordPositionInPage);
+      if (recordSize == RECORD_PLACEHOLDER_POINTER)
+        return placeholderContentFingerprint(new RID(fileId, recordPage.readLong(recordPositionInPage + recordHeaderSize)));
 
-      if (!isChunkHead(recordSize[0]) || !withChunkChainTail)
+      if (!isChunkHead(recordSize) || !withChunkChainTail)
         // An ordinary record: the whole of it is in its own slot, nothing left to cover.
         return NO_OFF_PAGE_FINGERPRINT;
 
-      return chunkChainTailFingerprint(recordPage, (int) (recordPositionInPage + recordSize[1]));
+      return chunkChainTailFingerprint(recordPage, recordPositionInPage + recordHeaderSize);
     } catch (final Exception e) {
       // A record whose off-page part cannot be read (a page that is gone, a broken pointer) cannot be vouched for.
       return unwalkableChunkChain(e, rid);
@@ -1089,8 +1149,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private long walkChunkChainTail(final BasePage headChunkPage, final int headChunkHeaderPos) throws IOException {
-    long pointer = headChunkPage.readLong(headChunkHeaderPos + INT_SERIALIZED_SIZE);
-    if (pointer == 0)
+    long pointer = decodeNextChunkLink(headChunkPage.readLong(headChunkHeaderPos + INT_SERIALIZED_SIZE));
+    if (pointer == NO_NEXT_CHUNK)
       // A single-chunk record: its whole content is in the head chunk, which the pre-image check already covers.
       return EMPTY_OFF_PAGE_FINGERPRINT;
 
@@ -1104,7 +1164,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // this walk allocates nothing at all.
     LongHashSet visitedChunks = null;
 
-    for (int chunk = 0; pointer > 0; ++chunk) {
+    for (int chunk = 0; pointer != NO_NEXT_CHUNK; ++chunk) {
       if (chunk >= CHUNKS_BEFORE_LOOP_DETECTION) {
         if (visitedChunks == null)
           visitedChunks = new LongHashSet();
@@ -1140,7 +1200,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       fingerprint = fnv1a(fingerprint, chunkSize);
       fingerprint = fnv1a(fingerprint, chunkPage, headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE, chunkSize);
 
-      pointer = chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE);
+      pointer = decodeNextChunkLink(chunkPage.readLong(headerPos + INT_SERIALIZED_SIZE));
     }
 
     // A hash that lands on the "unknown" sentinel is moved onto the "no tail" one rather than being handed back as
@@ -1215,20 +1275,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * {@link ConcurrentModificationException}, which is the answer here too.
    */
   private boolean hasOffPageRecordChangedSinceRead(final RID rid, final BasePage page, final int recordPositionInPage,
-      final long[] recordSize, final Binary readImage) {
+      final long recordMarker, final int recordHeaderSize, final Binary readImage) {
     try {
       final Binary current;
-      if (recordSize[0] == FIRST_CHUNK)
-        current = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
+      if (recordMarker == FIRST_CHUNK)
+        current = loadMultiPageRecord(rid, page, recordPositionInPage, recordMarker, recordHeaderSize);
       else
-        current = getRecordInternal(new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1]))), true, false);
+        current = getRecordInternal(new RID(fileId, page.readLong(recordPositionInPage + recordHeaderSize)), true, false);
 
       if (current == null)
         // CANNOT BE RECONSTRUCTED: IT CANNOT BE VOUCHED FOR EITHER
         return true;
       final int size = current.size();
       return size != readImage.size() || !readImage.isSameRegionAs(0, current, 0, size);
-    } catch (final ConcurrentModificationException e) {
+    } catch (final ConcurrentModificationException | RecordNotFoundException e) {
+      // #10944: A RECORD DELETED UNDER THE RE-READ IS A CHANGED RECORD TOO
       return true;
     } catch (final Exception e) {
       // FAIL CLOSED: A RECORD THAT CANNOT BE RE-READ IS NOT ONE THE UPDATE MAY BE LAID OVER
@@ -1273,22 +1334,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // FREE SLOT (NEVER USED OR DELETED)
         return false;
 
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] == FIRST_CHUNK || recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+      // ALLOCATION-FREE: ONCE PER RECORD TAKEN FOR UPDATE (#10656)
+      final long recordSize = page.readNumber(recordPositionInPage);
+      final int recordHeaderSize = page.readNumberSize(recordPositionInPage);
+      if (recordSize == FIRST_CHUNK || recordSize == RECORD_PLACEHOLDER_POINTER)
         // #8985: THE BODY IS ELSEWHERE, SO IT IS ASSEMBLED AND COMPARED WHOLE
-        return hasOffPageRecordChangedSinceRead(rid, page, recordPositionInPage, recordSize, readImage);
+        return hasOffPageRecordChangedSinceRead(rid, page, recordPositionInPage, recordSize, recordHeaderSize, readImage);
 
-      if (recordSize[0] <= 0)
+      if (recordSize <= 0)
         // DELETED, OR A SHAPE WHOSE BODY IS NOT (ENTIRELY) IN THIS SLOT: SEE THE JAVADOC
         return false;
 
-      final int size = (int) recordSize[0];
+      final int size = (int) recordSize;
       if (size != readImage.size())
         return true;
 
       // One intrinsified Arrays.equals over the two heap arrays, stopping at the first difference, rather than a
       // byte loop through the page accessors: this runs on the write path, once per record taken for update.
-      return !page.isSameContentAs((int) (recordPositionInPage + recordSize[1]), readImage, 0, size);
+      return !page.isSameContentAs(recordPositionInPage + recordHeaderSize, readImage, 0, size);
 
     } catch (final ConcurrentModificationException e) {
       // #8982: assembling a multi-page record found it moving under the read - the conflict this check exists to report
@@ -1364,8 +1427,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (cached > -1)
       // O(1) fast path: the counter is kept up to date on every commit, so return it directly. With an active
       // transaction add its uncommitted delta; without one there is nothing pending, so the cached value is the
-      // committed count. Only a still-unknown (-1) counter falls through to the full recompute below.
-      return cached + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
+      // committed count. Only a still-unknown (-1) counter falls through to the full recompute below. Under
+      // REPEATABLE_READ the committed part is the one the transaction first counted, so the count repeats (#10712)
+      return transaction != null ?
+          transaction.getRepeatableCommittedCount(fileId, cached) + transaction.getBucketRecordDelta(fileId) :
+          cached;
 
     // #5152: the recompute below (scan + publish of cachedRecordCount) must be mutually exclusive with a
     // commit's publishPages + record-count fold on this bucket. A commit holds this bucket's file lock across
@@ -1398,7 +1464,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // hold it (or timed out) and skip the duplicate O(N) scan, which also shortens how long we hold the lock.
       final long recomputed = cachedRecordCount.get();
       if (recomputed > -1)
-        return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
+        return transaction != null ?
+            transaction.getRepeatableCommittedCount(fileId, recomputed) + transaction.getBucketRecordDelta(fileId) :
+            recomputed;
 
       // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
       final long stampAtScanStart = getUnlockedApplyStamp();
@@ -1423,14 +1491,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final long[] recordSize;
+            final long recordSize;
             try {
               final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
               if (recordPositionInPage == 0)
                 // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
                 continue;
 
-              recordSize = page.readNumberAndSize(recordPositionInPage);
+              recordSize = page.readNumber(recordPositionInPage);
             } catch (final PageCorruptionException | IllegalArgumentException e) {
               // A slot whose offset or size marker cannot be decoded is not a record a scan would hand out either, so
               // it is not counted - and it must not fail the count: count(*) answers from here once the counter is
@@ -1442,7 +1510,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             // #6196: the same three shapes a scan hands out, and for the same reason - FIRST_CHUNK and not
             // isChunkHead(), because the head chunk of a placeholder's CONTENT is counted through its pointer.
-            if (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER || recordSize[0] == FIRST_CHUNK)
+            if (recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK)
               total++;
           }
         }
@@ -1478,7 +1546,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         LogManager.instance().log(this, Level.FINE,
                 "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
                 lockTimeout);
-      return total;
+      if (transaction == null)
+        return total;
+      // THE SCAN COUNTED THE TRANSACTION'S VIEW: ITS COMMITTED PART IS WHAT A REPEATABLE_READ TRANSACTION KEEPS (#10712)
+      final long pending = transaction.getBucketRecordDelta(fileId);
+      return transaction.getRepeatableCommittedCount(fileId, total - pending) + pending;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot count bucket '" + componentName + "'", e);
@@ -2126,7 +2198,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return;
 
       // THE CONTENT AS IT READS TODAY, SHARED REMAINDER INCLUDED
-      final Binary content = loadMultiPageRecord(rid, headPage, recordPositionInPage, recordSize);
+      final Binary content = loadMultiPageRecord(rid, headPage, recordPositionInPage, recordSize[0], (int) recordSize[1]);
 
       // FIND THE POINTER THAT LEADS INTO THE FIRST SHARED CHUNK, IN CHAIN ORDER. Cutting anywhere later would write
       // into a chunk the other record reads too.
@@ -2135,10 +2207,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         shared.add(chunk);
       MutablePage pointerPage = headPage;
       int pointerOffset = (int) (recordPositionInPage + recordSize[1] + INT_SERIALIZED_SIZE);
-      long pointer = pointerPage.readLong(pointerOffset);
+      long pointer = decodeNextChunkLink(pointerPage.readLong(pointerOffset));
       final LongHashSet visited = new LongHashSet();
       while (!shared.contains(pointer)) {
-        if (pointer <= 0 || !visited.add(pointer))
+        if (pointer == NO_NEXT_CHUNK || !visited.add(pointer))
           return;
         pointerPage = tx.getPageToModify(new PageId(database, file.getFileId(), (int) (pointer / maxRecordsInPage)), pageSize,
                 false);
@@ -2149,7 +2221,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (marker[0] != NEXT_CHUNK)
           return;
         pointerOffset = (int) (chunkPosition + marker[1] + INT_SERIALIZED_SIZE);
-        pointer = pointerPage.readLong(pointerOffset);
+        pointer = decodeNextChunkLink(pointerPage.readLong(pointerOffset));
       }
 
       // Writes no commit-time merge can replay: keep both pages out of it
@@ -2300,11 +2372,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recordPositionInPage == 0)
         return -1L;
 
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] != RECORD_PLACEHOLDER_POINTER)
+      if (page.readNumber(recordPositionInPage) != RECORD_PLACEHOLDER_POINTER)
         return -1L;
 
-      return page.readLong((int) (recordPositionInPage + recordSize[1]));
+      return page.readLong(recordPositionInPage + page.readNumberSize(recordPositionInPage));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unable to re-read the placeholder pointer at position %d of bucket '%s'", e,
               pointerPosition, componentName);
@@ -2394,7 +2465,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recordPositionInPage == 0)
         return PlaceholderTarget.DANGLING;
 
-      final long marker = contentPage.readNumberAndSize(recordPositionInPage)[0];
+      final long marker = contentPage.readNumber(recordPositionInPage);
       if (marker == FIRST_CHUNK)
         return PlaceholderTarget.LEGACY_AMBIGUOUS;
       // <= and not the < every other classification site uses, and deliberately so: this is the ONE site whose answer
@@ -2557,8 +2628,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final PageId headPageId = new PageId(database, file.getFileId(), pageId);
       // #9070: BEFORE the read pins it - only a head this very read pinned can be released and re-pinned by a retry of
       // the chain walk, one the transaction already held has been read by others in the image it has
-      final boolean headPrePinned = readTransaction.getPinnedPage(headPageId) != null;
-      final BasePage page = readTransaction.getPage(headPageId, pageSize);
+      final BasePage heldPage = readTransaction.getPinnedPage(headPageId);
+      final boolean headPrePinned = heldPage != null;
+      // ONE LOOKUP OF THE TRANSACTION'S PAGES PER RECORD, NOT TWO: getPage() WOULD ASK THEM AGAIN (#11007)
+      final BasePage page = heldPage != null ? heldPage : readTransaction.getPageNotHeld(headPageId, pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -2569,9 +2642,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         return null;
 
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+      // ALLOCATION-FREE: ONCE PER RECORD LOOKUP (#10656)
+      long recordSize = page.readNumber(recordPositionInPage);
+      final int recordHeaderSize = page.readNumberSize(recordPositionInPage);
 
-      if (recordSize[0] == 0)
+      if (recordSize == 0)
         // DELETED
         return null;
 
@@ -2579,31 +2654,124 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // be stored in - a negated size when a page could host it whole, and a chunk head when none could. The two are
       // separated below only because the negated one has to be turned back into a size, while the chunk head is read
       // by the chain walk exactly as a record's own head chunk is.
-      if (isPlaceholderContent(recordSize[0]) && !readPlaceHolderContent)
+      if (isPlaceholderContent(recordSize) && !readPlaceHolderContent)
         // PLACEHOLDER CONTENT: NOT A RECORD OF ITS OWN
         return null;
 
-      if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
-        recordSize[0] *= -1;
+      if (recordSize < RECORD_PLACEHOLDER_CONTENT)
+        recordSize *= -1;
 
-      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+      if (recordSize == RECORD_PLACEHOLDER_POINTER) {
         // FOUND PLACEHOLDER, LOAD THE REAL RECORD
         final RID placeHolderPointer = new RID(rid.getBucketId(),
-                page.readLong((int) (recordPositionInPage + recordSize[1])));
+                page.readLong(recordPositionInPage + recordHeaderSize));
         return getRecordInternal(placeHolderPointer, true, false);
-      } else if (isChunkHead(recordSize[0])) {
+      } else if (isChunkHead(recordSize)) {
         // FOUND 1ST CHUNK, LOAD THE ENTIRE MULTI-PAGE RECORD
-        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, !headPrePinned);
-      } else if (recordSize[0] == NEXT_CHUNK)
+        return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize, !headPrePinned);
+      } else if (recordSize == NEXT_CHUNK)
         // CANNOT LOAD PARTIAL CHUNK
         return null;
 
-      final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
+      final int recordContentPositionInPage = recordPositionInPage + recordHeaderSize;
 
-      return page.getImmutableView(recordContentPositionInPage, (int) recordSize[0]);
+      return page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on lookup of record " + rid, e);
+    }
+  }
+
+  /**
+   * Locates the content of the record at {@code position} for a reader that reads it in place, at absolute positions of its
+   * page, instead of through a {@link Binary} view and a record object per read (issue #11012: a full scan of the edge lists
+   * read every segment that way). The page is the one {@link TransactionContext#getPageForAbsoluteReads} answers, so the read
+   * sees what {@link #getRecord(RID)} would: the transaction's own copy of the page, its pinned image under
+   * {@code REPEATABLE_READ}, the page cache's shared view otherwise. No read event is fired: a caller checks there is no read
+   * listener first, or reads through the database.
+   * <p>
+   * Only a record that lies whole in its own slot is located. A placeholder pointer, a chunk chain, placeholder content, a
+   * deleted slot or a position past the bucket answer {@code null}, and the caller reads the record through the database,
+   * which knows every shape and raises what a missing record raises.
+   *
+   * @param location receives the offset of the content in the page at [0] and its length at [1]: reused by the caller across
+   *                 reads, so the location costs no allocation
+   *
+   * @return the page holding the content, or {@code null} when the slot holds no plain record
+   */
+  public BasePage getPlainRecordForAbsoluteReads(final long position, final int[] location) throws IOException {
+    return getPlainRecordForAbsoluteReads(position, location, null);
+  }
+
+  /**
+   * {@link #getPlainRecordForAbsoluteReads(long, int[])} reusing {@code recentPageId}, the identifier of a page read before,
+   * when the record is on that page: a scan reading records one after the other on the same page builds no identifier per
+   * record (issue #11012).
+   */
+  public BasePage getPlainRecordForAbsoluteReads(final long position, final int[] location, final PageId recentPageId)
+      throws IOException {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
+    final int pageId = (int) (position / maxRecordsInPage);
+    final int positionInPage = (int) (position % maxRecordsInPage);
+    if (position < 0 || pageId >= getTotalPages())
+      return null;
+
+    final PageId id = recentPageId != null && recentPageId.getPageNumber() == pageId && recentPageId.getFileId() == file.getFileId()
+        && recentPageId.getDatabase() == database ? recentPageId : new PageId(database, file.getFileId(), pageId);
+    final BasePage page = database.getTransaction().getPageForAbsoluteReads(id, pageSize);
+    if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return null;
+
+    final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+    if (recordPositionInPage == 0)
+      return null;
+
+    final long recordSize = page.readNumber(recordPositionInPage);
+    // A PLAIN RECORD HAS A POSITIVE SIZE: EVERY OTHER SHAPE (DELETED, PLACEHOLDER POINTER OR CONTENT, CHUNK) IS ZERO OR A MARKER
+    if (recordSize <= 0 || isChunkHead(recordSize) || recordSize == NEXT_CHUNK)
+      return null;
+
+    location[0] = recordPositionInPage + page.readNumberSize(recordPositionInPage);
+    location[1] = (int) recordSize;
+    return page;
+  }
+
+  /**
+   * Calls {@code consumer} with the position of every record of this bucket, the RIDs a scan of it would hand out, in the same
+   * order, without reading any of them (issue #11012: collecting the vertices of a Graph Analytical View materialized each one
+   * only to take its position). Fires no read event: a caller that must honour read listeners scans the records instead.
+   */
+  public void forEachRecordPosition(final LongConsumer consumer) {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
+    final int txPageCount = getTotalPages();
+    try {
+      for (int pageId = 0; pageId < txPageCount; ++pageId) {
+        final BasePage page = database.getTransaction()
+            .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageId), pageSize);
+        final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+        for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
+          final long recordSize;
+          try {
+            final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
+            if (recordPositionInPage == 0)
+              continue;
+            recordSize = page.readNumber(recordPositionInPage);
+          } catch (final RuntimeException e) {
+            // A CORRUPTED SLOT-TABLE ENTRY OR RECORD HEADER: SKIPPED AND LOGGED, AS BucketIterator SKIPS IT, SO THE POSITIONS
+            // STAY THE RECORDS A SCAN HANDS OUT
+            LogManager.instance().log(this, Level.SEVERE, "Error on reading record #%d:%d (error: %s)", fileId,
+                recordPosition(pageId, maxRecordsInPage, recordIdInPage), e.getMessage());
+            continue;
+          }
+          // THE RECORDS scan() HANDS OUT: A PLAIN ONE, A PLACEHOLDER POINTER, THE HEAD OF A CHUNK CHAIN
+          if (recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK)
+            consumer.accept(recordPosition(pageId, maxRecordsInPage, recordIdInPage));
+        }
+      }
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot scan bucket '" + componentName + "'", e);
     }
   }
 
@@ -2765,17 +2933,34 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return 0;
   }
 
+  /** Appends blanks to {@code buffer} until it holds {@code size} bytes: see {@link #MINIMUM_PADDED_RECORD_SIZE}. */
+  private static void padRecord(final Binary buffer, final int size) {
+    while (buffer.size() < size)
+      buffer.append((byte) 0);
+  }
+
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
     final Binary buffer = database.getSerializer().serialize(database, record);
+    final RID rid = createRecordInternal(buffer, isPlaceHolder);
+    if (!discardRecordAfter)
+      ((RecordInternal) record).setBuffer(buffer.getNotReusable());
+    return rid;
+  }
 
+  /**
+   * Writes an already serialized record into the first page that can host it, padding {@code buffer} in place as
+   * described below. Split from {@link #createRecordInternal(Record, boolean, boolean)} so a record that already lives
+   * on a page can be moved behind a placeholder pointer from its raw bytes, without a {@link Record} to serialize
+   * (#10637, {@link #relocateANeighbourOffPage}).
+   */
+  private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder) {
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
-    // but it is padded to the same floor, as it always has been. Fill the difference with blanks, which the
-    // deserializer stops before: it reads the property count, not the slot length.
-    while (buffer.size() < MINIMUM_RECORD_SIZE || (isPlaceHolder && buffer.size() == MINIMUM_RECORD_SIZE)) {
-      buffer.append((byte) 0);
-    }
+    // but it is padded to MINIMUM_PADDED_RECORD_SIZE, so its slot can always become a placeholder pointer in place
+    // (#10859). Fill the difference with blanks, which the deserializer stops before: it reads the property count, not
+    // the slot length.
+    padRecord(buffer, isPlaceHolder ? MINIMUM_RECORD_SIZE + 1 : MINIMUM_PADDED_RECORD_SIZE);
 
     final int bufferSize = buffer.size();
 
@@ -2854,6 +3039,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final boolean packedAppend = spaceNeeded <= spaceAvailableInCurrentPage;
       final boolean previousPackedWrite = packedAppend && selectedPage.beginPackedWrite();
       final short recordCountInPage;
+      // The record table summary of the page (see getFreeSpaceInPage) stays true across a plain insert into the slot it pointed
+      // at, be it a hole or the end of the table, of a page it described, or into a brand-new page: the table writes below drop
+      // it, the insert re-states it.
+      final int recordCountBefore = packedAppend ? selectedPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET) : 0;
+      final boolean keepsSlotScan = packedAppend && (createNewPage ? recordCountBefore == 0 && availablePositionIndex == 0
+              : selectedPage.hasSlotScan(recordCountBefore) && availablePositionIndex == selectedPage.getSlotScanFirstFreeSlot());
       try {
         // RESERVE A SPOT IMMEDIATELY TO AVOID USAGE FOR MULTI PAGE RECORD
         selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
@@ -2890,6 +3081,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
                   bufferSize);
           updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
+          if (keepsSlotScan) {
+            // the record sits at the end of the content, so it is the highest one; the slots up to its own are taken
+            final int recordCountAfter = Math.max(recordCountBefore, availablePositionIndex + 1);
+            selectedPage.rememberSlotScan(recordCountAfter, newRecordPositionInPage, availablePositionIndex + 1,
+                    PAGE_RECORD_TABLE_OFFSET + recordCountAfter * INT_SERIALIZED_SIZE);
+          }
         }
       } finally {
         if (packedAppend)
@@ -2918,12 +3115,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           slotTx.poisonSlotRebasePage(fileId, slotPageNumber);
         // Skip the record-image copy on a page that is already poisoned (it would be discarded anyway).
         else if (!slotTx.isSlotRebasePagePoisoned(fileId, slotPageNumber))
-          slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex,
-                  Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(), buffer.getContentBeginOffset() + bufferSize));
+          // #10661: no copy of the record: the replay reads it back from this page, which already holds it
+          slotTx.trackRebasableInsert(fileId, slotPageNumber, availablePositionIndex);
       }
-
-      if (!discardRecordAfter)
-        ((RecordInternal) record).setBuffer(buffer.getNotReusable());
 
       return rid;
 
@@ -2970,8 +3164,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final MutablePage selectedPage = checkRestoreTargetIsFree(position);
 
       final Binary buffer = database.getSerializer().serialize(database, record);
-      while (buffer.size() < MINIMUM_RECORD_SIZE)
-        buffer.append((byte) 0);
+      padRecord(buffer, MINIMUM_PADDED_RECORD_SIZE);
       final int bufferSize = buffer.size();
       final int spaceNeeded = Binary.getNumberSpace(bufferSize) + bufferSize;
 
@@ -3116,23 +3309,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           "Invalid record position " + lastRecordPositionInPage + " in page " + page.getPageId() + " of bucket '" + componentName
               + "'");
 
-    final long[] lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
-    if (lastRecordSize[0] == 0)
+    // ALLOCATION-FREE: ONCE PER RECORD CREATED (#10656)
+    final long lastRecordSize = page.readNumber(lastRecordPositionInPage);
+    final int lastRecordHeaderSize = page.readNumberSize(lastRecordPositionInPage);
+    if (lastRecordSize == 0)
       // DELETED (V<24.1.1)
-      return lastRecordPositionInPage + (int) lastRecordSize[1];
-    else if (lastRecordSize[0] > 0)
+      return lastRecordPositionInPage + lastRecordHeaderSize;
+    else if (lastRecordSize > 0)
       // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
-      return lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
-    else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
+      return lastRecordPositionInPage + (int) lastRecordSize + lastRecordHeaderSize;
+    else if (lastRecordSize == RECORD_PLACEHOLDER_POINTER)
       // PLACEHOLDER, CONSIDER NEXT 9 BYTES
-      return lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
-    else if (isChunkHead(lastRecordSize[0]) || lastRecordSize[0] == NEXT_CHUNK) {
+      return lastRecordPositionInPage + LONG_SERIALIZED_SIZE + lastRecordHeaderSize;
+    else if (isChunkHead(lastRecordSize) || lastRecordSize == NEXT_CHUNK) {
       // CHUNK (of a record, or of a placeholder's content - the footprint is the same either way)
-      final int chunkSize = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-      return lastRecordPositionInPage + chunkFootprint((int) lastRecordSize[1], chunkSize);
+      final int chunkSize = page.readInt(lastRecordPositionInPage + lastRecordHeaderSize);
+      return lastRecordPositionInPage + chunkFootprint(lastRecordHeaderSize, chunkSize);
     } else
       // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-      return lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
+      return lastRecordPositionInPage + (int) (-1 * lastRecordSize) + lastRecordHeaderSize;
   }
 
   /**
@@ -3295,7 +3490,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return false;
 
       // A ZERO SIZE MARKS A RECORD DELETED BEFORE v24.1.1; ANY OTHER VALUE (INCLUDING PLACEHOLDERS AND CHUNKS) IS A RECORD
-      return committed.readNumberAndSize(recordPositionInPage)[0] != 0L;
+      return committed.readNumber(recordPositionInPage) != 0L;
 
     } catch (final Exception e) {
       // The page is not there (or not readable): the record is certainly not committed at that position.
@@ -3327,7 +3522,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // A page no commit has published yet: reading it would load it from the file ahead of its commit
       return null;
     final int positionInPage = (int) (position % maxRecordsInPage);
-    final long[] recordSize;
+    final long recordSize;
+    final int recordHeaderSize;
     final int recordPositionInPage;
     final BasePage committed;
     try {
@@ -3341,28 +3537,29 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // FREE SLOT (NEVER USED OR DELETED)
         return null;
 
-      recordSize = committed.readNumberAndSize(recordPositionInPage);
+      recordSize = committed.readNumber(recordPositionInPage);
+      recordHeaderSize = committed.readNumberSize(recordPositionInPage);
     } catch (final IOException e) {
       // NOT "NO RECORD": THE CALLER WOULD TAKE AN UNREADABLE PAGE FOR AN ABSENT ENTRY AND COMMIT THE DELETE IT GUARDS
       throw new DatabaseOperationException("Error on reading the committed page of record " + rid, e);
     }
 
-    if (recordSize[0] == 0 || recordSize[0] == NEXT_CHUNK || isPlaceholderContent(recordSize[0]))
+    if (recordSize == 0 || recordSize == NEXT_CHUNK || isPlaceholderContent(recordSize))
       // DELETED, OR NOT A RECORD OF ITS OWN
       return null;
 
     try {
-      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+      if (recordSize == RECORD_PLACEHOLDER_POINTER)
         return committedPlaceholderContent(rid);
 
-      if (recordSize[0] == FIRST_CHUNK)
+      if (recordSize == FIRST_CHUNK)
         // #10304: ASSEMBLED FROM THE COMMITTED PAGES ONLY, VALIDATED AGAINST ONE COMMIT, NOT THROUGH THE TRANSACTION
         return committedMultiPageRecord(rid, new PageId(database, file.getFileId(), pageNumber), positionInPage, FIRST_CHUNK);
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on reading the committed pages of record " + rid, e);
     }
 
-    return committed.getImmutableView((int) (recordPositionInPage + recordSize[1]), (int) recordSize[0]);
+    return committed.getImmutableView(recordPositionInPage + recordHeaderSize, (int) recordSize);
   }
 
   /**
@@ -3456,7 +3653,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (head == null || headSlot >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
       return null;
     final int headPosition = getRecordPositionInPage(head, headSlot);
-    if (headPosition == 0 || head.readNumberAndSize(headPosition)[0] == 0)
+    if (headPosition == 0 || head.readNumber(headPosition) == 0)
       // DELETED MEANWHILE
       return null;
 
@@ -3545,6 +3742,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
         // the room it hid is known to nothing else now: a measurement no longer arms a gather by itself (#9575)
         changesFromLastStats.incrementAndGet();
+        roomTurnedAway(pageNumber);
         continue;
       }
       ++measured;
@@ -3629,6 +3827,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static boolean isSlotMergeCandidate(final Record record) {
     return record.getRecordType() != EdgeSegment.RECORD_TYPE;
+  }
+
+  /**
+   * Reads the body (no size prefix) of the plain record held by {@code positionInPage}. The disjoint-slot merge uses it
+   * to take the final image of a slot this transaction INSERTED from the page the transaction wrote, instead of
+   * keeping a copy of every inserted record until commit (#10661).
+   *
+   * @return the body, or {@code null} when the slot is free or does not hold a plain record that fits the page (a
+   * placeholder, a chunk, a corrupted entry), which the caller turns into a refusal to merge.
+   */
+  public byte[] readPlainRecordBody(final BasePage page, final int positionInPage) {
+    try {
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      if (positionInPage >= recordCountInPage)
+        return null;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        return null;
+      // ALLOCATION-FREE: ONCE PER RECORD THE SLOT MERGE REPLAYS (#10656)
+      final long recordSize = page.readNumber(recordPositionInPage);
+      if (recordSize <= 0)
+        return null;
+      final long contentPos = recordPositionInPage + page.readNumberSize(recordPositionInPage);
+      if (contentPos + recordSize > page.getMaxContentSize())
+        return null;
+      // both bounded by the page size checked above
+      final byte[] body = new byte[(int) recordSize];
+      page.readByteArray((int) contentPos, body, 0, body.length);
+      return body;
+    } catch (final IOException e) {
+      // a page that cannot be read back cannot be replayed: the caller refuses the merge and the transaction retries
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot read back the record in slot %d of page %s for the slot merge", e, positionInPage,
+              page.getPageId());
+      return null;
+    }
   }
 
   /**
@@ -3997,9 +4231,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Creates multiple records from pre-serialized Binary buffers in a single operation.
-   * Always appends to new pages to avoid complexity with existing page layouts, deletions,
-   * and multi-page records. This avoids the per-record findAvailableSpace overhead and is
-   * designed for bulk import scenarios where sequential page writes are optimal.
+   * <p>
+   * #10746: a record goes where {@link #createRecord} would put it as long as that is a page that already exists - a free slot
+   * a delete left on an older page, the room left on the last one - and through the same code, so the slot reservation, the
+   * disjoint-slot merge and the free-space statistics see it like any other insert. From the first record that needs a new page
+   * on, the rest is appended sequentially to pages this call opens, without the per-record search: once the allocator found no
+   * room for one record it would find none for the next, so a bulk import into a bucket with no free space pays one search,
+   * not one per record. This used to start on a brand-new page whatever the bucket held, so under an insert/delete churn of
+   * small flushes the bucket grew by one page per flush while the room of the deleted records stayed empty.
+   * <p>
+   * A record larger than a page is written as a chunk chain by {@link #createRecordInternal(Binary, boolean)}: it cannot be
+   * appended in one piece (the writer failed with "Cannot write outside the page space").
    *
    * @param buffers    array of pre-serialized record content (NOT including the size prefix)
    * @param from       start index in buffers array (inclusive)
@@ -4007,52 +4249,67 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @param ridsOut    output array for assigned RIDs (must have length >= to - from)
    */
   public void createRecordsBulk(final Binary[] buffers, final int from, final int to, final RID[] ridsOut) {
-      // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
-      // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
-      // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
-      // grant on this type could still write edges here once the request thread bound the principal
-      // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
-      database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // Enforce the per-type CREATE_RECORD ACL once for the whole bulk (a no-op when no principal is bound,
+    // e.g. internal import or HA apply). The single-record createRecord() path checks this per record; the
+    // bulk edge path (GraphBatch flush) previously skipped it, so an authenticated user with no createRecord
+    // grant on this type could still write edges here once the request thread bound the principal
+    // (defense-in-depth for GHSA-c23x-pqcj-7hfm).
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
-      // Always start from a fresh new page for bulk writes.
-      MutablePage currentPage = addNewPage();
-      int recordPositionInPage = contentHeaderSize;
-      int availablePositionIndex = 0;
-      final int maxContent = currentPage.getMaxContentSize();
+    final TransactionContext tx = database.getTransaction();
+    // the most an empty page holds: a record that needs more is a chunk chain
+    final int maxRecordSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
+    // The page the sequential append writes to: null while the records still go where createRecord puts them
+    MutablePage currentPage = null;
+    int recordPositionInPage = 0;
+    int availablePositionIndex = 0;
+    // where the append started on currentPage: what it took from the page is reported to the statistics once, when it leaves it
+    int appendStartInPage = 0;
 
+    try {
       for (int i = from; i < to; i++) {
         final Binary buffer = buffers[i];
-
-        // Pad to minimum record size
-        while (buffer.size() < MINIMUM_RECORD_SIZE)
-          buffer.append((byte) 0);
+        padRecord(buffer, MINIMUM_PADDED_RECORD_SIZE);
 
         final int actualSize = buffer.size();
         final int spaceNeeded = Binary.getNumberSpace(actualSize) + actualSize;
 
-        // Check if current page has room
-        if (availablePositionIndex >= maxRecordsInPage
-            || recordPositionInPage + spaceNeeded > maxContent) {
-          // Finalize current page record count
-          currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+        if (currentPage != null && spaceNeeded > maxRecordSpaceInPage) {
+          // A record no page holds in one piece goes to the allocator, which reads the record count of the page being appended
+          // to (it is the last page of the file): the append writes it only when it leaves the page, so it leaves it first
+          leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
+          currentPage = null;
+        }
 
-          // Create a new page
+        if (currentPage == null) {
+          final int pagesBefore = getTotalPages();
+          final RID rid = createRecordInternal(buffer, false);
+          ridsOut[i - from] = rid;
+
+          final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
+          if (pageNumber >= pagesBefore && spaceNeeded <= maxRecordSpaceInPage && inFlightNewPages.get(pageNumber) == tx) {
+            // THE ALLOCATOR HAD TO OPEN A PAGE: THE REST IS APPENDED, STARTING ON THAT ONE, WHICH NO OTHER TRANSACTION CAN USE
+            currentPage = tx.getPageToModify(new PageId(database, file.getFileId(), pageNumber), pageSize, false);
+            availablePositionIndex = currentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+            recordPositionInPage = findContentInsertionOffset(currentPage, availablePositionIndex);
+            appendStartInPage = recordPositionInPage;
+          }
+          continue;
+        }
+
+        if (availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > currentPage.getMaxContentSize()) {
+          leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
           currentPage = addNewPage();
           recordPositionInPage = contentHeaderSize;
+          appendStartInPage = recordPositionInPage;
           availablePositionIndex = 0;
         }
 
-        // Write the record offset in the record table
-        currentPage.writeUnsignedInt(
-            PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE,
-            recordPositionInPage);
-
-        // Write record size + content
+        // Write the record offset in the record table, then the record size and content
+        currentPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + availablePositionIndex * INT_SERIALIZED_SIZE, recordPositionInPage);
         final int sizeBytes = currentPage.writeNumber(recordPositionInPage, actualSize);
-        currentPage.writeByteArray(recordPositionInPage + sizeBytes,
-            buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
+        currentPage.writeByteArray(recordPositionInPage + sizeBytes, buffer.getContent(), buffer.getContentBeginOffset(), actualSize);
 
-        // Assign RID
         ridsOut[i - from] = new RID(file.getFileId(),
             ((long) currentPage.getPageId().getPageNumber()) * maxRecordsInPage + availablePositionIndex);
 
@@ -4060,9 +4317,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         availablePositionIndex++;
       }
 
-    // Finalize last page record count
-    if (availablePositionIndex > 0)
-      currentPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) availablePositionIndex);
+      if (currentPage != null)
+        leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
+
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot add new records to the bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * Closes the sequential append of {@link #createRecordsBulk} on a page: writes its record count, and tells the free-space
+   * statistics what the append took from it, as one write that takes space (so it arms no gather, #9575). The room left on the
+   * page is then listed like the room any other insert leaves (#10746): the next flush fills it before it opens a page.
+   */
+  private void leaveAppendedPage(final MutablePage page, final int recordCount, final int appendStart, final int appendEnd) {
+    page.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) recordCount);
+    if (appendEnd > appendStart)
+      updatePageStatistics(page, page.getMaxContentSize() - appendStart, appendStart - appendEnd);
   }
 
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
@@ -4078,8 +4349,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // record it creates behind a new pointer. It matters on every write that gives such a slot its size back - the
     // in-place overwrite far below, and since #6286 the collapse of a content chain into this very shape.
     if (updatePlaceholderContent)
-      while (buffer.size() <= MINIMUM_RECORD_SIZE)
-        buffer.append((byte) 0);
+      padRecord(buffer, MINIMUM_RECORD_SIZE + 1);
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
@@ -4097,7 +4367,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
       if (recordPositionInPage == 0)
         // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -4247,6 +4517,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // by the tracking further down, and poisoning it up front would have cost it that for nothing (PR review).
         final boolean legacyAmbiguousContentHead = updatePlaceholderContent && !placeholderContentHead;
 
+        if (!updatePlaceholderContent)
+          // #10859: a record collapsing back into its slot is written as a record created now is. The region is at
+          // least a chunk header plus a byte, so the padding always fits it.
+          padRecord(buffer, MINIMUM_PADDED_RECORD_SIZE);
+
         if (collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
                 chunkRegionEnd, legacyAmbiguousContentHead ? null : chunkBaseImage, updatePlaceholderContent, slotTx)) {
           // The slot changed and no tracked image accounts for it: a page rebased from some OTHER slot's write would
@@ -4295,10 +4570,35 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         recordSize[0] *= -1L;
       }
 
+      if (!isPlaceHolder)
+        // #10859: a record of its own keeps the slot it has, up to a pointer's footprint, however short its new content:
+        // padded to that, an in-place overwrite never turns a slot that could host a pointer into one that cannot, and
+        // a slot that already holds less (written before #10859) is never asked to grow for padding's sake alone.
+        padRecord(buffer, (int) Math.min(MINIMUM_PADDED_RECORD_SIZE, recordSize[0]));
+
       final int bufferSize = buffer.size();
       if (bufferSize > recordSize[0]) {
         // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
-        final int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        int lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+
+        // #10700: the room a growth (and every rung of the spill below) is judged against is the page's free TAIL. The
+        // bytes a shrink or a delete of this same transaction gave back are not in it: they are holes, packed only by
+        // the compression the commit runs on the page afterwards. A page whose tail is gone (a spill sealed it) then
+        // refused a 9-byte pointer while holding tens of KB of dead bytes, and every retry rebuilt the same page. So a
+        // growth the tail cannot host packs the holes first. Only a page some write left unpacked can have any, which
+        // keeps the walk off every other growth.
+        if (!page.hasOnlyPackedWrites() && !growthFitsFreeTail(page, lastRecordPositionInPage, recordPositionInPage,
+                recordSize, isPlaceHolder, buffer.size()) && packPageHoles(page, recordCountInPage)) {
+          // Every offset past the first hole moved, and no tracked image of this page describes the move: the merges
+          // re-derive a page from its committed image plus what was tracked, which would bring the holes back under
+          // the growth that relied on them being gone.
+          if (slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+          if (slotTx != null)
+            slotTx.poisonEdgeAppendPage(fileId, pageId);
+          recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+          lastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+        }
 
         // DISJOINT-SLOT MERGE (#5279): growing a record INSIDE its own page changes only this record's content - the
         // records that follow merely move, and their new offsets are recomputed from the page itself - so the write
@@ -4338,15 +4638,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (grown) {
           if (slotCandidate) {
             if (growRebasable) {
-              final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
-                      buffer.getContentBeginOffset() + bufferSize);
               if (growBaseBody != null)
-                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody, finalBody,
+                slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, growBaseBody,
+                        Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
+                                buffer.getContentBeginOffset() + bufferSize),
                         isPlaceHolder ? TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT : TransactionContext.SLOT_KIND_RECORD);
               else
                 // The slot holds a record CREATED by this transaction: there is no committed pre-image to diff
-                // against, so it stays an insert whose final image the merge re-writes at the same free slot.
-                slotTx.trackRebasableInsert(fileId, pageId, positionInPage, finalBody);
+                // against, so it stays an insert whose final image the merge reads back from this page and re-writes
+                // at the same free slot (#10661: no copy is kept).
+                slotTx.trackRebasableInsert(fileId, pageId, positionInPage);
             } else
               slotTx.poisonSlotRebasePage(fileId, pageId);
           }
@@ -4388,15 +4689,74 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           // TODO: LOOK FOR 1/2 OF THE RECORD SIZE
           if (availableSpaceInCurrentPage < MINIMUM_SPACE_FOR_FIRST_CHUNK) {
+            // #10617: the pointer is a marker plus an 8-byte position, more than the smallest slot holds (a record is
+            // padded to MINIMUM_RECORD_SIZE only). Writing it into a smaller slot overwrote the start of the next
+            // record, or ran past the content area when the slot was the page's last. Ask the page for the missing
+            // bytes through the same in-page shift the chunk head uses.
+            int pointerPositionInPage = recordPositionInPage;
+            int pointerRoom = availableSpaceInCurrentPage;
+            int pointerPageOccupiedInBytes = pageOccupiedInBytes;
+            int pointerFreeTailInPage = freeTailInPage;
+            int pointerEnlargement = slotEnlargementForChunkHead(PLACEHOLDER_POINTER_FOOTPRINT, pointerRoom,
+                    pointerFreeTailInPage, lastRecordPositionInPage == recordPositionInPage);
+
+            if (pointerEnlargement < 0) {
+              // #10637: the page cannot spare the missing bytes as it stands, and it will not on a retry either - the
+              // shape is a 6-8 byte slot on a page whose free tail is gone (typically taken by the head chunk of a
+              // record that spilled). Have ANOTHER record of the page give them: a plain record big enough is moved
+              // behind a placeholder pointer of its own, which releases its footprint minus the pointer's into the
+              // free tail. One byte more than missing, so the arithmetic below holds whether this slot is the last
+              // record of the page (the tail is part of its room) or not (the shift must leave a byte spare).
+              // #10669: a page with no such plain record - its tail taken by the head chunk of a record that spilled -
+              // has a CHUNK give them instead: its trailing content moves into a new continuation chunk.
+              final int bytesNeeded = PLACEHOLDER_POINTER_FOOTPRINT - pointerRoom + 1;
+              // #10859: and a page with neither has a placeholder's CONTENT record give them, or several records a part each.
+              if (releaseBytesFromOtherRecords(page, recordCountInPage, positionInPage, bytesNeeded, recordSize)) {
+                if (slotCandidate)
+                  slotTx.poisonSlotRebasePage(fileId, pageId);
+
+                // The records after the donor moved left, possibly this one too: re-derive the page from itself.
+                pointerPositionInPage = getRecordPositionInPage(page, positionInPage);
+                final int newLastRecordPositionInPage = getLastRecordPositionInPage(page, recordCountInPage);
+                pointerPageOccupiedInBytes = getPageOccupiedInBytes(page, newLastRecordPositionInPage, pointerPositionInPage,
+                        recordSize);
+                pointerFreeTailInPage = page.getMaxContentSize() - pointerPageOccupiedInBytes;
+                final boolean isLast = newLastRecordPositionInPage == pointerPositionInPage;
+                pointerRoom = slotFootprint + (isLast ? pointerFreeTailInPage : 0);
+                pointerEnlargement = slotEnlargementForChunkHead(PLACEHOLDER_POINTER_FOOTPRINT, pointerRoom,
+                        pointerFreeTailInPage, isLast);
+              }
+            }
+
+            // When no record of the page can give the bytes either, nothing at all is written.
+            if (pointerEnlargement < 0)
+              throw new DatabaseOperationException(
+                      "Cannot update record " + rid + ": it no longer fits page " + pageId + " of bucket '" + componentName
+                              + "', and its slot of " + pointerRoom + " bytes cannot host a placeholder pointer ("
+                              + PLACEHOLDER_POINTER_FOOTPRINT + " bytes) with only " + pointerFreeTailInPage
+                              + " bytes left free in the page and no other record of the page able to release them");
+
             // The slot becomes a placeholder POINTER to a record created on another page: two pages change together
             // and the slot stops holding record content at all, so no merge can replay it from this page alone.
             if (slotCandidate)
               slotTx.poisonSlotRebasePage(fileId, pageId);
 
-            final int bytesWritten = page.writeNumber(recordPositionInPage, RECORD_PLACEHOLDER_POINTER);
+            if (pointerEnlargement > 0) {
+              // Declared under no coverage span: the poison above already keeps every merge off this page, shift
+              // included, so unlike the chunk-head enlargement below there is no replay to reproduce it.
+              shiftFollowingRecordsRight(page, recordCountInPage, pointerPositionInPage + slotFootprint,
+                      pointerPageOccupiedInBytes, pointerEnlargement);
+              updatePageStatistics(page, pointerFreeTailInPage, -pointerEnlargement);
+            } else if (pointerRoom > slotFootprint && slotFootprint != PLACEHOLDER_POINTER_FOOTPRINT)
+              // The LAST record of the page: the pointer ends where the page's content now ends, so the free tail moves
+              // by the difference between the pointer and the slot it replaces - into the tail for a slot smaller than
+              // a pointer, back out of it for a bigger one. Reported, so the free-space claim keeps describing the page.
+              updatePageStatistics(page, pointerFreeTailInPage, slotFootprint - PLACEHOLDER_POINTER_FOOTPRINT);
+
+            final int bytesWritten = page.writeNumber(pointerPositionInPage, RECORD_PLACEHOLDER_POINTER);
 
             final RID realRID = createRecordInternal(record, true, false);
-            page.writeLong(recordPositionInPage + bytesWritten, realRID.getPosition());
+            page.writeLong(pointerPositionInPage + bytesWritten, realRID.getPosition());
 
             if (LogManager.instance().isLoggable(this, Level.FINE))
               LogManager.instance()
@@ -4479,13 +4839,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (slotCandidate) {
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
           if (slotTracked) {
-            final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
-                    buffer.getContentBeginOffset() + bufferSize);
             if (slotInsertedHere)
               // The slot holds a record CREATED by this transaction: it stays an insert (there is no committed
-              // pre-image to diff against), so only refresh its final image - and skip copying one altogether.
-              slotTx.trackRebasableInsert(fileId, pageId, positionInPage, finalBody);
+              // pre-image to diff against), and its final image is the one this write leaves on the page, read back
+              // by the merge only if the page conflicts (#10661) - so no image is copied at all.
+              slotTx.trackRebasableInsert(fileId, pageId, positionInPage);
             else {
+              final byte[] finalBody = Arrays.copyOfRange(buffer.getContent(), buffer.getContentBeginOffset(),
+                      buffer.getContentBeginOffset() + bufferSize);
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
               slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody, finalBody,
@@ -4616,17 +4977,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // which does read sizes. Aligning the two indices would buy that shape a permanent verdict at the cost of
           // more index bookkeeping in the code that has already been the source of most of this issue's mistakes.
           walk.brokenAtChunk = chunkId;
-          walk.brokenAtPointer = 0;
+          walk.brokenAtPointer = NO_NEXT_CHUNK;
           return "invalid chunk size at chunk " + chunkId;
         }
 
-        final long nextChunkPointer = chunkPage.readLong(chunkHeaderPosition + INT_SERIALIZED_SIZE);
-        if (nextChunkPointer == 0) {
+        final long nextChunkPointer = decodeNextChunkLink(chunkPage.readLong(chunkHeaderPosition + INT_SERIALIZED_SIZE));
+        if (nextChunkPointer == NO_NEXT_CHUNK) {
           // REACHED THE LAST CHUNK CLEANLY. The break location is cleared rather than left pointing at the last
           // SUCCESSFUL hop: both current consumers read it only after a reason came back, but a documented invariant
           // that the code does not keep is a trap for the next one (PR review).
           walk.brokenAtChunk = -1;
-          walk.brokenAtPointer = 0;
+          walk.brokenAtPointer = NO_NEXT_CHUNK;
           return null;
         }
 
@@ -4794,26 +5155,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // AVOID DELETION OF CONTENT IN CORRUPTED RECORD
       if (recordPositionInPage < page.getContentSize()) {
-        long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-        if (recordSize[0] == 0)
+        // ALLOCATION-FREE: ONCE PER DELETED RECORD AND PER CHUNK OF ITS CHAIN (#10656)
+        long recordSize = page.readNumber(recordPositionInPage);
+        int recordHeaderSize = page.readNumberSize(recordPositionInPage);
+        if (recordSize == 0)
           // ALREADY DELETED
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-        if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+        if (recordSize == RECORD_PLACEHOLDER_POINTER) {
           // The slot holds an 8-byte pointer, and the content record it points to lives on ANOTHER page: not a
           // single-slot change, so the page can never be slot-rebased from this transaction's writes alone.
           if (slotMergeOn)
             slotTx.poisonSlotRebasePage(fileId, pageId);
 
           // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
-          final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordSize[1])));
+          final RID placeHolderContentRID = new RID(fileId, page.readLong((int) (recordPositionInPage + recordHeaderSize)));
           try {
             deleteRecordInternal(placeHolderContentRID, true, false, force);
           } catch (RecordNotFoundException e) {
             // PARTIAL RECORD NOT FOUND
           }
 
-        } else if (isChunkHead(recordSize[0])) {
+        } else if (isChunkHead(recordSize)) {
           // The record continues on other pages through a chunk chain: freeing it touches more than this slot.
           if (slotMergeOn)
             slotTx.poisonSlotRebasePage(fileId, pageId);
@@ -4821,17 +5184,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // #6196: the head of a placeholder's CONTENT is freed by the same chain walk, but only on behalf of the
           // pointer that references it - a direct delete of it is refused exactly as it is for the negated-size shape
           // further down, which is what keeps a caller from leaving a pointer dangling.
-          if (recordSize[0] == FIRST_CHUNK_PLACEHOLDER_CONTENT && !deletePlaceholderContent)
+          if (recordSize == FIRST_CHUNK_PLACEHOLDER_CONTENT && !deletePlaceholderContent)
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
           // 1ST CHUNK: DELETE ALL THE CHUNKS
           MutablePage chunkPage = page;
           int chunkRecordPositionInPage = recordPositionInPage;
           for (int chunkId = 0; ; ++chunkId) {
-            final long nextChunkPointer = chunkPage.readLong(
-                    (int) (chunkRecordPositionInPage + recordSize[1] + INT_SERIALIZED_SIZE));
+            final long nextChunkPointer = decodeNextChunkLink(chunkPage.readLong(
+                    (int) (chunkRecordPositionInPage + recordHeaderSize + INT_SERIALIZED_SIZE)));
 
-            if (nextChunkPointer == 0)
+            if (nextChunkPointer == NO_NEXT_CHUNK)
               // LAST CHUNK
               break;
 
@@ -4857,8 +5220,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 if (chunkRecordPositionInPage == 0)
                   chainProblem = "chunk slot was cleaned";
                 else {
-                  recordSize = chunkPage.readNumberAndSize(chunkRecordPositionInPage);
-                  if (recordSize[0] != NEXT_CHUNK)
+                  recordSize = chunkPage.readNumber(chunkRecordPositionInPage);
+                  recordHeaderSize = chunkPage.readNumberSize(chunkRecordPositionInPage);
+                  if (recordSize != NEXT_CHUNK)
                     chainProblem = "chunk marker is not NEXT_CHUNK";
                 }
               }
@@ -4908,7 +5272,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             }
           }
 
-        } else if (recordSize[0] == NEXT_CHUNK) {
+        } else if (recordSize == NEXT_CHUNK) {
           // A continuation chunk of a record whose head lives elsewhere: part of a multi-page structure.
           if (slotMergeOn)
             slotTx.poisonSlotRebasePage(fileId, pageId);
@@ -4917,7 +5281,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // CANNOT DELETE A CHUNK DIRECTLY
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-        } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
+        } else if (recordSize < RECORD_PLACEHOLDER_CONTENT) {
           // Placeholder CONTENT: it is reachable only through a pointer on another page, so rebasing this page in
           // isolation would leave that pointer dangling.
           if (slotMergeOn)
@@ -4926,7 +5290,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           if (!deletePlaceholderContent)
             // CANNOT DELETE A PLACEHOLDER DIRECTLY
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
-        } else if (recordSize[0] > 0) {
+        } else if (recordSize > 0) {
           // PLAIN IN-PLACE RECORD: the delete is a single-slot change (zero the slot-table entry, optionally wipe the
           // content), so it commutes with concurrent writes to the other slots of the page and can be replayed on the
           // newer committed version at commit time (#5569). The pre-image must be captured BEFORE the wipe-out below,
@@ -4938,8 +5302,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // other plain record's. What an earlier append of this transaction wrote on the page stays undeclared
             // for the slot merge (and poisons it), so a page mixing both is still never rebased.
             if (!slotTx.isSlotRebasePagePoisoned(fileId, pageId)) {
-              final byte[] baseBody = new byte[(int) recordSize[0]];
-              page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
+              final byte[] baseBody = new byte[(int) recordSize];
+              page.readByteArray((int) (recordPositionInPage + recordHeaderSize), baseBody, 0, baseBody.length);
               slotTx.trackRebasableDelete(fileId, pageId, positionInPage, baseBody);
               // #5596: from here on the two writes this delete makes - the content wipe-out and the slot-pointer
               // zeroing below - are exactly what rebaseRecordDeleteOnPage re-applies, so declare them covered.
@@ -4951,7 +5315,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // WIPE OUT RECORD CONTENT
             final int previousCoverage = page.beginCoveredWrite(deleteCoverage);
             try {
-              page.writeZeros(recordPositionInPage + 1, (int) (recordSize[0] + recordSize[1] - 1));
+              page.writeZeros(recordPositionInPage + 1, (int) (recordSize + recordHeaderSize - 1));
             } catch (Exception e) {
               // IGNORE IT
               LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
@@ -5186,7 +5550,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       int newRecordCount = -1;
       for (int i = recordCountInPage - 1; i > -1; i--) {
         final int pos = getRecordPositionInPage(page, i);
-        if (pos == 0 || page.readNumberAndSize(pos)[0] == 0)
+        if (pos == 0 || page.readNumber(pos) == 0)
           // DELETED RECORD
           newRecordCount = i;
         else
@@ -5240,12 +5604,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // DELETED (OR CORRUPTED, WHICH THE FULL WALK SKIPS AS WELL)
           continue;
 
-        final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-        if (recordSize[0] == 0)
+        // ALLOCATION-FREE: ONCE PER SLOT OF EVERY PAGE A COMMIT COMPRESSES (#10656)
+        final long recordSize = page.readNumber(recordPositionInPage);
+        if (recordSize == 0)
           // DELETED BY A PRE-24.1.1 ENGINE: A SLOT THE FULL WALK FREES
           return -1;
 
-        final int footprint = recordFootprint(page, recordPositionInPage, recordSize);
+        final int footprint = recordFootprint(page, recordPositionInPage, recordSize, page.readNumberSize(recordPositionInPage));
         if (footprint < 0 || footprint > maxFootprint)
           // AN INVALID SIZE: THE FULL WALK REPORTS AND FREES IT
           return -1;
@@ -5490,8 +5855,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int size;
       try {
-        final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-        if (recordSize[0] == 0) {
+        final long recordSize = page.readNumber(recordPositionInPage);
+        if (recordSize == 0) {
           // DELETED <24.1.1
           if (repairOn != null)
             // SET 0 IN THE RECORD TABLE
@@ -5499,7 +5864,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           continue;
         }
 
-        size = recordFootprint(page, recordPositionInPage, recordSize);
+        size = recordFootprint(page, recordPositionInPage, recordSize, page.readNumberSize(recordPositionInPage));
 
         if (size < 0 || size > getPageSize() - contentHeaderSize) {
           // INVALID SIZE. Say what was actually done with it: a read-only walk skips it and leaves it for the next
@@ -5535,17 +5900,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * marker says follows it. One derivation shared by the ordered walk and the compression's fast path, so the two can
    * never measure a page differently.
    *
-   * @param recordSize the marker read at {@code recordPositionInPage}, as {@link BasePage#readNumberAndSize} returns it
+   * @param recordSize       the marker read at {@code recordPositionInPage}, as {@link BasePage#readNumber} returns it
+   * @param recordHeaderSize the bytes that marker takes, {@link BasePage#readNumberSize(int)} at the same position
    */
-  private static int recordFootprint(final BasePage page, final int recordPositionInPage, final long[] recordSize) {
-    if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
-      return LONG_SERIALIZED_SIZE + (int) recordSize[1];
-    if (isChunkHead(recordSize[0]) || recordSize[0] == NEXT_CHUNK)
-      return chunkFootprint((int) recordSize[1], page.readInt(recordPositionInPage + (int) recordSize[1]));
-    if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
+  private static int recordFootprint(final BasePage page, final int recordPositionInPage, final long recordSize,
+      final int recordHeaderSize) {
+    if (recordSize == RECORD_PLACEHOLDER_POINTER)
+      return LONG_SERIALIZED_SIZE + recordHeaderSize;
+    if (isChunkHead(recordSize) || recordSize == NEXT_CHUNK)
+      return chunkFootprint(recordHeaderSize, page.readInt(recordPositionInPage + recordHeaderSize));
+    if (recordSize < RECORD_PLACEHOLDER_CONTENT)
       // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-      return (int) (-1 * recordSize[0]) + (int) recordSize[1];
-    return (int) recordSize[0] + (int) recordSize[1];
+      return (int) (-1 * recordSize) + recordHeaderSize;
+    return (int) recordSize + recordHeaderSize;
   }
 
   /**
@@ -5566,8 +5933,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   private Binary loadMultiPageRecord(final RID originalRID, final BasePage firstPage, final int recordPositionInPage,
-                                     final long[] recordSize) throws IOException {
-    return loadMultiPageRecord(originalRID, firstPage, recordPositionInPage, recordSize, false);
+                                     final long recordMarker, final int recordHeaderSize) throws IOException {
+    return loadMultiPageRecord(originalRID, firstPage, recordPositionInPage, recordMarker, recordHeaderSize, false);
   }
 
   /**
@@ -5611,6 +5978,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * before the read that no longer matches the newest commit reads the same at every attempt, and the record its pages
    * belonged to is no longer there to complete, so the read fails with a {@link ConcurrentModificationException}.
    *
+   * @param recordMarker         the marker read at {@code recordPositionInPage}
+   * @param recordHeaderSize     the bytes that marker takes on the page, so the walk reads the chunk header past it
    * @param headPinnedByThisRead whether the head page was pinned by the very read that asks for the record (#9070), so
    *                             that a retry may release it and pin the newest copy. False when the caller already
    *                             held it - a neighbour's read, a scan reading the rest of the page, an update that took
@@ -5619,7 +5988,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private Binary loadMultiPageRecord(final RID originalRID, BasePage firstPage, int recordPositionInPage,
-                                     long[] recordSize, final boolean headPinnedByThisRead) throws IOException {
+                                     long recordMarker, int recordHeaderSize, final boolean headPinnedByThisRead) throws IOException {
     final int maxRetries = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
     final PageId firstPageId = firstPage.pageId;
     final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
@@ -5644,8 +6013,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
       int chunks = 0;
       // The continuation pointer the LAST traced chunk carried, so a chain the walk could not finish can be validated
-      // too: for a chain walked to its end this is 0, which is what the last chunk really holds.
-      long lastNextChunkPointer = 0L;
+      // too: for a chain walked to its end this is NO_NEXT_CHUNK, which is what the last chunk really holds.
+      long lastNextChunkPointer = NO_NEXT_CHUNK;
 
       // Set ONLY by the branches that could not PARSE the chain, never by the read-vs-write validation below: the two
       // have opposite answers and used to share one flag (#6258).
@@ -5654,7 +6023,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // Which kind of head this attempt started from - a record's own, or a placeholder's CONTENT (#6196). Read here
       // rather than assumed, because a retry re-reads the slot and could find the other one.
-      final long headMarker = recordSize[0];
+      final long headMarker = recordMarker;
 
       // Exact cycle detection, on the same terms as offPageContentFingerprint's walk: revisiting a continuation
       // pointer is the only certain loop signal, and a chain that never revisits one is finite by construction. The
@@ -5677,14 +6046,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         BasePage page = firstPage;
         int currentSlot = firstChunkSlot;
         int currentRecordPositionInPage = recordPositionInPage;
-        long[] currentRecordSize = recordSize;
+        int currentRecordHeaderSize = recordHeaderSize;
 
         while (true) {
-          final int chunkSize = page.readInt((int) (currentRecordPositionInPage + currentRecordSize[1]));
-          final long nextChunkPointer = page.readLong(
-                  (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE));
+          final int chunkSize = page.readInt((int) (currentRecordPositionInPage + currentRecordHeaderSize));
+          final long nextChunkPointer = decodeNextChunkLink(page.readLong(
+                  (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE)));
           final Binary chunk = page.getImmutableView(
-                  (int) (currentRecordPositionInPage + currentRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
+                  (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
                   chunkSize);
           record.append(chunk);
 
@@ -5701,7 +6070,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           ++chunks;
           lastNextChunkPointer = nextChunkPointer;
 
-          if (nextChunkPointer == 0)
+          if (nextChunkPointer == NO_NEXT_CHUNK)
             break;
 
           final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
@@ -5725,7 +6094,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
           if (nextRecordPositionInPage == 0) {
-            brokenChainReason = "chunk slot cleaned at chunk " + (chunks - 1);
+            brokenChainReason = CHUNK_SLOT_CLEANED_REASON + (chunks - 1);
             break;
           }
 
@@ -5749,9 +6118,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           currentSlot = chunkPositionInPage;
           currentRecordPositionInPage = nextRecordPositionInPage;
 
-          currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
+          // ALLOCATION-FREE, ONCE PER CHUNK OF THE CHAIN (#10656)
+          final long currentMarker = page.readNumber(currentRecordPositionInPage);
+          currentRecordHeaderSize = page.readNumberSize(currentRecordPositionInPage);
 
-          if (currentRecordSize[0] != NEXT_CHUNK) {
+          if (currentMarker != NEXT_CHUNK) {
             brokenChainReason = "unexpected marker at chunk " + (chunks - 1);
             break;
           }
@@ -5772,6 +6143,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // problem that does not exist.
         final String confirmed = confirmBrokenChunkChain(originalRID, chainTrace, chunks, record, lastNextChunkPointer,
                 headMarker);
+        if (confirmed != null && brokenChainReason.startsWith(CHUNK_SLOT_CLEANED_REASON) && isHeadFreedAfterItsTails(firstPageId,
+                firstChunkSlot, maxRetries))
+          // #10987: A DELETE PUBLISHES ITS PAGES ONE AT A TIME, AND A TAIL CAN BE PUBLISHED BEFORE THE HEAD. THE CHAIN THAT LOOKED
+          // CORRUPTED WAS A RECORD BEING DELETED, AND THE HEAD IS GONE NOW: A DELETED RECORD, WHICH THE SCAN SKIPS
+          throw new RecordNotFoundException("Multi-page record " + originalRID + " was deleted during read", originalRID);
+
         if (confirmed != null)
           // Both reasons when they differ, and they can: this walk carries a loop detector the confirmation walk
           // answers as the wrong marker it finds where the chain doubles back. The first is what the READ hit, the
@@ -5861,15 +6238,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   walkTransaction.getPage(firstPageId, pageSize) :
                   database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
           if (refreshedFirstPage == null)
-            throw new ConcurrentModificationException(
-                    "First page of multi-page record " + originalRID + " was removed during read");
+            // #10944: THE PAGE THE RECORD LIVED ON IS GONE, SO IS THE RECORD: A DELETED RECORD, NOT A CONFLICT TO RETRY
+            throw new RecordNotFoundException("First page of multi-page record " + originalRID + " was removed during read",
+                    originalRID);
 
           firstPage = refreshedFirstPage;
           recordPositionInPage = getRecordPositionInPage(firstPage, firstChunkSlot);
           if (recordPositionInPage == 0)
-            throw new ConcurrentModificationException(
-                    "Multi-page record " + originalRID + " was deleted during read");
-          recordSize = firstPage.readNumberAndSize(recordPositionInPage);
+            // #10944: THE HEAD SLOT WAS ZEROED UNDER THE READ, WHICH IS A DELETE. A RECORD THAT IS GONE IS NOT ONE A RETRY CAN
+            // READ, AND THE SCAN SKIPS IT (BucketIterator) AS IT DOES A SINGLE-PAGE RECORD DELETED BETWEEN SLOT AND LOAD
+            throw new RecordNotFoundException("Multi-page record " + originalRID + " was deleted during read", originalRID);
+          recordMarker = firstPage.readNumber(recordPositionInPage);
+          recordHeaderSize = firstPage.readNumberSize(recordPositionInPage);
         }
         // Otherwise the head the transaction holds, which is the only one it can read: the tails are what can change
       } else
@@ -5882,6 +6262,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Whether a chain broken by a freed chunk slot is a record whose delete is still being published (#10987). A delete frees
+   * the chunks and the head in pages of their own, readers take no lock, and the pages are published in an order the
+   * reader does not control: a tail page can be visible while the head still is, which is a chain indistinguishable from a
+   * corrupted one for as long as the window lasts. Waits for the head to follow, a few microseconds at a time and for at most
+   * {@code maxRetries} re-reads, and answers whether it did. A chain whose head never goes away is corrupted, and pays
+   * only this bounded wait for its diagnosis.
+   */
+  private boolean isHeadFreedAfterItsTails(final PageId firstPageId, final int firstChunkSlot, final int maxRetries)
+          throws IOException {
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      LockSupport.parkNanos(HEAD_FREE_RECHECK_NANOS << Math.min(attempt, 6));
+      database.getPageManager().incrementChunkChainReadRetries();
+
+      // The page manager, not the transaction: this only looks, and must not pin an image the read does not rely on
+      final BasePage head = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+      if (head == null || getRecordPositionInPage(head, firstChunkSlot) == 0)
+        return true;
+    }
+    return false;
+  }
+
+  /**
    * Decides whether the chain {@link #loadMultiPageRecord} just walked is still the one it read (#6217).
    * <p>
    * Every chunk is checked against the NEWEST committed image of its page: unchanged page version means unchanged
@@ -5889,7 +6291,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * that cannot be read at all is left alone, exactly as the version check that preceded this did - there is nothing
    * to compare against, and failing a read on it would be inventing a conflict.
    *
-   * @param lastNextChunkPointer the continuation pointer the last traced chunk carried: 0 for a chain walked to its
+   * @param lastNextChunkPointer the continuation pointer the last traced chunk carried, decoded
+   *                             ({@link #decodeNextChunkLink}): {@link #NO_NEXT_CHUNK} for a chain walked to its
    *                             end, and the pointer that could not be followed for a walk the chain broke (#6258) -
    *                             which is what lets a broken chain be validated by the same comparison as a whole one.
    * @param headMarker           the marker the head chunk carried when the walk started, {@link #FIRST_CHUNK} or
@@ -5952,7 +6355,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * or released, so nothing any other read of the transaction relied on moves (#9620). The chain is validated like any
    * read ({@link #validateChainRead}) and walked again when a commit landed under the walk.
    * <p>
-   * The walk mirrors the one in {@link #loadMultiPageRecord(RID, BasePage, int, long[], boolean)}, chunk layout and trace
+   * The walk mirrors the one in {@link #loadMultiPageRecord(RID, BasePage, int, long, int, boolean)}, chunk layout and trace
    * included, and must change with it. It is kept apart because that one reads through the transaction, which pins every
    * page it fetches, and diagnoses a chain it cannot follow, while this one may pin nothing and only gives up.
    *
@@ -6004,7 +6407,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         long[] size = headSize;
         while (true) {
           final int chunkSize = page.readInt((int) (position + size[1]));
-          final long nextChunkPointer = page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE));
+          final long nextChunkPointer = decodeNextChunkLink(page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE)));
           record.append(page.getImmutableView((int) (position + size[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE), chunkSize));
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
@@ -6016,7 +6419,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
           ++chunks;
 
-          if (nextChunkPointer == 0) {
+          if (nextChunkPointer == NO_NEXT_CHUNK) {
             complete = true;
             break;
           }
@@ -6047,7 +6450,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       // A chain that did not walk to its end, or that a commit moved under the walk, is walked again
-      if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, 0L, headMarker) != CHAIN_READ_CHANGED) {
+      if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, NO_NEXT_CHUNK, headMarker) != CHAIN_READ_CHANGED) {
         record.position(0);
         return record;
       }
@@ -6340,7 +6743,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // DELETED UNDER THE READ
       return null;
 
-    if (!isChunkHead(head.readNumberAndSize(recordPositionInPage)[0]))
+    if (!isChunkHead(head.readNumber(recordPositionInPage)))
       // NO LONGER A MULTI-PAGE RECORD: the record was rewritten under the read.
       return null;
 
@@ -6373,7 +6776,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int headerPos = (int) (chunkPositionInPage + marker[1]);
       if (page.readInt(headerPos) != chunkSize
-              || page.readLong(headerPos + INT_SERIALIZED_SIZE) != nextChunkPointer)
+              || decodeNextChunkLink(page.readLong(headerPos + INT_SERIALIZED_SIZE)) != nextChunkPointer)
         return false;
 
       final int contentPos = headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
@@ -6444,14 +6847,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void writeMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
                                     final int availableSpaceForFirstChunk, final int firstChunkCoverage,
                                     final int slotBytesAlreadyOwned, final boolean isPlaceHolderContent) throws IOException {
-    // DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table
-    // writes that bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED
-    // page that also holds a tracked single-slot write would let the rebase re-derive that page from the tracked
-    // slot alone and silently drop the chunk (corrupting the record). Poison every page this write touches so none
-    // of them can be rebased. Poisoning a brand-new page is harmless (new pages are never rebase-tracked). The page
-    // hosting the HEAD chunk is the caller's business (#6129): it either tracked the slot or poisoned the page.
-    final TransactionContext slotTx = database.getTransactionIfExists();
-    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+    // The page hosting the HEAD chunk is the caller's business (#6129): it either tracked the slot or poisoned the
+    // page. The pages the continuation chunks land on are poisoned by writeContinuationChunks.
     final MutablePage firstPage = currentPage;
     final int headChunkPageToAvoid = headChunkPageToAvoid(firstPage, firstChunkCoverage);
 
@@ -6491,13 +6888,38 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
     int nextChunkPointerOffset = newPosition;
 
-    newPosition += LONG_SERIALIZED_SIZE;
-
-    final byte[] content = buffer.getContent();
-    int contentOffset = buffer.getContentBeginOffset();
-
     bufferSize -= chunkSize;
-    contentOffset += chunkSize;
+    writeContinuationChunks(originalRID, currentPage, nextChunkPointerOffset, firstChunkCoverage, buffer.getContent(),
+            buffer.getContentBeginOffset() + chunkSize, bufferSize, headChunkPageToAvoid, 0L);
+  }
+
+  /**
+   * Writes {@code bufferSize} bytes of {@code content}, from {@code contentOffset}, as continuation ({@link #NEXT_CHUNK}) chunks on pages other than
+   * {@code currentPage}, linking the first one from the next-chunk pointer at {@code nextChunkPointerOffset} of
+   * {@code currentPage} and ending the last one with {@code chainTail}: 0 for a chain that ends there, or the pointer of
+   * the chunk that used to follow when the content is spliced into the middle of an existing chain (#10669). Written
+   * back exactly as it was read, in whichever encoding the chain used (#10853), so it is never decoded here.
+   * <p>
+   * DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table writes that
+   * bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED page that also holds a
+   * tracked single-slot write would let the rebase re-derive that page from the tracked slot alone and silently drop
+   * the chunk (corrupting the record). Every page a chunk lands on is poisoned so none of them can be rebased. Poisoning
+   * a brand-new page is harmless (new pages are never rebase-tracked).
+   *
+   * @param originalRID          the record the chain belongs to, named by the refusal of a link to position 0 (#10701).
+   * @param firstPointerCoverage coverage the pointer written into {@code currentPage} is declared under: the head
+   *                             chunk's coverage for a fresh spill (#6129), 0 otherwise.
+   * @param pageToAvoid          a page the chunks may not land on, or -1 (see {@link #findAvailableSpace}).
+   */
+  private void writeContinuationChunks(final RID originalRID, MutablePage currentPage, int nextChunkPointerOffset,
+                                       final int firstPointerCoverage,
+                                       final byte[] content, int contentOffset, int bufferSize, final int pageToAvoid,
+                                       final long chainTail) throws IOException {
+    final TransactionContext slotTx = database.getTransactionIfExists();
+    final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
+    final MutablePage firstPage = currentPage;
+    int newPosition = 0;
+    int chunkSize;
 
     // WRITE ALL THE REMAINING CHUNKS IN NEW PAGES
     int txPageCounter = getTotalPages();
@@ -6508,7 +6930,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int spaceNeededForChunk = chunkFootprint(CHUNK_MARKER_BUDGET, bufferSize);
 
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
-              true, headChunkPageToAvoid);
+              true, pageToAvoid);
 
       if (!pageAnalysis.createNewPage) {
         nextPage = database.getTransaction().getPageToModify(pageAnalysis.page.pageId, pageSize, false);
@@ -6549,9 +6971,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
 
       // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
-      writeNextChunkPointer(currentPage, nextChunkPointerOffset,
-              (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage,
-              currentPage == firstPage ? firstChunkCoverage : 0);
+      linkNextChunk(originalRID, currentPage, nextChunkPointerOffset, nextPage, recordIdInPage,
+              currentPage == firstPage ? firstPointerCoverage : 0);
 
       // The free tail this chunk is about to bite into, measured against the page's maximum content size - the same
       // base every other accounting in this class uses (#6358).
@@ -6576,7 +6997,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
       nextChunkPointerOffset = newPosition + INT_SERIALIZED_SIZE;
       if (lastChunk)
-        nextPage.writeLong(nextChunkPointerOffset, 0L);
+        nextPage.writeLong(nextChunkPointerOffset, chainTail);
 
       newPosition += INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
 
@@ -6634,6 +7055,94 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static int headChunkPageToAvoid(final MutablePage headChunkPage, final int firstChunkCoverage) {
     return firstChunkCoverage == 0 ? -1 : headChunkPage.getPageId().getPageNumber();
+  }
+
+  /**
+   * Links the chunk whose pointer field is at {@code offset} of {@code page} to the continuation chunk just placed at
+   * {@code slot} of {@code nextPage}. Refuses a link whose value would be 0 - position 0 of the bucket - because 0 is the
+   * pointer's "no next chunk" value: written, it would cut the chain at this chunk and leave the record undecodable on its
+   * next read, while the commit reports nothing (#10701). The allocator never offers that slot to a continuation chunk; this
+   * is what makes an allocator that one day does fail the write instead of truncating a record.
+   */
+  private void linkNextChunk(final RID originalRID, final MutablePage page, final int offset, final MutablePage nextPage,
+                             final int slot, final int coverage) {
+    final boolean selfDescribing = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_SELF_DESCRIBING_CHUNK_LINKS);
+    writeNextChunkPointer(page, offset,
+            nextChunkLink(originalRID, getName(), nextPage.getPageId().getPageNumber(), slot, maxRecordsInPage, selfDescribing),
+            coverage);
+  }
+
+  /**
+   * The value of a link to a continuation chunk at {@code slot} of {@code pageNumber}, in the legacy form, refusing the one
+   * value that reads as "no next chunk" (#10701): see {@link #linkNextChunk}.
+   */
+  static long nextChunkLink(final RID originalRID, final String bucketName, final int pageNumber, final int slot,
+                            final int maxRecordsInPage) {
+    return nextChunkLink(originalRID, bucketName, pageNumber, slot, maxRecordsInPage, false);
+  }
+
+  /**
+   * The value of a link to a continuation chunk at {@code slot} of {@code pageNumber}. With {@code selfDescribing} off it is
+   * the legacy absolute position, refusing the one value that reads as "no next chunk" (#10701); with it on it is
+   * {@link #nextChunkLinkOf}, which can name position 0 too (#10949). Package-private and static so the refusal can be tested
+   * without an allocator that hands out position 0.
+   */
+  static long nextChunkLink(final RID originalRID, final String bucketName, final int pageNumber, final int slot,
+                            final int maxRecordsInPage, final boolean selfDescribing) {
+    final long pointer = (long) pageNumber * maxRecordsInPage + slot;
+    if (selfDescribing)
+      return nextChunkLinkOf(pointer);
+    if (pointer == 0L)
+      throw new DatabaseOperationException("Cannot link a continuation chunk of record " + originalRID
+              + " at position 0 of bucket '" + bucketName + "': that value means 'no next chunk' and would truncate the record");
+    return pointer;
+  }
+
+  /**
+   * The bucket position the "pointer to the next chunk" field of a chunk header links to, or {@link #NO_NEXT_CHUNK} when
+   * the chunk is the last of its chain (#10853). Every reader that INTERPRETS the field goes through this and nothing else,
+   * because the field has two encodings and only this method knows both. The one reader that does not interpret it, a
+   * splice that writes the link back unchanged as the tail of a new chunk, goes through {@link #readNextChunkLinkAsStored}
+   * instead, so a search for either name finds every reader of the field (#11036):
+   * <ul>
+   * <li>{@code 0} ends the chain. That is why a LEGACY link cannot name position 0 of the bucket (#10701);</li>
+   * <li>a positive value is a legacy link: the absolute position {@code pageNumber * maxRecordsInPage + slot}, which is
+   * what every database written so far holds;</li>
+   * <li>a negative value is the self-describing form {@code -(position + 1)} ({@link #nextChunkLinkOf}), which can name
+   * position 0. No writer ever stored a negative value in this field, so reading it as a link takes nothing away.</li>
+   * </ul>
+   * The returned value is what the walks compare, put in their loop detectors and hand to each other, so two links to
+   * the same chunk in different encodings are the same link everywhere.
+   * <p>
+   * The writers store the new form only when {@link GlobalConfiguration#BUCKET_SELF_DESCRIBING_CHUNK_LINKS} is on (#10949,
+   * default off), so a database written with the default stays readable by a release that predates the read support.
+   */
+  static long decodeNextChunkLink(final long link) {
+    if (link > 0L)
+      return link;
+    return link == 0L ? NO_NEXT_CHUNK : -(link + 1L);
+  }
+
+  /**
+   * The "pointer to the next chunk" field at {@code offset} of {@code page} exactly as stored, in whichever encoding the
+   * chain used ({@link #decodeNextChunkLink}), for the one reader that never interprets it: a splice that hands it on
+   * verbatim as the tail of the chunk it inserts ({@link #writeContinuationChunks}). The end of chain is 0 in both
+   * encodings, so the copy stays correct whichever form a writer starts storing. Any reader that compares, follows or
+   * frees the link must decode it instead (#11036).
+   */
+  private static long readNextChunkLinkAsStored(final BasePage page, final int offset) {
+    return page.readLong(offset);
+  }
+
+  /**
+   * The self-describing form of a link to the chunk at {@code position}: {@code -(position + 1)}, which
+   * {@link #decodeNextChunkLink} reads back as {@code position}, position 0 included (#10853). Not written by any writer
+   * by default - see {@link #decodeNextChunkLink} for the rollout.
+   */
+  static long nextChunkLinkOf(final long position) {
+    if (position < 0L)
+      throw new IllegalArgumentException("A chunk position cannot be negative: " + position);
+    return -(position + 1L);
   }
 
   /**
@@ -6732,7 +7241,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
     int nextChunkPointerOffset = newPosition;
-    long nextChunkPointer = currentPage.readLong(nextChunkPointerOffset);
+    long nextChunkPointer = decodeNextChunkLink(currentPage.readLong(nextChunkPointerOffset));
 
     newPosition += LONG_SERIALIZED_SIZE;
 
@@ -6743,7 +7252,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     contentOffset += chunkSize;
 
     // WRITE ALL THE REMAINING CHUNKS IN NEW PAGES
-    long chunkToDeletePointer = bufferSize > 0 ? 0L : nextChunkPointer;
+    long chunkToDeletePointer = bufferSize > 0 ? NO_NEXT_CHUNK : nextChunkPointer;
 
     while (bufferSize > 0) {
       MutablePage nextPage = null;
@@ -6758,7 +7267,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // can say so. -1 while there is no reused chunk.
       int chunkSizeBefore = -1;
 
-      if (nextChunkPointer > 0) {
+      if (nextChunkPointer != NO_NEXT_CHUNK) {
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
         final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
@@ -6779,7 +7288,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         newPosition = (int) (recordPositionInPage + recordSize[1]);
         chunkSize = nextPage.readInt(newPosition);
         chunkSizeBefore = chunkSize;
-        nextChunkPointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
+        nextChunkPointer = decodeNextChunkLink(nextPage.readLong(newPosition + INT_SERIALIZED_SIZE));
 
       } else {
         // CREATE NEW SPACE FOR THE CURRENT AND REMAINING CHUNKS
@@ -6830,8 +7339,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
-        writeNextChunkPointer(currentPage, nextChunkPointerOffset,
-                (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage,
+        linkNextChunk(originalRID, currentPage, nextChunkPointerOffset, nextPage, recordIdInPage,
                 currentPage == firstPage ? firstChunkCoverage : 0);
 
         // Both branches above - a page the allocator reused and a page created for this chunk - hand out the free
@@ -6898,7 +7406,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     // CHECK TO DELETE REMAINING CHUNKS IF THE RECORD SHRUNK
-    if (chunkToDeletePointer > 0) {
+    if (chunkToDeletePointer != NO_NEXT_CHUNK) {
       // CUT THE CHAIN AT THE LAST CHUNK THAT SURVIVES, THEN FREE WHAT FOLLOWS
       writeNextChunkPointer(currentPage, nextChunkPointerOffset, 0L, currentPage == firstPage ? firstChunkCoverage : 0);
       freeChunkChain(originalRID, chunkToDeletePointer);
@@ -6963,7 +7471,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
 
     // Read BEFORE the write below overwrites the header these two come from.
-    final long chainToFree = page.readLong(chunkHeaderPos + INT_SERIALIZED_SIZE);
+    final long chainToFree = decodeNextChunkLink(page.readLong(chunkHeaderPos + INT_SERIALIZED_SIZE));
     final int previousChunkEnd = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + page.readInt(chunkHeaderPos);
 
     final int previousCoverage = page.beginCoveredWrite(chunkBaseImage != null ? MutablePage.COVERAGE_SLOT_MERGE : 0);
@@ -7008,7 +7516,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Frees every chunk of a chain, starting at {@code chunkPointer}, by zeroing its slot-table entry on the page that
-   * holds it. Poisons every page it visits: the freed slot is a change no tracked slot image accounts for, so a page
+   * holds it - and only once that slot is proven, from the page itself, to hold a continuation chunk (#10875): a slot
+   * that is free, or holds anything but a {@code NEXT_CHUNK}, stops the walk with nothing written on it. Poisons every
+   * page it frees a chunk on: the freed slot is a change no tracked slot image accounts for, so a page
    * that also carries a tracked write could otherwise be re-derived from that write alone and quietly resurrect the
    * chunk. Never throws on a chain it cannot walk - a broken pointer is logged and the walk stops there, exactly as
    * it did when this was inlined in {@link #updateMultiPageRecord} (the record's own slot has already been rewritten
@@ -7021,13 +7531,33 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final TransactionContext slotTx = database.getTransactionIfExists();
     final boolean poisonSlots = slotTx != null && slotTx.isSlotMergeEnabled();
 
-    while (chunkPointer > 0) {
+    while (chunkPointer != NO_NEXT_CHUNK) {
       final int chunkPageId = (int) (chunkPointer / maxRecordsInPage);
       final int chunkPositionInPage = (int) (chunkPointer % maxRecordsInPage);
 
       final MutablePage nextPage = database.getTransaction()
               .getPageToModify(new PageId(database, file.getFileId(), chunkPageId), pageSize, false);
       final int recordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
+
+      // #10875: the slot is proven to hold a continuation chunk BEFORE its slot-table entry is touched - the same two
+      // conditions updateMultiPageRecord checks on the same chain before it writes. Zeroing first and checking after
+      // freed whatever the slot held when the check failed: harmless for a slot already free, but a slot a concurrent
+      // insert had reused lost its record (gone from scan, count and lookup, in a transaction that committed normally).
+      if (recordPositionInPage == 0) {
+        LogManager.instance().log(this, Level.WARNING,
+                "Stopped freeing the chunk chain of multi-page record %s after it shrunk: the next chunk pointer %d reaches slot %d of page %d, which is already free. The slot was left untouched",
+                originalRID, chunkPointer, chunkPositionInPage, chunkPageId);
+        break;
+      }
+
+      final long[] recordSize = nextPage.readNumberAndSize(recordPositionInPage);
+
+      if (recordSize[0] != NEXT_CHUNK) {
+        LogManager.instance().log(this, Level.WARNING,
+                "Stopped freeing the chunk chain of multi-page record %s after it shrunk: the next chunk pointer %d reaches slot %d of page %d, which does not hold a continuation chunk (marker %d). The slot was left untouched",
+                originalRID, chunkPointer, chunkPositionInPage, chunkPageId, recordSize[0]);
+        break;
+      }
 
       if (poisonSlots)
         slotTx.poisonSlotRebasePage(fileId, nextPage.pageId.getPageNumber());
@@ -7036,25 +7566,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE, 0L);
       freedWithoutClaiming(nextPage);
 
-      if (recordPositionInPage == 0) {
-        LogManager.instance()
-                .log(this, Level.WARNING, "Error on deleting extra part of multi-page record %s after it shrunk", originalRID);
-        break;
-      }
-
-      final long[] recordSize = nextPage.readNumberAndSize(recordPositionInPage);
-
-      if (recordSize[0] != NEXT_CHUNK) {
-        LogManager.instance()
-                .log(this, Level.WARNING, "Error on deleting extra part of multi-page record %s after it shrunk", originalRID);
-        break;
-      }
-
       // #6339: nothing is told to the free-space statistics here, deliberately. The bytes are the page's again, but
       // the chunk leaves a HOLE that the allocator cannot hand out, and what the page will really have on offer is
       // settled by the compression the commit runs on it (compressPageInternal, which reports what it packed). A
       // guess made here would have to be undone there.
-      chunkPointer = nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE);
+      chunkPointer = decodeNextChunkLink(nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE));
     }
   }
 
@@ -7155,8 +7671,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                                    final int contentSize) throws IOException {
     final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage, recordSize);
     final int spaceAvailableInCurrentPage = page.getMaxContentSize() - pageOccupiedInBytes;
-    final int contentSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * contentSize : contentSize);
-    final int additionalSpaceNeeded = (int) (contentSize + contentSizeLength - recordSize[0] - recordSize[1]);
+    final int additionalSpaceNeeded = growthAdditionalSpace(recordSize, isPlaceHolder, contentSize);
 
     if (additionalSpaceNeeded >= spaceAvailableInCurrentPage)
       // NOT ENOUGH ROOM LEFT IN THE PAGE
@@ -7180,6 +7695,72 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     updatePageStatistics(page, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
+    return true;
+  }
+
+  /**
+   * Bytes a record stored as {@code recordSize} gains when rewritten with {@code contentSize} bytes of content, size
+   * marker included: what {@link #growRecordInPage} has to take from the page's free tail.
+   */
+  private static int growthAdditionalSpace(final long[] recordSize, final boolean isPlaceHolder, final int contentSize) {
+    final int contentSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * contentSize : contentSize);
+    return (int) (contentSize + contentSizeLength - recordSize[0] - recordSize[1]);
+  }
+
+  /**
+   * Whether {@link #growRecordInPage} would host the growth in the page's free tail as the page stands, by the very
+   * same arithmetic. Reads only.
+   */
+  private boolean growthFitsFreeTail(final MutablePage page, final int lastRecordPositionInPage,
+                                     final int recordPositionInPage, final long[] recordSize, final boolean isPlaceHolder,
+                                     final int contentSize) throws IOException {
+    final int pageOccupiedInBytes = getPageOccupiedInBytes(page, lastRecordPositionInPage, recordPositionInPage, recordSize);
+    return growthAdditionalSpace(recordSize, isPlaceHolder, contentSize) < page.getMaxContentSize() - pageOccupiedInBytes;
+  }
+
+  /**
+   * Packs the holes of a page in the middle of a transaction, so a write that needs room is judged against the page
+   * the commit would leave rather than against its free tail alone (#10700). The same layout transformation
+   * {@link #compressPageInternal} runs at commit - the slot-table repair, the defrag, the measured free tail handed to
+   * the statistics - with one difference that matters before the commit and not at it: the slot table keeps its
+   * length. Trimming the trailing freed slots would let an insert of this same transaction (the content record of a
+   * spill, a continuation chunk) be handed a slot it deleted, which the allocator otherwise never does.
+   * <p>
+   * The caller must poison the page for the commit-time merges when this returns true, and re-derive every offset it
+   * holds on it: every record past the first hole moved.
+   *
+   * @return true when the page had holes and they were closed; false when it had none, in which case nothing has been
+   * written.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean packPageHoles(final MutablePage page, final short recordCountInPage) throws IOException {
+    if (packedContentEnd(page, recordCountInPage) > 0)
+      // NO HOLE: THE CHEAP WALK PROVES IT WITHOUT BUILDING THE LIST
+      return false;
+
+    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, page);
+    if (orderedRecordContentInPage.isEmpty())
+      return false;
+
+    final List<int[]> holes = computePageHoles(orderedRecordContentInPage);
+    if (holes.isEmpty())
+      return false;
+
+    if (CHECK_FREE_SPACE_CLAIMS)
+      verifyFreeSpaceClaim(page, freeTailInPage(page, orderedRecordContentInPage), recordCountInPage);
+
+    defragPage(page, holes, recordCountInPage);
+    wipeOutFreeSpace(page, recordCountInPage);
+
+    int contentEndInPage = contentHeaderSize;
+    for (final int[] record : orderedRecordContentInPage)
+      contentEndInPage += record[1];
+    accountCompressedPage(page, contentEndInPage);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE, "Packed %d holes of page %s to make room for a growth (threadId=%d)",
+              holes.size(), page.pageId, Thread.currentThread().threadId());
     return true;
   }
 
@@ -7262,6 +7843,423 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Releases at least {@code bytesNeeded} bytes into the free tail of {@code page} on behalf of the record in slot
+   * {@code positionInPage}, which needs them to host a placeholder pointer, by having OTHER records of the page give them
+   * (#10637, #10669, #10859). One donor is preferred, in this order: a plain record moved behind a pointer of its own
+   * ({@link #relocateANeighbourOffPage}), the trailing content of a chunk moved into a new continuation chunk
+   * ({@link #moveAChunkTailOffPage}), a placeholder's CONTENT record turned into the head of a chunk chain
+   * ({@link #chunkAPlaceholderContentOffPage}). When no single record can give all the bytes, several give a part each:
+   * only when the bytes every record of the page can give add up to less than what is missing is nothing written at all.
+   * <p>
+   * The caller must poison the page for the commit-time merges when this returns true, and must re-derive every offset
+   * it holds on the page: the records after each donor moved left, possibly its own.
+   *
+   * @param recordSize the size and marker size of the record being made room for, unchanged by the donors.
+   *
+   * @return true when the free tail grew by at least {@code bytesNeeded}; false when the records of the page cannot
+   * release them, in which case nothing has been written.
+   */
+  private boolean releaseBytesFromOtherRecords(final MutablePage page, final short recordCountInPage, final int positionInPage,
+                                               final int bytesNeeded, final long[] recordSize) throws IOException {
+    int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+    int pageOccupiedInBytes = getPageOccupiedInBytes(page, getLastRecordPositionInPage(page, recordCountInPage),
+            recordPositionInPage, recordSize);
+    if (relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded, bytesNeeded,
+            pageOccupiedInBytes, page.getMaxContentSize() - pageOccupiedInBytes) > 0
+            || moveAChunkTailOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded, false,
+            pageOccupiedInBytes, page.getMaxContentSize() - pageOccupiedInBytes) > 0
+            || chunkAPlaceholderContentOffPage(page, recordCountInPage, recordPositionInPage, bytesNeeded, false,
+            pageOccupiedInBytes, page.getMaxContentSize() - pageOccupiedInBytes) > 0)
+      return true;
+
+    // #10859: no record can give every byte on its own. Several can, each a part, as long as together they hold enough:
+    // checked up front so that a page that cannot is refused with nothing written, as it always was.
+    if (releasableBytesInPage(page, recordCountInPage, recordPositionInPage) < bytesNeeded)
+      return false;
+
+    int remaining = bytesNeeded;
+    while (remaining > 0) {
+      // The donors before this record moved it left: every offset is re-derived from the page itself on each round.
+      recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      pageOccupiedInBytes = getPageOccupiedInBytes(page, getLastRecordPositionInPage(page, recordCountInPage),
+              recordPositionInPage, recordSize);
+      final int freeTailInPage = page.getMaxContentSize() - pageOccupiedInBytes;
+
+      int released = relocateANeighbourOffPage(page, recordCountInPage, recordPositionInPage, remaining, 1,
+              pageOccupiedInBytes, freeTailInPage);
+      if (released == 0)
+        released = moveAChunkTailOffPage(page, recordCountInPage, recordPositionInPage, remaining, true,
+                pageOccupiedInBytes, freeTailInPage);
+      if (released == 0)
+        released = chunkAPlaceholderContentOffPage(page, recordCountInPage, recordPositionInPage, remaining, true,
+                pageOccupiedInBytes, freeTailInPage);
+      if (released == 0)
+        // Unreachable while releasableBytesInPage and the three donors agree on what each record can give: every round
+        // takes at least one byte from a record that had it, and gives nothing back. Refused, rather than looping.
+        throw new DatabaseOperationException(
+                "Cannot release " + remaining + " more bytes on page " + page.getPageId() + " of bucket '" + componentName
+                        + "' although its records were counted able to");
+      remaining -= released;
+    }
+    return true;
+  }
+
+  /**
+   * Bytes the records of {@code page} other than the one at {@code excludedRecordPositionInPage} can release into its
+   * free tail between them: a plain record its footprint beyond a pointer's, a chunk all of its content but one byte,
+   * a placeholder's CONTENT record its footprint beyond that of a head chunk carrying one byte. Exactly what
+   * {@link #relocateANeighbourOffPage}, {@link #moveAChunkTailOffPage} and {@link #chunkAPlaceholderContentOffPage}
+   * take from each, so the sum is what the three can release together, and what one of them takes from a record is
+   * taken from this sum.
+   */
+  private int releasableBytesInPage(final MutablePage page, final short recordCountInPage,
+                                    final int excludedRecordPositionInPage) throws IOException {
+    int releasable = 0;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long[] candidateSize = page.readNumberAndSize(candidatePositionInPage);
+      if (candidateSize[0] > 0)
+        releasable += Math.max(0, (int) (candidateSize[0] + candidateSize[1]) - PLACEHOLDER_POINTER_FOOTPRINT);
+      else if (isChunkHead(candidateSize[0]) || candidateSize[0] == NEXT_CHUNK)
+        releasable += Math.max(0, page.readInt(candidatePositionInPage + (int) candidateSize[1]) - 1);
+      else if (candidateSize[0] < RECORD_PLACEHOLDER_CONTENT)
+        releasable += Math.max(0, (int) (candidateSize[1] - candidateSize[0]) - PLACEHOLDER_CONTENT_HEAD_MINIMUM_FOOTPRINT);
+    }
+    return releasable;
+  }
+
+  /**
+   * Releases bytes into the free tail of {@code page} by moving one of its plain records behind a placeholder POINTER
+   * (#10637): the record's content is re-created as placeholder content on another page, its slot keeps its RID and now
+   * holds the 9-byte pointer, and everything stored after it moves left by the bytes the slot no longer needs. The donor
+   * is the SMALLEST plain record that can release at least {@code minimumRelease} bytes, so the fewest bytes leave the
+   * page; the record at {@code excludedRecordPositionInPage} - the one the caller is making room for - is never picked,
+   * and neither is a record that already lives behind a pointer, a pointer, or a chunk.
+   * <p>
+   * This is the shape every reader already understands: it is what an update spilling a small record writes, and the
+   * reads follow the pointer. The caller must poison the page for the commit-time merges when this releases anything,
+   * and must re-derive every offset it holds on the page - the records after the donor, possibly its own, have moved.
+   *
+   * @param page                         the page to release bytes on.
+   * @param recordCountInPage            number of slot-table entries.
+   * @param excludedRecordPositionInPage content offset of the record that needs the bytes.
+   * @param bytesNeeded                  the bytes the free tail must gain: a donor releasing that many is preferred.
+   * @param minimumRelease               the fewest bytes a donor may release: {@code bytesNeeded} for a single donor,
+   *                                     1 when several share the bytes (#10859).
+   * @param pageOccupiedInBytes          the byte at which the page's used content ends.
+   * @param freeTailInPage               the page's free tail before the release.
+   *
+   * @return the bytes released, at least {@code minimumRelease}; 0 when no record of the page could release them, in
+   * which case nothing has been written.
+   */
+  private int relocateANeighbourOffPage(final MutablePage page, final short recordCountInPage,
+                                        final int excludedRecordPositionInPage, final int bytesNeeded, final int minimumRelease,
+                                        final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+    int donorPositionInPage = -1;
+    long[] donorSize = null;
+    int donorFootprint = Integer.MAX_VALUE;
+    boolean donorReleasesAll = false;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long[] candidateSize = page.readNumberAndSize(candidatePositionInPage);
+      if (candidateSize[0] <= 0)
+        // DELETED, A POINTER, A CHUNK OR SOMEBODY ELSE'S PLACEHOLDER CONTENT: NOTHING THAT CAN MOVE BEHIND A POINTER
+        continue;
+
+      final int footprint = (int) (candidateSize[0] + candidateSize[1]);
+      final int releasable = footprint - PLACEHOLDER_POINTER_FOOTPRINT;
+      if (releasable < minimumRelease)
+        continue;
+
+      // The smallest record releasing every byte needed; failing that (several donors share them), the biggest part.
+      final boolean releasesAll = releasable >= bytesNeeded;
+      if (donorPositionInPage < 0 || (releasesAll && !donorReleasesAll)//
+              || (releasesAll && footprint < donorFootprint) || (!releasesAll && !donorReleasesAll && footprint > donorFootprint)) {
+        donorPositionInPage = candidatePositionInPage;
+        donorSize = candidateSize;
+        donorFootprint = footprint;
+        donorReleasesAll = releasesAll;
+      }
+    }
+
+    if (donorPositionInPage < 0)
+      return 0;
+
+    // Created BEFORE this page changes: the page has less free tail than the donor's content, so it cannot land here
+    final byte[] donorContent = new byte[(int) donorSize[0]];
+    page.readByteArray((int) (donorPositionInPage + donorSize[1]), donorContent, 0, donorContent.length);
+    final RID contentRID = createRecordInternal(new Binary(donorContent), true);
+
+    final int markerSize = page.writeNumber(donorPositionInPage, RECORD_PLACEHOLDER_POINTER);
+    page.writeLong(donorPositionInPage + markerSize, contentRID.getPosition());
+
+    final int released = donorFootprint - markerSize - LONG_SERIALIZED_SIZE;
+    releaseBytesAfter(page, recordCountInPage, donorPositionInPage + donorFootprint, released, pageOccupiedInBytes,
+            freeTailInPage);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Moved the record at offset %d of page %s behind a placeholder pointer to release %d bytes (threadId=%d)",
+              donorPositionInPage, page, released, Thread.currentThread().threadId());
+    return released;
+  }
+
+  /**
+   * Releases bytes into the free tail of {@code page} by moving the trailing content of one of its chunks - a head
+   * chunk, of a record or of a placeholder's content, or a continuation chunk - into a new continuation chunk spliced
+   * into the chain right after it (#10669). It is the fallback of {@link #relocateANeighbourOffPage} for a page that
+   * holds no plain record able to give the bytes, typically because the head chunk of a record that spilled took the
+   * page's whole free tail: that very chunk is the one that gives them back.
+   * <p>
+   * The record the chunk belongs to keeps its RID and its content, one hop longer: the chunk keeps its slot, its marker
+   * and its next-chunk pointer offset, declares fewer content bytes and points to the new chunk, which points to
+   * whatever the chunk pointed to before. Every chunk keeps at least one byte of content, so the chain stays one that
+   * {@code loadMultiPageRecord} and {@code check} accept. The chunk picked is the head chunk of a record of this page
+   * when there is one (see the loop for why), the one with the most content among those, and the record at
+   * {@code excludedRecordPositionInPage} is never picked.
+   * <p>
+   * As for {@link #relocateANeighbourOffPage}, the caller must poison the page for the commit-time merges when this
+   * releases anything and re-derive every offset it holds on the page: the records after the chunk moved left. The
+   * page the new chunk lands on is poisoned here, as every page a continuation chunk lands on is.
+   *
+   * @param bytesNeeded the bytes the free tail must gain; at most these are taken.
+   * @param partial     false to take all of {@code bytesNeeded} from one chunk or none; true to take what the chunk
+   *                    with the most content can spare, up to {@code bytesNeeded} (several donors, #10859).
+   *
+   * @return the bytes released; 0 when no chunk of the page can give them, in which case nothing has been written.
+   */
+  private int moveAChunkTailOffPage(final MutablePage page, final short recordCountInPage,
+                                    final int excludedRecordPositionInPage, final int bytesNeeded, final boolean partial,
+                                    final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+    int chunkPositionInPage = -1;
+    int chunkSlot = -1;
+    int chunkMarkerSize = 0;
+    int donorChunkSize = 0;
+    boolean chunkIsRecordHead = false;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long candidateMarker = page.readNumber(candidatePositionInPage);
+      if (!isChunkHead(candidateMarker) && candidateMarker != NEXT_CHUNK)
+        continue;
+
+      final int candidateMarkerSize = page.readNumberSize(candidatePositionInPage);
+      final int candidateChunkSize = page.readInt(candidatePositionInPage + candidateMarkerSize);
+      if (candidateChunkSize <= (partial ? 1 : bytesNeeded))
+        // THE CHUNK MUST KEEP AT LEAST ONE BYTE OF CONTENT
+        continue;
+
+      // The head chunk of a record of THIS page first, whatever its size: its chain is covered by the poison this page
+      // gets anyway. A continuation chunk, or the head of a placeholder's content, belongs to a record whose slot is on
+      // another page, and an update of that record in this same transaction compares the off-page fingerprint it took
+      // at save() with one taken at commit: carryOffPageFingerprints keeps that comparison about OTHER transactions
+      // (#10859), but the record that already lives on this page is still the cheaper one to lengthen.
+      final boolean candidateIsRecordHead = candidateMarker == FIRST_CHUNK;
+      if (chunkPositionInPage < 0 || (candidateIsRecordHead && !chunkIsRecordHead)
+              || (candidateIsRecordHead == chunkIsRecordHead && candidateChunkSize > donorChunkSize)) {
+        chunkPositionInPage = candidatePositionInPage;
+        chunkSlot = pos;
+        chunkMarkerSize = candidateMarkerSize;
+        donorChunkSize = candidateChunkSize;
+        chunkIsRecordHead = candidateIsRecordHead;
+      }
+    }
+
+    if (chunkPositionInPage < 0)
+      return 0;
+
+    final int released = Math.min(bytesNeeded, donorChunkSize - 1);
+    final int chunkSizeOffset = chunkPositionInPage + chunkMarkerSize;
+    final int nextChunkPointerOffset = chunkSizeOffset + INT_SERIALIZED_SIZE;
+    final int contentOffset = nextChunkPointerOffset + LONG_SERIALIZED_SIZE;
+    final int keptChunkSize = donorChunkSize - released;
+
+    final byte[] movedContent = new byte[released];
+    page.readByteArray(contentOffset + keptChunkSize, movedContent, 0, released);
+    final long chainTail = readNextChunkLinkAsStored(page, nextChunkPointerOffset);
+
+    final RID[] fingerprintsToCarry = offPageFingerprintsStillCurrent();
+
+    // Written BEFORE this page changes, and kept off it: the page has far less free tail than a chunk header. The new
+    // chunk is linked from this chunk's next-chunk pointer, whose offset the shift below does not move. Should the write
+    // fail part way, whatever it allocated lives only in this transaction's pages and goes with its rollback. The pointer
+    // is rewritten under no coverage span: the caller poisons this page, so no merge replays any write on it. The page
+    // the new chunk lands on is never this one, so the offsets the caller re-derives here are not disturbed by it.
+    // The donor chunk may be a continuation chunk of a record whose head is elsewhere: its own slot is what names it.
+    writeContinuationChunks(new RID(fileId, recordPosition(page.getPageId().getPageNumber(), maxRecordsInPage, chunkSlot)),
+            page, nextChunkPointerOffset, 0, movedContent, 0, released,
+            page.getPageId().getPageNumber(), chainTail);
+
+    page.writeInt(chunkSizeOffset, keptChunkSize);
+
+    releaseBytesAfter(page, recordCountInPage, chunkPositionInPage + chunkFootprint(chunkMarkerSize, donorChunkSize),
+            released, pageOccupiedInBytes, freeTailInPage);
+
+    carryOffPageFingerprints(fingerprintsToCarry);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Moved the last %d bytes of the chunk at offset %d of page %s into a new continuation chunk (threadId=%d)",
+              released, chunkPositionInPage, page, Thread.currentThread().threadId());
+    return released;
+  }
+
+  /**
+   * Releases bytes into the free tail of {@code page} by turning one of its placeholder CONTENT records into the head of
+   * a chunk chain (#10859): the slot keeps its RID - the one the pointer on another page holds - and becomes a
+   * {@link #FIRST_CHUNK_PLACEHOLDER_CONTENT} head carrying the start of the content, the rest moving into a new
+   * continuation chunk on another page. That is the shape a placeholder whose content no page could host has had since
+   * #6196, so every reader already follows it. A content record cannot be moved behind a pointer of its own (the pointer
+   * referencing it is on another page, and nothing points back to it), which is why it was the one record a page could
+   * not ask for bytes before.
+   * <p>
+   * The record picked is the one with the most bytes to spare; a content record too short to carry a chunk header plus
+   * one byte in less room than it holds now is never picked. As for {@link #relocateANeighbourOffPage}, the caller must
+   * poison the page and re-derive its offsets when this releases anything.
+   *
+   * @param bytesNeeded the bytes the free tail must gain; at most these are taken.
+   * @param partial     as for {@link #moveAChunkTailOffPage}.
+   *
+   * @return the bytes released; 0 when no content record of the page can give them, in which case nothing has been
+   * written.
+   */
+  private int chunkAPlaceholderContentOffPage(final MutablePage page, final short recordCountInPage,
+                                              final int excludedRecordPositionInPage, final int bytesNeeded,
+                                              final boolean partial, final int pageOccupiedInBytes, final int freeTailInPage)
+          throws IOException {
+    int donorPositionInPage = -1;
+    int donorSlot = -1;
+    long[] donorSize = null;
+    int donorReleasable = 0;
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int candidatePositionInPage = getRecordPositionInPage(page, pos);
+      if (candidatePositionInPage < contentHeaderSize || candidatePositionInPage == excludedRecordPositionInPage)
+        continue;
+
+      final long[] candidateSize = page.readNumberAndSize(candidatePositionInPage);
+      if (candidateSize[0] >= RECORD_PLACEHOLDER_CONTENT)
+        continue;
+
+      final int releasable = (int) (candidateSize[1] - candidateSize[0]) - PLACEHOLDER_CONTENT_HEAD_MINIMUM_FOOTPRINT;
+      if (releasable >= (partial ? 1 : bytesNeeded) && releasable > donorReleasable) {
+        donorPositionInPage = candidatePositionInPage;
+        donorSlot = pos;
+        donorSize = candidateSize;
+        donorReleasable = releasable;
+      }
+    }
+
+    if (donorPositionInPage < 0)
+      return 0;
+
+    final int released = Math.min(bytesNeeded, donorReleasable);
+    final int contentSize = (int) -donorSize[0];
+    final int footprint = (int) donorSize[1] + contentSize;
+    final byte[] content = new byte[contentSize];
+    page.readByteArray(donorPositionInPage + (int) donorSize[1], content, 0, contentSize);
+
+    final int headMarkerSize = Binary.getNumberSpace(FIRST_CHUNK_PLACEHOLDER_CONTENT);
+    final int keptChunkSize = footprint - released - chunkFootprint(headMarkerSize, 0);
+    final int nextChunkPointerOffset = donorPositionInPage + headMarkerSize + INT_SERIALIZED_SIZE;
+
+    final RID[] fingerprintsToCarry = offPageFingerprintsStillCurrent();
+
+    // The content is in hand, so the pointer the continuation chunk writes over its bytes loses nothing. Kept off this
+    // page, exactly as moveAChunkTailOffPage keeps the chunk it writes.
+    writeContinuationChunks(new RID(fileId, recordPosition(page.getPageId().getPageNumber(), maxRecordsInPage, donorSlot)),
+            page, nextChunkPointerOffset, 0, content, keptChunkSize, contentSize - keptChunkSize,
+            page.getPageId().getPageNumber(), 0L);
+
+    final int markerSize = page.writeNumber(donorPositionInPage, FIRST_CHUNK_PLACEHOLDER_CONTENT);
+    assert markerSize == headMarkerSize;
+    page.writeInt(donorPositionInPage + markerSize, keptChunkSize);
+    page.writeByteArray(nextChunkPointerOffset + LONG_SERIALIZED_SIZE, content, 0, keptChunkSize);
+
+    releaseBytesAfter(page, recordCountInPage, donorPositionInPage + footprint, released, pageOccupiedInBytes,
+            freeTailInPage);
+
+    carryOffPageFingerprints(fingerprintsToCarry);
+
+    if (LogManager.instance().isLoggable(this, Level.FINE))
+      LogManager.instance().log(this, Level.FINE,
+              "Turned the placeholder content at offset %d of page %s into a chunk chain to release %d bytes (threadId=%d)",
+              donorPositionInPage, page, released, Thread.currentThread().threadId());
+    return released;
+  }
+
+  /**
+   * Moves everything stored from {@code from} to the end of the page's content {@code released} bytes to the left,
+   * fixes the slot-table offsets of the records that moved and hands the bytes to the free tail: the second half of
+   * every donor above, whose own footprint just shrank by {@code released} bytes ending at {@code from}.
+   */
+  private void releaseBytesAfter(final MutablePage page, final short recordCountInPage, final int from, final int released,
+                                 final int pageOccupiedInBytes, final int freeTailInPage) throws IOException {
+    if (pageOccupiedInBytes > from)
+      page.move(from, from - released, pageOccupiedInBytes - from);
+
+    for (int pos = 0; pos < recordCountInPage; ++pos) {
+      final int recordPositionInPage = getRecordPositionInPage(page, pos);
+      if (recordPositionInPage >= from && recordPositionInPage < pageOccupiedInBytes)
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + pos * INT_SERIALIZED_SIZE, recordPositionInPage - released);
+    }
+
+    updatePageStatistics(page, freeTailInPage, released);
+  }
+
+  /**
+   * The records of this bucket the current transaction took for update with an off-page fingerprint that still
+   * describes them, taken right before one of this transaction's own writes changes the part of a record kept off its
+   * page (#10859): shrinking a continuation chunk or a placeholder's content head, or turning a placeholder's content
+   * into a chunk chain. Such a write is not a concurrent modification, but the fingerprint taken at {@code save()}
+   * cannot tell: compared at commit it would refuse the update of that record - for a placeholder's content with a
+   * {@link com.arcadedb.exception.ConcurrentModificationException}, which a retry meets again. A fingerprint that no
+   * longer matches here was already changed by another transaction, and is left as it is so the commit still says so.
+   *
+   * @return the records to {@link #carryOffPageFingerprints carry}, or null when there is none.
+   */
+  private RID[] offPageFingerprintsStillCurrent() throws IOException {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null)
+      return null;
+
+    final RID[] fingerprinted = tx.getOffPageFingerprintedRecords(fileId);
+    if (fingerprinted == null)
+      return null;
+
+    int current = 0;
+    for (final RID rid : fingerprinted) {
+      final Long captured = tx.getOffPageFingerprint(rid);
+      if (captured != null && captured == offPageContentFingerprint(rid, recordPageInTransaction(rid), tx.isSlotMergeEnabled()))
+        fingerprinted[current++] = rid;
+    }
+    return current == 0 ? null : Arrays.copyOf(fingerprinted, current);
+  }
+
+  /** Re-takes, after this transaction's own write, the fingerprints {@link #offPageFingerprintsStillCurrent} vouched for. */
+  private void carryOffPageFingerprints(final RID[] rids) throws IOException {
+    if (rids == null)
+      return;
+
+    final TransactionContext tx = database.getTransaction();
+    for (final RID rid : rids)
+      tx.setOffPageFingerprint(rid, offPageContentFingerprint(rid, recordPageInTransaction(rid), tx.isSlotMergeEnabled()));
+  }
+
+  /** The page holding {@code rid}'s slot, as the current transaction sees it, without taking it for modification. */
+  private BasePage recordPageInTransaction(final RID rid) throws IOException {
+    return database.getTransaction()
+            .getPage(new PageId(database, fileId, (int) (rid.getPosition() / maxRecordsInPage)), pageSize);
+  }
+
+  /**
    * Highest content offset in use in {@code page}, or -1 when no slot below {@code totalRecords} holds one. A 0
    * entry in the record table is a hole left by a delete, not a record at content offset 0 (the page header lives
    * there), so it is skipped - see {@link #contentEndOffset}.
@@ -7277,8 +8275,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
-   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param multiPageRecord true for a CONTINUATION chunk of a multi-page record, which may never be given position 0 of the
+   *                        bucket (slot 0 of page 0): a next-chunk pointer of 0 means "no next chunk", so a chunk there
+   *                        would be linked with the end-of-chain sentinel and cut off the chain (#10701). The rule lives
+   *                        here and in {@link #getFreeSpaceInPage} - under every path of {@link #findAvailableSpace} -
+   *                        rather than beside any one of them.
    */
   private PageAnalysis getAvailableSpaceInPage(final int pageNumber, final int spaceNeeded, final boolean multiPageRecord)
           throws IOException {
@@ -7287,7 +8288,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     result.totalRecordsInPage = result.page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     if (result.totalRecordsInPage > 0) {
-      getFreeSpaceInPage(result);
+      getFreeSpaceInPage(result, multiPageRecord);
 
       if (!result.createNewPage && result.spaceAvailableInCurrentPage > -1) {
         if (spaceNeeded + SPARE_SPACE_FOR_GROWTH > result.spaceAvailableInCurrentPage)
@@ -7306,7 +8307,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return result;
   }
 
-  private void getFreeSpaceInPage(final PageAnalysis pageAnalysis) throws IOException {
+  /**
+   * @param multiPageRecord true for a continuation chunk: the slot offered is then never position 0 of the bucket (#10701),
+   *                        whichever way it was found - the record-table summary of #10612, the full walk, or the fallback
+   *                        to a new slot at the end of the table. The summary itself keeps describing the page as it is,
+   *                        hole at slot 0 included, so an ordinary record still reuses that hole.
+   */
+  private void getFreeSpaceInPage(final PageAnalysis pageAnalysis, final boolean multiPageRecord) throws IOException {
     if (pageAnalysis.totalRecordsInPage >= maxRecordsInPage) {
       pageAnalysis.createNewPage = true;
       return;
@@ -7316,28 +8323,86 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     pageAnalysis.lastRecordPositionInPage = -1;
     pageAnalysis.newRecordPositionInPage = -1;
 
-    for (int i = 0; i < pageAnalysis.totalRecordsInPage; i++) {
+    final int totalRecords = pageAnalysis.totalRecordsInPage;
+    final TransactionContext tx = database.getTransaction();
+    final int bucketId = file.getFileId();
+    final long firstPositionOfPage = ((long) pageAnalysis.page.getPageId().getPageNumber()) * maxRecordsInPage;
+
+    // A page this transaction keeps inserting into, and that no write touched since its record table was last summarized (the
+    // summary is also restated by every insert it describes): the highest record offset is known, and the search for a slot to
+    // reuse picks up where it stopped, so the slots of the page are read once per transaction however many records it takes
+    // (#10612). The slots below the one it stopped at are live, or holes this transaction deleted and may not reuse.
+    final MutablePage ownPage = pageAnalysis.page instanceof MutablePage mp ? mp : null;
+    if (ownPage != null && ownPage.hasSlotScan(totalRecords)) {
+      final int from = ownPage.getSlotScanFirstFreeSlot();
+      int slot = from;
+      while (slot < totalRecords && (getRecordPositionInPage(pageAnalysis.page, slot) != 0
+              || tx.isDeletedInTransaction(bucketId, firstPositionOfPage + slot)))
+        slot++;
+      if (slot > from) {
+        insertSlotsRead.addAndGet(Math.min(totalRecords, slot + 1) - from);
+        ownPage.advanceSlotScan(slot);
+      }
+
+      pageAnalysis.availablePositionIndex = multiPageRecord ? slotForContinuationChunk(pageAnalysis, slot) : slot;
+      pageAnalysis.lastRecordPositionInPage = ownPage.getSlotScanLastPosition();
+      pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
+      pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
+      return;
+    }
+
+    int firstFreeSlot = -1;
+    for (int i = 0; i < totalRecords; i++) {
       final int recordPositionInPage = getRecordPositionInPage(pageAnalysis.page, i);
       if (recordPositionInPage == 0) {
-        // Check if this position was deleted in the current transaction
-        final RID potentialRID = new RID(file.getFileId(),
-                ((long) pageAnalysis.page.getPageId().getPageNumber()) * maxRecordsInPage + i);
-
-        if (!database.getTransaction().isDeletedInTransaction(potentialRID)) {
-          // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD (from previous transactions only)
-          if (pageAnalysis.availablePositionIndex == -1)
-            pageAnalysis.availablePositionIndex = i;
-        }
+        // REUSE THE FIRST AVAILABLE POSITION FROM DELETED RECORD (from previous transactions only: a position deleted in the
+        // current transaction is not reused by it)
+        if (firstFreeSlot == -1 && !tx.isDeletedInTransaction(bucketId, firstPositionOfPage + i))
+          firstFreeSlot = i;
       } else if (recordPositionInPage > pageAnalysis.lastRecordPositionInPage)
         pageAnalysis.lastRecordPositionInPage = recordPositionInPage;
     }
 
-    if (pageAnalysis.availablePositionIndex == -1)
-      // USE NEW POSITION
-      pageAnalysis.availablePositionIndex = pageAnalysis.totalRecordsInPage;
+    insertSlotsRead.addAndGet(totalRecords);
+
+    // NO HOLE TO REUSE: USE NEW POSITION
+    pageAnalysis.availablePositionIndex = firstFreeSlot == -1 ? totalRecords : firstFreeSlot;
+
+    if (ownPage != null)
+      ownPage.rememberSlotScan(totalRecords, pageAnalysis.lastRecordPositionInPage, pageAnalysis.availablePositionIndex,
+              PAGE_RECORD_TABLE_OFFSET + totalRecords * INT_SERIALIZED_SIZE);
+
+    // Screened AFTER the summary is written: the summary is the page's first reusable slot for every later caller, and slot 0
+    // stays a perfectly good slot for anything but a continuation chunk.
+    if (multiPageRecord)
+      pageAnalysis.availablePositionIndex = slotForContinuationChunk(pageAnalysis, pageAnalysis.availablePositionIndex);
 
     pageAnalysis.newRecordPositionInPage = contentEndOffset(pageAnalysis.page, pageAnalysis.lastRecordPositionInPage);
     pageAnalysis.spaceAvailableInCurrentPage = pageAnalysis.page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage;
+  }
+
+  /**
+   * The slot a continuation chunk takes on the analysed page, given the one any other record would take (#10701). Only
+   * position 0 of the bucket is refused - it is the value a next-chunk pointer uses for "no next chunk" - and then the next
+   * reusable hole is taken (a slot freed by an earlier transaction; one this transaction freed is not reused, as in the
+   * walk), or a new slot at the end of the record table when there is none.
+   */
+  private int slotForContinuationChunk(final PageAnalysis pageAnalysis, final int slot) throws IOException {
+    if (slot != 0 || pageAnalysis.page.getPageId().getPageNumber() != 0)
+      return slot;
+
+    // Rescans from slot 1 rather than resuming where the caller's search stopped: that search stopped AT slot 0, so there is
+    // nothing to resume, and this runs only on page 0 with slot 0 free - once per such allocation, never per slot of a scan.
+    final int totalRecords = pageAnalysis.totalRecordsInPage;
+    final TransactionContext tx = database.getTransaction();
+    final int bucketId = file.getFileId();
+    int next = 1;
+    while (next < totalRecords && (getRecordPositionInPage(pageAnalysis.page, next) != 0 || tx.isDeletedInTransaction(bucketId,
+            next)))
+      next++;
+    // Slots read: 1..next when the walk stopped on a free slot (next of them), 1..totalRecords-1 when it ran off the table.
+    insertSlotsRead.addAndGet(Math.min(totalRecords, next + 1) - 1);
+    return next;
   }
 
   /**
@@ -7347,8 +8412,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if no page has enough space, use the last page
    * 4. if the last page is full, create a new page
    *
-   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
-   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param multiPageRecord true for a continuation chunk of a multi-page record: no path of this method then offers position 0
+   *                        of the bucket, the next-chunk pointer's "no next chunk" value (#10701). Every path asks
+   *                        {@link #getAvailableSpaceInPage}, which is where that rule is applied.
    * @param avoidPageNumber a page this allocation may NOT use, or -1 for none (#6175). Used by the continuation
    *                        chunks of a multi-page record to keep off the page holding that record's HEAD chunk when
    *                        the caller tracked that slot for the disjoint-slot merge: a continuation chunk is written
@@ -7362,7 +8428,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private PageAnalysis findAvailableSpace(final int currentPageId, final int spaceNeeded, final int txPageCounter,
                                           final boolean multiPageRecord, final int avoidPageNumber)
           throws IOException {
-    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal()) {
+    // #10547: a transaction that asked to append skips the search, which runs under the bucket-wide monitor below
+    if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.MEDIUM.ordinal() && !database.getTransaction().isAppendOnlyInserts()) {
       synchronized (freeSpaceInPages) {
         relistQueuedPages();
         if (freeSpaceInPages.isEmpty())
@@ -7391,9 +8458,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       avoidPageNumber);
           }
 
-          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0)
+          if (bestPageAnalysis == null && (gatherTruncated || gatherPagesLeftInLap > 0 || unlistedRoomFrom >= 0)
               && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS) {
-            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
+            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED (OR #10709, THE FULL MAP
+            // TURNED ROOM AWAY): LOOK THERE BEFORE GROWING
             gatherPageStatistics();
             if (!freeSpaceInPages.isEmpty()) {
               bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord, avoidPageNumber);
@@ -7425,8 +8493,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @param multiPageRecord if true, avoid returning record 0 if available. This is a special case because the record 0 (first record in bucket)
-   *                        as next pointer was used since the beginning to indicate the end of a record, before recycling was available.
+   * @param multiPageRecord true for a continuation chunk: see {@link #findAvailableSpace(int, int, int, boolean, int)}.
    * @param avoidPageNumber a page this allocation may NOT use, or -1 for none: see
    *                        {@link #findAvailableSpace(int, int, int, boolean, int)}.
    */
@@ -7505,10 +8572,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               freeSpaceInPages.put(pageId, pageAnalysis.spaceAvailableInCurrentPage);
           }
 
-          if (multiPageRecord && pageAnalysis.page.pageId.getPageNumber() == 0 && pageAnalysis.availablePositionIndex == 0)
-            // AVOID REUSING THE FIRST RECORD IF IT'S A MULTI-PAGE RECORD
-            continue;
-
           bestPageAnalysis = pageAnalysis;
           break;
         } else if (pageAnalysis.spaceAvailableInCurrentPage > -1 && pageAnalysis.spaceAvailableInCurrentPage < pageStats) {
@@ -7545,6 +8608,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return gatherPagesRead.get();
   }
 
+  /** How many record-table slots the inserts of this bucket read to find where to put a record since it was opened. Package-private: for tests only. */
+  long getInsertSlotsReadForTesting() {
+    return insertSlotsRead.get();
+  }
+
+  /**
+   * The slot the allocator would offer on {@code pageNumber} to a record of one byte, or -1 when it would open a new page
+   * instead (#10701). {@code multiPageRecord} is what every continuation chunk passes. Must run inside a transaction. Runs the
+   * allocator's real page analysis, side effects included: on a page the transaction already holds for modification it writes
+   * or advances the #10612 record-table summary exactly as an allocation would. Package-private: for tests only.
+   */
+  int getSlotOfferedInPageForTesting(final int pageNumber, final boolean multiPageRecord) {
+    try {
+      final PageAnalysis analysis = getAvailableSpaceInPage(pageNumber, 1, multiPageRecord);
+      return analysis.createNewPage ? -1 : analysis.availablePositionIndex;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot analyze page " + pageNumber + " of bucket " + getName(), e);
+    }
+  }
+
   /** Overrides how many pages one gather scan reads at most. Package-private: for tests only. */
   void setGatherPagesPerScanForTesting(final int pages) {
     gatherPagesPerScan = pages;
@@ -7558,6 +8641,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   void expireGatherThrottleForTesting() {
     if (timeOfLastStats != 0L)
       timeOfLastStats = 1L;
+  }
+
+  /**
+   * The opposite of {@link #expireGatherThrottleForTesting()}: starts the throttle between two gather scans again, as if a scan
+   * had just run, so a test does not depend on how long its own setup took (#10709). A bucket that never scanned keeps its
+   * first-run state. Package-private: for tests only.
+   */
+  void restartGatherThrottleForTesting() {
+    if (timeOfLastStats != 0L)
+      timeOfLastStats = System.currentTimeMillis();
+  }
+
+  /** The lowest page whose room the full free-space map turned away, -1 for none (#10709). Package-private: for tests only. */
+  int getUnlistedRoomFromForTesting() {
+    return unlistedRoomFrom;
+  }
+
+  /** The page the next gather scan starts at (#8660, #10709). Package-private: for tests only. */
+  int getGatherResumePageForTesting() {
+    synchronized (freeSpaceInPages) {
+      return gatherResumePage;
+    }
   }
 
   /** The pages the free-space map currently lists. Package-private: for tests only. */
@@ -7583,7 +8688,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // #8660: a scan cut short by the entry cap left pages unvisited, so the next one is due whatever the clock and the change
     // counter say. It cannot loop on a bucket with nothing to offer: the cursor moves on, and a scan that stops without filling
     // the map (at the end of its lap, or on its page budget) goes back to being throttled.
-    final boolean resuming = gatherTruncated;
+    // #10709: so is one asked after the full map turned room away, which only a scan can list again
+    final boolean resuming = gatherTruncated || unlistedRoomFrom >= 0;
     if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
       return;
 
@@ -7615,6 +8721,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final int pagesThisScan = Math.min(gatherPagesLeftInLap, gatherPagesPerScan);
           gatherTruncated = false;
 
+          // #10709: the scan starts at the room the full map turned away, the room it is asked for. A lap goes round the whole
+          // file wherever it starts, so it still visits every page. The cursor is moved there before anything is read: a scan
+          // that fails backs off like any other (below) and the next one, once the timeout is over, still starts at that room
+          final int roomFrom = unlistedRoomFrom;
+          unlistedRoomFrom = -1;
+          if (roomFrom >= 0 && roomFrom < pagesToScan)
+            gatherResumePage = roomFrom;
           int pageId = gatherResumePage < pagesToScan ? gatherResumePage : 0;
           int scanned = 0;
           while (scanned < pagesThisScan) {
@@ -7764,7 +8877,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (lowestPageId[0] > -1 && lowestPageSpace[0] < newSpace) {
               freeSpaceInPages.remove(lowestPageId[0], -1);
               freeSpaceInPages.put(pageId, newSpace);
-            }
+              roomTurnedAway(lowestPageId[0]);
+            } else
+              roomTurnedAway(pageId);
             // Either the evicted page or this one has room the map no longer lists: only a scan finds it again, whatever the
             // write was. Cheap while the map stays full: a gather stops at the first page then, and the slices of the lap
             // only run once the map has room for what they find (#9575)
@@ -7774,6 +8889,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       }
     }
+  }
+
+  /** Notes that the full free-space map could not list the room of {@code pageNumber} (#10709). Holds the map's monitor. */
+  private void roomTurnedAway(final int pageNumber) {
+    if (unlistedRoomFrom < 0 || pageNumber < unlistedRoomFrom)
+      unlistedRoomFrom = pageNumber;
   }
 
   /**

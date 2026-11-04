@@ -40,6 +40,19 @@ public enum TimeSeriesCodec {
     return code;
   }
 
+  /**
+   * Whether this codec stores numbers: the two codecs the sealed layer decodes as a numeric column, and therefore
+   * the ones whose column carries a {@code {min, max, sum, count}} statistics entry in a sealed block header.
+   * <p>
+   * ONE definition (issue #10878). The block format stores those statistics positionally with no column index, so
+   * every writer (compaction, downsampling, block rebuilds), the reader, the DEEP integrity check and the
+   * aggregation push-down have to agree on exactly which columns contribute one, or the statistics land on the
+   * wrong columns. Adding a numeric codec means adding it here, and nowhere else.
+   */
+  public boolean isNumeric() {
+    return this == GORILLA_XOR || this == SIMPLE8B;
+  }
+
   public static TimeSeriesCodec fromCode(final int code) {
     for (final TimeSeriesCodec codec : values())
       if (codec.code == code)

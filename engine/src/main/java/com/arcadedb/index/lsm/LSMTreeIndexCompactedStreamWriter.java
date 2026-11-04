@@ -73,6 +73,8 @@ final class LSMTreeIndexCompactedStreamWriter {
   private Object[]        lastPageMaxKey;
   private Object[]        lastPageMaxConvertedKey;
   private List<MutablePage> newPagesInSeries;
+  /** Entries appended to the leaf pages over the writer's whole life, whatever the series they landed in. */
+  private long              writtenEntries;
 
   LSMTreeIndexCompactedStreamWriter(final LSMTreeIndex mainIndex, final LSMTreeIndexCompacted compactedIndex) {
     this.mainIndex = mainIndex;
@@ -135,6 +137,7 @@ final class LSMTreeIndexCompactedStreamWriter {
       }
       newPagesInSeries.addAll(newPages);
     }
+    ++writtenEntries;
 
     lastPageMaxKey = keys;
     lastPageMaxConvertedKey = convertedKeys;
@@ -229,6 +232,10 @@ final class LSMTreeIndexCompactedStreamWriter {
   void finishIfActive() throws IOException, InterruptedException {
     if (rootPage != null)
       finishSeries();
+  }
+
+  long getWrittenEntries() {
+    return writtenEntries;
   }
 
   int getRootEntryCount() {

@@ -18,7 +18,15 @@
  */
 package com.arcadedb.remote;
 
-public class RemoteException extends RuntimeException {
+import com.arcadedb.exception.ArcadeDBException;
+
+/**
+ * A failure of a remote operation the driver has no more specific type for. An {@link ArcadeDBException}, like every
+ * exception the engine raises (issue #11045): a {@code catch (ArcadeDBException)} written against the database interfaces
+ * catches the same failures whether the database is embedded or remote, including one whose type the server named but this
+ * client cannot rebuild (a class of a newer server, or of a plugin).
+ */
+public class RemoteException extends ArcadeDBException {
   public RemoteException(final String message) {
     super(message);
   }

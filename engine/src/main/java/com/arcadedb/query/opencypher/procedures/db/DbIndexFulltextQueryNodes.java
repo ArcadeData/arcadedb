@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -43,9 +42,9 @@ import java.util.stream.Stream;
  * accepted by the SQL {@code SEARCH_INDEX()} function - there is no separate "index name" concept to reconcile.
  * </p>
  * <p>
- * The trailing {@code options} map is optional and carries {@code skip} and {@code limit}; see
- * {@link FullTextQueryOptions} for the keys, and for why the ones ArcadeDB cannot honour are refused by name
- * instead of ignored (issue #8103).
+ * The trailing {@code options} map is optional and carries {@code skip} and {@code limit}, and {@code where} and
+ * {@code filter} to restrict the matches before they apply (issue #11069); see {@link FullTextQueryOptions} for the keys,
+ * and for why the ones ArcadeDB cannot honour are refused by name instead of ignored (issue #8103).
  * </p>
  * <p>
  * Example (Neo4j-compatible):
@@ -101,22 +100,25 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
 
     final String indexName = args[0].toString();
     final String queryText = args[1].toString();
-    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args);
+    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args, context);
 
-    final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(context.getDatabase(), indexName);
+    final List<TypeIndex> typeIndexes = FullTextIndexes.resolve(context.getDatabase(), indexName);
 
-    final DocumentType type = context.getDatabase().getSchema().getType(typeIndex.getTypeName());
-    if (type instanceof EdgeType)
-      throw new CommandSQLParsingException(
-          DISPLAY_NAME + "(): index '" + indexName + "' is a full-text index on relationship type '"
-              + type.getName() + "', use db.index.fulltext.queryRelationships() instead");
+    for (final TypeIndex typeIndex : typeIndexes) {
+      final DocumentType type = context.getDatabase().getSchema().getType(typeIndex.getTypeName());
+      if (type instanceof EdgeType)
+        throw new CommandSQLParsingException(
+            DISPLAY_NAME + "(): index '" + indexName + "' is a full-text index on relationship type '"
+                + type.getName() + "', use db.index.fulltext.queryRelationships() instead");
+    }
 
     // Asked for no rows: the index name and the query string have still been validated above, but there is nothing
     // left for the search itself to contribute.
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit, WorkGuard.forCommandDeadline(context)), "node",
-        rid -> rid.asDocument(true)).stream();
+    return options.rows(
+        (limit, filter) -> FullTextIndexes.search(typeIndexes, queryText, limit, WorkGuard.forCommandDeadline(context), filter),
+        "node", rid -> rid.asDocument(true)).stream();
   }
 }

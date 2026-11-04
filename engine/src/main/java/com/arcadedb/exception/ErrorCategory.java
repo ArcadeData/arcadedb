@@ -33,7 +33,9 @@ import com.arcadedb.index.fulltext.FullTextQueryParseException;
  * <p>
  * The HTTP handler and the Bolt executor predate this enum and keep their own ladders; they encode
  * protocol-specific ordering this enum does not model, and their behaviour is pinned by the regression suites of
- * several shipped issues.
+ * several shipped issues. A ladder of its own is no exemption from a verdict this enum draws, though: HTTP answers
+ * {@link #UNAVAILABLE} and {@link #DATABASE_NOT_FOUND} apart (503 with the state's label, and 404), as every other
+ * protocol does (issue #10872).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -106,6 +108,31 @@ public enum ErrorCategory {
   TERMINATED,
 
   /**
+   * The database exists and cannot serve the request NOW: a restore holds its name, {@code close database} closed it, it is being
+   * dropped, an interrupted HA snapshot install left it mid-swap ({@link DatabaseNotAvailableException}, issue #10553). Raised where the
+   * name is resolved, before any work of the request, so nothing of it ran. Also the handle a request had already resolved being closed
+   * under it ({@link DatabaseIsClosedException}, issue #10692), except the HA reinstall's close-for-reopen, which is {@link #RETRY}.
+   * The operator caused it and it clears without the caller changing anything, which is what separates it from the three it is easily
+   * mistaken for: not {@link #NOT_FOUND}, because the database is there (and the gRPC client rebuilds that as a missing record); not
+   * {@link #RETRY}, which means "run the transaction again" and is decided on the conflict of a commit; not {@link #SERVER}, because
+   * nothing is broken and it is not worth a stack trace in the log.
+   * <p>
+   * {@link DatabaseNotFoundException}, the name that is no database at all, is its subtype and NOT in this category but in
+   * {@link #DATABASE_NOT_FOUND}: it is permanent and the caller's to correct.
+   */
+  UNAVAILABLE,
+
+  /**
+   * The caller named a database this server does not have ({@link DatabaseNotFoundException}, issue #10795): permanent, and the
+   * caller's to correct - no retry, no wait and no operator action on this server makes the same request succeed. The opposite
+   * verdict of {@link #UNAVAILABLE}, although its type extends the one {@link #UNAVAILABLE} is decided on; and not {@link #NOT_FOUND},
+   * a missing RECORD, which is what the gRPC client rebuilds that status as when no trailer names the type. It used to fall through
+   * to {@link #SERVER}, so every protocol that asks this enum reported a mistyped database name as a server fault ({@code XX000} on
+   * Postgres, {@code INTERNAL} on gRPC, an uncoded error on MongoDB) and logged it with a stack trace.
+   */
+  DATABASE_NOT_FOUND,
+
+  /**
    * Anything else: the server, not the caller, is at fault.
    */
   SERVER;
@@ -124,6 +151,14 @@ public enum ErrorCategory {
       new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
       new Rule(QueryHeapBudgetExceededException.class, RETRY),
       new Rule(QueryAdmissionException.class, RETRY),
+      // Right above DatabaseNotAvailableException, which it extends and whose verdict it reverses: the name is no database (issue #10795)
+      new Rule(DatabaseNotFoundException.class, DATABASE_NOT_FOUND),
+      // After RETRY, which a driver acts on first, and before everything that classifies the CALLER: a wrapper that parses or
+      // validates (GraphQL, the query engines) must not relabel a database the server holds as the caller's mistake (issue #10553)
+      new Rule(DatabaseNotAvailableException.class, UNAVAILABLE),
+      // After DatabaseIsReopeningException, its subtype, which stays RETRY: a handle closed under a request by a CLOSE DATABASE, a
+      // restore, a DROP or a shutdown is a database the server takes away and gives back, not a server fault (issue #10692)
+      new Rule(DatabaseIsClosedException.class, UNAVAILABLE),
       new Rule(ArithmeticErrorException.class, ARITHMETIC),
       new Rule(DuplicatedKeyException.class, DUPLICATED_KEY),
       // before SCHEMA, which it extends: the name is held there, not missing (issue #10153)
@@ -135,12 +170,21 @@ public enum ErrorCategory {
       new Rule(FullTextQueryParseException.class, PARSING),
       new Rule(ValidationException.class, VALIDATION),
       new Rule(QueryNotIdempotentException.class, VALIDATION),
-      new Rule(InvalidPropertyTypeException.class, VALIDATION),
+      // every runtime type error, InvalidPropertyTypeException among them (issue #11211)
+      new Rule(TypeMismatchException.class, VALIDATION),
       new Rule(IllegalArgumentException.class, VALIDATION),
       new Rule(TimeoutException.class, TIMEOUT) };
 
-  /** A type that, found anywhere along a cause chain, decides the chain's category. */
+  /**
+   * A type that, found anywhere along a cause chain, decides the chain's category. A narrower type that is the opposite verdict
+   * although it extends {@code type} (a {@link DatabaseNotFoundException} is permanent, the {@link DatabaseNotAvailableException}
+   * it extends clears by itself) is a rule of its own, above it.
+   */
   private record Rule(Class<? extends Throwable> type, ErrorCategory category) {
+    /** The frame of the chain that makes this rule decide, or {@code null} when the rule does not apply to it. */
+    Throwable find(final Throwable error) {
+      return CauseChain.find(error, type);
+    }
   }
 
   /**
@@ -154,10 +198,11 @@ public enum ErrorCategory {
    * failures in cannot relabel an arithmetic error as invalid syntax, and before any test on
    * {@link CommandExecutionException} would be, since {@link ArithmeticErrorException} extends it.
    * <p>
-   * {@link InvalidPropertyTypeException} is named explicitly rather than left to the
+   * {@link TypeMismatchException} is named explicitly rather than left to the
    * {@link CommandExecutionException} fall-through, because it extends that type and would otherwise land in
-   * {@link #SERVER}. It used to be an {@link IllegalArgumentException} and so already answered {@link #VALIDATION};
-   * naming it keeps that verdict across the change (issue #7729).
+   * {@link #SERVER}. Its subtype {@link InvalidPropertyTypeException} used to be an {@link IllegalArgumentException}
+   * and so already answered {@link #VALIDATION}; naming the parent keeps that verdict (issue #7729) and gives it to
+   * every other runtime type error, such as a property read off a list (issue #11211).
    * <p>
    * {@link IllegalArgumentException} is the one entry that is not self-evidently the caller's fault: the engine
    * raises it both for bad input and for internal invariant violations, so classifying it as {@link #VALIDATION}
@@ -186,7 +231,11 @@ public enum ErrorCategory {
    * {@link DatabaseIsReopeningException} rides with them too: the handle the request was using was closed so the same
    * database could be reopened under its name (an HA snapshot reinstall), so the request re-issued resolves the reopened
    * database and succeeds. Only that subtype: a plain {@link DatabaseIsClosedException} is a {@code DROP}, a
-   * {@code CLOSE DATABASE} or a shutdown, which no retry fixes, and stays {@link #SERVER} (issue #8199).
+   * {@code CLOSE DATABASE}, a restore or a shutdown, which an immediate retry of the same transaction does not fix (issue #8199).
+   * It is {@link #UNAVAILABLE} instead (issue #10692): the operator took the database away and an {@code open database}, the end
+   * of the restore or the server coming back gives it back, without the caller changing anything. It used to fall through to
+   * {@link #SERVER}, so a Postgres client was told {@code XX000} internal_error, with the text concealed in production mode,
+   * for an operator's cold backup, while Bolt answered {@code DatabaseUnavailable} for the same handle.
    * <p>
    * {@link QueryHeapBudgetExceededException} rides with them for the same reason: the query was refused heap because
    * the queries running at the same time hold the budget they all share, and fits it on its own, so the same request
@@ -196,6 +245,11 @@ public enum ErrorCategory {
    * {@link QueryAdmissionException} rides with it too: the query admission gate did not start the query because the
    * server was busy, so nothing of it ran and the same request re-issued later can succeed (issue #9518).
    * <p>
+   * {@link #UNAVAILABLE} is decided right after them and before everything that blames the caller, so a wrapper that parses
+   * or validates cannot relabel a database the server holds. {@link DatabaseNotFoundException} extends the type it is decided on and
+   * is the opposite verdict, so {@link #DATABASE_NOT_FOUND} is decided right above it (issues #10553, #10795): wherever the
+   * {@link DatabaseNotFoundException} sits in the chain, the name is no database, and no wrapper changes that.
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -204,7 +258,7 @@ public enum ErrorCategory {
    */
   public static ErrorCategory of(final Throwable error) {
     for (final Rule rule : RULES)
-      if (CauseChain.contains(error, rule.type()))
+      if (rule.find(error) != null)
         return rule.category();
     return SERVER;
   }
@@ -221,7 +275,7 @@ public enum ErrorCategory {
    */
   public static Throwable classifiedCause(final Throwable error) {
     for (final Rule rule : RULES) {
-      final Throwable found = CauseChain.find(error, rule.type());
+      final Throwable found = rule.find(error);
       if (found != null)
         return found;
     }

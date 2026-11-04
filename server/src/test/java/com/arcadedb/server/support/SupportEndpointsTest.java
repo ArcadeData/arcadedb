@@ -721,7 +721,7 @@ class SupportEndpointsTest extends BaseGraphServerTest {
           new JSONObject().put("language", write[0]).put("command", write[1]).toString());
       assertThat(r.status()).as(write[1]).isGreaterThanOrEqualTo(400);
     }
-    assertThat(getServer(0).getDatabase(getDatabaseName()).getSchema().existsType("SupportRequestProbe")).isFalse();
+    assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).getSchema().existsType("SupportRequestProbe")).isFalse();
     final Resp read = call("POST", "/api/v1/query/" + getDatabaseName(),
         new JSONObject().put("language", "sql").put("command", "SELECT 1 AS n").toString());
     assertThat(read.status()).isEqualTo(200);

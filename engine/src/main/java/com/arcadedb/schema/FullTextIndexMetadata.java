@@ -18,9 +18,11 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -29,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Metadata class for full-text indexes, storing Lucene analyzer configuration.
@@ -78,6 +81,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public static final float  DEFAULT_BM25_K1 = 1.2f;
   /** Default BM25 document-length normalization parameter. */
   public static final float  DEFAULT_BM25_B  = 0.75f;
+
+  /**
+   * What {@link #getLengthSignature()} says about the rule that turns the tokens of a document into a length while no index has
+   * bound the real one (see {@link #bindLengthRule}): a metadata read on its own, without the index that owns the analyzer.
+   */
+  private static final String UNBOUND_LENGTH_RULE = "-";
 
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
@@ -142,9 +151,25 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // or a save that fails after serializing leaves them unsaved, because only a completed write marks a generation saved
   private final AtomicLong countersGeneration      = new AtomicLong(0L);
   private volatile long    countersSavedGeneration = 0L;
-  // Set when a scan result could not be proven exact: the next drift check must rescan even if the document counts agree
+  // Set when the counters are known to be wrong (a clamp, a scan result that could not be proven exact, a delta that could not be
+  // applied): the next drift check must rescan even if the document counts agree. Cleared only by an exact scan. PERSISTED with the
+  // pair it speaks against (ft_rescanRequired, issue #10735): the reloaded pair passes every other check, so a proof kept in memory
+  // only was lost by the first restart. Every arming bumps countersGeneration AFTER setting it, so a save that serialized the pair
+  // before the arming stays unsaved and the next one (at the latest, the close) writes it
   private final AtomicBoolean rescanRequired = new AtomicBoolean(false);
   private volatile boolean countersValid = false;
+  // WHAT THE PERSISTED sumDocLength WAS MEASURED WITH (SEE getLengthSignature()). NULL = NOT KNOWN: THE COUNTERS WERE PERSISTED BEFORE
+  // THIS WAS RECORDED, AND NOTHING CAN BE SAID AGAINST THEM, SO THEY ARE TRUSTED AND THE NEXT SAVE RECORDS THE CURRENT ONE (ISSUE #10397)
+  private volatile String  countersMeasuredWith;
+  // WHAT THE ANALYZER THIS INDEX WRITES WITH AND THE RULE THAT COUNTS ITS TOKENS DO, AS THE INDEX THAT OWNS BOTH SAYS IT (SEE
+  // bindLengthRule()). NOT PERSISTED: IT IS DERIVED AGAIN AT EVERY LOAD, WHICH IS WHAT MAKES A CHANGE OF EITHER SHOW. NULL = NO INDEX
+  // HAS BOUND IT
+  private volatile String  lengthRule;
+  // Times a counter was driven below zero and floored there. Each is an arithmetic error the counters cannot repair by themselves:
+  // it arms the rescan, and is counted so an operator can see it happened (issue #10606). Not persisted: it is this session's
+  // diagnostic, while what a clamp proves about the pair is the persisted rescanRequired
+  private final AtomicLong clamps = new AtomicLong(0L);
+  private final AtomicLong lastClampLogged = new AtomicLong(0L);
   // Not persisted (no toJSON/fromJSON): whether the persisted counters have already been checked for staleness against the live
   // data this session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the
   // first BM25 query validates them once (cheap live count) and rebuilds only if they disagree. AtomicBoolean (with CAS) so that
@@ -238,6 +263,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
     this.countersEpoch.set(metadata.getLong("ft_countersEpoch", 0L));
+    this.countersMeasuredWith = metadata.getString("ft_lengthSignature", null);
+    this.rescanRequired.set(metadata.getBoolean("ft_rescanRequired", false));
 
     // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost). Clear first so a fromJSON() on an
     // already-populated instance replaces the per-field config rather than merging stale entries into it (these maps are now
@@ -274,6 +301,19 @@ public class FullTextIndexMetadata extends IndexMetadata {
   @Override
   protected boolean isUserMetadataKey(final String key) {
     return USER_METADATA_KEYS.contains(key) || key.endsWith(ANALYZER_SUFFIX) || key.endsWith(BOOST_SUFFIX);
+  }
+
+  /** The fixed keys and the per-field ones of the fields this definition configures. */
+  @Override
+  protected Set<String> getUserSettingKeys() {
+    if (fieldAnalyzers.isEmpty() && fieldBoosts.isEmpty())
+      return USER_METADATA_KEYS;
+    final Set<String> keys = new HashSet<>(USER_METADATA_KEYS);
+    for (final String field : fieldAnalyzers.keySet())
+      keys.add(field + ANALYZER_SUFFIX);
+    for (final String field : fieldBoosts.keySet())
+      keys.add(field + BOOST_SUFFIX);
+    return keys;
   }
 
   @Override
@@ -413,11 +453,30 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (countersValid) {
       // The pair and its epoch are read together with the writers that move them as a unit (a commit's delta, an adoption), so a
       // save never records a new epoch next to an old pair, nor half of a delta
+      final String measuredWith;
       synchronized (countersLock) {
         metadata.put("ft_totalDocs", totalDocs.get());
         metadata.put("ft_sumDocLength", sumDocLength.get());
         metadata.put("ft_countersEpoch", countersEpoch.get());
+        // What the pair was measured with, read with it: a scan that publishes a new pair publishes its signature under the same
+        // lock, so a save never records the signature of a scan next to the pair from before it
+        measuredWith = countersMeasuredWith;
+        // What is known AGAINST the pair, read with it (issue #10735): a reader of this definition cannot obtain the pair without
+        // also obtaining the proof that it is wrong. Only written when armed, so a sound pair keeps the definition as it was
+        if (rescanRequired.get())
+          metadata.put("ft_rescanRequired", true);
       }
+      // What the pair was measured with, NOT what the index analyzes with now: a save between a change of the analyzer and the
+      // rescan it arms must not record the new one next to the old counters, or no later session would ever find them off.
+      // Counters persisted before the signature existed have none: they are recorded as measured with the current analyzer, so an
+      // analyzer changed between the upgrade and the first save goes unseen. There is nothing to compare them with, and rescanning
+      // every existing index at the upgrade would cost more than the drift it could find
+      // A metadata no index has bound the rule to cannot say what it would measure with, so it records nothing: a made-up signature
+      // would be found off by the first index that does
+      if (measuredWith != null)
+        metadata.put("ft_lengthSignature", measuredWith);
+      else if (lengthRule != null)
+        metadata.put("ft_lengthSignature", getLengthSignature());
       metadata.put("ft_countersValid", true);
     }
     return metadata;
@@ -686,6 +745,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Whether the counters are known to be wrong and the next drift check must rescan whatever the document counts say. Unlike
+   * {@link #consumeRescanRequired()} it leaves the flag armed: only a scan whose result is exact clears it
+   * ({@link #publishScannedCounters}), so a scan that fails or races a writer leaves the proof in place, persisted (issue #10735).
+   */
+  public boolean isRescanRequired() {
+    return rescanRequired.get();
+  }
+
+  /**
    * Atomically claims the one-per-session staleness check: returns true to exactly one caller (which must then run the
    * live-count validation), false to everyone else. Prevents concurrent first-queries from all rescanning the type.
    */
@@ -714,8 +782,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param sumDocLength sum of document lengths
    */
   public void setCounters(final long totalDocs, final long sumDocLength) {
-    this.totalDocs.set(totalDocs);
-    this.sumDocLength.set(sumDocLength);
+    // THE PAIR AND WHAT IT WAS MEASURED WITH MOVE TOGETHER FOR A SAVE (writeToJSON) AND FOR getCountersPair()
+    synchronized (countersLock) {
+      this.totalDocs.set(totalDocs);
+      this.sumDocLength.set(sumDocLength);
+      this.countersMeasuredWith = getLengthSignature();
+    }
     // The volatile write to countersValid below comes AFTER the two counter writes in program order: by the JMM, a reader that
     // observes countersValid == true is guaranteed to also see these counter values (volatile-write / volatile-read edge).
     this.countersValid = true;
@@ -746,15 +818,32 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // sumDocLength first, then totalDocs: same ordering rationale as addDocument()
     final long lenDelta = sumDocLength - lenAtStart;
     final long docsDelta = totalDocs - docsAtStart;
-    final long newLen = this.sumDocLength.updateAndGet(v -> Math.max(0L, v + lenDelta));
-    final long newDocs = this.totalDocs.updateAndGet(v -> Math.max(0L, v + docsDelta));
+    final long newLen;
+    final long newDocs;
+    final boolean clamped;
+    // ONE UNIT FOR A SAVE (writeToJSON), WHICH READS THE PAIR AND WHAT IT WAS MEASURED WITH UNDER THIS LOCK: IT NEVER RECORDS THE
+    // SIGNATURE OF THIS SCAN NEXT TO THE PAIR FROM BEFORE IT
+    synchronized (countersLock) {
+      final long previousLen = this.sumDocLength.getAndUpdate(v -> Math.max(0L, v + lenDelta));
+      final long previousDocs = this.totalDocs.getAndUpdate(v -> Math.max(0L, v + docsDelta));
+      newLen = Math.max(0L, previousLen + lenDelta);
+      newDocs = Math.max(0L, previousDocs + docsDelta);
+      clamped = previousLen + lenDelta < 0L || previousDocs + docsDelta < 0L;
+      // THE SCAN ANALYZED THE CORPUS WITH THE CURRENT ANALYZER, WHATEVER THE COUNTERS WERE MEASURED WITH BEFORE
+      this.countersMeasuredWith = getLengthSignature();
+    }
     this.countersValid = true;
     scans.incrementAndGet();
-    countersGeneration.incrementAndGet();
+    // A delta that took a counter below zero means writers removed more than the counters held while the scan ran. The floor can
+    // make the published pair EQUAL to the scan result by accident (both zero), so the clamp is what says it is not exact
+    if (clamped)
+      noteClamp();
     // Exact only when no writer touched the counters at all: equal net values can hide an add and a remove that cancelled out
-    final boolean exact = mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
+    final boolean exact = !clamped && mutations.get() == mutationsAtStart && newDocs == totalDocs && newLen == sumDocLength;
     this.rescanRequired.set(!exact);
     this.staleChecked.set(exact);
+    // After the flag, so a save that serialized the new pair without its flag records a generation this one supersedes
+    countersGeneration.incrementAndGet();
     return exact;
   }
 
@@ -784,6 +873,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   /**
    * Removes a document from the corpus counters, clamping at zero to stay consistent under at-least-once removals. Thread-safe.
+   * <p>
+   * A clamp that fires is not silent: a removal that took more than the counters held means they were already wrong, and no
+   * counter can repair that from the inside, so it is counted ({@link #getClamps()}) and arms the rescan (issue #10606).
    *
    * @param docLength number of analyzed tokens of the document
    */
@@ -793,8 +885,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // addDocument's bias.
     mutations.incrementAndGet();
     countersGeneration.incrementAndGet();
-    totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
-    sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
+    boolean clamped = totalDocs.getAndUpdate(v -> v > 0 ? v - 1 : v) <= 0L;
+    clamped |= sumDocLength.getAndUpdate(v -> Math.max(0L, v - docLength)) - docLength < 0L;
+    if (clamped) {
+      noteClamp();
+      requireRescan();
+    }
   }
 
   /**
@@ -829,8 +925,30 @@ public class FullTextIndexMetadata extends IndexMetadata {
         clamped |= addClamped(sumDocLength, lengthDelta);
       }
     }
-    if (clamped)
+    if (clamped) {
+      noteClamp();
       requireRescan();
+    }
+  }
+
+  /**
+   * How many times a counter was driven below zero and floored there since this metadata was created. Zero in a healthy corpus:
+   * every one is an arithmetic error (a removal of what was never counted, a length taken out twice) that armed a rescan.
+   */
+  public long getClamps() {
+    return clamps.get();
+  }
+
+  /** A counter was driven below zero and floored: counted, and logged at most once a minute per index. */
+  private void noteClamp() {
+    clamps.incrementAndGet();
+    final long now = System.currentTimeMillis();
+    final long last = lastClampLogged.get();
+    if (now - last > 60_000L && lastClampLogged.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING,
+          "A BM25 corpus counter of the full-text index on '%s' was driven below zero and floored there: the counters were already wrong "
+              + "(a removal of documents or lengths that were never counted). The next search recomputes them; REBUILD INDEX <name> WITH "
+              + "statsOnly = true repairs them on every node", null, typeName);
   }
 
   /**
@@ -887,12 +1005,63 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * What the sum of document lengths depends on besides the documents themselves: the analyzer that tokenizes them for the index
+   * and the rule that counts the tokens. The query analyzer and the per-field analyzers do not take part, because only the index
+   * analyzer measures the length a document adds and removes. An index with no analyzer of its own answers the default one, never
+   * null.
+   * <p>
+   * The class names the analyzer, and {@link #bindLengthRule} adds what the analyzer and the rule actually DO: the name alone cannot
+   * tell an analyzer whose tokenization changed under the same class (a Lucene upgrade), and a version constant would be one more
+   * thing to remember (issue #10606).
+   */
+  public String getLengthSignature() {
+    final String rule = lengthRule;
+    return getIndexAnalyzerClass() + '#' + (rule != null ? rule : UNBOUND_LENGTH_RULE);
+  }
+
+  /**
+   * Binds what the index analyzer and the rule that counts tokens do, derived by the index that owns both (see
+   * {@code FullTextLengthSignature}). This class lives in the schema package, which cannot see the index package, so the index
+   * says it when it is built; every bucket index of the logical index binds the same value. Not persisted: it is derived again at
+   * every load, which is what makes a change of the analyzer, of the library under it or of the rule show against the signature the
+   * counters were saved with.
+   *
+   * @param lengthRule the derived description of the length rule, never null
+   */
+  public void bindLengthRule(final String lengthRule) {
+    this.lengthRule = lengthRule;
+  }
+
+  /**
+   * What the persisted counters were measured with, or the current signature when that was not recorded.
+   */
+  public String getMeasuredWith() {
+    final String measuredWith = countersMeasuredWith;
+    return measuredWith != null ? measuredWith : getLengthSignature();
+  }
+
+  /**
+   * Whether the counters were measured with an analyzer (or a length rule) other than the current one, so the sum of lengths is
+   * wrong whatever the document count says: the half of the persisted pair the live record count cannot vouch for. Counters
+   * persisted before the signature was recorded are trusted: there is nothing to compare them with.
+   */
+  public boolean isMeasuredWithAnotherAnalyzer() {
+    final String measuredWith = countersMeasuredWith;
+    return measuredWith != null && !measuredWith.equals(getLengthSignature());
+  }
+
+  /**
    * Arms the drift check again: the next search compares the live count with the counters and rescans when they disagree, or
    * unconditionally. For a node that knows it missed a change to them.
+   * <p>
+   * The armed state is part of what the schema persists with the pair, so arming dirties the counters even when it moves neither
+   * of them (crash recovery, a delta that could not be applied): otherwise a close before the first search wrote nothing, and the
+   * next session trusted the pair (issue #10735). The generation moves AFTER the flag is set, for the save that races it.
    */
   public void requireRescan() {
     rescanRequired.set(true);
     staleChecked.set(false);
+    countersGeneration.incrementAndGet();
   }
 
   /**
@@ -972,6 +1141,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
       sumDocLength.set(definition.getLong("ft_sumDocLength", 0L));
       totalDocs.set(definition.getLong("ft_totalDocs", 0L));
       countersEpoch.set(epoch);
+      // THE PAIR IS REPLACED WHOLE, SO WHAT IT WAS MEASURED WITH IS TOO: A PAIR WITHOUT A SIGNATURE IS NOT THE ONE THIS NODE FOUND OFF,
+      // AND KEEPING THE SIGNATURE OF THE OLD ONE WOULD RESCAN COUNTERS THE LEADER JUST RECOMPUTED
+      countersMeasuredWith = definition.getString("ft_lengthSignature", null);
+      // AND SO IS WHAT IS KNOWN AGAINST IT (ISSUE #10735): A PAIR THE LEADER KNEW TO BE WRONG IS RESCANNED HERE TOO, AND WHAT THIS NODE
+      // KNEW AGAINST ITS OWN PAIR DOES NOT SPEAK AGAINST THE ONE THAT REPLACES IT
+      rescanRequired.set(definition.getBoolean("ft_rescanRequired", false));
     }
     // Counted as a mutation so a scan racing this adoption does not call its own result exact
     mutations.incrementAndGet();

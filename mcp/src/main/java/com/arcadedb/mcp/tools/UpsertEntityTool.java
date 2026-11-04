@@ -33,6 +33,8 @@ public class UpsertEntityTool {
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "upsert_entity")
+        // Not idempotent: 'setProperties' may rewrite a match key, and the next call with the same keys then creates a new vertex
+        .put("annotations", MCPToolUtils.annotations("Create or update a vertex", false, true, false, false))
         .put("description",
             """
             Create or update a single vertex addressed by a match key, without duplicating it. The record is matched \
@@ -49,7 +51,7 @@ public class UpsertEntityTool {
                     .put("description", "The name of the database"))
                 .put("typeName", new JSONObject()
                     .put("type", "string")
-                    .put("description", "The vertex type. Created automatically if it does not exist"))
+                    .put("description", "The vertex type. Created automatically if it does not exist, when the MCP configuration allows schema changes (allowSchemaChange)"))
                 .put("matchKeys", new JSONObject()
                     .put("type", "object")
                     .put("description", "property:value pairs used as the match/merge key; must be non-empty. Values should be scalars"))

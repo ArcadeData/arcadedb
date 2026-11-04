@@ -27,6 +27,16 @@ on:
         description: "Git ref to BUILD - tag, branch or SHA (e.g. 26.9.1). Empty = the ref this run was dispatched on."
         type: string
         default: ""
+      # The default amd64 binary is built for x86-64-v3 (AVX2/BMI2/FMA) and refuses to start on older
+      # CPUs and on VMs that hide those features (QEMU's qemu64, Proxmox's x86-64-v2-AES, #11253).
+      # This adds a second linux/amd64 binary built with -march=compatibility, which starts on any
+      # x86-64 CPU. It is a release ARCHIVE only (`...-linux-x86_64-compat.tar.gz`), not a Docker
+      # image: the default image keeps its baseline. Always built on a published `release`; opt-in on
+      # a dispatch, and never on the nightly, so it costs no extra runner time on routine runs.
+      include_compat:
+        description: "Also build the linux/amd64 -march=compatibility variant (runs on CPUs below x86-64-v3). Always built on a published release; off by default on a dispatch."
+        type: boolean
+        default: false
       # A dispatch otherwise publishes NOTHING - every outward-facing step here is gated on
       # `github.event_name == 'release'`. That gate is why "Attach to release" shipped broken from
       # #5323 and was only discovered when it lost every native asset of the 26.9.1 release: no
@@ -120,6 +130,14 @@ jobs:
             {"runner":"ubuntu-24.04-arm","os_name":"linux","arch":"arm64","required":true,"linkmode":"mostly-static"},
             {"runner":"windows-latest","os_name":"windows","arch":"amd64","required":false,"linkmode":"dynamic"}
           ]'
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ inputs.include_compat }}" = "true" ]; then
+            # `suffix` names the artifact and the release archive so this leg cannot collide with the
+            # default linux/amd64 one; `march` is passed to native-image through -Dnative.march.
+            include="$(jq -c '. + [{"runner":"ubuntu-latest","os_name":"linux","arch":"amd64","required":false,"linkmode":"musl-static","suffix":"-compat","march":"compatibility"}]' <<<"$include")"
+            echo "linux/amd64 compatibility leg INCLUDED (event=${{ github.event_name }}, include_compat=${{ inputs.include_compat }})"
+          else
+            echo "linux/amd64 compatibility leg EXCLUDED (scheduled run or ordinary dispatch; tick include_compat or publish a release to build it)"
+          fi
           if [ "${{ github.event_name }}" = "release" ] || [ "${{ inputs.include_macos }}" = "true" ]; then
             include="$(jq -c '. + [{"runner":"macos-15-xlarge","os_name":"macos","arch":"arm64","required":false,"linkmode":"dynamic"}]' <<<"$include")"
             echo "macOS arm64 leg INCLUDED (event=${{ github.event_name }}, include_macos=${{ inputs.include_macos }})"
@@ -130,7 +148,7 @@ jobs:
           echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
 
   build:
-    name: ${{ matrix.os_name }}-${{ matrix.arch }}
+    name: ${{ matrix.os_name }}-${{ matrix.arch }}${{ matrix.suffix }}
     needs: setup
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.required == false }}
@@ -170,7 +188,7 @@ jobs:
       # see docs/native-image.md "Prerequisites". Move the two together or not at all;
       # .github/scripts/check-native-graalvm-pin.py fails the `lint` job if they disagree.
       - name: Set up GraalVM (Community 25.0.2)
-        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.1
+        uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
         with:
           java-version: "25.0.2"
           distribution: "graalvm-community"
@@ -260,18 +278,34 @@ jobs:
           sudo swapon /swapfile.native
           free -h
 
+      # native/pom.xml says per architecture whether its -march baseline is GraalVM's own default or a
+      # deliberate departure from it. Nothing offline can check that claim (#10581 and #10715 both got it
+      # wrong), so ask the builder before spending an hour building on it (#11254). A matrix.march override
+      # (the compat leg) does not use the pom's baseline.
+      - name: Verify the pom's -march claim against the builder
+        if: ${{ matrix.march == '' }}
+        shell: bash
+        run: |
+          # Windows runners have python, not python3.
+          PY="$(command -v python3 || command -v python)"
+          "$PY" .github/scripts/check-native-march-builder-default.py
+
       - name: Build native image
         shell: bash
         run: |
           set -euo pipefail
-          ARGS=""
+          ARGS=()
           case "${{ matrix.linkmode }}" in
-            musl-static)   ARGS="-Dnative.static=true" ;;
-            mostly-static) ARGS="-Dnative.mostlystatic=true" ;;
-            dynamic)       ARGS="" ;;
+            musl-static)   ARGS+=("-Dnative.static=true") ;;
+            mostly-static) ARGS+=("-Dnative.mostlystatic=true") ;;
+            dynamic)       ;;
             *)              echo "::error::unknown matrix.linkmode '${{ matrix.linkmode }}'"; exit 1 ;;
           esac
-          ./mvnw -B -ntp -Pnative -pl native -am -DskipTests $ARGS package
+          # An empty matrix.march leaves the baseline to native/pom.xml's per-arch default.
+          if [ -n "${{ matrix.march }}" ]; then
+            ARGS+=("-Dnative.march=${{ matrix.march }}")
+          fi
+          ./mvnw -B -ntp -Pnative -pl native -am -DskipTests "${ARGS[@]}" package
 
       # native-maven-plugin names the executable via os-maven-plugin's os.detected.name/arch
       # (e.g. osx-aarch_64, linux-x86_64, windows-x86_64), which does NOT match this matrix's
@@ -401,7 +435,7 @@ jobs:
             7z a "$ARCHIVE" "$BIN"
             sha256sum "$ARCHIVE" > "$ARCHIVE.sha256" || shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           else
-            ARCHIVE="$BIN.tar.gz"
+            ARCHIVE="$BIN${{ matrix.suffix }}.tar.gz"
             tar czf "$ARCHIVE" "$BIN"
             shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256" || sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
@@ -411,7 +445,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}
+          name: arcadedb-native-${{ matrix.os_name }}-${{ matrix.arch }}${{ matrix.suffix }}
           if-no-files-found: error
           path: |
             native/target/arcadedb-*.tar.gz
@@ -526,7 +560,7 @@ jobs:
 
       - name: Login to Docker Hub
         if: ${{ github.event_name == 'release' || github.event_name == 'schedule' || inputs.attach_to_release || inputs.publish_nightly }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -580,7 +614,7 @@ jobs:
       # is asserted against the packaged native image. The suite ends with ServerLogIT, which fails on a
       # ClassNotFoundException / MissingReflectionRegistrationError / log-handler failure anywhere in the server log.
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
@@ -631,7 +665,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}

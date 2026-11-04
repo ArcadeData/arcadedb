@@ -55,14 +55,17 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
     database.command("sql", "INSERT INTO Product SET sku = 'A1', name = 'first'");
 
     // Matches the documented baseline (issue #4918): the record BEFORE the clash is written, the clashing record raises,
-    // and every record AFTER it never runs at all - the whole point of the new clause. Since #10194 the transaction that
-    // holds the half-applied statement can no longer be committed, so the caller that caught the error has to roll back.
+    // and every record AFTER it never runs at all - the whole point of the new clause. The statement that failed is taken back to
+    // its savepoint (#10346), so the record before the clash goes with it, and the transaction can still be committed.
     assertThatExceptionOfType(DuplicatedKeyException.class).isThrownBy(() -> database.command("sql",
         "INSERT INTO Product CONTENT [ {\"sku\":\"A2\",\"name\":\"second\"}, {\"sku\":\"A1\",\"name\":\"clashes\"}, {\"sku\":\"A3\",\"name\":\"never runs\"} ]"));
 
     assertThat(database.query("sql", "SELECT FROM Product WHERE sku = 'A3'").hasNext()).isFalse();
-    assertThat(((DatabaseInternal) database).getTransaction().getRollbackOnlyReason()).contains("a statement failed after part of its records were written");
-    database.rollback();
+    assertThat(database.query("sql", "SELECT FROM Product WHERE sku = 'A2'").hasNext()).isFalse();
+    assertThat(database.countType("Product", true)).isEqualTo(1);
+    assertThat(((DatabaseInternal) database).getTransaction().getRollbackOnlyReason()).isNull();
+    database.commit();
+    database.begin();
   }
 
   @Test

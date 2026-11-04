@@ -36,7 +36,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Issue #9590: the branch matrix of {@code RaftReplicatedDatabase.waitForReadConsistency()} on a node removed from the
- * Raft configuration, in the regular lane. {@link Issue9590RemovedNodeRefusesConsistentReadsIT} drives the same gate
+ * Raft configuration, in the regular lane. {@link HaRemovedNodeIT} drives the same gate
  * against real Ratis.
  */
 class Issue9590ReadConsistencyGateOnRemovedNodeTest {

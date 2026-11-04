@@ -27,6 +27,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,8 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.lang.reflect.Field;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -205,22 +208,25 @@ class WalCommitOrderingTest {
 
 
   @Test
-  void publishFailureWithWalDisabledAbortsWithoutFencing() throws Exception {
-    // #5053 review round 6: walAppended was set even when changes.result was null (useWAL=false, the
-    // supported bulk-load mode) - a post-validation publish failure then FENCED the whole database while
-    // promising a WAL replay that cannot happen (nothing was appended): a permanently unusable database for
-    // a transaction that opted out of WAL durability. Such a failure must simply abort, as before this PR.
+  void publishFailureWithWalDisabledFencesAndKeepsTheIdentities() throws Exception {
+    // #5053 review round 6 made this failure abort with a full rollback, on the grounds that with useWAL=false (the
+    // supported bulk-load mode) there is no WAL record to replay. #10768: the failure injected here lands AFTER every page
+    // of the transaction was published, so the rollback told the caller nothing happened over a record that was there,
+    // and reset its identity, so a retry inserted it twice. Past the start of the publication the transaction is fenced
+    // and released without touching the records the caller holds, as past the WAL append; the fence names that there is
+    // no replay, and a reopen lifts it.
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     if (factory.exists())
       factory.open().drop();
 
-    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    DatabaseInternal db = (DatabaseInternal) factory.create();
     try {
       db.getSchema().createDocumentType("Doc");
 
       db.begin();
       db.getTransaction().setUseWAL(false);
-      db.newDocument("Doc").set("v", 1).save();
+      final MutableDocument held = db.newDocument("Doc").set("v", 1);
+      held.save();
       final TransactionContext tx = (TransactionContext) db.getTransaction();
       final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
       assertThat(phase1.result).as("useWAL=false must build no WAL buffer").isNull();
@@ -229,10 +235,87 @@ class WalCommitOrderingTest {
       assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(TransactionException.class);
 
       assertThat(((LocalDatabase) db).isFencedForRecovery())
-          .as("a publish failure with NO WAL record must abort, not fence: there is nothing to replay (#5053)")
-          .isFalse();
-      // The database keeps working.
-      db.transaction(() -> db.newDocument("Doc").set("v", 2).save());
+          .as("a failure past the start of the publication fences, WAL or not (#10768)").isTrue();
+      assertThat(held.getIdentity()).as("the published record keeps its identity: a retry must not insert it again").isNotNull();
+
+      // A reopen lifts the fence, and the database keeps working.
+      db.close();
+      db = (DatabaseInternal) factory.open();
+      final DatabaseInternal reopened = db;
+      reopened.transaction(() -> reopened.newDocument("Doc").set("v", 2).save());
+      assertThat(reopened.countType("Doc", false)).isEqualTo(2);
+    } finally {
+      db.close();
+      factory.close();
+    }
+  }
+
+  /**
+   * The test above, with the order that made it flaky pinned: the fence lands before the flush thread reaches the pages of the
+   * failed publication. The flush dropped every page of a fenced database, on the grounds that recovery replays it from the WAL,
+   * and with txWAL=false there is nothing to replay: the record whose identity the caller kept was gone after the reopen,
+   * or not, depending on which of the two threads came first.
+   */
+  @Test
+  void publishFailureWithWalDisabledKeepsItsPagesWhenTheFenceComesBeforeTheirFlush() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      db.getSchema().createDocumentType("Doc");
+
+      db.begin();
+      db.getTransaction().setUseWAL(false);
+      db.newDocument("Doc").set("v", 1).save();
+      final TransactionContext tx = (TransactionContext) db.getTransaction();
+      final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+      injectPostPublishFailure(tx);
+
+      // suspended, the flush thread defers the published pages instead of writing them, so they are still queued when the
+      // failure fences the database
+      runWithPageFlushSuspended(db, () -> assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(TransactionException.class));
+      assertThat(((LocalDatabase) db).isFencedForRecovery()).isTrue();
+
+      db.close();
+      db = (DatabaseInternal) factory.open();
+      assertThat(countByScan(db)).as("the published record of a txWAL=false commit must reach its file on a fenced database")
+          .isEqualTo(1);
+    } finally {
+      db.close();
+      factory.close();
+    }
+  }
+
+  /**
+   * The same drop with a transaction that SUCCEEDED: a txWAL=false commit whose pages were still waiting for their flush when an
+   * unrelated failure fenced the database lost them at the close, although the commit had returned.
+   */
+  @Test
+  void committedPagesWithWalDisabledSurviveAFenceThatLandsBeforeTheirFlush() throws Exception {
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      db.getSchema().createDocumentType("Doc");
+
+      final DatabaseInternal database = db;
+      runWithPageFlushSuspended(db, () -> {
+        database.begin();
+        database.getTransaction().setUseWAL(false);
+        for (int i = 0; i < 10; i++)
+          database.newDocument("Doc").set("v", i).save();
+        database.commit();
+        ((LocalDatabase) database).fenceForRecovery("test: fenced while the pages of a txWAL=false commit wait for their flush");
+      });
+
+      db.close();
+      db = (DatabaseInternal) factory.open();
+      assertThat(countByScan(db)).as("a committed txWAL=false transaction must survive the close of a fenced database")
+          .isEqualTo(10);
     } finally {
       db.close();
       factory.close();
@@ -358,6 +441,36 @@ class WalCommitOrderingTest {
       db.close();
       factory.close();
     }
+  }
+
+  /** Counted by a scan, not by countType(): the cached record count is persisted at close and would count a lost record. */
+  private static long countByScan(final DatabaseInternal db) {
+    final long[] count = { 0 };
+    db.iterateType("Doc", false).forEachRemaining(r -> count[0]++);
+    return count[0];
+  }
+
+  /**
+   * Runs {@code body} with the page flush of the database suspended: the flush thread defers what is published meanwhile instead
+   * of writing it. {@code suspendFlushAndExecute} logs and swallows what its callback throws, so a failure is carried out and
+   * rethrown here.
+   */
+  private static void runWithPageFlushSuspended(final DatabaseInternal db, final CallableNoReturn body) throws Exception {
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final AtomicBoolean ran = new AtomicBoolean();
+    db.getPageManager().suspendFlushAndExecute(db, () -> {
+      try {
+        body.call();
+        ran.set(true);
+      } catch (final Throwable e) {
+        failure.set(e);
+      }
+    });
+    if (failure.get() instanceof Error error)
+      throw error;
+    if (failure.get() instanceof Exception exception)
+      throw exception;
+    assertThat(ran.get()).as("the body run with the page flush suspended must have completed").isTrue();
   }
 
   private static long totalWalBytes() {

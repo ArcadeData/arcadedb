@@ -18,8 +18,13 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.EdgeBucketMask;
+
+import java.util.List;
 
 import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
@@ -29,8 +34,10 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
   // Not final: both are settable through ALTER TYPE, unlike bidirectional. Volatile because ALTER TYPE reassigns them
   // on the live instance while the edge-creation path (GraphEngine, GraphBatch) reads them with no lock held; for a
   // LIGHTWEIGHT type no index backs UNIQUE, so a stale read of unique admits duplicates nothing else rejects (#7866).
-  private volatile boolean lightweight;
-  private volatile boolean unique;
+  private volatile boolean        lightweight;
+  private volatile boolean        unique;
+  // THE MASK OF getBucketIds(true) EVERY TYPE-FILTERED WALK READS, REBUILT WHEN THAT LIST IS REPLACED (#11007)
+  private volatile EdgeBucketMask polymorphicBucketMask;
 
   public LocalEdgeType(final LocalSchema schema, final String name, final boolean bidirectional) {
     this(schema, name, bidirectional, false, false);
@@ -42,6 +49,23 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
     this.bidirectional = bidirectional;
     this.lightweight = lightweight;
     this.unique = unique;
+  }
+
+  /**
+   * The buckets of this type and its subtypes as the mask a walk of an edge list filtered by this type tests every entry
+   * against. A hop used to build one per vertex it expanded - two schema lookups, three arrays and a sort - and now reads the
+   * one kept here, rebuilt only when the type's bucket list changed.
+   *
+   * @return the mask, or null when the type has no bucket
+   */
+  public EdgeBucketMask getPolymorphicBucketMask() {
+    final List<Integer> bucketIds = getBucketIds(true);
+    final EdgeBucketMask cached = polymorphicBucketMask;
+    if (cached != null && cached.isBuiltFrom(bucketIds))
+      return cached;
+    final EdgeBucketMask mask = EdgeBucketMask.ofBucketList(bucketIds);
+    polymorphicBucketMask = mask;
+    return mask;
   }
 
   @Override
@@ -184,28 +208,32 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    */
   public static void alterShape(final LocalSchema schema, final LocalEdgeType type, final Boolean lightweight,
       final Boolean unique) {
-    schema.recordChange(() -> {
-      final boolean previousLightweight = type.lightweight;
-      final boolean previousUnique = type.unique;
-      try {
-        // Order matters when both arrive together: the storage shape decides how UNIQUE is enforced, so it is settled before
-        // the constraint is materialised.
-        if (lightweight != null)
-          type.setLightweight(lightweight);
-        if (unique != null)
-          // Withdrawn first so that the index drop below passes the guard that protects a live constraint's index
-          type.setUnique(unique);
+    // The async quiescence is taken OUTSIDE the frame (issue #10537): the index of the constraint waits for the async workers to drain,
+    // and they need the database write lock the frame holds to commit their batch, so asked from inside it the wait never ends
+    try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) schema.getDatabase()).quiesceAsync()) {
+      schema.recordChange(() -> {
+        final boolean previousLightweight = type.lightweight;
+        final boolean previousUnique = type.unique;
+        try {
+          // Order matters when both arrive together: the storage shape decides how UNIQUE is enforced, so it is settled before
+          // the constraint is materialised.
+          if (lightweight != null)
+            type.setLightweight(lightweight);
+          if (unique != null)
+            // Withdrawn first so that the index drop below passes the guard that protects a live constraint's index
+            type.setUnique(unique);
 
-        if (type.isUnique())
-          applyUniqueConstraint(schema, type);
-        else
-          removeUniqueConstraint(schema, type);
-      } catch (final RuntimeException e) {
-        type.lightweight = previousLightweight;
-        type.unique = previousUnique;
-        throw e;
-      }
-    });
+          if (type.isUnique())
+            applyUniqueConstraint(schema, type);
+          else
+            removeUniqueConstraint(schema, type);
+        } catch (final RuntimeException e) {
+          type.lightweight = previousLightweight;
+          type.unique = previousUnique;
+          throw e;
+        }
+      });
+    }
   }
 
   /**

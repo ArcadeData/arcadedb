@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.GlobalConfiguration;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import org.junit.jupiter.api.Test;
 
@@ -45,6 +46,26 @@ class VectorApiSupportTest {
   void theJvmKeepsJVectorsOwnChoice() {
     assertThat(VectorApiSupport.jvectorProviderFor(false, null)).isNull();
     assertThat(VectorApiSupport.jvectorProviderFor(false, "default")).isNull();
+  }
+
+  @Test
+  void nativeVectorizationIsOffUnlessTheSettingTurnsItOn() {
+    assertThat(VectorApiSupport.jvectorNativeVectorizationFor(false, null, null)).isEqualTo("false");
+    assertThat(VectorApiSupport.jvectorNativeVectorizationFor(true, null, null)).isEqualTo("true");
+  }
+
+  @Test
+  void anExplicitJVectorNativePropertyWinsInBothDirections() {
+    assertThat(VectorApiSupport.jvectorNativeVectorizationFor(false, "true", null)).isNull();
+    assertThat(VectorApiSupport.jvectorNativeVectorizationFor(true, "false", null)).isNull();
+    assertThat(VectorApiSupport.jvectorNativeVectorizationFor(false, null, "true")).isNull();
+    assertThat(VectorApiSupport.jvectorNativeVectorizationFor(true, null, "false")).isNull();
+  }
+
+  @Test
+  void theNativeSettingIsOffByDefault() {
+    assertThat(GlobalConfiguration.VECTOR_INDEX_NATIVE_VECTORIZATION.getDefValue()).isEqualTo(false);
+    assertThat(GlobalConfiguration.VECTOR_INDEX_NATIVE_VECTORIZATION.getKey()).isEqualTo("arcadedb.vectorIndex.nativeVectorization");
   }
 
   @Test

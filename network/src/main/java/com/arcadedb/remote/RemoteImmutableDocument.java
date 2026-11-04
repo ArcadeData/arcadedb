@@ -89,14 +89,18 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         // convertOrKeep: this READS what the server sent, with no Database in scope and therefore no access to the
         // schema's date patterns, so a value the server formatted with a custom one cannot be typed here. Keeping it
         // hands the caller the value intact; refusing would fail the whole read over a single column (issue #8090).
-        value = Type.convertOrKeep(null, value, javaImplementation, property);
-
         // ISSUE #4735: for LIST/MAP properties with a declared primitive ofType (e.g. `MAP OF LONG`), the JSON parser
-        // hydrates nested numbers using the smallest fitting type (Integer), losing the declared schema type. Convert the
-        // nested entries to the declared ofType so the remote client matches what the schema promises.
-        // The same holds for a schemaless collection whose @props hint names its element type.
-        if (propType == Type.MAP || propType == Type.LIST)
+        // hydrates nested numbers using the smallest fitting type (Integer), losing the declared schema type, so the nested
+        // entries are converted to the declared ofType; the same holds for a schemaless collection whose @props hint names
+        // its element type.
+        // Issue #10909: a collection with a known element type is converted item by item to the client's configured
+        // implementation. Converting it as a whole first, with the declared property, rebuilt a LIST OF DATE as
+        // java.util.Date items (the zone-dependent midnight), which the item pass below then read as the previous day
+        // wherever the zone is ahead of UTC.
+        if ((propType == Type.MAP || propType == Type.LIST) && elementType != null && (value instanceof List || value instanceof Map))
           value = convertNestedOfType(value, elementType);
+        else
+          value = Type.convertOrKeep(null, value, javaImplementation, property);
 
         map.put(fieldName, value);
       }

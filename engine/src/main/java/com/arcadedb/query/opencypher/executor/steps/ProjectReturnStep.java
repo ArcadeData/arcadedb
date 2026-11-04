@@ -161,7 +161,8 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           }
         }
 
-        if (!prevResults.hasNext()) {
+        // A full buffer leaves the input unasked: asking it would read its next batch ahead of any demand (issue #11082)
+        if (buffer.size() < n) {
           finished = true;
           // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
           if (seenResults != null) {

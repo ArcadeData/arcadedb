@@ -59,6 +59,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PatternComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.PatternPredicateExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.ReduceExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -198,6 +199,16 @@ public final class CypherExpressionWalker {
     default Visitor forLocalBindings(final String... variables) {
       return this;
     }
+
+    /**
+     * Called before the walk descends into the inline {@code WHERE} of a relationship pattern. Inside the inline
+     * predicate of a variable-length relationship ({@code [r:R* WHERE r.w > 0]}) the variable names the ONE relationship
+     * being tested, where everywhere else it names the list of them (issue #11211), so a check reading variable kinds
+     * re-binds it here. Returning {@code this} is right for a check that does not tell the two apart.
+     */
+    default Visitor forInlinePredicate(final RelationshipPattern relationship) {
+      return this;
+    }
   }
 
   private CypherExpressionWalker() {
@@ -266,6 +277,15 @@ public final class CypherExpressionWalker {
     walkOrderBy(statement.getOrderByClause(), current);
     walk(statement.getSkip(), current);
     walk(statement.getLimit(), current);
+  }
+
+  /**
+   * Visits every expression of one clause, the bodies of the subqueries it holds included, with the same visitor for
+   * what is evaluated before the clause's own binding takes effect and for what is evaluated after it.
+   */
+  public static void walk(final ClauseEntry entry, final Visitor visitor) {
+    if (entry != null)
+      walkClause(entry, visitor, visitor);
   }
 
   /**
@@ -544,7 +564,8 @@ public final class CypherExpressionWalker {
   /**
    * Hands the pattern itself to {@link Visitor#visitPattern}, then visits every expression nested inside it: the
    * inline property values of each node and relationship, their dynamic labels, and any inline {@code WHERE}. This is
-   * how {@code CREATE (n:P {age: abs('x')})} is reached.
+   * how {@code CREATE (n:P {age: abs('x')})} is reached. A quantified path pattern is a single hop of its enclosing
+   * pattern, so the pattern it repeats, and its inner {@code WHERE}, are handed over after it (issue #10525).
    */
   public static void walk(final PathPattern pattern, final Visitor visitor) {
     if (pattern == null)
@@ -566,7 +587,14 @@ public final class CypherExpressionWalker {
         if (relationship == null)
           continue;
         walkPatternProperties(relationship.getProperties(), visitor);
-        walk(relationship.getWhereExpression(), visitor);
+        if (relationship.getWhereExpression() != null)
+          walk(relationship.getWhereExpression(), visitor.forInlinePredicate(relationship));
+        // A quantified path pattern is ONE hop here, whose types, variables and WHERE are placeholders: what it repeats
+        // is a pattern of its own, and without descending into it nothing inside a group is checked (issue #10525)
+        if (relationship instanceof QuantifiedPathPattern group) {
+          walk(group.getInnerPattern(), visitor);
+          walk(group.getInnerWhere(), visitor);
+        }
       }
   }
 

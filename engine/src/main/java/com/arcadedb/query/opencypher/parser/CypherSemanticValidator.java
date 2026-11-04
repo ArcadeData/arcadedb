@@ -24,7 +24,6 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
-import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.*;
 
@@ -62,8 +61,13 @@ public class CypherSemanticValidator {
   public static final String NULL_MERGE_PROPERTY =
       "MergeReadOwnWrites: 'MERGE' cannot be used with a graph element property value that is null";
 
+  /**
+   * The kind of value a variable holds. {@link #RELATIONSHIP_LIST} is the variable of a variable-length relationship
+   * ({@code [r*1..3]}), which holds a {@code LIST<RELATIONSHIP>} rather than one relationship: Neo4j types it so, and
+   * refuses {@code r.weight} on it before the query runs (issue #11211).
+   */
   private enum VarType {
-    NODE, RELATIONSHIP, PATH, SCALAR
+    NODE, RELATIONSHIP, RELATIONSHIP_LIST, PATH, SCALAR
   }
 
   private final Map<String, VarType> varTypes = new HashMap<>();
@@ -380,7 +384,8 @@ public class CypherSemanticValidator {
         declareVar(node.getVariable(), VarType.NODE, scope, declaredHere);
     for (final RelationshipPattern rel : path.getRelationships()) {
       if (rel.getVariable() != null)
-        declareVar(rel.getVariable(), VarType.RELATIONSHIP, scope, declaredHere);
+        declareVar(rel.getVariable(), rel.isVariableLength() ? VarType.RELATIONSHIP_LIST : VarType.RELATIONSHIP, scope,
+            declaredHere);
       // A GQL quantified path pattern (issue #4531) also declares its inner variables, which bind
       // outside the group to one list element per repetition. They are declared as plain values, not
       // as NODE/RELATIONSHIP: the name holds a LIST<NODE> or LIST<RELATIONSHIP>, so the structural
@@ -434,7 +439,7 @@ public class CypherSemanticValidator {
   private static List<String> resolveYieldAllFieldNames(final CallClause callClause) {
     if (!callClause.isYieldAll())
       return null;
-    final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+    final CypherProcedure procedure = callClause.resolveProcedure();
     return procedure != null ? procedure.getYieldFields() : null;
   }
 
@@ -601,9 +606,12 @@ public class CypherSemanticValidator {
       switch (entry.getType()) {
         case MATCH:
           final MatchClause matchClause = entry.getTypedClause();
-          if (matchClause.hasPathPatterns())
+          if (matchClause.hasPathPatterns()) {
             for (final PathPattern path : matchClause.getPathPatterns())
               addBoundVarsFromPattern(path, scope);
+            for (final PathPattern path : matchClause.getPathPatterns())
+              checkGroupWhereScope(path, scope);
+          }
           // Validate WHERE clause references against scope
           if (matchClause.getWhereClause() != null)
             checkBooleanExpressionScope(matchClause.getWhereClause().getConditionExpression(), scope);
@@ -1228,6 +1236,17 @@ public class CypherSemanticValidator {
       // expression. This catches variables that leak out of a pattern/list comprehension into the
       // outer predicate scope (issue #5179).
       checkExpressionScope(((BooleanCoercionExpression) boolExpr).getExpression(), scope);
+    } else if (boolExpr instanceof RegexExpression regex) {
+      // zz.name =~ 'A.*' filtered the rows by a name no clause bound instead of refusing it (issue #10559)
+      checkExpressionScope(regex.getExpression(), scope);
+      checkExpressionScope(regex.getPattern(), scope);
+    } else if (boolExpr instanceof StringMatchExpression match) {
+      checkExpressionScope(match.getExpression(), scope);
+      checkExpressionScope(match.getPattern(), scope);
+    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
+      checkExpressionScope(normalized.getValueExpression(), scope);
+    } else if (boolExpr instanceof IsTypedExpression typed) {
+      checkExpressionScope(typed.getValueExpression(), scope);
     }
   }
 
@@ -1291,6 +1310,19 @@ public class CypherSemanticValidator {
     for (final Object value : properties.values())
       if (value instanceof Expression)
         checkExpressionScope((Expression) value, scope);
+  }
+
+  /**
+   * The inner {@code WHERE} of a quantified path pattern is held to the scope of the clause it is written in, as the {@code WHERE} of
+   * the clause is: the variables the groups write, the ones of the rest of the pattern and the ones of the earlier clauses. A name
+   * outside all of them used to evaluate as null, so the typo answered no row instead of an error (issue #10559).
+   */
+  private void checkGroupWhereScope(final PathPattern path, final Set<String> scope) {
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel instanceof QuantifiedPathPattern group) {
+        checkBooleanExpressionScope(group.getInnerWhere(), scope);
+        checkGroupWhereScope(group.getInnerPattern(), scope);
+      }
   }
 
   private void validateSetClauseScope(final SetClause setClause, final Set<String> scope) {
@@ -1456,6 +1488,9 @@ public class CypherSemanticValidator {
           final MatchClause matchClause = entry.getTypedClause();
           if (matchClause.hasWhereClause())
             checkAggregationInWhere(matchClause.getWhereClause());
+          if (matchClause.hasPathPatterns())
+            for (final PathPattern path : matchClause.getPathPatterns())
+              checkAggregationInGroupWhere(path);
         } else if (entry.getType() == ClauseEntry.ClauseType.WITH) {
           final WithClause withClause = entry.getTypedClause();
           if (withClause.getWhereClause() != null)
@@ -1618,6 +1653,15 @@ public class CypherSemanticValidator {
     checkAggregationInBooleanExpression(whereClause.getConditionExpression());
   }
 
+  /** The inner {@code WHERE} of a quantified path pattern filters rows like the one of the clause: no aggregate (issue #10559). */
+  private void checkAggregationInGroupWhere(final PathPattern path) {
+    for (final RelationshipPattern rel : path.getRelationships())
+      if (rel instanceof QuantifiedPathPattern group) {
+        checkAggregationInBooleanExpression(group.getInnerWhere());
+        checkAggregationInGroupWhere(group.getInnerPattern());
+      }
+  }
+
   private void checkAggregationInBooleanExpression(final BooleanExpression boolExpr) {
     if (boolExpr == null)
       return;
@@ -1636,6 +1680,21 @@ public class CypherSemanticValidator {
       checkAggregationInExpression(inExpr.getExpression());
       for (final Expression elem : inExpr.getList())
         checkAggregationInExpression(elem);
+    } else if (boolExpr instanceof IsNullExpression isNull) {
+      // count(x) IS NOT NULL is as much an aggregate in a WHERE as count(x) > 0 (issue #10559)
+      checkAggregationInExpression(isNull.getExpression());
+    } else if (boolExpr instanceof RegexExpression regex) {
+      checkAggregationInExpression(regex.getExpression());
+      checkAggregationInExpression(regex.getPattern());
+    } else if (boolExpr instanceof StringMatchExpression match) {
+      checkAggregationInExpression(match.getExpression());
+      checkAggregationInExpression(match.getPattern());
+    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
+      checkAggregationInExpression(normalized.getValueExpression());
+    } else if (boolExpr instanceof IsTypedExpression typed) {
+      checkAggregationInExpression(typed.getValueExpression());
+    } else if (boolExpr instanceof BooleanCoercionExpression coercion) {
+      checkAggregationInExpression(coercion.getExpression());
     }
   }
 
@@ -2335,6 +2394,20 @@ public class CypherSemanticValidator {
       return new FunctionArgumentChecks(shadowed, declaringPatterns);
     }
 
+    /**
+     * The inline predicate of a variable-length relationship tests one relationship at a time, so there its variable is
+     * a relationship and {@code r.w} reads a property (issue #11211); outside it, the same name holds the list.
+     */
+    @Override
+    public CypherExpressionWalker.Visitor forInlinePredicate(final RelationshipPattern relationship) {
+      final String variable = relationship.getVariable();
+      if (variable == null || scope.get(variable) != VarType.RELATIONSHIP_LIST)
+        return this;
+      final Map<String, VarType> single = new HashMap<>(scope);
+      single.put(variable, VarType.RELATIONSHIP);
+      return new FunctionArgumentChecks(single, declaringPatterns);
+    }
+
     @Override
     public void visitPattern(final PathPattern path) {
       if (declaringPatterns.contains(path))
@@ -2361,7 +2434,8 @@ public class CypherSemanticValidator {
       if (name == null)
         return;
       final VarType declared = scope.get(name);
-      if (declared == VarType.NODE || declared == VarType.RELATIONSHIP || declared == VarType.PATH)
+      if (declared == VarType.NODE || declared == VarType.RELATIONSHIP || declared == VarType.RELATIONSHIP_LIST
+          || declared == VarType.PATH)
         throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
     }
 
@@ -2374,10 +2448,15 @@ public class CypherSemanticValidator {
       if (name == null)
         return;
       final VarType declared = scope.get(name);
-      if ((declared == VarType.NODE || declared == VarType.RELATIONSHIP) && declared != used)
+      // a variable-length relationship's variable is a relationship kind too: reusing it as a node is the same conflict
+      if (declared == VarType.NODE ? used != VarType.NODE : isRelationshipKind(declared) && !isRelationshipKind(used))
         throw new CommandParsingException(
             "VariableTypeConflict: Variable '" + name + "' already defined as " + declared + ", cannot redefine as "
                 + used);
+    }
+
+    private static boolean isRelationshipKind(final VarType type) {
+      return type == VarType.RELATIONSHIP || type == VarType.RELATIONSHIP_LIST;
     }
 
     /**
@@ -2419,22 +2498,37 @@ public class CypherSemanticValidator {
     case MATCH -> {
       final MatchClause matchClause = entry.getTypedClause();
       if (matchClause.hasPathPatterns())
-        patterns.addAll(matchClause.getPathPatterns());
+        for (final PathPattern path : matchClause.getPathPatterns())
+          addWithGroupPatterns(path, patterns);
     }
     case CREATE -> {
       final CreateClause createClause = entry.getTypedClause();
       if (createClause != null && !createClause.isEmpty())
-        patterns.addAll(createClause.getPathPatterns());
+        for (final PathPattern path : createClause.getPathPatterns())
+          addWithGroupPatterns(path, patterns);
     }
     case MERGE -> {
       final MergeClause mergeClause = entry.getTypedClause();
       if (mergeClause != null)
-        patterns.add(mergeClause.getPathPattern());
+        addWithGroupPatterns(mergeClause.getPathPattern(), patterns);
     }
     default -> {
     }
     }
     return patterns;
+  }
+
+  /**
+   * A pattern, and the patterns its quantified path patterns repeat: the variables written in a group are declared by the
+   * clause as well, as {@link #applyClauseToVarTypes} reads them, and the walk reaches those inner patterns since issue #10525.
+   */
+  private static void addWithGroupPatterns(final PathPattern path, final Set<PathPattern> patterns) {
+    if (path == null)
+      return;
+    patterns.add(path);
+    for (final RelationshipPattern relationship : path.getRelationships())
+      if (relationship instanceof QuantifiedPathPattern group)
+        addWithGroupPatterns(group.getInnerPattern(), patterns);
   }
 
   // ================================================
@@ -2600,7 +2694,7 @@ public class CypherSemanticValidator {
     if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
       // Echo the spelling the client wrote, not the folded one: "Unknown function 'charat'" sends someone looking for
       // a name that never appeared in their query.
-      throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getOriginalFunctionName() + "'");
+      throw FunctionValidator.unknownFunction(func.getOriginalFunctionName());
     final List<Expression> args = func.getArguments();
     // The wrong number of arguments is the primary defect and must be reported as such, before the single-argument type
     // check below decides that e.g. atan2('x') - a binary function called with one argument - is a type error (#5484).
@@ -2625,6 +2719,9 @@ public class CypherSemanticValidator {
               throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
             if (argType == VarType.RELATIONSHIP)
               throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
+            if (argType == VarType.RELATIONSHIP_LIST)
+              throw new CommandParsingException(
+                  "InvalidArgumentType: length() cannot be applied to a list of relationships. Use size() to count them");
             break;
           case "type":
             // type() only works on relationships. Point at valueType(), which is what callers who
@@ -2762,12 +2859,23 @@ public class CypherSemanticValidator {
   }
 
   /**
-   * A path variable holds a whole path, so {@code p.name} names nothing. Called on every node of the traversal, which
-   * is why it inspects only the node handed to it rather than recursing.
+   * A path variable holds a whole path, so {@code p.name} names nothing; nor does {@code r.weight} on the variable of a
+   * variable-length relationship, which holds a list of relationships (issue #11211). Neo4j refuses both before the
+   * query runs, whatever it would match. Called on every node of the traversal, which is why it inspects only the node
+   * handed to it rather than recursing.
    */
   private void checkPropertyAccessOnPath(final Expression expr, final Map<String, VarType> scope) {
-    if (expr instanceof PropertyAccessExpression access && scope.get(access.getVariableName()) == VarType.PATH)
+    if (!(expr instanceof PropertyAccessExpression access))
+      return;
+    final VarType declared = scope.get(access.getVariableName());
+    if (declared == VarType.PATH)
       throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
+    if (declared == VarType.RELATIONSHIP_LIST)
+      throw new CommandSemanticException("TypeError: Type mismatch: expected Map, Node, Relationship, Point, Duration, Date, Time, "
+          + "LocalTime, LocalDateTime or DateTime but was List<Relationship>. '" + access.getVariableName()
+          + "' is a variable-length relationship and holds a list of relationships, so '" + access.getVariableName() + "."
+          + access.getPropertyName() + "' reads no property: read it per relationship, e.g. [rel IN "
+          + access.getVariableName() + " | rel." + access.getPropertyName() + "]");
   }
 
   private VarType getExpressionType(final Expression expr, final Map<String, VarType> scope) {

@@ -20,7 +20,10 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -29,9 +32,11 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
+import com.arcadedb.remote.RemoteExceptionRebuilder;
 import com.arcadedb.server.grpc.LeaderRedirectProtocol;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -64,6 +69,8 @@ final class GrpcClientErrorMapper {
       Metadata.ASCII_STRING_MARSHALLER);
   static final Metadata.Key<String> NAME_TAKEN_KEY       = Metadata.Key.of("arcadedb-name-taken",
       Metadata.ASCII_STRING_MARSHALLER);
+  static final Metadata.Key<String> UNAVAILABLE_REASON_KEY = Metadata.Key.of("arcadedb-unavailable-reason",
+      Metadata.ASCII_STRING_MARSHALLER);
 
   private static final int MAX_CAUSE_DEPTH = 32;
 
@@ -85,7 +92,14 @@ final class GrpcClientErrorMapper {
         return reconstructed;
     }
 
-    // Legacy / trailer-less fallback: map by status code only.
+    // A database the server has and does not serve now, named by a class this client does not know (issue #11049): the reason
+    // trailer is the server's verdict, and it is the opposite of the retry the status row below reads an UNAVAILABLE as
+    final String unavailableReason = trailers != null ? trailers.get(UNAVAILABLE_REASON_KEY) : null;
+    if (unavailableReason != null && status.getCode() == Status.Code.UNAVAILABLE)
+      return new DatabaseNotAvailableException(msg, DatabaseNotAvailableException.Reason.fromName(unavailableReason));
+
+    // Legacy / trailer-less fallback: map by status code only. A trailer-less UNAVAILABLE is the transport's (no server
+    // authors one, see responseMayHaveBeenLost), and a read that met it can be run again.
     return switch (status.getCode()) {
       case NOT_FOUND -> new RecordNotFoundException(msg, null);
       case ALREADY_EXISTS -> new DuplicatedKeyException(dupIndex(trailers, msg), dupKeys(trailers, msg), null);
@@ -297,6 +311,16 @@ final class GrpcClientErrorMapper {
       case "com.arcadedb.exception.ConcurrentModificationException" -> new ConcurrentModificationException(msg);
       case "com.arcadedb.exception.NeedRetryException" -> new NeedRetryException(msg);
       case "com.arcadedb.exception.RecordNotFoundException" -> new RecordNotFoundException(msg, null);
+      // A missing edge endpoint keeps its own type (issue #11045), which is still a RecordNotFoundException
+      case "com.arcadedb.exception.VertexNotFoundException" -> new VertexNotFoundException(msg, null, null);
+      // A name that is no database (issue #10795): answered NOT_FOUND, which the status fallback reads as a missing record
+      case "com.arcadedb.exception.DatabaseNotFoundException" -> new DatabaseNotFoundException(msg);
+      // A database the server HAS and does not serve now (issue #11049): answered UNAVAILABLE, which the status fallback reads as
+      // a retryable NeedRetryException, so transaction() spun its whole retry budget on a database that stays closed until an
+      // operator opens it. Rebuilt with the state it is in, as the HTTP driver does from exceptionArgs (issue #10872)
+      case "com.arcadedb.exception.DatabaseNotAvailableException" ->
+          new DatabaseNotAvailableException(msg, DatabaseNotAvailableException.Reason.fromName(
+              trailers != null ? trailers.get(UNAVAILABLE_REASON_KEY) : null));
       case "com.arcadedb.exception.TimeoutException" -> new TimeoutException(msg);
       // Stopped on request (issue #9689): its own type, so no retry loop mistakes it for a failure worth repeating
       case "com.arcadedb.exception.QueryTerminatedException" -> new QueryTerminatedException(msg);
@@ -313,9 +337,26 @@ final class GrpcClientErrorMapper {
       // A listener refused the write (issues #10085, #10161): a refusal of the request, typed so it is not read as a fault
       case "com.arcadedb.exception.RecordVetoedException" -> new RecordVetoedException(msg);
       case "com.arcadedb.exception.ValidationException" -> new ValidationException(msg);
-      // Unknown class: let the caller fall back to status-code mapping.
-      default -> null;
+      default -> rebuildByName(exceptionClass, code, msg);
     };
+  }
+
+  /**
+   * Any other ArcadeDB exception this client has a class for, rebuilt by its name as the HTTP driver does (issue #11045): the
+   * command family used to fall back to the status code, which reads none of it. Null (an unknown class) lets the caller fall
+   * back to the status.
+   * <p>
+   * An {@code UNAVAILABLE} carries one of two opposite verdicts, and a type rebuilt from it has to carry one of them too: a
+   * retryable refusal (the admin service's {@link NeedRetryException} arm, issue #10143), or a database the server has and does
+   * not serve now, which no retry of the transaction clears (issue #11049). The second is decided by the same
+   * {@link ErrorCategory} table the server answered from, so a type it classifies {@link ErrorCategory#UNAVAILABLE} (a
+   * {@code DatabaseIsClosedException}, a handle closed under the request) comes back as itself rather than as the retryable
+   * status row, and any such type added to the engine later does too.
+   */
+  private static RuntimeException rebuildByName(final String exceptionClass, final Status.Code code, final String msg) {
+    final RuntimeException rebuilt = RemoteExceptionRebuilder.rebuild(exceptionClass, msg);
+    return rebuilt != null && (code != Status.Code.UNAVAILABLE || rebuilt instanceof NeedRetryException
+        || ErrorCategory.of(rebuilt) == ErrorCategory.UNAVAILABLE) ? rebuilt : null;
   }
 
   /**

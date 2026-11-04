@@ -112,7 +112,19 @@ public class CreatePropertyStatement extends DDLStatement {
 
     // CREATE IT LOCALLY
     final String ofTypeAsString = ofType != null ? ofType.getStringValue() : null;
-    final Property internalProp = typez.createProperty(propertyName.getStringValue(), type, ofTypeAsString);
+    final Property internalProp;
+    try {
+      internalProp = typez.createProperty(propertyName.getStringValue(), type, ofTypeAsString);
+    } catch (final AlreadyExistsException e) {
+      // The check above ran outside the schema write lock: a concurrent statement can create the property between it
+      // and the creation, which re-checks under the lock. IF NOT EXISTS answers the same row as when it saw the property
+      // (issue #11040)
+      if (ifNotExists && typez.existsPolymorphicProperty(propertyName.getStringValue())) {
+        result.setProperty("created", false);
+        return;
+      }
+      throw e;
+    }
     result.setProperty("created", true);
     try {
       for (final CreatePropertyAttributeStatement attr : attributes) {

@@ -69,6 +69,8 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.NeOperator;
+import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
@@ -98,6 +100,7 @@ import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
+import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -114,6 +117,7 @@ import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -139,6 +143,8 @@ import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class SelectExecutionPlanner {
+  private static final BigDecimal        BIG_LONG_MIN    = BigDecimal.valueOf(Long.MIN_VALUE);
+  private static final BigDecimal        BIG_LONG_MAX    = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final String            LOCAL_NODE_NAME = "local";
   /** The variable a scoring indexed function such as {@code SEARCH_INDEX} sets on every row it matches. */
   private static final String            SCORE_VARIABLE  = "$score";
@@ -480,7 +486,7 @@ public class SelectExecutionPlanner {
     // What follows depends on the thread, the transaction and the size of the type at planning time, not on the statement alone: a plan
     // either way must not be reused by an execution for which the answer differs
     planDependsOnInputParameters = true;
-    if (!ParallelTypeScan.isAllowed(context.getDatabase()))
+    if (!ParallelTypeScan.isAllowed(context))
       return;
     // A small type is not scanned in parallel at run time, so the GROUP BY would only block where the DISTINCT streams
     final String typeName = info.target.getItem().getIdentifier().getStringValue();
@@ -740,8 +746,18 @@ public class SelectExecutionPlanner {
     if (index == null)
       return false;
 
+    // The aggregate is over the records of the target, its subtypes included, and nothing else: the index of a subtype is routinely
+    // its ancestor's, which holds the entries of every sibling type too, so the step reads the target's buckets only. A bucket of the
+    // target the index has no sub-index on holds values the index cannot give: the scan answers then (issue #10748)
+    final List<Integer> polymorphicBuckets = documentType.getBucketIds(true);
+    final int[] targetBuckets = new int[polymorphicBuckets.size()];
+    for (int i = 0; i < targetBuckets.length; i++)
+      targetBuckets[i] = polymorphicBuckets.get(i);
+    if (!coversBuckets(index, targetBuckets))
+      return false;
+
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, targetBuckets, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -928,6 +944,21 @@ public class SelectExecutionPlanner {
       return null;
 
     return new MaxMinInfo(suffix.identifier.getStringValue(), isMax);
+  }
+
+  /** True when the index has a sub-index on every one of the buckets, so that it holds the entries of all their records. */
+  private static boolean coversBuckets(final RangeIndex index, final int[] bucketIds) {
+    if (!(index instanceof TypeIndex typeIndex))
+      return false;
+    final IndexInternal[] subIndexes = typeIndex.getIndexesOnBuckets();
+    final int[] covered = new int[subIndexes.length];
+    for (int i = 0; i < subIndexes.length; i++)
+      covered[i] = subIndexes[i].getAssociatedBucketId();
+    Arrays.sort(covered);
+    for (final int bucketId : bucketIds)
+      if (Arrays.binarySearch(covered, bucketId) < 0)
+        return false;
+    return true;
   }
 
   /**
@@ -2658,11 +2689,16 @@ public class SelectExecutionPlanner {
    * the runtime caller lets it propagate as a genuine execution error.
    */
   private static Object resolveInRightHandRawValue(final InCondition in, final CommandContext context) {
+    final Object value;
     if (in.getRightMathExpression() != null)
-      return in.getRightMathExpression().execute((Result) null, context);
-    if (in.getRightParam() != null)
-      return in.getRightParam().getValue(context.getInputParameters());
-    return NOT_A_RESOLVABLE_RID_SHAPE;
+      value = in.getRightMathExpression().execute((Result) null, context);
+    else if (in.getRightParam() != null)
+      value = in.getRightParam().getValue(context.getInputParameters());
+    else
+      return NOT_A_RESOLVABLE_RID_SHAPE;
+    // a Java array bound to the placeholder ('@rid IN ?' with a RID[]) is the list of its elements, as a scan reads it: taken for
+    // one RID it resolved to none and the fetch answered no row (issue #10721)
+    return MultiValue.isSequenceArray(value) ? MultiValue.getMultiValueIterable(value) : value;
   }
 
   /**
@@ -3049,9 +3085,16 @@ public class SelectExecutionPlanner {
     for (final AndBlock andBlock : flattenedWhere) {
       long blockFrom = Long.MIN_VALUE;
       long blockTo = Long.MAX_VALUE;
+      boolean matchesNothing = false;
       for (final BooleanExpression expr : andBlock.getSubBlocks()) {
         final long[] range = extractTimeRange(expr, timestampColumn, context);
         if (range != null) {
+          // A predicate that is empty by itself empties the block. Said here, and not left to the bounds below: Long.MIN_VALUE
+          // and Long.MAX_VALUE on a side read as "no bound", so an empty range's own ends would not tighten anything (issue #10528)
+          if (range[0] > range[1]) {
+            matchesNothing = true;
+            break;
+          }
           // Tighten bounds: take the most restrictive range
           if (range[0] != Long.MIN_VALUE)
             blockFrom = Math.max(blockFrom, range[0]);
@@ -3059,13 +3102,13 @@ public class SelectExecutionPlanner {
             blockTo = Math.min(blockTo, range[1]);
         }
       }
-      if (blockFrom > blockTo)
+      if (matchesNothing || blockFrom > blockTo)
         continue; // contradictory block: matches nothing
       anyBlock = true;
       from = Math.min(from, blockFrom);
       to = Math.max(to, blockTo);
     }
-    return anyBlock ? new long[] { from, to } : new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+    return anyBlock ? new long[] { from, to } : emptyTimeRange();
   }
 
   /**
@@ -3077,16 +3120,15 @@ public class SelectExecutionPlanner {
     if (expr instanceof BetweenCondition between) {
       final String fieldName = between.getFirst() != null ? identifierText(between.getFirst()) : null;
       if (timestampColumn.equals(fieldName)) {
-        final Object fromVal = between.getSecond().execute((Identifiable) null, context);
-        final Object toVal = between.getThird().execute((Identifiable) null, context);
-        final long fromTs = toEpochMs(fromVal);
-        final long toTs = toEpochMs(toVal);
-        // #8152: Long.MIN_VALUE means "not a timestamp", not "the beginning of time". Returning it as the UPPER
-        // bound produced an empty range and a BETWEEN that matched nothing; as the LOWER bound it silently widened
-        // the scan. Either way the correct answer is to decline the push-down and let the generic filter run.
-        if (fromTs == Long.MIN_VALUE || toTs == Long.MIN_VALUE)
+        // ts BETWEEN a AND b is ts >= a AND ts <= b, each side read as exactly as the comparison it stands for (issue #10560)
+        final long[] lower = timeRangeOf(TimeComparison.GE, between.getSecond().execute((Identifiable) null, context));
+        final long[] upper = timeRangeOf(TimeComparison.LE, between.getThird().execute((Identifiable) null, context));
+        // #8152: a bound that is no timestamp declines the push-down, and the generic filter runs
+        if (lower == null || upper == null)
           return null;
-        return new long[] { fromTs, toTs };
+        if (isEmptyTimeRange(lower) || isEmptyTimeRange(upper) || lower[0] > upper[1])
+          return emptyTimeRange();
+        return new long[] { lower[0], upper[1] };
       }
     } else if (expr instanceof BinaryCondition binary) {
       // Check if one side is the timestamp column and the other is a value
@@ -3096,41 +3138,146 @@ public class SelectExecutionPlanner {
       final boolean rightIsTs = timestampColumn.equals(rightStr);
 
       if (leftIsTs || rightIsTs) {
-        final Expression valueExpr = leftIsTs ? binary.right : binary.left;
-        final Object rawVal = valueExpr.execute((Identifiable) null, context);
-        final long val = toEpochMs(rawVal);
-        if (val == Long.MIN_VALUE)
+        final TimeComparison comparison = TimeComparison.of(binary.operator, leftIsTs);
+        if (comparison == null)
           return null;
-
-        final BinaryCompareOperator op = binary.operator;
-        // When field is on the right side, invert the operator semantics
-        if (leftIsTs) {
-          if (op instanceof GtOperator)
-            return new long[] { val + 1, Long.MAX_VALUE };
-          if (op instanceof GeOperator)
-            return new long[] { val, Long.MAX_VALUE };
-          if (op instanceof LtOperator)
-            return new long[] { Long.MIN_VALUE, val - 1 };
-          if (op instanceof LeOperator)
-            return new long[] { Long.MIN_VALUE, val };
-          if (op instanceof EqualsCompareOperator)
-            return new long[] { val, val };
-        } else {
-          // timestamp is on the right: "value > ts" means "ts < value"
-          if (op instanceof GtOperator)
-            return new long[] { Long.MIN_VALUE, val - 1 };
-          if (op instanceof GeOperator)
-            return new long[] { Long.MIN_VALUE, val };
-          if (op instanceof LtOperator)
-            return new long[] { val + 1, Long.MAX_VALUE };
-          if (op instanceof LeOperator)
-            return new long[] { val, Long.MAX_VALUE };
-          if (op instanceof EqualsCompareOperator)
-            return new long[] { val, val };
-        }
+        final Expression valueExpr = leftIsTs ? binary.right : binary.left;
+        return timeRangeOf(comparison, valueExpr.execute((Identifiable) null, context));
       }
     }
     return null;
+  }
+
+  /**
+   * A comparison of the timestamp column with a bound, written as {@code ts <op> bound}: a comparison with the column on the right
+   * is mirrored ({@code 5 > ts} is {@code ts < 5}).
+   */
+  private enum TimeComparison {
+    LT, LE, GT, GE, EQ, NE;
+
+    static TimeComparison of(final BinaryCompareOperator operator, final boolean timestampOnLeft) {
+      if (operator instanceof GtOperator)
+        return timestampOnLeft ? GT : LT;
+      if (operator instanceof GeOperator)
+        return timestampOnLeft ? GE : LE;
+      if (operator instanceof LtOperator)
+        return timestampOnLeft ? LT : GT;
+      if (operator instanceof LeOperator)
+        return timestampOnLeft ? LE : GE;
+      if (operator instanceof EqualsCompareOperator)
+        return EQ;
+      if (operator instanceof NeOperator || operator instanceof NeqOperator)
+        return NE;
+      return null;
+    }
+  }
+
+  /**
+   * The range of timestamps {@code ts <comparison> bound} selects, EXACTLY: the timestamps are whole milliseconds, so the bound is
+   * read as the decimal it is and not as the long it truncates to (issue #10560). {@code ts >= 2000.5} starts at 2001, {@code ts = 2000.5}
+   * and {@code ts = 1e19} select nothing, {@code ts <= 1e19} and {@code ts <> 2000.5} select every sample, and a NaN is above every
+   * sample like +Infinity. Answers {@code null} (the push-down is declined, and the WHERE judges the rows) for a bound that is no
+   * timestamp, for the {@code Long.MIN_VALUE} that stands for "not a timestamp" (#8152) and for {@code <>} against a whole
+   * millisecond, which is two ranges and not one.
+   */
+  private static long[] timeRangeOf(final TimeComparison comparison, final Object rawBound) {
+    final Object bound = exactTimeBound(rawBound);
+    if (bound == null)
+      return null;
+
+    if (bound instanceof Double special) {
+      // NaN or an infinity, the only doubles exactTimeBound does not turn into a decimal. A NaN is above every number, as the
+      // engine orders it everywhere (Double.compare), so it bounds the samples from above like +Infinity
+      final boolean everySampleIsBelow = special.isNaN() || special > 0;
+      return switch (comparison) {
+        case LT, LE -> everySampleIsBelow ? fullTimeRange() : emptyTimeRange();
+        case GT, GE -> everySampleIsBelow ? emptyTimeRange() : fullTimeRange();
+        case EQ -> emptyTimeRange();
+        case NE -> fullTimeRange();
+      };
+    }
+
+    final BigDecimal value = (BigDecimal) bound;
+    // not setScale(0): a bound of 1E+999999999 would make the server build a number of a billion digits. A value beyond every long
+    // answers a whole number beyond every long, which the ranges below read as above or below every sample
+    final BigDecimal floor = DateUtils.floorOrBeyondLong(value);
+    final boolean whole = floor.compareTo(value) == 0;
+    if (whole && floor.compareTo(BIG_LONG_MIN) == 0)
+      // the Long.MIN_VALUE that toEpochMs answers for "not a timestamp" (#8152): declined, as it always was
+      return null;
+
+    return switch (comparison) {
+      // ts < v is ts <= ceil(v) - 1, ts <= v is ts <= floor(v)
+      case LT -> upToTimeRange(whole ? floor.subtract(BigDecimal.ONE) : floor);
+      case LE -> upToTimeRange(floor);
+      // ts > v is ts >= floor(v) + 1, ts >= v is ts >= ceil(v)
+      case GT -> fromTimeRange(floor.add(BigDecimal.ONE));
+      case GE -> fromTimeRange(whole ? floor : floor.add(BigDecimal.ONE));
+      case EQ -> whole && fitsALong(floor) ? new long[] { floor.longValue(), floor.longValue() } : emptyTimeRange();
+      // one range holds it only when no sample can equal the bound
+      case NE -> !whole || !fitsALong(floor) ? fullTimeRange() : null;
+    };
+  }
+
+  /** The samples {@code ts <= last}, where {@code last} is a whole number that may lie outside the range of a long. */
+  private static long[] upToTimeRange(final BigDecimal last) {
+    if (last.compareTo(BIG_LONG_MIN) < 0)
+      return emptyTimeRange();
+    return last.compareTo(BIG_LONG_MAX) >= 0 ? fullTimeRange() : new long[] { Long.MIN_VALUE, last.longValue() };
+  }
+
+  /** The samples {@code ts >= first}, where {@code first} is a whole number that may lie outside the range of a long. */
+  private static long[] fromTimeRange(final BigDecimal first) {
+    if (first.compareTo(BIG_LONG_MAX) > 0)
+      return emptyTimeRange();
+    return first.compareTo(BIG_LONG_MIN) <= 0 ? fullTimeRange() : new long[] { first.longValue(), Long.MAX_VALUE };
+  }
+
+  private static boolean fitsALong(final BigDecimal whole) {
+    return whole.compareTo(BIG_LONG_MIN) >= 0 && whole.compareTo(BIG_LONG_MAX) <= 0;
+  }
+
+  /**
+   * The bound of a time predicate as the milliseconds it stands for: a {@link BigDecimal} for a finite number (it keeps its fraction)
+   * and for a date/time (it keeps the part below its millisecond), a {@link Double} for a NaN or an infinity, and {@code null} for a
+   * value that is no timestamp, which {@link #toEpochMs} reads as {@link Long#MIN_VALUE}.
+   */
+  private static Object exactTimeBound(final Object value) {
+    if (value == null)
+      return null;
+    if (value instanceof Number number) {
+      if (number instanceof BigDecimal decimal)
+        return decimal;
+      if (number instanceof BigInteger integer)
+        return new BigDecimal(integer);
+      if (number instanceof Double || number instanceof Float) {
+        final double doubleValue = number instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
+        return Double.isNaN(doubleValue) || Double.isInfinite(doubleValue) ? (Object) doubleValue : new BigDecimal(doubleValue);
+      }
+      return BigDecimal.valueOf(number.longValue());
+    }
+    final long millis = toEpochMs(value);
+    if (millis == Long.MIN_VALUE)
+      return null;
+    final int subMillisecondNanos = DateUtils.subMillisecondNanos(value);
+    return subMillisecondNanos == 0 ? BigDecimal.valueOf(millis) : BigDecimal.valueOf(millis).add(BigDecimal.valueOf(subMillisecondNanos, 6));
+  }
+
+  /**
+   * The range of no timestamp at all, {@code [Long.MAX_VALUE, Long.MIN_VALUE]}: what a predicate that no {@code long} satisfies, or
+   * a block of predicates that contradict each other, is pushed down as. A scan or a DELETE over it touches nothing.
+   */
+  private static long[] emptyTimeRange() {
+    return new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+  }
+
+  private static boolean isEmptyTimeRange(final long[] range) {
+    return range[0] > range[1];
+  }
+
+  /** The range of every timestamp: what a predicate that every long satisfies is pushed down as. */
+  private static long[] fullTimeRange() {
+    return new long[] { Long.MIN_VALUE, Long.MAX_VALUE };
   }
 
   /**
@@ -4255,6 +4402,9 @@ public class SelectExecutionPlanner {
               residual.getSubBlocks().add(condition);
           block = residual;
         }
+        // The property equalities the function may decide through an index before it loads a record (issue #11069). They stay
+        // in the filter after the fetch, which answers a record no index listing decided
+        final List<BinaryCondition> recordConditions = pushableRecordConditions(block, blockCandidateFunction, info);
         final IndexedFunctionPushdown.Order order = indexedFunctionRidOrder(blockCandidateFunction, info, context);
         // An OR splits the WHERE into branches whose rows are concatenated and deduplicated, so no branch alone knows how many
         // of its rows the LIMIT will take (issue #9895) - unless the branches are merged by score (issue #10022): a record
@@ -4262,9 +4412,11 @@ public class SelectExecutionPlanner {
         // above it there is ranked above it in the merge too
         final int functionLimit =
             (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez, info,
-                ridConditions, context) ? indexedFunctionRowLimit(blockCandidateFunction, block, info, order, context) : -1;
+                ridConditions, context) ?
+                indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
+                -1;
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
-            functionLimit, ridConditions, order, context);
+            functionLimit, ridConditions, recordConditions, order, context);
         if (order != IndexedFunctionPushdown.Order.FUNCTION)
           // The function answers in the RID order the ORDER BY asks for, and nothing after the fetch reorders the rows
           info.orderApplied = true;
@@ -4376,7 +4528,9 @@ public class SelectExecutionPlanner {
    * excludes something that can drop, add or reorder a row between the fetch and the LIMIT:
    * <ul>
    *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
-   *       holds for every row the function returns - a filter could reject a row the limit counted;</li>
+   *       holds for every row the function returns - a filter could reject a row the limit counted. The exception is a
+   *       property equality the function was handed to decide before the load ({@code recordConditions}, issue #11069): it
+   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter;</li>
    *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
    *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in, or than the
    *       {@code @rid} order it was asked to produce them in (issue #9909);</li>
@@ -4387,8 +4541,9 @@ public class SelectExecutionPlanner {
    * caller. The type filter that follows the fetch is the function's to respect: it is told the target and keeps the limit
    * only when every record it can return passes.
    */
-  private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual, final QueryPlanningInfo info,
-      final IndexedFunctionPushdown.Order order, final CommandContext context) {
+  private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual,
+      final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
+      final CommandContext context) {
     if (info.limit == null || info.deferredLetWhereClause != null)
       return -1;
     if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
@@ -4396,7 +4551,7 @@ public class SelectExecutionPlanner {
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
     // empty), so the function's condition is the very instance the block holds
     for (final BooleanExpression condition : residual.getSubBlocks())
-      if (condition != function)
+      if (condition != function && !containsInstance(recordConditions, condition))
         return -1;
     if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
       return -1;
@@ -4476,6 +4631,40 @@ public class SelectExecutionPlanner {
     return pushable == null ? List.of() : pushable;
   }
 
+  /**
+   * The conjuncts of {@code block} an indexed function may decide on its candidates through an index before it loads their
+   * records (issue #11069): {@code property = value}, the property bare on the left and the value known before the fetch, as
+   * for the {@code @rid} conditions. {@code WHERE SEARCH_INDEX(...) = true AND tenant = :t} used to load every match until
+   * enough of them passed the filter, which for a restrictive tenant is nearly all of them. One conjunct per property: a
+   * second one on the same property stays a plain filter. Whether an index can list the records, and whether the listing is
+   * exact, is the search's to find out at each execution.
+   */
+  private static List<BinaryCondition> pushableRecordConditions(final AndBlock block, final BinaryCondition function,
+      final QueryPlanningInfo info) {
+    List<BinaryCondition> pushable = null;
+    for (final BooleanExpression condition : block.getSubBlocks()) {
+      if (condition == function || !(condition instanceof final BinaryCondition binary)
+          || !(binary.getOperator() instanceof EqualsCompareOperator) || binary.getRight() == null)
+        continue;
+      final String property = RecordPredicateRidSet.propertyName(binary.getLeft());
+      if (property == null || property.isEmpty() || property.charAt(0) == '@' || property.charAt(0) == '$'
+          || !isKnownBeforeFetch(binary, info) || bindsProperty(pushable, property))
+        continue;
+      if (pushable == null)
+        pushable = new ArrayList<>(2);
+      pushable.add(binary);
+    }
+    return pushable == null ? List.of() : pushable;
+  }
+
+  private static boolean bindsProperty(final List<BinaryCondition> conditions, final String property) {
+    if (conditions != null)
+      for (final BinaryCondition condition : conditions)
+        if (property.equals(RecordPredicateRidSet.propertyName(condition.getLeft())))
+          return true;
+    return false;
+  }
+
   private static boolean isKnownBeforeFetch(final BooleanExpression condition, final QueryPlanningInfo info) {
     if (condition instanceof final BinaryCondition binary)
       return binary.getRight().isLiteral(true) || isVariableKnownBeforeFetch(binary.getRight().getMathExpression(), info);
@@ -4501,7 +4690,7 @@ public class SelectExecutionPlanner {
    * By identity: the pushed conditions were taken from this very block, and two conjuncts can be equal without being the
    * same one (a condition written twice is pushed twice and removed twice, which is still the same filter).
    */
-  private static boolean containsInstance(final List<BooleanExpression> conditions, final BooleanExpression condition) {
+  private static boolean containsInstance(final List<? extends BooleanExpression> conditions, final BooleanExpression condition) {
     for (final BooleanExpression c : conditions)
       if (c == condition)
         return true;
@@ -5776,8 +5965,9 @@ public class SelectExecutionPlanner {
 
     AndBlock indexKeyValue = new AndBlock();
     BinaryCondition additionalRangeCondition = null;
-    // Conditions answered through the lower-casing of a CI index key, which must still be checked on what the index returns
-    List<BooleanExpression> lowerCaseRewrites = null;
+    // Conditions the index answers with a superset of their rows, which must still be checked on what the index returns: one answered
+    // through the lower-casing of a CI index key, or one the index looks up by a part of its operand (a CONTAINSALL, issue #10757)
+    List<BooleanExpression> rechecks = null;
 
     for (String indexField : indexFields) {
       final String baseFieldName = Index.basePropertyName(indexField);
@@ -5805,10 +5995,10 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
-          if (ciCollation && needsLowerCaseResidual(singleExp, info)) {
-            if (lowerCaseRewrites == null)
-              lowerCaseRewrites = new ArrayList<>(2);
-            lowerCaseRewrites.add(singleExp);
+          if (singleExp.needsRecheckAfterIndexLookup() || (ciCollation && needsLowerCaseResidual(singleExp, info))) {
+            if (rechecks == null)
+              rechecks = new ArrayList<>(2);
+            rechecks.add(singleExp);
           }
           if (singleExp instanceof BetweenCondition
               || (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator())) {
@@ -5841,6 +6031,9 @@ public class SelectExecutionPlanner {
       if (indexFieldFound) {
         found = true;
       }
+      // an answer that read a parameter's value holds for this binding only
+      if (info.isPlanDependsOnValue())
+        planDependsOnInputParameters = true;
       if (!indexFieldFound || rangeOp) {
         break;
       }
@@ -5856,9 +6049,9 @@ public class SelectExecutionPlanner {
       // The user wrote field.toLowerCase() <op> X, but a CI index lower-cases X as well before probing, and its keys hold
       // the lower-cased field. That answers the question only when X is already lower case (and a range over 'A'..'C'
       // becomes one over 'a'..'c'), so the condition stays as a filter on what the index returns (issue #8560)
-      if (lowerCaseRewrites != null)
-        for (final BooleanExpression rewrite : lowerCaseRewrites)
-          blockCopy.getSubBlocks().add(rewrite.copy());
+      if (rechecks != null)
+        for (final BooleanExpression recheck : rechecks)
+          blockCopy.getSubBlocks().add(recheck.copy());
       return new IndexSearchDescriptor((RangeIndex) index, indexKeyValue, additionalRangeCondition, blockCopy);
     }
 
@@ -5873,14 +6066,23 @@ public class SelectExecutionPlanner {
    * the unindexed query agree. A double bound on a FLOAT key is not one of them: the FLOAT reads as equal to the double that
    * narrows to it on both sides (issue #8882), and the ordering operators follow that rule too.
    */
-  private static boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
+  private boolean hasLossyDecimalLiteralBound(final BooleanExpression expression, final DocumentType type, final String field,
       final CommandContext context) {
     final Property property = type.getPropertyIfExists(field);
+    // A literal is a parameter by the time the statement is planned (SQLLiteralParameterizer), so the bound of a DATETIME_SECOND,
+    // DATETIME_MICROS or DATETIME_NANOS key is read from the parameter: those keys count seconds, microseconds or nanoseconds, a
+    // number is milliseconds, and the index cannot hold one that falls between two of its keys (issue #10560). The DATETIME key
+    // counts milliseconds and maps such a bound at run time, see IntegralKeyBound#boundTypeOf
+    final boolean readsParameters = property != null
+        && (property.getType() == Type.DATETIME_SECOND || property.getType() == Type.DATETIME_MICROS
+        || property.getType() == Type.DATETIME_NANOS);
     if (expression instanceof BinaryCondition condition)
-      return isLossyBound(literalValue(condition.getRight(), context), property);
+      return isLossyBound(readsParameters ? boundValue(condition.getRight(), context) : literalValue(condition.getRight(), context),
+          property);
     if (expression instanceof BetweenCondition between)
-      return isLossyBound(literalValue(between.getSecond(), context), property)
-          || isLossyBound(literalValue(between.getThird(), context), property);
+      return isLossyBound(readsParameters ? boundValue(between.getSecond(), context) : literalValue(between.getSecond(), context),
+          property)
+          || isLossyBound(readsParameters ? boundValue(between.getThird(), context) : literalValue(between.getThird(), context), property);
     if (expression instanceof InCondition in) {
       final MathExpression right = in.getRightMathExpression();
       if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
@@ -5912,7 +6114,45 @@ public class SelectExecutionPlanner {
     return expression != null && expression.isLiteral() ? expression.execute((Result) null, context) : null;
   }
 
+  /**
+   * The value of a literal, or of a bare input parameter, which makes the plan depend on the parameters it was given: a plan that
+   * left a bound out of the index because of its value must not be reused for another one.
+   */
+  private Object boundValue(final Expression expression, final CommandContext context) {
+    if (expression == null)
+      return null;
+    if (expression.isLiteral())
+      return expression.execute((Result) null, context);
+    if (!isBareInputParameter(expression))
+      return null;
+    final Object value = expression.execute((Result) null, context);
+    if (value instanceof Number)
+      // only a number is judged here, so a datetime parameter keeps the plan reusable
+      planDependsOnInputParameters = true;
+    return value;
+  }
+
   private static boolean isLossyBound(final Object bound, final Property property) {
+    if (property != null && bound instanceof Number number && !(number instanceof BigDecimal)) {
+      // A number is epoch milliseconds in SQL, and these keys count seconds, microseconds or nanoseconds: the index would convert a
+      // fraction of a millisecond, a NaN, an infinity or (for seconds) a millisecond inside a second to the key it falls in, where
+      // the scan compares the number exactly (issue #10560). A DATETIME key counts milliseconds and maps such a bound onto the keys
+      // that bound the same set, see IntegralKeyBound#boundTypeOf
+      final boolean wholeMilliseconds = number instanceof Byte || number instanceof Short || number instanceof Integer
+          || number instanceof Long || number instanceof BigInteger;
+      switch (property.getType()) {
+      case DATETIME_MICROS, DATETIME_NANOS -> {
+        if (!wholeMilliseconds)
+          return true;
+      }
+      case DATETIME_SECOND -> {
+        if (!wholeMilliseconds || (!(number instanceof BigInteger) && number.longValue() % 1000L != 0L))
+          return true;
+      }
+      default -> {
+      }
+      }
+    }
     if (bound instanceof BigDecimal)
       // a null property is unreachable (an index needs a declared property); treated as lossy to stay on the safe scan path
       // any non-DECIMAL key type (DOUBLE, FLOAT, INTEGER, LONG) would round or truncate the bound; the scan is slower but exact

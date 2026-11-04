@@ -21,15 +21,18 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -41,6 +44,7 @@ import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.DatabaseUserContext;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.UserAlreadyExistsException;
@@ -55,6 +59,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * gRPC admin service for server and database administration.
@@ -271,8 +276,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       final String name = req.getName(); // proto should define 'name' for the DB
       // Exact name, like createDatabase / dropDatabase (issue #7413): what this reports as existing is what a
-      // create of the same name would refuse.
-      final boolean exists = server.existsDatabase(name) && (user == null || user.canAccessToDatabase(name));
+      // create of the same name would refuse. Open or not (issue #11068): one closed for idleness, or not opened at startup,
+      // exists, and its first request opens it.
+      final boolean exists = server.isDatabaseAvailable(name) && (user == null || user.canAccessToDatabase(name));
 
       return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
@@ -291,7 +297,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // this used to be let CreateDatabase("MyDb") answer OK for an existing "mydb" and then DropDatabase("MyDb")
       // fail inside the drop (issue #7413). An empty OK told a provisioning tool nothing either way; now the
       // strict default refuses a taken name as HTTP does, and the idempotent form says which happened.
-      if (server.existsDatabase(name)) {
+      if (server.isDatabaseAvailable(name)) {
         if (req.getIfNotExists())
           return CreateDatabaseResponse.newBuilder().setCreated(false).build();
         throw new ServerControlPlane.AlreadyExistsException("Database '" + name + "' already exists");
@@ -305,9 +311,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         // The shared ServerDatabase the create returned - don't close it
         db.transaction(() -> {
           final Schema s = db.getSchema();
-          if (!existsVertexType(s, "V"))
+          if (!s.existsType("V"))
             s.createVertexType("V");
-          if (!existsEdgeType(s, "E"))
+          if (!s.existsType("E"))
             s.createEdgeType("E");
         });
       }
@@ -324,7 +330,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final String name = req.getName();
 
       // See createDatabase: exact name, strict by default, explicit outcome either way (issue #7413).
-      if (!server.existsDatabase(name)) {
+      if (!server.isDatabaseAvailable(name)) {
         if (req.getIfExists())
           return DropDatabaseResponse.newBuilder().setDropped(false).build();
         throw new ServerControlPlane.NotFoundException("Database '" + name + "' does not exist");
@@ -350,7 +356,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (user != null && !user.canAccessToDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      if (!server.existsDatabase(name))
+      if (!server.isDatabaseAvailable(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it
@@ -358,41 +364,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (db == null)
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      final Schema schema = db.getSchema();
-
-      // Count classes
-      int classes = 0;
-      try {
-        classes = schema.getTypes().size();
-      } catch (Throwable ignore) {
-      }
-
-      // Count indexes (Index[] in your build)
-      int indexes = 0;
-      try {
-        Index[] idx = schema.getIndexes();
-        indexes = idx != null ? idx.length : 0;
-      } catch (Throwable ignore) {
-      }
-
-      // Approximate record count (fast-ish; adjust to your needs)
-      final long records = approximateRecordCount(db);
-
-      // Infer db kind: "graph" if any vertex type exists
-      String type = "document";
-      try {
-        final boolean hasVertexTypes = schema.getTypes().stream()
-            .anyMatch(t -> t instanceof VertexType);
-        if (hasVertexTypes)
-          type = "graph";
-      } catch (Exception e) {
-        // Keep default "document" type if schema inspection fails
-      }
-
-      return GetDatabaseInfoResponse.newBuilder()
-          .setDatabase(name)
-          .setClasses(classes).setIndexes(indexes).setRecords(records).setType(type)
-          .build();
+      // The census is read with the caller bound, as every other route that reads a database does, and covers only the types the
+      // caller may read: a type its per-type permissions deny adds nothing to the classes, the indexes or the records, and is not
+      // named among the uncounted ones. Unbound, the answer rested on the engine happening not to gate a count
+      final DatabaseInternal database = (DatabaseInternal) db;
+      return user == null ? databaseInfo(database, name) : DatabaseUserContext.runAs(database, user, () -> databaseInfo(database, name));
     });
   }
 
@@ -1310,8 +1286,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // reproduces that gate. Found along the cause chain, as the mapper does: the engine wraps what it raises (issue
     // #10089). And a statement stopped on request is CANCELLED and named as a QueryTerminatedException whatever else the
     // chain carries (issue #9689): decided before the table, whose NeedRetryException arm would otherwise answer the
-    // conflict its rollback ran into as a retryable UNAVAILABLE
-    if (ServerIsNotTheLeaderException.refusalIn(e) != null || ErrorCategory.of(e) == ErrorCategory.TERMINATED) {
+    // conflict its rollback ran into as a retryable UNAVAILABLE. A database named by the operation that is no database, or that the
+    // server holds (a restore, a 'close database', a drop in progress), is answered as the data plane answers it, NOT_FOUND or
+    // UNAVAILABLE named by its class (issue #10795): no arm of the table knows either, and the catch-all answered both INTERNAL, a
+    // server fault, for an 'open database' or a backup of a mistyped name
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (ServerIsNotTheLeaderException.refusalIn(e) != null || category == ErrorCategory.TERMINATED
+        || category == ErrorCategory.DATABASE_NOT_FOUND || category == ErrorCategory.UNAVAILABLE) {
       final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }
@@ -1471,44 +1452,73 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * Open database for read ops.
    */
   private Database openDatabase(final String name) {
-    return server.getDatabase(name);
+    return server.getDatabaseForClient(name);
   }
 
   /**
-   * Approximate record count with a quick pass across types.
+   * The records of a database's types and the types whose records could not be counted (issue #10877): the total is the sum
+   * over the counted ones, so a client is told it is short instead of being handed a smaller number as the database's.
    */
-  private long approximateRecordCount(Database db) {
-    long total = 0L;
-    try {
-      for (DocumentType t : db.getSchema().getTypes()) {
-        try {
-          // exact=false when supported; otherwise this counts exactly
-          total += db.countType(t.getName(), false);
-        } catch (Throwable ignore) {
-        }
+  private record RecordCount(long records, List<String> uncountedTypes) {
+  }
+
+  /**
+   * Counts the records of every type of {@code types}, the bucket counters rather than a scan ({@code countType(name, false)}).
+   * A type dropped since the snapshot is no type of the database any more and is left out; a type that is there and cannot be
+   * counted - a TimeSeries type whose engine did not open, for one - is named in the answer and logged, never folded into the
+   * total as zero (issue #10877).
+   */
+  /**
+   * One snapshot of the readable types answers the classes, the kind and the census of the count, so the three cannot describe two
+   * schemas. Nothing here is caught: a schema that cannot be read fails the call through respond(), which classifies it, rather than
+   * answering zero classes as if the database had none (issue #10877).
+   */
+  private GetDatabaseInfoResponse databaseInfo(final DatabaseInternal db, final String name) {
+    final Collection<? extends DocumentType> types = SecurityHelper.readableTypes(db);
+
+    boolean graph = false;
+    for (final DocumentType t : types)
+      if (t instanceof VertexType) {
+        graph = true;
+        break;
       }
-    } catch (Throwable ignore) {
+
+    // the indexes of the readable types; a manual index belongs to no type and is counted as it always was
+    int indexes = 0;
+    for (final Index index : db.getSchema().getIndexes()) {
+      final String typeName = index.getTypeName();
+      if (typeName == null || !db.getSchema().existsType(typeName) || SecurityHelper.isReadable(db, db.getSchema().getType(typeName)))
+        ++indexes;
     }
-    return total;
+
+    final RecordCount count = approximateRecordCount(db, types);
+
+    return GetDatabaseInfoResponse.newBuilder()
+        .setDatabase(name)
+        .setClasses(types.size()).setIndexes(indexes).setRecords(count.records()).setType(graph ? "graph" : "document")
+        .addAllUncountedTypes(count.uncountedTypes())
+        .build();
   }
 
-  private boolean existsVertexType(Schema s, String name) {
-
-    try {
-      return s.existsType(name);
-    } catch (Throwable t) {
-      return false;
+  private RecordCount approximateRecordCount(final Database db, final Collection<? extends DocumentType> types) {
+    long total = 0L;
+    List<String> uncounted = List.of();
+    for (final DocumentType t : types) {
+      final String typeName = t.getName();
+      try {
+        total += db.countType(typeName, false);
+      } catch (final RuntimeException e) {
+        if (!db.getSchema().existsType(typeName))
+          // dropped by a concurrent DDL between the snapshot and the count
+          continue;
+        LogManager.instance().log(this, Level.FINE, "getDatabaseInfo: cannot count the records of type '%s' of database '%s': %s",
+            null, typeName, db.getName(), e.toString());
+        if (uncounted.isEmpty())
+          uncounted = new ArrayList<>();
+        uncounted.add(typeName);
+      }
     }
-  }
-
-  private boolean existsEdgeType(Schema s, String name) {
-
-    try {
-
-      return s.existsType(name);
-    } catch (Throwable t) {
-      return false;
-    }
+    return new RecordCount(total, uncounted);
   }
 
   // ---------- Server info helpers using direct API calls ----------

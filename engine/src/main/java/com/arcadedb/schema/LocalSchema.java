@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -29,6 +30,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
@@ -37,19 +39,23 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.event.*;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
@@ -61,13 +67,14 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.hash.HashIndex;
-import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
+import com.arcadedb.index.hash.HashIndex;
+import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
+import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
@@ -93,6 +100,9 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -102,6 +112,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -331,6 +343,13 @@ public class LocalSchema implements Schema {
   // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
   // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
   protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
+  // The index entries the running load read from schema.json (file and logical names): what sweepOrphanBucketIndexFiles() must
+  // not touch. Filled and emptied by the loading thread, within one load
+  private final       Set<String>                            indexEntriesReadAtLoad        = new HashSet<>();
+  // Set once the load of the open has published: the orphan sweep runs only before it, when no build of this process can be in flight
+  private volatile    boolean                                openLoadDone;
+  // Whether the running load read schema.prev.json because schema.json was missing, empty or unreadable
+  private             boolean                                schemaReadFromPreviousCopy;
   // #10046: per type, the definitions of the bucket indexes whose file the last load refused for a missing header page,
   // keyed by file name. Re-emitted by LocalDocumentType.toJSON() so a save does not lose them, see readConfiguration().
   private volatile    Map<String, Map<String, JSONObject>>   unavailableIndexDefinitions   = Map.of();
@@ -420,8 +439,13 @@ public class LocalSchema implements Schema {
    */
   private final       AtomicReference<Thread>                stagingThread                 = new AtomicReference<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
-  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
-  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
+  protected final     Map<String, MaterializedViewImpl>     materializedViews             = new BackingTypeRegistry<>();
+  protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new BackingTypeRegistry<>();
+  /**
+   * The owner of every backing type by the type's name, rebuilt by the two registries above on every change (issue #11020). Read on
+   * every record write: empty, the common case, it costs one volatile read.
+   */
+  private volatile    Map<String, BackingTypeOwner>         backingTypeOwners             = Map.of();
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   // Concurrent: its emptiness is read on every record write, to skip the trigger walk on a database without triggers
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new ConcurrentHashMap<>();
@@ -462,6 +486,8 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
+  // True when the last readConfiguration() built the schema from schema.prev.json instead of schema.json (issue #11224)
+  private volatile    boolean                                loadedFromPreviousSchema      = false;
   // statistics.json reflects the last graceful close: applied once on open, never over live state on a later reload.
   private             boolean                                storedStatisticsApplied     = false;
   private             boolean                                multipleUpdate                = false;
@@ -487,6 +513,11 @@ public class LocalSchema implements Schema {
    */
   boolean isTypeBeingDropped() {
     return typeBeingDropped != null;
+  }
+
+  /** Whether the drop in progress is the one of {@code typeName} itself. Read under the database write lock, as it is written. */
+  boolean isTypeBeingDropped(final String typeName) {
+    return typeName.equals(typeBeingDropped);
   }
   /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
   private             int                                    recordingDepth                = 0;
@@ -542,6 +573,7 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
     componentFactory.registerComponent(SparseSegmentComponent.FILE_EXT,
         new SparseSegmentComponent.PaginatedComponentFactoryHandler());
+    componentFactory.registerComponent(SparsePostingLog.FILE_EXT, new SparsePostingLog.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesTagDictionary.DICT_EXT,
         new TimeSeriesTagDictionary.PaginatedComponentFactoryHandler());
@@ -648,9 +680,17 @@ public class LocalSchema implements Schema {
       if (initialize)
         initComponents();
 
-      if (!readConfiguration() && mustKeepPreviousGeneration())
+      indexEntriesReadAtLoad.clear();
+      final boolean schemaRead = readConfiguration();
+      if (!schemaRead && mustKeepPreviousGeneration())
         throw new SchemaException("Cannot load the schema from '" + SCHEMA_FILE_NAME
             + "': it could not be read. The previous schema stays in place, see the log for the cause");
+
+      // Only over a schema read whole: not one read from schema.prev.json (it can predate the last indexes created, whose files
+      // are no leftovers), and not one whose read failed part-way, which leaves only the index entries parsed before the error
+      if (schemaRead && mode == ComponentFile.MODE.READ_WRITE && !openLoadDone && !schemaReadFromPreviousCopy)
+        sweepOrphanBucketIndexFiles();
+      indexEntriesReadAtLoad.clear();
 
       // filesDuringLoad(), not `files`: the components this load built live in the staged file-id overlay until
       // the barrier below, while the live array still carries the previous generation (issues #7962, #7963).
@@ -670,6 +710,7 @@ public class LocalSchema implements Schema {
       // rather than one that has not finished loading itself - or, before issue #7963, than nothing at all.
       commitStagedPublication();
       published = true;
+      openLoadDone = true;
 
       updateSecurity();
     } finally {
@@ -732,6 +773,10 @@ public class LocalSchema implements Schema {
    * accessor below tests this rather than merely "is a load running", so a component in {@link #stagedIndexMap} is
    * reachable only by the load that built it.
    */
+  public boolean isLoadingOnCurrentThread() {
+    return isStagingPublication();
+  }
+
   private boolean isStagingPublication() {
     return stagingThread.get() == Thread.currentThread();
   }
@@ -1462,6 +1507,30 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * One SEVERE line per type index that lacks the bucket index of a bucket of its type, the state a rebuild interrupted by an
+   * earlier version left behind (11 of 16 buckets without a bucket index, the index still reported valid). Such an index misses
+   * every record of those buckets and, for a UNIQUE one, no longer refuses a duplicate there: it is reported as not valid
+   * ({@link TypeIndex#isValid()}), the planners do not use it, and the line names the statement that repairs it.
+   */
+  private void reportIncompleteTypeIndexes(final Map<String, LocalDocumentType> graph) {
+    for (final LocalDocumentType type : graph.values())
+      for (final TypeIndex typeIndex : type.getAllIndexes(false)) {
+        if (typeIndex.isDropped() || !typeIndex.getTypeName().equals(type.getName()))
+          continue;
+        final List<Bucket> missing = typeIndex.getBucketsWithoutIndex();
+        if (!missing.isEmpty()) {
+          final List<String> names = new ArrayList<>(missing.size());
+          for (final Bucket bucket : missing)
+            names.add(bucket.getName());
+          LogManager.instance().log(this, Level.SEVERE,
+              "Index '%s' on type '%s' has no bucket index for %d of its %d buckets %s: it is NOT valid, queries do not use it and a "
+                  + "UNIQUE constraint is not enforced on those buckets. Run `REBUILD INDEX `%s`` to repair it", null,
+              typeIndex.getName(), type.getName(), missing.size(), type.getBuckets(false).size(), names, typeIndex.getName());
+        }
+      }
+  }
+
+  /**
    * Links every {@code .bfidx} bloom filter component (#5517) to the compacted index it was written for, matching it
    * by name. Only a compacted index the load claimed gets one: an orphan is about to be dropped anyway, and an
    * unattached filter is inert, since nothing but its compacted index ever probes it.
@@ -1470,6 +1539,88 @@ public class LocalSchema implements Schema {
     for (final Component component : snapshot)
       if (component instanceof LSMTreeIndexCompacted compacted && compacted.getMainIndex() != null)
         compacted.attachBloomFilter();
+  }
+
+  /**
+   * Drops the files of LSM bucket indexes no index of the schema references: an index build or rebuild
+   * that stopped half way (a REBUILD INDEX of an earlier version interrupted by a stop, one of this version stopped before it filled
+   * a bucket index it created) leaves mutable index files on disk with no schema entry. Each open re-created them as type-less
+   * indexes nothing reads, and the ones whose compacted file was already gone logged an "Invalid sub-index" line advising a
+   * REBUILD of a name no statement can reach.
+   * <p>
+   * Only what is proven unreferenced is dropped, and only by the first load of an open, when no build of this process can be in
+   * flight: a plain LSM_TREE index (never a bucket, never a wrapper index, never a compacted file, which
+   * {@link #sweepOrphanCompactedIndexFiles} reclaims once its mutable file is gone), or a HASH index (the new file of a rebuild in place
+   * stopped before its swap, or the previous one of a rebuild stopped after it), left without a type by the whole load including
+   * its orphan-relinking pass, whose name is no schema entry's, and whose name is the {@code <bucket>_<number>} name of a bucket
+   * index of a bucket that exists (a manual index is named by its creator). Not on an HA node, where the files of an index being
+   * created by the leader can arrive before its schema entry.
+   */
+  private void sweepOrphanBucketIndexFiles() {
+    // A follower restarted in the middle of a chunked compaction holds the delivered files of the new index before the entry
+    // that names them (issue #11240). The server says so through the open (DatabaseFactory.setReplicatedNode): the database's
+    // configuration alone cannot, its configuration.json replaces what the opener put there. The settings are read too, on the
+    // rule the HA plugin starts on (the flag, or a server list alone), for a node configured JVM-wide
+    if (database.getEmbedded() instanceof LocalDatabase local && local.isReplicatedNode())
+      return;
+    final ContextConfiguration configuration = database.getConfiguration();
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled())
+      return;
+
+    // The FILES, not the index map: the previous file of an index that never compacted is named after the index, and the live
+    // index re-keyed under that logical name (restoreLogicalIndexName) has already taken its place in the map
+    for (final Component component : filesDuringLoad()) {
+      // a plain LSM_TREE bucket index, or a HASH one (a rebuild in place of a hash index fills a new file before it swaps it in)
+      final IndexInternal orphan;
+      if (component instanceof LSMTreeIndexMutable mutable) {
+        final LSMTreeIndex lsm = mutable.getMainIndex();
+        if (lsm == null || lsm.getClass() != LSMTreeIndex.class)
+          continue;
+        orphan = lsm;
+      } else if (component instanceof HashIndexBucket hashBucket && hashBucket.getMainComponent() instanceof HashIndex hashIndex)
+        orphan = hashIndex;
+      else
+        continue;
+      if (orphan.getTypeName() != null)
+        continue;
+      final String fileName = component.getName();
+      if (indexEntriesReadAtLoad.contains(fileName))
+        continue;
+      final Bucket bucket = bucketOfBucketIndexName(fileName);
+      if (bucket == null || getBucketOwner(bucket.getFileId()) == null)
+        continue;
+
+      final int fileId = component.getFileId();
+      LogManager.instance().log(this, Level.WARNING,
+          "Dropping index file '%s' (fileId=%d) of bucket '%s': no index of the schema references it, it was left behind by an "
+              + "index build or rebuild that did not complete", null, fileName, fileId, bucket.getName());
+      try {
+        database.getPageManager().deleteFile(database, fileId);
+        database.getFileManager().dropFile(fileId);
+        removeFile(fileId);
+        // only the names that still resolve to this very index: the live one may answer to the same logical name
+        for (final String name : new String[] { orphan.getName(), fileName })
+          if (lookupIndex(name) == orphan)
+            removeIndexDuringLoad(name);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on dropping the unreferenced index file '%s'", e, fileName);
+      }
+    }
+  }
+
+  /** The bucket a bucket index is named after ({@code <bucket>_<number>}, a compaction adds one more number), or null. */
+  private Bucket bucketOfBucketIndexName(final String indexName) {
+    String candidate = indexName;
+    for (int i = 0; i < 4; i++) {
+      final String base = LSMTreeIndexAbstract.compactionBaseName(candidate);
+      if (base.equals(candidate))
+        return null;
+      final Bucket bucket = lookupBucket(base);
+      if (bucket != null)
+        return bucket;
+      candidate = base;
+    }
+    return null;
   }
 
   /**
@@ -1538,6 +1689,34 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * The file names of the UNIQUE bucket indexes the last load could not serve for a missing header page (issue #11258) and
+   * that no index on the same properties has replaced since. A unique index in that state enforces nothing: the node that
+   * loaded it accepts duplicates a healthy peer would refuse, and no local step can tell a half-arrived compaction file
+   * from one a power loss emptied. An HA node reads this to re-install the database from its cluster.
+   */
+  public List<String> getUnavailableUniqueIndexNames() {
+    final Map<String, Map<String, JSONObject>> unavailable = unavailableIndexDefinitions;
+    if (unavailable.isEmpty())
+      return List.of();
+
+    final List<String> names = new ArrayList<>();
+    for (final Map.Entry<String, Map<String, JSONObject>> typeEntry : unavailable.entrySet()) {
+      final LocalDocumentType type = existsType(typeEntry.getKey()) ? getType(typeEntry.getKey()) : null;
+      for (final Map.Entry<String, JSONObject> entry : typeEntry.getValue().entrySet()) {
+        final JSONObject definition = entry.getValue();
+        if (!definition.getBoolean("unique", false))
+          continue;
+        final List<String> properties = definition.getJSONArray("properties", new JSONArray()).toListOfStrings();
+        // Replaced by REBUILD INDEX or CREATE INDEX since the load: the unique index is served again
+        if (type != null && !properties.isEmpty() && !type.getIndexesByProperties(properties).isEmpty())
+          continue;
+        names.add(entry.getKey());
+      }
+    }
+    return names;
+  }
+
+  /**
    * The compaction base names ({@link LSMTreeIndexAbstract#compactionBaseName}) of the mutable LSM index files the file
    * manager holds and this load did not turn into a component: the ones refused for a missing header (issue #10046).
    */
@@ -1561,6 +1740,27 @@ public class LocalSchema implements Schema {
   private static final String BUCKETLESS_TYPE_WARNING_PREFIX = "bucketless-type:";
   // KEY PREFIX IN reportedUpgradeWarnings: A LIGHTWEIGHT EDGE TYPE WITH A CONSTRAINT IT CANNOT APPLY, ACCEPTED BEFORE #9846
   private static final String UNENFORCED_LIGHTWEIGHT_CONSTRAINT_WARNING_PREFIX = "unenforced-lightweight-constraint:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A CONTINUOUS AGGREGATE CREATED BEFORE #10804, WITH NO INDEX ON ITS BUCKET COLUMN
+  private static final String UNINDEXED_AGGREGATE_WARNING_PREFIX = "unindexed-continuous-aggregate:";
+  // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LINKED BELOW A BACKING TYPE BEFORE #11204
+  private static final String BACKING_SUBTYPE_WARNING_PREFIX     = "subtype-of-backing-type:";
+
+  /**
+   * Issue #10804: names, once per aggregate for the life of this schema, a continuous aggregate whose refresh scans its whole backing
+   * type, with the statements that index it. Never breaks the load: the warning is advice.
+   */
+  private void warnAboutUnindexedContinuousAggregate(final ContinuousAggregateImpl aggregate) {
+    final String warning;
+    try {
+      warning = aggregate.getUpgradeWarning();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot tell whether continuous aggregate '%s' has an index on its bucket column", e,
+          aggregate.getName());
+      return;
+    }
+    if (warning != null && reportedUpgradeWarnings.add(UNINDEXED_AGGREGATE_WARNING_PREFIX + aggregate.getName()))
+      LogManager.instance().log(this, Level.WARNING, "Database '%s': %s", null, database.getName(), warning);
+  }
 
   /**
    * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
@@ -1883,6 +2083,34 @@ public class LocalSchema implements Schema {
     return createBucket(bucketName, pageSize, databasePath, LocalBucket.CURRENT_VERSION);
   }
 
+  /**
+   * Refuses a page a bucket of the file format {@code version} could not write a record into ({@link LocalBucket#minimumPageSize}),
+   * naming the setting the size comes from when the caller did not choose one (issue #10876). Asked before anything is created, so
+   * the refusal comes where the size was given, and not at the first insert into a bucket that cannot take one.
+   */
+  public static void checkBucketPageSize(final String bucketName, final int pageSize, final int version) {
+    final int minimum = LocalBucket.minimumPageSize(version);
+    if (pageSize < minimum)
+      throw new SchemaException("Cannot create bucket '" + bucketName + "' with a page size of " + pageSize
+          + " bytes: the minimum is " + minimum + " bytes, the room a page needs for its header, its slot table and one record. "
+          + "Without an explicit page size it comes from the database setting '" + (version >= LocalBucket.EXTERNAL_BUCKET_VERSION ?
+          GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE.getKey() :
+          GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getKey()) + "'");
+  }
+
+  /**
+   * {@link #checkBucketPageSize} for the paired EXTERNAL-property bucket of {@code primaryBucketName}, when it would have to be
+   * created: a caller about to attach a primary bucket to a type with EXTERNAL properties asks it first, so a refused pairing
+   * cannot leave the primary bucket attached without its pair (issue #10876).
+   */
+  public void checkPairedExternalBucketPageSize(final String primaryBucketName) {
+    final String externalName = InternalBucketNaming.externalPropertyBucketName(primaryBucketName);
+    if (lookupBucket(externalName) == null)
+      checkBucketPageSize(externalName,
+          database.getConfiguration().getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE),
+          LocalBucket.EXTERNAL_BUCKET_VERSION);
+  }
+
   /** Creates the bucket file under {@code parentDirectory} instead of the database directory; null/empty falls back. */
   public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory) {
     return createBucket(bucketName, pageSize, parentDirectory, LocalBucket.CURRENT_VERSION);
@@ -1897,6 +2125,7 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     checkValidBucketName(bucketName);
+    checkBucketPageSize(bucketName, pageSize, version);
 
     if (lookupBucket(bucketName) != null)
       throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
@@ -2208,6 +2437,21 @@ public class LocalSchema implements Schema {
 
   @Override
   public void dropIndex(final String indexName) {
+    dropIndexes(List.of(indexName));
+  }
+
+  /**
+   * Drops several indexes as ONE statement: a refusal from any of them leaves every one of them in place (issue #10589).
+   * <p>
+   * {@code DROP PROPERTY ... FORCE} and {@code TRUNCATE TYPE} drop the indexes of a type one after the other; asked one at a time,
+   * the verdict of the second came after the first was already gone. The guards are asked of every index, and the files of all of
+   * them are probed and locked once, before the first is dropped.
+   */
+  public void dropIndexes(final Collection<String> indexNames) {
+    if (indexNames.isEmpty())
+      // nothing to drop is no schema change: no session, no save of schema.json, no schema entry shipped by HA
+      return;
+
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // The guard and the drop run in one schema session, under the write lock that orders every other schema change (#9848,
@@ -2215,8 +2459,24 @@ public class LocalSchema implements Schema {
     // concurrent ALTER TYPE ... WITH unique = true changes before the drop gets the lock, and the drop would then remove the
     // index that ALTER had just built.
     recordFileChanges(() -> {
-      checkIndexIsNotBackingAConstraint(indexName);
-      dropIndexInternal(indexName);
+      // issue #10589: dropping a TypeIndex deletes one file per bucket sub-index, and the first file that refused left every
+      // sub-index before it dropped and saved - the wrapper kept covering a subset of the buckets, and the records of the others
+      // were invisible to it. Everything that can refuse is asked before the first change
+      final List<Integer> fileIds = new ArrayList<>();
+      for (final String indexName : indexNames) {
+        checkIndexIsNotBackingAConstraint(indexName);
+        final IndexInternal index = lookupIndex(indexName);
+        if (index != null)
+          fileIds.addAll(index.getFileIds());
+      }
+
+      executeDroppingFiles(
+          indexNames.size() == 1 ? "drop the index '" + indexNames.iterator().next() + "'" : "drop the indexes " + indexNames,
+          fileIds, () -> {
+            for (final String indexName : indexNames)
+              dropIndexInternal(indexName);
+            return null;
+          });
       return null;
     });
   }
@@ -2275,6 +2535,7 @@ public class LocalSchema implements Schema {
             // LocalDocumentType.addBucketInternal(). A plain indexMap.remove() would be a no-op against a staged
             // entry and commitStagedPublication() would then publish the dropped index as live.
             removeIndexDuringLoad(indexName);
+            database.getTransactionManager().indexUnregistered(indexName);
 
             if (index.getTypeName() != null) {
               final LocalDocumentType type = getType(index.getTypeName());
@@ -2357,13 +2618,36 @@ public class LocalSchema implements Schema {
 
   @Override
   public Trigger[] getTriggersForType(final String typeName) {
+    // Either side may be an alias (#10750): the argument because the caller typed it, the stored name because a schema written
+    // before triggers were bound to the type's own name kept the one the statement used
+    final String canonicalTypeName = TypeNameDependant.canonicalNameOf(this, typeName);
     return triggers.values().stream()
-        .filter(t -> t.getTypeName().equals(typeName))
+        .filter(t -> canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(this, t.getTypeName())))
         .toArray(Trigger[]::new);
   }
 
+  /**
+   * The trigger bound to the NAME OF ITS TYPE, never to the alias the statement or the schema file named it with (#10750). An
+   * alias is a second name of the type, not a part of it: it can be removed, and after a {@code DROP TYPE} it names nothing until
+   * an unrelated type takes it. A trigger that stored the alias was missed by the cleanup of the drop, which compares the type's
+   * own name, and bound itself to that later type at the next open; it was also missing from the listing of its own type, and
+   * orphaned by an {@code ALTER TYPE ... ALIASES} that removed the alias. Resolved once, where the trigger enters the schema, so
+   * no comparison downstream can be alias-blind. Answers the trigger unchanged when its type does not exist.
+   */
+  private Trigger bindToTypeName(final Trigger trigger) {
+    final LocalDocumentType type = getTypeOrNull(trigger.getTypeName());
+    if (type == null || type.getName().equals(trigger.getTypeName()))
+      return trigger;
+    if (trigger instanceof TriggerImpl impl) {
+      impl.retargetType(type.getName());
+      return impl;
+    }
+    return new TriggerImpl(trigger.getName(), trigger.getTiming(), trigger.getEvent(), type.getName(), trigger.getActionType(),
+        trigger.getActionCode());
+  }
+
   @Override
-  public void createTrigger(final Trigger trigger) {
+  public void createTrigger(final Trigger definition) {
     // A JAVASCRIPT or JAVA trigger is arbitrary host code that fires with the engine's own privileges: the JS
     // executor binds the real database object into a GraalVM context (HostAccess.ALL minus reflection), so the
     // script can reach database.getSecurity().createUser(...) and mint a server-wide admin, and the JAVA executor
@@ -2371,21 +2655,23 @@ public class LocalSchema implements Schema {
     // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
     // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
     // code and keeps the standard schema-level protection.
-    if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT || trigger.getActionType() == Trigger.ActionType.JAVA)
+    if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
     else
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
-      if (triggers.containsKey(trigger.getName())) {
-        throw new AlreadyExistsException(AlreadyExistsException.Kind.TRIGGER, "Trigger '" + trigger.getName() + "' already exists");
+      if (triggers.containsKey(definition.getName())) {
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.TRIGGER, "Trigger '" + definition.getName() + "' already exists");
       }
 
       // Validate type exists
-      if (!existsType(trigger.getTypeName())) {
-        throw new SchemaException("Type '" + trigger.getTypeName() + "' does not exist");
+      if (!existsType(definition.getTypeName())) {
+        throw new SchemaException("Type '" + definition.getTypeName() + "' does not exist");
       }
+
+      final Trigger trigger = bindToTypeName(definition);
 
       // Store trigger
       triggers.put(trigger.getName(), trigger);
@@ -2455,30 +2741,42 @@ public class LocalSchema implements Schema {
     // BACKING TYPE - RUNS UNDER THE WRITE LOCK, SO IT CANNOT INTERLEAVE WITH A CREATE OR AN ALTER OF THE SAME VIEW
     // THAT IS STILL INSTALLING ITS REFRESH RESOURCES: WHAT IS TORN DOWN HERE IS WHAT THE VIEW REMOVED HERE OWNED
     recordFileChanges(() -> {
-      final MaterializedViewImpl view;
-      final MaterializedViewScheduler scheduler;
+      final MaterializedViewImpl registered;
       synchronized (this) {
         // Two drops of the same view can both pass the check above: the second loses here
-        view = materializedViews.remove(viewName);
-        if (view == null)
-          throw new SchemaException("Materialized view '" + viewName + "' not found");
-        scheduler = materializedViewScheduler;
+        registered = materializedViews.get(viewName);
       }
+      if (registered == null)
+        throw new SchemaException("Materialized view '" + viewName + "' not found");
 
-      // Cancel periodic scheduler if active
-      if (scheduler != null)
-        scheduler.cancel(viewName);
+      // #10590: THE DROP OF THE BACKING TYPE IS THE STEP THAT CAN REFUSE, AND IT COMES LAST: EVERYTHING IT WILL ASK IS ASKED, AND
+      // THE LOCKS OF ITS INDEX FILES ARE TAKEN, BEFORE THE VIEW STOPS BEING REGISTERED. A refusal after the removal left a view that
+      // no longer existed beside a backing type that did, which no statement but DROP TYPE could repair
+      return executeDroppingBackingType("drop the materialized view '" + viewName + "'", registered.getBackingTypeName(), registered, () -> {
+        final MaterializedViewImpl view;
+        final MaterializedViewScheduler scheduler;
+        synchronized (this) {
+          view = materializedViews.remove(viewName);
+          if (view == null)
+            throw new SchemaException("Materialized view '" + viewName + "' not found");
+          scheduler = materializedViewScheduler;
+        }
 
-      // Unregister incremental listeners from source types
-      if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-        MaterializedViewBuilder.unregisterListeners(this, view);
+        // Cancel periodic scheduler if active
+        if (scheduler != null)
+          scheduler.cancel(viewName);
 
-      // Drop the backing type (which drops buckets and indexes)
-      if (existsType(view.getBackingTypeName()))
-        dropType(view.getBackingTypeName());
+        // Unregister incremental listeners from source types
+        if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+          MaterializedViewBuilder.unregisterListeners(this, view);
 
-      saveConfiguration();
-      return null;
+        // Drop the backing type (which drops buckets and indexes)
+        if (existsType(view.getBackingTypeName()))
+          dropType(view.getBackingTypeName());
+
+        saveConfiguration();
+        return null;
+      });
     });
   }
 
@@ -2572,16 +2870,19 @@ public class LocalSchema implements Schema {
     }
 
     recordFileChanges(() -> {
-      synchronized (this) {
-        if (continuousAggregates.remove(name) == null)
-          throw new SchemaException("Continuous aggregate '" + name + "' not found");
-      }
+      // #10590: the refusals of the drop of the backing type are asked before the aggregate stops being registered, see dropMaterializedView
+      return executeDroppingBackingType("drop the continuous aggregate '" + name + "'", ca.getBackingTypeName(), ca, () -> {
+        synchronized (this) {
+          if (continuousAggregates.remove(name) == null)
+            throw new SchemaException("Continuous aggregate '" + name + "' not found");
+        }
 
-      if (existsType(ca.getBackingTypeName()))
-        dropType(ca.getBackingTypeName());
+        if (existsType(ca.getBackingTypeName()))
+          dropType(ca.getBackingTypeName());
 
-      saveConfiguration();
-      return null;
+        saveConfiguration();
+        return null;
+      });
     });
   }
 
@@ -2810,7 +3111,8 @@ public class LocalSchema implements Schema {
     timeSeriesEnginesAwaitingReplay = null;
     // Save dirty configuration before clearing everything. The database's close has saved it already while it was still open
     // (saveBeforeClose()): this only catches a schema closed some other way, e.g. by an open that failed
-    if (dirtyGeneration.get() > savedGeneration) {
+    // Not for a READ_ONLY handle, which never writes its schema (#10507)
+    if (dirtyGeneration.get() > savedGeneration && database.getMode() == ComponentFile.MODE.READ_WRITE) {
       try {
         // Force save even if transaction is active - this is the last chance to save
         LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
@@ -2833,7 +3135,10 @@ public class LocalSchema implements Schema {
       timeSeriesMaintenanceScheduler = null;
     }
 
-    writeStatisticsFile();
+    // A READ_ONLY handle writes nothing to the directory: its counters are those of its open, and a read-write process may have
+    // committed since, so writing them back would rewind the writer's record counts (#10507)
+    if (database.getMode() == ComponentFile.MODE.READ_WRITE)
+      writeStatisticsFile();
     materializedViews.clear();
     continuousAggregates.clear();
     extensions.clear();
@@ -2858,6 +3163,12 @@ public class LocalSchema implements Schema {
     if (timeSeriesMaintenanceScheduler == null)
       timeSeriesMaintenanceScheduler = new TimeSeriesMaintenanceScheduler();
     return timeSeriesMaintenanceScheduler;
+  }
+
+  /** Stops the automatic maintenance of a TIMESERIES type, without starting a scheduler only to find nothing scheduled in it. */
+  synchronized void cancelTimeSeriesMaintenance(final String typeName) {
+    if (timeSeriesMaintenanceScheduler != null)
+      timeSeriesMaintenanceScheduler.cancel(typeName);
   }
 
   private void readStatisticsFile() {
@@ -3050,77 +3361,18 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
 
-        // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
-        for (final LocalDocumentType parent : superTypes)
-          type.removeSuperType(parent);
-
-        for (final LocalDocumentType sub : type.subTypes) {
-          sub.superTypes.remove(type);
-          for (final LocalDocumentType parent : superTypes)
-            sub.addSuperType(parent, false);
-        }
-        // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
-        // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
-        if (!type.subTypes.isEmpty())
-          typesChanged();
-
-        // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
-        // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
-        // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
-        // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
-        // PR #5946).
-        for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
-          dropIndexInternal(m.getName());
-
-        if (type instanceof LocalVertexType vertexType)
-          // DELETE IN/OUT EDGE FILES
-          database.getGraphEngine().dropVertexType(vertexType);
-
-        // DELETE ALL ASSOCIATED BUCKETS
-        final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
-        for (final Bucket b : buckets) {
-          type.removeBucket(b);
-          dropBucket(b.getName());
-        }
-
-        if (type instanceof LocalTimeSeriesType tsType)
-          tsType.drop();
-
-        // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
-        // second is the damaging one:
-        //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
-        //     type registered under its own name with its buckets and indexes already torn down.
-        //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
-        //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
-        //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
-        //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
-        //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
-        //     left the instance in getTypes(), which is what CHECK DATABASE walks.
-        // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
-        // form: a name that has since been taken over by another type must not be taken away from it.
-        // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
-        // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
-        // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
-        // leaves the type map, which is where the listener is unregistered from
-        for (final Trigger trigger : new ArrayList<>(triggers.values()))
-          if (canonicalTypeName.equals(trigger.getTypeName())) {
-            unregisterTriggerListener(trigger.getName());
-            triggers.remove(trigger.getName());
-          }
-
-        for (final String alias : type.getAliases())
-          typeMap().remove(alias, type);
-
-        if (!typeMap().remove(type.getName(), type))
-          throw new SchemaException("Type '" + typeName + "' not found");
-
-        // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
-        type.events.detachFromDatabase();
-        type.triggerEvents.detachFromDatabase();
-
-        // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
-        reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
+        // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
+        // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
+        // (and saved): the file of an index that cannot be deleted, the lock of a file another thread holds. The files are
+        // probed here, and the locks of the index files taken once, up front, so the drops below re-acquire what is held
+        final List<Integer> filesOfTheDrop = new ArrayList<>();
+        final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+        collectFilesOfTheDrop(type, filesOfTheDrop, indexFilesOfTheDrop);
+        executeDroppingFiles("drop the type '" + type.getName() + "'", filesOfTheDrop, indexFilesOfTheDrop, () -> {
+          dropTypeInternal(type, typeName, canonicalTypeName);
+          return null;
+        });
+        reportFilesTheDropLeft(type.getName(), filesOfTheDrop);
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
@@ -3133,6 +3385,276 @@ public class LocalSchema implements Schema {
       }
       return null;
     });
+  }
+
+  /**
+   * Runs {@code mutation}, the unregistration of {@code owner} - a materialized view or a continuous aggregate - and the drop of
+   * its backing type, after everything the drop of that type is going to ask has been asked: another dependant built from the
+   * backing type, a file that cannot be deleted, the locks of the index files (issue #10590). {@link #dropType} asks the same, but
+   * it is the LAST step of those statements, so a refusal from it came after the owner was no longer registered, with its refresh
+   * scheduler cancelled and its listeners off the source types, while the message claimed that nothing was changed. The owner is
+   * left out of the dependants: it is the one going.
+   * <p>
+   * Called under the database write lock, which every registration of a view or an aggregate takes too, so no dependant can be
+   * added between this verdict and the mutation that follows it.
+   *
+   * @param statement what the statement does, for the refusal message: "drop the materialized view 'V'"
+   */
+  private <RET> RET executeDroppingBackingType(final String statement, final String backingTypeName, final TypeNameDependant owner,
+      final Callable<RET> mutation) {
+    checkTypeHasNoDependants(backingTypeName, owner);
+
+    final List<Integer> filesOfTheDrop = new ArrayList<>();
+    final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
+    final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
+    if (backingType != null)
+      collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
+  }
+
+  /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
+  private void dropTypeInternal(final LocalDocumentType type, final String typeName, final String canonicalTypeName) {
+    // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
+    final List<LocalDocumentType> superTypes = new ArrayList<>(type.superTypes);
+    for (final LocalDocumentType parent : superTypes)
+      type.removeSuperType(parent);
+
+    for (final LocalDocumentType sub : type.subTypes) {
+      sub.superTypes.remove(type);
+      for (final LocalDocumentType parent : superTypes)
+        sub.addSuperType(parent, false);
+    }
+    // THE SUB TYPES NO LONGER INHERIT THE PROPERTIES OF THE DROPPED TYPE: THE LINE ABOVE BYPASSES unlinkSuperType(), SO
+    // AN ANSWER DERIVED FROM THEIR INHERITED PROPERTIES IS RETIRED HERE, NOT LEFT TO THE SAVE AT THE END (#9997)
+    if (!type.subTypes.isEmpty())
+      typesChanged();
+
+    // DELETE ALL ASSOCIATED INDEXES. typeBeingDropped (set above) makes dropIndexInternal() skip the
+    // partition-suitability report it would otherwise trigger on this type - directly, and through the nested
+    // calls TypeIndex.drop() makes back into dropIndex() for each bucket sub-index. Reporting here would
+    // describe a type that no longer exists by the time anyone reads it (issue #5646 review follow-up on
+    // PR #5946).
+    for (final Index m : new ArrayList<>(type.getAllIndexes(true)))
+      dropIndexInternal(m.getName());
+
+    if (type instanceof LocalVertexType vertexType)
+      // DELETE IN/OUT EDGE FILES
+      database.getGraphEngine().dropVertexType(vertexType);
+
+    // DELETE ALL ASSOCIATED BUCKETS
+    final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
+    for (final Bucket b : buckets) {
+      type.removeBucket(b);
+      dropBucket(b.getName());
+    }
+
+    if (type instanceof LocalTimeSeriesType tsType)
+      tsType.drop();
+
+    // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
+    // second is the damaging one:
+    //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
+    //     type registered under its own name with its buckets and indexes already torn down.
+    //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
+    //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
+    //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
+    //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
+    //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
+    //     left the instance in getTypes(), which is what CHECK DATABASE walks.
+    // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
+    // form: a name that has since been taken over by another type must not be taken away from it.
+    // THE TRIGGERS DECLARED ON THE TYPE GO WITH IT, AS ITS INDEXES DO: LEFT BEHIND, A TRIGGER STAYED IN THE SCHEMA NAMING A
+    // TYPE THAT NO LONGER EXISTS, AND BOUND ITSELF TO A TYPE CREATED LATER UNDER THE SAME NAME (issue #10207). As late as it
+    // can be, so a step above that fails leaves the type with its triggers: once every file is gone, and before the type
+    // leaves the type map, which is where the listener is unregistered from
+    // Compared by the name each stored type name resolves to, the aliases being still registered here: a trigger is bound to the
+    // type's own name where it enters the schema (#10750), and this still catches one that is not, whatever wrote it
+    for (final Trigger trigger : new ArrayList<>(triggers.values()))
+      if (canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(this, trigger.getTypeName()))) {
+        unregisterTriggerListener(trigger.getName());
+        triggers.remove(trigger.getName());
+      }
+
+    for (final String alias : type.getAliases())
+      typeMap().remove(alias, type);
+
+    if (!typeMap().remove(type.getName(), type))
+      throw new SchemaException("Type '" + typeName + "' not found");
+
+    // NO READ REACHES ITS LISTENERS ANY MORE: THEY MUST NOT KEEP THE DATABASE ON THE DISPATCH PATH (#9997)
+    type.events.detachFromDatabase();
+    type.triggerEvents.detachFromDatabase();
+
+    // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
+    reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
+  }
+
+  /**
+   * The files {@link #dropType} is going to delete for {@code type} (issue #10421): the sub-indexes of the indexes it declares and
+   * the ones it inherits over its own buckets, its buckets, and the edge buckets of a vertex type. The index files are told apart
+   * because their locks are taken up front. An index naming a type that does not exist is refused here: the drop of it would
+   * fail on that name after the sub types were unlinked.
+   */
+  private void collectFilesOfTheDrop(final LocalDocumentType type, final List<Integer> files, final List<Integer> indexFiles) {
+    final Set<Integer> ownBucketIds = new HashSet<>(type.getBucketIds(false));
+    final Collection<TypeIndex> declared = type.getAllIndexes(false);
+    for (final TypeIndex index : type.getAllIndexes(true)) {
+      boolean declaredHere = false;
+      for (final TypeIndex candidate : declared)
+        // BY IDENTITY: TypeIndex.equals() is content-based and asks the wrapper for its property names
+        if (candidate == index) {
+          declaredHere = true;
+          break;
+        }
+      for (final IndexInternal subIndex : index.getIndexesOnBuckets())
+        if (declaredHere || ownBucketIds.contains(subIndex.getAssociatedBucketId())) {
+          if (subIndex.getTypeName() != null && !existsType(subIndex.getTypeName()))
+            throw new SchemaException("Cannot drop the type '" + type.getName() + "': its index '" + subIndex.getName()
+                + "' names the type '" + subIndex.getTypeName() + "', which does not exist. Nothing was changed");
+          indexFiles.addAll(subIndex.getFileIds());
+        }
+    }
+    files.addAll(indexFiles);
+    // the files of the storage the type owns besides its buckets, the same list a rename moves (issue #10749)
+    type.collectOwnedComponentFiles(files);
+
+    for (final Bucket bucket : type.getBuckets(false)) {
+      files.add(bucket.getFileId());
+      if (type instanceof LocalVertexType)
+        for (final String edgeBucketName : List.of(InternalBucketNaming.outEdgesBucketName(bucket.getName()),
+            InternalBucketNaming.inEdgesBucketName(bucket.getName())))
+          if (existsBucket(edgeBucketName))
+            files.add(getBucketByName(edgeBucketName).getFileId());
+    }
+  }
+
+  /**
+   * Makes up, for a transaction that is about to commit, the entries of every bucket index bound to its type after the transaction
+   * began and covering a bucket it wrote (issue #10588).
+   * <p>
+   * An index build scans the committed state. What a transaction has written and not committed is out of its reach whoever holds
+   * it - another session, or an outer frame of the builder's own stack - and the transaction queued no entry for the index when it
+   * saved the record, because there was no index to queue it for. Nothing the builder can do about a transaction on another thread
+   * is safe (its pages are being written by that thread), so the transaction itself is asked, at the one moment its thread is
+   * holding the database read lock a {@code CREATE INDEX} excludes: the schema cannot move under it, and the committed state it
+   * reads is the one the build indexed. The result is the one the record would have had if it had been saved after the index was
+   * bound: the same entries, queued on the same transaction, committed or rolled back with it.
+   * <p>
+   * The transaction must be {@code BEGUN} on the calling thread, which is the only state an index queues instead of writing.
+   *
+   * @param sequence the registration sequence the transaction took when it began, see {@link TransactionManager#getIndexRegistrationSequence}
+   */
+  public void reconcileIndexesRegisteredSince(final TransactionContext tx, final long sequence) {
+    List<IndexInternal> owed = null;
+    for (final Map.Entry<String, Long> registration : database.getTransactionManager().getIndexesRegisteredSince(sequence).entrySet()) {
+      final String indexName = registration.getKey();
+      final IndexInternal index = lookupIndex(indexName);
+      if (index == null || index.getAssociatedBucketId() < 0 || tx.isIndexReconciled(indexName))
+        continue;
+
+      // Owed an entry only for what was written before the index was bound: a bucket the transaction first wrote to after it had
+      // its entries queued as they were written
+      if (!tx.wroteToBucketBefore(index.getAssociatedBucketId(), registration.getValue()))
+        continue;
+
+      // A transaction that wrote to the bucket on BOTH sides of the registration has queued the entries of what it wrote after it
+      // already, and cannot tell them from the ones it owes: queueing the owed ones from the committed state would queue those
+      // again. Idempotent for an index keyed by (key, record), not for one that counts what it is given (the corpus counters of a
+      // full-text index): it is refused, retryably, and the retry finds the index there from its first write
+      if (tx.hasQueuedIndexEntriesIn(index.getFileIds()))
+        throw new ConcurrentModificationException(
+            "The index '" + (index.getTypeIndex() != null ? index.getTypeIndex().getName() : indexName) + "' was created on type '"
+                + index.getTypeName() + "' while this transaction was writing to it. Please retry the transaction");
+
+      if (owed == null)
+        owed = new ArrayList<>(2);
+      owed.add(index);
+    }
+
+    if (owed == null)
+      return;
+
+    // The entries are queued on the transaction on top of the calling thread's stack, through the indexer. Queueing the ones this
+    // transaction owes from underneath another would put them in the wrong transaction, and skipping them would publish records the
+    // new index does not know: it is refused instead, and the commit of the transaction on top has to come first
+    if (database.getTransactionIfExists() != tx)
+      throw new TransactionException("Cannot commit a transaction that owes the entries of the index '" + owed.getFirst().getName()
+          + "', created after it began, while another transaction is open on top of it: commit or roll back the innermost one first");
+
+    for (final IndexInternal index : owed)
+      IndexBuildCallerChanges.apply(database, tx, index, null, 0L);
+  }
+
+  /**
+   * The one way a statement that deletes component files runs its mutation (issues #10421, #10589): the files are probed
+   * ({@link #requireFilesCanBeDeleted}) and their locks taken once, and only then does the mutation start. The probe is private and
+   * this is its only door, so reaching a file delete without asking whether it can be done is not expressible - it was easy to
+   * forget, and {@code DROP INDEX} did.
+   *
+   * @param statement what the statement does, for the refusal message: "drop the index 'T[p]'"
+   */
+  public <RET> RET executeDroppingFiles(final String statement, final Collection<Integer> fileIds, final Callable<RET> mutation) {
+    return executeDroppingFiles(statement, fileIds, fileIds, mutation);
+  }
+
+  /**
+   * As {@link #executeDroppingFiles(String, Collection, Callable)} for a statement whose set of files to probe is wider than the
+   * one whose locks it takes up front: {@code DROP TYPE} probes the buckets too, and locks the index files only.
+   */
+  public <RET> RET executeDroppingFiles(final String statement, final Collection<Integer> filesToProbe,
+      final Collection<Integer> filesToLock, final Callable<RET> mutation) {
+    requireFilesCanBeDeleted(statement, filesToProbe);
+    return database.executeLockingFiles(filesToLock, mutation);
+  }
+
+  /**
+   * Reports every file the drop of a type probed as its own and did not delete (issue #10866). The probe names "the files this
+   * statement is going to delete", and nothing checked that it did: the files of a TIMESERIES type whose engine had not started stayed
+   * registered, came back at every open and were adopted by the next type of that name, with CHECK DATABASE silent about them. A
+   * leftover is logged rather than thrown: the type is already gone, and failing the statement now would only hide that it was.
+   */
+  private void reportFilesTheDropLeft(final String typeName, final Collection<Integer> fileIds) {
+    final FileManager fileManager = database.getFileManager();
+    for (final Integer fileId : fileIds) {
+      final ComponentFile file = fileManager.getFileIfExists(fileId);
+      if (file != null)
+        LogManager.instance().log(this, Level.SEVERE, "The drop of the type '%s' left its file '%s' (id=%d) behind", null, typeName,
+            file.getFileName(), fileId);
+    }
+  }
+
+  /**
+   * Refuses, before a statement changes anything, a file it is going to delete that cannot be (issue #10421): one that is not a
+   * regular file, or sits in a directory that cannot be written. The delete of such a file fails after the statement has changed
+   * the files and the schema graph in front of it, and what it leaves behind is neither the schema it found nor the one it meant to
+   * reach. A file that is already gone is not a refusal: the delete of it fails as it always did, and the statement is the one that
+   * finds it out.
+   * <p>
+   * A best-effort pre-check, not a guarantee: the state of a file can change between the check and the delete, and
+   * {@link Files#isWritable} on a directory says nothing reliable on some platforms or for a process that runs as root. What the
+   * check does not detect fails the delete as it always did.
+   *
+   * @param statement what the statement does, for the message: "drop the type 'T'"
+   */
+  void requireFilesCanBeDeleted(final String statement, final Collection<Integer> fileIds) {
+    final FileManager fileManager = database.getFileManager();
+    for (final Integer fileId : fileIds) {
+      final ComponentFile file = fileManager.getFileIfExists(fileId);
+      if (file == null)
+        continue;
+
+      final Path path = Path.of(file.getFilePath());
+      final String reason;
+      if (Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+        reason = "it is not a regular file";
+      else if (path.getParent() != null && !Files.isWritable(path.getParent()))
+        reason = "its directory cannot be written";
+      else
+        continue;
+
+      throw new SchemaException("Cannot " + statement + ": the file '" + file.getFileName() + "' of '" + file.getComponentName()
+          + "' cannot be deleted, " + reason + ". Nothing was changed");
+    }
   }
 
   /**
@@ -3151,12 +3673,20 @@ public class LocalSchema implements Schema {
    * @return the canonical name of the type
    */
   private String checkTypeHasNoDependants(final String typeName) {
+    return checkTypeHasNoDependants(typeName, null);
+  }
+
+  /**
+   * @param owner the dependant whose own statement drops the type, which does not refuse it, or {@code null} (issue #10590)
+   */
+  private String checkTypeHasNoDependants(final String typeName, final TypeNameDependant owner) {
     final LocalDocumentType resolvedType = getTypeOrNull(typeName);
     final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
 
     synchronized (this) {
       for (final TypeNameDependant dependant : getTypeNameDependants())
-        dependant.checkTypeDrop(this, typeName, canonicalTypeName);
+        if (dependant != owner)
+          dependant.checkTypeDrop(this, typeName, canonicalTypeName);
     }
     return canonicalTypeName;
   }
@@ -3178,6 +3708,319 @@ public class LocalSchema implements Schema {
           dependants.add(impl);
       dependants.addAll(GraphAnalyticalViewPersistence.getTypeNameDependants(database));
       return dependants;
+    }
+  }
+
+  /**
+   * Refuses the write {@code operation} ("insert into", "truncate", ...) on the type {@code typeName} when it is the backing type of a
+   * materialized view or a continuous aggregate and the current thread is not running that owner's refresh (issue #11020). The rows
+   * of a backing type are derived, and its owner's state accounts for exactly the rows its refresh wrote: a materialized view kept
+   * answering a row written beside its query, or emptied by a {@code TRUNCATE}, until its next refresh while reporting VALID, and a
+   * continuous aggregate never recomputed a bucket deleted behind its watermark, so the loss was permanent. PostgreSQL refuses the
+   * same writes on a materialized view.
+   * <p>
+   * The rule is asked by every record create, update and delete ({@code LocalDatabase}) and, before anything is changed, by the
+   * statements that empty a type or a bucket, so that one of them is refused whole and not half-way.
+   */
+  public void checkBackingTypeWrite(final String typeName, final String operation) {
+    final Map<String, BackingTypeOwner> owners = backingTypeOwners;
+    if (owners.isEmpty())
+      return;
+    final BackingTypeOwner owner = owners.get(typeName);
+    if (owner != null && !BackingTypeWriteScope.isRefreshing(owner))
+      throw new SchemaException("Cannot " + operation + " type '" + typeName + "' because it is the backing type for " + owner.kind()
+          + " '" + owner.getName() + "': its rows are computed from its source types and only its refresh writes them. Change the "
+          + "source data and run: " + owner.refreshStatement() + ", or remove the " + owner.kind() + " with: " + owner.dropStatement());
+  }
+
+  /**
+   * Refuses to link {@code superType} above the type {@code typeName} when {@code superType} is the backing type of a materialized
+   * view or a continuous aggregate, or a type below one (issue #11204). {@code SELECT FROM} a type is polymorphic, so every row of a
+   * subtype is answered by the view, counted in its {@code count(*)} and sorted into its {@code ORDER BY} while the view reports
+   * VALID, and no refresh takes it out: a refresh rewrites the backing type's own buckets only. The write guard of
+   * {@link #checkBackingTypeWrite} cannot stand in for this refusal, because a type linked with its rows already in it brings all of
+   * them into the view without writing one. Asked of a NEW linkage only: a database whose schema already holds such a link still
+   * opens, and the link can be taken out with {@code ALTER TYPE ... SUPERTYPE -}.
+   */
+  public void checkCanExtend(final String typeName, final DocumentType superType) {
+    if (backingTypeOwners.isEmpty())
+      return;
+    final DocumentType backingType = backingTypeAtOrAbove(superType, new HashSet<>());
+    if (backingType == null)
+      return;
+    final BackingTypeOwner owner = backingTypeOwners.get(backingType.getName());
+    final String what = backingType == superType ?
+        "'" + superType.getName() + "' is the backing type for " :
+        "'" + superType.getName() + "' extends '" + backingType.getName() + "', the backing type for ";
+    throw new SchemaException("Cannot make type '" + typeName + "' a subtype of '" + superType.getName() + "' because " + what
+        + owner.kind() + " '" + owner.getName() + "': every row of a subtype is answered by SELECT FROM '" + backingType.getName()
+        + "', while only its refresh writes the rows of the " + owner.kind() + ". Store the rows in a type of their own");
+  }
+
+  /** {@code type} or the first of its super types that is a backing type, or null when none is. */
+  private DocumentType backingTypeAtOrAbove(final DocumentType type, final Set<String> visited) {
+    if (!visited.add(type.getName()))
+      return null;
+    if (backingTypeOwners.containsKey(type.getName()))
+      return type;
+    for (final DocumentType superType : type.getSuperTypes()) {
+      final DocumentType found = backingTypeAtOrAbove(superType, visited);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Names, once per type for the life of this schema, every type a database written before issue #11204 linked below a backing
+   * type: its rows are answered by the view, and the link is what to take out.
+   */
+  private void warnAboutSubtypesOfBackingTypes(final Collection<? extends BackingTypeOwner> owners) {
+    for (final BackingTypeOwner owner : owners) {
+      final String backingTypeName = owner.getBackingTypeName();
+      if (!existsType(backingTypeName))
+        continue;
+      for (final DocumentType subType : getType(backingTypeName).getSubTypes())
+        if (reportedUpgradeWarnings.add(BACKING_SUBTYPE_WARNING_PREFIX + subType.getName()))
+          LogManager.instance().log(this, Level.WARNING,
+              "Type '%s' in database '%s' is a subtype of '%s', the backing type for %s '%s': every row of it is answered by the %s "
+                  + "as if its refresh had computed it. Take the link out with ALTER TYPE `%s` SUPERTYPE -`%s`", null, subType.getName(),
+              database.getName(), backingTypeName, owner.kind(), owner.getName(), owner.kind(), subType.getName(), backingTypeName);
+    }
+  }
+
+  /** As {@link #checkBackingTypeWrite(String, String)}, for a record known by its bucket. */
+  public void checkBackingTypeWrite(final int bucketId, final String operation) {
+    if (backingTypeOwners.isEmpty())
+      return;
+    final DocumentType type = getTypeByBucketId(bucketId);
+    if (type != null)
+      checkBackingTypeWrite(type.getName(), operation);
+  }
+
+  /**
+   * Rebuilds the snapshot from both registries. Not synchronized on purpose: it runs inside the mutation of a registry, which is
+   * serialized already (under the schema's monitor or the database write lock, as every other access to the registries is), and
+   * taking the monitor here from a thread that holds only the write lock is the order #7457 forbids. Readers never see a partial
+   * map: the snapshot is built aside and published with one volatile write.
+   */
+  private void backingTypeOwnersChanged() {
+    final Map<String, BackingTypeOwner> owners = new HashMap<>();
+    for (final MaterializedViewImpl view : materializedViews.values())
+      owners.put(view.getBackingTypeName(), view);
+    for (final ContinuousAggregateImpl aggregate : continuousAggregates.values())
+      owners.put(aggregate.getBackingTypeName(), aggregate);
+    backingTypeOwners = owners.isEmpty() ? Map.of() : owners;
+  }
+
+  /**
+   * A registry of backing type owners that keeps {@link #backingTypeOwners} in step with itself on every change, so that no code
+   * path that registers or removes a view or an aggregate (creation, drop, schema load, the restore of a staged schema) can leave
+   * the write guard of issue #11020 behind. Every mutator of the map refreshes the snapshot, and the key, value and entry views
+   * are read-only, so a removal through one of them fails instead of leaving the guard stale. So are the entries they hand out
+   * (issue #11203): {@code Collections.unmodifiableSet} over the entry set hands out the live entries, whose {@code setValue}
+   * replaced an owner behind the snapshot.
+   */
+  private final class BackingTypeRegistry<V extends BackingTypeOwner> extends LinkedHashMap<String, V> {
+    @Override
+    public V putIfAbsent(final String key, final V value) {
+      final V previous = super.putIfAbsent(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public V computeIfAbsent(final String key, final Function<? super String, ? extends V> function) {
+      final V result = super.computeIfAbsent(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V computeIfPresent(final String key,
+        final BiFunction<? super String, ? super V, ? extends V> function) {
+      final V result = super.computeIfPresent(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V compute(final String key, final BiFunction<? super String, ? super V, ? extends V> function) {
+      final V result = super.compute(key, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V merge(final String key, final V value,
+        final BiFunction<? super V, ? super V, ? extends V> function) {
+      final V result = super.merge(key, value, function);
+      backingTypeOwnersChanged();
+      return result;
+    }
+
+    @Override
+    public V replace(final String key, final V value) {
+      final V previous = super.replace(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public boolean replace(final String key, final V oldValue, final V newValue) {
+      final boolean replaced = super.replace(key, oldValue, newValue);
+      backingTypeOwnersChanged();
+      return replaced;
+    }
+
+    @Override
+    public void replaceAll(final BiFunction<? super String, ? super V, ? extends V> function) {
+      super.replaceAll(function);
+      backingTypeOwnersChanged();
+    }
+
+    @Override
+    public boolean remove(final Object key, final Object value) {
+      final boolean removed = super.remove(key, value);
+      backingTypeOwnersChanged();
+      return removed;
+    }
+
+    @Override
+    public Set<String> keySet() {
+      return Collections.unmodifiableSet(super.keySet());
+    }
+
+    @Override
+    public Collection<V> values() {
+      return Collections.unmodifiableCollection(super.values());
+    }
+
+    @Override
+    public Set<Map.Entry<String, V>> entrySet() {
+      return new ReadOnlyEntries<>(super.sequencedEntrySet());
+    }
+
+    // THE SequencedMap MUTATORS AND VIEWS OF LinkedHashMap (JAVA 21) GO AROUND put/remove, SO THEY ARE COVERED TOO
+    @Override
+    public V putFirst(final String key, final V value) {
+      final V previous = super.putFirst(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public V putLast(final String key, final V value) {
+      final V previous = super.putLast(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    // the default ones remove through the entry view, which is read-only here: through remove(key), which refreshes the snapshot
+    @Override
+    public Map.Entry<String, V> pollFirstEntry() {
+      return isEmpty() ? null : poll(super.firstEntry());
+    }
+
+    @Override
+    public Map.Entry<String, V> pollLastEntry() {
+      return isEmpty() ? null : poll(super.lastEntry());
+    }
+
+    private Map.Entry<String, V> poll(final Map.Entry<String, V> entry) {
+      remove(entry.getKey());
+      return entry;
+    }
+
+    @Override
+    public SequencedSet<String> sequencedKeySet() {
+      return Collections.unmodifiableSequencedSet(super.sequencedKeySet());
+    }
+
+    @Override
+    public SequencedCollection<V> sequencedValues() {
+      return Collections.unmodifiableSequencedCollection(super.sequencedValues());
+    }
+
+    @Override
+    public SequencedSet<Map.Entry<String, V>> sequencedEntrySet() {
+      return new ReadOnlyEntries<>(super.sequencedEntrySet());
+    }
+
+    @Override
+    public SequencedMap<String, V> reversed() {
+      return Collections.unmodifiableSequencedMap(super.reversed());
+    }
+
+    @Override
+    public V put(final String key, final V value) {
+      final V previous = super.put(key, value);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public void putAll(final Map<? extends String, ? extends V> map) {
+      super.putAll(map);
+      backingTypeOwnersChanged();
+    }
+
+    @Override
+    public V remove(final Object key) {
+      final V previous = super.remove(key);
+      backingTypeOwnersChanged();
+      return previous;
+    }
+
+    @Override
+    public void clear() {
+      super.clear();
+      backingTypeOwnersChanged();
+    }
+  }
+
+  /**
+   * The entries of a {@link BackingTypeRegistry}, read-only down to each entry (issue #11203). Not a JDK wrapper over the registry:
+   * {@code Collections.unmodifiableMap(registry).entrySet()} asks the registry for its entry set, which is this view, and the
+   * sequenced wrappers route back the same way. It wraps the map's own entry set instead, whose iterator walks the map's nodes.
+   */
+  private static final class ReadOnlyEntries<V> extends AbstractSet<Map.Entry<String, V>> implements SequencedSet<Map.Entry<String, V>> {
+    private final SequencedSet<Map.Entry<String, V>> entries;
+
+    private ReadOnlyEntries(final SequencedSet<Map.Entry<String, V>> entries) {
+      this.entries = entries;
+    }
+
+    @Override
+    public Iterator<Map.Entry<String, V>> iterator() {
+      final Iterator<Map.Entry<String, V>> iterator = entries.iterator();
+      // no remove(): the default refuses it
+      return new Iterator<>() {
+        @Override
+        public boolean hasNext() {
+          return iterator.hasNext();
+        }
+
+        @Override
+        public Map.Entry<String, V> next() {
+          return new AbstractMap.SimpleImmutableEntry<>(iterator.next());
+        }
+      };
+    }
+
+    @Override
+    public int size() {
+      return entries.size();
+    }
+
+    @Override
+    public boolean contains(final Object o) {
+      return entries.contains(o);
+    }
+
+    @Override
+    public SequencedSet<Map.Entry<String, V>> reversed() {
+      return new ReadOnlyEntries<>(entries.reversed());
     }
   }
 
@@ -3274,22 +4117,36 @@ public class LocalSchema implements Schema {
         // associatedBucketId=-1, and breaks REBUILD INDEX * (getBucketById(-1)) as well as its own toJSON().
         // Dropping the indexes first leaves at worst a bucket with no index, which is fully recoverable with a
         // plain REBUILD/CREATE INDEX. Both directions still need schema.json saved (finally) to be complete.
-        for (final Index idx : new ArrayList<>(indexMap.values())) {
-          if (idx.getAssociatedBucketId() == bucket.getFileId())
-            dropIndexInternal(idx.getName());
-        }
+        //
+        // issue #10589: the files of the indexes and of the bucket are probed before the first index is dropped
+        final List<String> indexNames = new ArrayList<>();
+        final List<Integer> indexFileIds = new ArrayList<>();
+        for (final IndexInternal idx : new ArrayList<>(indexMap.values()))
+          if (idx.getAssociatedBucketId() == bucket.getFileId()) {
+            indexNames.add(idx.getName());
+            indexFileIds.addAll(idx.getFileIds());
+          }
 
-        database.getPageManager().deleteFile(database, bucket.getFileId());
-        try {
-          database.getFileManager().dropFile(bucket.getFileId());
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
-        }
-        removeFile(bucket.getFileId());
+        final List<Integer> filesOfTheDrop = new ArrayList<>(indexFileIds);
+        filesOfTheDrop.add(bucket.getFileId());
 
-        removeBucketDuringLoad(bucketName);
-        // it can be a bucket a type involves without owning it (an edge-list, external or stripe bucket)
-        bucketMembershipChanged();
+        executeDroppingFiles("drop the bucket '" + bucketName + "'", filesOfTheDrop, indexFileIds, () -> {
+          for (final String indexName : indexNames)
+            dropIndexInternal(indexName);
+
+          database.getPageManager().deleteFile(database, bucket.getFileId());
+          try {
+            database.getFileManager().dropFile(bucket.getFileId());
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
+          }
+          removeFile(bucket.getFileId());
+
+          removeBucketDuringLoad(bucketName);
+          // it can be a bucket a type involves without owning it (an edge-list, external or stripe bucket)
+          bucketMembershipChanged();
+          return null;
+        });
 
         return null;
 
@@ -3575,9 +4432,11 @@ public class LocalSchema implements Schema {
 
     loadInRamCompleted = false;
     readingFromFile = true;
+    loadedFromPreviousSchema = false;
 
     boolean saveConfiguration = false;
     boolean readable = true;
+    schemaReadFromPreviousCopy = false;
     try {
       File file = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
       final File prevFile = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
@@ -3587,12 +4446,14 @@ public class LocalSchema implements Schema {
           return true;
 
         LogManager.instance().log(this, Level.WARNING, "Could not find schema file, loading the previous version saved");
+        loadedFromPreviousSchema = true;
       }
 
       JSONObject root;
       try (final FileInputStream fis = new FileInputStream(file)) {
         final String fileContent = FileUtils.readStreamAsString(fis, encoding);
         root = new JSONObject(fileContent);
+        schemaReadFromPreviousCopy = file == prevFile;
       } catch (final Exception e) {
         // The primary schema.json is non-empty but unparseable: this is the classic "server killed in the middle of a
         // schema save" corruption (issue #1249). Fall back to the previous good copy saved in schema.prev.json instead
@@ -3605,6 +4466,8 @@ public class LocalSchema implements Schema {
           try (final FileInputStream fis = new FileInputStream(prevFile)) {
             root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
           }
+          loadedFromPreviousSchema = true;
+          schemaReadFromPreviousCopy = true;
           saveConfiguration = true;
         } else
           throw e;
@@ -3782,6 +4645,12 @@ public class LocalSchema implements Schema {
 
           for (final String indexName : orderedIndexes) {
             final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
+            final boolean awaitingFill = indexJSON.getBoolean(AWAITING_FILL, false);
+            // FILE names only: the logical name of an index that never compacted is the name of its first file, which a rebuild
+            // in place stopped before deleting it leaves behind once the entry names the new file
+            // only the open load's sweep reads it: loadIncremental (every applied schema entry on an HA follower) must not grow it
+            if (!awaitingFill && !openLoadDone)
+              indexEntriesReadAtLoad.add(indexName);
 
             final JSONArray schemaIndexProperties = indexJSON.getJSONArray("properties");
             final String[] properties = new String[schemaIndexProperties.length()];
@@ -3863,6 +4732,15 @@ public class LocalSchema implements Schema {
                 LogManager.instance()
                     .log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName,
                         index.getName());
+              } else if (awaitingFill) {
+                // Created by a REBUILD INDEX that stopped before filling it: bound, it would make its type index look complete
+                // with no entry for the records of its bucket. Left out instead, and its file goes with the other leftovers
+                // (sweepOrphanBucketIndexFiles): the type index reopens incomplete, reported as not valid, until REBUILD INDEX
+                // runs again
+                LogManager.instance().log(this, Level.WARNING,
+                    "Index '%s' of bucket '%s' was created by a REBUILD INDEX that stopped before filling it: it is left out",
+                    null, index.getName(), bucketName);
+                saveConfiguration = true;
               } else {
                 addLoadedIndex(type, ownerOfBucket, index, bucket.getFileId(), properties);
                 reportUpgradeWarning(index, typeName, properties);
@@ -3991,6 +4869,8 @@ public class LocalSchema implements Schema {
         }
       }
 
+      reportIncompleteTypeIndexes(graph);
+
       // SET THE BUCKET STRATEGY AFTER THE INDEXES BECAUSE SOME OF THEM REQUIRE INDEXES (LIKE THE PARTITIONED)
       for (final String typeName : types.keySet()) {
         final JSONObject schemaType = types.getJSONObject(typeName);
@@ -4068,6 +4948,10 @@ public class LocalSchema implements Schema {
         for (final String key : migratedJSON.keySet())
           migratedTarget.put(Integer.parseInt(key), migratedJSON.getInt(key));
       }
+
+      // The files on disk rebuild the id slots, so the ids of the highest files dropped before are free again unless the
+      // schema says they were used (issue #11240)
+      database.getFileManager().reserveFileIdsBelow(root.getInt(NEXT_FILE_ID, 0));
 
     } catch (final Exception e) {
       readable = false;
@@ -4225,7 +5109,7 @@ public class LocalSchema implements Schema {
       for (final String triggerName : triggersJSON.keySet()) {
         final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
         try {
-          final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
+          Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
 
           // ARBITRARY HOST CODE ARRIVING IN A FILE EARNS THE PERMISSION IT WOULD HAVE EARNED AT THE KEYBOARD.
           // createTrigger() gates a JAVASCRIPT or JAVA trigger on UPDATE_SECURITY and not UPDATE_SCHEMA for the
@@ -4266,6 +5150,10 @@ public class LocalSchema implements Schema {
               triggerTarget.put(trigger.getName(), trigger);
             continue;
           }
+
+          // A schema written before #10750 can name the type by an alias: the trigger registered and saved below is the one bound
+          // to the type's own name, so the next save repairs the file
+          trigger = bindToTypeName(trigger);
 
           // A trigger of this name already installed is being REPLACED by this one, not joined by it - the map
           // holds one entry per name either way. The sweep above covers that on the replace path; on the MERGE
@@ -4376,6 +5264,7 @@ public class LocalSchema implements Schema {
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
             ca.setStatus(MaterializedViewStatus.STALE);
+          warnAboutUnindexedContinuousAggregate(ca);
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading continuous aggregate '%s': %s", e, caName,
@@ -4383,6 +5272,9 @@ public class LocalSchema implements Schema {
         }
       }
     }
+
+    warnAboutSubtypesOfBackingTypes(viewTarget.values());
+    warnAboutSubtypesOfBackingTypes(aggregateTarget.values());
 
     // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
     // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
@@ -4628,6 +5520,17 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Runs {@code change} of the refresh state of the continuous aggregates (the range of samples appended behind a watermark) inside
+   * a schema recording session, so that under HA the followers receive it as well and a follower promoted to leader refreshes with
+   * it (issue #10634). An append ships it before committing its samples (issue #10673). The state a refresh writes is not shipped
+   * this way: see {@code ContinuousAggregateRefresher}. Takes the database write lock: never call it from code running under the
+   * read lock, such as an after-commit callback.
+   */
+  public void recordContinuousAggregateChange(final Runnable change) {
+    recordChange(change);
+  }
+
+  /**
    * The close's save, run by the database while it is still open, as the last step before it marks itself closed: a
    * schema serialized once the database reports itself closed cannot resolve its buckets, because the indexes name theirs
    * through the checked schema accessor (issue #10059). Writes a schema whose save a transaction or {@code multipleUpdate}
@@ -4675,6 +5578,34 @@ public class LocalSchema implements Schema {
    *                              commit of the outermost transaction, right before its durable phase
    */
   private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
+    try {
+      writeConfiguration(ignoreOpenTransaction);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
+          databasePath + File.separator + SCHEMA_FILE_NAME);
+    }
+  }
+
+  /**
+   * As {@link #saveConfiguration()}, for a caller that acts on the file holding the schema afterwards (issue #11240): an HA
+   * compaction drops the files the previous schema names only once the new one is on disk, and releases the replay of its
+   * entry then. Fails instead of logging.
+   *
+   * @throws IOException when the file could not be written, or the save was postponed (a load, a multiple update or an open
+   *                     transaction in progress)
+   */
+  public synchronized void saveConfigurationOrThrow() throws IOException {
+    if (!writeConfiguration(false))
+      throw new IOException("The schema of database '" + database.getName()
+          + "' cannot be saved now: a load, a multiple update or a transaction is in progress");
+  }
+
+  /**
+   * @return {@code false} when the save is postponed, {@code true} when the file was written
+   *
+   * @throws IOException when the file could not be written
+   */
+  private synchronized boolean writeConfiguration(final boolean ignoreOpenTransaction) throws IOException {
     refreshBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
@@ -4685,7 +5616,7 @@ public class LocalSchema implements Schema {
     if (readingFromFile || !loadInRamCompleted || multipleUpdate || (!ignoreOpenTransaction && database.isTransactionActive())) {
       // POSTPONE THE SAVING - ensure at least one generation is marked dirty
       dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
-      return;
+      return false;
     }
 
     // Capture the generation BEFORE serializing. Any concurrent modification that increments
@@ -4699,14 +5630,18 @@ public class LocalSchema implements Schema {
       savedGeneration = capturedGeneration;
 
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e,
-          databasePath + File.separator + SCHEMA_FILE_NAME);
+      // A FAILED WRITE LEAVES THE SCHEMA DIRTY, WHATEVER ASKED FOR IT: A CHANGE THAT SAVES WITHOUT MARKING ITSELF DIRTY (A
+      // COMPACTION SWAP, #11240) WOULD OTHERWISE NEVER BE WRITTEN AGAIN, NOT AT THE NEXT TRANSACTION END NOR AT THE CLOSE
+      dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
+      throw e;
+    } finally {
+      // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
+      // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
+      // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
+      // Refreshed whether or not the write succeeded, as before it could report the failure.
+      updateSecurity();
     }
-
-    // #5269: the schema reached a stable state (buckets/indexes just created are now registered). Refresh the per-user
-    // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
-    // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
-    updateSecurity();
+    return true;
   }
 
   /**
@@ -4715,6 +5650,11 @@ public class LocalSchema implements Schema {
    * the in-memory version equal to the one the file holds instead of a generation ahead of it (issue #7604).
    */
   private synchronized void writeNextGeneration() throws IOException {
+    // A database opened READ_ONLY owns nothing of its directory, a writer may be replacing this very file: a schema recovered from the
+    // previous generation (the current file torn) stays in memory, whatever asks for the save (issue #10507)
+    if (database.getMode() == ComponentFile.MODE.READ_ONLY)
+      return;
+
     // The generations are read BEFORE the document is serialized and recorded only once the file is on disk: a counter changed
     // meanwhile, or a write that fails, leaves it unsaved
     final Map<FullTextIndexMetadata, Long> counterGenerations = new IdentityHashMap<>();
@@ -4877,6 +5817,11 @@ public class LocalSchema implements Schema {
         migratedJSON.put(String.valueOf(entry.getKey()), entry.getValue());
       root.put("migratedFileIds", migratedJSON);
     }
+
+    // Only past the highest file held (issue #11240): ids of dropped files are never handed out again after a reopen
+    final int nextFileId = database.getFileManager().getNextFileIdPastDroppedFiles();
+    if (nextFileId > -1)
+      root.put(NEXT_FILE_ID, nextFileId);
 
     final Map<String, String> manualNames = manualIndexLogicalNames();
     if (!manualNames.isEmpty()) {
@@ -5085,6 +6030,11 @@ public class LocalSchema implements Schema {
       saveConfiguration();
   }
 
+  /** Withdraws a migration {@link #setMigratedFileId} recorded, for a swap undone before the schema naming it was saved. */
+  public void removeMigratedFileId(final int oldFileId, final int newFileId) {
+    migratedFileIds.remove(oldFileId, newFileId);
+  }
+
   public Integer getMigratedFileId(final int oldFileId) {
     return migratedFileIds.get(oldFileId);
   }
@@ -5102,6 +6052,15 @@ public class LocalSchema implements Schema {
    * its post-compaction file.
    */
   static final String MANUAL_INDEXES = "manualIndexes";
+
+  /**
+   * Key of the first file id never handed out, written only when it is past the highest file the database holds, i.e. when
+   * the highest files were dropped (issue #11240). See {@link FileManager#getNextFileIdPastDroppedFiles()}.
+   */
+  static final String NEXT_FILE_ID = "nextFileId";
+
+  /** Marks the schema entry of a bucket index a REBUILD INDEX created and has not filled yet, see {@link LSMTreeIndex#isAwaitingFill()}. */
+  static final String AWAITING_FILL = "awaitingFill";
 
   /** Current file name -> logical name of every manual LSM index a compaction renamed, in file name order. */
   private Map<String, String> manualIndexLogicalNames() {
@@ -5122,6 +6081,8 @@ public class LocalSchema implements Schema {
       return;
     final JSONObject manual = root.getJSONObject(MANUAL_INDEXES);
     for (final String fileName : manual.keySet()) {
+      if (!openLoadDone)
+        indexEntriesReadAtLoad.add(fileName);
       final IndexInternal index = lookupIndex(fileName);
       if (index != null)
         restoreLogicalIndexName(fileName, manual.getString(fileName), index);
@@ -5145,6 +6106,9 @@ public class LocalSchema implements Schema {
     final LSMTreeIndex lsm = lsmTreeIndexOf(index);
     if (lsm != null && !lsm.getName().equals(lsm.getMostRecentFileName()))
       indexJSON.put(LOGICAL_INDEX_NAME, lsm.getName());
+    else if (index instanceof HashIndex hashIndex && !hashIndex.getName().equals(hashIndex.getMostRecentFileName()))
+      // a hash index rebuilt in place keeps its name on a new file
+      indexJSON.put(LOGICAL_INDEX_NAME, hashIndex.getName());
   }
 
   /**
@@ -5172,10 +6136,14 @@ public class LocalSchema implements Schema {
       return;
 
     final LSMTreeIndex lsm = lsmTreeIndexOf(index);
-    if (lsm == null || !fileName.equals(lsm.getName()))
+    if (lsm != null) {
+      if (!fileName.equals(lsm.getName()))
+        return;
+      lsm.restoreLogicalName(logicalName);
+    } else if (index instanceof HashIndex hashIndex && fileName.equals(hashIndex.getName()))
+      hashIndex.restoreLogicalName(logicalName);
+    else
       return;
-
-    lsm.restoreLogicalName(logicalName);
     publishIndexDuringLoad(logicalName, index);
     removeIndexDuringLoad(fileName);
   }
@@ -5208,11 +6176,20 @@ public class LocalSchema implements Schema {
     if (newName == null || newName.equals(oldName))
       return;
 
+    // Never over another index: the map is the only way to reach it (issue #10751). A type rename refuses this before it starts
+    final IndexInternal holder = indexMap.get(newName);
+    if (holder != null && holder != index)
+      throw new AlreadyExistsException(AlreadyExistsException.Kind.INDEX,
+          "Cannot rename index '" + oldName + "' to '" + newName + "': an index with that name already exists");
+
     LogManager.instance().log(this, Level.FINE, "Index '%s' renamed to '%s'", null, oldName, newName);
 
     indexMap.put(newName, index);
-    if (oldName != null)
+    if (oldName != null) {
       indexMap.remove(oldName, index);
+      // The registration follows the index: a transaction that wrote before it was bound still owes it entries after a rename of its type
+      database.getTransactionManager().indexRenamed(oldName, newName);
+    }
   }
 
   public boolean isDirty() {
@@ -5242,11 +6219,11 @@ public class LocalSchema implements Schema {
       // the new one, so between the two statements schema.json DID NOT EXIST and while the writer ran it was
       // truncated. A crash in that window left a database whose schema file was missing - recoverable only from
       // schema.prev.json - and any concurrent reader (the backup's lock-free t0 configuration capture, the HA
-      // snapshot ship) could observe nothing, or half a JSON document. The copy is published as a hard link where
-      // the file store allows it, so it costs an inode operation rather than a re-read of the whole schema, and it
-      // is atomic on the target either way: schema.prev.json is what readConfiguration() falls back TO, so it can
-      // never be half-written. It is also byte-identical by construction - literally the same bytes, so no charset
-      // from setEncoding() is applied to it on the way out.
+      // snapshot ship) could observe nothing, or half a JSON document. The copy is atomic on the target:
+      // schema.prev.json is what readConfiguration() falls back TO, so it can never be half-written. It is a byte copy
+      // - the same bytes, so no charset from setEncoding() is applied to it on the way out - and NOT a hard link
+      // (#11097): a file system can accept a link and still lose the data under the second name once the first is
+      // replaced, which would leave the recovery copy unreadable.
       //
       // #8635: WITHOUT ITS OWN DIRECTORY FSYNC. The write of schema.json below publishes into the same directory and
       // fsyncs it, which makes this rename durable too, so a second fsync here was a full device flush bought for
@@ -5333,8 +6310,10 @@ public class LocalSchema implements Schema {
       }
     }
 
-    final long prevGeneration = dirtyGeneration.get();
-    dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
+    // READ AND MARKED UNDER THE WRITE LOCK, INSIDE THE CALLBACK BELOW (issue #11040): read before the lock, it is stale by
+    // the time a caller that waited for the lock decides whether to restore it
+    // (the -1 is never read: the restore below runs only after the callback has set it)
+    final long[] prevGeneration = { -1L };
 
     final boolean suspendIntermediateSaves = deferIntermediateSchemaSaves && !multipleUpdate;
     if (suspendIntermediateSaves)
@@ -5347,6 +6326,8 @@ public class LocalSchema implements Schema {
         // UNDER THE WRITE LOCK, SO THE DEPTH IS CONSISTENT: A NESTED FRAME (A TYPE CREATION AND THE BUCKET CREATIONS
         // INSIDE IT) SEES THE FRAME ENCLOSING IT
         final boolean outermost = recordingDepth++ == 0;
+        prevGeneration[0] = dirtyGeneration.get();
+        dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
         if (outermost) {
           recordingThread = Thread.currentThread();
           recordingSavePending = false;
@@ -5416,6 +6397,13 @@ public class LocalSchema implements Schema {
             }
           }
           --recordingDepth;
+          // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty, and never over the work of
+          // a nested frame that is still waiting to be written (#8635). Under the write lock, so that "we made it dirty"
+          // is read against the generation no other frame can move meanwhile: a caller that waited for the lock and
+          // was refused used to declare the schema clean over the change of the one that got it first, whose save an open
+          // transaction had postponed, so neither the commit nor the close wrote it (issue #11040)
+          if (!executed[0] && !keepDirty[0] && prevGeneration[0] <= savedGeneration)
+            savedGeneration = dirtyGeneration.get();
         }
       });
 
@@ -5432,10 +6420,6 @@ public class LocalSchema implements Schema {
     } finally {
       if (suspendIntermediateSaves)
         multipleUpdate = false;
-      if (!executed[0] && !keepDirty[0] && prevGeneration <= savedGeneration)
-        // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty, and never over the work of
-        // a nested frame that is still waiting to be written (#8635)
-        savedGeneration = dirtyGeneration.get();
     }
   }
 
@@ -5629,6 +6613,11 @@ public class LocalSchema implements Schema {
       // or a DROP TYPE in between looked for the sub-index under the wrong type
       bindBucketIndexToItsOwner(type, getBucketOwner(bucket.getFileId()), index, bucket.getFileId(), propertyNames, propIndex);
 
+      // From here every write queues its entry for the index. A transaction that began before this line and has written to the
+      // bucket is not one of them: the build scans the committed state and cannot see its pages, so it owes the index those entries
+      // and makes them up when it commits (issue #10588). AFTER the binding, see TransactionManager#indexRegistered
+      database.getTransactionManager().indexRegistered(indexName);
+
       // Re-set metadata after addIndexInternal populated propertyNames, to propagate
       // caseInsensitiveKeys to the underlying mutable/compacted indexes.
       index.setMetadata(index.getMetadata());
@@ -5687,6 +6676,17 @@ public class LocalSchema implements Schema {
           declaringWrapper != null ? declaringWrapper : declaringType.typeIndexFor(index, propertyNames));
   }
 
+  /**
+   * Tells whether the last schema load fell back to {@code schema.prev.json} because {@code schema.json} was missing, empty or
+   * unparseable (issue #11224). The engine logs a WARNING and opens the database anyway; a caller that needs the schema files to
+   * be the intended ones, such as a snapshot install, uses this to refuse instead. It describes the most recent load of this
+   * instance: the self-healing rewrite that follows does not clear it, and a load that fails or is aborted after
+   * the fallback can leave it set.
+   */
+  public boolean isLoadedFromPreviousSchema() {
+    return loadedFromPreviousSchema;
+  }
+
   protected boolean isSchemaLoaded() {
     return loadInRamCompleted;
   }
@@ -5704,6 +6704,23 @@ public class LocalSchema implements Schema {
   protected void updateSecurity() {
     if (security != null)
       security.updateSchema(database);
+  }
+
+  /** Refuses the rename of a type when per-type permissions grant the old and the new name different access. */
+  void checkTypeRenameKeepsAccess(final String oldName, final String newName) {
+    if (security != null)
+      security.checkTypeRename(database, oldName, newName);
+  }
+
+  /**
+   * Refuses detaching a bucket that holds records from {@code typeName} when per-type permissions restrict the type: a bucket
+   * of no type is restricted by none. An empty bucket opens no record, so it is never refused.
+   */
+  void checkBucketDetachKeepsAccess(final Bucket bucket, final String typeName) {
+    // THE CACHED COUNTER, NOT count(): THAT ONE ASKS THE CALLER FOR THE READ GRANT THIS CHECK IS ABOUT. AN UNKNOWN COUNT (-1)
+    // IS TAKEN AS RECORDS
+    if (security != null && !(bucket instanceof LocalBucket localBucket && localBucket.getCachedRecordCount() == 0))
+      security.checkBucketDetach(database, bucket.getName(), typeName);
   }
 
   /**

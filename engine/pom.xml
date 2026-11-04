@@ -35,8 +35,8 @@
 
     <properties>
         <disruptor.version>1.2.21</disruptor.version>
-        <gson.version>2.14.0</gson.version>
-        <lz4-java.version>1.12.0</lz4-java.version>
+        <gson.version>2.15.0</gson.version>
+        <lz4-java.version>1.12.1</lz4-java.version>
         <lucene.version>10.5.2</lucene.version>
         <!--
             ONE GraalVM version, everywhere. This property, native/pom.xml's
@@ -66,6 +66,9 @@
         -->
         <graalvm.version>25.4.4.1.1</graalvm.version>
         <!--
+            4.0.2 bundles a native (Highway, FFM) provider that it switches on by default on Linux x86_64 and aarch64.
+            VectorApiSupport.configureJVectorProvider() sets jvector.enable_native_vectorization from
+            arcadedb.vectorIndex.nativeVectorization (off by default) unless the user set the jvector property.
             Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:
             - GraphIndexBuilder.build() is unrolled by hand in buildGraphFromScratchExclusively() (see the
@@ -80,8 +83,10 @@
               because every GraphIndexBuilder this engine constructs backs onto OnHeapGraphIndex, whose
               View.close() is a documented no-op as of 4.0.0-rc.9 - re-verify that close() still touches no
               live state before relying on it after a version bump.
+            - JVectorProviderSelectionTest matches jvector's log text "Native vector API was not enabled" to tell a
+              native load failure from an ignored property - re-check that wording in the new jvector release.
         -->
-        <jvector.version>4.0.1</jvector.version>
+        <jvector.version>4.0.2</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
         <buildnumber-maven-plugin.version>3.3.1</buildnumber-maven-plugin.version>
@@ -261,6 +266,16 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
             <version>${micrometer.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ASM reads the compiled SQL functions in Issue10699NoNarrowingIntReadsInFunctionsTest: a narrowing to int is one
+             of a closed set of instructions whatever its source spelling (#10931). The same version json-path already
+             brings in through json-smart, declared here so the scan does not depend on another library's internals. -->
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm</artifactId>
+            <version>9.11.1</version>
             <scope>test</scope>
         </dependency>
 

@@ -186,7 +186,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   private static final File[] EMPTY_FILES = new File[0];
 
-  private final String               basePath;
+  // Changed only by rename() (issue #10749), under the directory WRITE lock: every reader of the path holds the READ lock or is a
+  // rewrite, which the shard keeps off a rename with its compaction mutex
+  private volatile String            basePath;
   private final List<ColumnDefinition> columns;
   /**
    * The file and its channel, held for the life of the store and replaced only by the file-swap paths (under the
@@ -1446,13 +1448,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * block's dictionary is built with, so the declared set IS that dictionary. The paths that rewrite a block
    * afterwards keep it true: {@link #truncateBefore} and {@link #truncateToBlockCount} drop whole blocks and copy
    * every retained one verbatim, compaction's {@link #writeTempCompactionFile} does the same, and
-   * {@link #downsampleBlocks} recomputes the set from the rows it emits. Nothing deletes a row from a sealed block,
-   * so no declaration outlives the rows it was computed from.
+   * {@link #downsampleBlocks} recomputes the set from the rows it emits, and so does the rebuild of a block
+   * {@link #deleteSamples} removes rows from ({@code rebuildWithout}), from the rows that survive. So no declaration
+   * outlives the rows it was computed from.
    * <p>
    * What a declaration cannot carry is the BOXING the scan applies on the way out: {@link #decompressColumns} puts
    * every dictionary string through {@link ColumnDefinition#boxString}, which returns its argument unchanged for a
-   * {@code STRING} column and only for one - elsewhere {@code ""} comes back as {@code null} (as {@code false} for
-   * {@code BOOLEAN}) and a numeric string comes back normalised. A block is therefore answered from its declaration
+   * {@code STRING} column and only for one - elsewhere {@code ""} comes back as {@code null} (for {@code BOOLEAN} too since
+   * issue #10874) and a numeric string comes back normalised. A block is therefore answered from its declaration
    * only for a {@code STRING} TAG column stored with {@code DICTIONARY}, and read otherwise. Either way what lands
    * in {@code out} is exactly what a full scan of that block would have put there.
    * <p>
@@ -2130,15 +2133,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
           if (needRowTagFilter && count > 0) {
             // Mixed-tag block: decompress the tag columns the filter reads and keep the rows that match them
-            final List<TagFilter.Condition> filterConditions = tagFilter.getConditions();
-            final String[][] tagCols = new String[filterConditions.size()][];
-            for (int ci = 0; ci < filterConditions.size(); ci++) {
-              final int schemaIdx = findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex());
-              tagCols[ci] = DictionaryCodec.decode(sliceColumn(blockData, entry, schemaIdx));
-            }
+            final boolean[] tagRowMatches = tagFilterRowMatches(blockData, entry, tagFilter, tsCount);
             int kept = 0;
             for (int s = 0; s < count; s++)
-              if (matchesTagConditions(tagCols, filterConditions, selected[s]))
+              if (tagRowMatches[selected[s]])
                 selected[kept++] = selected[s];
             count = kept;
           }
@@ -2552,14 +2550,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           metrics.addDecompVal(System.nanoTime() - t0);
 
         final boolean needRowTagFilter = tagFilter != null && tagMatch == BlockMatchResult.SLOW_PATH;
-        String[][] filterCols = null;
-        List<TagFilter.Condition> filterConditions = null;
-        if (needRowTagFilter) {
-          filterConditions = tagFilter.getConditions();
-          filterCols = new String[filterConditions.size()][];
-          for (int ci = 0; ci < filterConditions.size(); ci++)
-            filterCols[ci] = DictionaryCodec.decode(sliceColumn(blockData, entry, findNonTsColumnSchemaIndex(filterConditions.get(ci).columnIndex())));
-        }
+        final boolean[] tagRowMatches = needRowTagFilter ? tagFilterRowMatches(blockData, entry, tagFilter, tsCount) : null;
 
         t0 = metrics != null ? System.nanoTime() : 0;
         final int rangeStart = lowerBound(reusableTsBuf, 0, tsCount, fromTs);
@@ -2588,7 +2579,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         long windowEnd = 0;
         for (int k = 0; k < rowCount; k++) {
           final int i = rowFieldFilter ? selected[k] : rangeStart + k;
-          if (needRowTagFilter && !matchesTagConditions(filterCols, filterConditions, i))
+          if (needRowTagFilter && !tagRowMatches[i])
             continue;
 
           MultiColumnAggregationResult group;
@@ -2732,6 +2723,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         deleteTempFileIfExists();
         throw e;
       }
+
+      refuseSwapOfClosedStore();
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
@@ -3541,7 +3534,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   boolean commitMerge(final MergePlan plan) throws IOException {
     directoryLock.writeLock().lock();
     try {
-      if (directoryVersion != plan.directoryVersion()) {
+      // a store dropped since the plan was made is not the one it was derived from either (issue #10867): installing the merge
+      // would re-create the file the drop deleted, for the next type of that name to adopt
+      if (closed || directoryVersion != plan.directoryVersion()) {
+        // a no-op for a closed store, whose temp path may belong to a store created since (see openTempFile())
         deleteMergeTempFileIfExists();
         return false;
       }
@@ -3642,6 +3638,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       deleteTempFileIfExists();
       throw e;
     }
+
+    refuseSwapOfClosedStore();
 
     // Atomic file swap: close handles first (required on Windows), then atomically replace.
     // If the move fails, reopen the original file so the store remains usable.
@@ -4063,6 +4061,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath) throws IOException {
     directoryLock.writeLock().lock();
     try {
+      refuseSwapOfClosedStore();
+
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
       indexChannel.close();
@@ -4145,7 +4145,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw new IOException("The compaction temp file '" + tempPath
           + "' is gone: another rewrite of the sealed store removed or replaced it while this compaction was building its replacement");
 
-    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+    try (final RandomAccessFile tempFile = openTempFile(tempPath)) {
       // Read the current header to get existing block count and global min/max timestamps
       final ByteBuffer hdrBuf = ByteBuffer.allocate(HEADER_SIZE);
       readExactly(channelOf(tempFile), hdrBuf, 0, "the temp file header");
@@ -4183,11 +4183,33 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Called from error-recovery paths to leave a clean state.
    */
   void deleteTempFileIfExists() {
-    final File tmp = new File(basePath + ".ts.sealed.tmp");
-    if (tmp.exists() && !tmp.delete())
-      LogManager.instance().log(this, Level.WARNING,
-          "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
-          null, tmp.getAbsolutePath());
+    synchronized (channelReopenLock) {
+      // a store closed on purpose owns no file at that path any more (issue #10867): see openTempFile()
+      if (closed)
+        return;
+      final File tmp = new File(basePath + ".ts.sealed.tmp");
+      if (tmp.exists() && !tmp.delete())
+        LogManager.instance().log(this, Level.WARNING,
+            "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
+            null, tmp.getAbsolutePath());
+    }
+  }
+
+  /**
+   * Opens a temp file of a rewrite of the sealed file, refusing for a store closed on purpose (issue #10867). The temp paths are
+   * fixed, so after a drop they are free for the store of a type created again under the same name: a rewrite of the dropped store
+   * that was still running must neither create a file there nor, later, delete or append to one. The check and the open are atomic
+   * against {@link #close()}, which sets the flag under the same monitor, and {@link #drop()} deletes the temp files after the close,
+   * so whatever such a rewrite created before it is gone and nothing it does afterwards reaches the path again: the refused swaps
+   * and the cleanup of a failed rewrite leave the path alone for a closed store.
+   */
+  private RandomAccessFile openTempFile(final String tempPath) throws IOException {
+    synchronized (channelReopenLock) {
+      if (closed)
+        throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
+            + "' was closed on purpose (its type was dropped or its engine replaced): no rewrite of it is started");
+      return new RandomAccessFile(tempPath, "rw");
+    }
   }
 
   /**
@@ -4203,7 +4225,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #appendBlocksToTempFile} is the one writer that must NOT truncate, and it says so by not using this.
    */
   private RandomAccessFile openTempFileForRewrite(final String tempPath, final int colCount) throws IOException {
-    final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw");
+    final RandomAccessFile tempFile = openTempFile(tempPath);
     try {
       tempFile.setLength(0);
       final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
@@ -4228,9 +4250,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /** Deletes the temp file of a merge of small blocks ({@code .ts.sealed.merge.tmp}) if it exists. */
   void deleteMergeTempFileIfExists() {
-    final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
-    if (tmp.exists() && !tmp.delete())
-      LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+    synchronized (channelReopenLock) {
+      // a store closed on purpose owns no file at that path any more (issue #10867): see openTempFile()
+      if (closed)
+        return;
+      final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
+      if (tmp.exists() && !tmp.delete())
+        LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+    }
   }
 
   static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {
@@ -4295,6 +4322,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         deleteTempFileIfExists();
         throw e;
       }
+
+      refuseSwapOfClosedStore();
 
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
       // If the move fails, reopen the original file so the store remains usable.
@@ -4622,7 +4651,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // bytes the directory scan already refuses to read.
         if (tailIsUnfinishedBlock) {
           indexFile.setLength(blockStart);
-          indexChannel.force(true);
+          FileUtils.force(indexChannel, true);
           repairs.add("dropped " + orphanTailBytes + " byte(s) of an incomplete write trailing the last block");
         }
 
@@ -4750,15 +4779,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Whether column {@code c} carries a {@code {min, max, sum}} triplet in a block header.
    * <p>
-   * ONE definition, shared by the two writers and the reader, because the block format stores the triplets
-   * positionally with no column index: the three sites must agree on exactly which columns contribute one or the
-   * statistics land on the wrong columns. The answer is the codec - the two numeric codecs are the ones
-   * {@link #reduceNumericStats} is run for - and deliberately NOT the value of the declared minimum, which since
-   * issue #7043 can legitimately be NaN for a column whose samples are all NaN.
+   * A shorthand for {@link ColumnDefinition#carriesBlockStatistics()}, the ONE definition every writer
+   * ({@link #downsampleBlocks}, the block rebuilds, {@code TimeSeriesShard}'s compaction), the reader and the DEEP
+   * check share, because the block format stores the triplets positionally with no column index: they must agree on
+   * exactly which columns contribute one or the statistics land on the wrong columns (issue #10878). The answer is the
+   * codec - the numeric codecs are the ones {@link #reduceNumericStats} is run for - and deliberately NOT the value of
+   * the declared minimum, which since issue #7043 can legitimately be NaN for a column whose samples are all NaN.
    */
   private boolean hasNumericStats(final int c) {
-    final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
-    return codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B;
+    return columns.get(c).carriesBlockStatistics();
   }
 
   /**
@@ -5080,18 +5109,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Closes the store for good. Under the directory WRITE lock, which every swap of the sealed file holds (issue #10867): a swap
+   * either completes before the store is closed or finds it closed and refuses, whoever closes it - a drop, or an engine replaced by
+   * a schema reload, whose successor has the file open itself.
+   */
   @Override
   public void close() throws IOException {
+    directoryLock.writeLock().lock();
     try {
       flushHeader();
     } finally {
-      // MARKED CLOSED EVEN WHEN THE FLUSH FAILS, SO NO LATER READ REOPENS A STORE ITS OWNER CLOSED (#9621)
-      synchronized (channelReopenLock) {
-        closed = true;
-        if (indexChannel != null && indexChannel.isOpen())
-          indexChannel.close();
-        if (indexFile != null)
-          indexFile.close();
+      try {
+        // MARKED CLOSED EVEN WHEN THE FLUSH FAILS, SO NO LATER READ REOPENS A STORE ITS OWNER CLOSED (#9621)
+        synchronized (channelReopenLock) {
+          closed = true;
+          if (indexChannel != null && indexChannel.isOpen())
+            indexChannel.close();
+          if (indexFile != null)
+            indexFile.close();
+        }
+      } finally {
+        directoryLock.writeLock().unlock();
       }
     }
   }
@@ -5185,7 +5224,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File incoming = new File(basePath + ".ts.sealed.incoming");
     try (final FileOutputStream fos = new FileOutputStream(incoming)) {
       fos.write(bytes);
-      fos.getFD().sync();
+      FileUtils.sync(fos.getFD());
     }
     installSealedFile(incoming);
   }
@@ -5201,6 +5240,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public void installSealedFile(final File incoming) throws IOException {
     directoryLock.writeLock().lock();
     try {
+      // a store closed on purpose takes no image either (issue #10867): the incoming file is the caller's, and is left to it
+      if (closed)
+        throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
+            + "' was closed on purpose (its type was dropped or its engine replaced): the image is not installed");
+
       // Close current handles before replacing the file (required on Windows).
       try {
         if (indexChannel != null && indexChannel.isOpen())
@@ -5321,13 +5365,154 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Closes file handles and deletes the sealed store file from disk.
+   * Closes file handles and deletes the sealed store file from disk, with the temp files of any rewrite.
+   * <p>
+   * Under the directory WRITE lock, which every swap of the sealed file holds (issue #10867): a rewrite that has written its temp
+   * file - a merge, a compaction, retention, downsampling, a delete - either swapped it in before the drop, and the drop deletes the
+   * result, or finds the store closed and refuses the swap ({@link #refuseSwapOfClosedStore}). Without it a merge in flight moved
+   * its temp file onto the path the drop had just cleared, and a type created later under the same name adopted every sample of the
+   * dropped one. The shard's compaction mutex is not the lock for this: the drop runs under the database write lock, and a
+   * compaction holding the mutex commits transactions that wait for that lock.
    */
   public void drop() throws IOException {
-    close();
-    final File f = new File(basePath + ".ts.sealed");
-    if (f.exists() && !f.delete())
-      throw new IOException("Failed to delete sealed store file: " + f.getAbsolutePath());
+    directoryLock.writeLock().lock();
+    try {
+      close();
+      deleteFiles(basePath);
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * Deletes the sealed file of the store at {@code basePath} and the temp files a rewrite of it can leave, for a store that is not
+   * open as well (an engine that could not start, issue #6356): what {@link #drop()} deletes, so a type created later under the same
+   * name finds none of them.
+   */
+  public static void deleteFiles(final String basePath) throws IOException {
+    for (final String suffix : new String[] { ".ts.sealed.tmp", MERGE_TEMP_SUFFIX, ".ts.sealed.incoming" }) {
+      final File temp = new File(basePath + suffix);
+      if (temp.exists() && !temp.delete())
+        LogManager.instance().log(TimeSeriesSealedStore.class, Level.WARNING, "Could not delete the temp file '%s'", null,
+            temp.getAbsolutePath());
+    }
+    final File sealed = new File(basePath + FILE_EXTENSION);
+    if (sealed.exists() && !sealed.delete())
+      throw new IOException("Failed to delete sealed store file: " + sealed.getAbsolutePath());
+  }
+
+  /**
+   * Refuses to swap a rewrite in for the sealed file of a store closed on purpose (issue #10867): its type was dropped, or its engine
+   * superseded by one that has the file open itself. Called under the directory write lock, which {@link #close()} holds, and before
+   * the handles are touched: a refused swap must not reopen them. The temp path is left alone: the drop deleted what this store had
+   * written there, and a file there now belongs to the store of a type created since under the same name (see {@link #openTempFile}).
+   */
+  private void refuseSwapOfClosedStore() throws IOException {
+    if (!closed)
+      return;
+    throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
+        + "' was closed on purpose (its type was dropped or its engine replaced): the rewrite of it is not installed");
+  }
+
+  /**
+   * Moves the sealed file to {@code newBasePath} and goes on reading it there (issue #10749): the sealed file of a shard is named
+   * after the shard's mutable bucket, so it moves when that bucket does, which is what a rename of the type does. Under the directory
+   * WRITE lock, as a compaction swaps the file: no read is on the channel, the handles are closed before the move (required on
+   * Windows) and reopened after it. A move that fails reopens the file where it was, so the store stays usable.
+   * <p>
+   * A store closed on purpose (the engine of a superseded schema) only moves its file: nothing reads it any more, and the engine
+   * that replaces it opens the file under the name it now has.
+   */
+  public void rename(final String newBasePath) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      synchronized (channelReopenLock) {
+        final String oldBasePath = basePath;
+        if (oldBasePath.equals(newBasePath))
+          return;
+
+        final File oldFile = new File(oldBasePath + FILE_EXTENSION);
+        final File newFile = new File(newBasePath + FILE_EXTENSION);
+        if (closed) {
+          moveFile(oldFile, newFile);
+          basePath = newBasePath;
+          return;
+        }
+
+        // a header that cannot be written leaves the store as it was: nothing is closed yet
+        if (headerDirty) {
+          rewriteHeader();
+          headerDirty = false;
+        }
+        try {
+          indexChannel.close();
+          indexFile.close();
+        } catch (final IOException closeEx) {
+          reopenAfterFailedRename(oldFile, closeEx);
+          throw closeEx;
+        }
+        try {
+          moveFile(oldFile, newFile);
+        } catch (final IOException moveEx) {
+          reopenAfterFailedRename(oldFile, moveEx);
+          throw moveEx;
+        }
+        try {
+          reopenAt(newFile);
+          basePath = newBasePath;
+        } catch (final IOException | RuntimeException reopenEx) {
+          // the file moved but cannot be opened where it is now: back where it was, where the store is still named
+          try {
+            moveFile(newFile, oldFile);
+          } catch (final IOException moveBackEx) {
+            reopenEx.addSuppressed(moveBackEx);
+          }
+          reopenAfterFailedRename(oldFile, reopenEx);
+          throw reopenEx;
+        }
+      }
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  private void reopenAt(final File file) throws IOException {
+    indexFile = new RandomAccessFile(file, "rw");
+    indexChannel = channelOf(indexFile);
+  }
+
+  /**
+   * Reopens the file where the store is still named after a rename that failed. A store that cannot reopen even there is marked
+   * closed, so every later read fails naming the file instead of on a channel closed under it.
+   */
+  private void reopenAfterFailedRename(final File file, final Exception failure) {
+    try {
+      reopenAt(file);
+    } catch (final IOException | RuntimeException reopenEx) {
+      closed = true;
+      failure.addSuppressed(reopenEx);
+      LogManager.instance().log(this, Level.SEVERE, "Sealed store '%s' could not be reopened after a failed rename", reopenEx,
+          file.getAbsolutePath());
+    }
+  }
+
+  /**
+   * Moves the sealed file of the store at {@code oldBasePath} to {@code newBasePath}, for a shard whose store is not open (an engine
+   * that could not start, issue #6356). Nothing to move when the shard never sealed a block.
+   */
+  public static void renameFile(final String oldBasePath, final String newBasePath) throws IOException {
+    moveFile(new File(oldBasePath + FILE_EXTENSION), new File(newBasePath + FILE_EXTENSION));
+  }
+
+  private static void moveFile(final File from, final File to) throws IOException {
+    if (from.equals(to) || !from.exists())
+      return;
+    // The only guard against replacing a file: ATOMIC_MOVE replaces an existing target on some platforms. The callers hold the type's
+    // rename lock, and the type refuses a target name already in the directory before anything moves
+    if (to.exists())
+      throw new IOException("Cannot move the sealed store '" + from.getAbsolutePath() + "' to '" + to.getAbsolutePath()
+          + "': a file with that name already exists");
+    Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE);
   }
 
   // --- Private helpers ---
@@ -5350,9 +5535,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return BlockMatchResult.SLOW_PATH;
 
       final String[] distinctVals = entry.tagDistinctValues[schemaIdx];
+      final ColumnDefinition column = columns.get(schemaIdx);
       boolean anyMatch = false;
       for (final String dv : distinctVals) {
-        if (cond.matchValues().contains(dv)) {
+        if (cond.matchesStored(column, dv)) {
           anyMatch = true;
           break;
         }
@@ -5429,14 +5615,46 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Checks if a row at index i matches all tag filter conditions.
+   * Which rows of a block satisfy every condition of {@code tagFilter}, indexed by row.
+   * <p>
+   * A {@code DICTIONARY} tag - every tag but one declared with a numeric codec - is decided once per DISTINCT dictionary entry,
+   * through {@link TagFilter.Condition#matchesStored}, the same reading of the stored text a row scan applies, and then looked up per
+   * row by dictionary index, so the aggregation push-down and the scan cannot disagree about a row (issue #10874) and no row hashes
+   * a string. A tag declared with a numeric codec ({@code BOOLEAN CODEC SIMPLE8B}) is decoded by that codec into the values the scan
+   * reads, a sample with none being {@code null}, and tested per row.
    */
-  private static boolean matchesTagConditions(final String[][] tagCols,
-      final List<TagFilter.Condition> conditions, final int i) {
-    for (int ci = 0; ci < tagCols.length; ci++)
-      if (!conditions.get(ci).matchValues().contains(tagCols[ci][i]))
-        return false;
-    return true;
+  private boolean[] tagFilterRowMatches(final byte[] blockData, final BlockEntry entry, final TagFilter tagFilter,
+      final int rowCount) throws IOException {
+    final boolean[] rowMatches = new boolean[rowCount];
+    Arrays.fill(rowMatches, true);
+    final int[] indices = new int[rowCount];
+    for (final TagFilter.Condition cond : tagFilter.getConditions()) {
+      final int schemaIdx = findNonTsColumnSchemaIndex(cond.columnIndex());
+      final byte[] encoded = sliceColumn(blockData, entry, schemaIdx);
+      final ColumnDefinition column = columns.get(schemaIdx);
+      if (column.getCompressionHint() != TimeSeriesCodec.DICTIONARY) {
+        final Object[] values = decodeColumn(column, encoded);
+        if (values.length != rowCount)
+          throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + rowCount
+              + " timestamp(s) but column '" + column.getName() + "' holds a different number of values");
+        for (int i = 0; i < rowCount; i++)
+          if (rowMatches[i] && !cond.matchValues().contains(values[i]))
+            rowMatches[i] = false;
+        continue;
+      }
+      if (DictionaryCodec.valueCount(encoded) != rowCount)
+        throw new IOException("Sealed block at offset " + entry.blockStartOffset + " has " + rowCount + " timestamp(s) but column '"
+            + column.getName() + "' holds a different number of values");
+
+      final String[] dictionary = DictionaryCodec.decodeIndexed(encoded, indices);
+      final boolean[] entryMatches = new boolean[dictionary.length];
+      for (int k = 0; k < dictionary.length; k++)
+        entryMatches[k] = cond.matchesStored(column, dictionary[k]);
+      for (int i = 0; i < rowCount; i++)
+        if (!entryMatches[indices[i]])
+          rowMatches[i] = false;
+    }
+    return rowMatches;
   }
 
   /**
@@ -5527,7 +5745,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void writeHeaderOnce(final ByteBuffer buf, final boolean metaData) throws IOException {
     final FileChannel channel = indexChannel;
     FileUtils.writeFully(channel, buf, 0);
-    channel.force(metaData);
+    FileUtils.force(channel, metaData);
   }
 
   private void rewriteHeader() throws IOException {

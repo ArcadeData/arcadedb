@@ -65,6 +65,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     for (final Statement statement : statements)
       if (!statement.isIdempotent())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
+    Statement.checkParametersBound(statements, parameters);
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
@@ -78,6 +79,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     for (final Statement statement : statements)
       if (!statement.isIdempotent())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
+    Statement.checkPositionalParameterCount(statements, parameters == null ? 0 : parameters.length);
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
@@ -88,6 +90,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
+    Statement.checkParametersBound(statements, parameters);
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);
@@ -99,6 +102,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
+    Statement.checkPositionalParameterCount(statements, parameters == null ? 0 : parameters.length);
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setConfiguration(configuration);

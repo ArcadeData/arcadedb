@@ -29,12 +29,12 @@
    <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>
   </a>
   &nbsp;
-  <a href="https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage">
-    <img src="https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668">
+  <a href="https://app.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_coverage">
+    <img src="https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668" alt="Codacy Badge">
   </a>
   &nbsp;
-  <a href="https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings">
-    <img src="https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b">
+  <a href="https://app.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade">
+    <img src="https://app.codacy.com/project/badge/Grade/1f971260db1e46638bd3fd91e3ebf668" alt="Codacy Badge">
   </a>
   &nbsp;
   <a href="https://www.meterian.io/report/gh/ArcadeData/arcadedb">
@@ -132,14 +132,16 @@ ArcadeDB key capabilities:
 ArcadeDB can be used as:
 
 - Embedded from any language on top of the Java Virtual Machine
-- Embedded from Python via bindings: [arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python)
+- Embedded from Python via bindings: [arcadedb-python-bindings](https://github.com/ArcadeData/arcadedb-python-bindings)
 - Remotely by using [HTTP/JSON](https://docs.arcadedb.com#http-json-api)
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#postgres-driver) (ArcadeDB implements Postgres Wire protocol)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are
   implemented)
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are
   implemented)
-- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/#mcp-server) (Model Context Protocol)
+- By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/arcadedb/reference/mcp/mcp) (Model Context Protocol). For
+  Claude Code there is a ready-made [plugin](claude-plugin/README.md):
+  `/plugin marketplace add ArcadeData/arcadedb` then `/plugin install arcadedb@arcadedb`
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 
@@ -162,9 +164,15 @@ Start ArcadeDB Server with Docker:
 
 ```
 docker run --rm -p 2480:2480 \
+           -v arcadedb-config:/home/arcadedb/config \
+           -v arcadedb-databases:/home/arcadedb/databases \
            -e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" \
            arcadedata/arcadedb:latest
 ```
+
+`--rm` deletes the container's anonymous volumes with it, so the two named volumes keep the imported `OpenBeer` database
+(`databases`) and the users, groups and API tokens the server writes at runtime (`config`) across runs. For a fresh start, remove
+them with `docker volume rm arcadedb-config arcadedb-databases`.
 
 Pass database settings in `ARCADEDB_SETTINGS` and any extra JVM flags in `JAVA_OPTS`: Docker replaces
 an environment variable rather than appending to it, so keeping the two apart leaves the image's own

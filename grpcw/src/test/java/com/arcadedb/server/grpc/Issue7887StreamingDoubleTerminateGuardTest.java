@@ -223,7 +223,7 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
 
     verify(resp, times(1)).onError(any());
     // Transactions are thread-bound and the inline path ran on this thread against the server's database.
-    assertThat(getServer(0).getDatabase(getDatabaseName()).isTransactionActive()).isFalse();
+    assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).isTransactionActive()).isFalse();
   }
 
   @Test

@@ -94,9 +94,28 @@ public enum PostgresType {
   ARRAY_DOUBLE(1022, "_float8", 701, 0, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
   ARRAY_TEXT(1009, "_text", 25, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
   ARRAY_JSON(199, "_json", 114, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
-  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean)),
+  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseBooleanText)),
   // numeric[]: the one array type that holds every integer, long, float, double and BigDecimal exactly (issue #9008)
-  ARRAY_NUMERIC(1231, "_numeric", 1700, 0, Collection.class, -1, value -> parseArrayFromString(value, BigDecimal::new));
+  ARRAY_NUMERIC(1231, "_numeric", 1700, 0, Collection.class, -1, value -> parseArrayFromString(value, BigDecimal::new)),
+  // The array types of the scalars above that had none (issue #10592): each scalar's typarray named one of these OIDs, and a client
+  // resolving it - pgjdbc's createArrayOf("varchar", ...) binds a parameter of type 1015 - found no type behind it. This protocol
+  // never announces them for a column, it reads them as parameters and lists them in pg_type.
+  ARRAY_SMALLINT(1005, "_int2", 21, 0, Collection.class, -1, value -> parseArrayFromString(value, Short::parseShort)),
+  ARRAY_BYTEA(1001, "_bytea", 17, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseByteaText)),
+  ARRAY_BPCHAR(1014, "_bpchar", 1042, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_VARCHAR(1015, "_varchar", 1043, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_DATE(1182, "_date", 1082, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseDateText)),
+  ARRAY_TIMESTAMP(1115, "_timestamp", 1114, 0, Collection.class, -1,
+      value -> parseArrayFromString(value, PostgresType::parseTimestampText)),
+  // The types a client looks up in pg_type by name while it sets up a connection or reads metadata, though this protocol never announces
+  // a column under them (issue #11027): every identifier column of the real catalog is name, and pgjdbc answers getMax*NameLength()
+  // and getClientInfoProperties() from the typlen of the row called "name". Each is a scalar here (typelem 0) whatever PostgreSQL says
+  // of name and int2vector, so that none of them is taken for an array; the announced OID of an identifier column stays varchar.
+  // typarray is 0 for all three, where PostgreSQL has 1003, 1028 and 1006: this protocol reads no array of them, and a typarray must
+  // name a row pg_type has (issue #10592).
+  NAME(19, "name", 0, 0, String.class, 64, value -> value),
+  OID(26, "oid", 0, 0, Long.class, 4, value -> Long.parseLong(value)),
+  INT2VECTOR(22, "int2vector", 0, 0, String.class, -1, value -> value);
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -510,6 +529,33 @@ public enum PostgresType {
   }
 
   /**
+   * The SQL name PostgreSQL prints this type under - {@code integer}, not {@code int4} - which is what {@code format_type()}, a
+   * {@code regtype} cast and {@code information_schema.columns.data_type} answer (issues #10228, #10370). {@link #typeName} is the
+   * other spelling, {@code pg_type.typname} and {@code information_schema.columns.udt_name}. An array is its element's SQL name
+   * and {@code []}. The one place a catalog column that carries the SQL name reads it from, so a new constant declares both
+   * spellings here and no writer can reach for {@link #typeName} by accident.
+   */
+  public String sqlName() {
+    if (isArrayType()) {
+      final PostgresType element = byCode(elementCode);
+      return element == null ? typeName : element.sqlName() + "[]";
+    }
+    return switch (this) {
+      case SMALLINT -> "smallint";
+      case INTEGER -> "integer";
+      case LONG -> "bigint";
+      case REAL -> "real";
+      case DOUBLE -> "double precision";
+      case CHAR -> "\"char\"";
+      case BOOLEAN -> "boolean";
+      case TIMESTAMP -> "timestamp without time zone";
+      case VARCHAR -> "character varying";
+      case BPCHAR -> "character";
+      default -> typeName;
+    };
+  }
+
+  /**
    * Returns the type carrying the given OID, or null when this protocol has no such type. Unlike
    * {@code deserializeAsText}/{@code deserializeAsBinary}, which reject an unknown OID, a catalog lookup
    * for a type ArcadeDB cannot produce is a legitimate answer of "no row" rather than an error.
@@ -530,55 +576,9 @@ public enum PostgresType {
     return name == null ? null : NAME_MAP.get(name.trim().toLowerCase(Locale.ENGLISH));
   }
 
-  /**
-   * Parses an array string representation into an ArrayList.
-   * Handles PostgreSQL array format like '{1,2,3}' or '{\"value1\",\"value2\"}'
-   */
-  private static <T> ArrayList<T> parseArrayFromString(String arrayStr, Function<String, T> elementParser) {
-    if (arrayStr == null || arrayStr.isEmpty())
-      return new ArrayList<>();
-
-    // Handle PostgreSQL array format: remove curly braces and split by comma
-    String content = arrayStr.trim();
-    if (content.startsWith("{") && content.endsWith("}")) {
-      content = content.substring(1, content.length() - 1);
-    }
-
-    // Split by comma, but handle quoted strings properly
-    List<String> elements = new ArrayList<>();
-    StringBuilder currentElement = new StringBuilder();
-    boolean inQuotes = false;
-    for (int i = 0; i < content.length(); i++) {
-      char c = content.charAt(i);
-      if (c == '\\' && i + 1 < content.length()) {
-        // Inside an array literal a backslash escapes the next character, typically a quote or another
-        // backslash (issue #5366). Without this the escaped quote was read as the end of the element.
-        currentElement.append(content.charAt(++i));
-        continue;
-      } else if (c == '"') {
-        inQuotes = !inQuotes;
-        // Skip the quote character itself for parsing
-        continue;
-      } else if (c == ',' && !inQuotes) {
-        elements.add(currentElement.toString().trim());
-        currentElement = new StringBuilder();
-        continue;
-      }
-      currentElement.append(c);
-    }
-    // Add the last element
-    if (currentElement.length() > 0) {
-      elements.add(currentElement.toString().trim());
-    }
-
-    // Parse each element
-    ArrayList<T> result = new ArrayList<>();
-    for (String element : elements) {
-      if (!element.isEmpty()) {
-        result.add(elementParser.apply(element));
-      }
-    }
-    return result;
+  /** Parses an array literal in text format: see {@link PostgresArrayLiteral} for the grammar (issue #10870). */
+  private static ArrayList<Object> parseArrayFromString(final String arrayStr, final Function<String, ?> elementParser) {
+    return PostgresArrayLiteral.parse(arrayStr, elementParser);
   }
 
   public static PostgresType getTypeForValue(Object val) {
@@ -709,6 +709,8 @@ public enum PostgresType {
       case FLOAT -> ARRAY_REAL;
       case DOUBLE -> ARRAY_DOUBLE;
       case DECIMAL -> ARRAY_NUMERIC;
+      // A BINARY is a bytea, so a list of them is a bytea[] (issue #10927)
+      case BINARY -> ARRAY_BYTEA;
       // Nested collections (issue #5365) join maps and embedded documents in being carried as a JSON document:
       // a Postgres array is rectangular and homogeneous, an ArcadeDB nested list is neither.
       case MAP, EMBEDDED, LIST, ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> JSON;
@@ -886,7 +888,8 @@ public enum PostgresType {
       final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
       typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
     }
-    case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC -> {
+    case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC, ARRAY_SMALLINT,
+         ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> {
       final Collection<?> elements = value instanceof Collection<?> collection ? collection
           : value.getClass().isArray() ? convertPrimitiveArrayToCollection(value) : null;
       if (elements == null)
@@ -930,7 +933,7 @@ public enum PostgresType {
       for (final Object element : elements) {
         if (element == null)
           typeBuffer.putInt(-1);
-        else if (elementType == TEXT || elementType == JSON)
+        else if (elementType == TEXT || elementType == JSON || elementType == VARCHAR || elementType == BPCHAR)
           writeString(typeBuffer, arrayElementToText(element));
         else
           try {
@@ -944,19 +947,12 @@ public enum PostgresType {
     typeBuffer.putInt(lengthPosition, typeBuffer.position() - lengthPosition - 4);
   }
 
+  /** The element type of an array type: its {@code typelem}, the one place the pairing is declared. */
   private static PostgresType elementTypeOf(final PostgresType arrayType) {
-    return switch (arrayType) {
-      case ARRAY_INT -> INTEGER;
-      case ARRAY_CHAR -> CHAR;
-      case ARRAY_LONG -> LONG;
-      case ARRAY_REAL -> REAL;
-      case ARRAY_DOUBLE -> DOUBLE;
-      case ARRAY_TEXT -> TEXT;
-      case ARRAY_JSON -> JSON;
-      case ARRAY_BOOLEAN -> BOOLEAN;
-      case ARRAY_NUMERIC -> NUMERIC;
-      default -> throw new IllegalArgumentException("Not an array type: " + arrayType);
-    };
+    final PostgresType element = arrayType.isArrayType() ? byCode(arrayType.elementCode) : null;
+    if (element == null)
+      throw new IllegalArgumentException("Not an array type: " + arrayType);
+    return element;
   }
 
   /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
@@ -1013,8 +1009,17 @@ public enum PostgresType {
         sb.append(((Number) element).floatValue());
       } else if (element instanceof Double) {
         sb.append(((Number) element).doubleValue());
+      } else if (element instanceof BigDecimal bd) {
+        // as the scalar is written: toString() switches to scientific notation, which a numeric[] element is never written in
+        sb.append(bd.toPlainString());
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
+      } else if (pgType == ARRAY_BYTEA && byteaValueOf(element) != null) {
+        // a bytea[] element is the \x<hex> text the scalar has (issue #10870), not the JSON array of its bytes
+        appendQuoted(sb, toByteaText(byteaValueOf(element)));
+      } else if (pgType == ARRAY_DATE && element instanceof Date date) {
+        // a date[] element is the date alone, as the scalar DATE is written: the time of day is not part of the value
+        appendQuoted(sb, date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE));
       } else if (element instanceof Character) {
         // A Postgres array literal quotes an element with the DOUBLE quote and nothing else: a single quote is
         // an ordinary data character there, so wrapping the character in single quotes (issue #7801) shipped
@@ -1287,6 +1292,9 @@ public enum PostgresType {
       return ARRAY_NUMERIC;
     if (element instanceof String)
       return ARRAY_TEXT;
+    // A BINARY element is a bytea, as the scalar is, and not the JSON array of its bytes a primitive array is (issue #10927)
+    if (element instanceof byte[] || element instanceof Binary)
+      return ARRAY_BYTEA;
     // A list of documents is advertised as a single json value holding a JSON array, not as json[] (issue
     // #5366). A json[] forces every element to travel as a quoted string inside a Postgres array literal, and
     // JDBC-based clients (DBeaver, DataGrip/PhpStorm, DbVisualizer) then show the escaped text instead of the
@@ -1329,10 +1337,13 @@ public enum PostgresType {
   private static Object deserializeText(final long code, final byte[] valueAsBytes) {
     String str = new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
     if (code == 0) { // UNSPECIFIED
-      // Try to detect if this is a PostgreSQL array format
+      // A client that leaves the type unspecified may still send a list as an array literal (psycopg does, issue #2559). It is
+      // read as one only when it is a well-formed literal: a JSON document such as {"k": 1} merely starts and ends with a brace,
+      // and stays the string it was sent as (issue #10870).
       if (str.startsWith("{") && str.endsWith("}")) {
-        // Parse as an array using the TEXT array parser
-        return parseArrayFromString(str, s -> s);
+        final List<Object> array = PostgresArrayLiteral.tryParse(str);
+        if (array != null)
+          return array;
       }
       return str;
     }
@@ -1382,15 +1393,19 @@ public enum PostgresType {
       }
       case BYTEA -> valueAsBytes.clone();
       case NUMERIC -> parseNumericBinary(buffer);
-      case CHAR -> (char) buffer.get();
+      // "char" is one UNSIGNED byte: a bare (char) cast sign-extends, and 'é' (0xE9) came back as '￩'
+      case CHAR -> (char) (buffer.get() & 0xFF);
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
         // In PostgreSQL binary format, json is the raw UTF-8 text with no inner length prefix
         // (json_send emits it verbatim); the length is already provided by the Bind message.
         yield parseJsonText(new String(valueAsBytes, DatabaseFactory.getDefaultCharset()));
       }
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC ->
-          deserializeBinaryArray(buffer);
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC,
+           ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> deserializeBinaryArray(buffer);
+      // catalog-only types (issue #11027): listed in pg_type for clients to look up, never bound as a parameter, as before they existed
+      case NAME, OID, INT2VECTOR ->
+          throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
     };
   }
 
@@ -1442,8 +1457,7 @@ public enum PostgresType {
       return buf.get() != 0;
     if (elemOid == LONG.code)
       return buf.getLong();
-    // int2[] (OID 1005) is not in the ARRAY_* enum, but int2 elements can appear inside
-    // any array (e.g. composite types), so we still decode them as Short here.
+    // the elements of int2[] (OID 1005, ARRAY_SMALLINT)
     if (elemOid == SMALLINT.code)
       return buf.getShort();
     if (elemOid == INTEGER.code)
@@ -1454,6 +1468,12 @@ public enum PostgresType {
       return buf.getDouble();
     if (elemOid == NUMERIC.code)
       return parseNumericBinary(buf);
+    // a "char"[] element is the single byte the scalar is, read as the Character the text format reads (issue #10870)
+    if (elemOid == CHAR.code)
+      return (char) (buf.get() & 0xFF);
+    // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592): read as the scalar is, not as its bytes' text
+    if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code)
+      return deserializeBinary(elemOid, bytes);
     // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
     return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
@@ -1462,15 +1482,9 @@ public enum PostgresType {
    * Checks if this type is an array type.
    */
   public boolean isArrayType() {
-    return this == ARRAY_INT ||
-        this == ARRAY_CHAR ||
-        this == ARRAY_LONG ||
-        this == ARRAY_DOUBLE ||
-        this == ARRAY_REAL ||
-        this == ARRAY_TEXT ||
-        this == ARRAY_JSON ||
-        this == ARRAY_BOOLEAN ||
-        this == ARRAY_NUMERIC;
+    // an array type is the one that names an element type: read off the pairing every constant declares, so a new array constant
+    // cannot be left out of a list of them (issue #10592)
+    return elementCode != 0;
   }
 
   /**

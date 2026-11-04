@@ -41,7 +41,10 @@ import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.ContainsAllCondition;
+import com.arcadedb.query.sql.parser.ContainsCondition;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.ContainsValueCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
@@ -77,6 +80,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte FLOATING_KEYS_NOT_APPLICABLE = 2;
   /** {@link #checkedKey} before any key was checked: no key, not even null. */
   private static final Object NOT_CHECKED                  = new Object();
+  /** How a key slot reads its value, see {@link #keySlotKinds}. */
+  private static final byte   SLOT_MULTI_VALUE             = 0;
+  private static final byte   SLOT_SCALAR                  = 1;
+  private static final byte   SLOT_FIRST_ITEM              = 2;
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -435,7 +442,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             // few instructions wide, and a statement planned again answers the same rows. Before any entry, a drop that has
             // only started counts too (issue #9615): it may already have taken the sub-indexes away, and an empty answer is the
             // one a statement planned again can still replace at no cost to the caller
-            if (index instanceof TypeIndex typeIndex && (!typeIndex.isValid() || (count == 0 && typeIndex.isDropping())))
+            if (index instanceof TypeIndex typeIndex && (typeIndex.isDropped() || (count == 0 && typeIndex.isDropping())))
               throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
           } else
@@ -641,24 +648,36 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final PCollection toKey = indexKeyTo((AndBlock) condition, additionalRangeCondition);
     final boolean fromKeyIncluded = indexKeyFromIncluded((AndBlock) condition, additionalRangeCondition);
     final boolean toKeyIncluded = indexKeyToIncluded((AndBlock) condition, additionalRangeCondition);
-    final boolean[] fromScalarSlots = scalarKeySlots((AndBlock) condition, additionalRangeCondition, true);
-    final boolean[] toScalarSlots = scalarKeySlots((AndBlock) condition, additionalRangeCondition, false);
-    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded, fromScalarSlots, toScalarSlots);
+    final byte[] fromSlotKinds = keySlotKinds((AndBlock) condition, additionalRangeCondition, true);
+    final byte[] toSlotKinds = keySlotKinds((AndBlock) condition, additionalRangeCondition, false);
+    init(fromKey, fromKeyIncluded, toKey, toKeyIncluded, fromSlotKinds, toSlotKinds);
   }
 
   /**
-   * Marks the key slots filled by a comparison ({@code =}, {@code <}, {@code >}, ...). Only the multi-value operators
-   * ({@code IN}, {@code CONTAINSANY}, ...) expand a list into one lookup per element; a comparison against a list
-   * matches nothing on a scan, so the index must not answer it with the rows of every element (#9370).
+   * How each key slot reads its value. A slot filled by a comparison ({@code =}, {@code <}, {@code >}, ...) is one key: a
+   * comparison against a list matches nothing on a scan, so the index must not answer it with the rows of every element (#9370).
+   * So is a {@code BETWEEN} bound, and a {@code CONTAINSVALUE} slot, whose list operand is one value the map must hold (#10757).
+   * A {@code CONTAINSALL} slot is the first item searched for: every row it matches holds that item, the planner keeps the
+   * condition as a filter, and the union of every item's rows would only read more of them. A {@code CONTAINS} slot is its one item
+   * too: a longer list is one element to find, never a list of keys (#10757). The multi-value operators ({@code IN},
+   * {@code CONTAINSANY}, ...) expand a list into one lookup per element.
    */
-  private static boolean[] scalarKeySlots(final AndBlock keyCondition, final BinaryCondition additional, final boolean from) {
+  private static byte[] keySlotKinds(final AndBlock keyCondition, final BinaryCondition additional, final boolean from) {
     final List<BooleanExpression> subBlocks = keyCondition.getSubBlocks();
-    final boolean[] slots = new boolean[subBlocks.size()];
+    final byte[] slots = new byte[subBlocks.size()];
     int count = 0;
     for (final BooleanExpression exp : subBlocks)
       if ((from ? exp.resolveKeyFrom(additional) : exp.resolveKeyTo(additional)) != null)
-        slots[count++] = exp instanceof BinaryCondition;
+        slots[count++] = keySlotKind(exp);
     return slots;
+  }
+
+  private static byte keySlotKind(final BooleanExpression exp) {
+    if (exp instanceof BinaryCondition || exp instanceof BetweenCondition || exp instanceof ContainsValueCondition)
+      return SLOT_SCALAR;
+    if (exp instanceof ContainsAllCondition || exp instanceof ContainsCondition)
+      return SLOT_FIRST_ITEM;
+    return SLOT_MULTI_VALUE;
   }
 
   /**
@@ -781,7 +800,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   private void init(final PCollection fromKey, final boolean fromKeyIncluded, final PCollection toKey,
-      final boolean toKeyIncluded, final boolean[] fromScalarSlots, final boolean[] toScalarSlots) {
+      final boolean toKeyIncluded, final byte[] fromScalarSlots, final byte[] toScalarSlots) {
     final List<PCollection> secondValueCombinations = cartesianProduct(fromKey, fromScalarSlots);
     final List<PCollection> thirdValueCombinations = cartesianProduct(toKey, toScalarSlots);
 
@@ -993,11 +1012,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (key == null)
         continue;
       for (int i = 0; i < key.length && i < keyTypes.length; i++) {
-        if (!IntegralKeyBound.isInexact(keyTypes[i], key[i]))
+        final byte boundType = IntegralKeyBound.boundTypeOf(keyTypes[i]);
+        if (!IntegralKeyBound.isInexact(boundType, key[i]))
           continue;
         if (i != rangeSlot)
           return false;
-        final Object mapped = side == 0 ? IntegralKeyBound.ceilingKey(keyTypes[i], key[i]) : IntegralKeyBound.floorKey(keyTypes[i], key[i]);
+        final Object mapped = side == 0 ? IntegralKeyBound.ceilingKey(boundType, key[i]) : IntegralKeyBound.floorKey(boundType, key[i]);
         if (mapped == null)
           return false;
         // a copy: the array can be the one the other side, or another seek, holds
@@ -1010,8 +1030,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
     // 11.5 < i < 11.9 maps to 12 <= i <= 11: an empty range, which the index is not asked to read backwards
     if (mappedAny && seek[0] != null && seek[1] != null && seek[0].length > rangeSlot && seek[1].length > rangeSlot
-        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], seek[0][rangeSlot])
-        && !IntegralKeyBound.isInexact(keyTypes[rangeSlot], seek[1][rangeSlot])
+        && !IntegralKeyBound.isInexact(IntegralKeyBound.boundTypeOf(keyTypes[rangeSlot]), seek[0][rangeSlot])
+        && !IntegralKeyBound.isInexact(IntegralKeyBound.boundTypeOf(keyTypes[rangeSlot]), seek[1][rangeSlot])
         && IntegralKeyBound.isEmptyRange(seek[0][rangeSlot], seek[1][rangeSlot]))
       return false;
     return true;
@@ -1035,11 +1055,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (keyTypes == null)
       return BOUND_KEPT;
     for (int i = 0; i < key.length && i < keyTypes.length; i++) {
-      if (!IntegralKeyBound.isInexact(keyTypes[i], key[i]))
+      final byte boundType = IntegralKeyBound.boundTypeOf(keyTypes[i]);
+      if (!IntegralKeyBound.isInexact(boundType, key[i]))
         continue;
       if (i < key.length - 1)
         return NO_MATCH;
-      final Object mapped = lower ? IntegralKeyBound.ceilingKey(keyTypes[i], key[i]) : IntegralKeyBound.floorKey(keyTypes[i], key[i]);
+      final Object mapped = lower ? IntegralKeyBound.ceilingKey(boundType, key[i]) : IntegralKeyBound.floorKey(boundType, key[i]);
       if (mapped == null)
         return NO_MATCH;
       key[i] = mapped;
@@ -1055,7 +1076,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
     if (keyTypes == null || position >= keyTypes.length)
       return false;
-    final byte keyType = keyTypes[position];
+    final byte keyType = IntegralKeyBound.boundTypeOf(keyTypes[position]);
     return keyType == BinaryTypes.TYPE_BYTE || keyType == BinaryTypes.TYPE_SHORT || keyType == BinaryTypes.TYPE_INT
         || keyType == BinaryTypes.TYPE_LONG;
   }
@@ -1233,24 +1254,27 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
-  private List<PCollection> cartesianProduct(final PCollection key, final boolean[] scalarSlots) {
-    return cartesianProduct(new PCollection(), key, scalarSlots);
+  private List<PCollection> cartesianProduct(final PCollection key, final byte[] slotKinds) {
+    return cartesianProduct(new PCollection(), key, slotKinds);
   }
 
-  private List<PCollection> cartesianProduct(final PCollection head, final PCollection key, final boolean[] scalarSlots) {
+  private List<PCollection> cartesianProduct(final PCollection head, final PCollection key, final byte[] slotKinds) {
     if (key.getExpressions().isEmpty())
       return List.of(head);
 
-    final Expression nextElementInKey = key.getExpressions().getFirst();
-    final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
+    final Expression keyExpression = key.getExpressions().getFirst();
+    final Object keyValue = keyExpression.execute(new ResultInternal(context.getDatabase()), context);
     // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
     // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
     // consistent with the multi-value handling in processInCondition().
     final int slot = head.getExpressions().size();
     // The mask has one entry per key slot the condition produces, so it always covers the slot; a slot past it (a key built some
     // other way) is treated as a multi-value one, the behaviour before #9370
-    final boolean scalar = slot < scalarSlots.length && scalarSlots[slot];
-    if (!scalar && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
+    final byte slotKind = slot < slotKinds.length ? slotKinds[slot] : SLOT_MULTI_VALUE;
+    // the planner hands a CONTAINSALL with a lookup item only, and a CONTAINS with exactly one item
+    final Object value = slotKind == SLOT_FIRST_ITEM ? unwrapSubQueryResult(ContainsAllCondition.firstLookupItem(keyValue)) : keyValue;
+    final Expression nextElementInKey = slotKind == SLOT_FIRST_ITEM ? toExpression(value) : keyExpression;
+    if (slotKind == SLOT_MULTI_VALUE && !(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
       // `tail` does not depend on `elemInKey`: it is `key` with its (already-consumed) first expression
       // dropped, the same for every element `value` expands into. Computing it once here instead of once
@@ -1265,7 +1289,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           newHead.add(exp.copy());
 
         newHead.add(toExpression(unwrapSubQueryResult(elemInKey)));
-        result.addAll(cartesianProduct(newHead, tail, scalarSlots));
+        result.addAll(cartesianProduct(newHead, tail, slotKinds));
       }
       return result;
     } else {
@@ -1276,7 +1300,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       newHead.add(nextElementInKey);
       final PCollection tail = key.copy();
       tail.getExpressions().removeFirst();
-      return cartesianProduct(newHead, tail, scalarSlots);
+      return cartesianProduct(newHead, tail, slotKinds);
     }
 
   }
@@ -1506,15 +1530,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // Bounded by the shorter array rather than requiring equal lengths: convertKeys() itself assumes
     // values.length <= keyTypes.length (it indexes keyTypes[i] unguarded for every key), so a partial-key
     // lookup is expected to supply no more values than the index has key types for.
-    for (int i = 0; i < values.length && i < keyTypes.length; i++) {
-      if (values[i] == null)
-        continue;
-      try {
-        Type.convert(database, values[i], BinaryTypes.getClassFromType(keyTypes[i]));
-      } catch (final IllegalArgumentException e) {
+    for (int i = 0; i < values.length && i < keyTypes.length; i++)
+      // Also a value the conversion leaves as it was or answers null for (a LocalDate for a BOOLEAN key, a List for an INTEGER one):
+      // no key either, and a range reads a null bound as "no bound" (issue #10541)
+      if (!Type.canBeIndexLookupKey(database, values[i], BinaryTypes.getClassFromType(keyTypes[i])))
         return false;
-      }
-    }
     return true;
   }
 

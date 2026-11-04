@@ -117,6 +117,34 @@ class FileUtilsTest {
   }
 
   @Test
+  void atomicCopyNeverLinksAndWritesAnIndependentFile() throws Exception {
+    // Issue #11097: a file system can accept a hard link yet lose the data once the other name is replaced, so the
+    // copy must never be a link.
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    final byte[] content = { 0, 0x7f, (byte) 0x80, (byte) 0xe9, (byte) 0xff };
+    Files.write(source, content);
+    Files.writeString(target, "an older generation");
+
+    final AtomicInteger linkAttempts = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = mockStatic(Files.class, invocation -> {
+      if (invocation.getMethod().getName().equals("createLink"))
+        linkAttempts.incrementAndGet();
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicCopyFile(source.toFile(), target.toFile());
+    }
+
+    assertThat(linkAttempts.get()).isZero();
+    assertThat(Files.isSameFile(source, target)).isFalse();
+    assertThat(Files.readAllBytes(target)).isEqualTo(content);
+    assertThat(Files.readAllBytes(source)).isEqualTo(content);
+    try (final var files = Files.list(tempDir)) {
+      assertThat(files).containsExactlyInAnyOrder(source, target);
+    }
+  }
+
+  @Test
   void defaultAtomicWriteRetainsTheExistingFallbackForUnsupportedFileSystems() throws Exception {
     final Path target = tempDir.resolve("config.json").toAbsolutePath();
     Files.writeString(target, "old");

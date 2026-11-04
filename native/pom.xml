@@ -48,7 +48,7 @@
             org.apache.maven.shared:maven-shared-utils in the plugin declaration below, which
             injects the jar into the plugin realm.
         -->
-        <native-maven-plugin.version>1.1.14</native-maven-plugin.version>
+        <native-maven-plugin.version>1.1.16</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
@@ -144,6 +144,85 @@
             linux/arm64 uses a different build mode than linux/amd64's native.static.
         -->
         <native.mostlystatic>false</native.mostlystatic>
+        <!--
+            The CPU baseline the binary is compiled for, passed to native-image as -march (#10581).
+            A binary built for a level the host CPU lacks does not start: it exits at once with
+            "The current machine does not support all of the following CPU features that are
+            required by the image". So this value IS the native image's minimum CPU requirement,
+            and it is written down here rather than inherited from whatever GraalVM's default is
+            for the builder in use.
+
+            The value is chosen per architecture by the native-march-* profiles below:
+
+              amd64 / x86_64  x86-64-v3   AVX, AVX2, BMI1, BMI2, FMA, F16C, LZCNT, MOVBE
+                                          (Intel Haswell 2013+, AMD Excavator/Zen 2015+)
+                                          the builder's own default (GraalVM 25)
+              aarch64         armv8-a     ASIMD, the ARMv8.0 baseline: runs on every 64-bit ARM core,
+                                          Raspberry Pi 3/4 (Cortex-A53/A72) and Graviton1 included
+                                          NOT the builder's default, which is armv8.1-a (CRC32 + LSE)
+
+            Whether a baseline is the builder's default is a claim about GraalVM, and an earlier
+            revision of this comment made it wrongly for aarch64 (#10581, #10715). It is now recorded
+            per architecture in native.march.pins-builder-default.<arch> and checked against the
+            builder itself by .github/scripts/check-native-march-builder-default.py, which the native
+            job runs before it builds (#11254). amd64 stays at the default it has always carried
+            (x86-64-v3). It is kept, rather than lowered to
+            compatibility, until what that costs has been measured: the 26.10.2 amd64 binary carries
+            AVX2/FMA/BMI2 code throughout (the issue counted 8,098 ymm operands, 46 FMA and 25,482
+            BMI2 instructions). A compatibility-built archive for older amd64 CPUs is built by native-image.yml's
+            include_compat leg (#11253).
+
+            aarch64 is pinned to armv8-a on purpose, below the builder's default of armv8.1-a (CRC32 +
+            LSE atomics), so that ARMv8.0 cores keep working (#10715). Binaries built before -march was
+            stated at all took the builder's default, so an armv8-a binary is a change from them and
+            admits more CPUs; it does not leave them unchanged. Moving it is a decision of its own,
+            with a measurement and a release note.
+
+            This default is the fallback for an architecture none of those profiles names, and
+            `compatibility` is valid on every architecture native-image supports. Override it
+            on the command line to build for an older or a specific CPU:
+
+              -Dnative.march=compatibility   runs on any CPU of the architecture
+              -Dnative.march=x86-64-v2       SSE4.2/POPCNT, no AVX
+
+            NEVER build a binary that is published or shipped in an image with
+            -Dnative.march=native: it targets the CPU of the machine that ran the build, so a
+            CI-built binary would require whatever the runner happened to have.
+            .github/scripts/check-native-march.py (lint job) fails on that, and on this pom
+            losing its -march build arg or docs/native-image.md naming different baselines.
+        -->
+        <native.march>compatibility</native.march>
+        <!--
+            The baseline each architecture's published binary is recorded as being built for (#10715).
+            .github/scripts/check-native-march.py fails when the baseline a native-march-* profile
+            resolves to differs from the value here, so changing one without the other is a red lint
+            job, not a silent change of the minimum CPU. To raise or lower a baseline deliberately,
+            change the profile, this value and the docs/native-image.md table in the same commit.
+            These are properties only for the checker to read; the build does not use them.
+        -->
+        <native.march.expected.amd64>x86-64-v3</native.march.expected.amd64>
+        <native.march.expected.x86_64>x86-64-v3</native.march.expected.x86_64>
+        <native.march.expected.aarch64>armv8-a</native.march.expected.aarch64>
+        <!--
+            Whether the recorded baseline is the builder's own default (true) or a deliberate departure
+            from it (false) (#11254). check-native-march-builder-default.py reads the default from
+            the native-image help (expert options) in the native job and fails when this claim is wrong
+            for the build architecture, or when the builder's wording can no longer be read.
+        -->
+        <native.march.pins-builder-default.amd64>true</native.march.pins-builder-default.amd64>
+        <native.march.pins-builder-default.x86_64>true</native.march.pins-builder-default.x86_64>
+        <native.march.pins-builder-default.aarch64>false</native.march.pins-builder-default.aarch64>
+        <!--
+            native-image optimization level (#11070). -O3 inlines more aggressively than GraalVM's default
+            -O2: faster code for a larger binary and a longer image build. The timed A/B behind it (same
+            engine and glue built at -O2 and at -O3, -march=compatibility) and the size and build-time cost
+            are in #11070; that measurement covers the embedded library, the server binary is measured on
+            the pull request. Override it on the command line:
+
+              -Dnative.opt=-O2   GraalVM's default level
+              -Dnative.opt=-Os   smallest binary
+        -->
+        <native.opt>-O3</native.opt>
     </properties>
 
     <dependencyManagement>
@@ -217,7 +296,7 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- GraalVM hosted Feature API, for GrpcMessageReflectionFeature (already on the classpath through graal-sdk) -->
+        <!-- GraalVM hosted Feature API, for GrpcMessageReflectionFeature and OpenApiModelReflectionFeature (already on the classpath through graal-sdk) -->
         <dependency>
             <groupId>org.graalvm.sdk</groupId>
             <artifactId>nativeimage</artifactId>
@@ -338,12 +417,19 @@
                     </metadataRepository>
                     <buildArgs>
                         <buildArg>--no-fallback</buildArg>
+                        <!-- Minimum CPU the binary runs on; see the native.march property and #10581. -->
+                        <buildArg>-march=${native.march}</buildArg>
+                        <!-- Optimization level; see the native.opt property and #11070. -->
+                        <buildArg>${native.opt}</buildArg>
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                         <buildArg>--enable-url-protocols=http,https</buildArg>
                         <buildArg>--add-modules=jdk.incubator.vector</buildArg>
                         <!-- The gRPC interceptors read request fields through the protobuf descriptor, which looks up the
                              generated getters by reflection: register every gRPC message and builder for it. -->
                         <buildArg>--features=com.arcadedb.nativeimage.GrpcMessageReflectionFeature</buildArg>
+                        <!-- GET /api/v1/openapi.json serializes the swagger OpenAPI models with Jackson, which finds their
+                             properties by reflection: without this every model is an empty bean and the document is {} (#10573). -->
+                        <buildArg>--features=com.arcadedb.nativeimage.OpenApiModelReflectionFeature</buildArg>
                         <!-- Undertow/XNIO: HostName reads the machine hostname eagerly; must be deferred to run time. -->
                         <buildArg>--initialize-at-run-time=org.wildfly.common.net.HostName</buildArg>
                         <!-- slf4j API, helpers, providers and the JUL binding must all initialize at build time,
@@ -524,6 +610,48 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!--
+            Pin the native image's CPU baseline per architecture (#10581). See the native.march
+            property above for what each value requires of the host CPU and why it was chosen.
+            Activated by the BUILD machine's os.arch, which is also the target's: native-image
+            cannot cross-compile. Java reports amd64 on Linux/Windows and x86_64 on macOS for the
+            same architecture, hence two profiles for it. A -Dnative.march=... on the command
+            line still wins over all three: user properties take precedence over profile ones.
+        -->
+        <profile>
+            <id>native-march-amd64</id>
+            <activation>
+                <os>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.march>x86-64-v3</native.march>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-march-x86_64</id>
+            <activation>
+                <os>
+                    <arch>x86_64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.march>x86-64-v3</native.march>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-march-aarch64</id>
+            <activation>
+                <os>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.march>armv8-a</native.march>
+            </properties>
         </profile>
     </profiles>
 </project>

@@ -1196,6 +1196,9 @@ message GetDatabaseInfoResponse {
   int32  indexes  = 5;
   int64  size_bytes = 6; // optional if you can provide
   map<string, string> properties = 7; // extra info
+  // The types whose records could not be counted (issue #10877): 'records' is the sum over every other type, so a
+  // non-empty list says the total is short by an unknown amount rather than that the database holds fewer records
+  repeated string uncounted_types = 8;
 }
 
 message CreateUserRequest {

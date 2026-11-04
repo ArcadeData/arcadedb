@@ -114,7 +114,7 @@ class Issue8411PendingBootstrapReplacementPersistenceTest {
     if (server != null) {
       try {
         if (server.existsDatabase(DB_NAME))
-          ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+          ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       } catch (final Exception ignore) {
         // best-effort cleanup; the @TempDir is removed regardless
       }
@@ -290,7 +290,7 @@ class Issue8411PendingBootstrapReplacementPersistenceTest {
   }
 
   private long liveCount() {
-    return server.getDatabase(DB_NAME).countType("Node", true);
+    return server.getDatabaseForOperator(DB_NAME).countType("Node", true);
   }
 
   /** Publishes a leader whose snapshot endpoint serves a real database with a DIFFERENT record count. */

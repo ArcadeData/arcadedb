@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
@@ -81,23 +82,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphEngine {
-  private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
-    @Override
-    public boolean hasNext() {
-      return false;
-    }
-
-    @Override
-    public RID next() {
-      throw new NoSuchElementException();
-    }
-
-    @Override
-    public RID getEdgeRID() {
-      throw new IllegalStateException("No entry: next() has not returned one yet");
-    }
-  };
-
   public static final IterableGraph<Vertex> EMPTY_VERTEX_LIST = new IterableGraph<>() {
     @Override
     public Iterator<Vertex> iterator() {
@@ -126,6 +110,24 @@ public class GraphEngine {
   // SHARED: countInto() ONLY READS ITS FILTER ARRAYS, IT WRITES THE COUNTS ALONE
   private static final EdgeBucketMask[] NO_NEIGHBOR_MASK = new EdgeBucketMask[1];
   private static final boolean[]        SKIP_SELF_LOOPS  = { true };
+
+  // THE ENTRIES OF A VERTEX WITH NO EDGE LIST IN A DIRECTION
+  private static final EdgeEntryRIDIterator NO_ENTRIES = new EdgeEntryRIDIterator() {
+    @Override
+    public boolean hasNext() {
+      return false;
+    }
+
+    @Override
+    public RID next() {
+      throw new NoSuchElementException();
+    }
+
+    @Override
+    public RID getEdgeRID() {
+      throw new IllegalStateException("No entry: next() has not returned one yet");
+    }
+  };
 
   /**
    * Told about the edge writes no record event reports (issue #9572). Internal: these are not record events, so no
@@ -339,7 +341,7 @@ public class GraphEngine {
                              final Object... edgeProperties) {
     final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, null, edgeProperties);
     if (edge == null)
-      throw vetoedEdge(edgeTypeName, fromVertex.getIdentity(), toVertex);
+      throw RecordVetoedException.ofCreateEdge(edgeTypeName, fromVertex, toVertex);
     return edge;
   }
 
@@ -426,11 +428,6 @@ public class GraphEngine {
   private static VertexNotFoundException deletedEndpoint(final RID vertexRID, final String side) {
     return new VertexNotFoundException(
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
-  }
-
-  private static RecordVetoedException vetoedEdge(final String edgeTypeName, final RID fromVertexRID, final Identifiable toVertex) {
-    return new RecordVetoedException("Cannot create edge of type '" + edgeTypeName + "' from " + fromVertexRID + " to "
-        + (toVertex != null ? toVertex.getIdentity() : null) + ": a beforeCreate listener vetoed it");
   }
 
   /** @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired */
@@ -534,8 +531,11 @@ public class GraphEngine {
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
-    if (edge instanceof LightEdge)
+    if (edge instanceof LightEdge) {
       lightEdgeEntryAppended(fromVertex.getIdentity(), Vertex.DIRECTION.OUT, edge.getIdentity().getBucketId(), toVertex.getIdentity());
+      // A lightweight edge is an entry in the edge lists of its two vertices and no record of its own: see DeferredExistenceChecks
+      DeferredExistenceChecks.lightEdgeConnected(database);
+    }
     recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
     // EVERY LIGHTWEIGHT EDGE IS CREATED THROUGH HERE (Java API, SQL, Cypher, async): A REGULAR ONE WAS ALREADY REPORTED
     // BY ITS RECORD'S save(). A LISTENER THAT THROWS FAILS THE CREATION, AS A RECORD LISTENER DOES: THE APPEND ABOVE IS
@@ -2077,13 +2077,14 @@ public class GraphEngine {
     final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
 
     // A SELF-LOOP IS IN BOTH LISTS: THE INCOMING WALK SKIPS THE ONES THE OUTGOING WALK DELETED, SO EACH IS DELETED, AND
-    // REPORTED TO THE DELETE LISTENERS, ONCE (issue #10369). Only when that walk read its whole list: one cut short by a
-    // tolerated failure may not have reached them
-    final EdgeListWalk outWalk = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.OUT, force, null);
-    final EdgeListWalk inWalk = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.IN, force,
-        outWalk == EdgeListWalk.CUT_SHORT ? null : vertexRID);
-    final boolean hadOutList = outWalk != EdgeListWalk.NO_LIST;
-    final boolean hadInList = inWalk != EdgeListWalk.NO_LIST;
+    // REPORTED TO THE DELETE LISTENERS, ONCE (issue #10369). Exactly those, as the outgoing walk recorded them, and not every
+    // self-loop entry: an outgoing list that could not be opened, was cut short, or simply does not hold the entry (an
+    // asymmetric list, what the repair pass's own prune leaves) deleted nothing, and the incoming walk is then the one that
+    // deletes the edge, or its record outlives the vertex at both ends (issue #10520)
+    final DeletedSelfLoops deletedSelfLoops = new DeletedSelfLoops();
+    final boolean hadOutList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.OUT, force, deletedSelfLoops);
+    final boolean hadInList = deleteEdgesOf(mostUpdatedVertex, Vertex.DIRECTION.IN, force,
+        deletedSelfLoops.isEmpty() ? null : deletedSelfLoops);
 
     if (hadOutList)
       deleteRemainingChunks(mostUpdatedVertex, Vertex.DIRECTION.OUT);
@@ -2461,14 +2462,15 @@ public class GraphEngine {
    * carries a different meaning entirely, has its own policy in {@link #deleteEdgeOfDeletedVertex}, and must not
    * be mistaken for "this vertex's list is corrupt, delete it anyway".
    *
-   * @param skippedNeighbor the neighbour whose entries the walk passes over, read off the list without touching the edge
-   *                        record, or null to delete every edge
+   * @param selfLoops on the OUTGOING walk, where the self-loops it deletes are recorded; on the INCOMING walk, the self-loops
+   *                  it passes over, read off the list without touching the edge record, or null to delete every edge
    *
-   * @return whether the vertex has an edge list in this direction at all, i.e. whether there are chunk records left
-   * to drain afterwards, and whether the walk read all of it.
+   * @return whether the walk opened an edge list in this direction, i.e. whether there are chunk records left to drain
+   * afterwards. False for a vertex with no list in this direction, and for a list whose head could not be read at all.
    */
-  private EdgeListWalk deleteEdgesOf(final VertexInternal vertex, final Vertex.DIRECTION direction, final boolean force,
-      final RID skippedNeighbor) {
+  private boolean deleteEdgesOf(final VertexInternal vertex, final Vertex.DIRECTION direction, final boolean force,
+      final DeletedSelfLoops selfLoops) {
+    final boolean outgoing = direction == Vertex.DIRECTION.OUT;
     EdgeLinkedList edges = null;
     Iterator<Edge> iterator = null;
     try {
@@ -2486,7 +2488,7 @@ public class GraphEngine {
         // drain still runs. Pinning before the assignment would leave it null and orphan the chunks as well.
         edges.anchorForFullRemoval();
 
-        iterator = edges.edgeIteratorForRemoval(skippedNeighbor);
+        iterator = edges.edgeIteratorForRemoval(outgoing ? null : selfLoops);
       }
     } catch (final BrokenChunkChainException e) {
       tolerateBrokenChunkChainEdgeList(e, vertex, direction, force);
@@ -2501,7 +2503,7 @@ public class GraphEngine {
     // than folded into the loop condition, which then read as a disguised while(true) - the reference is never
     // reassigned and every exit below is a break.
     if (iterator == null)
-      return edges != null ? EdgeListWalk.CUT_SHORT : EdgeListWalk.NO_LIST;
+      return edges != null;
 
     while (true) {
       final Edge edge;
@@ -2517,30 +2519,28 @@ public class GraphEngine {
         continue;
       } catch (final BrokenChunkChainException e) {
         tolerateBrokenChunkChainEdgeList(e, vertex, direction, force);
-        return EdgeListWalk.CUT_SHORT;
+        return true;
       } catch (final NeedRetryException e) {
         tolerateUnreadableEdgeList(e, vertex, direction, force);
-        return EdgeListWalk.CUT_SHORT;
+        return true;
       } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
                      | IndexOutOfBoundsException | IllegalArgumentException | ClassCastException | SchemaException e) {
         tolerateUndecodableEdgeList(e, vertex, direction);
-        return EdgeListWalk.CUT_SHORT;
+        return true;
       }
 
-      // A self-loop is in both of the vertex's lists, and reaches here once: the incoming walk skips the vertex itself
-      // when the outgoing one read its whole list (see deleteVertex). It used to arrive twice, the second time over a
-      // record the first had removed, so onBeforeDelete and the after-delete listeners heard of ONE deletion twice. A
-      // record-backed edge carries its RID, which lets a listener tell the replay apart; a lightweight one does not, and
-      // a Graph Analytical View counted the second report as a second edge gone (issue #10369)
-      deleteEdgeOfDeletedVertex(edge, vertex, force);
+      // A self-loop is in both of the vertex's lists, and reaches here once: the incoming walk skips the ones the outgoing
+      // walk recorded as deleted (see deleteVertex). It used to arrive twice, the second time over a record the first had
+      // removed, so onBeforeDelete and the after-delete listeners heard of ONE deletion twice. A record-backed edge carries
+      // its RID, which lets a listener tell the replay apart; a lightweight one does not, and a Graph Analytical View
+      // counted the second report as a second edge gone (issue #10369). Recorded only once the delete returned: one that a
+      // tolerated failure stopped deleted nothing, and the incoming walk then tries the edge again (issue #10520)
+      if (deleteEdgeOfDeletedVertex(edge, vertex, force) && outgoing && selfLoops != null
+          && vertex.getIdentity().equals(edge.getIn()))
+        selfLoops.add(edge.getIdentity());
     }
 
-    return EdgeListWalk.WALKED;
-  }
-
-  /** What {@link #deleteEdgesOf} found: no list in the direction, a list it read to the end, or one it could not. */
-  private enum EdgeListWalk {
-    NO_LIST, WALKED, CUT_SHORT
+    return true;
   }
 
   /**
@@ -2643,12 +2643,17 @@ public class GraphEngine {
    * Routed through the edge's OWN database handle rather than this engine's, so a wrapped instance
    * (server, replicated) still sees the delete go through its own pipeline - exactly what {@code Record.delete()}
    * did when this was a plain {@code edge.delete()}.
+   *
+   * @return false when a failure tolerated under {@code force} stopped the delete, true when the delete went through, was
+   * vetoed by a listener (which was asked), or found the edge already gone
    */
-  private void deleteEdgeOfDeletedVertex(final Edge edge, final VertexInternal vertex, final boolean force) {
+  private boolean deleteEdgeOfDeletedVertex(final Edge edge, final VertexInternal vertex, final boolean force) {
     try {
       ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, vertex.getIdentity(), null);
+      return true;
     } catch (final RecordNotFoundException e) {
       // ALREADY DELETED, IGNORE IT
+      return true;
     } catch (final BrokenChunkChainException e) {
       // The NEIGHBOUR's record (or a chunk of its list) is corrupted rather than merely busy (#6258). Same
       // force gate as the retryable arm below, which is where this landed before the loader could tell the two
@@ -2660,6 +2665,7 @@ public class GraphEngine {
                   Cannot disconnect edge %s from the vertex at its other end while force-deleting vertex %s \
                   (broken chunk chain): the reference survives, %s""", e, edge.getIdentity(), vertex.getIdentity(),
               danglingRepairAdvice());
+      return false;
     } catch (final NeedRetryException e) {
       // THE EDGE LIST OF THE VERTEX AT THE OTHER END IS NOT READABLE (SEE getEdgeHeadChunkForWrite). #5764: the
       // list that needs rebuilding belongs to the NEIGHBOUR, not to the vertex being deleted, so that is the RID
@@ -2675,6 +2681,7 @@ public class GraphEngine {
                   "rebuild that vertex's list with `CHECK DATABASE RECORD " + otherEnd + " FIX`, then "
                       + danglingRepairAdvice() :
                   danglingRepairAdvice());
+      return false;
     }
   }
 
@@ -3611,8 +3618,14 @@ public class GraphEngine {
     return moveTo(vertex, typeName, null);
   }
 
+  /**
+   * A bucket another type owns makes the vertex a vertex of that type, as INSERT INTO BUCKET types a record by the bucket's
+   * owner: a record of the old type there would be read back as the owner while the old type's indexes answered for it, which
+   * the create refuses (issue #11206).
+   */
   protected RID moveToBucket(final Vertex vertex, final String bucketName) {
-    return moveTo(vertex, vertex.getTypeName(), bucketName);
+    final DocumentType owner = vertex.getDatabase().getSchema().getTypeByBucketName(bucketName);
+    return moveTo(vertex, owner != null ? owner.getName() : vertex.getTypeName(), bucketName);
   }
 
   // newLightEdge() is deprecated in favour of declaring LIGHTWEIGHT on the edge type, but this method must

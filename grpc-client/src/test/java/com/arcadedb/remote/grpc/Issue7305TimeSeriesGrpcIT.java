@@ -487,7 +487,7 @@ class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
    * mutable bucket, while claiming to cover the raw {@code FileChannel} reader.
    */
   private void sealEveryShard() throws Exception {
-    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabase(getDatabaseName());
+    final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForOperator(getDatabaseName());
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType(TYPE);
     type.requireEngine().compactAll();
 

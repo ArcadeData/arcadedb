@@ -33,22 +33,27 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
+import java.util.logging.Level;
 
 /**
  * Internal API, do not use as an end user.
@@ -527,12 +532,63 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * Runs what a compaction persists of its swap on this node - the schema save, the drop of a file it replaced - once the
+   * cluster accepted the entry that publishes the compaction, or at once when no replicated compaction runs on this thread,
+   * which is always the case standalone (issue #11240). A leader that persisted first and then crashed, or lost the entry
+   * to a leadership change, held a layout no other node had, and its index silently missed what the next leader wrote into
+   * the files it had replaced. Deferred, the local files stay as the cluster knows them until the entry is in the log.
+   *
+   * <p>
+   * A failure of {@code action} is reported to the caller of the replicated compaction, which then keeps the entry
+   * replayable and skips what follows it. Run at once, it is logged and does not propagate: the swap is already in memory and
+   * serving, and an exception here would leave the compaction half undone. An action that depends on an earlier one checks
+   * for itself whether that one failed (a dropped file the schema on disk still names, say).
+   *
+   * @param droppedFileId the id of the file {@code action} drops, which the publishing entry announces to the other nodes
+   *                      although this node keeps it until then, or -1 when the action drops no file
+   * @param action        what to persist
+   */
+  default void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    try {
+      action.call();
+    } catch (final Error e) {
+      throw e;
+    } catch (final Throwable e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on persisting the compaction of database '%s'", e, getName());
+    }
+  }
+
+  /**
    * Returns true if this node is the current leader (or always true when not replicated, i.e. standalone).
    * Used by engine-internal background work (e.g. the TimeSeries maintenance scheduler) to keep
    * destructive maintenance leader-only without a compile dependency on the HA module.
    */
   default boolean isLeader() {
     return true;
+  }
+
+  /**
+   * True when this node is a follower of a cluster, so the engine-internal background work that writes replicated or derived
+   * state (a periodic materialized view refresh, TimeSeries maintenance, an analytical view's persisted certificate, a vector
+   * index compaction) must leave it to the leader, whose results the follower receives.
+   * <p>
+   * The one form of that test that cannot be written dead (issues #6948, #11021, #11031). A component that captured its database
+   * at schema load holds the raw {@code LocalDatabase}: it is built before the server wraps the database for HA and never sees
+   * the wrapper, so its own {@link #isReplicated()} is the default {@code false} forever, and a guard
+   * {@code isReplicated() && !isLeader()} written against it never fires. This resolves the instance the node is CURRENTLY
+   * served through, on every call, following {@link #getWrappedDatabaseInstance()} to the instance that answers for itself (the
+   * replicated wrapper does), so a promotion or a demotion is seen at the next call.
+   */
+  default boolean isFollower() {
+    DatabaseInternal current = this;
+    // A server handle wraps the local database, which points at the replicated wrapper: two hops at most, bounded anyway
+    for (int hop = 0; hop < 4; hop++) {
+      final DatabaseInternal next = current.getWrappedDatabaseInstance();
+      if (next == null || next == current)
+        break;
+      current = next;
+    }
+    return current.isReplicated() && !current.isLeader();
   }
 
   /**
@@ -670,4 +726,20 @@ public interface DatabaseInternal extends Database {
    * @return Map of variable name to value
    */
   Map<String, Object> getGlobalVariables();
+
+  /**
+   * The map that holds the global variables, keyed by the exact names it holds, for a key space that is not SQL's: the Redis
+   * wrapper stores its database-backed keys here (issue #10790). The accessors above speak SQL - they strip one leading
+   * {@code $} and refuse the names SQL reserves ({@link SQLQueryEngine#RESERVED_VARIABLE_NAMES}) - so a
+   * Redis key {@code $k} was the key {@code k} and a key {@code parent} could not be written at all. Through this map every key is
+   * the client's own: what SQL can name as {@code $k} it still reads, and a name SQL reserves stays the context's
+   * ({@link #getGlobalVariable} answers it absent).
+   * <p>
+   * A raw store: the caller owns its keys, nothing here validates them. Like every {@code ConcurrentHashMap} it refuses a
+   * {@code null} key or value with a {@code NullPointerException}, so a removal is a {@code remove}, never a {@code put} of
+   * {@code null} as {@link #setGlobalVariable} accepts.
+   * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #getGlobalVariable(String)}.
+   */
+  ConcurrentMap<String, Object> getGlobalVariableStore();
 }

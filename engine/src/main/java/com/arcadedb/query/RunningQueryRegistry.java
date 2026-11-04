@@ -148,6 +148,14 @@ public final class RunningQueryRegistry {
     return running.size();
   }
 
+  /** Whether a statement is running on {@code database} now, read without copying the registry (issue #11068). */
+  public boolean isRunningOn(final String database) {
+    for (final RunningQuery query : running.values())
+      if (database.equals(query.getDatabase()))
+        return true;
+    return false;
+  }
+
   void unregister(final RunningQuery query) {
     running.remove(query.getNumericId(), query);
   }

@@ -82,7 +82,7 @@ class Issue7511SecurityEntryCapabilityGateTest {
         PeerCapabilities.SECURITY_GROUPS_ENTRY, PeerCapabilities.SECURITY_API_TOKENS_ENTRY,
         PeerCapabilities.SECURITY_PRECONDITION, PeerCapabilities.TX_PREPARED_AT_INDEX,
         PeerCapabilities.SCHEMA_FILE_RENAMES, PeerCapabilities.DATABASE_CONFIGURATION_ENTRY,
-        PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS);
+        PeerCapabilities.TX_FULLTEXT_CORPUS_DELTAS, PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS, PeerCapabilities.RESTORE_FENCE);
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -190,6 +190,45 @@ class Issue7511SecurityEntryCapabilityGateTest {
         RaftLogEntryType.SECURITY_GROUPS_ENTRY, "group document")).doesNotThrowAnyException();
 
     assertThat(raft.calls("peersMissingCapabilityNow")).isEmpty();
+  }
+
+  /**
+   * Issue #11195: the override is the security operations' escape hatch, so switching it off must not unlock an
+   * ALTER DATABASE, which can wait for the peer. The gate asks the peers and refuses, whatever the setting says.
+   */
+  @Test
+  void aDatabaseConfigurationEntryIsRefusedEvenWithTheSecurityOverrideSwitchedOff() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapabilityNow", a -> Objects.equals(a[0], PeerCapabilities.DATABASE_CONFIGURATION_ENTRY) ? List.of(LAGGING_PEER) : List.of());
+
+    assertThatThrownBy(() -> SecurityEntryCapabilityGate.requireEveryPeerCanDecode(serverWithGate(false), raft,
+        RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY, "configuration of database 'x'"))
+        .isInstanceOf(ClusterCapabilityNotReadyException.class)
+        .hasMessageContaining(LAGGING_PEER)
+        .hasMessageNotContaining(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE.getKey().concat("=false"));
+
+    assertThat(raft.calls("peersMissingCapabilityNow")).isNotEmpty();
+  }
+
+  /** The refusal of a non-overridable entry must not send an operator to the security setting. */
+  @Test
+  void theRefusalOfADatabaseConfigurationEntryDoesNotNameTheSecurityOverride() {
+    final String message = SecurityEntryCapabilityGate.refusal("configuration of database 'x'",
+        RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY, PeerCapabilities.DATABASE_CONFIGURATION_ENTRY,
+        List.of(LAGGING_PEER), registryWhereThePeerAnswered404());
+
+    assertThat(message).contains(LAGGING_PEER).contains("no setting");
+    assertThat(message).doesNotContain(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE.getKey());
+  }
+
+  /** Only the two security entries carry the operator override. */
+  @Test
+  void onlyTheSecurityEntriesAreOverridable() {
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.SECURITY_GROUPS_ENTRY)).isTrue();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY)).isTrue();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.DATABASE_CONFIGURATION_ENTRY)).isFalse();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.SCHEMA_ENTRY)).isFalse();
+    assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.TX_ENTRY)).isFalse();
   }
 
   // -------------------------------------------------------------------------------------------------------

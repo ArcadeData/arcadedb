@@ -27,6 +27,7 @@ import com.arcadedb.log.LogManager;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -45,7 +46,6 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
-import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -506,6 +506,10 @@ public class FileUtils {
    * which encodes in UTF-8.
    */
   public static void atomicWriteFile(final File file, final byte[] content) throws IOException {
+    atomicWriteFile(file, content, true);
+  }
+
+  private static void atomicWriteFile(final File file, final byte[] content, final boolean syncDirectory) throws IOException {
     // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
     // File("ai.json")); this keeps the temp file on the same file store as the target, which is
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
@@ -518,9 +522,9 @@ public class FileUtils {
       try (final FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
         fos.write(content);
         fos.flush();
-        fos.getFD().sync();
+        sync(fos.getFD());
       }
-      publishAtomically(tmp, target, true);
+      publishAtomically(tmp, target, syncDirectory);
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -532,14 +536,13 @@ public class FileUtils {
    * {@code source} is never unlinked in the process. As in {@link #atomicWriteFile(File, byte[])}, the parent
    * directory is fsync'd after the rename so the published name survives a power failure (issue #7465).
    * <p>
-   * A hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
-   * which costs one inode operation instead of a full read + write + fsync of the source, and is
-   * byte-exact by construction (no charset can be applied to bytes that are never decoded). Filesystems
-   * that do not support links (FAT/exFAT, some network mounts) fall back to reading the source and
-   * republishing it through {@link #atomicWriteFile(File, byte[])}.
+   * The copy is a real one: the source is read and the bytes are republished through
+   * {@link #atomicWriteFile(File, byte[])}, never decoded. It is deliberately NOT a hard link (issue #11097): a file
+   * system can accept {@code createLink} and still lose the data under the second name once the first is replaced
+   * (a SeaweedFS FUSE mount does), which no exception announces and which would leave the one file a recovery relies
+   * on unreadable.
    *
-   * @param source the file to copy; must exist. The link fast path additionally needs it on the same file store as
-   *               {@code target}, which is the case for every caller today (both names sit in the database directory)
+   * @param source the file to copy; must exist
    * @param target the name to publish the copy under, replaced if it already exists
    */
   public static void atomicCopyFile(final File source, final File target) throws IOException {
@@ -554,31 +557,13 @@ public class FileUtils {
    * {@link #atomicWriteFile}: that publication fsyncs the directory, which makes every rename made in it so far
    * durable at once, so a second fsync here buys nothing and costs a full device flush on every call. Until then the
    * copy is published but only process-crash durable: after a power failure {@code target} holds either its previous
-   * complete content or the full copy, never a partial one, exactly as with the fsync. The fallback copy for a file
-   * store without links always fsyncs.
+   * complete content or the full copy, never a partial one, exactly as with the fsync. The copy's own file is always
+   * fsync'd; the directory only when {@code syncDirectory} is true.
    *
    * @param syncDirectory {@code false} only when the caller fsyncs the target's directory itself right after
    */
   public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory) throws IOException {
-    final Path from = source.toPath().toAbsolutePath();
-    final Path to = target.toPath().toAbsolutePath();
-    final Path dir = to.getParent();
-    createDirectoriesDurably(dir);
-
-    // Unique by construction, so the link below never races another writer for the name.
-    final Path tmp = dir.resolve(target.getName() + "." + UUID.randomUUID() + ".tmp");
-    try {
-      try {
-        Files.createLink(tmp, from);
-      } catch (final UnsupportedOperationException | FileSystemException e) {
-        // No links on this file store: pay for the copy instead. Still a byte copy, never a decode.
-        atomicWriteFile(target, Files.readAllBytes(from));
-        return;
-      }
-      publishAtomically(tmp, to, syncDirectory);
-    } finally {
-      Files.deleteIfExists(tmp);
-    }
+    atomicWriteFile(target, Files.readAllBytes(source.toPath().toAbsolutePath()), syncDirectory);
   }
 
   /**
@@ -668,13 +653,15 @@ public class FileUtils {
    * store at this point; failing the caller here would turn a weaker durability guarantee into a failed schema save,
    * which is the worse of the two outcomes.
    *
+   * Skipped, without opening the directory, while {@link GlobalConfiguration#FILE_SYNC} is off.
+   *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be. Returned for the test
-   * that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off. Returned
+   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
    */
   public static boolean forceDirectory(final Path dir) {
-    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM)
+    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
       return false;
 
     // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
@@ -689,6 +676,23 @@ public class FileUtils {
       reportNoDirectorySync(dir);
       return false;
     }
+  }
+
+  /**
+   * {@link FileChannel#force(boolean)}, skipped while {@link GlobalConfiguration#FILE_SYNC} is off. Every fsync of a file
+   * goes through here or {@link #sync(FileDescriptor)}, so the setting has one meaning.
+   */
+  public static void force(final FileChannel channel, final boolean metaData) throws IOException {
+    if (GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
+      channel.force(metaData);
+  }
+
+  /**
+   * {@link FileDescriptor#sync()}, skipped while {@link GlobalConfiguration#FILE_SYNC} is off.
+   */
+  public static void sync(final FileDescriptor fd) throws IOException {
+    if (GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
+      fd.sync();
   }
 
   private static void reportNoDirectorySync(final Path dir) {

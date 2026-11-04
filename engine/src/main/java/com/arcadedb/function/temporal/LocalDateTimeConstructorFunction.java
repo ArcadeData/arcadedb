@@ -68,7 +68,7 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
         return CypherLocalDateTime.parse(str);
       } catch (final Exception e) {
         try {
-          return new CypherLocalDateTime(LocalDateTime.now(ZoneId.of(str)));
+          return new CypherLocalDateTime(CypherFunctionHelper.getStatementTime(context, ZoneId.of(str)).toLocalDateTime());
         } catch (final Exception e2) {
           // Neither a valid local datetime nor a valid timezone: determined entirely by the supplied string, so
           // it is a client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5910.
@@ -89,7 +89,7 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
     if (args[0] instanceof LocalDate)
       return new CypherLocalDateTime(((LocalDate) args[0]).atStartOfDay());
     if (args[0] instanceof CypherTime)
-      return new CypherLocalDateTime(LocalDateTime.of(LocalDate.now(), ((CypherTime) args[0]).getValue().toLocalTime()));
+      return new CypherLocalDateTime(LocalDateTime.of(((CypherDate) CypherFunctionHelper.getStatementTime(context).get("date")).getValue(), ((CypherTime) args[0]).getValue().toLocalTime()));
     throw new CommandSemanticException("localdatetime() expects a string, map, or temporal argument");
   }
 }

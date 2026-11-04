@@ -74,7 +74,7 @@ class Issue10295BeginIsolationLevelIT extends BaseGraphServerTest {
 
   @Test
   void anAbsentIsolationLevelOpensATransactionAtTheDatabaseDefault() throws Exception {
-    final Database.TRANSACTION_ISOLATION_LEVEL defaultLevel = getServer(0).getDatabase(getDatabaseName())
+    final Database.TRANSACTION_ISOLATION_LEVEL defaultLevel = getServer(0).getDatabaseForOperator(getDatabaseName())
         .getTransactionIsolationLevel();
 
     // An explicit JSON null is the same as an absent member, not a value of the wrong type

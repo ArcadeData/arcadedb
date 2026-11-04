@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -142,9 +143,9 @@ class PostgresCatalogTest {
   void theDriversSchemaListNamesTheConnectedDatabase() {
     final PostgresCatalog.Answer answer = resolve(JDBC_GET_SCHEMAS);
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0)).containsEntry("TABLE_SCHEM", database.getName());
-    assertThat(answer.rows.get(0)).containsEntry("TABLE_CATALOG", database.getName());
+    // the database's own schema, and pg_catalog, the schema of every built-in type, which pgjdbc lists as PostgreSQL does (issue #10745)
+    assertThat(names(answer.rows, "TABLE_SCHEM")).containsExactly(database.getName(), "pg_catalog");
+    assertThat(names(answer.rows, "TABLE_CATALOG")).containsOnly(database.getName());
     // The projection order is the client's, because a DataRow is read positionally.
     assertThat(answer.columns.keySet()).containsExactly("TABLE_SCHEM", "TABLE_CATALOG");
   }
@@ -197,10 +198,10 @@ class PostgresCatalogTest {
             + "case when lower(NSPNAME)='information_schema' then 'Y' else 'N' end as IS_SYSTEM, 'N' as IS_EMPTY "
             + "from PG_CATALOG.PG_NAMESPACE order by NSPNAME asc");
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0)).containsEntry("schema_name", database.getName());
-    assertThat(answer.rows.get(0)).containsEntry("is_public", "N");
-    assertThat(answer.rows.get(0)).containsEntry("is_system", "N");
+    // the client's own CASE decides what it calls public: pg_catalog, by its spelling (issue #10745)
+    assertThat(names(answer.rows, "schema_name")).containsExactly(database.getName(), "pg_catalog");
+    assertThat(names(answer.rows, "is_public")).containsExactly("N", "Y");
+    assertThat(names(answer.rows, "is_system")).containsOnly("N");
   }
 
   @Test
@@ -250,7 +251,8 @@ class PostgresCatalogTest {
             + "WHERE table_name = 'Article' ORDER BY ordinal_position");
 
     assertThat(names(answer.rows, "column_name")).containsExactly("id", "title");
-    assertThat(answer.rows.get(0)).containsEntry("data_type", "int4");
+    // the SQL standard name, as format_type() reads it (issue #10370); udt_name is the one that stays int4
+    assertThat(answer.rows.get(0)).containsEntry("data_type", "integer");
     assertThat(answer.rows.get(0)).containsEntry("is_nullable", "YES");
     assertThat(answer.rows.get(1)).containsEntry("is_nullable", "NO");
   }
@@ -274,14 +276,14 @@ class PostgresCatalogTest {
     final PostgresCatalog.Answer answer = resolve("SELECT * FROM pg_catalog.pg_namespace");
 
     assertThat(answer.columns.keySet()).contains("oid", "nspname", "nspowner", "nspacl");
-    assertThat(answer.rows.get(0)).containsEntry("nspname", database.getName());
+    assertThat(names(answer.rows, "nspname")).containsExactly("pg_catalog", database.getName());
   }
 
   // ---------------------------------------------------------------- what is not answered
 
   @Test
   void aQueryAboutARelationThisCatalogDoesNotModelIsDeclined() {
-    assertThat(resolveRaw("SELECT indexrelid FROM pg_catalog.pg_index")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT oid FROM pg_catalog.pg_extension")).isSameAs(PostgresCatalog.DECLINED);
   }
 
   @Test
@@ -420,10 +422,10 @@ class PostgresCatalogTest {
     // Both change what the rows are, so they are answered whole (issue #10228) rather than by the half this
     // catalog used to understand - which would be answering a different question.
     assertThat(names(resolve("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace ORDER BY 1").rows,
-        "relname")).containsExactly("Article", "Author", database.getName());
+        "relname")).containsExactly("Article", "Author", database.getName(), "pg_catalog");
     assertThat(names(resolve("SELECT relkind FROM pg_class GROUP BY relkind").rows, "relkind")).containsExactly("r");
     // A set operation with an arm this catalog cannot answer is declined whole, not answered by its other arm.
-    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT proname FROM pg_proc")).isSameAs(
+    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT extname FROM pg_extension")).isSameAs(
         PostgresCatalog.DECLINED);
     // LIMIT ALL is no limit (issue #10228).
     assertThat(names(resolve("SELECT relname FROM pg_class LIMIT ALL").rows, "relname")).containsExactly("Article", "Author");
@@ -435,6 +437,60 @@ class PostgresCatalogTest {
     // type - even a type called pg_something - must reach the SQL engine untouched.
     assertThat(resolveRaw("INSERT INTO pg_class SET relname = 'x'")).isSameAs(PostgresCatalog.DECLINED);
     assertThat(resolveRaw("CREATE DOCUMENT TYPE pg_notes")).isNull();
+    // Only a relation's place makes it a catalog statement: a column the user called pg_type is theirs (issue #10695)
+    assertThat(resolveRaw("DELETE FROM pg_class")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("UPDATE pg_catalog.pg_class SET relname = 'x'")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("INSERT INTO Article SET title = 'x', pg_type = 'v'")).isNull();
+    assertThat(resolveRaw("CREATE PROPERTY Article.pg_type STRING")).isNull();
+    assertThat(resolveRaw("UPDATE Article SET pg_class = 1")).isNull();
+    assertThat(resolveRaw("SELECT 1 AS pg_type")).isNull();
+    assertThat(resolveRaw("SELECT (SELECT count(*) FROM pg_class)")).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  /**
+   * Issue #10695: the session probe is decided on the tokens. A statement that only holds the words in a literal, that is not a
+   * SELECT, or that reads a FROM is not one; a FROM-less SELECT qualified with pg_catalog answers one row when this catalog can
+   * compute it, and the empty set it was always given when it cannot.
+   */
+  @Test
+  void aSessionProbeIsASelectNamingTheCatalogAsAWordNotAsData() {
+    assertThat(probe("INSERT INTO Article SET title = 'pg_catalog'")).isNull();
+    assertThat(probe("INSERT INTO Article SET title = 'xxpg_typexx'")).isNull();
+    assertThat(probe("UPDATE Article SET title = 'pg_catalog' WHERE title = 'plain'")).isNull();
+    assertThat(probe("DELETE FROM Article WHERE title = 'pg_type'")).isNull();
+    assertThat(probe("SELECT title FROM Article WHERE title LIKE '%pg_catalog%'")).isNull();
+    assertThat(probe("SELECT 'pg_catalog'")).isNull();
+    assertThat(probe("SELECT pg_type FROM Article")).isNull();
+    assertThat(probe("select pg_backend_pid()")).isNull();
+
+    final PostgresCatalog.Answer schema = probe("select pg_catalog.current_schema()");
+    assertThat(schema).isNotNull();
+    assertThat(schema.rows).hasSize(1);
+    assertThat(schema.rows.get(0).values()).containsExactly(database.getName());
+
+    final PostgresCatalog.Answer setConfig = probe("SELECT pg_catalog.set_config('search_path', '', false);");
+    assertThat(setConfig.rows).hasSize(1);
+    assertThat(setConfig.rows.get(0).values()).containsExactly("");
+
+    final PostgresCatalog.Answer bound = probe("SELECT pg_catalog.set_config($1, $2, false)", "search_path", "public");
+    assertThat(bound.rows).hasSize(1);
+    assertThat(bound.rows.get(0).values()).containsExactly("public");
+
+    assertThat(probe("SELECT pg_catalog.pg_is_in_recovery()").rows.get(0).values()).containsExactly(false);
+    // a client's leading comment does not turn a probe into a statement for the SQL engine
+    assertThat(probe("/* app */ SELECT pg_catalog.set_config('search_path', '', false)").rows).hasSize(1);
+    assertThat(probe("-- app\nSELECT pg_catalog.pg_is_in_recovery()").rows.get(0).values()).containsExactly(false);
+    assertThat(probe("/* SELECT */ INSERT INTO Article SET title = 'pg_catalog'")).isNull();
+    assertThat(probe("SELECT 1 AS pg_type").rows.get(0).values()).containsExactly(1L);
+
+    // not running on a Postgres connection's thread, so there is no process id to answer, and nothing to make up either: what the
+    // catalog cannot evaluate is declined, which the executor refuses rather than answering no row (issue #10883)
+    assertThat(probe("SELECT pg_catalog.pg_backend_pid()")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(probe("SELECT pg_catalog.no_such_function_10695()")).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  private PostgresCatalog.Answer probe(final String query, final Object... parameters) {
+    return PostgresCatalog.resolveProbe(query, database, USER, null, parameters);
   }
 
   @Test
@@ -501,7 +557,8 @@ class PostgresCatalogTest {
   void aPlainEnumerationOfPgTypeListsEveryTypeInOidOrder() {
     final PostgresCatalog.Answer answer = resolve("SELECT oid, typname FROM pg_catalog.pg_type ORDER BY oid");
 
-    assertThat(answer.rows).hasSize(PostgresType.values().length);
+    // the built-in types and the row type of every relation (issue #10873)
+    assertThat(answer.rows).hasSize(PostgresType.values().length + database.getSchema().getTypes().size());
     assertThat(names(answer.rows, "oid")).isSorted();
   }
 
@@ -596,15 +653,24 @@ class PostgresCatalogTest {
   }
 
   @Test
-  void readingOneRelationThroughTwoAliasesIsDeclined() {
-    // Every Row carries one map per relation, so two aliases of the same relation read the same map. The
-    // second would answer with the first's values, and a projection naming a column through both announces
-    // one column where the client asked for two - a miscount that makes a strict client abort. There is no
-    // honest answer, so the query is declined rather than guessed at.
-    assertThat(resolveRaw("SELECT t.typname, e.typname FROM pg_type t, pg_type e WHERE t.typelem = e.oid"))
-        .isSameAs(PostgresCatalog.DECLINED);
-    assertThat(resolveRaw("SELECT a.relname, b.relname FROM pg_class a, pg_class b WHERE a.oid = b.oid"))
-        .isSameAs(PostgresCatalog.DECLINED);
+  void readingOneRelationThroughTwoAliasesReadsARowForEachAlias() {
+    // Every Row carries one map per relation, so the one-row-per-entity model reads the same map through two aliases of a relation:
+    // the second would answer with the first's values, and a projection naming a column through both would announce one column
+    // where the client asked for two. That statement is answered by joining the rows of its entries instead (issue #10495), each
+    // alias with its own, so the second alias reads the row it is paired with.
+    final PostgresCatalog.Answer elements = resolveRaw(
+        "SELECT t.typname, e.typname FROM pg_type t, pg_type e WHERE t.typelem = e.oid AND t.typname = '_int4'");
+    assertThat(elements.columns).hasSize(2);
+    assertThat(elements.rows).hasSize(1);
+    assertThat(new ArrayList<>(elements.rows.get(0).values())).containsExactly("_int4", "int4");
+
+    final PostgresCatalog.Answer classes = resolveRaw("SELECT a.relname, b.relname FROM pg_class a, pg_class b WHERE a.oid = b.oid");
+    assertThat(classes.rows).isNotEmpty();
+    for (final Map<String, Object> row : classes.rows) {
+      final List<Object> pair = new ArrayList<>(row.values());
+      assertThat(pair).hasSize(2);
+      assertThat(pair.get(0)).isEqualTo(pair.get(1));
+    }
   }
 
   @Test

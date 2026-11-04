@@ -45,7 +45,7 @@ class Issue5297PolymorphicCountIT extends BaseRaftHATest {
   @Test
   void polymorphicCountIsIdenticalOnEveryNode() {
     final int leaderIndex = findLeaderIndex();
-    final Database leader = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database leader = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
 
     leader.getSchema().createVertexType("Base");
     leader.getSchema().createVertexType("Tenant").addSuperType("Base");
@@ -66,7 +66,7 @@ class Issue5297PolymorphicCountIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     for (int i = 0; i < getServerCount(); i++) {
-      final Database db = getServer(i).getDatabase(getDatabaseName());
+      final Database db = getServer(i).getDatabaseForOperator(getDatabaseName());
       final String role = i == leaderIndex ? "leader" : "follower";
 
       assertThat(count(db, "Tenant")).as("per-type count of Tenant on the %s (server %d)", role, i).isEqualTo(TENANTS);

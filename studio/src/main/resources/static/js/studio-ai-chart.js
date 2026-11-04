@@ -20,9 +20,9 @@
 // The pure parts of two things the AI Assistant shows from query results:
 //
 //  - CHARTS: the model asks for a chart as {type, title, language, query, x, y[]}; Studio runs the query itself (read-only,
-//    through api/v1/query, which refuses anything that writes) and draws the rows with ApexCharts. The model never sees the
-//    rows. The spec comes from a model and the rows from a database: both are untrusted, so the spec is checked again here and
-//    every label is escaped (or handed to ApexCharts as text), never put into HTML.
+//    through api/v1/query, which refuses anything that writes) and draws the rows with Apache ECharts. The model never sees
+//    the rows. The spec comes from a model and the rows from a database: both are untrusted, so the spec is checked again here
+//    and every label is defused (or handed to the chart as text), never put into HTML.
 //  - RESULT TABLES: what an Execute button shows under the command: a compact table of the first rows.
 //
 // No DOM here, so studio/test/ai-chart.test.js drives these functions as the browser loads them.
@@ -75,10 +75,11 @@ function aiChartNumber(value) {
  * A category label: any value as short text. Nested values become short JSON. Null, undefined, an empty text and a number that is
  * not a number (NaN, Infinity) are all "(none)": a label never reads "NaN" or "undefined".
  *
- * ⚠️ ApexCharts puts some of its texts (the legend of a pie, the tooltip) into the page as HTML, and a label is whatever a
- * database holds. Observed: a category called `<img src=x onerror=alert(1)>` ran its script in a donut's legend. So the
- * characters that make markup are swapped for look-alikes (and a quote, which could leave an attribute, too): the label stays
- * readable, no tag or attribute can be formed from it.
+ * ⚠️ A chart library can put some of its texts (a legend, a tooltip) into the page as HTML, and a label is whatever a
+ * database holds. Observed with ApexCharts, Studio's chart library before #10579: a category called
+ * `<img src=x onerror=alert(1)>` ran its script in a donut's legend. ECharts escapes its tooltip, but the label does not rely
+ * on that: the characters that make markup are swapped for look-alikes (and a quote, which could leave an attribute, too),
+ * so the label stays readable and no tag or attribute can be formed from it whatever draws it.
  */
 function aiChartLabel(value) {
   var text;
@@ -231,43 +232,59 @@ function aiChartModel(records, spec) {
   };
 }
 
-/** The ApexCharts options of a chart. Titles, categories and series names reach ApexCharts as text. */
-function aiChartOptions(spec, model, dark) {
-  var pie = spec.type === "pie" || spec.type === "donut";
-  var theme = { mode: dark ? "dark" : "light" };
-  if (pie)
+/** The height in pixels of a chart: a horizontal bar chart grows with its categories so every name keeps its row. */
+function aiChartHeight(spec, model) {
+  return spec.type === "horizontalBar" ? Math.max(240, 60 + model.categories.length * 30) : 320;
+}
+
+/** The ECharts option of a chart. Titles, categories and series names reach the chart as text. */
+function aiChartOptions(spec, model) {
+  var number = function (val) {
+    return studioChartNumber(val, 4);
+  };
+  if (spec.type === "pie" || spec.type === "donut")
     return {
-      chart: { type: spec.type, height: 320, background: "transparent", toolbar: { show: false } },
-      series: model.series[0].data,
-      labels: model.categories,
-      legend: { position: "bottom" },
-      dataLabels: { enabled: true },
-      theme: theme
+      animation: false,
+      tooltip: { trigger: "item" },
+      legend: { type: "scroll", bottom: 0 },
+      series: [
+        {
+          name: model.series[0].name,
+          type: "pie",
+          radius: spec.type === "donut" ? ["40%", "65%"] : "65%",
+          center: ["50%", "45%"],
+          label: { formatter: "{d}%" },
+          data: model.categories.map(function (category, index) {
+            return { name: category, value: model.series[0].data[index] };
+          })
+        }
+      ]
     };
   var horizontal = spec.type === "horizontalBar";
-  var apexType = horizontal ? "bar" : spec.type;
-  var bars = apexType === "bar";
-  var options = {
-    chart: { type: apexType, height: horizontal ? Math.max(240, 60 + model.categories.length * 30) : 320, background: "transparent", toolbar: { show: true } },
-    series: model.series,
-    xaxis: { type: "category", categories: model.categories, labels: { rotate: horizontal ? 0 : -45, trim: true } },
-    yaxis: { labels: {} },
-    stroke: { curve: "smooth", width: bars ? 0 : 2 },
-    dataLabels: { enabled: false },
-    legend: { show: model.series.length > 1, position: "bottom" },
-    theme: theme
+  var bars = horizontal || spec.type === "bar";
+  // ⚠️ The NUMBER formatter goes on the value axis only: on a horizontal bar chart that is the x axis, and a number formatter
+  // on the category axis turns every name into "NaN" (observed with ApexCharts, which flips the axes the same way).
+  var categoryAxis = { type: "category", data: model.categories, axisLabel: { rotate: horizontal ? 0 : 45, hideOverlap: true } };
+  var valueAxis = { type: "value", axisLabel: { formatter: number } };
+  if (horizontal) categoryAxis.inverse = true; // the first category on top, as the rows came
+  return {
+    animation: false,
+    tooltip: { trigger: "axis" },
+    legend: { show: model.series.length > 1, type: "scroll", bottom: 0 },
+    grid: { left: 16, right: 24, top: 40, bottom: model.series.length > 1 ? 40 : 16 },
+    toolbox: { feature: { saveAsImage: {} } },
+    xAxis: horizontal ? valueAxis : categoryAxis,
+    yAxis: horizontal ? categoryAxis : valueAxis,
+    series: model.series.map(function (serie) {
+      var out = { name: serie.name, type: bars ? "bar" : "line", data: serie.data.slice() };
+      if (!bars) {
+        out.smooth = true;
+        out.lineStyle = { width: 2 };
+      }
+      if (spec.type === "area") out.areaStyle = { opacity: 0.3 };
+      return out;
+    })
   };
-  // ⚠️ The NUMBER formatter goes on the axis that shows numbers. ApexCharts flips the axes of a horizontal bar chart: the
-  // category names are then on the y axis, and a number formatter there turned every name into "NaN" (observed).
-  var number = function (val) {
-    var n = Number(val);
-    return val === null || val === undefined || val === "" ? "" : isNaN(n) ? String(val) : Number(n.toFixed(4));
-  };
-  if (horizontal) {
-    options.plotOptions = { bar: { horizontal: true } };
-    options.xaxis.labels = { formatter: number };
-  } else options.yaxis.labels.formatter = number;
-  return options;
 }
 
 // ===== Result tables (the Execute button) =====

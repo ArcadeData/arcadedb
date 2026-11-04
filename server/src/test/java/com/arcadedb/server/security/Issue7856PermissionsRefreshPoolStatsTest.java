@@ -85,7 +85,7 @@ class Issue7856PermissionsRefreshPoolStatsTest {
       }
       return Set.of(DATABASE);
     });
-    server.on("getDatabase", args -> Objects.equals(args[0], DATABASE) ? database : null);
+    server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DATABASE) ? database : null);
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY, 600_000);

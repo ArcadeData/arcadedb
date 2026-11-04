@@ -508,7 +508,7 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
     inTransaction(tx -> {
       tx.trackRebasableUpdate(fileId, 0, 3, base, image, TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT);
       assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).isFalse();
-      tx.trackRebasableInsert(fileId, 0, 3, image);
+      tx.trackRebasableInsert(fileId, 0, 3);
       assertThat(tx.isSlotRebasePagePoisoned(fileId, 0)).as("an insert cannot follow another shape").isTrue();
     });
 

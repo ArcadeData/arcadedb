@@ -68,7 +68,7 @@ class Issue5559LocationCacheSizeHttpIT extends BaseGraphServerTest {
   @Test
   void aRefusedLocationCacheSizeAnswers400() throws Exception {
     testEachServer(serverIndex -> {
-      final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
+      final Database database = getServer(serverIndex).getDatabaseForOperator(getDatabaseName());
       database.transaction(() -> {
         database.command("sql", "CREATE VERTEX TYPE " + TYPE_NAME + " IF NOT EXISTS");
         database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".embedding IF NOT EXISTS ARRAY_OF_FLOATS");

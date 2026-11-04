@@ -36,6 +36,8 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotAvailableException.Reason;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
@@ -102,6 +104,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -255,6 +258,7 @@ public class ArcadeDBServer {
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
   // that plugin is enabled.
   private final       BackupCoordinator                     backupCoordinator                    = new BackupCoordinator();
+  private final       DatabaseIdleCloser                    idleCloser                           = new DatabaseIdleCloser(this);
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   // The databases a 'close database' command closed and nothing opened since: a client request does not reopen them, so a
   // database closed for maintenance stays closed until 'open database' (issue #10234)
@@ -264,19 +268,35 @@ public class ArcadeDBServer {
   // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
   // exposed via getDatabasesLock() without leaking the registry itself.
   private final       Object                                databasesLock                        = new Object();
-  // Database names an in-flight restore has claimed, guarded by databasesLock (issue #7441). A restore checks its
+  // Database names an in-flight restore has claimed; every change and every check-then-act is guarded by databasesLock, and the set is
+  // concurrent so isDatabaseHeld can read it without that lock (issues #7441, #10553). A restore checks its
   // target up front and replaces it minutes later, in swapRestoredDatabase; without a claim held across that window
   // a database created inside it was dropped and overwritten with no error reported to either caller. Sampling the
   // name a second time would not have helped - the two samples are not atomic with each other either - so the name
   // is reserved in the same databasesLock section as the pre-check and released when the restore ends. Creators are
   // refused, not parked: waiting here would block a create behind a multi-GB download. A client request is refused the
   // same way when it would OPEN the target (issue #10388), but only a request: the restore resolves its own target.
-  private final       Set<String>                           restoringDatabaseNames               = new HashSet<>();
+  private final       Set<String>                           restoringDatabaseNames               = ConcurrentHashMap.newKeySet();
+  // Why a database whose name a restore holds refuses writes (issue #10689), and why one opened before the HA plugin wrapped it does
+  // (issue #8270). Each is lifted by its own reason, so ending one never ends the other
+  static final        String                                RESTORE_WRITE_REFUSAL                =
+      "a restore is replacing it with a backup, and a write made now would be discarded by the swap. Retry once the restore has ended";
+  private static final String                               HA_NOT_ACTIVE_WRITE_REFUSAL          =
+      "the server is starting and high availability is not active yet, so a write here would not be replicated. Retry once the "
+          + "server is online";
   // The databases whose files a drop is deleting right now (issue #10388). LocalDatabase.drop() closes the instance and
   // only then runs the recursive delete, and until the delete reaches schema.json the directory still holds a database:
   // a request that resolved the name in that window opened the directory being deleted. Set before the drop starts and
   // cleared after the files are gone, by dropLocalDatabase, and refused to every caller by getDatabase under databasesLock.
   private final       Set<String>                           beingDropped                         = ConcurrentHashMap.newKeySet();
+  // The databases on disk, open or not, for isDatabaseOfServer (issue #10567). Built at each start, for the database directory of
+  // that lifecycle
+  private volatile    DatabaseDirectoryNames                databaseDirectoryNames;
+  // Set under databasesLock by stopInternal before it closes the databases, cleared by the next start (issue #10707): a database
+  // opened after the close would be left open, and locked, behind a stopped server, where the next server on the same directory
+  // fails on its file lock. Read under the same lock by every load and create, so a load in flight when it is set has finished and
+  // registered its database, which the close then closes, and every later one is refused
+  private             boolean                               databasesClosedByStop;
   // Serialises start() and stop(). Deliberately an explicit lock rather than `synchronized` on the
   // instance: the JVM shutdown hook must be able to give up on it (see stopFromShutdownHook), because a
   // startup failure that calls System.exit() from inside start() would otherwise deadlock the JVM
@@ -580,6 +600,12 @@ public class ArcadeDBServer {
 
     // A NEW LIFECYCLE OF THIS INSTANCE: A DATABASE A COMMAND CLOSED BEFORE THE LAST STOP IS NOT CLOSED ANY MORE (#10234)
     closedByCommand.clear();
+    synchronized (databasesLock) {
+      databasesClosedByStop = false;
+    }
+    databaseDirectoryNames = new DatabaseDirectoryNames(
+        new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)),
+        directory -> holdsDatabase(directory) || isAwaitingSnapshotRecovery(directory), ArcadeDBServer::isReservedDatabaseName);
     status = STATUS.STARTING;
 
     // A (re)start has not been held by the security-convergence gate yet (issue #8446).
@@ -589,6 +615,10 @@ public class ArcadeDBServer {
     // through THIS configuration, which is where a directory set in config/server-configuration.json lands - the
     // file never reaches the process-wide enum. Withdrawn in stopInternal() and on a failed start.
     Profiler.publishDiskSpaceConfiguration(configuration);
+
+    // Issue #10536: before anything reads the configuration directory, a directory moved off <root>/config (an empty
+    // volume claim) gets the shipped defaults it is missing, from this very image and without a shell.
+    ConfigDirectorySeeder.seedFromRoot(serverRootPath, serverConfigPath);
 
     // Armed before any database is opened: the HA plugin that wraps them starts only after the network listeners.
     awaitingHAWrapper = isHARequested();
@@ -735,6 +765,9 @@ public class ArcadeDBServer {
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_DATABASES_OPEN);
 
     status = STATUS.ONLINE;
+
+    // Issue #11068: closes the databases nobody uses, when arcadedb.server.databaseIdleTimeout or maxOpenDatabases asks for it
+    idleCloser.start();
 
     // A server registered with a support key registers itself as an installation of the portal (after a delay, in the background)
     if (supportService != null)
@@ -1350,6 +1383,9 @@ public class ArcadeDBServer {
 
     status = STATUS.SHUTTING_DOWN;
 
+    // Before the databases close: a check running now must not close one the shutdown is closing too
+    CodeUtils.executeIgnoringExceptions(idleCloser::stop, "Error on stopping the idle database closer", false);
+
     // Before anything it reports on goes away: the monitor reads the event log and the configured database
     // directory, and one restart per leaked daemon thread is what an embedded start/stop cycle would cost.
     if (serverMonitor != null) {
@@ -1378,6 +1414,13 @@ public class ArcadeDBServer {
 
     if (security != null)
       CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service", false);
+
+    // Issue #10707: from here no database is opened or created (see databasesClosedByStop). A thread still running after the
+    // services stopped - a security reload sweep, a request that outlived the HTTP server - is refused instead of reopening a
+    // directory the next server on it then finds locked
+    synchronized (databasesLock) {
+      databasesClosedByStop = true;
+    }
 
     for (final ServerDatabase db : databases.values())
       CodeUtils.executeIgnoringExceptions(db.getEmbedded()::close, "Error closing database '" + db.getName() + "'",
@@ -1409,8 +1452,48 @@ public class ArcadeDBServer {
     return Collections.unmodifiableCollection(pluginManager.getPlugins());
   }
 
-  public ServerDatabase getDatabase(final String databaseName) {
+  /**
+   * The database {@code databaseName}, opened from disk when it is not open: the operator's own entry point. It sees past the
+   * marks that keep a client out of a name an operator has taken away (a {@code close database}, a restore in progress), because
+   * the steps that set those marks resolve the name through here too - {@code open database}, the restore replacing its target,
+   * the snapshot installer. <b>A listener serving a client must call {@link #getDatabaseForClient(String)} instead</b> (issue
+   * #10533): a client that reached the database through this method could open the copy an {@code overwrite} restore is about
+   * to destroy and have its writes acknowledged and then discarded.
+   * <p>
+   * Named for whom it serves (issue #10802): as {@code getDatabase(String)}, the shortest of the resolvers, it was the one a new
+   * client handler reached for by default (#10533, #10690 both did).
+   */
+  public ServerDatabase getDatabaseForOperator(final String databaseName) {
     return getDatabase(databaseName, false, true);
+  }
+
+  /**
+   * The operator's entry point under its former name, kept for one release for the embedded servers and plugins built against
+   * it (issue #10802).
+   *
+   * @deprecated it opens a database past a {@code close database} and a restore in progress. Call
+   * {@link #getDatabaseForOperator(String)} for an operator's own step, {@link #getDatabaseForClient(String)} for a database a
+   * client names
+   */
+  @Deprecated(since = "26.11.1", forRemoval = true)
+  public ServerDatabase getDatabase(final String databaseName) {
+    return getDatabaseForOperator(databaseName);
+  }
+
+  /**
+   * The database a client of a wire protocol (Postgres, Bolt, gRPC, Redis, MongoDB, MCP, Gremlin) names, opened from disk when it
+   * is not open (issue #10533). Same as {@link #getDatabaseForOperator(String)} except that a name an operator has taken away is
+   * refused with {@link DatabaseNotAvailableException}, as {@link #getDatabaseForRequest} does for HTTP: a database a {@code close
+   * database} command closed stays closed until {@code open database}, and one a restore holds is not opened for a client, whose
+   * writes the swap of the restore would discard. A name being dropped is refused to every caller.
+   * <p>
+   * A database that is already open is served as before, with no lock: one a restore holds keeps its readers until the swap and
+   * refuses every write in the database itself, so a handle resolved before the restore began is refused too (issue #10689).
+   * Unlike {@link #getDatabaseForRequest} this does not look at the disk first: a name that is neither open nor on disk fails in
+   * the open, as it always did for these protocols.
+   */
+  public ServerDatabase getDatabaseForClient(final String databaseName) {
+    return getDatabase(databaseName, false, true, false, true);
   }
 
   public ServerDatabase getOrCreateDatabase(final String databaseName) {
@@ -1430,8 +1513,8 @@ public class ArcadeDBServer {
    * <p>
    * A database a {@code close database} command closed is not reopened by a request: it was closed on purpose - a restore
    * of its files, a cold backup - and stays closed until {@code open database} (see {@link #markClosedByCommand}). The
-   * binary protocols (Postgres, Bolt, gRPC) open databases through {@link #getDatabase(String)} and keep the behaviour
-   * they always had: they reopen it.
+   * binary protocols (Postgres, Bolt, gRPC, Redis, MongoDB) get the same refusal through {@link #getDatabaseForClient} (issue
+   * #10533).
    */
   public ServerDatabase getDatabaseForRequest(final String databaseName) {
     // A NULL OR BLANK NAME GETS THE ANSWER IT ALWAYS DID (IllegalArgumentException), NOT A NullPointerException OUT OF THE MAP
@@ -1513,18 +1596,67 @@ public class ArcadeDBServer {
   public void reserveDatabaseNameForRestore(final String databaseName) {
     synchronized (databasesLock) {
       restoringDatabaseNames.add(databaseName);
+      // The target an 'overwrite' restore replaces stays open and keeps its readers until the swap, and accepts no write from now
+      // on (issue #10689): one acknowledged meanwhile would be destroyed by the swap. Refused in the database itself, at every
+      // commit and schema change, so a client that resolved it before the claim - a Postgres session, a Bolt connection, a
+      // transaction begun earlier - is refused as well as one that resolves it now. A commit that passed the check just before
+      // the refusal went up is waited for by awaitCommitsInFlightOn, which the restore calls once it has left this lock
+      final ServerDatabase target = databases.get(databaseName);
+      if (target != null)
+        refuseWritesWhileRestoring(target);
     }
+  }
+
+  /**
+   * Waits for every commit to {@code databaseName} that was already running when the restore claimed it (issue #10689): one
+   * that passed the write refusal's check just before the refusal went up would otherwise complete during the download, be
+   * acknowledged, and be destroyed by the swap. Called by the restore right after {@link #reserveDatabaseNameForRestore}, and
+   * NOT under {@link #getDatabasesLock()}: the wait lasts as long as the slowest commit in flight, and every open on this
+   * server contends on that monitor.
+   * <p>
+   * Under HA the commits made on OTHER nodes are not commits of this database: a replica runs phase 1 of its own and ships the
+   * entry, which the leader may have accepted before the claim and not applied yet. The HA plugin holds the database for the
+   * restore from here (issue #10974), refusing those entries from now on and waiting for the ones already accepted, until
+   * {@link #releaseDatabaseNameReservedForRestore} ends the hold.
+   */
+  public void awaitCommitsInFlightOn(final String databaseName) {
+    final ServerDatabase target = databases.get(databaseName);
+    if (target != null && target.isOpen() && target.getEmbedded() instanceof LocalDatabase local)
+      local.awaitCommitsInFlight();
+    final HAServerPlugin ha = haServer;
+    if (ha != null)
+      ha.holdReplicatedWritesForRestore(databaseName);
   }
 
   /**
    * Releases the claim {@link #reserveDatabaseNameForRestore} took. Always call it from a {@code finally}: a claim
    * leaked by a failed restore would refuse every later create of that name until the server restarts, turning one
-   * bad URL into an outage.
+   * bad URL into an outage. The write refusal the claim put on the database registered under the name - the target a failed
+   * restore left in place, or the copy a successful one swapped in - ends with it.
    */
   public void releaseDatabaseNameReservedForRestore(final String databaseName) {
     synchronized (databasesLock) {
+      // the restore may have left a database on disk that is not opened (issue #10567)
+      invalidateDatabaseDirectoryNames();
       restoringDatabaseNames.remove(databaseName);
+      final ServerDatabase registered = databases.get(databaseName);
+      if (registered != null && registered.getEmbedded() instanceof LocalDatabase local)
+        local.acceptWrites(RESTORE_WRITE_REFUSAL);
     }
+    // The hold awaitCommitsInFlightOn took on the writes other nodes replicate through this one (issue #10974)
+    final HAServerPlugin ha = haServer;
+    if (ha != null)
+      ha.releaseReplicatedWritesForRestore(databaseName);
+  }
+
+  /**
+   * Puts the refusal of a restore in progress on {@code database}: reads go on, every write is answered "not available". Called
+   * under {@link #databasesLock}, where the claim changes, for the database registered when the claim is taken and for one opened
+   * while it stands (the operator's own steps may open it: {@code open database}, the restore dropping its target).
+   */
+  private static void refuseWritesWhileRestoring(final ServerDatabase database) {
+    if (database.getEmbedded() instanceof LocalDatabase local)
+      local.refuseWrites(RESTORE_WRITE_REFUSAL, true);
   }
 
   /** Whether a restore on this server currently holds {@code databaseName}. */
@@ -1532,6 +1664,85 @@ public class ArcadeDBServer {
     synchronized (databasesLock) {
       return restoringDatabaseNames.contains(databaseName);
     }
+  }
+
+  /**
+   * Whether an operator holds {@code databaseName} right now: a restore reserved it, a {@code close database} closed it, or a drop is
+   * deleting its files. Such a database EXISTS and is not registered, so {@link #existsDatabase} cannot tell it from a name that is no
+   * database at all, which is the question a protocol that guesses whether a key prefix names a database has to answer (Redis, issue
+   * #10553); {@link #getDatabaseForClient} refuses it with {@link DatabaseNotAvailableException}.
+   * <p>
+   * Lock-free: three reads of concurrent sets, no {@link #getDatabasesLock()}, because the caller is a command's hot path and the lock
+   * is held across the whole close, swap and reopen of a snapshot install. The answer is a sample, as {@link #existsDatabase} is.
+   * A caller asks {@link #existsDatabase} FIRST and this second: every hold goes up before the registry entry it replaces leaves
+   * (a close command in {@code removeDatabase}, a restore reservation and a drop before they start), so a name that is gone from the
+   * registry is already held.
+   */
+  public boolean isDatabaseHeld(final String databaseName) {
+    return closedByCommand.contains(databaseName) || restoringDatabaseNames.contains(databaseName)
+        || beingDropped.contains(databaseName);
+  }
+
+  /**
+   * Whether {@code databaseName} is a database of this server, open or not: registered ({@link #existsDatabase}), held by an
+   * operator ({@link #isDatabaseHeld}), or a directory of the database directory that holds a database nothing opened yet - with
+   * {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} off, every database until its first request - or that a snapshot
+   * install left pending (issue #10567). The question a protocol that guesses whether a key prefix names a database has to answer
+   * (Redis); {@link #getDatabaseForClient} then opens the database, or refuses one that is held or pending.
+   * <p>
+   * Lock-free, and without a look at the disk on each call: the directory part is answered from a listing kept in memory (see
+   * {@link DatabaseDirectoryNames}), because the caller is the hot path of every command whose key has a dot in it. The answer is
+   * a sample, as {@link #existsDatabase} is, asked in the order {@link #isDatabaseHeld} documents.
+   */
+  public boolean isDatabaseOfServer(final String databaseName) {
+    if (databaseName == null || databaseName.isEmpty())
+      return false;
+    if (existsDatabase(databaseName) || isDatabaseHeld(databaseName))
+      return true;
+    final DatabaseDirectoryNames names = databaseDirectoryNames;
+    return names != null && names.contains(databaseName);
+  }
+
+  /** The database directory changed under the server's hands: {@link #isDatabaseOfServer} lists it again. */
+  private void invalidateDatabaseDirectoryNames() {
+    final DatabaseDirectoryNames names = databaseDirectoryNames;
+    if (names != null)
+      names.invalidate();
+  }
+
+  /** Called under {@link #databasesLock} by every path that would open or create a database (issue #10707). */
+  private void checkDatabasesNotClosedByStop(final String databaseName) {
+    if (databasesClosedByStop)
+      throw new DatabaseNotAvailableException(
+          "Database '" + databaseName + "' is not available: the server '" + serverName + "' is stopped");
+  }
+
+  /**
+   * The refusal of a caller that may not open a database ({@code allowLoad=false}) and finds {@code databaseName} not open, called
+   * under {@link #databasesLock}. A name that is no database on this server is {@link DatabaseNotFoundException}: permanent, and the
+   * caller's to correct. Anything else is a database that exists and cannot serve the request now, told apart by its reason, which
+   * a client is shown where the message is concealed (issue #10872). Before, both were the same bare
+   * {@link DatabaseNotAvailableException}, and HTTP answered a database an operator closed as one that does not exist.
+   * <p>
+   * No look at the disk: this runs under the lock every open of the server takes, on the path a flood of requests for names that
+   * are no database reaches. Whether the name is a database is answered by {@link #isDatabaseOfServer}, from the registry, the
+   * operators' holds and the in-memory listing of the database directory.
+   */
+  private DatabaseNotAvailableException notOpenForThisCaller(final String databaseName) {
+    if (beingDropped.contains(databaseName))
+      return new DatabaseNotAvailableException(
+          "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted", Reason.DROPPING);
+    if (closedByCommand.contains(databaseName))
+      return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
+          + "'close database' command and stays closed until 'open database'", Reason.CLOSED);
+    if (restoringDatabaseNames.contains(databaseName))
+      return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: a restore of it is in progress",
+          Reason.RESTORING);
+
+    // A name that leaves the database directory, or one reserved for the server's own use, is no database whatever is on disk
+    if (isReservedDatabaseName(databaseName) || !isValidDatabaseName(databaseName) || !isDatabaseOfServer(databaseName))
+      return new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
+    return new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
   }
 
   /**
@@ -1564,6 +1775,7 @@ public class ArcadeDBServer {
 
     ServerDatabase serverDatabase;
     synchronized (databasesLock) {
+      checkDatabasesNotClosedByStop(databaseName);
       checkDatabaseNameIsNotBeingRestored(databaseName);
 
       serverDatabase = databases.get(databaseName);
@@ -1579,9 +1791,9 @@ public class ArcadeDBServer {
       if (isAwaitingSnapshotRecovery(new File(databasePath)))
         throw new DatabaseNotAvailableException("Cannot create database '" + databaseName + "': an interrupted "
             + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory. Snapshot recovery must "
-            + "reconcile it first");
+            + "reconcile it first", Reason.RECOVERING);
 
-      final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true);
+      final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true).setReplicatedNode(isHARequested());
 
       factory.setSecurity(getDatabaseSecurityManager());
 
@@ -1604,12 +1816,98 @@ public class ArcadeDBServer {
       closedByCommand.remove(databaseName);
     }
 
-    notifyPlugins(databaseName, true);
+    notifyRegistered(databaseName, serverDatabase);
     return serverDatabase;
   }
 
+  /** The names of the databases open on this server now. {@link #getAvailableDatabaseNames()} adds the ones not open. */
   public Set<String> getDatabaseNames() {
     return Collections.unmodifiableSet(databases.keySet());
+  }
+
+  /**
+   * The names of every database of this server a client can use, open or not: the open ones, and those on disk that nothing
+   * opened yet or that were closed for idleness (issue #11068) - every one of which {@link #getDatabaseForClient} and
+   * {@link #getDatabaseForRequest} open on their first request. What a listing shows ({@code list databases}, Studio,
+   * {@code SHOW DATABASES}): with {@link GlobalConfiguration#SERVER_DATABASE_LOADATSTARTUP} off, or once a database was closed
+   * for idleness, a listing of the open ones only would answer as if those did not exist. A database an operator holds (closed
+   * by {@code close database}, being restored or dropped) is left out, as it was before: it is not available until the operator
+   * gives it back.
+   * <p>
+   * Lock-free and without a look at the disk on each call, like {@link #isDatabaseOfServer}: the part not open is answered from
+   * the listing of the database directory kept in memory.
+   */
+  public Set<String> getAvailableDatabaseNames() {
+    final DatabaseDirectoryNames names = databaseDirectoryNames;
+    final Set<String> onDisk = names != null ? names.names() : Set.of();
+    if (onDisk.isEmpty())
+      return getDatabaseNames();
+    final Set<String> result = new HashSet<>(databases.keySet());
+    for (final String name : onDisk)
+      if (!isDatabaseHeld(name) && !isReservedDatabaseName(name))
+        result.add(name);
+    return Collections.unmodifiableSet(result);
+  }
+
+  /**
+   * Whether {@code databaseName} is one of {@link #getAvailableDatabaseNames()}: open, or on disk and not held by an operator, so
+   * a client's first request opens it (issue #11068). The question an existence check of one name asks, without building the set.
+   */
+  public boolean isDatabaseAvailable(final String databaseName) {
+    if (databaseName == null || databaseName.isEmpty())
+      return false;
+    return existsDatabase(databaseName) || (!isDatabaseHeld(databaseName) && !isReservedDatabaseName(databaseName)
+        && isDatabaseOfServer(databaseName));
+  }
+
+  /** The instance registered under {@code databaseName}, open or not, or {@code null}: never opens anything. */
+  ServerDatabase getRegisteredDatabase(final String databaseName) {
+    return databases.get(databaseName);
+  }
+
+  /** What closes the databases nobody uses (issue #11068), with its counters. */
+  public DatabaseIdleCloser getDatabaseIdleCloser() {
+    return idleCloser;
+  }
+
+  /**
+   * Closes {@code expected}, the instance registered under {@code databaseName}, because nobody uses it (issue #11068), and
+   * deregisters it. Unlike a {@code close database} it keeps no mark: the database is left as one not opened at startup is, and
+   * the next request of any protocol opens it again. Closed FOR REOPEN, so a request that resolved this instance a moment before
+   * is refused with the retryable {@code DatabaseIsReopeningException} and its retry finds the database reopened.
+   * <p>
+   * Takes the maintenance slot of a close first, as {@code close database} does, so a backup, an export or an import running
+   * through the instance keeps it open; then decides and acts under {@link #databasesLock}, the lock every open of a closed or
+   * absent database takes, so no request opens the directory again while this instance still holds it. {@code stillIdle} is
+   * asked there, right before the close: a request that used the database since the caller sampled it keeps it open.
+   *
+   * @return whether the database was closed
+   */
+  boolean closeIdleDatabase(final String databaseName, final ServerDatabase expected, final BooleanSupplier stillIdle) {
+    if (backupCoordinator.begin(databaseName, Operation.CLOSE) != null)
+      return false;
+    try {
+      synchronized (databasesLock) {
+        if (status != STATUS.ONLINE || databases.get(databaseName) != expected || !expected.isOpen() || isDatabaseHeld(
+            databaseName) || !stillIdle.getAsBoolean())
+          return false;
+
+        // Listed again: the database is still on disk, and a listing taken while it was registered may not show it (#10567)
+        invalidateDatabaseDirectoryNames();
+        databases.remove(databaseName);
+        try {
+          expected.getEmbedded().closeForReopen();
+        } catch (final RuntimeException e) {
+          // Deregistered whatever the close did: the next request opens the files again, or is refused while they are held
+          LogManager.instance().log(this, Level.SEVERE, "Error on closing idle database '%s'", e, databaseName);
+          Metrics.counter(DatabaseIdleCloser.CLOSE_FAILED_METER).increment();
+        }
+      }
+    } finally {
+      backupCoordinator.end(databaseName, Operation.CLOSE);
+    }
+    notifyUnregistered(databaseName);
+    return true;
   }
 
   /**
@@ -1700,7 +1998,7 @@ public class ArcadeDBServer {
           + "that none of them holds a newer one, so it is not reopened as the cluster's copy. The reason is in the "
           + "server log and in the cluster alerts. Transfer the leadership to the server holding the newer copy, or, "
           + "only if this copy is known to be the right one, accept it as it is with POST "
-          + "/api/v1/cluster/accept-copy/" + databaseName + " on this node");
+          + "/api/v1/cluster/accept-copy/" + databaseName + " on this node", Reason.RECOVERING);
     }
     return true;
   }
@@ -1776,11 +2074,13 @@ public class ArcadeDBServer {
       if (databases.containsKey(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
       serverDatabase = new ServerDatabase(this, wrapForHA(database));
+      if (restoringDatabaseNames.contains(databaseName))
+        refuseWritesWhileRestoring(serverDatabase);
       databases.put(databaseName, serverDatabase);
       closedByCommand.remove(databaseName);
     }
 
-    notifyPlugins(databaseName, true);
+    notifyRegistered(databaseName, serverDatabase);
     return serverDatabase;
   }
 
@@ -1833,8 +2133,8 @@ public class ArcadeDBServer {
    * {@link #databasesLock} as one step.
    * <p>
    * The caller holds {@code embedded} open and registered under {@code databaseName}: the control plane resolves it through
-   * {@link #getDatabase(String)} after taking the maintenance slot of the drop, and the startup restore does the same. That is
-   * what makes the hold safe to take without {@link #databasesLock}, see below.
+   * {@link #getDatabaseForOperator(String)} after taking the maintenance slot of the drop, and the startup restore does the same.
+   * That is what makes the hold safe to take without {@link #databasesLock}, see below.
    *
    * @throws ServerControlPlane.OperationInProgressException when the name is already being dropped, which the maintenance slot
    *                                                         does not allow either: a second drop is refused, never allowed to end
@@ -1857,6 +2157,8 @@ public class ArcadeDBServer {
           "Drop of database '%s' failed: its instance is closed and its files may be partly deleted", e, databaseName);
       throw e;
     } finally {
+      // the files are gone, or what a failed delete left is still there: listed again either way (issue #10567)
+      invalidateDatabaseDirectoryNames();
       beingDropped.remove(databaseName);
     }
   }
@@ -1864,16 +2166,51 @@ public class ArcadeDBServer {
   private void removeDatabase(final String databaseName, final boolean keepClosedByCommandMark) {
     final ServerDatabase removed;
     synchronized (databasesLock) {
-      removed = databases.remove(databaseName);
-      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      // The mark goes up BEFORE the entry leaves the registry: isDatabaseHeld() is read without this lock, after existsDatabase(), and a
+      // reader that finds the entry gone then finds the mark. In the other order there was an instant where a database a close command
+      // is closing was neither registered nor held (issue #10553)
       if (keepClosedByCommandMark)
         closedByCommand.add(databaseName);
-      else
+      // Before the entry leaves too, for isDatabaseOfServer: a deregistered database may still be on disk, which a listing taken
+      // while it was registered may not show (issue #10567)
+      invalidateDatabaseDirectoryNames();
+      removed = databases.remove(databaseName);
+      // A DROP OR A DEREGISTRATION ENDS THE CLOSE A COMMAND ASKED FOR; ONLY THE CLOSE COMMAND ITSELF KEEPS THE MARK
+      if (!keepClosedByCommandMark)
         closedByCommand.remove(databaseName);
     }
 
     if (removed != null)
-      notifyPlugins(databaseName, false);
+      notifyUnregistered(databaseName);
+  }
+
+  /**
+   * Tells the plugins, then the {@code /ws} change stream, that {@code database} was registered under {@code databaseName}: the
+   * stream of the name follows the instance registered under it (issue #10801). Same thread and same constraints as
+   * {@link #notifyPlugins}.
+   */
+  private void notifyRegistered(final String databaseName, final ServerDatabase database) {
+    notifyPlugins(databaseName, true);
+    final HttpServer http = httpServer;
+    if (http != null)
+      try {
+        http.getWebSocketEventBus().onDatabaseRegistered(databaseName, database);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on moving the change stream of database '%s' to its new instance", e,
+            databaseName);
+      }
+  }
+
+  /** The counterpart of {@link #notifyRegistered} for a database that left the registry. */
+  private void notifyUnregistered(final String databaseName) {
+    notifyPlugins(databaseName, false);
+    final HttpServer http = httpServer;
+    if (http != null)
+      try {
+        http.getWebSocketEventBus().onDatabaseUnregistered(databaseName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on stopping the change stream of database '%s'", e, databaseName);
+      }
   }
 
   /**
@@ -1978,8 +2315,7 @@ public class ArcadeDBServer {
       return wrapper.apply(local);
 
     if (awaiting && database instanceof LocalDatabase local)
-      local.refuseWrites("the server is starting and high availability is not active yet, so a write here would not "
-          + "be replicated. Retry once the server is online");
+      local.refuseWrites(HA_NOT_ACTIVE_WRITE_REFUSAL);
     return database;
   }
 
@@ -1991,7 +2327,7 @@ public class ArcadeDBServer {
       awaitingHAWrapper = false;
       for (final ServerDatabase serverDb : databases.values())
         if (serverDb.getWrappedDatabaseInstance() instanceof LocalDatabase local)
-          local.acceptWrites();
+          local.acceptWrites(HA_NOT_ACTIVE_WRITE_REFUSAL);
     }
   }
 
@@ -2027,8 +2363,8 @@ public class ArcadeDBServer {
         final ServerDatabase newServerDb = new ServerDatabase(this, newWrapped);
         databases.put(entry.getKey(), newServerDb);
         // Writes now go through the replicated wrapper, so the refusal wrapForHA() put on the plain database while
-        // it waited for this is lifted (issue #8270).
-        localDb.acceptWrites();
+        // it waited for this is lifted (issue #8270). Only that one: a restore in progress keeps its own (issue #10689).
+        localDb.acceptWrites(HA_NOT_ACTIVE_WRITE_REFUSAL);
         LogManager.instance().log(this, Level.INFO, "Re-wrapped database '%s' with HA wrapper", entry.getKey());
       }
     }
@@ -2214,23 +2550,27 @@ public class ArcadeDBServer {
 
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
-          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
+          throw notOpenForThisCaller(databaseName);
+
+        checkDatabasesNotClosedByStop(databaseName);
 
         // Whoever takes a database away has to be seen here, under the lock the load takes, or the load and the operation
         // interleave (issues #10234, #10388). A drop is refused to every caller: its files are being deleted, and nobody
-        // has a use for the directory. A close and a restore are refused to a client request only - 'open database' and the
-        // restore itself resolve the name through here too.
+        // has a use for the directory. A close and a restore are refused to a client only (HTTP, and every wire protocol
+        // through getDatabaseForClient, issue #10533) - 'open database' and the restore itself resolve the name through the
+        // unflagged getDatabaseForOperator(String).
         if (beingDropped.contains(databaseName))
           throw new DatabaseNotAvailableException(
-              "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted");
+              "Database '" + databaseName + "' is not available: it is being dropped and its files are being deleted",
+              Reason.DROPPING);
 
         if (refuseIfClosedByCommand) {
           if (closedByCommand.contains(databaseName))
             throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: it was closed by a "
-                + "'close database' command and stays closed until 'open database'");
+                + "'close database' command and stays closed until 'open database'", Reason.CLOSED);
           if (restoringDatabaseNames.contains(databaseName))
             throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: a restore of it is in "
-                + "progress, and will replace what is on disk");
+                + "progress, and will replace what is on disk", Reason.RESTORING);
         }
 
         checkDatabaseNameIsValid(databaseName);
@@ -2245,7 +2585,8 @@ public class ArcadeDBServer {
         if (!underSnapshotRecovery && isAwaitingSnapshotRecovery(new File(path)))
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: an interrupted "
               + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory, so its files are "
-              + "neither the previous database nor the new one. Snapshot recovery must reconcile it first");
+              + "neither the previous database nor the new one. Snapshot recovery must reconcile it first",
+              Reason.RECOVERING);
 
         // A copy closed on this node that the last resync could not verify - the leader did not hold it - may be behind
         // the committed log, and reopening it here would serve it unclamped (issue #8589). Refused on a follower, for
@@ -2261,7 +2602,8 @@ public class ArcadeDBServer {
               + "was closed here and the last HA resync could not verify its copy, because the leader did not hold it. "
               + "It may be behind the cluster, so it is not reopened on a follower. It is reinstalled by the next resync "
               + "that finds the leader holding it, which this node checks periodically; open it on the leader, or "
-              + "remove this node's copy (or its '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)");
+              + "remove this node's copy (or its '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)",
+              Reason.RECOVERING);
         }
         // On the leader the copy becomes the cluster's, so it is reopened only once its peers have said none of them
         // holds a newer one (issue #8605) - which the check before the lock established, or this node was not the
@@ -2269,9 +2611,9 @@ public class ArcadeDBServer {
         if (!peersVerifiedCopy && leaderHoldsUnverifiedClosedCopy(databaseDirectory))
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node became "
               + "the leader while opening a copy the last HA resync could not verify, and has not compared it with the "
-              + "other servers' copies yet. Retry the request");
+              + "other servers' copies yet. Retry the request", Reason.RECOVERING);
 
-        final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
+        final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true).setReplicatedNode(isHARequested());
 
         factory.setSecurity(getDatabaseSecurityManager());
 
@@ -2310,10 +2652,15 @@ public class ArcadeDBServer {
         embDatabase = wrapForHA(embDatabase);
 
         db = new ServerDatabase(this, embDatabase);
+        // Opened by an operator's step while a restore holds the name: readable, and refusing writes like the target the claim found
+        // open (issue #10689)
+        if (restoringDatabaseNames.contains(databaseName))
+          refuseWritesWhileRestoring(db);
 
         databases.put(databaseName, db);
         closedByCommand.remove(databaseName);
         loaded = true;
+        idleCloser.onOpened(databaseName);
 
         // Only once the copy is open and registered on the leader: a mark dropped before an open that then failed
         // would leave the copy reopenable by this node as a follower, never having been verified. And only when the
@@ -2324,7 +2671,7 @@ public class ArcadeDBServer {
     }
 
     if (loaded)
-      notifyPlugins(databaseName, true);
+      notifyRegistered(databaseName, db);
 
     return db;
   }
@@ -2398,7 +2745,7 @@ public class ArcadeDBServer {
                   f.getName());
               continue;
             }
-            getDatabase(f.getName());
+            getDatabaseForOperator(f.getName());
           }
       }
     }
@@ -2461,7 +2808,7 @@ public class ArcadeDBServer {
         if (!credentials.isEmpty())
           parseCredentials(dbName, credentials);
 
-        Database database = existsDatabase(dbName) ? getDatabase(dbName) : null;
+        Database database = existsDatabase(dbName) ? getDatabaseForOperator(dbName) : null;
 
         if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) == '{') {
           // PARSE IMPORTS
@@ -2495,7 +2842,7 @@ public class ArcadeDBServer {
               // The handle read at the top of this iteration names a database that no longer exists: the restore
               // dropped it and rebuilt it. A later command in the same '{...}' list must resolve it again rather
               // than reuse the dropped instance.
-              database = getDatabase(dbName);
+              database = getDatabaseForOperator(dbName);
               break;
 
             case "import":
@@ -2665,6 +3012,9 @@ public class ArcadeDBServer {
       // rather than engineered away; a create that lands in it is destroyed by the drop below exactly as
       // issue #7469 describes for the control-plane restores.
       reserveDatabaseNameForRestore(databaseName);
+      // An existing target now refuses writes: the commits already past that check end before the drop, so none is acknowledged
+      // and then destroyed with it (issue #10689), as the control-plane restores wait in reserveRestoreTarget
+      awaitCommitsInFlightOn(databaseName);
 
       // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE.
       //
@@ -2679,7 +3029,7 @@ public class ArcadeDBServer {
       // peers at boot with nothing in the log saying so is the #7389 failure mode. So a replicated database gets a
       // WARNING naming exactly what happened, even though the drop itself stays local.
       if (existsDatabase(databaseName)) {
-        final ServerDatabase existing = getDatabase(databaseName);
+        final ServerDatabase existing = getDatabaseForOperator(databaseName);
         if (existing.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase)
           LogManager.instance().log(this, Level.WARNING,
               "The startup 'restore:' command for database '%s' is dropping this node's copy ONLY: the rest of "
@@ -2713,7 +3063,7 @@ public class ArcadeDBServer {
         clazz.getMethod("restoreDatabase").invoke(restorer);
 
         progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
-        getDatabase(databaseName);
+        getDatabaseForOperator(databaseName);
       } catch (final InvocationTargetException e) {
         throw new CommandExecutionException("Error on restoring database", e.getTargetException());
       } catch (final ReflectiveOperationException e) {
@@ -2754,38 +3104,31 @@ public class ArcadeDBServer {
         final String userPassword = credentialParts[1];
         final String userGroup = credentialParts.length > 2 ? credentialParts[2] : null;
 
+        final String[] groups = new String[] { userGroup };
+
         if (security.existsUser(userName)) {
           // EXISTING USER: CHECK CREDENTIALS
-          ServerSecurityUser user = security.getUser(userName);
+          final ServerSecurityUser user = security.getUser(userName);
           if (user.canAccessToDatabase(dbName)) {
             try {
-              user = security.authenticate(userName, userPassword, dbName);
-
-              // UPDATE DB LIST + GROUP
-              user.addDatabase(dbName, new String[] { userGroup });
-              security.saveUsers();
-
+              security.authenticate(userName, userPassword, dbName);
             } catch (final ServerSecurityException e) {
               LogManager.instance().log(this, Level.WARNING,
                   "Cannot create database '%s' because the user '%s' already exists with a different password", null,
                   dbName,
                   userName);
+              continue;
             }
-          } else {
-            // UPDATE DB LIST
-            user.addDatabase(dbName, new String[] { userGroup });
-            security.saveUsers();
           }
+
+          // UPDATE DB LIST + GROUP: persisted before it is published, and outside the try above, so a users file that cannot be
+          // written is not reported as a password mismatch (issue #10535)
+          security.addDatabaseToUser(userName, dbName, groups);
         } else {
-          // CREATE A NEW USER
+          // CREATE A NEW USER, with its database and group in the one write
           security.createUser(new JSONObject().put("name", userName)//
               .put("password", security.encodePassword(userPassword))//
-              .put("databases", new JSONObject().put(dbName, new JSONArray())));
-
-          // UPDATE DB LIST + GROUP
-          ServerSecurityUser user = security.getUser(userName);
-          user.addDatabase(dbName, new String[] { userGroup });
-          security.saveUsers();
+              .put("databases", new JSONObject().put(dbName, new JSONArray(groups))));
         }
       }
     }

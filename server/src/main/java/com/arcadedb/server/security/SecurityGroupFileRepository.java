@@ -20,7 +20,7 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.security.SecurityManager;
+import com.arcadedb.server.ConfigDirectorySeeder;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -30,6 +30,8 @@ import com.arcadedb.utility.FileUtils;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -77,6 +79,14 @@ public class SecurityGroupFileRepository {
    */
   public synchronized void stop() {
     policy.stop();
+  }
+
+  /**
+   * Waits for a watcher tick that is running, after {@link #stop()}: see {@link ReloadableSecurityArtifact#awaitIdle}. NOT
+   * synchronized, because the tick being waited for holds this monitor for as long as it reloads.
+   */
+  boolean awaitIdle(final long timeoutMs) {
+    return policy.awaitIdle(timeoutMs);
   }
 
   public synchronized void save(final JSONObject configuration) throws IOException {
@@ -180,7 +190,7 @@ public class SecurityGroupFileRepository {
         // 'version' and falls back to createDefault() - silently widening every group to the default permissions
         // (issue #7825).
         FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
-        channel.force(true);
+        FileUtils.force(channel, true);
       }
       try {
         Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -436,24 +446,20 @@ public class SecurityGroupFileRepository {
    * The default group document. Builds it and nothing else (issue #10383): it used to save itself too, so every path
    * that reached it - including a reload that merely failed to read the file - wrote over the operator's file. The
    * first load's fallback ({@code Policy.publish}) is the one place that saves it.
+   * <p>
+   * Parsed from the copy of {@link #FILE_NAME} bundled in the server jar, the file the distribution ships, so the
+   * built-in groups cannot differ from the shipped ones (issue #10554): they used to be built here by hand, without the
+   * {@code readonly} group.
    */
   public JSONObject createDefault() {
-    final JSONObject json = new JSONObject();
-
-    // DEFAULT DATABASE
-    final JSONObject defaultDatabase = new JSONObject()//
-        .put("groups", new JSONObject()//
-            .put("admin", new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
-                .put("access", new JSONArray(new String[] { "updateSecurity", "updateSchema", "updateDatabaseSettings" }))//
-                .put("types", new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access",
-                    new JSONArray(new String[] { "createRecord", "readRecord", "updateRecord", "deleteRecord" })))))//
-            .put(SecurityManager.ANY, new JSONObject().put("resultSetLimit", -1L).put("readTimeout", -1L)//
-                .put("access", new JSONArray())
-                .put("types", new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())))));
-
-    json.put("databases", new JSONObject().put(SecurityManager.ANY, defaultDatabase));
-    json.put("version", ServerSecurity.LATEST_VERSION);
-    return json;
+    try (final InputStream bundled = ConfigDirectorySeeder.openBundledDefault(FILE_NAME)) {
+      if (bundled == null)
+        throw new IllegalStateException(
+            "The default '" + FILE_NAME + "' is missing from the server jar (" + ConfigDirectorySeeder.BUNDLED_DEFAULTS + ")");
+      return new JSONObject(FileUtils.readStreamAsString(bundled, "UTF-8"));
+    } catch (final IOException e) {
+      throw new UncheckedIOException("Cannot read the default '" + FILE_NAME + "' bundled in the server jar", e);
+    }
   }
 
   public SecurityGroupFileRepository onReload(final Callable<Void, JSONObject> callback) {

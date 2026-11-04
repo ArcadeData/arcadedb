@@ -56,7 +56,7 @@ public class Issue7407InsertStreamUpsertMetricsIT extends BaseGrpcServerTest {
   @BeforeEach
   void createKeyedType() {
     typeName = "Issue7407Keyed_" + System.currentTimeMillis();
-    final Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
     database.command("sql", "CREATE DOCUMENT TYPE " + typeName);
     database.command("sql", "CREATE PROPERTY " + typeName + ".name STRING");
     database.command("sql", "CREATE INDEX ON " + typeName + " (name) UNIQUE");
@@ -70,7 +70,7 @@ public class Issue7407InsertStreamUpsertMetricsIT extends BaseGrpcServerTest {
   @AfterEach
   void dropKeyedType() {
     service.close();
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    getServer(0).getDatabaseForOperator(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
   }
 
   @Test

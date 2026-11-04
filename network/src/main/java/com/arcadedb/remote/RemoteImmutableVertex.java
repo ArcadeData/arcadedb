@@ -128,12 +128,12 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public RID moveToType(final String targetType) {
-    return internal.vertex.moveToType(targetType);
+    return internal.moveTo(targetType, null);
   }
 
   @Override
   public RID moveToBucket(final String targetBucket) {
-    return internal.vertex.moveToBucket(targetBucket);
+    return internal.moveTo(null, targetBucket);
   }
 
   @Override

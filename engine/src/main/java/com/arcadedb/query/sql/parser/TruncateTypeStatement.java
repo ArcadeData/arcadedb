@@ -72,6 +72,16 @@ public class TruncateTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
 
+    // ONLY THE REFRESH OF A MATERIALIZED VIEW OR A CONTINUOUS AGGREGATE WRITES ITS BACKING TYPE (issue #11020). Truncated, a view
+    // answered no rows while reporting VALID, and an aggregate lost every bucket behind its watermark for good, since its refresh
+    // recomputes only the buckets after it. Asked of the whole scope and before anything below, UNSAFE or not: the fast path drops
+    // the indexes first, and the per-record refusal of a delete would come after other types of the scope were emptied
+    // the scope of a POLYMORPHIC truncate, walked once: the graph-type guard below reads it too
+    final Set<DocumentType> descendants = polymorphic ? collectPolymorphicDescendants(typez) : Set.of();
+    schema.getEmbedded().checkBackingTypeWrite(typez.getName(), "truncate");
+    for (final DocumentType descendant : descendants)
+      schema.getEmbedded().checkBackingTypeWrite(descendant.getName(), "truncate");
+
     // A TIMESERIES TYPE OWNS NO RECORD BUCKET: THE TRUNCATE BELOW REPORTED SUCCESS AND KEPT EVERY SAMPLE (issue #10336). ITS SAMPLES
     // ARE REMOVED BY ITS ENGINE, OUTSIDE ANY TRANSACTION (issue #10342)
     if (typez instanceof LocalTimeSeriesType tsType)
@@ -167,7 +177,7 @@ public class TruncateTypeStatement extends DDLStatement {
       // subtree, so the guard has to read the whole subtree. The type that actually holds the records is the one
       // named in the message, which is strictly more useful than #7919's "report a grandchild against the direct
       // subtype it hangs from" - that phrasing existed only because a grandchild could not be reached from here.
-      for (final DocumentType descendant : collectPolymorphicDescendants(typez)) {
+      for (final DocumentType descendant : descendants) {
         // Only a graph type can produce a refusal, so anything else is not worth counting. That matters because the
         // count is not free - a bucket-record sum, or a whole count(*) query for a lightweight edge type - and the
         // shape this loop exists for (#8042) is precisely a hierarchy with non-graph types in it, so the intermediate
@@ -270,6 +280,7 @@ public class TruncateTypeStatement extends DDLStatement {
   private ResultSet truncateTimeSeries(final CommandContext context, final LocalTimeSeriesType tsType) {
     final long deleted;
     try {
+      // the engine tells the continuous aggregates over the type that every sample is gone (issue #10428) and refreshes them (#10686)
       deleted = tsType.requireEngine(SecurityDatabaseUser.ACCESS.DELETE_RECORD).truncate();
     } catch (final IOException e) {
       throw new CommandExecutionException("Error truncating the TIMESERIES type '" + tsType.getName() + "': some of the samples may "
@@ -461,8 +472,13 @@ public class TruncateTypeStatement extends DDLStatement {
     // Capture index definitions BEFORE truncating records: the drop below is a committed schema change and the
     // definitions are all that is left to rebuild from.
     final List<IndexDefinition> indexDefs = collectIndexDefinitions(typez, polymorphic);
+
+    // One statement: the indexes go together or not at all (issue #10589). Dropped one after the other, a refusal from the second
+    // came after the first was gone, and the truncate was refused with its indexes half dropped
+    final List<String> indexNames = new ArrayList<>(indexDefs.size());
     for (final IndexDefinition def : indexDefs)
-      schema.dropIndex(def.name);
+      indexNames.add(def.name);
+    schema.getEmbedded().dropIndexes(indexNames);
 
     final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 

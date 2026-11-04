@@ -18,23 +18,46 @@
  */
 package com.arcadedb.query.opencypher.planner;
 
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.ListIndexExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
+import com.arcadedb.query.opencypher.ast.MapExpression;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.PropertyReadExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
+import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -88,6 +111,41 @@ public final class CypherEagernessAnalyzer {
   private       boolean     writePending           = false;
   // Sticky, never cleared by a barrier: whether any clause that changes the graph precedes the current one.
   private       boolean     writeSeen              = false;
+  // What the MERGE clauses planned since the last barrier match on: the property keys and labels of their patterns. A MERGE
+  // runs its lookup once per row, so a later SET or REMOVE of one of them changes what the MERGE of the next row finds
+  // (issue #10889).
+  private final Set<String> mergeReadKeys          = new HashSet<>();
+  private final Set<String> mergeReadLabels        = new HashSet<>();
+  private       boolean     mergeReadsAnyKey       = false;
+  private       boolean     mergeReadsAnyLabel     = false;
+  // The property reads of the clauses planned since the last barrier that evaluate an expression per row (a WITH, an UNWIND,
+  // the right-hand side of a SET, ...): a later write of one of those keys runs for one row before the read of the next row
+  // (issue #11005). A MATCH's own pattern and WHERE are not among them, see observeClause()
+  private final Set<PropertyReadSite> pendingPropertyReads = new HashSet<>();
+  // The property reads of the patterns and WHERE of the MATCH clauses planned since the last barrier: they select which entities a
+  // row binds, so only a write that NAMES their key conflicts (an opaque map write is left streaming, see observeClause(), and
+  // issue #11173)
+  private final Set<PropertyReadSite> pendingMatchReads = new HashSet<>();
+  // The variables bound to a different entity on every row: a write through one of them cannot reach a read of another row
+  private final Set<String> rowUniqueVariables     = new HashSet<>();
+  // The variables known never to hold a record (a LOAD CSV row, an UNWIND of a literal list): no record
+  // write can change what a read of one of them answers
+  private final Set<String> nonRecordVariables     = new HashSet<>();
+  // The variables a WITH bound to a property of a variable that cannot hold a record ({@code WITH row, row.id AS id}), to the
+  // variable and the key: a lookup by one of them reads the same value as that property (issue #11230)
+  private final Map<String, String[]> projectedProperties = new HashMap<>();
+
+  /**
+   * A property read: the variable it reads through (null when not known) and the key (null when any key). {@code pair} names the
+   * variable the other side of an equality {@code a.k = b.k} (or of an inline {@code (a {k: b.k})}) reads through, when both
+   * sides read the same key: the two reads then hold the same value on every row, which is what lets an opaque write of
+   * {@code b} onto {@code a} leave the lookup alone (issue #11230).
+   */
+  private record PropertyReadSite(String variable, String key, String pair) {
+    private PropertyReadSite(final String variable, final String key) {
+      this(variable, key, null);
+    }
+  }
 
   /**
    * Folds one MATCH (or OPTIONAL MATCH) clause into the read footprint. A node pattern with no static and
@@ -144,6 +202,148 @@ public final class CypherEagernessAnalyzer {
     writtenPropertyKeys.clear();
     writesAnyPropertyKey = false;
     writePending = false;
+    mergeReadKeys.clear();
+    mergeReadLabels.clear();
+    mergeReadsAnyKey = false;
+    mergeReadsAnyLabel = false;
+    pendingPropertyReads.clear();
+    pendingMatchReads.clear();
+  }
+
+  /**
+   * Folds what a MERGE matches on into the footprint {@link #needsBarrierAfterMerge(SetClause)} weighs a later write
+   * against: the keys of its inline property maps (a bare-parameter map reads keys it cannot name) and its node labels (a
+   * dynamic label any label). Called only for a MERGE that can receive more than one row: one that starts the statement
+   * runs its lookup once, so no later write can change what it finds.
+   */
+  public void observeMergeRead(final MergeClause mergeClause) {
+    if (mergeClause == null || mergeClause.getPathPattern() == null)
+      return;
+    final PathPattern pathPattern = mergeClause.getPathPattern();
+    for (final NodePattern node : pathPattern.getNodes()) {
+      observeMergeReadKeys(node.getProperties(), node.getPropertiesParameterName());
+      if (node.hasDynamicLabels())
+        mergeReadsAnyLabel = true;
+      else if (node.hasLabels())
+        mergeReadLabels.addAll(node.getLabels());
+    }
+    for (final RelationshipPattern relationship : pathPattern.getRelationships())
+      observeMergeReadKeys(relationship.getProperties(), relationship.getPropertiesParameterName());
+  }
+
+  private void observeMergeReadKeys(final Map<String, Object> properties, final String parameterName) {
+    if (parameterName != null)
+      mergeReadsAnyKey = true;
+    else if (properties != null)
+      mergeReadKeys.addAll(properties.keySet());
+  }
+
+  /**
+   * True when a SET needs the barrier in FRONT of it because it writes a property key or a label a MERGE before it matches
+   * on. Cypher runs the MERGE for every row before the SET runs for any of them (Neo4j plants its {@code Eager} between the
+   * two); streamed, the MERGE of the second row already sees the SET of the first, so
+   * {@code UNWIND [1, 2] AS x MERGE (n:Item {id: 1, key: 'v'}) SET n.key = null} created two nodes, and a {@code WITH}
+   * between the two clauses brought it back to one only as long as the input fit one pull batch (issue #10889).
+   * <p>
+   * A whole-map write ({@code SET n = map}, {@code SET n += expr}) or a key computed per row writes keys the planner
+   * cannot name, and counts as writing every key; a {@code SET n += {..}} literal writes exactly its keys.
+   */
+  public boolean needsBarrierAfterMerge(final SetClause setClause) {
+    if (setClause == null || !mergeReadsAnything())
+      return false;
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      switch (item.getType()) {
+      case PROPERTY -> {
+        if (mergeReadsKey(item.getKeyExpression() != null ? null : item.getProperty()))
+          return true;
+      }
+      case MERGE_MAP -> {
+        if (item.getValueExpression() instanceof MapExpression map) {
+          for (final String key : map.getEntries().keySet())
+            if (mergeReadsKey(key))
+              return true;
+        } else if (mergeReadsKey(null))
+          return true;
+      }
+      case REPLACE_MAP -> {
+        // replaces the whole map, so every key the MERGE reads is either rewritten or removed
+        if (mergeReadsKey(null))
+          return true;
+      }
+      case LABELS -> {
+        if (mergeReadsLabel(item.getLabels(), item.hasLabelExpressions()))
+          return true;
+      }
+      }
+    }
+    return false;
+  }
+
+  /** The REMOVE counterpart of {@link #needsBarrierAfterMerge(SetClause)}. */
+  public boolean needsBarrierAfterMerge(final RemoveClause removeClause) {
+    if (removeClause == null || !mergeReadsAnything())
+      return false;
+    for (final RemoveClause.RemoveItem item : removeClause.getItems()) {
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY) {
+        if (mergeReadsKey(item.getKeyExpression() != null ? null : item.getProperty()))
+          return true;
+      } else if (mergeReadsLabel(item.getLabels(), item.hasLabelExpressions()))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * A MERGE whose {@code ON CREATE SET} / {@code ON MATCH SET} writes what an earlier MERGE matches on: see
+   * {@link #needsBarrierAfterMerge(SetClause)}. A MERGE action writing what its own MERGE matches on is not a conflict: it
+   * is part of that MERGE, applied row by row.
+   */
+  public boolean needsBarrierAfterMerge(final MergeClause mergeClause) {
+    return mergeClause != null && (needsBarrierAfterMerge(mergeClause.getOnCreateSet())
+        || needsBarrierAfterMerge(mergeClause.getOnMatchSet()));
+  }
+
+  /** A FOREACH whose body, at any nesting depth, writes what a MERGE before it matches on. */
+  public boolean needsBarrierAfterMerge(final ForeachClause foreachClause) {
+    if (foreachClause == null || !mergeReadsAnything())
+      return false;
+    for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
+      final boolean conflicts = switch (innerClause.getType()) {
+        case SET -> needsBarrierAfterMerge((SetClause) innerClause.getClause());
+        case REMOVE -> needsBarrierAfterMerge((RemoveClause) innerClause.getClause());
+        case MERGE -> needsBarrierAfterMerge((MergeClause) innerClause.getClause());
+        case FOREACH -> needsBarrierAfterMerge((ForeachClause) innerClause.getClause());
+        default -> false;
+      };
+      if (conflicts)
+        return true;
+    }
+    return false;
+  }
+
+  private boolean mergeReadsAnything() {
+    return mergeReadsAnyKey || mergeReadsAnyLabel || !mergeReadKeys.isEmpty() || !mergeReadLabels.isEmpty();
+  }
+
+  /** Whether writing {@code key} (null: a key the planner cannot name) can change what a MERGE planned before it matches. */
+  private boolean mergeReadsKey(final String key) {
+    if (mergeReadsAnyKey)
+      return true;
+    if (key == null)
+      return !mergeReadKeys.isEmpty();
+    return mergeReadKeys.contains(key);
+  }
+
+  private boolean mergeReadsLabel(final List<String> labels, final boolean dynamic) {
+    if (mergeReadsAnyLabel)
+      return true;
+    if (dynamic)
+      return !mergeReadLabels.isEmpty();
+    if (labels != null)
+      for (final String label : labels)
+        if (mergeReadLabels.contains(label))
+          return true;
+    return false;
   }
 
   /**
@@ -239,7 +439,8 @@ public final class CypherEagernessAnalyzer {
    * as a conflict.
    */
   public boolean needsBarrierForWriteProcedure() {
-    return anyRead;
+    // it can also write any property a clause ahead of it read (issue #11005)
+    return anyRead || !pendingPropertyReads.isEmpty();
   }
 
   /**
@@ -374,6 +575,547 @@ public final class CypherEagernessAnalyzer {
       writesAnyPropertyKey = true;
     else
       writtenPropertyKeys.add(property);
+  }
+
+  /**
+   * Folds one clause into the per-row read footprint the {@code needsBarrierForPropertyWrites} methods weigh a later write
+   * against, and into what is known about the variables of the rows it hands on. Called once per clause, after the barrier
+   * in front of it was decided: a clause applies its own writes row by row, so its own reads never conflict with them.
+   * <p>
+   * Cypher runs a clause for every row before the next clause starts, so in
+   * {@code UNWIND range(1, 101) AS i WITH n, n.k AS snapshot REMOVE n.k} every row projects 42 before the REMOVE runs for
+   * any of them. Streamed, the projection of the 101st row ran after the REMOVE of the first 100, which had already taken
+   * the property off the one node they all share, and it answered null (issue #11005). A write therefore needs the barrier
+   * when it writes a key such a read reads, unless both go through the same variable and that variable holds a different
+   * entity on every row: then the write of a row cannot reach the read of another one, and
+   * {@code MATCH (n:P) WITH n, n.k AS old SET n.k = old + 1} keeps streaming.
+   * <p>
+   * The reads of a MATCH's own pattern and WHERE are kept apart: they select which entities a row binds rather than project a
+   * value into it. A write that names their key ({@code SET n.k}, {@code REMOVE n.k}, {@code SET n += {k: ..}}) conflicts with
+   * them, so {@code MATCH (a)-[:R]->(c) WHERE c.k = 1 SET c.k = 2} matches every row before the first SET runs (issue #11173).
+   * An opaque write ({@code SET n += map}, {@code SET n = map}, a computed key) can rewrite any key, so it conflicts with every
+   * one of them, with one exception that keeps the upserts streaming: the map is the very variable the key is looked up by
+   * ({@code MATCH (n {id: row.id}) SET n += row}, {@code WHERE n.id = row.id}), which rewrites the key with the value it was found
+   * by. Planting the barrier there would hold the whole file of a {@code LOAD CSV} in memory (issue #11230).
+   *
+   * @param startsStatement whether the clause is the first one of the statement or of a subquery body, i.e. receives a
+   *                        single row
+   * @param boundVariables  the names bound before the clause runs
+   */
+  public void observeClause(final ClauseEntry entry, final boolean startsStatement, final Set<String> boundVariables) {
+    if (entry == null)
+      return;
+    if (entry.getType() == ClauseEntry.ClauseType.MATCH)
+      CypherExpressionWalker.walk(entry,
+          new PropertyReadCollector(pendingMatchReads, false, Set.of(), List.of(), samePropertyPairs(entry.getTypedClause(), projectedProperties)));
+    else {
+      final List<PathPattern> ownPatterns = switch (entry.getType()) {
+        case CREATE -> ((CreateClause) entry.getClause()).getPathPatterns();
+        case MERGE -> {
+          final PathPattern merged = ((MergeClause) entry.getClause()).getPathPattern();
+          yield merged != null ? List.of(merged) : List.of();
+        }
+        default -> List.of();
+      };
+      // a FOREACH loop variable is a name of the loop, not the outer variable it may shadow
+      final Set<String> shadowed = entry.getType() == ClauseEntry.ClauseType.FOREACH ?
+          Set.of(((ForeachClause) entry.getClause()).getVariable()) :
+          Set.of();
+      CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingPropertyReads, false, shadowed, ownPatterns, Map.of()));
+    }
+
+    switch (entry.getType()) {
+    case MATCH -> {
+      final String variable = startsStatement ? singleNodeVariable(entry.getTypedClause()) : null;
+      rowUniqueVariables.clear();
+      if (variable != null && (boundVariables == null || !boundVariables.contains(variable)))
+        rowUniqueVariables.add(variable);
+    }
+    case WITH -> observeProjection(entry.getTypedClause());
+    case UNWIND -> {
+      final UnwindClause unwind = entry.getTypedClause();
+      rowUniqueVariables.clear();
+      if (cannotHoldRecord(unwind.getListExpression()))
+        nonRecordVariables.add(unwind.getVariable());
+      else
+        nonRecordVariables.remove(unwind.getVariable());
+    }
+    case LOAD_CSV -> {
+      rowUniqueVariables.clear();
+      nonRecordVariables.add(((LoadCSVClause) entry.getClause()).getVariable());
+    }
+    case CREATE -> {
+      // every row creates entities of its own
+      for (final PathPattern pathPattern : ((CreateClause) entry.getClause()).getPathPatterns()) {
+        for (final NodePattern node : pathPattern.getNodes())
+          observeCreated(node.getVariable(), boundVariables);
+        for (final RelationshipPattern relationship : pathPattern.getRelationships())
+          observeCreated(relationship.getVariable(), boundVariables);
+      }
+    }
+    case MERGE, CALL -> rowUniqueVariables.clear(); // a MERGE can match, and a procedure yield, several rows per row
+    case SUBQUERY -> {
+      // a unit subquery hands on each row once, one that returns can hand it on several times
+      // (a UNION answers the RETURN of its first branch only, so it counts as returning)
+      final CypherStatement body = ((SubqueryClause) entry.getClause()).getInnerStatement();
+      if (body instanceof UnionStatement || body.getReturnClause() != null)
+        rowUniqueVariables.clear();
+    }
+    default -> {
+      // SET, REMOVE, DELETE and FOREACH hand on the rows they receive
+    }
+    }
+  }
+
+  /** True when a SET writes a key a clause ahead of it read for another row, see {@link #observeClause}. */
+  public boolean needsBarrierForPropertyWrites(final SetClause setClause) {
+    return setClause != null && hasPropertyReads() && setWritesConflict(setClause, Set.of());
+  }
+
+  /** The REMOVE counterpart of {@link #needsBarrierForPropertyWrites(SetClause)}. */
+  public boolean needsBarrierForPropertyWrites(final RemoveClause removeClause) {
+    return removeClause != null && hasPropertyReads() && removeWritesConflict(removeClause, Set.of());
+  }
+
+  /** The {@code ON CREATE SET} / {@code ON MATCH SET} counterpart of {@link #needsBarrierForPropertyWrites(SetClause)}. */
+  public boolean needsBarrierForPropertyWrites(final MergeClause mergeClause) {
+    return mergeClause != null && hasPropertyReads() && mergeWritesConflict(mergeClause, Set.of());
+  }
+
+  /** A FOREACH whose body, at any nesting depth, writes a key a clause ahead of it read for another row. */
+  public boolean needsBarrierForPropertyWrites(final ForeachClause foreachClause) {
+    return foreachClause != null && hasPropertyReads() && foreachWritesConflict(foreachClause, Set.of());
+  }
+
+  /**
+   * A subquery body that writes a key a clause ahead of it read. The body's variables are its own scope, so its writes are
+   * weighed by key alone.
+   */
+  public boolean needsBarrierForPropertyWrites(final CypherStatement body) {
+    if (body == null || !hasPropertyReads() || body.isReadOnly())
+      return false;
+    if (body instanceof UnionStatement || body.getClausesInOrder() == null)
+      return true;
+    final CypherEagernessAnalyzer writes = ofPropertyWrites(body.getClausesInOrder());
+    for (final PropertyReadSite read : pendingPropertyReads) {
+      if (writes.writesAnyPropertyKey)
+        return true;
+      if (read.key() == null ? !writes.writtenPropertyKeys.isEmpty() : writes.writtenPropertyKeys.contains(read.key()))
+        return true;
+    }
+    for (final PropertyReadSite read : pendingMatchReads)
+      // an opaque write of the body can rewrite the key the MATCH found its entity by (issue #11230)
+      if (writes.writesAnyPropertyKey || (read.key() == null ? !writes.writtenPropertyKeys.isEmpty() : writes.writtenPropertyKeys.contains(read.key())))
+        return true;
+    return false;
+  }
+
+  private boolean hasPropertyReads() {
+    return !pendingPropertyReads.isEmpty() || !pendingMatchReads.isEmpty();
+  }
+
+  private boolean setWritesConflict(final SetClause setClause, final Set<String> shadowed) {
+    if (setClause == null)
+      return false;
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      final String variable = item.getVariable();
+      switch (item.getType()) {
+      case PROPERTY -> {
+        if (propertyWriteConflicts(variable, item.getKeyExpression() != null ? null : item.getProperty(), shadowed, null))
+          return true;
+      }
+      case MERGE_MAP -> {
+        if (item.getValueExpression() instanceof MapExpression map) {
+          for (final String key : map.getEntries().keySet())
+            if (propertyWriteConflicts(variable, key, shadowed, null))
+              return true;
+        } else if (propertyWriteConflicts(variable, null, shadowed, mapVariable(item.getValueExpression())))
+          return true;
+      }
+      case REPLACE_MAP -> {
+        if (propertyWriteConflicts(variable, null, shadowed, mapVariable(item.getValueExpression())))
+          return true;
+      }
+      default -> {
+        // a label write changes no property
+      }
+      }
+    }
+    return false;
+  }
+
+  private boolean removeWritesConflict(final RemoveClause removeClause, final Set<String> shadowed) {
+    for (final RemoveClause.RemoveItem item : removeClause.getItems())
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY
+          && propertyWriteConflicts(item.getVariable(), item.getKeyExpression() != null ? null : item.getProperty(), shadowed, null))
+        return true;
+    return false;
+  }
+
+  private boolean mergeWritesConflict(final MergeClause mergeClause, final Set<String> shadowed) {
+    return setWritesConflict(mergeClause.getOnCreateSet(), shadowed) || setWritesConflict(mergeClause.getOnMatchSet(), shadowed);
+  }
+
+  private boolean foreachWritesConflict(final ForeachClause foreachClause, final Set<String> shadowed) {
+    // the loop variable is a name of the body: a write through it is not a write through the outer variable it may shadow
+    final Set<String> bodyShadowed = new HashSet<>(shadowed);
+    bodyShadowed.add(foreachClause.getVariable());
+    for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
+      final boolean conflicts = switch (innerClause.getType()) {
+        case SET -> setWritesConflict(innerClause.getTypedClause(), bodyShadowed);
+        case REMOVE -> removeWritesConflict(innerClause.getTypedClause(), bodyShadowed);
+        case MERGE -> mergeWritesConflict(innerClause.getTypedClause(), bodyShadowed);
+        case FOREACH -> foreachWritesConflict(innerClause.getTypedClause(), bodyShadowed);
+        default -> false;
+      };
+      if (conflicts)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether writing {@code key} (null: a key the planner cannot name) through {@code variable} (null: an expression) can
+   * change what a pending read answers for another row. A read through the same variable is safe when that variable holds a
+   * different entity on every row: the only row that reads the entity is the one that writes it.
+   * <p>
+   * A write that names a key conflicts with the MATCH reads of that key. An opaque one ({@code key} null) can write any key, so it
+   * conflicts with every MATCH read, unless the map it writes is {@code mapVariable}, a variable the read is paired with
+   * ({@link PropertyReadSite#pair}): {@code MATCH (n {id: row.id}) SET n += row} rewrites the key with the value it was found by
+   * (issue #11230).
+   */
+  private boolean propertyWriteConflicts(final String variable, final String key, final Set<String> shadowed, final String mapVariable) {
+    final boolean ownRowOnly = variable != null && !shadowed.contains(variable) && rowUniqueVariables.contains(variable);
+    for (final PropertyReadSite read : pendingPropertyReads) {
+      if (key != null && read.key() != null && !key.equals(read.key()))
+        continue;
+      if (ownRowOnly && variable.equals(read.variable()))
+        continue;
+      return true;
+    }
+    final boolean pairedMap = mapVariable != null && variable != null && !shadowed.contains(variable) && !shadowed.contains(mapVariable);
+    for (final PropertyReadSite read : pendingMatchReads) {
+      if (key != null && read.key() != null && !key.equals(read.key()))
+        continue;
+      if (ownRowOnly && variable.equals(read.variable()))
+        continue;
+      if (key == null && pairedMap && read.key() != null && isPairedLookup(read, variable, mapVariable))
+        continue;
+      return true;
+    }
+    return false;
+  }
+
+  /** Whether {@code read} is one side of an equality between {@code variable} and {@code mapVariable} on one key. */
+  private static boolean isPairedLookup(final PropertyReadSite read, final String variable, final String mapVariable) {
+    return read.pair() != null && ((variable.equals(read.variable()) && mapVariable.equals(read.pair()))
+        || (mapVariable.equals(read.variable()) && variable.equals(read.pair())));
+  }
+
+  /** The variable a map write takes its map from, when the map is nothing but that variable, or null. */
+  private static String mapVariable(final Expression map) {
+    return map instanceof VariableExpression variable ? variable.getVariableName() : null;
+  }
+
+  /**
+   * The property reads of a MATCH that look an entity up by the value of the same key of another variable, so that both sides
+   * hold the same value on every row: {@code (n {id: row.id})}, and the conjuncts {@code n.id = row.id} of its WHERE. Each read
+   * object maps to the variable of the opposite side. The side that is an inline key has no object of its own, and is paired
+   * where its pattern is visited.
+   */
+  private static Map<Object, String> samePropertyPairs(final MatchClause matchClause, final Map<String, String[]> projectedProperties) {
+    final Map<Object, String> pairs = new IdentityHashMap<>();
+    if (matchClause == null)
+      return pairs;
+    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+      for (final NodePattern node : pathPattern.getNodes())
+        pairInline(pairs, node.getVariable(), node.getProperties(), projectedProperties);
+      for (final RelationshipPattern relationship : pathPattern.getRelationships())
+        pairInline(pairs, relationship.getVariable(), relationship.getProperties(), projectedProperties);
+    }
+    if (matchClause.hasWhereClause())
+      pairConjuncts(pairs, matchClause.getWhereClause().getConditionExpression());
+    return pairs;
+  }
+
+  private static void pairInline(final Map<Object, String> pairs, final String variable, final Map<String, Object> properties,
+      final Map<String, String[]> projectedProperties) {
+    if (variable == null || properties == null)
+      return;
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      if (entry.getValue() instanceof PropertyAccessExpression access && entry.getKey().equals(access.getPropertyName())
+          && !variable.equals(access.getVariableName()))
+        pairs.put(access, variable);
+      else if (entry.getValue() instanceof VariableExpression name) {
+        // (n {id: id}) after WITH row, row.id AS id: nothing but the lookup reads the key, the read of the row was the WITH's
+        final String[] source = projectedProperties.get(name.getVariableName());
+        if (source != null && source[1].equals(entry.getKey()) && !variable.equals(source[0]))
+          pairs.put(name, source[0]);
+      }
+    }
+  }
+
+  private static void pairConjuncts(final Map<Object, String> pairs, final BooleanExpression condition) {
+    if (condition instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      pairConjuncts(pairs, logical.getLeft());
+      pairConjuncts(pairs, logical.getRight());
+    } else if (condition instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.EQUALS
+        && comparison.getLeft() instanceof PropertyAccessExpression left && comparison.getRight() instanceof PropertyAccessExpression right
+        && left.getPropertyName().equals(right.getPropertyName()) && !left.getVariableName().equals(right.getVariableName())) {
+      pairs.put(left, right.getVariableName());
+      pairs.put(right, left.getVariableName());
+    }
+  }
+
+  private void observeCreated(final String variable, final Set<String> boundVariables) {
+    if (variable == null || (boundVariables != null && boundVariables.contains(variable)))
+      return;
+    rowUniqueVariables.add(variable);
+    nonRecordVariables.remove(variable);
+  }
+
+  /**
+   * A WITH hands on the variables it forwards under their own name as they were, and binds every other name it projects
+   * anew: a pending read through a name that no longer means the same entity keeps the key it read but forgets the variable.
+   * An aggregation drains its input, so only its grouping key, when it is one variable, is known to differ on every row.
+   */
+  private void observeProjection(final WithClause withClause) {
+    final Set<String> unique = new HashSet<>();
+    final Set<String> nonRecord = new HashSet<>();
+    final Set<String> forwarded = new HashSet<>();
+    final Set<String> rebound = new HashSet<>();
+    boolean star = false;
+    String groupingVariable = null;
+    int groupingKeys = 0;
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      if (item.isStar()) {
+        star = true;
+        continue;
+      }
+      final Expression expression = item.getExpression();
+      final String name = item.getOutputName();
+      final boolean aggregation = expression.isAggregation() || expression.containsAggregation();
+      if (!aggregation) {
+        ++groupingKeys;
+        groupingVariable = expression instanceof VariableExpression ? name : null;
+      }
+      if (expression instanceof VariableExpression variable) {
+        final String source = variable.getVariableName();
+        if (source.equals(name))
+          forwarded.add(name);
+        else
+          rebound.add(name);
+        if (rowUniqueVariables.contains(source))
+          unique.add(name);
+        if (nonRecordVariables.contains(source))
+          nonRecord.add(name);
+      } else {
+        rebound.add(name);
+        if (!aggregation && cannotHoldRecord(expression))
+          nonRecord.add(name);
+      }
+    }
+
+    if (star) {
+      // WITH * forwards every name but the ones an item binds anew
+      for (final String name : rowUniqueVariables)
+        if (!rebound.contains(name))
+          unique.add(name);
+      for (final String name : nonRecordVariables)
+        if (!rebound.contains(name))
+          nonRecord.add(name);
+    }
+    if (withClause.hasAggregations()) {
+      unique.clear();
+      if (groupingKeys == 1 && groupingVariable != null)
+        unique.add(groupingVariable);
+    }
+    final Map<String, String[]> projected = new HashMap<>();
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (!item.isStar() && item.getExpression() instanceof PropertyAccessExpression access && nonRecordVariables.contains(access.getVariableName()))
+        projected.put(item.getOutputName(), new String[] { access.getVariableName(), access.getPropertyName() });
+    for (final Map.Entry<String, String[]> kept : projectedProperties.entrySet())
+      if ((star || forwarded.contains(kept.getKey())) && !rebound.contains(kept.getKey()) && !isRenamed(kept.getValue()[0], star, forwarded, rebound))
+        projected.putIfAbsent(kept.getKey(), kept.getValue());
+    projectedProperties.clear();
+    projectedProperties.putAll(projected);
+    rowUniqueVariables.clear();
+    rowUniqueVariables.addAll(unique);
+    nonRecordVariables.clear();
+    nonRecordVariables.addAll(nonRecord);
+
+    forgetRenamedVariables(pendingPropertyReads, star, forwarded, rebound);
+    forgetRenamedVariables(pendingMatchReads, star, forwarded, rebound);
+  }
+
+  private static void forgetRenamedVariables(final Set<PropertyReadSite> reads, final boolean star, final Set<String> forwarded,
+      final Set<String> rebound) {
+    final List<PropertyReadSite> renamed = new ArrayList<>();
+    for (final Iterator<PropertyReadSite> it = reads.iterator(); it.hasNext(); ) {
+      final PropertyReadSite read = it.next();
+      if (read.variable() != null && isRenamed(read.variable(), star, forwarded, rebound)) {
+        it.remove();
+        renamed.add(new PropertyReadSite(null, read.key()));
+      } else if (read.pair() != null && isRenamed(read.pair(), star, forwarded, rebound)) {
+        // the other side of the equality is another value now
+        it.remove();
+        renamed.add(new PropertyReadSite(read.variable(), read.key()));
+      }
+    }
+    reads.addAll(renamed);
+  }
+
+  private static boolean isRenamed(final String name, final boolean star, final Set<String> forwarded, final Set<String> rebound) {
+    return rebound.contains(name) || (!star && !forwarded.contains(name));
+  }
+
+  /** The variable of a MATCH that binds one node and nothing else, or null. */
+  private static String singleNodeVariable(final MatchClause matchClause) {
+    if (matchClause == null || matchClause.isOptional() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    if (pathPattern.getNodes().size() != 1 || !pathPattern.getRelationships().isEmpty())
+      return null;
+    return pathPattern.getNodes().getFirst().getVariable();
+  }
+
+  /** Whether {@code expression} is built from literals alone (a literal list, {@code range(1, 10)}), so it cannot evaluate to a record. */
+  private static boolean cannotHoldRecord(final Expression expression) {
+    final boolean[] reachesRecord = { false };
+    CypherExpressionWalker.walk(expression, new CypherExpressionWalker.Visitor() {
+      @Override
+      public void visit(final Expression nested) {
+        if (nested instanceof VariableExpression || nested instanceof PropertyReadExpression || nested instanceof ParameterExpression)
+          reachesRecord[0] = true;
+      }
+
+      @Override
+      public void visitPattern(final PathPattern pattern) {
+        reachesRecord[0] = true;
+      }
+
+      @Override
+      public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
+        reachesRecord[0] = true;
+        return null;
+      }
+    });
+    return !reachesRecord[0];
+  }
+
+  private void observePropertyRead(final Set<PropertyReadSite> sink, final String variable, final String key, final String pair) {
+    if (variable != null && nonRecordVariables.contains(variable))
+      return;
+    sink.add(new PropertyReadSite(variable, key, pair));
+  }
+
+  /**
+   * Collects the property reads of one clause into {@link #pendingPropertyReads}. Inside a nested statement, or for a name
+   * a list comprehension, a quantifier or a FOREACH binds locally, the variable is not the outer one and is recorded as
+   * unknown.
+   */
+  private final class PropertyReadCollector implements CypherExpressionWalker.Visitor {
+    private final Set<PropertyReadSite> sink;
+    private final boolean           nested;
+    private final Set<String>       shadowed;
+    // the patterns the clause itself creates or merges: their inline maps are values written, not keys read
+    private final List<PathPattern> ownPatterns;
+    // the reads of a MATCH that look an entity up by the same key of another variable, each to the variable of the other side
+    private final Map<Object, String> pairs;
+
+    private PropertyReadCollector(final Set<PropertyReadSite> sink, final boolean nested, final Set<String> shadowed,
+        final List<PathPattern> ownPatterns, final Map<Object, String> pairs) {
+      this.sink = sink;
+      this.nested = nested;
+      this.shadowed = shadowed;
+      this.ownPatterns = ownPatterns;
+      this.pairs = pairs;
+    }
+
+    @Override
+    public void visit(final Expression expression) {
+      switch (expression) {
+      case PropertyAccessExpression access -> read(access.getVariableName(), access.getPropertyName(), pairs.get(access));
+      case ListIndexExpression index -> {
+        final Expression keyExpression = index.getIndexExpression();
+        if (keyExpression instanceof LiteralExpression literal && literal.getValue() instanceof Number)
+          return; // an element of a list
+        read(index.getListExpression() instanceof VariableExpression variable ? variable.getVariableName() : null,
+            keyExpression instanceof LiteralExpression literal && literal.getValue() instanceof String key ? key : null);
+      }
+      // a.link.v, properties(n).v: which record is read is only known per row
+      case PropertyReadExpression ignored -> read(null, null);
+      case MapProjectionExpression projection -> {
+        for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
+          if (element.isAllProperties())
+            read(projection.getVariableName(), null);
+          else if (element.isPropertySelector())
+            read(projection.getVariableName(), element.getPropertyName());
+      }
+      case FunctionCallExpression call -> {
+        if (call.getArguments().size() == 1 && call.getArguments().getFirst() instanceof VariableExpression variable
+            && ("properties".equalsIgnoreCase(call.getFunctionName()) || "keys".equalsIgnoreCase(call.getFunctionName())))
+          read(variable.getVariableName(), null);
+      }
+      default -> {
+        // reads no property
+      }
+      }
+    }
+
+    @Override
+    public void visitPattern(final PathPattern pattern) {
+      for (final PathPattern own : ownPatterns)
+        if (own == pattern)
+          return;
+      for (final NodePattern node : pattern.getNodes())
+        readInline(node.getVariable(), node.getProperties(), node.getPropertiesParameterName());
+      for (final RelationshipPattern relationship : pattern.getRelationships())
+        readInline(relationship.getVariable(), relationship.getProperties(), relationship.getPropertiesParameterName());
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
+      return new PropertyReadCollector(sink, true, shadowed, List.of(), Map.of());
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
+      final Set<String> local = new HashSet<>(shadowed);
+      local.addAll(Arrays.asList(variables));
+      return new PropertyReadCollector(sink, nested, local, ownPatterns, pairs);
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forClauseEntry(final ClauseEntry entry) {
+      if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
+        final Set<String> local = new HashSet<>(shadowed);
+        local.add(((ForeachClause) entry.getClause()).getVariable());
+        return new PropertyReadCollector(sink, nested, local, ownPatterns, pairs);
+      }
+      return this;
+    }
+
+    private void readInline(final String variable, final Map<String, Object> properties, final String parameterName) {
+      if (parameterName != null)
+        read(variable, null);
+      else if (properties != null)
+        for (final Map.Entry<String, Object> entry : properties.entrySet())
+          read(variable, entry.getKey(), switch (entry.getValue()) {
+            case PropertyAccessExpression access when pairs.containsKey(access) -> access.getVariableName();
+            case VariableExpression name -> pairs.get(name);
+            case null, default -> null;
+          });
+    }
+
+    private void read(final String variable, final String key) {
+      read(variable, key, null);
+    }
+
+    private void read(final String variable, final String key, final String pair) {
+      final boolean known = !nested && variable != null && !shadowed.contains(variable);
+      observePropertyRead(sink, known ? variable : null, key, known && pair != null && !shadowed.contains(pair) ? pair : null);
+    }
   }
 
   /**

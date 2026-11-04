@@ -91,6 +91,7 @@ import com.arcadedb.function.sql.misc.SQLFunctionBoolOr;
 import com.arcadedb.function.sql.misc.SQLFunctionCoalesce;
 import com.arcadedb.function.sql.misc.SQLFunctionDecode;
 import com.arcadedb.function.sql.misc.SQLFunctionEncode;
+import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.function.sql.misc.SQLFunctionIf;
 import com.arcadedb.function.sql.misc.SQLFunctionIfEmpty;
 import com.arcadedb.function.sql.misc.SQLFunctionIfNull;
@@ -169,7 +170,6 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorSum;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorToString;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorVariance;
 
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -277,6 +277,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionIfEmpty.NAME, new SQLFunctionIfEmpty());
     register(SQLFunctionIfNull.NAME, new SQLFunctionIfNull());
     register(SQLFunctionUUID.NAME, SQLFunctionUUID.class);
+    register(SQLFunctionEnsureLabelTypes.NAME, SQLFunctionEnsureLabelTypes.class);
     register(SQLFunctionVersion.NAME, SQLFunctionVersion.class);
 
     // Text
@@ -397,13 +398,14 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
   }
 
   /**
-   * Whether {@code lowercaseName} still resolves to the implementation this factory registered for it at
+   * Whether {@code name} (any case, issue #11051) still resolves to the implementation this factory registered for it at
    * construction. False for a name added later AND for a built-in name an application re-registered with its own
    * implementation, since {@link #register} silently replaces.
    */
-  public boolean isBuiltIn(final String lowercaseName) {
-    final Object builtIn = builtInFunctions.get(lowercaseName);
-    return builtIn != null && builtIn == getFunctions().get(lowercaseName);
+  public boolean isBuiltIn(final String name) {
+    final String key = key(name);
+    final Object builtIn = builtInFunctions.get(key);
+    return builtIn != null && builtIn == getFunctions().get(key);
   }
 
   /**
@@ -417,6 +419,6 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
    * the reading it was parsed with.
    */
   public boolean hasNamespacedFunction(final String qualifiedName) {
-    return hasFunction(qualifiedName.toLowerCase(Locale.ENGLISH)) || FunctionRegistry.hasStatelessFunction(qualifiedName);
+    return hasFunction(qualifiedName) || FunctionRegistry.hasStatelessFunction(qualifiedName);
   }
 }

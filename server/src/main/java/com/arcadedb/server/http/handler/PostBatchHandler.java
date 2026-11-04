@@ -538,6 +538,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           session != null ? session.getTag() : null);
 
       final DatabaseInternal database = httpServer.getServer().getDatabaseForRequest(databaseName);
+      // The principal bound on the database this load runs against: checkAuthorizationOnDatabase could not bind one when
+      // the database was on disk but not open yet, which is what getDatabaseForRequest has just changed
+      bindPrincipal(user, database);
       final boolean isCsv = contentType.contains("text/csv");
 
       // Configure GraphBatch from query parameters

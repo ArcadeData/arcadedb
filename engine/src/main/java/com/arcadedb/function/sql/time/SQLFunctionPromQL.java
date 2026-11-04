@@ -72,7 +72,8 @@ public class SQLFunctionPromQL extends SQLFunctionConfigurableAbstract {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         evalTimeMs = opts.getLong("evalTimeMs", System.currentTimeMillis());
       } else {
-        evalTimeMs = params[1] instanceof Number n ? n.longValue() : Long.parseLong(params[1].toString());
+        // issue #10850: a whole number of milliseconds, as the option map's getLong("evalTimeMs") already reads it
+        evalTimeMs = params[1] instanceof Number n ? requireWholeLongArgument(NAME, n, "evalTimeMs") : Long.parseLong(params[1].toString());
       }
     } else {
       evalTimeMs = System.currentTimeMillis();

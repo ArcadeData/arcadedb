@@ -45,12 +45,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * Both halves of that claim are false, and the second one measurably so.
  * <p>
- * Compaction output IS replicated: {@link Issue5517BloomFilterFullCompactionIT}, a 3-node test in this very
+ * Compaction output IS replicated: {@link HaCompactionReplicationBloomFilterFullIT}, a 3-node test in this very
  * package, asserts end to end that a full compaction ships the new file, that the followers drop the retired one,
  * and that they then serve lookups out of replicated bloom filters they never built.
  * <p>
  * And {@code checkDatabasesAreIdentical()} does not fail here. The obvious fix was to suppress the shared
- * comparator the way {@code Issue5517BloomFilterFullCompactionIT} has to - a compacted file name embeds a per-node
+ * comparator the way {@code HaCompactionReplicationBloomFilterFullIT} has to - a compacted file name embeds a per-node
  * {@code nanoTime}, so the comparator cannot pair bucket indexes by name afterwards - but running these two with
  * the comparator left ON shows it is not needed: all four tests in this class pass with it. That test forces a
  * FULL compaction by setting {@code INDEX_COMPACTION_FULL_SERIES}; the implicit compaction a {@code REBUILD INDEX}

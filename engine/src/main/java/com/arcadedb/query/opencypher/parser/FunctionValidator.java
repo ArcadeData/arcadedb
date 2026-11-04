@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.FunctionArity;
 
 import java.util.HashMap;
@@ -180,7 +181,7 @@ public class FunctionValidator {
     registerFunction("tostringlist", 1, 1, "Convert list elements to strings", false);
 
     // Vector functions
-    registerFunction("vector", 1, 2, "Create vector from list (alias for vector.create)", false);
+    registerFunction("vector", 1, 3, "Create vector from list (alias for vector.create)", false);
     registerFunction("vector.dimension.count", 1, 1, "Return dimension count of vector", false);
     registerFunction("vector_dimension_count", 1, 1, "Return dimension count of vector", false);
     registerFunction("vector.distance", 2, 3, "Calculate distance between vectors", false);
@@ -212,7 +213,7 @@ public class FunctionValidator {
     registerFunction("vector.similarity.euclidean", 2, 2, "Euclidean similarity between vectors", false);
 
     // Vector construction and distance functions (Cypher-specific; others delegate to SQL functions)
-    registerFunction("vector.create", 1, 2, "Create vector from list", false);
+    registerFunction("vector.create", 1, 3, "Create vector from list", false);
     registerFunction("vector.distance.manhattan", 2, 2, "Manhattan distance between vectors", false);
     registerFunction("vector.distance.cosine", 2, 2, "Cosine distance between vectors", false);
 
@@ -300,6 +301,17 @@ public class FunctionValidator {
    */
   public static FunctionSignature getSignature(final String functionName) {
     return FUNCTIONS.get(functionName.toLowerCase(Locale.ROOT));
+  }
+
+  /**
+   * The error for a call of a function nothing answers: Neo4j's {@code Unknown function '...'}, a syntax error (a
+   * {@link CommandParsingException} that is not a {@link com.arcadedb.exception.CommandSemanticException}), naming the
+   * function as written rather than in the folded spelling it is looked up by. One shape whichever path finds it: the parse
+   * of a plain name, the check of a namespaced name against the database before the query runs, or a user-defined
+   * function dropped while a running query still calls it (issue #11115).
+   */
+  public static CommandParsingException unknownFunction(final String writtenName) {
+    return new CommandParsingException("UnknownFunction: Unknown function '" + writtenName + "'");
   }
 
   /**

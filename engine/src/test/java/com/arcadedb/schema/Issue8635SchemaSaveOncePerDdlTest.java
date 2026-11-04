@@ -18,6 +18,7 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -53,6 +54,13 @@ import static org.mockito.Mockito.mockStatic;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
+
+  @Override
+  protected void beginTest() {
+    // aSchemaWriteForcesTheDatabaseDirectoryOnce counts directory fsyncs, which the unit-test lanes turn off
+    // (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
+  }
 
   @Test
   void createDocumentTypeWritesTheSchemaOnce() {

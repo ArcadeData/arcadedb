@@ -34,6 +34,7 @@ import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.backup.IoThrottler;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 
@@ -62,6 +63,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 public class FullBackupFormat extends AbstractBackupFormat {
   /**
@@ -91,6 +93,12 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * rather than the filesystem, and {@link #writeArchive} for why it is reset per attempt.
    */
   private boolean schemaArchived;
+
+  /**
+   * Whether this backup has opened its output, which truncates whatever the path held. Until then a failure has written
+   * nothing, so with {@code -o} the archive already at the path is still the previous, complete backup and must survive it.
+   */
+  private boolean outputOpened;
 
   private interface BackupCallback {
     void backup(BackupArchiveWriter archive) throws Exception;
@@ -136,6 +144,23 @@ public class FullBackupFormat extends AbstractBackupFormat {
     // RETENTION TO COUNT AND FOR AN OPERATOR TO MISTAKE FOR A BACKUP
     claimBackupFile(backupFile);
 
+    // ONE CLEANUP ARM FOR EVERY WAY OUT THAT IS NOT A COMPLETED ARCHIVE, Error INCLUDED (ISSUE #11060): THE TWO PER-BRANCH
+    // DELETES THIS REPLACES CAUGHT Exception ONLY, SO AN OutOfMemoryError - THE REALISTIC FAILURE ON A LARGE ARCHIVE - LEFT
+    // THE CLAIMED, PARTIALLY WRITTEN FILE ON DISK FOR RETENTION TO COUNT AND FOR AN OPERATOR TO RESTORE FROM
+    outputOpened = false;
+    try {
+      writeBackup(backupFile, compressionLevel, compressionThreads, maxMBPerSecond);
+    } catch (final Throwable t) {
+      // WITHOUT -o THE FILE IS THIS BACKUP'S OWN CLAIM, EMPTY OR PARTIAL, AND GOES EITHER WAY. WITH -o IT IS DELETED ONLY ONCE THIS
+      // ATTEMPT OPENED IT: A FAILURE BEFORE THAT (THE LOG LINE, THE COMPACTION PAUSE) HAS NOT TOUCHED THE PREVIOUS BACKUP
+      if (outputOpened || !settings.overwriteFile)
+        deletePartialArchive(backupFile, t);
+      throw t;
+    }
+  }
+
+  private void writeBackup(final File backupFile, final int compressionLevel, final int compressionThreads,
+      final int maxMBPerSecond) throws Exception {
     logger.logLine(0, "Executing full backup of database to '%s' (compression level %d, %s%s)...", backupFile,
         compressionLevel, compressionThreads > 0 ? compressionThreads + " threads" : "single threaded",
         maxMBPerSecond > 0 ? ", throttled at " + maxMBPerSecond + "MB/s" : "");
@@ -154,7 +179,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
       // SWALLOWS. WITHOUT CARRYING THE FAILURE OUT BY HAND, A BACKUP THAT DIED HALFWAY WOULD STILL GET ITS CENTRAL
       // DIRECTORY WRITTEN AND BE REPORTED AS SUCCESSFUL - A TRUNCATED ARCHIVE THAT LOOKS VALID IS THE WORST POSSIBLE
       // FAILURE MODE FOR A BACKUP
-      final AtomicReference<Exception> failure = new AtomicReference<>();
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
       final boolean snapshotAttempt = useSnapshot;
 
       try (final TimeSeriesCompactionPause pause = pauseCompaction()) {
@@ -179,7 +204,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
               database.getPageManager().suspendFlushAndExecute(database, () -> {
                 try {
                   databaseOrigSize.set(backupFromFrozenFiles(archive));
-                } catch (final Exception e) {
+                } catch (final Throwable e) {
+                  // Throwable, NOT Exception: executeIgnoringExceptions SWALLOWS AN Error TOO, AND AN Error LEFT UNRECORDED
+                  // HERE LET writeArchive TERMINATE THE TRUNCATED ARCHIVE AND REPORT IT AS A SUCCESSFUL BACKUP (ISSUE #11060)
                   failure.set(e);
                   throw e;
                 }
@@ -192,27 +219,22 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
         break;
       } catch (final PageSnapshotException e) {
-        if (!snapshotAttempt || e.getReason() == PageSnapshotException.Reason.CLOSING) {
-          // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT.
+        if (!snapshotAttempt || e.getReason() == PageSnapshotException.Reason.CLOSING)
           // #7458: A WINDOW REFUSED BECAUSE THE DATABASE IS CLOSED, OR BECAUSE A CLOSE IS WAITING FOR THE WINDOWS
           // ALREADY OPEN, IS NOT THE TRANSIENT SHADOW PROBLEM THE RETRY BELOW EXISTS FOR - THE DATABASE IS GOING
-          // AWAY, AND A FROZEN-FILES RETRY WOULD ONLY RACE ITS TEARDOWN. FAIL NOW, AND SAY WHY
-          backupFile.delete();
+          // AWAY, AND A FROZEN-FILES RETRY WOULD ONLY RACE ITS TEARDOWN. FAIL NOW, AND SAY WHY. THE PARTIAL ARCHIVE IS
+          // DELETED BY backupDatabase, ON THE WAY OUT
           throw e;
-        }
         // ON THE WAY TO A RETRY THE PARTIAL ARCHIVE IS KEPT, NOT DELETED: DELETING IT WOULD HAND THE PATH BACK TO
         // ANYBODY ELSE RACING FOR IT (SEE claimBackupFile), AND THE RETRY OPENS THE SAME FILE WITH TRUNCATE, SO THE
-        // PARTIAL CONTENT IS GONE THE MOMENT THE SECOND ATTEMPT STARTS WRITING. A RETRY THAT FAILS IN TURN LANDS IN
-        // ONE OF THE TWO BRANCHES THAT DO DELETE, SO A PARTIAL ARCHIVE STILL NEVER SURVIVES THE CALL
+        // PARTIAL CONTENT IS GONE THE MOMENT THE SECOND ATTEMPT STARTS WRITING. A RETRY THAT FAILS IN TURN LEAVES THIS
+        // METHOD, AND backupDatabase DELETES THE FILE FOR EVERY THROWABLE THAT DOES, SO A PARTIAL ARCHIVE NEVER SURVIVES THE CALL
         //
         // THE WINDOW COULD NOT HOLD THE POINT IN TIME (THE SHADOW BREACHED ITS CAP, OR A PRE-IMAGE COULD NOT BE READ).
         // A STREAMED ARCHIVE CANNOT BE REPAIRED IN PLACE, SO THE WHOLE BACKUP RESTARTS ON THE PATH THAT ALWAYS
         // COMPLETES - AT THE COST OF THROTTLING WRITERS, WHICH IS STILL BETTER THAN NOT HAVING A BACKUP
         logger.logLine(0, "Point-in-time snapshot unusable (%s): retrying with page flushing suspended...", e.getMessage());
         useSnapshot = false;
-      } catch (final Exception e) {
-        backupFile.delete();
-        throw e;
       }
     }
 
@@ -270,10 +292,10 @@ public class FullBackupFormat extends AbstractBackupFormat {
       final PageSnapshot window = database.getPageManager().openSnapshot(database);
       try {
         return new SnapshotImage(window, listSealedStoresOrFail(), vectorGraphSideFiles);
-      } catch (final RuntimeException e) {
+      } catch (final RuntimeException | Error e) {
         try {
           window.close();
-        } catch (final RuntimeException closeFailure) {
+        } catch (final RuntimeException | Error closeFailure) {
           e.addSuppressed(closeFailure);
         }
         throw e;
@@ -723,8 +745,25 @@ public class FullBackupFormat extends AbstractBackupFormat {
     return Math.max(1, Math.min(availableProcessors / 2, 8));
   }
 
+  /**
+   * Removes the archive a failed backup leaves behind, and says so when it cannot (issue #11060): a refused delete used to be
+   * silent, which left a partial archive on disk with nothing telling the operator not to restore from it. Recorded on the
+   * failure in flight rather than thrown, so the root cause stays the exception the caller sees.
+   */
+  private void deletePartialArchive(final File backupFile, final Throwable failure) {
+    try {
+      Files.deleteIfExists(backupFile.toPath());
+    } catch (final IOException | RuntimeException e) {
+      final BackupException notDeleted = new BackupException(
+          "The partial backup file '%s' left by the failed backup could not be deleted: remove it, it must not be restored from".formatted(
+              backupFile), e);
+      failure.addSuppressed(notDeleted);
+      LogManager.instance().log(this, Level.SEVERE, notDeleted.getMessage(), e);
+    }
+  }
+
   private void writeArchive(final File backupFile, final int compressionLevel, final int compressionThreads,
-      final int maxMBPerSecond, final AtomicReference<Exception> failure, final BackupCallback callback) throws Exception {
+      final int maxMBPerSecond, final AtomicReference<Throwable> failure, final BackupCallback callback) throws Exception {
     // PER ATTEMPT, NOT PER BACKUP. A snapshot attempt that archived schema.json and then lost its window retries
     // on the frozen-files path (see the PageSnapshotException branch in backupDatabase), and that second attempt
     // writes a brand new archive from scratch - so what the abandoned one contained says nothing about it
@@ -748,10 +787,13 @@ public class FullBackupFormat extends AbstractBackupFormat {
       boolean terminated = false;
       try {
         callback.backup(archive);
-        if (failure.get() != null)
-          // SURFACE IT HERE RATHER THAN ONLY AFTER writeArchive RETURNS, SO THE STREAM-CLOSING BELOW KNOWS THE BACKUP
-          // FAILED AND CANNOT LET ITS OWN close() FAILURE TAKE THE ROOT CAUSE'S PLACE
-          throw failure.get();
+        // SURFACE IT HERE RATHER THAN ONLY AFTER writeArchive RETURNS, SO THE STREAM-CLOSING BELOW KNOWS THE BACKUP
+        // FAILED AND CANNOT LET ITS OWN close() FAILURE TAKE THE ROOT CAUSE'S PLACE
+        final Throwable failed = failure.get();
+        if (failed instanceof Error error)
+          throw error;
+        if (failed != null)
+          throw (Exception) failed;
 
         // AFTER THE FAILURE CHECK ABOVE, NOT BEFORE: A BACKUP THAT DIED HALFWAY IS ALSO MISSING ENTRIES, AND ITS
         // ROOT CAUSE IS THE ONE WORTH REPORTING. ONLY A RUN THAT OTHERWISE SUCCEEDED GETS TOLD ITS ARCHIVE WOULD
@@ -800,6 +842,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   private void encryptFile(final File backupFile, final StreamCallback callback) throws Exception {
     try (final FileOutputStream fos = new FileOutputStream(backupFile)) {
+      outputOpened = true;
       final OutputStream archiveStream;
       if (settings.encryptionKey != null) {
         // Generate a random salt (e.g., 16 bytes)

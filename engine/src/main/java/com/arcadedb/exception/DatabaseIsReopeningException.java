@@ -32,6 +32,6 @@ package com.arcadedb.exception;
  */
 public class DatabaseIsReopeningException extends DatabaseIsClosedException {
   public DatabaseIsReopeningException(final String s) {
-    super(s);
+    super(s, s);
   }
 }

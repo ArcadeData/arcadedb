@@ -22,7 +22,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionRetryPolicy;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -79,6 +81,7 @@ public class RetryStep extends AbstractExecutionStep {
     if (finalResult != null) {
       return finalResult.syncPull(ctx, nRecords);
     }
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
     for (int attempt = 0; attempt < retries; attempt++) {
       // #8188: the witness that this attempt published part of its work before failing. Sampled before the
       // attempt runs and read in both catches, exactly as LocalDatabase.transaction() and
@@ -130,7 +133,7 @@ public class RetryStep extends AbstractExecutionStep {
         final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
         if (finished != null)
           return finished;
-      } catch (final NeedRetryException ex) {
+      } catch (final NeedRetryException | DuplicatedKeyException ex) {
         // A write conflict clears on its own, so this is the retry the user asked for - unless the
         // command's deadline has passed, in which case the remaining attempts cannot even start their
         // work. The deadline, not the conflict, is what ended the block, and saying so is the whole
@@ -144,8 +147,9 @@ public class RetryStep extends AbstractExecutionStep {
           throw ex;
         // A refusal this node repeats until something outside it changes (a follower naming the leader) is not a conflict
         // that clears on its own: every remaining attempt would fail the same way, and an ELSE body would run on a block
-        // that never had a chance (issue #9995)
-        if (!ex.isRetryableOnThisNode())
+        // that never had a chance (issue #9995). A duplicated key gets one retry, for a commit that raced the attempt (an
+        // UPSERT that lost to a concurrent insert becomes an update), as in every other retry loop (#4959, #10759)
+        if (!retryPolicy.mayRetry(ex))
           throw ex;
 
         final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);

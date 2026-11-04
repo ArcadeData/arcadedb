@@ -43,6 +43,10 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
         left = couple[0];
         right = couple[1];
       } else {
+        // A number against a datetime is compared as epoch milliseconds, exactly, on whichever side it stands (issue #10560)
+        final int order = DateUtils.compareNumberAndTemporal(left, right);
+        if (order != DateUtils.NOT_NUMBER_AND_TEMPORAL)
+          return order < 0;
         // Comparing across incompatible types has no defined ordering: report "not less" rather than let the
         // raw parse/conversion failure (e.g. NumberFormatException on a non-numeric String) escape (#5900).
         // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206).

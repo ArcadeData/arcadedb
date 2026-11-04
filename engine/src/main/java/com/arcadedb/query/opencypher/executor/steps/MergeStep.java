@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
@@ -215,7 +216,8 @@ public class MergeStep extends AbstractExecutionStep {
    * @return list of results containing matched or created elements
    */
   private List<Result> executeMerge(final Result inputResult, final LabelReplacements labelReplacements) {
-    final PathPattern pathPattern = mergeClause.getPathPattern();
+    // Dynamic labels - MERGE (n:$($label) {...}) - are evaluated for this row first, so the match and the create below see static ones (issue #10683)
+    final PathPattern pathPattern = DynamicNodeLabels.resolve(mergeClause.getPathPattern(), inputResult, evaluator, context, "MERGE");
 
     // A path variable an earlier clause bound to null (an unmatched OPTIONAL MATCH) is not a free variable: the pattern
     // has no endpoint there, and the statement fails as on Neo4j. The row used to be dropped in silence (issue #10191)
@@ -896,6 +898,15 @@ public class MergeStep extends AbstractExecutionStep {
       final String relType = relPattern.getFirstType();
       if (!context.getDatabase().getSchema().existsType(relType))
         return;
+
+      if (context.getDatabase().getSchema().getType(relType) instanceof EdgeType edgeType && edgeType.isLightweight()) {
+        // A lightweight edge has no record to scan, so the type holds nothing to iterate below and the path was never found, then
+        // created again by every MERGE (issue #10433). The walk starts from the vertices the first node matches instead, and
+        // reads the edges they store, as it does from an anchor the row already binds
+        for (final Vertex candidate : findAllNodes(nodePattern, currentResult))
+          traverseFromNode(pathPattern, nodeIndex, candidate, currentResult, branchPathTrace(trace), results);
+        return;
+      }
 
       final Map<String, Object> relProps = relPattern.hasProperties()
           ? evaluateMatchProperties(relPattern.getProperties(), currentResult) : null;

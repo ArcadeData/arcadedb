@@ -277,6 +277,35 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
     return (int) page.readUnsignedInt(Binary.SHORT_SERIALIZED_SIZE + slot * Binary.INT_SERIALIZED_SIZE);
   }
 
+  /**
+   * Gives {@code rid}'s slot back the size it would have had before #10859, when a record was padded to 5 bytes only: an
+   * empty document then took a slot of 7 bytes, smaller than the 9 of a placeholder pointer, which is the shape the
+   * small-slot tests (#10617, #10637, #10669, #10859) are about. Every database written before #10859 is full of them,
+   * and nothing writes them any more. Only the size marker is rewritten, as an in-place overwrite of a shorter record
+   * leaves it: the bytes the slot no longer declares stay where they are, a hole until the page is packed.
+   *
+   * @return the slot's footprint after the rewrite.
+   */
+  protected int shrinkToUnpaddedSize(final RID rid) {
+    final int[] footprint = new int[1];
+    database.transaction(() -> {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      // A record never written, so its buffer is the serializer's own, not the padded one the slot was read into
+      final Document stored = rid.asDocument(true);
+      final MutableDocument fresh = database.newDocument(stored.getTypeName()).fromMap(stored.toMap(false));
+      final int unpadded = Math.max(5, db.getSerializer().serialize(db, fresh).size());
+      onSlot(rid, page -> {
+        final int offset = recordOffsetOf(page, rid);
+        final long[] size = page.readNumberAndSize(offset);
+        assertThat(size[0]).as("a plain record, padded to at least the unpadded size").isGreaterThanOrEqualTo(unpadded);
+        assertThat(page.writeNumber(offset, unpadded)).as("the size marker keeps its length").isEqualTo((int) size[1]);
+        footprint[0] = unpadded + (int) size[1];
+        return 0L;
+      });
+    });
+    return footprint[0];
+  }
+
   /** Frees a slot without touching anything that references it: an interrupted repair, or physical corruption. */
   protected void freeSlotBehindItsBack(final RID rid) {
     database.transaction(() -> onSlot(rid, page -> {

@@ -27,8 +27,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 public class IndexMetadata {
@@ -199,6 +201,31 @@ public class IndexMetadata {
   }
 
   /**
+   * The settings of the {@code METADATA} clause this definition carries with another value than {@code defaults}, by key in
+   * key order: what a statement has to name to create the same index again (discussion #10893). A setting with no value on
+   * this definition is left out, since there is nothing to ask for.
+   *
+   * @param defaults a definition of the same index type as created with no {@code METADATA}
+   */
+  public final Map<String, Object> getUserSettingsDifferingFrom(final IndexMetadata defaults) {
+    final Map<String, Object> settings = new TreeMap<>();
+    for (final String key : getUserSettingKeys()) {
+      final Object value = getUserMetadataValue(key);
+      if (value != null && !Objects.equals(value, defaults.getUserMetadataValue(key)))
+        settings.put(key, value);
+    }
+    return settings;
+  }
+
+  /**
+   * The keys of the {@code METADATA} clause this definition has a value for. The default is {@link #getUserMetadataKeys()};
+   * override where the key space is open-ended, to name the keys of it this definition carries.
+   */
+  protected Set<String> getUserSettingKeys() {
+    return getUserMetadataKeys();
+  }
+
+  /**
    * Answers which of the settings {@code requested} NAMES this definition does not already carry, so an
    * {@code IF NOT EXISTS} request can tell "the index that is there is the one I asked for" from "the index that is
    * there happens to sit on the same properties".
@@ -233,13 +260,21 @@ public class IndexMetadata {
     for (final String key : requested.keySet()) {
       final Object current = getUserMetadataValue(key);
       final Object wanted = asRequested.getUserMetadataValue(key);
-      if (!Objects.equals(current, wanted))
+      if (!isSameUserSetting(key, current, wanted))
         mismatches.add(key + "=" + current + " (requested " + wanted + ")");
     }
     // Stable order: a JSONObject key set is unordered, and an error message that reshuffles between two identical
     // statements is one nobody can match on.
     Collections.sort(mismatches);
     return mismatches;
+  }
+
+  /**
+   * Whether the value this definition holds for {@code key} satisfies the {@code wanted} one of a request. Equality, unless
+   * the index type has a setting that stops being meaningful once it has taken effect.
+   */
+  protected boolean isSameUserSetting(final String key, final Object current, final Object wanted) {
+    return Objects.equals(current, wanted);
   }
 
   /**

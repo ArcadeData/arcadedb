@@ -162,7 +162,8 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
     // the agreement below proves nothing if the indexed type is answered by a scan as well
     for (final String where : new String[] { "i = 12.5", "i < 12.5", "i >= ?", "l = ?", "s > 12.5", "b <= 12.5", "c = 1 AND d < 12.5",
         "u = 12.5", "h = 12.5" })
-      try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT i FROM I WHERE " + where, 12.5d)) {
+      try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT i FROM I WHERE " + where,
+          where.contains("?") ? new Object[] { 12.5d } : new Object[0])) {
         assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(where).contains("FETCH FROM INDEX");
       }
   }
@@ -199,7 +200,9 @@ class Issue9021IntegralIndexInexactBoundTest extends TestHelper {
         "u IN [12.5, 13]", "h IN [12.5, 13]", "u BETWEEN 11.5 AND 12.5" };
     for (final String where : wheres) {
       final Object parameter = where.contains("IN ?") ? List.of(12.5d, 11) : where.startsWith("l ") ? 1e19d : 11.5d;
-      assertThat(sql("SELECT i FROM I WHERE " + where, parameter)).as(where).isEqualTo(sql("SELECT i FROM S WHERE " + where, parameter));
+      // one value for the one placeholder, none for a statement without (issue #10721)
+      final Object[] args = where.contains("?") ? new Object[] { parameter } : new Object[0];
+      assertThat(sql("SELECT i FROM I WHERE " + where, args)).as(where).isEqualTo(sql("SELECT i FROM S WHERE " + where, args));
     }
   }
 

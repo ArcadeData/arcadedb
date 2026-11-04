@@ -21,7 +21,10 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -199,6 +202,40 @@ class GrpcErrorMapperTest {
         null);
 
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+  }
+
+  @Test
+  @DisplayName("A database the server holds (restore, close database) maps to UNAVAILABLE, not INTERNAL (issue #10533)")
+  void databaseHeld_mapsToUnavailable() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new DatabaseNotAvailableException("Database 'mydb' is not available: a restore of it is in progress"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DatabaseNotAvailableException.class.getName());
+  }
+
+  @Test
+  @DisplayName("A held database is UNAVAILABLE through a wrapper too")
+  void databaseHeld_mapsToUnavailableThroughAWrapper() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new CommandExecutionException("Error on executing the command", new DatabaseNotAvailableException("held")), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
+    // named by the frame that classified it (issue #10553), as every other classified failure is, not by its wrapper
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DatabaseNotAvailableException.class.getName());
+  }
+
+  @Test
+  @DisplayName("A database that does not exist is NOT_FOUND named by its class, neither UNAVAILABLE nor INTERNAL (issue #10795)")
+  void databaseNotFound_isNotFoundNamedByItsClass() {
+    final DatabaseNotFoundException missing = new DatabaseNotFoundException("Database 'nope' does not exist");
+    for (final Throwable failure : new Throwable[] { missing, new CommandExecutionException("outer", missing) }) {
+      final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(failure, null);
+
+      assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+      // the class, so the client rebuilds the type rather than reading NOT_FOUND as a missing record
+      assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DatabaseNotFoundException.class.getName());
+    }
   }
 
   @Test

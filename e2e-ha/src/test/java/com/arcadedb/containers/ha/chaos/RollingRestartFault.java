@@ -30,6 +30,7 @@ import java.util.Random;
  */
 public final class RollingRestartFault implements Fault {
   private final Duration electionTimeout;
+  private       int      restartedCount;
 
   public RollingRestartFault(final Duration electionTimeout) {
     this.electionTimeout = electionTimeout;
@@ -47,8 +48,11 @@ public final class RollingRestartFault implements Fault {
 
   @Override
   public String inject(final ClusterState state, final NodeControl control, final Random random) throws Exception {
+    restartedCount = 0;
     for (int node = 0; node < state.size(); node++) {
       control.stopGracefully(node);
+      // The server process is gone from here on, whether or not the start below succeeds
+      restartedCount = node + 1;
       state.set(node, NodeState.DOWN);
       control.start(node);
       state.set(node, NodeState.UP);
@@ -68,5 +72,20 @@ public final class RollingRestartFault implements Fault {
   @Override
   public boolean expectsWritesAvailable() {
     return false;
+  }
+
+  /** Every node shuts down cleanly and a majority is up at every instant, so no node has a reason to discard its log. */
+  @Override
+  public boolean forbidsReformat() {
+    return true;
+  }
+
+  @Override
+  public int[] restartedNodes(final ClusterState state) {
+    // The nodes inject() got to, which is all of them unless it failed part way
+    final int[] nodes = new int[Math.min(restartedCount, state.size())];
+    for (int node = 0; node < nodes.length; node++)
+      nodes[node] = node;
+    return nodes;
   }
 }

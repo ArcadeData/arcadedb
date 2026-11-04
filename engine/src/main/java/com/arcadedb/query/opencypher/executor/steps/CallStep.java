@@ -77,6 +77,38 @@ public class CallStep extends AbstractExecutionStep {
   private record KnownRowCount(long rows) {
   }
 
+  private boolean countOnlyOptimization = false;
+  private final CallClause callClause;
+  /**
+   * The procedure streams this step has opened and nobody has read to the end. Concurrent because {@link #close()} may be called
+   * from a thread other than the one reading the rows.
+   */
+  private final Set<ProcedureRows> openRows = ConcurrentHashMap.newKeySet();
+  /**
+   * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
+   * an immutable set, because an execution plan can be cached and replayed: a racing reader of a plain field could
+   * otherwise see a {@link HashSet} whose construction it does not yet see finished. The race itself is harmless -
+   * the value is deterministic, so the worst outcome is computing it twice.
+   */
+  private volatile Set<String> requestedYieldFields;
+  private final CypherFunctionFactory functionFactory;
+  private final ExpressionEvaluator evaluator;
+
+  public CallStep(final CallClause callClause, final CommandContext context,
+                  final CypherFunctionFactory functionFactory) {
+    super(context);
+    this.callClause = callClause;
+    this.functionFactory = functionFactory;
+    this.evaluator = new ExpressionEvaluator(functionFactory);
+  }
+
+  /** Registers the rows of a procedure's stream with the step, so that {@link #close()} reaches them. */
+  private ProcedureRows track(final Stream<ResultInternal> stream, final Iterator<ResultInternal> rows) {
+    final ProcedureRows procedureRows = new ProcedureRows(stream, rows);
+    openRows.add(procedureRows);
+    return procedureRows;
+  }
+
   /**
    * The rows of one procedure's stream, which the step closes: the stream holds whatever the procedure registered with
    * {@link Stream#onClose} (the {@code path.*} walks hold the heap of their frontier) until somebody closes it, and nothing
@@ -93,7 +125,6 @@ public class CallStep extends AbstractExecutionStep {
     private ProcedureRows(final Stream<ResultInternal> stream, final Iterator<ResultInternal> rows) {
       this.stream = stream;
       this.rows = rows;
-      openRows.add(this);
     }
 
     @Override
@@ -127,31 +158,6 @@ public class CallStep extends AbstractExecutionStep {
       if (openRows.remove(this))
         stream.close();
     }
-  }
-
-  private boolean countOnlyOptimization = false;
-  private final CallClause callClause;
-  /**
-   * The procedure streams this step has opened and nobody has read to the end. Concurrent because {@link #close()} may be called
-   * from a thread other than the one reading the rows.
-   */
-  private final Set<ProcedureRows> openRows = ConcurrentHashMap.newKeySet();
-  /**
-   * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
-   * an immutable set, because an execution plan can be cached and replayed: a racing reader of a plain field could
-   * otherwise see a {@link HashSet} whose construction it does not yet see finished. The race itself is harmless -
-   * the value is deterministic, so the worst outcome is computing it twice.
-   */
-  private volatile Set<String> requestedYieldFields;
-  private final CypherFunctionFactory functionFactory;
-  private final ExpressionEvaluator evaluator;
-
-  public CallStep(final CallClause callClause, final CommandContext context,
-                  final CypherFunctionFactory functionFactory) {
-    super(context);
-    this.callClause = callClause;
-    this.functionFactory = functionFactory;
-    this.evaluator = new ExpressionEvaluator(functionFactory);
   }
 
   /**
@@ -264,10 +270,13 @@ public class CallStep extends AbstractExecutionStep {
           if (currentIter != null && currentIter.hasNext()) {
             final ResultInternal converted = convertItemToResult(currentIter.next());
             if (hasYield) {
-              final ResultInternal filtered = applyYieldToSingleResult(converted);
-              if (filtered != null) {
+              // YIELD ... WHERE sees every variable in scope, not only the yielded ones, so it is evaluated against
+              // the merged row: evaluated against the yielded fields alone, a predicate on an outer variable read it
+              // as null and dropped every row (issue #11008)
+              final ResultInternal merged = mergeWithInputRow(currentInputRow, projectYield(converted));
+              if (passesYieldWhere(merged)) {
                 currentYielded = true;
-                next = mergeWithInputRow(currentInputRow, filtered);
+                next = merged;
                 return true;
               }
             } else {
@@ -381,7 +390,7 @@ public class CallStep extends AbstractExecutionStep {
 
     // Check the procedure registry first (built-in Neo4j-compatible procedures like db.labels() are registered
     // here too, so their declared yield fields are available to CypherSemanticValidator for YIELD * - issue #6148)
-    final CypherProcedure procedure = CypherProcedureRegistry.get(procedureName);
+    final CypherProcedure procedure = callClause.resolveProcedure();
     if (procedure != null)
       return executeProcedure(procedure, args.toArray(), inputRow, context);
 
@@ -468,12 +477,12 @@ public class CallStep extends AbstractExecutionStep {
           resultStream.close();
           return new KnownRowCount(size);
         }
-        return new ProcedureRows(resultStream, Spliterators.iterator(rows));
+        return track(resultStream, Spliterators.iterator(rows));
       }
 
       // Kept lazy instead of collected to a list, so a procedure that yields many results does not exhaust the memory: the
       // statement's transaction is committed only once the write statement has been drained to its end
-      return new ProcedureRows(resultStream, resultStream.iterator());
+      return track(resultStream, resultStream.iterator());
     } catch (final NeedRetryException | HeapLimitExceededException | QueryHeapBudgetExceededException refusal) {
       closeAfterFailure(resultStream, refusal);
       // a conflict is not "no rows" either: it keeps its type, OPTIONAL or not, for Database.transaction(..., retries) (#9487).
@@ -486,11 +495,10 @@ public class CallStep extends AbstractExecutionStep {
       // that looks legitimately empty. Matches Neo4j, where OPTIONAL CALL is about cardinality (issue #5602).
       throw clientError;
     } catch (final Exception e) {
-      if (e instanceof RuntimeException runtime)
-        closeAfterFailure(resultStream, runtime);
+      closeAfterFailure(resultStream, e);
       if (callClause.isOptional())
         return null;
-      throw new CommandExecutionException("Error executing procedure: " + procedure.getName(), e);
+      throw new CommandExecutionException("Error executing procedure: " + procedure.getName() + causeMessage(e), e);
     }
   }
 
@@ -528,8 +536,18 @@ public class CallStep extends AbstractExecutionStep {
     } catch (final Exception e) {
       if (callClause.isOptional())
         return null;
-      throw new CommandExecutionException("Error executing function: " + function.getName(), e);
+      throw new CommandExecutionException("Error executing function: " + function.getName() + causeMessage(e), e);
     }
+  }
+
+  /**
+   * The message of the failure a procedure or function raised, for the error that wraps it: a driver shows the wrapper's
+   * message only, and the cause is often the whole point - {@code apoc.util.validate}'s is the text the query itself chose
+   * to abort with (issue #11114). Neo4j reports it the same way ({@code Failed to invoke procedure ...: Caused by: ...}).
+   */
+  private static String causeMessage(final Exception e) {
+    final String message = e.getMessage();
+    return message != null && !message.isEmpty() ? ": " + message : "";
   }
 
   /**
@@ -688,7 +706,7 @@ public class CallStep extends AbstractExecutionStep {
       for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
         row.setProperty(yieldItem.getOutputName(), null);
     } else {
-      final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+      final CypherProcedure procedure = callClause.resolveProcedure();
       if (procedure != null && procedure.getYieldFields() != null)
         for (final String field : procedure.getYieldFields())
           row.setProperty(field, null);
@@ -701,21 +719,20 @@ public class CallStep extends AbstractExecutionStep {
    * Returns null if the result is filtered out by YIELD WHERE.
    */
   private ResultInternal applyYieldToSingleResult(final ResultInternal input) {
+    final ResultInternal output = projectYield(input);
+    return passesYieldWhere(output) ? output : null;
+  }
+
+  /** Renames the yielded fields to their output names, dropping the fields YIELD does not name. */
+  private ResultInternal projectYield(final ResultInternal input) {
     final ResultInternal output = new ResultInternal();
-
-    for (final CallClause.YieldItem yieldItem : callClause.getYieldItems()) {
-      final Object value = input.getProperty(yieldItem.getFieldName());
-      output.setProperty(yieldItem.getOutputName(), value);
-    }
-
-    // Apply YIELD WHERE if present
-    if (callClause.getYieldWhere() != null) {
-      final boolean matches = callClause.getYieldWhere().getConditionExpression().evaluate(output, context);
-      if (!matches)
-        return null;
-    }
-
+    for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
+      output.setProperty(yieldItem.getOutputName(), input.getProperty(yieldItem.getFieldName()));
     return output;
+  }
+
+  private boolean passesYieldWhere(final Result row) {
+    return callClause.getYieldWhere() == null || callClause.getYieldWhere().getConditionExpression().evaluate(row, context);
   }
 
   /**
@@ -813,7 +830,7 @@ public class CallStep extends AbstractExecutionStep {
   }
 
   /** Closes {@code stream} after {@code failure}, which is the error the caller gets: one more from the close is suppressed into it. */
-  private static void closeAfterFailure(final Stream<?> stream, final RuntimeException failure) {
+  private static void closeAfterFailure(final Stream<?> stream, final Throwable failure) {
     if (stream == null)
       return;
     try {

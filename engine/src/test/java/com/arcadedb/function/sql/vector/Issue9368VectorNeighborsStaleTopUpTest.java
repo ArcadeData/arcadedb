@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -83,10 +84,18 @@ class Issue9368VectorNeighborsStaleTopUpTest extends TestHelper {
     lsm.findNeighborsFromVector(new float[] { 0f, 0f }, 10).forEach(p -> fromIndex.add(p.getFirst()));
     assertThat(fromIndex).containsAll(stale);
 
+    // Since issue #10973 a row is made without reading its record, and asks the index whether the record is still there: a
+    // delete that commits takes the vector out of the index in the same commit, which a removal from the bucket alone does not
+    // simulate (Issue10973VectorNeighborsDeferredRecordReadTest pins what such a row answers). A read listener keeps the
+    // records read as the rows are made, which is the path whose stale entries are found by the read and topped up
+    final AfterRecordReadListener listener = record -> record;
+    database.getSchema().getType("Doc").getEvents().registerListener(listener);
     final List<Integer> pids = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", "SELECT pid FROM (SELECT expand(vectorNeighbors('Doc[vector]', :v, 10)))",
         Map.of("v", new float[] { 0f, 0f }))) {
       rs.forEachRemaining(r -> pids.add(r.getProperty("pid")));
+    } finally {
+      database.getSchema().getType("Doc").getEvents().unregisterListener(listener);
     }
     assertThat(pids).hasSize(10).containsExactly(4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
   }

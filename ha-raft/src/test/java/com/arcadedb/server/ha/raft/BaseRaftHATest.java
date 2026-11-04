@@ -966,8 +966,8 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * resolved (or held) before the resync ran (issue #5977).
    * <p>
    * Three independent HA ITs hit this once each: two reinvented this exact resolve-and-retry shape ad hoc
-   * ({@code Issue5492TruncateBatchNotReplicatedIT}, {@code Issue5655CypherCommitsOnInnerDatabaseIT}) and a third
-   * had no defense at all ({@code Issue5492SchemaWalNotShippedIT}, {@code RaftReadConsistencyBookmarkIT}). This is
+   * (#5492 and #5655, now in {@code InnerDatabaseCommitReplicationIT}) and a third
+   * had no defense at all (#5492 schema callback, also there, and {@code RaftReadConsistencyBookmarkIT}). This is
    * the shared version, so a new HA IT that queries a follower shortly after inducing a resync gets it for free
    * instead of needing to know the trap exists.
    * <p>

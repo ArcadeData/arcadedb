@@ -85,6 +85,7 @@ import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -134,8 +135,68 @@ public class BinarySerializer {
    * decide what to do with a checked exception that only ever meant "this server is misconfigured".
    */
   public BinarySerializer(final ContextConfiguration configuration) {
+    readConfiguration(configuration);
+  }
+
+  /**
+   * Takes the settings the serializer depends on from {@code configuration}: at construction, and again whenever the database's
+   * configuration changes, including the {@code configuration.json} an open loads after the serializer was built.
+   */
+  public void readConfiguration(final ContextConfiguration configuration) {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+    fixedWidthFloatArraysEnabled = configuration.getValueAsBoolean(GlobalConfiguration.SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS);
+  }
+
+  private static final BooleanSupplier ALWAYS = () -> true;
+
+  /**
+   * {@link GlobalConfiguration#SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS}: false keeps every float and double array in the varint
+   * form, whatever {@link #fixedWidthFloatArrays} answers, so the files stay readable by a build before the fixed-width form.
+   */
+  private volatile boolean fixedWidthFloatArraysEnabled;
+
+  /**
+   * Whether a {@code float[]} / {@code double[]} is written in its fixed-width form ({@link BinaryTypes#TYPE_ARRAY_OF_FLOATS_FIXED},
+   * {@link BinaryTypes#TYPE_ARRAY_OF_DOUBLES_FIXED}) rather than as varints (issue #10856). Always, unless the database is
+   * replicated: a node of a build that predates the form cannot read it, so the HA layer answers "only once every peer
+   * advertises that it decodes it", and the varint form, which every build reads, is written until then.
+   */
+  private volatile BooleanSupplier fixedWidthFloatArrays = ALWAYS;
+
+  /** Sets who decides whether float and double arrays are written in their fixed-width form; {@code null} restores "always". */
+  public void setFixedWidthFloatArrays(final BooleanSupplier policy) {
+    this.fixedWidthFloatArrays = policy != null ? policy : ALWAYS;
+  }
+
+  /**
+   * The type byte a value of binary type {@code type} is STORED under in a record: the fixed-width form of a float or double
+   * array when {@link #fixedWidthFloatArrays} allows it, {@code type} itself otherwise. Only the record's own type bytes go
+   * through here; an index key is written under its declared type, so an index page never changes form.
+   */
+  private byte storageTypeOf(final byte type) {
+    if (!fixedWidthFloatArraysEnabled)
+      return type;
+    if (type == BinaryTypes.TYPE_ARRAY_OF_FLOATS)
+      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED : type;
+    if (type == BinaryTypes.TYPE_ARRAY_OF_DOUBLES)
+      return fixedWidthFloatArrays.getAsBoolean() ? BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED : type;
+    return type;
+  }
+
+  /** A {@code Float[]} with no null element (a null one makes the value a TYPE_LIST, see BinaryTypes.getTypeFromValue). */
+  private static float[] unbox(final Float[] boxed) {
+    final float[] values = new float[boxed.length];
+    for (int i = 0; i < boxed.length; i++)
+      values[i] = boxed[i];
+    return values;
+  }
+
+  private static double[] unbox(final Double[] boxed) {
+    final double[] values = new double[boxed.length];
+    for (int i = 0; i < boxed.length; i++)
+      values[i] = boxed[i];
+    return values;
   }
 
   public Binary serialize(final DatabaseInternal database, final Record record) {
@@ -321,7 +382,17 @@ public class BinarySerializer {
    */
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
-    return deserializeProperties(database, buffer, embeddedModifier, rid, false, fieldNames);
+    return deserializeProperties(database, buffer, embeddedModifier, rid, false, null, fieldNames);
+  }
+
+  /**
+   * The lenient form of {@link #deserializeProperties}, telling the caller whether it lost anything (issue #10955): the first
+   * part of the content that did not decode is described in {@code damage[0]}, which stays null when the whole record decoded.
+   * A caller that writes the record back must not do so from a map that lacks what could not be read.
+   */
+  public Map<String, Object> deserializePropertiesReportingDamage(final Database database, final Binary buffer,
+      final EmbeddedModifier embeddedModifier, final RID rid, final String[] damage) {
+    return deserializeProperties(database, buffer, embeddedModifier, rid, false, damage);
   }
 
   /**
@@ -333,11 +404,12 @@ public class BinarySerializer {
    * @throws SerializationException on the first part of the content that does not decode
    */
   public Map<String, Object> deserializePropertiesStrict(final Database database, final Binary buffer, final RID rid) {
-    return deserializeProperties(database, buffer, null, rid, true);
+    return deserializeProperties(database, buffer, null, rid, true, null);
   }
 
   private Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
-      final EmbeddedModifier embeddedModifier, final RID rid, final boolean strict, final String... fieldNames) {
+      final EmbeddedModifier embeddedModifier, final RID rid, final boolean strict, final String[] damage,
+      final String... fieldNames) {
     final Map<String, Object> values = new LinkedHashMap<>();
     try {
       final int initialPosition = buffer.position();
@@ -412,6 +484,8 @@ public class BinarySerializer {
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
                 + e.getMessage(), e);
+          if (damage != null && damage[0] == null)
+            damage[0] = "property '" + propertyName + "' of record " + rid + " cannot be decoded: " + e.getMessage();
           LogManager.instance().log(this, Level.WARNING,
               "Skipping corrupted property '%s' in record %s: %s", propertyName, rid, e.getMessage());
         }
@@ -429,6 +503,8 @@ public class BinarySerializer {
         throw e instanceof SerializationException serializationException ?
             serializationException :
             new SerializationException("Record " + rid + " cannot be decoded: " + e.getMessage(), e);
+      if (damage != null && damage[0] == null)
+        damage[0] = "record " + rid + " cannot be decoded: " + e.getMessage();
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s, returning %d properties read so far", e, rid,
           values.size());
     }
@@ -657,6 +733,11 @@ public class BinarySerializer {
       final boolean applyEncryption) {
     if (value == null)
       return;
+    if (value instanceof Result result)
+      // COMING FROM A QUERY: BinaryTypes.getTypeFromValue() labelled the Result as the record or the map it stands for, and
+      // unwrapping it once here hands every label's branch that thing instead of a Result (issues #10264, #10607)
+      value = BinaryTypes.unwrapResult(result);
+
     final boolean encrypt = applyEncryption && dataEncryption != null;
     Binary content = encrypt ? new Binary() : serialized;
 
@@ -778,10 +859,6 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_RID: {
-      if (value instanceof Result result)
-        // COMING FROM A QUERY
-        value = result.getElement().get();
-
       final RID rid = ((Identifiable) value).getIdentity();
       serialized.putInt(rid.getBucketId());
       serialized.putLong(rid.getPosition());
@@ -820,6 +897,7 @@ public class BinarySerializer {
               entryType = BinaryTypes.TYPE_NULL;
               valueToWrite = null;
             }
+            entryType = storageTypeOf(entryType);
             content.putByte(entryType);
             serializeValue(database, content, entryType, valueToWrite, applyEncryption);
           } catch (Exception e) {
@@ -840,10 +918,6 @@ public class BinarySerializer {
 
       if (value instanceof JSONObject object)
         value = object.toMap();
-      else if (value instanceof Result result)
-        // COMING FROM A QUERY: BinaryTypes.getTypeFromValue() types a Result that is not a record as a map, and a projected
-        // SELECT subquery hands a list of them to a CREATE MATERIALIZED VIEW or an INSERT ... FROM (issue #10264)
-        value = result.toMap();
 
       final Map<Object, Object> map = (Map<Object, Object>) value;
       final int mapSize = map.size();
@@ -903,6 +977,7 @@ public class BinarySerializer {
       for (int i = 0; i < validCount; ++i) {
         content.putByte(keyTypes[i]);
         serializeValue(database, content, keyTypes[i], keys[i], applyEncryption);
+        valueTypes[i] = storageTypeOf(valueTypes[i]);
         content.putByte(valueTypes[i]);
         serializeValue(database, content, valueTypes[i], values[i], applyEncryption);
       }
@@ -995,6 +1070,18 @@ public class BinarySerializer {
       }
       break;
     }
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED: {
+      final float[] floats = value instanceof float[] array ? array : unbox((Float[]) value);
+      content.putUnsignedNumber(floats.length);
+      content.putFloatArray(floats);
+      break;
+    }
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED: {
+      final double[] doubles = value instanceof double[] array ? array : unbox((Double[]) value);
+      content.putUnsignedNumber(doubles.length);
+      content.putDoubleArray(doubles);
+      break;
+    }
     default:
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '%s', type not supported", value);
     }
@@ -1030,6 +1117,7 @@ public class BinarySerializer {
         entryType = BinaryTypes.TYPE_NULL;
         valueToWrite = null;
       }
+      entryType = storageTypeOf(entryType);
       content.putByte(entryType);
       serializeValue(database, content, entryType, valueToWrite, applyEncryption);
     }
@@ -1210,6 +1298,12 @@ public class BinarySerializer {
       value = array;
       break;
     }
+    case BinaryTypes.TYPE_ARRAY_OF_FLOATS_FIXED:
+      value = content.getFloatArray(checkDeserializedCount(content.getUnsignedNumber(), content));
+      break;
+    case BinaryTypes.TYPE_ARRAY_OF_DOUBLES_FIXED:
+      value = content.getDoubleArray(checkDeserializedCount(content.getUnsignedNumber(), content));
+      break;
 
     default:
       throw new SerializationException("Error on deserializing value of unknown type " + type);
@@ -1359,7 +1453,8 @@ public class BinarySerializer {
     for (int i = 0; i < validCount; i++) {
       final String propertyName = validNames[i];
       Object value = validValues[i];
-      byte type = validTypes[i];
+      // INLINE AND EXTERNAL ALIKE: THE EXTERNAL BLOB CARRIES THE SAME TYPE BYTE (issue #10856)
+      byte type = storageTypeOf(validTypes[i]);
 
       // WRITE PROPERTY ID FROM THE DICTIONARY
       header.putUnsignedNumber(dictionary.getIdByName(propertyName, true));

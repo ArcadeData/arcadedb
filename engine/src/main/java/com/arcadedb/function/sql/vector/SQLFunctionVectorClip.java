@@ -54,10 +54,8 @@ public class SQLFunctionVectorClip extends SQLFunctionVectorAbstract {
     if (vectorObj == null || minObj == null || maxObj == null)
       return null;
 
+    // An empty vector clips to an empty vector, as vector.scale and vector.add answer (issue #11052)
     final float[] vector = toFloatArray(vectorObj);
-
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Parse min and max
     final float min;

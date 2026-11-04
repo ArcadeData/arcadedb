@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -35,6 +36,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.EmptyIndexCursor;
+import com.arcadedb.index.IndexBuildTestHooks;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -52,6 +54,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
@@ -81,7 +84,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   // and out underneath it, which is why getMostRecentFileName() and getName() can differ (issue #9213).
   private              String                        name;
   private final        RWLockContext                 lock         = new RWLockContext();
+  // Test seam: runs in splitIndex() once the swap is published and saved, before the previous mutable file is dropped
+  private static final ThreadLocal<Runnable>         AFTER_SWAP_TEST_HOOK = new ThreadLocal<>();
   protected final      AtomicReference<INDEX_STATUS> status       = new AtomicReference<>(INDEX_STATUS.AVAILABLE);
+  /**
+   * Set on a bucket index {@code REBUILD INDEX} created for a bucket its type index lacked, from its creation until it is filled,
+   * and persisted in its schema entry: a type index does not count it as present meanwhile, and a schema load that finds the flag
+   * (a process that stopped before the fill) leaves the bucket index out, so the type index reopens incomplete and reported as not
+   * valid rather than complete and empty for that bucket.
+   */
+  private volatile     boolean                       awaitingFill;
   /**
    * Compacted files replaced by a FULL compaction, awaiting their physical drop. The swap (under the write
    * lock) guarantees no NEW cursor can reach them, but live series cursors load pages lazily and may still
@@ -89,8 +101,20 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * subsequent compaction round and at close/drop time).
    */
   private final        List<LSMTreeIndexCompacted>   retiredCompactedIndexes = new CopyOnWriteArrayList<>();
+  // old mutable files a published compaction could not drop at once, because a commit still held their lock (#11240)
+  private final        List<LSMTreeIndexMutable>     retiredMutables         = new CopyOnWriteArrayList<>();
+  // Set when the schema save of the last swap failed (issue #11240): the schema on disk still names the files the swap
+  // replaced, so they are kept. Read only by what the same compaction runs after the save; compactions of one index are
+  // serial
+  private volatile     boolean                       swapNotPersisted;
   /** Cumulative dead (tombstone-resolved) keys skipped by scans since this index was loaded. */
   private final        AtomicLong                    statsDeadEntriesSkipped = new AtomicLong();
+  /**
+   * The same keys counted since the last FULL compaction (or the load): the price the scans have paid so far for the
+   * dead entries only a full compaction can drop, which is what starts one early (#10919, see
+   * {@link com.arcadedb.GlobalConfiguration#INDEX_COMPACTION_FULL_DEAD_ENTRIES_RATIO}).
+   */
+  private final        AtomicLong                    deadEntriesSkippedSinceFullCompaction = new AtomicLong();
   private              TypeIndex                     typeIndex;
   private              boolean                       valid        = true;
   private              IndexMetadata                 metadata;
@@ -226,6 +250,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * the migrated-file mapping. Synchronized so concurrent callers (a compaction round and a close) cannot
    * double-drop the same file.
    */
+  /** Whether the schema save of the last swap failed, so the files it replaced must stay (issue #11240). */
+  boolean isSwapNotPersisted() {
+    return swapNotPersisted;
+  }
+
   synchronized void dropRetiredCompactedIndexes() {
     for (final LSMTreeIndexCompacted retired : retiredCompactedIndexes) {
       if (retired.countActiveCursors() != 0)
@@ -244,6 +273,25 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       } catch (final IOException e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on dropping retired compacted index file '%s'", e, retired.getName());
+      } finally {
+        if (locked == LockManager.LOCK_STATUS.YES)
+          getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
+      }
+    }
+
+    for (final LSMTreeIndexMutable retired : retiredMutables) {
+      final int fileId = retired.getFileId();
+      final LockManager.LOCK_STATUS locked = getDatabase().getTransactionManager().tryLockFile(fileId, 0,
+          Thread.currentThread());
+      if (locked == LockManager.LOCK_STATUS.NO)
+        continue;
+
+      try {
+        retired.drop();
+        retiredMutables.remove(retired);
+      } catch (final IOException e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, retired.getName());
       } finally {
         if (locked == LockManager.LOCK_STATUS.YES)
           getDatabase().getTransactionManager().unlockFile(fileId, Thread.currentThread());
@@ -460,6 +508,28 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return status.get() == INDEX_STATUS.COMPACTION_IN_PROGRESS;
   }
 
+  /**
+   * TEST SEAM ONLY, package-private: a crash test installs it in the child JVM it kills. Per thread, and a caller sharing its JVM
+   * must remove it (null) in a finally, as {@code LSMTreeIndexBulkLoader.setBuildTestHook} is.
+   */
+  static void setAfterSwapTestHook(final Runnable hook) {
+    if (hook == null)
+      AFTER_SWAP_TEST_HOOK.remove();
+    else
+      AFTER_SWAP_TEST_HOOK.set(hook);
+  }
+
+  /** See {@link #awaitingFill}. */
+  @Override
+  public boolean isAwaitingFill() {
+    return awaitingFill;
+  }
+
+  @Override
+  public void setAwaitingFill(final boolean awaitingFill) {
+    this.awaitingFill = awaitingFill;
+  }
+
   @Override
   public boolean isValid() {
     return valid;
@@ -517,6 +587,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         }
         retiredCompactedIndexes.clear();
 
+        for (final LSMTreeIndexMutable retired : retiredMutables) {
+          try {
+            retired.drop();
+          } catch (final IOException e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, retired.getName());
+          }
+        }
+        retiredMutables.clear();
+
         final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
         if (subIndex != null)
           subIndex.drop();
@@ -572,6 +652,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) {
     checkIsValid();
+    // A bound of a kind the key type cannot hold bounds no entry (issue #10541): it used to be read as "no bound" and answer every one
+    if (!canReadAsKeys(fromKeys))
+      return EMPTY_CURSOR;
     return lock.executeInReadLock(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
   }
 
@@ -579,8 +662,37 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive,
                            final Object[] endKeys, final boolean endKeysInclusive) {
     checkIsValid();
+    if (!canReadAsKeys(beginKeys) || !canReadAsKeys(endKeys))
+      return EMPTY_CURSOR;
     return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys,
         endKeysInclusive));
+  }
+
+  /**
+   * Whether every component of a lookup key or a range bound can be read as a key of the index (issue #10541). A {@code null} key or
+   * component is the lookup of the null key, which is not asked about.
+   */
+  private boolean canReadAsKeys(final Object[] keys) {
+    if (keys == null)
+      return true;
+
+    final byte[] keyTypes = mutable.binaryKeyTypes;
+    for (int i = 0; i < keys.length && i < keyTypes.length; ++i)
+      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+        return false;
+    return true;
+  }
+
+  /** The same question for a key that was converted already, so that a lookup does not convert it twice. */
+  private boolean areReadAsKeys(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return true;
+
+    final byte[] keyTypes = mutable.binaryKeyTypes;
+    for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+        return false;
+    return true;
   }
 
   @Override
@@ -616,6 +728,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // still fails in put(), which is the build/insert contract convertIndexKeyOrNull documents.
       return EMPTY_CURSOR;
     }
+
+    // A key of a kind the declared type cannot hold is no key either (issue #10541): the conversion left it as it was, and the key
+    // comparison would cast it, or answered null, which is no lookup at all. It equals no indexed key
+    if (!areReadAsKeys(keys, convertedKeys))
+      return EMPTY_CURSOR;
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
@@ -748,6 +865,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public Map<String, Long> getStats() {
     final Map<String, Long> stats = mutable.getStats();
     stats.put("deadEntriesSkipped", statsDeadEntriesSkipped.get());
+    stats.put("deadEntriesSkippedSinceFullCompaction", deadEntriesSkippedSinceFullCompaction.get());
     return stats;
   }
 
@@ -759,6 +877,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    */
   void addDeadEntriesSkipped(final long skipped) {
     statsDeadEntriesSkipped.addAndGet(skipped);
+    deadEntriesSkippedSinceFullCompaction.addAndGet(skipped);
+  }
+
+  long getDeadEntriesSkippedSinceFullCompaction() {
+    return deadEntriesSkippedSinceFullCompaction.get();
+  }
+
+  /** Called once a full compaction is published: the dead entries the scans were paying for are gone. */
+  void resetDeadEntriesSkippedSinceFullCompaction() {
+    deadEntriesSkippedSinceFullCompaction.set(0);
   }
 
   /**
@@ -888,6 +1016,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new IllegalStateException("Cannot replace compacted index because cannot lock index file " + fileId);
 
     final AtomicInteger lockedNewFileId = new AtomicInteger(-1);
+    swapNotPersisted = false;
 
     try {
       final LSMTreeIndexMutable prevMutable = mutable;
@@ -955,17 +1084,54 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         mutable = newMutableIndex;
         updateCaseInsensitiveKeys();
 
-        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), saveSchema);
+        ((LocalSchema) database.getSchema()).setMigratedFileId(fileId, newMutableIndex.getFileId(), false);
+        if (saveSchema)
+          // Persisted only once an HA compaction is published (issue #11240), at once otherwise. A failure is reported, not
+          // logged and passed over: the old file is dropped only once the schema on disk no longer names it
+          database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(-1, () -> {
+            try {
+              database.getSchema().getEmbedded().saveConfigurationOrThrow();
+            } catch (final IOException e) {
+              swapNotPersisted = true;
+              throw e;
+            }
+          });
         return newMutableIndex;
       });
 
+      final Runnable afterSwapHook = AFTER_SWAP_TEST_HOOK.get();
+      if (afterSwapHook != null)
+        afterSwapHook.run();
+
       if (prevMutable != null)
-        try {
-          prevMutable.drop();
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
-              prevMutable);
-        }
+        // Kept until an HA compaction is published (issue #11240), so a leader that loses the entry still has it
+        database.getWrappedDatabaseInstance().runOnceCompactionIsPublished(prevMutable.getFileId(), () -> {
+          if (swapNotPersisted) {
+            // The schema on disk still names the old file: a restart reopens the index on it, so it stays
+            LogManager.instance().log(this, Level.WARNING,
+                "Keeping the old copy of mutable index file %s: the schema that replaces it could not be saved", null, prevMutable);
+            return;
+          }
+          // Under the old file's lock, as the swap above: deferred, the drop no longer runs inside it, and a commit still
+          // holding that lock must not have the file dropped underneath it. Standalone the lock is still held here (the
+          // same thread, ALREADY_LOCKED) and is not released early
+          final LockManager.LOCK_STATUS dropLocked = database.getTransactionManager().tryLockFile(fileId,
+              database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT), Thread.currentThread());
+          if (dropLocked == LockManager.LOCK_STATUS.NO) {
+            // a commit still holds the old file: retried at the next round, like a retired compacted file
+            retiredMutables.add(prevMutable);
+            return;
+          }
+          try {
+            prevMutable.drop();
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e,
+                prevMutable);
+          } finally {
+            if (dropLocked == LockManager.LOCK_STATUS.YES)
+              database.getTransactionManager().unlockFile(fileId, Thread.currentThread());
+          }
+        });
 
       return result;
 
@@ -1001,6 +1167,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
         db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
+        IndexBuildTestHooks.recordIndexed(LSMTreeIndex.this, record.getIdentity());
 
         // Periodic progress logging
         if (total.get() % LOG_INTERVAL == 0) {

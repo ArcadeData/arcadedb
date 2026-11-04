@@ -82,12 +82,29 @@ public abstract class BasePage {
   }
 
   /**
-   * Reads an unsigned number.
+   * Reads a signed variable-length number without allocating (#10656). The number of bytes it occupies on the page is
+   * {@link #readNumberSize(int)}. Neither moves the buffer position nor keeps any state on the page, so the pair is safe on
+   * a view shared by many threads ({@link SharedImmutablePage}, #10930).
+   */
+  public long readNumber(final int index) {
+    return this.content.getNumberAt(PAGE_HEADER_SIZE + index);
+  }
+
+  /**
+   * The number of bytes the variable-length number at {@code index} occupies on the page, without decoding it.
+   */
+  public int readNumberSize(final int index) {
+    return this.content.getNumberSizeAt(PAGE_HEADER_SIZE + index);
+  }
+
+  /**
+   * Reads a signed variable-length number. Allocates the returned pair on every call: a hot path uses
+   * {@link #readNumber(int)} and {@link #readNumberSize(int)} instead.
    *
-   * @return An array of longs with the unsigned number in the 1st position and the occupied bytes on the 2nd position.
+   * @return An array of longs with the number in the 1st position and the occupied bytes on the 2nd position.
    */
   public long[] readNumberAndSize(final int index) {
-    return this.content.getNumberAndSize(PAGE_HEADER_SIZE + index);
+    return new long[] { readNumber(index), readNumberSize(index) };
   }
 
   public long readLong(final int index) {
@@ -153,7 +170,8 @@ public abstract class BasePage {
   }
 
   public String readString(final int index) {
-    return new String(readBytes(PAGE_HEADER_SIZE + index), DatabaseFactory.getDefaultCharset());
+    // readBytes(int) ALREADY SKIPS THE PAGE HEADER
+    return new String(readBytes(index), DatabaseFactory.getDefaultCharset());
   }
 
   public PageId getPageId() {
@@ -174,11 +192,10 @@ public abstract class BasePage {
    */
   public ByteBuffer slice() {
     final ByteBuffer buffer = content.getByteBuffer();
-    // Use duplicate() to create a new ByteBuffer with independent position/limit
+    // slice(index, length) creates a new ByteBuffer with independent position/limit
     // This prevents concurrent threads from interfering with each other's buffer position
-    final ByteBuffer duplicate = buffer.duplicate();
-    duplicate.position(PAGE_HEADER_SIZE);
-    return duplicate.slice();
+    // #10654: one buffer, where duplicate().position(PAGE_HEADER_SIZE).slice() built two (the same bytes, the same limit)
+    return buffer.slice(PAGE_HEADER_SIZE, buffer.limit() - PAGE_HEADER_SIZE);
   }
 
   public int getBufferPosition() {

@@ -53,6 +53,12 @@ import java.util.concurrent.TimeUnit;
 public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutorService {
   static final String GREMLIN_PROTOCOL = "gremlin";
 
+  /** The principal of the request a pool thread runs, and the databases it is bound on: one per thread, as one request is. */
+  private record RequestPrincipal(ServerSecurityUser user, List<DatabaseInternal> bound) {
+  }
+
+  private static final ThreadLocal<RequestPrincipal> REQUEST = new ThreadLocal<>();
+
   private final ExecutorService delegate;
   private final ArcadeDBServer  server;
 
@@ -69,6 +75,8 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
     final RunningQuery.Client client = GremlinAuthContext.getClient();
     delegate.execute(() -> {
       final List<DatabaseInternal> bound = user != null ? bindPrincipal(user) : Collections.emptyList();
+      if (user != null)
+        REQUEST.set(new RequestPrincipal(user, bound));
       // Tagged as the client request it is (issue #8363): under HA, RaftReplicatedDatabase refuses a CLIENT request
       // on a database whose directory is being replaced from the leader's snapshot and tells a client from the
       // engine by this tag, so an untagged traversal read as engine work and was served from the discarded copy.
@@ -90,24 +98,44 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
         // enclosing query by the next request it runs
         ArcadeGraphManager.releaseAdmission();
         ProtocolContext.clear();
+        REQUEST.remove();
         unbindPrincipal(bound);
       }
     });
   }
 
+  /**
+   * Binds the principal of the request this thread runs onto {@code database}, which the request has just opened (issue #11068):
+   * {@link #bindPrincipal} binds the databases open when the request starts, and a traversal source naming a database that is
+   * not open - closed for idleness, or not opened at startup - opens it while the request runs. Without this the traversal would
+   * run on it with no user bound, which the engine's permission gates read as "no check". A no-op outside a request, or for a
+   * database already bound; unbound with the others when the request ends.
+   */
+  static void bindRequestPrincipal(final DatabaseInternal database) {
+    final RequestPrincipal request = REQUEST.get();
+    if (request == null)
+      return;
+    for (final DatabaseInternal bound : request.bound)
+      if (bound == database)
+        return;
+    DatabaseContext.INSTANCE.init(database).setCurrentUser(request.user.getDatabaseUser(database));
+    request.bound.add(database);
+  }
+
   private List<DatabaseInternal> bindPrincipal(final ServerSecurityUser user) {
     final List<DatabaseInternal> bound = new ArrayList<>();
-    // getDatabaseNames() returns only already-open databases, so this never opens dormant ones.
+    // getDatabaseNames() returns only already-open databases, so this never opens dormant ones: one the request opens is bound
+    // when it is opened (bindRequestPrincipal, issue #11068)
     for (final String databaseName : server.getDatabaseNames()) {
       try {
-        final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+        final DatabaseInternal database = (DatabaseInternal) server.getDatabaseForClient(databaseName);
         // LOAD-BEARING: the engine's permission gates (GremlinHostAccessGuard, checkPermissionsOnDatabase) allow a thread
         // with no bound user, so any other pool that runs Gremlin must bind the principal exactly like this.
         DatabaseContext.INSTANCE.init(database).setCurrentUser(user.getDatabaseUser(database));
         bound.add(database);
       } catch (final Exception e) {
         // A database may have been dropped/closed concurrently; skip it - a missing binding cannot widen
-        // access because the traversal can only touch databases that are open.
+        // access: a traversal that opens a database binds the principal on it (bindRequestPrincipal)
       }
     }
     return bound;

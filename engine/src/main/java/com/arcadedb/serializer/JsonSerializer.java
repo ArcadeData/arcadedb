@@ -18,6 +18,7 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DetachedDocument;
@@ -40,6 +41,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
@@ -134,8 +136,7 @@ public class JsonSerializer {
       // LocalDateTime-to-Date conversion to UTC - so the old answer was the outlier: the same document read back
       // through GET /document/{db}/{rid} and through a query disagreed, and the document one moved with the
       // machine's time zone. Pinned by Issue7638DateColumnPrecisionTest#anUndeclaredDatePropertyIsAlsoUtcAnchored.
-      value = formatTemporalForPrecision(value, type != null && type.existsProperty(p) ? type.getProperty(p).getType() : null,
-          schemaDateTimeFormat, schemaDateFormat);
+      value = formatTemporalForPrecision(value, declaredType(type, p), schemaDateTimeFormat, schemaDateFormat);
 
       object.put(p, value);
     }
@@ -163,14 +164,25 @@ public class JsonSerializer {
       type = document.getType();
 
       if (result.getMetadata("_projectionName") != null) {
+        final StringBuilder projectionTypes = includeTypeHints ? new StringBuilder() : null;
         for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
           // Issue #4149: keep precision-aware formatting on the projection branch too.
           Object projValue = serializeObject(database, entry.getValue());
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
-          final Type propertyType = type != null && type.existsProperty(entry.getKey()) ? type.getProperty(entry.getKey()).getType() : null;
+          final Type propertyType = declaredType(type, entry.getKey());
+          // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
+          // non-finite needs a hint, or the client reads the marker string back as a String
+          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+            // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
+            final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
+            if (hintType != null)
+              appendTypeHint(projectionTypes, entry.getKey(), hintType, entry.getValue());
+          }
           projValue = formatTemporalForPrecision(projValue, propertyType, schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }
+        if (projectionTypes != null && !projectionTypes.isEmpty())
+          object.put(Property.PROPERTY_TYPES_PROPERTY, projectionTypes.toString());
         return object;
       }
     }
@@ -207,30 +219,17 @@ public class JsonSerializer {
         else
           propertyType = null;
 
-        if (propertyType != null && !JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType)) {
-          if (!propertyTypes.isEmpty())
-            propertyTypes.append(",");
-          propertyTypes.append(propertyName).append(":").append(propertyType.getId());
-
-          // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
-          // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
-          // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
-          // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
-          // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
-          // as the configured temporal implementation.
-          final Collection<?> elements;
-          if (propertyType == Type.LIST && value instanceof Collection<?> collection)
-            elements = collection;
-          else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
-            elements = map.values();
-          else
-            elements = null;
-          if (elements != null) {
-            final Type elementType = detectHomogeneousTemporalElementType(elements);
-            if (elementType != null)
-              propertyTypes.append('(').append(elementType.getId()).append(')');
-          }
-        }
+        // Issue #10899: a non-finite DOUBLE is NOT faithful - it goes out as a NonFiniteNumbers marker string, which a
+        // client with no hint for the column would hand back as that String instead of the number.
+        // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
+        // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
+        // tells the client the marker string stands for a number. Every other element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
+        final boolean hint = propertyType != null && (type == null ?
+            (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
+            hintElementRow);
+        if (hint)
+          appendTypeHint(propertyTypes, propertyName, propertyType, value);
       }
 
       value = serializeObject(database, value);
@@ -247,12 +246,41 @@ public class JsonSerializer {
     // Issue #4267: emit per-column type hints for synthetic (non-element) result rows so HTTP
     // clients can restore the original Java type (e.g. count(*) is a long; JSON would otherwise
     // collapse it to Integer when it fits). Element rows already carry their type via @type and
-    // the schema, so adding @props there would only change existing JSON shapes without benefit.
+    // the schema, so they get @props only for a property the schema does not declare whose value is non-finite
+    // (issue #10905); every other element row keeps its shape.
     // Issue #5812: gated behind includeTypeHints (off by default) - see the field javadoc.
-    if (type == null && propertyTypes != null && !propertyTypes.isEmpty())
+    if (propertyTypes != null && !propertyTypes.isEmpty())
       object.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes.toString());
 
     return object;
+  }
+
+  private static void appendTypeHint(final StringBuilder propertyTypes, final String propertyName, final Type propertyType,
+      final Object value) {
+    if (!propertyTypes.isEmpty())
+      propertyTypes.append(",");
+    propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+
+    // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
+    // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
+    // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
+    // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
+    // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
+    // as the configured temporal implementation.
+    final Collection<?> elements;
+    if (propertyType == Type.LIST && value instanceof Collection<?> collection)
+      elements = collection;
+    else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
+      elements = map.values();
+    else
+      elements = null;
+    if (elements != null) {
+      Type elementType = detectHomogeneousTemporalElementType(elements);
+      if (elementType == null)
+        elementType = detectNonFiniteFloatingElementType(elements);
+      if (elementType != null)
+        propertyTypes.append('(').append(elementType.getId()).append(')');
+    }
   }
 
   /**
@@ -279,13 +307,11 @@ public class JsonSerializer {
 
       Object value = entry.getValue();
 
-      final Type propertyType;
-      if (type != null && type.existsProperty(propertyName))
-        propertyType = type.getProperty(propertyName).getType();
-      else if (value != null)
+      // The declaration may sit on a supertype (issue #10865): a java.util.Date for an inherited DATE fell through to
+      // getTypeByClass, which answers DATETIME, and was sent as epoch milliseconds the server reads as epoch days
+      Type propertyType = declaredType(type, propertyName);
+      if (propertyType == null && value != null)
         propertyType = Type.getTypeByClass(value.getClass());
-      else
-        propertyType = null;
 
       // Issue #5863: @props emission is gated by includeTypeHints (off by default), decoupled from
       // includeMetadata - which keeps meaning "include @rid/@type/@cat/@in/@out" only. Unlike serializeResult
@@ -544,6 +570,20 @@ public class JsonSerializer {
   }
 
   /**
+   * The type a property is declared with on {@code type} or on any of its supertypes, {@code null} when it is not declared (or
+   * there is no type). The declaration of an inherited property lives on the supertype only, so asking the record's own type
+   * missed it, and the value was rendered as if the property were undeclared (issue #10865).
+   */
+  static Type declaredType(final DocumentType type, final String propertyName) {
+    if (type == null)
+      return null;
+    if (type.existsProperty(propertyName))
+      return type.getProperty(propertyName).getType();
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    return property != null ? property.getType() : null;
+  }
+
+  /**
    * True for the values of the types that keep more than an instant: a time of day, a zoned datetime and a duration. A
    * {@code ZonedDateTime} under a DATETIME declaration is still an instant (issue #8572). Public so that
    * {@code Result#valueToJSON} asks the same question and the two renderings of one row cannot drift (issue #9810).
@@ -580,8 +620,7 @@ public class JsonSerializer {
     else if (value instanceof Date date)
       value = date.getTime();
     else if (value instanceof Temporal)
-      value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) :
-          ChronoUnit.MILLIS);
+      value = temporalToJSON(value, type);
     else if (value instanceof Map<?, ?> m) {
       // a member name is derived from the key, whatever its class (#9805)
       final JSONObject map = new JSONObject();
@@ -591,6 +630,27 @@ public class JsonSerializer {
     }
 
     return value;
+  }
+
+  /**
+   * A temporal of a record as JSON, in a form {@code fromJSON()} reads back as the same value (issue #10486). A number is epoch
+   * MILLISECONDS for every DATETIME precision, on the way in as on the way out - that is how SQL, the HTTP API and the remote client
+   * read it - so a count in the column's own unit (seconds, microseconds, nanoseconds) came back in 1970, in the year 51972 or in
+   * the year 50004715. A column that milliseconds hold without losing a digit, DATETIME and DATETIME_SECOND, is therefore written
+   * as milliseconds. A DATETIME_MICROS or DATETIME_NANOS column, which milliseconds would truncate, is written as the text the HTTP
+   * API answers for it, with all its digits, which reading it back truncates to the column's precision. That text has no offset and is
+   * read in the schema zone, so a {@code ZonedDateTime} is rendered in that zone, at the same instant.
+   */
+  private Object temporalToJSON(final Object value, final Type type) {
+    if (type == Type.DATETIME_MICROS || type == Type.DATETIME_NANOS) {
+      final String dateTimeFormat = database != null ? database.getSchema().getDateTimeFormat() :
+          GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+      final Object inSchemaZone = database != null && value instanceof ZonedDateTime zoned ?
+          zoned.withZoneSameInstant(database.getSchema().getZoneId()) :
+          value;
+      return formatTemporalForPrecision(inSchemaZone, type, dateTimeFormat, null);
+    }
+    return DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
   }
 
   /**
@@ -649,7 +709,27 @@ public class JsonSerializer {
   }
 
   private static String nonFiniteName(final double value) {
-    return Double.isNaN(value) ? "NaN" : value > 0 ? "PosInfinity" : "NegInfinity";
+    return Double.isNaN(value) ? NonFiniteNumbers.NAN : value > 0 ? NonFiniteNumbers.POSITIVE_INFINITY : NonFiniteNumbers.NEGATIVE_INFINITY;
+  }
+
+  private static boolean isNonFiniteDouble(final Object value) {
+    return value instanceof Double d && !Double.isFinite(d);
+  }
+
+  /**
+   * Issue #10905: true when {@code value} is a non-finite {@code Float}/{@code Double}, or a LIST/MAP one of whose
+   * elements is - the values that go out as a {@code NonFiniteNumbers} marker string.
+   */
+  private static boolean carriesNonFinite(final Object value) {
+    if (value instanceof Double d)
+      return !Double.isFinite(d);
+    if (value instanceof Float f)
+      return !Float.isFinite(f);
+    if (value instanceof Collection<?> collection)
+      return detectNonFiniteFloatingElementType(collection) != null;
+    if (value instanceof Map<?, ?> map)
+      return detectNonFiniteFloatingElementType(map.values()) != null;
+    return false;
   }
 
   /**
@@ -744,11 +824,52 @@ public class JsonSerializer {
   }
 
   /**
+   * Issue #10899: returns FLOAT (DOUBLE) when every non-null element of {@code collection} is a {@link Float}
+   * ({@link Double}) and at least one of them is non-finite, or {@code null} otherwise. Such an element goes out as a
+   * {@code NonFiniteNumbers} marker string, and without the element-type hint the remote client would hand that string
+   * back instead of the number. A collection of finite numbers is left alone: JSON already carries it faithfully enough
+   * for the client, as it did before.
+   * <p>
+   * Issue #10905: a collection that mixes {@code Float} and {@code Double} (and integers a double holds exactly)
+   * reports DOUBLE: the hint is one type for the whole collection, and widening each of those to a double loses
+   * nothing. A collection holding any other kind of element (a {@code Long} a double cannot hold exactly, a
+   * {@code BigDecimal}, a string, ...) has no single type to name and still reports {@code null}.
+   */
+  private static Type detectNonFiniteFloatingElementType(final Collection<?> collection) {
+    boolean floats = false;
+    boolean doubles = false;
+    boolean others = false;
+    boolean nonFinite = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (element instanceof Float f) {
+        floats = true;
+        nonFinite |= !Float.isFinite(f);
+      } else if (element instanceof Double d) {
+        doubles = true;
+        nonFinite |= !Double.isFinite(d);
+      } else if (element instanceof Integer || element instanceof Short || element instanceof Byte)
+        others = true;
+      // (double) Long.MAX_VALUE is 2^63, which the cast back saturates to Long.MAX_VALUE: the round trip only looks exact
+      else if (element instanceof Long l && l != Long.MAX_VALUE && (long) (double) l == l)
+        others = true;
+      else
+        return null;
+    }
+    if (!nonFinite)
+      return null;
+    if (floats && !doubles && !others)
+      return Type.FLOAT;
+    return Type.DOUBLE;
+  }
+
+  /**
    * Issue #4849: returns the temporal {@link Type} shared by every non-null element of {@code
    * collection} (the items of a LIST column or the values of a MAP column), or {@code null} when the
    * collection is empty, contains a non-temporal element, or mixes temporal types. Only the {@code
-   * DATETIME} family is reported: {@link
-   * Type#getTypeByClass(Class)} collapses every datetime variant onto {@code DATETIME}, which matches
+   * DATETIME} family is reported, plus {@code DATE} for {@link LocalDate} items (issue #10909).
+   * {@link Type#getTypeByClass(Class)} collapses every datetime variant onto {@code DATETIME}, which matches
    * the millisecond encoding that {@link com.arcadedb.serializer.json.JSONObject#objectToElement} uses
    * for array items, so the remote client can safely rebuild each item from the epoch-millis Number.
    */
@@ -760,7 +881,8 @@ public class JsonSerializer {
       if (!(element instanceof Temporal || element instanceof Date || element instanceof Calendar))
         return null;
       final Type t = Type.getTypeByClass(element.getClass());
-      if (t != Type.DATETIME)
+      // Issue #10909: a LocalDate item is a DATE, and goes out as its text, so it needs its hint as much as a DATETIME one
+      if (t != Type.DATETIME && !(t == Type.DATE && element instanceof LocalDate))
         return null;
       if (elementType == null)
         elementType = t;

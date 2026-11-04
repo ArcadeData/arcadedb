@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.traversal;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -154,9 +155,12 @@ public class BreadthFirstTraverser extends GraphTraverser {
               GhostEdgeReporter.reportSkipped(e);
             }
           }
-        } else
-          for (final Vertex neighbour : getNextVertices(vertex))
-            reach(label, neighbour, next);
+        } else {
+          // The relationships are not read, so the entry's edge is asked about instead: see Neighbours
+          final Neighbours entries = getNeighbours(vertex);
+          while (entries.hasNext())
+            reach(label, entries, next);
+        }
       }
       level = next;
       depth++;
@@ -168,16 +172,34 @@ public class BreadthFirstTraverser extends GraphTraverser {
      * @param next      the vertices found at the next depth
      */
     private void reach(final long fromLabel, final Vertex vertex, final List<Vertex> next) {
-      if (isVisited(vertex, seen)) {
-        // A cycle back to the start makes it an end vertex of a pattern whose lower bound is 1, once; its neighbours were all
-        // explored from depth 0
-        if (!startReported && (startNeedsCycle ? closesCycleThroughStart(fromLabel, vertex)
-            : startIsEndOnReturn && vertex.getIdentity().equals(start.getIdentity()))) {
-          startReported = true;
-          ready.add(start);
-        }
+      if (isVisited(vertex, seen))
+        metAgain(fromLabel, vertex.getIdentity(), null);
+      else
+        found(fromLabel, vertex, next);
+    }
+
+    /**
+     * The same for the entry {@code entries} last returned, which names its far end by RID and its edge by the RID of its record:
+     * a vertex already found is not loaded, and the edge is asked about only for an entry that would find a new vertex (or, once,
+     * close the cycle back to the start), so the check costs a probe per vertex reached and not one per entry (issue #10149). A
+     * ghost entry does not spend the vertex it names, so another, live, entry can still reach it.
+     */
+    private void reach(final long fromLabel, final Neighbours entries, final List<Vertex> next) {
+      final RID rid = entries.next();
+      if (rid == null)
+        return;
+      if (seen.contains(rid)) {
+        metAgain(fromLabel, rid, entries);
         return;
       }
+      if (!entries.liveEdge())
+        return;
+      final Vertex vertex = entries.vertex(rid);
+      if (vertex != null)
+        found(fromLabel, vertex, next);
+    }
+
+    private void found(final long fromLabel, final Vertex vertex, final List<Vertex> next) {
       markVisited(vertex, seen);
       if (labels != null)
         labels.put(vertex.getIdentity(), ((long) (depth + 1) << 32) | ((depth == 0 ? branches++ : (int) fromLabel) & 0xFFFFFFFFL));
@@ -186,12 +208,25 @@ public class BreadthFirstTraverser extends GraphTraverser {
     }
 
     /**
+     * A relationship to a vertex found already. A cycle back to the start makes it an end vertex of a pattern whose lower bound is 1,
+     * once; its neighbours were all explored from depth 0. {@code entries} is null when the relationship was read, and otherwise the
+     * entry it came from, whose edge has to be live to close a cycle.
+     */
+    private void metAgain(final long fromLabel, final RID rid, final Neighbours entries) {
+      if (!startReported && (startNeedsCycle ? closesCycleThroughStart(fromLabel, rid)
+          : startIsEndOnReturn && rid.equals(start.getIdentity())) && (entries == null || entries.liveEdge())) {
+        startReported = true;
+        ready.add(start);
+      }
+    }
+
+    /**
      * Whether a relationship from the expanded vertex to one already found closes a simple cycle through the start of at most
      * {@code maxHops} relationships. The relationship that found the expanded vertex leads back to its parent, so it is not a
      * second way to anything and must not count.
      */
-    private boolean closesCycleThroughStart(final long fromLabel, final Vertex vertex) {
-      final boolean toStart = vertex.getIdentity().equals(start.getIdentity());
+    private boolean closesCycleThroughStart(final long fromLabel, final RID rid) {
+      final boolean toStart = rid.equals(start.getIdentity());
       if (depth == 0)
         // The start lists itself (a self loop) or a vertex it has already found (a parallel relationship, a cycle of two)
         return toStart || maxHops >= 2;
@@ -199,7 +234,7 @@ public class BreadthFirstTraverser extends GraphTraverser {
         // Only a vertex next to the start lists it, through the relationship it was found by or a parallel one, which the start
         // listed twice itself
         return false;
-      final long found = labels.get(vertex.getIdentity(), 0L);
+      final long found = labels.get(rid, 0L);
       return (int) found != (int) fromLabel && depth + (int) (found >>> 32) + 1 <= maxHops;
     }
   }
@@ -242,12 +277,22 @@ public class BreadthFirstTraverser extends GraphTraverser {
           continue;
         }
 
-        // Expand to neighbors using fast getNextVertices() (skips loading edge records)
-        for (final Vertex nextVertex : getNextVertices(vertex)) {
+        // Expand to the neighbors the adjacency entries name, without loading the edge records. The edge of an entry is asked about
+        // only once the entry would reach a vertex not met yet (issue #10149): a ghost is skipped and reported, as the walks that
+        // read the edge do
+        final Neighbours entries = getNeighbours(vertex);
+        while (entries.hasNext()) {
+          final RID rid = entries.next();
           // Skip if already visited - mark as visited when adding to queue
-          if (detectCycles && isVisited(nextVertex, visited)) {
+          if (rid == null || detectCycles && visited.contains(rid))
             continue;
-          }
+
+          if (!entries.liveEdge())
+            continue;
+
+          final Vertex nextVertex = entries.vertex(rid);
+          if (nextVertex == null)
+            continue;
 
           // Mark as visited BEFORE adding to queue (prevents duplicates)
           if (detectCycles) {

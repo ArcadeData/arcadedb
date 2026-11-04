@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.NumberUtils;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -44,10 +45,12 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.time.Period;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -264,6 +267,78 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Reads an argument a Cypher function declares as an INTEGER (a length, an index, a count, a depth, an amount) as a
+   * long, refusing a value that is not a whole number instead of reading it as a different one: {@code Number.intValue()}
+   * truncates {@code 2.9} to 2 and wraps {@code 3000000000} to a negative int, and {@code longValue()} truncates the same
+   * way, so a wrong argument used to answer as a plausible one (issue #10850). A whole FLOAT such as {@code 2.0} is
+   * accepted, as the parse-time check accepts an INTEGER | FLOAT there. A value past the int range is a valid Cypher
+   * INTEGER, so it is returned as it is: the caller decides what it means (past the end of a string or a list, usually).
+   * The caller handles {@code null} first, as each one propagates it in its own way.
+   *
+   * @throws CommandSemanticException when the argument is not a number, or not a whole one in the long range
+   */
+  public static long requireWholeNumberArgument(final Object value, final String functionName, final String argumentName) {
+    // the same wording as requireNumberArgument, which the parse-time check of left()/right()/substring() shares (#6609)
+    if (!(value instanceof Number number))
+      throw typeMismatch(functionName, NUMERIC_DOMAIN, value);
+    try {
+      return NumberUtils.toLongWhole(number);
+    } catch (final ArithmeticException e) {
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(value));
+    }
+  }
+
+  /**
+   * As {@link #requireWholeNumberArgument}, for the functions that also accept the number as text ({@code '5'}): a text is
+   * parsed as a long, and one that is not a whole number ({@code '1.5'}, {@code 'abc'}) is the same client error as a
+   * fractional number instead of a raw {@code NumberFormatException} (issue #10954).
+   *
+   * @throws CommandSemanticException when the argument is neither a whole number nor a text holding one
+   */
+  public static long requireWholeNumberOrTextArgument(final Object value, final String functionName, final String argumentName) {
+    if (value instanceof Number)
+      return requireWholeNumberArgument(value, functionName, argumentName);
+    try {
+      return Long.parseLong(value.toString());
+    } catch (final NumberFormatException e) {
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(value));
+    }
+  }
+
+  /**
+   * As {@link #requireWholeIntArgument}, for the functions that also accept the number as text (issue #10954).
+   *
+   * @throws CommandSemanticException when the argument is neither a whole number in the int range nor a text holding one
+   */
+  public static int requireWholeIntOrTextArgument(final Object value, final String functionName, final String argumentName) {
+    if (value instanceof Number)
+      return requireWholeIntArgument(value, functionName, argumentName);
+    final long whole = requireWholeNumberOrTextArgument(value, functionName, argumentName);
+    if (whole != (int) whole)
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + "> in the int range, but received "
+              + NumberUtils.describeRejectedNumber(value));
+    return (int) whole;
+  }
+
+  /**
+   * As {@link #requireWholeNumberArgument}, for an argument that has to fit an int because what it drives cannot be
+   * larger (a scale, a padding length, a character index): a value past the int range is refused rather than wrapped.
+   *
+   * @throws CommandSemanticException when the argument is not a number, or not a whole one in the int range
+   */
+  public static int requireWholeIntArgument(final Object value, final String functionName, final String argumentName) {
+    final long whole = requireWholeNumberArgument(value, functionName, argumentName);
+    if (whole != (int) whole)
+      throw new CommandSemanticException(
+          functionName + "() requires a whole number <" + argumentName + "> in the int range, but received "
+              + NumberUtils.describeRejectedNumber(value));
+    return (int) whole;
+  }
+
+  /**
    * Resolves the primary text argument of a STRING-only Cypher function - {@code toUpper()}, {@code toLower()},
    * {@code trim()}/{@code btrim()}, {@code lTrim()}, {@code rTrim()}, {@code split()}, {@code replace()} - to a String.
    * <p>
@@ -413,6 +488,93 @@ public final class CypherFunctionHelper {
       if (from < 0)
         return -1;
     }
+  }
+
+  /**
+   * Splits {@code str} around every occurrence of the literal {@code delimiter}, as openCypher {@code split()} does, and as every
+   * other split of this engine now does (issue #10485): the pieces are the ones {@code String.split(Pattern.quote(delimiter), -1)}
+   * returns - every occurrence, left to right and not overlapping, with the empty leading, inner and trailing pieces kept - except
+   * that a surrogate pair is never cut.
+   * <ul>
+   * <li>An empty delimiter splits into characters, a pair being one: {@code "a😀"} is {@code ["a", "😀"]}, where the regex matches
+   * between UTF-16 units and answers the two lone halves of the emoji. The empty string is the one piece {@code [""]}.</li>
+   * <li>The delimiter is found with {@code indexOf}, not a regex compiled on every call, which a quoted pattern never gets out of.
+   * {@code indexOf} compares UTF-16 units and the regex compares code points: an occurrence that starts or ends inside a pair of
+   * {@code str}, which only a delimiter with a lone surrogate at that end can produce, is not one.</li>
+   * </ul>
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final String delimiter) {
+    if (delimiter.isEmpty()) {
+      if (str.isEmpty())
+        return List.of("");
+      final List<String> characters = new ArrayList<>(str.length());
+      for (int begin = 0; begin < str.length(); ) {
+        final int end = begin + Character.charCount(str.codePointAt(begin));
+        characters.add(str.substring(begin, end));
+        begin = end;
+      }
+      return Collections.unmodifiableList(characters);
+    }
+
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = str.indexOf(delimiter);
+    while (at >= 0) {
+      final int end = at + delimiter.length();
+      if (splitsSurrogatePair(str, at, end)) {
+        at = str.indexOf(delimiter, at + 1);
+        continue;
+      }
+      pieces.add(str.substring(from, at));
+      from = end;
+      at = str.indexOf(delimiter, from);
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
+   * Replaces every occurrence of the literal {@code search} in {@code str}, as {@code String.replace(CharSequence, CharSequence)}
+   * does, except that a surrogate pair is never cut (issue #10485, #10484): an empty {@code search} puts the replacement before
+   * every character and after the last - {@code "-a-😀-"} for {@code ("a😀", "", "-")}, never between the two halves of the emoji -
+   * and an occurrence that starts or ends inside a pair, which only a search with a lone surrogate at that end can produce, is not
+   * one. The string itself is returned when nothing is replaced.
+   */
+  public static String replaceLiteral(final String str, final String search, final String replacement) {
+    if (search.isEmpty()) {
+      // Sized in a long and capped: a long text with a long replacement is a size an int cannot hold, which the builder reports
+      // when it outgrows its limit and not as a negative capacity here
+      final long expected = str.length() + (long) (codePointLength(str) + 1) * replacement.length();
+      final StringBuilder result = new StringBuilder((int) Math.min(expected, 1 << 20));
+      for (int begin = 0; begin < str.length(); ) {
+        final int end = begin + Character.charCount(str.codePointAt(begin));
+        result.append(replacement).append(str, begin, end);
+        begin = end;
+      }
+      return result.append(replacement).toString();
+    }
+
+    int at = str.indexOf(search);
+    if (at < 0)
+      return str;
+
+    StringBuilder result = null;
+    int from = 0;
+    while (at >= 0) {
+      final int end = at + search.length();
+      if (splitsSurrogatePair(str, at, end)) {
+        at = str.indexOf(search, at + 1);
+        continue;
+      }
+      if (result == null)
+        result = new StringBuilder(str.length());
+      result.append(str, from, at).append(replacement);
+      from = end;
+      at = str.indexOf(search, from);
+    }
+    return result == null ? str : result.append(str, from, str.length()).toString();
   }
 
   /**
@@ -666,6 +828,16 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * The statement clock's instant seen from {@code zone}: what a temporal constructor given only a timezone
+   * ({@code datetime('Europe/Rome')}, {@code date('UTC')}, ...) answers, so it agrees with its no-argument form and
+   * with itself on every row of the statement. Reading {@code now(zone)} per call made it advance from one row to
+   * the next (issue #11009).
+   */
+  public static ZonedDateTime getStatementTime(final CommandContext context, final ZoneId zone) {
+    return ((CypherDateTime) getStatementTime(context).get("datetime")).getValue().withZoneSameInstant(zone);
+  }
+
+  /**
    * Makes a nested plan share the enclosing statement's clock instead of freezing one of its own.
    * <p>
    * A {@code CALL { }} body and every UNION branch run on a {@link CommandContext} built for them, so without
@@ -725,7 +897,7 @@ public final class CypherFunctionHelper {
       date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
     value = map.get("dayOfWeek");
     if (value != null)
-      date = date.with(WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
+      date = date.with(WeekFields.ISO.dayOfWeek(), TemporalUtil.toIntField("dayOfWeek", value));
     return date;
   }
 

@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
@@ -75,6 +76,21 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   /**
+   * Through the server, as the immutable vertex does: the inherited one reaches for an embedded database this record has none of.
+   * As in the embedded engine, the move creates a new record: it answers the new RID and this instance keeps the old one, so the
+   * caller continues with {@code lookupByRID(newRid)}, not with a {@code save()} or {@code reload()} of this instance.
+   */
+  @Override
+  public RID moveToType(final String targetType) {
+    return internal.moveTo(targetType, null);
+  }
+
+  @Override
+  public RID moveToBucket(final String targetBucket) {
+    return internal.moveTo(null, targetBucket);
+  }
+
+  /**
    * Both remote drivers learn a listener's veto from the server, of a create and of an update alike, and raise it from
    * {@link #save()} as a {@link RecordVetoedException}: here it is answered as {@code false} instead (issue #10161).
    */
@@ -90,7 +106,7 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   public void reload() {
-    final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
+    final ResultSet resultSet = remoteDatabase.queryUncounted("sql", "select from " + rid, null);
     if (resultSet.hasNext()) {
       final Document document = resultSet.next().toElement();
 
@@ -128,11 +144,6 @@ public class RemoteMutableVertex extends MutableVertex {
         result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
-  }
-
-  @Override
-  public DocumentType getType() {
-    throw new UnsupportedOperationException("Schema API are not supported in remote database");
   }
 
   @Override

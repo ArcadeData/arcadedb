@@ -191,6 +191,17 @@ public interface CommandContext {
     return parent != null ? parent.getRunningQuery() : RunningQuery.current();
   }
 
+  /**
+   * Whether this command runs under a row of an enclosing statement: a context above holds, as {@code current}, the row the
+   * enclosing scan is on, which a correlated subquery or a per-row LET reads as {@code $parent.$current}. Such a command must
+   * scan on the thread that holds the row (issue #10609): a record is not shared between threads, so workers of its own would
+   * read the row of the enclosing thread concurrently. False for a statement of its own, and for a FROM-subquery or a LET of
+   * the whole statement, which run before any row.
+   */
+  default boolean isUnderEnclosingRow() {
+    return false;
+  }
+
   CommandContext setParent(CommandContext parentContext);
 
   CommandContext setChild(CommandContext context);

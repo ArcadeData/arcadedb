@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -135,10 +136,52 @@ class FaultsTest {
     assertThat(fault.forbidsReformat()).isTrue();
     assertThat(fault.expectsWritesAvailable()).isTrue();
     for (final String other : ChaosConfig.ALL_FAULTS)
-      if (!other.equals("longpause")) {
+      if (!other.equals("longpause"))
         assertThat(FaultPicker.create(other, Duration.ofSeconds(1)).minHold()).as(other).isEqualTo(Duration.ZERO);
-        assertThat(FaultPicker.create(other, Duration.ofSeconds(1)).forbidsReformat()).as(other).isFalse();
+  }
+
+  /**
+   * Issue #10159: every fault states whether a reformat of the Raft storage during its step is a violation, and the test is a
+   * table rather than "exactly one is checked", so a new fault forces the decision and turning a check on is not a failure.
+   * The rule is the interface's: the fault alone gives no node a reason to discard its log. That holds for a graceful stop, a
+   * pause and a rolling restart (a majority is up the whole time and every server shuts down cleanly), and not for a SIGKILL or
+   * for a partition or a toxic link, which can leave a minority genuinely diverged.
+   */
+  @Test
+  void everyFaultStatesWhetherAReformatIsAViolation() {
+    final Map<String, Boolean> forbidsReformat = Map.of("kill", false, "stop", true, "rolling", true, "pause", true, "longpause", true,
+        "isolate", false, "split", false, "latency", false, "loss", false);
+    assertThat(forbidsReformat.keySet()).containsExactlyInAnyOrderElementsOf(ChaosConfig.ALL_FAULTS);
+    for (final Map.Entry<String, Boolean> expected : forbidsReformat.entrySet())
+      assertThat(FaultPicker.create(expected.getKey(), Duration.ofSeconds(1)).forbidsReformat()).as(expected.getKey())
+          .isEqualTo(expected.getValue());
+  }
+
+  /**
+   * The in-place restart counts live in the server process, so a node a fault restarted counts from zero again, and the runner
+   * must know which nodes those are: a count that merely went down cannot say, and one that came back equal says nothing.
+   */
+  @Test
+  void faultsNameTheNodesWhoseServerProcessTheyRestarted() throws Exception {
+    for (final String name : ChaosConfig.ALL_FAULTS) {
+      final ClusterState state = new ClusterState(3);
+      final FakeNodeControl control = new FakeNodeControl();
+      control.leader = 1;
+      final Fault fault = FaultPicker.create(name, Duration.ofSeconds(1));
+      assertThat(fault.restartedNodes(state)).as("%s before it ran", name).isEmpty();
+      fault.inject(state, control, new Random(5));
+      fault.heal(state, control);
+      final int[] restarted = fault.restartedNodes(state);
+      switch (name) {
+      case "rolling" -> assertThat(restarted).as(name).containsExactly(0, 1, 2);
+      case "kill", "stop" -> {
+        assertThat(restarted).as(name).isNotEmpty();
+        for (final int node : restarted)
+          assertThat(control.calls).as(name).contains("start:" + node);
       }
+      default -> assertThat(restarted).as(name).isEmpty();
+      }
+    }
   }
 
   @Test

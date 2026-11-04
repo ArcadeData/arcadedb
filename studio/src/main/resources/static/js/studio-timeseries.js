@@ -48,10 +48,8 @@ function tsToggleQueryMode(mode) {
   // Clear results when switching modes
   tsLastResult = null;
   $("#tsQueryStats").html("");
-  if (tsChartInstance) {
-    tsChartInstance.destroy();
-    tsChartInstance = null;
-  }
+  studioChartDispose(tsChartInstance);
+  tsChartInstance = null;
   $("#tsChart").empty();
   if ($.fn.DataTable.isDataTable("#tsDataTable")) {
     $("#tsDataTable").DataTable().destroy();
@@ -487,40 +485,52 @@ function tsRenderRawChart(data) {
 }
 
 function tsDrawChart(series) {
-  if (tsChartInstance) {
-    tsChartInstance.destroy();
-    tsChartInstance = null;
-  }
+  studioChartDispose(tsChartInstance);
+  tsChartInstance = null;
 
   if (series.length === 0) {
     $("#tsChart").html('<div class="text-center text-muted py-5">No numeric data to chart</div>');
     return;
   }
 
-  var options = {
-    chart: {
-      type: tsChartType,
-      height: 350,
-      zoom: { enabled: true },
-      toolbar: { show: true }
-    },
-    series: series,
-    xaxis: {
-      type: "datetime",
-      labels: { datetimeUTC: false }
-    },
-    yaxis: {
-      labels: { formatter: function (val) { return val != null ? val.toFixed(2) : ""; } }
-    },
-    stroke: { curve: "smooth", width: 2 },
-    tooltip: { x: { format: "yyyy-MM-dd HH:mm:ss" } },
-    theme: {
-      mode: document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"
-    }
-  };
+  tsChartInstance = studioChartDraw(document.querySelector("#tsChart"), tsChartOption(series, tsChartType), 350);
+}
 
-  tsChartInstance = new ApexCharts(document.querySelector("#tsChart"), options);
-  tsChartInstance.render();
+/**
+ * The ECharts option of the Time Series chart: `series` is `[{name, data: [{x: epoch ms, y}]}]`, drawn as lines, or as
+ * filled areas when `type` is "area", on a time axis that can be zoomed.
+ */
+function tsChartOption(series, type) {
+  return {
+    animation: false,
+    tooltip: { trigger: "axis" },
+    legend: { type: "scroll", bottom: 0 },
+    grid: { left: 16, right: 24, top: 40, bottom: 80 },
+    toolbox: { feature: { dataZoom: { yAxisIndex: "none" }, restore: {}, saveAsImage: {} } },
+    dataZoom: [{ type: "inside" }, { type: "slider", bottom: 32, height: 20 }],
+    xAxis: { type: "time" },
+    yAxis: {
+      type: "value",
+      axisLabel: {
+        formatter: function (val) {
+          return val != null ? val.toFixed(2) : "";
+        }
+      }
+    },
+    series: series.map(function (serie) {
+      var out = {
+        name: serie.name,
+        type: "line",
+        smooth: true,
+        lineStyle: { width: 2 },
+        data: serie.data.map(function (point) {
+          return [point.x, point.y];
+        })
+      };
+      if (type === "area") out.areaStyle = { opacity: 0.3 };
+      return out;
+    })
+  };
 }
 
 function tsToggleChartType(type) {
@@ -801,10 +811,8 @@ function tsTogglePanel(panel) {
 
   if (!enabled) {
     if (panel === "chart") {
-      if (tsChartInstance) {
-        tsChartInstance.destroy();
-        tsChartInstance = null;
-      }
+      studioChartDispose(tsChartInstance);
+      tsChartInstance = null;
       $("#tsChart").empty();
     } else if (panel === "table") {
       if ($.fn.DataTable.isDataTable("#tsDataTable"))

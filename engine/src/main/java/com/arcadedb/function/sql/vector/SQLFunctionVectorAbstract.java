@@ -22,6 +22,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -33,6 +34,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -52,6 +54,17 @@ import java.util.function.Function;
  * Functions with names starting with "vector." will automatically have an alias
  * generated for backward compatibility. For example, "vector.cosineSimilarity"
  * will also be available as "vectorCosineSimilarity".
+ * </p>
+ * <p>
+ * Degenerate arguments follow one rule across the family (issue #11052). A NULL vector argument answers NULL, the SQL
+ * convention, so a row without an embedding yet answers NULL instead of failing the whole query ({@code vector.dimension}
+ * answers 0, as {@code size()} does, issue #3099). The searches and the reranker ({@code vector.neighbors},
+ * {@code vector.sparseNeighbors}, {@code vector.recommend}, {@code vector.discover}, {@code vector.rerank}) are outside
+ * this rule: their index name, query vector and count are supplied once for the whole query, no row can lack them, and a
+ * NULL one is refused as the caller's mistake. An empty vector answers what the function answers on a zero vector:
+ * 0 for a norm or a distance, false for a predicate, an empty vector for an element-wise operation. Only a function that
+ * has no value on it (cosine similarity, variance, standard deviation, sparsity, the quantizations: 0/0) refuses it.
+ * {@code Issue11052VectorDegenerateArgumentsTest} checks the NULL rule over every registered {@code vector.*} function.
  * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -136,6 +149,62 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (param == null) {
       throw new CommandSQLParsingException(paramName + " cannot be null");
     }
+  }
+
+  /**
+   * One int8 code from a boxed element of a quantized vector. A value that is not an integer in [-128, 127] is refused rather
+   * than wrapped or truncated by {@code byteValue()}: 200 would otherwise silently become -56 and land on the opposite end of
+   * the scale (#10931). The value is checked as it is, not through {@code doubleValue()}: a decimal whose fraction a double
+   * cannot hold ({@code 1.00000000000000000001}) is refused as fractional, and NaN or an infinity is refused rather than
+   * cast to 0.
+   */
+  protected static byte toInt8Code(final Object element) {
+    if (!(element instanceof Number num))
+      throw new CommandSQLParsingException("Quantized elements must be numbers, found: " + element);
+    final long value;
+    try {
+      value = NumberUtils.toLongWhole(num);
+    } catch (final ArithmeticException e) {
+      throw new CommandSQLParsingException("Quantized elements must be integers in [-128, 127], found: " + element);
+    }
+    if (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE)
+      throw new CommandSQLParsingException("Quantized elements must be integers in [-128, 127], found: " + element);
+    return (byte) value;
+  }
+
+  /**
+   * Reads a positional argument that has to be an integer (a count, a beam width). {@code intValue()} would read
+   * {@code 2.5} as 2 and {@code 3000000000} as a negative int, so a number that is not an int is refused, as is a text
+   * that does not parse as one (issue #10611).
+   *
+   * @param param     the argument value
+   * @param paramName the argument name, for the error message
+   *
+   * @throws CommandSQLParsingException if the argument is null or is not an integer
+   */
+  protected int parseInteger(final Object param, final String paramName) {
+    validateNotNull(param, getName() + " " + paramName);
+    try {
+      if (param instanceof Number number)
+        return NumberUtils.toIntWhole(number);
+      return Integer.parseInt(param.toString().trim());
+    } catch (final ArithmeticException | NumberFormatException e) {
+      throw new CommandSQLParsingException(
+          getName() + " " + paramName + " must be an integer, got " + NumberUtils.describeRejectedNumber(param));
+    }
+  }
+
+  /**
+   * Reads the {@code k} of a nearest-neighbour function. {@code 0} is a valid, empty request, as {@code LIMIT 0} is; a
+   * negative {@code k} is a caller mistake, and answering no rows would read as "no neighbours" (issue #10611).
+   *
+   * @throws CommandSQLParsingException if {@code k} is null, not an integer, or negative
+   */
+  protected int parseNeighborCount(final Object param) {
+    final int k = parseInteger(param, "k");
+    if (k < 0)
+      throw new CommandSQLParsingException(getName() + " k must not be negative, got " + k);
+    return k;
   }
 
   /**
@@ -258,11 +327,11 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * Returns {@code null} when no recognisable RID is present so callers can skip the row instead of
    * throwing on an unfamiliar shape.
    * <p>
-   * Centralised here so the four reranker functions ({@code vector.mmr}, {@code vector.recommend},
-   * {@code vector.discover}, {@code vector.rerank} - and {@code vector.boost} via its source-row
-   * iteration) share one canonical implementation. Diverging copies in earlier patches drifted
-   * silently (e.g. one variant did not check {@code Result#getIdentity()}); a single helper makes
-   * those drifts impossible.
+   * The only reader of a row's RID in the vector functions: {@code vector.fuse}, {@code vector.mmr} and {@code vector.rerank}
+   * read the rows a caller pipes in through it, and {@code vector.recommend} / {@code vector.discover} the rows of their own
+   * inner {@code vector.neighbors} search. Diverging copies in earlier patches drifted silently (one variant did not check
+   * {@code Result#getIdentity()}), and the last private copy, in {@code vector.fuse}, was removed by issue #10879: a new
+   * function reads the RID through here, never through its own variant.
    */
   protected static RID extractRidFromRow(final Object row) {
     if (row == null)
@@ -336,13 +405,31 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     // Without a transaction there is no own write to see. Every database a SQL function runs on is a DatabaseInternal (the
     // engine evaluates server-side); the type test only guards the cast
     if (!(db instanceof DatabaseInternal database) || !database.isTransactionActive())
-      return held;
+      return isReadable(held) ? held : null;
     final TransactionContext tx = database.getTransaction();
     final RID rid = held.getIdentity();
     if (tx.isDeletedInTransaction(rid))
       return null;
     // A RID that held a document holds a document: the written copy is never another kind of record
-    return tx.getWrittenRecord(rid) instanceof Document written ? written : held;
+    if (tx.getWrittenRecord(rid) instanceof Document written)
+      return written;
+    return isReadable(held) ? held : null;
+  }
+
+  /**
+   * False for a record {@code vector.neighbors} handed on without reading it (issue #10973) that the read now finds gone: removed
+   * from its bucket behind the index's back, so the index still answered it. The read is the one the caller is about to make
+   * anyway, since it asks for the record to read it; a record already read costs nothing here.
+   */
+  private static boolean isReadable(final Document held) {
+    if (!(held instanceof ImmutableDocument unread) || unread.getBuffer() != null)
+      return true;
+    try {
+      unread.getPropertyNames();
+      return true;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
   }
 
   /**
@@ -361,17 +448,16 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   }
 
   /**
-   * Reads a candidate row's similarity score, with the same auto-flip rules as
-   * {@link SQLFunctionVectorFuse#extractScore}: prefer {@code score} or {@code $score}
+   * Reads a candidate row's similarity score: prefer {@code score} or {@code $score}
    * (similarity-shaped, higher = better), fall back to the negated {@code distance} field that
    * {@code vector.neighbors} emits (distance-shaped, lower = better - we flip the sign so the
    * rest of the pipeline can assume one direction). Returns {@link Float#NaN} when no recognisable
    * score field is present so callers can either skip the row or treat NaN as "missing score".
    * <p>
-   * Critical: every reranker function that consumes vector function output MUST go through this
-   * helper, not its own variant. A bare-{@code score}-only extractor will silently drop every row
-   * piped in from {@code vector.neighbors} (which emits {@code distance}) - exactly the
-   * silent-data-loss bug the consolidation was meant to prevent.
+   * Critical: every function that consumes vector function output ({@code vector.fuse}, {@code vector.mmr},
+   * {@code vector.boost}) MUST go through this helper, not its own variant. A bare-{@code score}-only extractor will silently
+   * drop every row piped in from {@code vector.neighbors} (which emits {@code distance}) - exactly the silent-data-loss bug the
+   * consolidation was meant to prevent. {@code vector.fuse} kept a private copy until issue #10879.
    */
   protected static float extractScoreFromRow(final Object row) {
     if (row instanceof Map<?, ?> m) {
@@ -393,6 +479,21 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
       return Float.NaN;
     }
     return Float.NaN;
+  }
+
+  /**
+   * The pre-filter of a k-NN search: the allow-list the {@code filter} and {@code where} options build together, tested by the
+   * index as it meets each candidate rather than on the k rows it answered. Shared by {@code vector.neighbors} and the
+   * Cypher {@code db.index.vector.queryNodes} (issue #10685), so both read the two options the same way.
+   *
+   * @return {@code null} when neither option is set (no filter); an EMPTY set when no record can satisfy them, which the
+   * caller must answer with no rows (issue #8959)
+   */
+  public static Set<RID> parsePreFilter(final List<?> filter, final Object where, final String functionName,
+      final CommandContext context) {
+    // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of listing
+    // every RID in scope up front as a `filter` subquery has to (issue #10169)
+    return RecordPredicateRidSet.of(where, parseRidFilter(filter, functionName, context), functionName, context);
   }
 
   /**

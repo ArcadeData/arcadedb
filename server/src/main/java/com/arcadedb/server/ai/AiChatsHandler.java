@@ -64,7 +64,8 @@ public class AiChatsHandler extends AbstractServerHttpHandler {
     // Extract chat ID from path if present
     final String chatId = getChatIdFromPath(exchange);
 
-    if ("GET".equals(method)) {
+    // HEAD is a GET whose body the connector discards (RFC 9110 section 9.3.2): the router hands it to the GET entry (issue #10531)
+    if ("GET".equals(method) || "HEAD".equals(method)) {
       if (chatId != null)
         return getChat(username, chatId);
       else

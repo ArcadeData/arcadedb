@@ -22,12 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
-import io.github.jbellis.jvector.quantization.PQVectors;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Random;
 
@@ -41,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * {@code PQVectors.getChunk}.
  * <p>
  * {@code graphIndex} is published under the write lock a search's read lock excludes, so it cannot move while a
- * search runs. {@code pqVectors} is not: it is republished later and outside that lock (see
+ * search runs. The PQ codes are not: they are republished later and outside that lock (see
  * {@code buildAndPersistPQ}). A rebuild that has already installed its new, larger graph but has not yet installed
  * the codes for it therefore leaves a window in which the two disagree about how many ordinals exist - and the
  * beam walking that graph asks the old, smaller {@code PQVectors} for an ordinal it was never sized for. It throws
@@ -106,9 +104,9 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
         .as("the approximate path must work normally when the pair agrees").isNotEmpty();
 
     // The codes as they stand for THIS graph - the snapshot a rebuild is about to make stale.
-    final PQVectors staleCodes = pqVectors(index);
+    final LSMVectorIndex.PQCodes staleCodes = index.pqCodesForTest();
     assertThat(staleCodes).as("the fixture must actually have PQ codes to go stale").isNotNull();
-    final int staleCount = staleCodes.count();
+    final int staleCount = staleCodes.codes().count();
 
     // Grow the graph: enough mutations to clear the default ratio-derived threshold, then a search to trigger the
     // rebuild and a wait for it to land.
@@ -129,7 +127,7 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
 
     // Install the state the race produces: the new, larger graph paired with the codes of the old, smaller one.
-    setPqVectors(index, staleCodes);
+    index.setPqCodesForTest(staleCodes);
 
     assertThat(index.isPQSearchAvailable())
         .as("the approximate path must still be selected, or this would silently test the exact path instead")
@@ -157,18 +155,6 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
     assertThat(index.getStats().get("searchOperations") - searchOpsBefore)
         .as("a refused PQ attempt is not a search of its own - only the exact search it delegates to may be counted")
         .isEqualTo(1L);
-  }
-
-  private static PQVectors pqVectors(final LSMVectorIndex index) throws Exception {
-    final Field field = LSMVectorIndex.class.getDeclaredField("pqVectors");
-    field.setAccessible(true);
-    return (PQVectors) field.get(index);
-  }
-
-  private static void setPqVectors(final LSMVectorIndex index, final PQVectors codes) throws Exception {
-    final Field field = LSMVectorIndex.class.getDeclaredField("pqVectors");
-    field.setAccessible(true);
-    field.set(index, codes);
   }
 
   private void awaitSettled(final LSMVectorIndex index) {

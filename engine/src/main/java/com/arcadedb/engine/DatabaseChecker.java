@@ -39,6 +39,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.InPlaceIndexRebuild;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
@@ -72,6 +73,8 @@ public class DatabaseChecker {
    */
   private static final int          LOGGED_UNREFERENCED_FILES = 20;
   private final DatabaseInternal    database;
+  // the type indexes checkIndexes() found lacking the bucket index of some bucket of their type
+  private final List<TypeIndex>     incompleteTypeIndexes = new ArrayList<>();
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
   private       boolean             compress     = false;
@@ -228,6 +231,11 @@ public class DatabaseChecker {
     // per-direction detail behind it plus the half-linked edges that are still reachable from one side.
 
     result.put("unreachableEdgeRecords", 0L);
+    // Issue #10741: how many of them a plain FIX linked back into their vertices' lists (their entries are counted in
+    // reconnectedEdges too, one or two per record by direction)
+    result.put("relinkedOrphanEdgeRecords", 0L);
+    // and how many a run left for the next one, to bound the memory of its relink plan
+    result.put("orphanEdgeRecordsLeftToRelink", 0L);
     result.put("edgesMissingOutReference", 0L);
     result.put("edgesMissingInReference", 0L);
     result.put("unreachableEdgeRecordsFound", new LinkedHashSet<RID>());
@@ -259,6 +267,8 @@ public class DatabaseChecker {
     // unreadable list gets, after which the full-scope orphan reclaim removes the superseded directory.
     result.put("unreadableStripeDirectories", new LinkedHashSet<RID>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
+    // type indexes that lack the bucket index of some bucket of their type (left by an interrupted rebuild of an earlier version)
+    result.put("incompleteIndexes", new LinkedHashSet<String>());
     // Issue #6340: the TimeSeries pass, seeded like every other family so a clean run publishes zeros rather than
     // omitting the keys - "did this run look at the TimeSeries files at all?" has to be answerable from the result
     // of every run, and a database with no TimeSeries type answers it with zeros rather than with silence.
@@ -507,8 +517,20 @@ public class DatabaseChecker {
     if (fix)
       stepBegin("Rebuilding indexes", affectedIndexes.size());
 
+    // The type indexes some bucket indexes of which were rebuilt in place below: each one is completed once at the end (the type-wide
+    // work of its kind and, for a UNIQUE one, the check for a key two buckets share), as REBUILD INDEX * does
+    final Set<TypeIndex> typeIndexesToComplete = new LinkedHashSet<>();
+
     if (fix)
       for (final Index idx : affectedIndexes) {
+        // IN PLACE whenever the index kind allows it (InPlaceIndexRebuild): the bucket index keeps its name and its object, is never
+        // missing, and the rebuild blocks only the writes to its own bucket instead of every query of the database. What follows is
+        // the drop-and-create left for the other kinds
+        if (rebuildInPlace(idx, rebuildIndexes, typeIndexesToComplete)) {
+          stepTick();
+          continue;
+        }
+
         // bucketName/indexType/unique/propNames/typeName/pageSize/nullStrategy are all read once here, before the
         // retry loop below, rather than recomputed per attempt the way RebuildIndexStatement.buildIndex() does.
         // That is safe: every one of them is a plain, idempotent read off idx/schema state fixed before the first
@@ -530,6 +552,9 @@ public class DatabaseChecker {
         // explicitly-named TypeIndex wrapper. Safe to read once, outside the retry loop below: it is a plain name
         // read off idx, unaffected by how many attempts the rebuild takes.
         final TypeIndex ownerTypeIndex = ((IndexInternal) idx).getTypeIndex();
+        // Re-created through the type that DECLARES the index, as REBUILD INDEX does (issue #10734): through the sub type that
+        // owns the bucket it minted a wrapper of its own under the declaring index's name
+        final String declaringTypeName = ownerTypeIndex != null ? ownerTypeIndex.getTypeName() : typeName;
 
         // Same file-locking coverage AND retry-on-contention as RebuildIndexStatement.buildIndex(): holding the
         // lock across both the drop and the create prevents a concurrent writer from observing the index
@@ -572,7 +597,7 @@ public class DatabaseChecker {
               // still held - so a single outer attempt can now take noticeably longer than before (up to
               // LOCK_MAX_ATTEMPTS internal retries with their own backoff) before it either succeeds or falls
               // through to the outer catch below.
-              database.getSchema().buildBucketIndex(typeName, bucketName, propNames.toArray(new String[propNames.size()]))
+              database.getSchema().buildBucketIndex(declaringTypeName, bucketName, propNames.toArray(new String[propNames.size()]))
                   .withType(indexType).withUnique(unique).withPageSize(pageSize).withNullStrategy(nullStrategy)
                   .withMetadata(rebuildMetadata)
                   .withIndexName(ownerTypeIndex != null ? ownerTypeIndex.getName() : null)
@@ -634,24 +659,24 @@ public class DatabaseChecker {
         // quotes lastFailure.getMessage() so the operator can see the underlying cause in every case.
         if (!rebuilt) {
           rebuildIndexes.remove(idx.getName());
-          // Named by the OWNING TypeIndex where there is one, because that is the name the operator created and
-          // the only one they can act on: idx.getName() is the internal per-bucket sub-index ("Doc_0_<nanos>"),
-          // which nobody typed and which makes the follow-up query below return nothing. The sub-index name is
-          // still quoted when the two differ, since a multi-bucket type has several and this says which failed.
-          final String reportedName = ownerTypeIndex != null ? ownerTypeIndex.getName() : idx.getName();
-          final String bucketSubIndex = reportedName.equals(idx.getName()) ? "" : " (bucket sub-index '" + idx.getName() + "')";
-          addWarning("index '" + reportedName + "'" + bucketSubIndex + " " + (lastFailureRetryable ?
-              "did not finish rebuilding after " + attemptsUsed + " attempts" :
-              "could not be rebuilt") + " (" + rebuildFailureStatus(indexDropped, lastFailureRetryable)
-              + ", error: " + lastFailure.getMessage() + "). Verify with `SELECT FROM schema:indexes WHERE name = '"
-              + reportedName + "'` and run CHECK DATABASE FIX again if it is missing");
+          warnRebuildFailure(idx, ownerTypeIndex, lastFailureRetryable, attemptsUsed,
+              rebuildFailureStatus(indexDropped, lastFailureRetryable), lastFailure);
         }
 
         stepTick();
       }
 
-    if (fix)
+    if (fix) {
+      for (final TypeIndex typeIndex : typeIndexesToComplete)
+        try {
+          InPlaceIndexRebuild.completeBucketRebuilds(database, typeIndex, LOCK_MAX_ATTEMPTS);
+        } catch (final RuntimeException e) {
+          addWarning("index '" + typeIndex.getName() + "' was rebuilt but could not be completed (error: " + e.getMessage()
+              + "). A UNIQUE index refused here holds a key two records share: remove the duplicate and run CHECK DATABASE FIX again");
+        }
+      repairIncompleteTypeIndexes(rebuildIndexes);
       stepComplete();
+    }
 
     if (compress)
       compress();
@@ -675,6 +700,84 @@ public class DatabaseChecker {
    * between the two ways of not being dropped: exhausting the lock-acquisition budget, or failing outright before
    * the drop.
    */
+  /**
+   * Rebuilds {@code idx}, a bucket index, in place when its kind and the database allow it ({@link InPlaceIndexRebuild#refusal}).
+   *
+   * @return false when it has to be dropped and re-created instead, true when the in-place rebuild ran, whatever its outcome (a
+   * failure is reported, and leaves the index with its previous content)
+   */
+  private boolean rebuildInPlace(final Index idx, final Set<String> rebuildIndexes, final Set<TypeIndex> typeIndexesToComplete) {
+    final String refusal = InPlaceIndexRebuild.refusal(database, idx);
+    if (refusal != null) {
+      LogManager.instance().log(this, Level.FINE, "Index '%s' is rebuilt by dropping and creating it again: %s", null, idx.getName(),
+          refusal);
+      return false;
+    }
+
+    final TypeIndex owner = ((IndexInternal) idx).getTypeIndex();
+    try {
+      InPlaceIndexRebuild.rebuild(database, idx, null, LOCK_MAX_ATTEMPTS);
+      if (owner != null)
+        typeIndexesToComplete.add(owner);
+    } catch (final RuntimeException e) {
+      // nothing of the index is dropped by the rebuild in place: whatever failed, it still holds its previous content
+      final boolean retryable = e instanceof NeedRetryException || e.getCause() instanceof NeedRetryException;
+      rebuildIndexes.remove(idx.getName());
+      warnRebuildFailure(idx, owner, retryable, LOCK_MAX_ATTEMPTS, inPlaceRebuildFailureStatus(retryable), e);
+    }
+    return true;
+  }
+
+  /**
+   * Repairs the type indexes {@link #checkIndexes} found lacking the bucket index of some bucket of their type: the missing bucket
+   * indexes are created and filled in place, the others are left as they are. A kind that is not rebuilt in place is reported with
+   * the statement that repairs it.
+   */
+  private void repairIncompleteTypeIndexes(final Set<String> rebuildIndexes) {
+    for (final TypeIndex typeIndex : incompleteTypeIndexes) {
+      if (typeIndex.isDropped() || typeIndex.getBucketsWithoutIndex().isEmpty())
+        continue;
+      final String refusal = InPlaceIndexRebuild.refusal(database, typeIndex);
+      if (refusal != null) {
+        addWarning("index '" + typeIndex.getName() + "' lacks the bucket index of some buckets of its type and this check cannot "
+            + "repair it in place (" + refusal + "): run `REBUILD INDEX `" + typeIndex.getName() + "`` to repair it");
+        continue;
+      }
+      try {
+        InPlaceIndexRebuild.repairMissingBucketIndexes(database, typeIndex, LOCK_MAX_ATTEMPTS);
+        rebuildIndexes.add(typeIndex.getName());
+      } catch (final RuntimeException e) {
+        addWarning("index '" + typeIndex.getName() + "' lacks the bucket index of some buckets of its type and could not be repaired "
+            + "(error: " + e.getMessage() + "). It stays reported as not valid: run CHECK DATABASE FIX again, or `REBUILD INDEX `"
+            + typeIndex.getName() + "``");
+      }
+    }
+  }
+
+  /**
+   * The warning of an index FIX could not rebuild. Named by the OWNING TypeIndex where there is one, because that is the name the
+   * operator created and the only one they can act on: idx.getName() is the internal per-bucket sub-index ("Doc_0_<nanos>"), which
+   * nobody typed and which makes the follow-up query below return nothing. The sub-index name is still quoted when the two differ,
+   * since a multi-bucket type has several and this says which failed.
+   */
+  private void warnRebuildFailure(final Index idx, final TypeIndex ownerTypeIndex, final boolean retryable, final int attemptsUsed,
+      final String status, final RuntimeException failure) {
+    final String reportedName = ownerTypeIndex != null ? ownerTypeIndex.getName() : idx.getName();
+    final String bucketSubIndex = reportedName.equals(idx.getName()) ? "" : " (bucket sub-index '" + idx.getName() + "')";
+    addWarning("index '" + reportedName + "'" + bucketSubIndex + " " + (retryable ?
+        "did not finish rebuilding after " + attemptsUsed + " attempts" :
+        "could not be rebuilt") + " (" + status + ", error: " + failure.getMessage()
+        + "). Verify with `SELECT FROM schema:indexes WHERE name = '" + reportedName
+        + "'` and run CHECK DATABASE FIX again if it is missing");
+  }
+
+  /** {@link #rebuildFailureStatus} of a rebuild in place, which never drops the index. */
+  private static String inPlaceRebuildFailureStatus(final boolean retryable) {
+    return retryable ?
+        "the index lock could not be acquired; the index itself is unchanged" :
+        "the rebuild in place failed; the index keeps its previous content";
+  }
+
   private static String rebuildFailureStatus(final boolean indexDropped, final boolean retryable) {
     if (indexDropped)
       return "the index was dropped but the rebuild could not complete; it is now missing";
@@ -1438,6 +1541,12 @@ public class DatabaseChecker {
    * adjacency and the thing {@code RESTORE VERTEX} rebuilds it from, so a repair that deletes them by default
    * would turn a recoverable database into an unrecoverable one. Reporting is therefore always on; removing is
    * always asked for.
+   * <p>
+   * Without this opt-in a plain {@code FIX} RELINKS them instead (issue #10741): an orphan's {@code @out} and
+   * {@code @in} name live vertices, so the record goes back into the OUT list of the first and, for a bidirectional
+   * type, the IN list of the second. That is right in both cases the detection cannot tell apart - the committed edges of
+   * a {@code GraphBatch} killed before {@code close()} linked them, and the edges of a vertex that lost its head-chunk
+   * pointer - and loses nothing even for garbage, which {@code countType()} and a scan of the type already return.
    */
   public DatabaseChecker setDeleteOrphanEdgeRecords(final boolean deleteOrphanEdgeRecords) {
     this.deleteOrphanEdgeRecords = deleteOrphanEdgeRecords;
@@ -2363,6 +2472,28 @@ public class DatabaseChecker {
         corruptedIndexes.add(index);
         for (final String problem : problems)
           warnings.add("index '" + index.getName() + "': " + problem);
+      }
+    }
+
+    // A type index that lacks the bucket index of a bucket of its type misses every record of that bucket and, for a UNIQUE one, does
+    // not refuse a duplicate there (the state a rebuild interrupted by an earlier version left behind). FIX repairs it at the end
+    incompleteTypeIndexes.clear();
+    for (final DocumentType type : database.getSchema().getTypes()) {
+      if (types != null && !types.isEmpty() && !types.contains(type.getName()))
+        continue;
+      for (final TypeIndex typeIndex : type.getAllIndexes(false)) {
+        if (typeIndex.isDropped() || !type.getName().equals(typeIndex.getTypeName()))
+          continue;
+        final List<Bucket> missing = typeIndex.getBucketsWithoutIndex();
+        if (missing.isEmpty())
+          continue;
+        incompleteTypeIndexes.add(typeIndex);
+        ((LinkedHashSet<String>) result.get("incompleteIndexes")).add(typeIndex.getName());
+        final List<String> bucketNames = new ArrayList<>(missing.size());
+        for (final Bucket bucket : missing)
+          bucketNames.add(bucket.getName());
+        warnings.add("index '" + typeIndex.getName() + "': no bucket index for buckets " + bucketNames
+            + ", the index is not valid and is not used by queries" + (fix ? "" : ". Run CHECK DATABASE FIX to repair it"));
       }
     }
 

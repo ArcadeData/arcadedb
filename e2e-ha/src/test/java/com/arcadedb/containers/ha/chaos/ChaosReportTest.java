@@ -38,8 +38,8 @@ class ChaosReportTest {
   @Test
   void stepsAndTrendsAreFlushedAsTheyAreWritten() throws Exception {
     try (final ChaosReport report = new ChaosReport(dir, config)) {
-      report.step(new StepRecord(1, "pause", "LEADER [0]", 0, 1, 1200, 300, 55, 1000, 3, 1));
-      report.step(new StepRecord(2, "kill", "FOLLOWER [2]", 1, 1, 900, 250, 80, 1100, 3, 2));
+      report.step(new StepRecord(1, "pause", "LEADER [0]", 0, 1, 1200, 300, 55, 1000, 3, 1, 0));
+      report.step(new StepRecord(2, "kill", "FOLLOWER [2]", 1, 1, 900, 250, 80, 1100, 3, 2, 1));
       report.trend(new TrendRow(2, new long[] { 1, 2, 3 }, new long[] { 4, 5, 6 }, new long[] { 7, 8, 9 }, 12.5, 400));
 
       final List<String> steps = Files.readAllLines(dir.resolve("steps.log"));
@@ -51,6 +51,24 @@ class ChaosReportTest {
       assertThat(trends.getFirst()).isEqualTo(TrendRow.CSV_HEADER);
       assertThat(trends.get(3)).isEqualTo("2,2,3,6,9,12.50,400");
     }
+  }
+
+  /** Issue #10159: a step whose counts could not be read says "?", and the summary keeps what was seen apart from what was lost. */
+  @Test
+  void aStepWithUnreadReformatCountsIsNotAStepWithNoReformat() throws Exception {
+    try (final ChaosReport report = new ChaosReport(dir, config)) {
+      report.step(new StepRecord(1, "kill", "LEADER [0]", 0, 1, 1200, 300, 55, 1000, 3, 1, 2));
+      report.step(new StepRecord(2, "kill", "FOLLOWER [2]", 1, 1, 900, 250, 80, 1100, 3, 2, StepRecord.REFORMATS_UNKNOWN));
+      report.step(new StepRecord(3, "stop", "FOLLOWER [1]", 1, 1, 900, 250, 80, 1200, 3, 2, 0));
+      report.summary(new ChaosResult(ResultKind.PASS, "Completed 3 steps", 3, List.of()), new Ledger(1), 0);
+    }
+    final List<String> steps = Files.readAllLines(dir.resolve("steps.log"));
+    assertThat(steps.get(0)).endsWith("reformats=2");
+    assertThat(steps.get(1)).endsWith("reformats=?");
+    assertThat(steps.get(2)).endsWith("reformats=0");
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("summary.json")));
+    assertThat(summary.getInt("reformats")).isEqualTo(2);
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isEqualTo(1);
   }
 
   @Test

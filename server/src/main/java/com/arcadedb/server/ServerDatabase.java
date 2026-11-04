@@ -69,6 +69,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.monitor.ProfilingResultSet;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.utility.CallableNoReturn;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -77,6 +78,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -242,6 +244,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public boolean runWithCompactionReplication(final Callable<Boolean> compaction) throws IOException, InterruptedException {
     return current().runWithCompactionReplication(compaction);
+  }
+
+  @Override
+  public void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
+    current().runOnceCompactionIsPublished(droppedFileId, action);
   }
 
   @Override
@@ -910,6 +917,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Map<String, Object> getGlobalVariables() {
     return current().getGlobalVariables();
+  }
+
+  @Override
+  public ConcurrentMap<String, Object> getGlobalVariableStore() {
+    return current().getGlobalVariableStore();
   }
 
   @Override

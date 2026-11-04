@@ -87,7 +87,39 @@ public class LiveVectorBitsFilter implements Bits {
    * record per candidate, and its length is the graph's to decide. Null for a walk nothing can stop.
    */
   private final WorkGuard           guard;
+  /**
+   * The walk of a predicate whose candidates an index can list (issue #10921): the members the walk needs before it ends (its
+   * beam), and the vectors of the index, or 0 when the walk is never given up for the listing.
+   */
+  private       int                 listedWalkBeam;
+  private final int                 listedWalkVectors;
+  private final int                 listedWalkMaxCandidates;
   private       int                 calls;
+  private       int                 accepted;
+
+  /**
+   * What a candidate the walk considers costs against a candidate the pre-filter plan scores (issue #10921): the walk loads
+   * the candidate's record to test it and scores its neighbours, the plan reads one vector. Measured by
+   * Issue10921WherePrefilterBenchmark on 100,000 vectors of 128 dimensions: about 3.8 us against 0.45 us.
+   */
+  static final int WALK_TO_PLAN_COST_RATIO = 8;
+
+  /** How many candidates the walk considers between two estimates of the predicate's selectivity. */
+  private static final int ESTIMATE_EVERY = 32;
+
+  /**
+   * Thrown by {@link #get} once the walk has found its predicate selective enough that scoring what an index lists for it
+   * costs less than the rest of the walk: the search abandons the walk and scores the listing instead, if it holds no more
+   * than {@link #listingCap} candidates. Carries no stack trace, it is a plan decision and not an error.
+   */
+  static final class SelectiveWalkException extends RuntimeException {
+    final int listingCap;
+
+    SelectiveWalkException(final int listingCap) {
+      super("The filtered walk costs more than scoring the listed candidates", null, false, false);
+      this.listingCap = listingCap;
+    }
+  }
 
   /**
    * @param allowedRIDs               optional RID allow-list; {@code null} or empty means "every live vector"
@@ -113,11 +145,42 @@ public class LiveVectorBitsFilter implements Bits {
 
   LiveVectorBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
       final VectorLocationIndex vectorIndex, final Set<RID> supersededRIDs, final WorkGuard guard) {
+    this(allowedRIDs, ordinalToVectorIdSnapshot, vectorIndex, supersededRIDs, guard, 0, 0, 0);
+  }
+
+  /**
+   * @param listedWalkBeam          for a predicate an index can list, the members the walk needs before it ends: the walk is
+   *                                then given up with a {@link SelectiveWalkException} once the listing costs less than the
+   *                                rest of it. 0 for a walk never given up
+   * @param listedWalkVectors       the vectors of the index, of which the selectivity the walk measures is a fraction
+   * @param listedWalkMaxCandidates the most candidates the pre-filter plan takes (its selectivity threshold): a predicate
+   *                                expected to keep more is walked
+   */
+  LiveVectorBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
+      final VectorLocationIndex vectorIndex, final Set<RID> supersededRIDs, final WorkGuard guard, final int listedWalkBeam,
+      final int listedWalkVectors, final int listedWalkMaxCandidates) {
     this.guard = guard;
+    this.listedWalkBeam = listedWalkMaxCandidates > 0 ? listedWalkBeam : 0;
+    this.listedWalkVectors = listedWalkVectors;
+    this.listedWalkMaxCandidates = listedWalkMaxCandidates;
     this.allowedRIDs = allowedRIDs != null && !allowedRIDs.isEmpty() ? allowedRIDs : null;
     this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
     this.vectorIndex = vectorIndex;
     this.supersededRIDs = supersededRIDs != null && !supersededRIDs.isEmpty() ? supersededRIDs : null;
+  }
+
+  /**
+   * Whether the walk may be given up for the listing of its predicate (issue #10921).
+   */
+  boolean givesUpForTheListing() {
+    return listedWalkBeam > 0;
+  }
+
+  /**
+   * The walk that follows (a resumed pass) is no longer given up for the listing.
+   */
+  void disarm() {
+    listedWalkBeam = 0;
   }
 
   /**
@@ -126,8 +189,37 @@ public class LiveVectorBitsFilter implements Bits {
    */
   @Override
   public boolean get(final int ordinal) {
+    ++calls;
     if (guard != null)
-      guard.checkPeriodically(++calls);
+      guard.checkPeriodically(calls);
+    if (listedWalkBeam == 0)
+      return accepts(ordinal);
+    final boolean accept = accepts(ordinal);
+    if (accept)
+      ++accepted;
+    if (calls % ESTIMATE_EVERY == 0)
+      giveUpForTheListingIfCheaper();
+    return accept;
+  }
+
+  /**
+   * Gives the walk up when its predicate proves selective (issue #10921). The walk ends once the predicate has accepted a beam
+   * of candidates, so at the rate it has accepted them so far it still has {@code (beam - accepted) / rate} candidates to
+   * consider, while the predicate keeps about {@code rate * vectors} records, which the plan would score instead. The rate is
+   * the walk's own, measured where the walk goes, which is what its cost depends on; counting one accepted candidate more than
+   * seen keeps it from reading zero, and leans towards walking on. The walk is given up when the listing it expects costs no
+   * more than half of the rest of the walk, nor holds more than half of the candidates the plan takes, and the listing it then
+   * asks for is capped at both, so a predicate that keeps more records than the walk met where it went is walked after all.
+   */
+  private void giveUpForTheListingIfCheaper() {
+    final double rate = (accepted + 1d) / calls;
+    final double listingCap = Math.min(listedWalkMaxCandidates,
+        Math.max(0, listedWalkBeam - accepted) / rate * WALK_TO_PLAN_COST_RATIO);
+    if (rate * listedWalkVectors * 2 <= listingCap)
+      throw new SelectiveWalkException((int) listingCap);
+  }
+
+  private boolean accepts(final int ordinal) {
     if (ordinal < 0 || ordinal >= ordinalToVectorIdSnapshot.length)
       return false;
 

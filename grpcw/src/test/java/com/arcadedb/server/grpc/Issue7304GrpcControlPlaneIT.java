@@ -153,15 +153,15 @@ public class Issue7304GrpcControlPlaneIT extends BaseGrpcServerTest {
   @Test
   void setDatabaseSettingStoresACoercedValueOnTheNamedDatabase() {
     final GlobalConfiguration setting = GlobalConfiguration.TX_RETRIES;
-    final Object previous = getServer(0).getDatabase(getDatabaseName()).getConfiguration().getValue(setting);
+    final Object previous = getServer(0).getDatabaseForOperator(getDatabaseName()).getConfiguration().getValue(setting);
     try {
       adminStub.setDatabaseSetting(SetDatabaseSettingRequest.newBuilder().setCredentials(root())
           .setDatabase(getDatabaseName()).setKey(setting.getKey()).setValue("7").build());
 
       // Coerced to the setting's declared type, not stored as the string "7".
-      assertThat(getServer(0).getDatabase(getDatabaseName()).getConfiguration().getValueAsInteger(setting)).isEqualTo(7);
+      assertThat(getServer(0).getDatabaseForOperator(getDatabaseName()).getConfiguration().getValueAsInteger(setting)).isEqualTo(7);
     } finally {
-      getServer(0).getDatabase(getDatabaseName()).getConfiguration().setValue(setting.getKey(), previous);
+      getServer(0).getDatabaseForOperator(getDatabaseName()).getConfiguration().setValue(setting.getKey(), previous);
     }
   }
 
@@ -348,7 +348,7 @@ public class Issue7304GrpcControlPlaneIT extends BaseGrpcServerTest {
         ProfilerStartRequest.newBuilder().setCredentials(root()).setTimeoutSeconds(0).build());
     assertThat(started.getRecording()).isTrue();
 
-    try (final var rs = getServer(0).getDatabase(getDatabaseName()).query("sql", "select from " + VERTEX1_TYPE_NAME)) {
+    try (final var rs = getServer(0).getDatabaseForOperator(getDatabaseName()).query("sql", "select from " + VERTEX1_TYPE_NAME)) {
       rs.stream().count();
     }
 

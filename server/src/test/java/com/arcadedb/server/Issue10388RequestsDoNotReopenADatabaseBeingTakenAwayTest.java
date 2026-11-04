@@ -82,10 +82,11 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
       // Every way a request resolves the name: none of them may bring the directory being deleted back
       assertThatThrownBy(() -> server.getDatabaseForRequest(NAME)).isInstanceOf(DatabaseNotAvailableException.class)
           .hasMessageContaining("being dropped");
-      assertThatThrownBy(() -> server.getDatabase(NAME)).as("the binary protocols resolve through getDatabase")
+      assertThatThrownBy(() -> server.getDatabaseForOperator(NAME)).as("the binary protocols resolve through getDatabase")
           .isInstanceOf(DatabaseNotAvailableException.class);
       final HttpResponse<String> http = postQuery(NAME, "select from Doc");
-      assertThat(http.statusCode()).as("HTTP answers 'not found', not a database reopened under the delete").isEqualTo(404);
+      // 503 'being dropped' rather than the 404 of a name that is no database: the files are still there (issue #10872)
+      assertThat(http.statusCode()).as("HTTP answers 'being dropped', not a database reopened under the delete").isEqualTo(503);
       assertThat(server.getDatabaseForRequest(getDatabaseName()).isOpen()).as("any other database is unaffected").isTrue();
 
       // A create of the same name is refused too: the name is still taken until the files are gone
@@ -95,7 +96,7 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
       // A second drop of the name is refused, and never ends the hold of the one running
       assertThatThrownBy(() -> server.dropLocalDatabase(created.getEmbedded(), NAME))
           .isInstanceOf(ServerControlPlane.OperationInProgressException.class).hasMessageContaining("already being dropped");
-      assertThatThrownBy(() -> server.getDatabase(NAME)).as("the refused second drop left the first one's hold in place")
+      assertThatThrownBy(() -> server.getDatabaseForOperator(NAME)).as("the refused second drop left the first one's hold in place")
           .isInstanceOf(DatabaseNotAvailableException.class);
 
       release.countDown();
@@ -148,11 +149,12 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
     try {
       assertThatThrownBy(() -> server.getDatabaseForRequest(NAME)).isInstanceOf(DatabaseNotAvailableException.class)
           .hasMessageContaining("restore");
-      assertThat(postQuery(NAME, "select 1").statusCode()).isEqualTo(404);
+      // the database is there and a restore holds it: 503, not the 404 of a name that is no database (issue #10872)
+      assertThat(postQuery(NAME, "select 1").statusCode()).isEqualTo(503);
       assertThat(server.existsDatabase(NAME)).as("the request opened nothing").isFalse();
 
       // The restore itself is not a request: it resolves the target it replaces through getDatabase, and is not refused
-      assertThat(server.getDatabase(NAME).isOpen()).isTrue();
+      assertThat(server.getDatabaseForOperator(NAME).isOpen()).isTrue();
       // Once it is open it is served as before: the reservation takes no live database away from its readers
       assertThat(server.getDatabaseForRequest(NAME).isOpen()).isTrue();
     } finally {
@@ -221,7 +223,7 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
 
   private static void dropIfPresent(final ArcadeDBServer server, final String name) {
     if (server.existsDatabase(name)) {
-      final DatabaseInternal embedded = server.getDatabase(name).getEmbedded();
+      final DatabaseInternal embedded = server.getDatabaseForOperator(name).getEmbedded();
       server.dropLocalDatabase(embedded, name);
     }
     FileUtils.deleteRecursively(new File(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), name));

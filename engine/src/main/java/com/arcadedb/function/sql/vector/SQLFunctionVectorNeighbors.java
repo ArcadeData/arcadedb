@@ -19,9 +19,11 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -32,11 +34,16 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RidHashSet;
@@ -49,13 +56,19 @@ import java.util.Set;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
+ * <p>
+ * The {@code rerank} option (issue #10514) is the number of candidates per requested neighbour that a PRODUCT index walks on
+ * its PQ codes and then scores again on the stored vectors; {@code 0} returns the PQ scores. A BINARY index takes it too, for
+ * the candidates it walks on its one-bit codes (issue #10968), and reranks at least one per neighbour. It is ignored for
+ * {@code groupBy} searches and for the other quantizations.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.neighbors";
 
-  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "where", "groupBy", "groupSize", "maxDistance");
+  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "where", "groupBy", "groupSize", "maxDistance",
+      "rerank");
 
   // Hard cap on the candidate pool the index is asked to materialize when grouping is enabled.
   // Prevents memory exhaustion on pathological combinations of `k` and `groupSize` (e.g. k=1000,
@@ -83,14 +96,15 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (key instanceof List<?> list)
       key = list.toArray();
 
-    final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
-    if (limit <= 0)
+    final int limit = parseNeighborCount(params[2]);
+    if (limit == 0)
       return new ArrayList<>(0);
 
     // Optional 4th parameter. Either:
     //   - a number: efSearch (backward-compatible positional form)
-    //   - a map: options {efSearch, filter, where, groupBy, groupSize, maxDistance}
+    //   - a map: options {efSearch, filter, where, groupBy, groupSize, maxDistance, rerank}
     int efSearch = -1;
+    int rerank = -1;
     Set<RID> allowedRIDs = null;
     String groupBy = null;
     int groupSize = 1;
@@ -100,10 +114,13 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (params[3] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         efSearch = opts.getInt("efSearch", -1);
-        // `where` restricts the candidates by a predicate on their record, tested as the search meets them instead of
-        // listing every RID in scope up front as a `filter` subquery has to (issue #10169)
-        allowedRIDs = RecordPredicateRidSet.of(opts.get("where"), parseRidFilter(opts.getList("filter"), NAME, context), NAME,
-            context);
+        // `rerank` is the number of candidates per requested neighbour that a PRODUCT (issue #10514) or BINARY (issue #10968)
+        // index scores again on the stored vectors after walking its graph on its codes: absent is the default of the index,
+        // 0 keeps the PQ scores
+        rerank = opts.getInt("rerank", -1);
+        if (opts.get("rerank") != null && rerank < 0)
+          throw new CommandSQLParsingException(NAME + " rerank must be >= 0, got " + rerank);
+        allowedRIDs = parsePreFilter(opts.getList("filter"), opts.get("where"), NAME, context);
         groupBy = opts.getString("groupBy", null);
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
@@ -118,10 +135,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         maxDistance = (float) opts.getDouble("maxDistance", Double.POSITIVE_INFINITY);
         if (Float.isNaN(maxDistance))
           throw new CommandSQLParsingException(NAME + " maxDistance must be a number, not NaN");
-      } else if (params[3] instanceof Number n) {
-        efSearch = n.intValue();
       } else {
-        efSearch = Integer.parseInt(params[3].toString());
+        efSearch = parseInteger(params[3], "efSearch");
       }
     }
 
@@ -134,9 +149,18 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       propertyName = indexSpec.substring(bracketStart + 1, indexSpec.length() - 1);
     } else {
       // Assume it's just an index name
-      final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
+      final Schema schema = context.getDatabase().getSchema();
+      // The name of a vector index over several labels (issue #11014) designates the per-type indexes it spans. They share the
+      // similarity function, so their distances merge as the buckets of one index do. An index name is unique across the database,
+      // so a name that is an index is not a logical one, and the walk of the types is paid only by a name that is not
+      final List<TypeIndex> logical = schema.existsIndex(indexSpec) ? null : MultiTypeIndexes.resolve(schema, indexSpec);
+      if (logical != null)
+        return executeWithLogicalIndex(indexSpec, logical, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance,
+            context);
+
+      final Index directIndex = schema.getIndexByName(indexSpec);
       if (directIndex instanceof TypeIndex typeIndex) {
-        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
+        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
       }
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a vector index (found: " + (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
@@ -168,12 +192,36 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // results consistent with the WHERE.
     allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
-    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
+    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
+  }
+
+  private Object executeWithLogicalIndex(final String name, final List<TypeIndex> members, final Object key, final int limit,
+      final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final float maxDistance, final CommandContext context) {
+    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+    for (final TypeIndex member : members) {
+      final var bucketIndexes = member.getIndexesOnBuckets();
+      if (bucketIndexes == null || bucketIndexes.length == 0)
+        throw new CommandSQLParsingException("Index '" + member.getName() + "' has no bucket indexes");
+      final List<LSMVectorIndex> memberIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class, null);
+      if (memberIndexes.isEmpty())
+        throw new CommandSQLParsingException("Index '" + member.getName() + "' is not a vector index");
+      vectorIndexes.addAll(memberIndexes);
+    }
+    if (vectorIndexes.isEmpty())
+      throw new CommandSQLParsingException("Index '" + name + "' has no vector index left");
+
+    // A filter that matched nothing is not "no filter" (issue #8959)
+    if (allowedRIDs != null && allowedRIDs.isEmpty())
+      return new ArrayList<>(0);
+
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance,
+        context);
   }
 
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,
-      final int limit, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
-      final float maxDistance, final CommandContext context) {
+      final int limit, final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy,
+      final int groupSize, final float maxDistance, final CommandContext context) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0) {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -199,7 +247,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       return new ArrayList<>(0);
 
     // Search across all matching vector indexes and merge results
-    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, rerank, allowedRIDs, groupBy, groupSize, maxDistance, context);
   }
 
   /**
@@ -229,7 +277,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * it positional for now to minimise the blast radius of the maxDistance / Tier 4 follow-ups.
    */
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
-      final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
       final float maxDistance, final CommandContext context) {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
@@ -258,11 +306,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // The grouped top-up reads the stale RIDs of a pass, not their count, so the pass's counter is a scratch one
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(limit, groupSize, MAX_FETCH_CANDIDATES,
-          (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch,
+          (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchGroups, efSearch, rerank,
               allowedRIDs, groupBy, fetchGroupSize, groupSize, maxDistance, context, guard, new int[1], staleRids, null));
 
     return VectorUtils.searchWithStaleTopUp(limit,
-        (fetchK, staleSkipped, saturated) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, allowedRIDs,
+        (fetchK, staleSkipped, saturated) -> searchAndEmit(vectorIndexes, queryVector, limit, fetchK, efSearch, rerank, allowedRIDs,
             null, groupSize, groupSize, maxDistance, context, guard, staleSkipped, null, saturated));
   }
 
@@ -275,8 +323,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * the top-up can tell a candidate deleted since the last pass from one it already met (issue #10002).
    */
   private ArrayList<Object> searchAndEmit(final List<LSMVectorIndex> vectorIndexes, final float[] queryVector, final int limit,
-      final int fetchK, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int fetchGroupSize,
-      final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
+      final int fetchK, final int efSearch, final int rerank, final Set<RID> allowedRIDs, final String groupBy,
+      final int fetchGroupSize, final int groupSize, final float maxDistance, final CommandContext context, final WorkGuard guard,
       final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
 
     final BasicDatabase db = context.getDatabase();
@@ -295,7 +343,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
       if (groupBy == null)
-        neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchK, efSearch, allowedRIDs, guard);
+        // A PRODUCT index walks its graph on the PQ codes and scores only the best candidates on the stored vectors, as BINARY
+        // does (issue #10514); `rerank` absent is the rerankOversample of the index
+        neighbors = lsmIndex.findNeighbors(queryVector, fetchK, efSearch, rerank, allowedRIDs, guard);
       else
         neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, fetchK, fetchGroupSize, efSearch, allowedRIDs,
             groupKeyResolver, guard);
@@ -344,6 +394,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // the real candidate count; allNeighbors.size() is that clamp having already happened, per index and summed.
     final RidHashSet emitted = new RidHashSet(Math.min(limit, allNeighbors.size()));
 
+    // Issue #10973: a row whose record nothing reads (SELECT @rid, distance FROM (SELECT expand(...))) is made without reading
+    // it, see deferredRecordReads. The grouped path reads the group key of every row, so it reads the record anyway
+    final LSMVectorIndex[] deferring = groupBy == null ? deferredRecordReads(db, vectorIndexes) : null;
+
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       // Stop conditions:
       //   - groupBy unset: stop once we collected `limit` rows
@@ -365,13 +419,13 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (!emitted.add(rid))
         continue;
 
-      final Document record;
-      try {
-        record = (Document) db.lookupByRID(rid, true);
-      } catch (final RecordNotFoundException e) {
+      final LSMVectorIndex deferredBy = deferringIndexOf(rid, deferring);
+      final Document record = neighbourRecord(db, rid, deferredBy);
+      if (record == null) {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,
-        // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
+        // e.g., after crash recovery, backup restore, or index/storage inconsistencies. A deferred row only lands here when the
+        // index itself no longer holds the vector: one the bucket lost behind its back is emitted (see deferredRecordReads).
         staleSkipped[0]++;
         if (staleRids != null)
           staleRids.add(rid);
@@ -396,10 +450,81 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
       // The row exposes the record's properties so they are accessible in outer queries after expand() (e.g., SELECT
       // name, distance FROM (SELECT expand(...))), reading them off the record on demand (issue #10129)
-      result.add(new ScoredRecordRow(record, "distance", distance));
+      result.add(new ScoredRecordRow(record, "distance", distance, deferredBy));
     }
 
     return result;
+  }
+
+  /**
+   * The indexes whose rows are made without reading their record (issue #10973), at the position of each in
+   * {@code vectorIndexes}, or null when none is. A row reads its record on the first property asked of it
+   * ({@link ScoredRecordRow}), so a query that projects only {@code @rid}, {@code @type} and the distance reads no record at
+   * all: on a quantized index (INT8, BINARY, PRODUCT) the walk scores the codes and touches no document either, and the
+   * record read was the whole page footprint of the search.
+   * <p>
+   * The read was also how a row learned that its record is gone. A deferred row asks the index instead
+   * ({@link LSMVectorIndex#hasLiveVector}), which a committed delete updates in the same commit, so a delete that overlaps
+   * the search still costs a candidate and not an answer row (issue #9368). What only the read can see is a record removed
+   * from its bucket behind the index's back (a crash, a restore): such a row is answered with no properties, as the Java API
+   * answers its RID, until {@code REBUILD INDEX} repairs the index. It is a row of the answer like any other, so it takes one
+   * of the {@code limit} places and the answer holds one real neighbour fewer for each such row (issue #11202): knowing the
+   * record is gone before the row is emitted means reading its page, which is the whole cost the deferral removes, so the
+   * index is repaired instead of probed, as a ghost edge is (#10463). The first property read that finds the record gone
+   * reports it ({@link StaleVectorEntryReporter}), naming the repair, when the index still holds the vector: a delete committed
+   * between the search and the read takes the vector out of the index too, and is no damage.
+   * <p>
+   * The record is read as before where reading it does more than load it: a read listener or trigger on the database or on the
+   * type sees (and can veto) every record the search hands out, and an index the calling transaction wrote to answers its own
+   * rows from the transaction, not from the committed locations. The permission to read the bucket is asked by
+   * {@link #neighbourRecord} for each row it makes, as the read did, since no read will ask it for a row that is never loaded.
+   */
+  private static LSMVectorIndex[] deferredRecordReads(final BasicDatabase db, final List<LSMVectorIndex> vectorIndexes) {
+    if (!(db instanceof DatabaseInternal database) || !(database.getEvents() instanceof RecordEventsRegistry events)
+        || events.hasBeforeReadListeners() || events.hasAfterReadListeners())
+      return null;
+
+    LSMVectorIndex[] deferring = null;
+    for (int i = 0; i < vectorIndexes.size(); i++) {
+      final LSMVectorIndex index = vectorIndexes.get(i);
+      final int bucketId = index.getAssociatedBucketId();
+      if (bucketId < 0 || index.isWrittenByCurrentTransaction())
+        continue;
+      if (!(database.getSchema().getTypeByBucketId(bucketId) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
+          || type.hasAfterReadListeners())
+        continue;
+      if (deferring == null)
+        deferring = new LSMVectorIndex[vectorIndexes.size()];
+      deferring[i] = index;
+    }
+    return deferring;
+  }
+
+  /** The index of {@code deferring} that defers the read of {@code rid}'s record, or null when the record is read now. */
+  private static LSMVectorIndex deferringIndexOf(final RID rid, final LSMVectorIndex[] deferring) {
+    if (deferring != null)
+      for (final LSMVectorIndex index : deferring)
+        if (index != null && index.getAssociatedBucketId() == rid.getBucketId())
+          return index;
+    return null;
+  }
+
+  /**
+   * The record of a neighbour, read now unless {@code deferredBy} defers the read (see {@link #deferredRecordReads}), or null when
+   * the record is gone.
+   */
+  private static Document neighbourRecord(final BasicDatabase db, final RID rid, final LSMVectorIndex deferredBy) {
+    try {
+      if (deferredBy == null)
+        return (Document) db.lookupByRID(rid, true);
+      // The check the read makes (LocalBucket.getRecord), for the row being emitted only: a bucket the caller cannot read
+      // fails the query when it contributes a row, not when it was merely searched
+      ((DatabaseInternal) db).checkPermissionsOnFile(rid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+      // Under REPEATABLE_READ the lookup reads the record all the same, and a record that is gone throws as it always did
+      return deferredBy.hasLiveVector(rid) ? (Document) db.lookupByRID(rid, false) : null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
   }
 
   /**
@@ -447,6 +572,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public String getSyntax() {
     return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | "
         + "{ efSearch: <int>, filter: [<rid>, ...], where: { <property>: <value>, ... } | '<condition>', groupBy: <field>, "
-        + "groupSize: <int>, maxDistance: <float> }])";
+        + "groupSize: <int>, maxDistance: <float>, rerank: <int> }]); rerank: PRODUCT and BINARY indexes only, "
+        + "ignored with groupBy and for other quantizations";
   }
 }

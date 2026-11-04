@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
@@ -83,6 +84,15 @@ public final class GrpcErrorMapper {
    * taken name, and must keep doing so.
    */
   public static final Metadata.Key<String> NAME_TAKEN_KEY = Metadata.Key.of("arcadedb-name-taken",
+      Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Trailer carrying the {@link DatabaseNotAvailableException.Reason} of a database the server has and does not serve now
+   * ({@link ErrorCategory#UNAVAILABLE}, issue #11049): what the HTTP body carries in {@code exceptionArgs}. A {@link Enum#name()},
+   * plain ASCII and bounded, so it survives production concealment. It is also what tells this {@code UNAVAILABLE} - a database
+   * an operator holds, which no retry of the transaction clears - from the admin service's {@code UNAVAILABLE}, which names a
+   * {@link NeedRetryException}: a client that does not know the class the trailer next to it names still reads the verdict.
+   */
+  public static final Metadata.Key<String> UNAVAILABLE_REASON_KEY = Metadata.Key.of("arcadedb-unavailable-reason",
       Metadata.ASCII_STRING_MARSHALLER);
 
   /**
@@ -239,6 +249,8 @@ public final class GrpcErrorMapper {
       addDuplicatedKeyTrailers(trailers, dup, conceal);
     } else {
       code = statusCodeFor(category);
+      if (category == ErrorCategory.UNAVAILABLE)
+        trailers.put(UNAVAILABLE_REASON_KEY, unavailableReason(cause).name());
     }
 
     if (conceal)
@@ -286,8 +298,27 @@ public final class GrpcErrorMapper {
       case TIMEOUT -> Status.Code.DEADLINE_EXCEEDED;
       // Stopped on request (issue #9689): gRPC's own word for an operation somebody cancelled, never retried by a client
       case TERMINATED -> Status.Code.CANCELLED;
+      // A database the server HAS but does not serve now: a restore holds its name, a 'close database' closed it, it is being
+      // dropped (issues #10533, #10553). Raised where the name is resolved, before any work of the call, so nothing was applied. Not
+      // INTERNAL, which reads as a server fault and is logged with a stack trace for a refusal an operator asked for; not NOT_FOUND,
+      // which the client rebuilds as a missing record; not ABORTED, which means "retry the transaction"
+      case UNAVAILABLE -> Status.Code.UNAVAILABLE;
+      // A name that is no database (issue #10795): gRPC's own word for a requested entity that is not there. It used to be INTERNAL.
+      // The class-name trailer names the DatabaseNotFoundException, so the client rebuilds it rather than reading NOT_FOUND as a
+      // missing record, which is what a client that predates the type falls back to (still the caller's, unlike INTERNAL)
+      case DATABASE_NOT_FOUND -> Status.Code.NOT_FOUND;
       case SERVER -> Status.Code.INTERNAL;
     };
+  }
+
+  /**
+   * The state that keeps the database from serving the request, as the HTTP handler puts it in {@code exceptionArgs}: the
+   * reason of the {@link DatabaseNotAvailableException} along the chain, or {@link DatabaseNotAvailableException.Reason#UNAVAILABLE}
+   * for a handle closed under the request ({@code DatabaseIsClosedException}), which does not say by what.
+   */
+  private static DatabaseNotAvailableException.Reason unavailableReason(final Throwable cause) {
+    final DatabaseNotAvailableException notAvailable = CauseChain.find(cause, DatabaseNotAvailableException.class);
+    return notAvailable != null ? notAvailable.getReason() : DatabaseNotAvailableException.Reason.UNAVAILABLE;
   }
 
   /**
@@ -355,6 +386,25 @@ public final class GrpcErrorMapper {
     final Level level = ErrorCategory.of(cause) == ErrorCategory.SERVER ? Level.SEVERE : Level.FINE;
     LogManager.instance().log(requester, level, "%s (concealed from the client in production mode)", cause,
         context != null ? context : "gRPC");
+  }
+
+  /**
+   * The level a failed RPC is logged at: {@code SEVERE} only for a fault the SERVER is responsible for, {@code FINE} for
+   * everything the caller can act on - above all a retryable conflict ({@link ErrorCategory#RETRY}, answered {@code ABORTED}),
+   * which a concurrent write workload produces by the hundred and the client simply repeats (issue #10943). The same split
+   * {@link #logConcealed} draws.
+   */
+  static Level failureLevel(final Throwable cause) {
+    return ErrorCategory.of(unwrap(cause)) == ErrorCategory.SERVER ? Level.SEVERE : Level.FINE;
+  }
+
+  /**
+   * Logs a failed RPC once, at {@link #failureLevel}. A handler that rethrows to the one that answers the client must not log
+   * as well: each failure used to be written twice (issue #10943).
+   */
+  static void logFailure(final Object requester, final String context, final Throwable cause) {
+    final Throwable root = unwrap(cause);
+    LogManager.instance().log(requester, failureLevel(root), context, root);
   }
 
   /**

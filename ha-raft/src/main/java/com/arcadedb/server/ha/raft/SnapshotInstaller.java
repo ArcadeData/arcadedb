@@ -28,6 +28,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.backup.BackupCoordinator;
@@ -58,6 +59,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -68,6 +70,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedOutputStream;
 import java.util.zip.ZipEntry;
@@ -123,6 +126,13 @@ public final class SnapshotInstaller {
    */
   static final String SNAPSHOT_VALIDATION_FAILED_FILE = SNAPSHOT_SWAP_STATE_FILE + ".validation-failed";
   /**
+   * The account of the installed files (size and name, one per line) taken from the verified staging. It is written into
+   * {@code .snapshot-new} before the completion marker, so it is carried into the live directory by the swap itself, and
+   * crash recovery compares the live files with it before it deletes the retained backup (issue #11223). Deleted with the
+   * rest of the swap state.
+   */
+  static final String SNAPSHOT_MANIFEST_FILE = ".snapshot-manifest";
+  /**
    * Every regular file the install writes into a database directory (the {@code SNAPSHOT_*_DIR} entries are
    * directories). None of them is part of the database, so the cross-node checksum scan
    * ({@code SnapshotManager.computeFileChecksums}) leaves them out: issue #9307 was the verdict record above, added
@@ -133,7 +143,8 @@ public final class SnapshotInstaller {
    * otherwise escapes the guard.
    */
   private static final Set<String> SNAPSHOT_MACHINERY_FILES = Set.of(SNAPSHOT_PENDING_FILE, SNAPSHOT_COMPLETE_FILE,
-      SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE);
+      SNAPSHOT_QUARANTINE_FILE, SNAPSHOT_SWAP_STATE_FILE, SNAPSHOT_SWAP_STATE_TMP_FILE, SNAPSHOT_VALIDATION_FAILED_FILE,
+      SNAPSHOT_MANIFEST_FILE);
   /**
    * The directories the snapshot install keeps in a database directory: the staging, the retained backup and the
    * orphans. With {@link #SNAPSHOT_MACHINERY_FILES} this is every entry the swap leaves in place (issue #9446), so a new
@@ -155,6 +166,16 @@ public final class SnapshotInstaller {
    */
   static boolean isSnapshotMachineryEntryName(final String name) {
     return SNAPSHOT_MACHINERY_FILES.contains(name) || SNAPSHOT_MACHINERY_DIRS.contains(name);
+  }
+
+  /**
+   * The files that make a directory a database ({@link DatabaseFactory#exists()}), in the order {@link #restoreBackup}
+   * moves them back: the previous-generation file first, the final one last.
+   */
+  private static final String[] SCHEMA_FILES_RESTORED_LAST = { LocalSchema.SCHEMA_PREV_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME };
+
+  private static boolean isSchemaFileName(final String name) {
+    return LocalSchema.SCHEMA_FILE_NAME.equals(name) || LocalSchema.SCHEMA_PREV_FILE_NAME.equals(name);
   }
 
   private enum SwapPhase {
@@ -604,6 +625,13 @@ public final class SnapshotInstaller {
       throw e;
     }
 
+    // The staging has just been verified against the leader's manifest, which is dropped after the download. Keep
+    // its account (name and size of every file) for the length of the install, so the files that end up live can be
+    // compared with it before the retained backup is deleted (issue #11200). It is also persisted, before the
+    // completion marker that vouches for the staging, so crash recovery has the same account to compare with (#11223).
+    final Map<String, Long> expectedFiles = expectedInstalledFiles(snapshotNew);
+    writeInstalledFilesManifest(snapshotNew, expectedFiles);
+
     // Mark download as complete. The extracted files were each fsynced as they were written
     // (see extractAndVerifySnapshot), so fsyncing this marker and the staging directory now
     // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
@@ -618,7 +646,7 @@ public final class SnapshotInstaller {
     // while the files are being moved.
     server.setSnapshotInstallInProgress(true);
     try {
-      swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server);
+      swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server, expectedFiles);
     } finally {
       server.setSnapshotInstallInProgress(false);
     }
@@ -649,6 +677,18 @@ public final class SnapshotInstaller {
    */
   static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
       final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
+    swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server, null);
+  }
+
+  /**
+   * Same as above, and when {@code expectedFiles} is not null (see {@link #expectedInstalledFiles}) the installed
+   * files are compared with it right after the swap. A reopen that does not throw proves nothing about whether the
+   * files are the leader's: zero-length page files read as empty buckets and an unreadable {@code schema.json} falls
+   * back to {@code schema.prev.json}, and both open (issue #11200). A mismatch is treated like a failed reopen.
+   */
+  static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
+      final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server,
+      final Map<String, Long> expectedFiles) throws IOException {
     // Prepared while nothing has moved, so a failed validation can record its verdict without free space (#8942).
     // Outside the registry lock: the install's maintenance slot already excludes every other writer of this directory.
     try {
@@ -687,6 +727,19 @@ public final class SnapshotInstaller {
       // Remove the completion marker from the now-live directory
       Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
 
+      // Checked BEFORE the reopen: opening may legitimately rewrite files (the engine rewrites schema.json when it
+      // had to fall back to schema.prev.json), and what must be compared is what the swap installed.
+      final String mismatch = expectedFiles != null ? firstInstalledFileMismatch(expectedFiles, dbPath) : null;
+      if (mismatch != null) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Installed snapshot for '%s' does not match what the leader sent (%s); rolling back to the previous local copy",
+            null, databaseName, mismatch);
+        rollbackAfterFailedValidation(dbPath, snapshotBackup);
+        reopenQuietly(server, databaseName);
+        throw new IOException("Snapshot for '" + databaseName + "' downloaded but the installed files do not match what the leader sent ("
+            + mismatch + "); rolled back to the previous local copy");
+      }
+
       try {
         // Re-open the database so the server registers it (also validates the snapshot is loadable). The pending
         // marker is still on disk at this point - it is cleared only once this open succeeds - and it is what
@@ -719,6 +772,73 @@ public final class SnapshotInstaller {
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
     }
+  }
+
+  /**
+   * The account of what a verified staging directory holds: relative path (with {@code /}) to size, for every file
+   * except the install's own completion marker. Taken once the staging was verified against the leader's manifest.
+   */
+  static Map<String, Long> expectedInstalledFiles(final Path snapshotNew) throws IOException {
+    final Map<String, Long> expected = new HashMap<>();
+    try (final Stream<Path> files = Files.walk(snapshotNew)) {
+      final Iterator<Path> it = files.iterator();
+      while (it.hasNext()) {
+        final Path file = it.next();
+        if (!Files.isRegularFile(file))
+          continue;
+        final String name = snapshotNew.relativize(file).toString().replace('\\', '/');
+        if (SNAPSHOT_COMPLETE_FILE.equals(name) || SNAPSHOT_MANIFEST_FILE.equals(name))
+          continue;
+        expected.put(name, Files.size(file));
+      }
+    }
+    return expected;
+  }
+
+  /** Persists {@code expected} as {@link #SNAPSHOT_MANIFEST_FILE} in {@code directory}, durably (issue #11223). */
+  static void writeInstalledFilesManifest(final Path directory, final Map<String, Long> expected) throws IOException {
+    final StringBuilder content = new StringBuilder(expected.size() * 32);
+    for (final Map.Entry<String, Long> entry : expected.entrySet())
+      content.append(entry.getValue()).append('\t').append(entry.getKey()).append('\n');
+    writeFileForced(directory.resolve(SNAPSHOT_MANIFEST_FILE), content.toString());
+    fsyncDirectory(directory);
+  }
+
+  /** The account persisted by {@link #writeInstalledFilesManifest}, or null when {@code directory} holds none (an install that predates it). */
+  static Map<String, Long> readInstalledFilesManifest(final Path directory) throws IOException {
+    final Path file = directory.resolve(SNAPSHOT_MANIFEST_FILE);
+    if (!Files.isRegularFile(file))
+      return null;
+    final Map<String, Long> expected = new HashMap<>();
+    for (final String line : Files.readAllLines(file)) {
+      if (line.isEmpty())
+        continue;
+      final int tab = line.indexOf('\t');
+      if (tab <= 0)
+        throw new IOException("Malformed snapshot manifest line in " + file);
+      try {
+        expected.put(line.substring(tab + 1), Long.parseLong(line.substring(0, tab)));
+      } catch (final NumberFormatException e) {
+        throw new IOException("Malformed snapshot manifest line in " + file, e);
+      }
+    }
+    return expected;
+  }
+
+  /** The first file of {@code expected} that is missing from {@code dbPath} or has another size, described; null when all match. */
+  static String firstInstalledFileMismatch(final Map<String, Long> expected, final Path dbPath) {
+    for (final Map.Entry<String, Long> entry : expected.entrySet()) {
+      final Path file = dbPath.resolve(entry.getKey());
+      final long size;
+      try {
+        size = Files.size(file);
+      } catch (final IOException e) {
+        return "'" + entry.getKey() + "' is missing";
+      }
+      if (size != entry.getValue())
+        return "'" + entry.getKey() + "' is " + size + " bytes instead of " + entry.getValue();
+    }
+    return null;
   }
 
   /**
@@ -840,7 +960,7 @@ public final class SnapshotInstaller {
       // (best effort) and leave the database absent rather than registered-but-broken.
       publishStaging(staging, dbPath);
       try {
-        server.getDatabase(databaseName);
+        server.getDatabaseForOperator(databaseName);
       } catch (final RuntimeException openEx) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Acquired snapshot for new database '%s' was validated but failed to open after publish; removing it "
@@ -1016,7 +1136,7 @@ public final class SnapshotInstaller {
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName)) {
       try {
-        return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+        return ((DatabaseInternal) server.getDatabaseForOperator(databaseName)).getDatabasePath();
       } catch (final DatabaseNotAvailableException e) {
         // Registered but not open, with the .snapshot-pending marker on disk: getDatabase refuses to open it, and
         // refusing here too failed every install driver before the install could reconcile that marker - the one
@@ -1157,11 +1277,13 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
-          + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
-          + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
-          + "the only intact copy; delete the entries in the database directory that do not start with '.snapshot', "
-          + "move the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
-          + ".snapshot-pending");
+          + "resolve the underlying problem (typically a full or read-only volume) and restart the node: startup "
+          + "recovery resumes the recorded swap phase and completes the restore from .snapshot-backup by itself, "
+          + "after which a new install can run. Until then delete nothing by hand, neither in .snapshot-backup nor in "
+          + "the database directory: the database directory can hold originals the failed install never moved into "
+          + "the backup, entries the failed restore already moved back and files of the failed snapshot, and a name "
+          + "does not tell which. If the node cannot complete it, copy the database directory and .snapshot-backup "
+          + "aside before touching either");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
@@ -1609,7 +1731,7 @@ public final class SnapshotInstaller {
 
     final DatabaseInternal db;
     try {
-      db = (DatabaseInternal) server.getDatabase(databaseName);
+      db = (DatabaseInternal) server.getDatabaseForOperator(databaseName);
     } catch (final DatabaseNotAvailableException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Database '%s' is registered but did not resolve before its directory is swapped or repaired: %s. Only "
@@ -1791,11 +1913,24 @@ public final class SnapshotInstaller {
    */
   private static void rollBackUnlessSnapshotOpens(final Path dbDir, final Path snapshotNew, final Path snapshotBackup)
       throws IOException {
-    if (!Files.isDirectory(snapshotBackup) || snapshotOpens(dbDir))
+    if (!Files.isDirectory(snapshotBackup))
       return;
 
-    LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-        "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
+    // What the live files are compared with is the account taken from the verified staging (issue #11223): a snapshot
+    // that opens can still hold zero-length page files or a schema.json that fell back to schema.prev.json (#11200).
+    // An install that predates the manifest has nothing to compare with, and keeps the proof of the open alone.
+    final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
+    final String mismatch = expected != null ? firstInstalledFileMismatch(expected, dbDir) : null;
+    if (mismatch == null && snapshotOpens(dbDir))
+      return;
+
+    if (mismatch != null)
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "The snapshot rolled forward in %s does not match what the leader sent (%s): restoring the retained backup instead of deleting it",
+          null, dbDir, mismatch);
+    else
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "The snapshot rolled forward in %s does not open: restoring the retained backup instead of deleting it", null, dbDir);
     writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
     resumeRollback(dbDir, snapshotBackup);
     deleteDirectoryIfExists(snapshotNew);
@@ -1835,7 +1970,8 @@ public final class SnapshotInstaller {
         "Opening the rolled-forward snapshot in %s to prove it before the retained backup is deleted (can take long on a large database)",
         null, dbDir);
     final long start = System.currentTimeMillis();
-    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString())) {
+    // an HA node's copy: the open must not sweep away files a replicated change delivered ahead of its schema entry (#11240)
+    try (final DatabaseFactory factory = new DatabaseFactory(dbDir.toString()).setReplicatedNode(true)) {
       factory.open().close();
       LogManager.instance().log(SnapshotInstaller.class, Level.INFO, "The snapshot in %s opened in %dms", null, dbDir,
           System.currentTimeMillis() - start);
@@ -1875,6 +2011,7 @@ public final class SnapshotInstaller {
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE));
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_VALIDATION_FAILED_FILE));
+    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_MANIFEST_FILE));
     fsyncDirectory(dbDir);
   }
 
@@ -2442,7 +2579,7 @@ public final class SnapshotInstaller {
           // after the swap (when the backup is already gone) would expose torn/partial files with no
           // way to roll back (issue #4830).
           cos.flush();
-          fos.getFD().sync();
+          FileUtils.sync(fos.getFD());
 
           extracted.put(entryName, new long[] { uncompressedBytes, crc.getValue() });
         }
@@ -2759,20 +2896,37 @@ public final class SnapshotInstaller {
     deleteDirectoryIfExists(newDir);
   }
 
+  /**
+   * Moves the retained backup back into {@code dbDir}, the schema files LAST (issue #10426). A directory listing is in
+   * whatever order the filesystem keeps (APFS sorts it, ext4, overlayfs and tmpfs do not), so a restore that follows it
+   * and fails part way moved {@code schema.json} out of the backup on one machine and left it there on another. The
+   * schema file is what makes a directory a database ({@link #looksLikeADatabaseDirectory}): moving it last means a
+   * restore that cannot finish never leaves a live directory that looks loadable while entries are still in the backup,
+   * and the backup that remains plainly still holds the thing that identifies the database.
+   */
   private static void restoreBackup(final Path dbDir, final Path backupDir) throws IOException {
-    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(backupDir)) {
-      for (final Path entry : stream) {
-        // REPLACE_EXISTING is required for the phase-1 partial-failure path: some originals may never
-        // have left dbDir, so the backed-up copies must overwrite whatever partial state is there to
-        // reconstruct the exact original set without leaving stale files behind.
-        Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
-        snapshotSwapProgress("RESTORING:" + entry.getFileName());
-      }
+    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(backupDir,
+        entry -> !isSchemaFileName(entry.getFileName().toString()))) {
+      for (final Path entry : stream)
+        moveBackToLiveDirectory(dbDir, entry);
+    }
+    for (final String schemaFile : SCHEMA_FILES_RESTORED_LAST) {
+      final Path entry = backupDir.resolve(schemaFile);
+      if (Files.exists(entry))
+        moveBackToLiveDirectory(dbDir, entry);
     }
     // Persist the restored directory entries before the backup is deleted so a crash during rollback
     // recovery cannot lose the originals we just moved back (issue #4830).
     fsyncDirectory(dbDir);
     deleteDirectoryIfExists(backupDir);
+  }
+
+  private static void moveBackToLiveDirectory(final Path dbDir, final Path entry) throws IOException {
+    // REPLACE_EXISTING is required for the phase-1 partial-failure path: some originals may never
+    // have left dbDir, so the backed-up copies must overwrite whatever partial state is there to
+    // reconstruct the exact original set without leaving stale files behind.
+    Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+    snapshotSwapProgress("RESTORING:" + entry.getFileName());
   }
 
   /**
@@ -2825,7 +2979,7 @@ public final class SnapshotInstaller {
   private static void writeFileForced(final Path file, final String content) throws IOException {
     Files.writeString(file, content);
     try (final FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     }
   }
 
@@ -2841,7 +2995,7 @@ public final class SnapshotInstaller {
     if (dir == null)
       return;
     try (final FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
-      channel.force(true);
+      FileUtils.force(channel, true);
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
           "Directory fsync not supported or failed for %s: %s", null, dir, e.getMessage());

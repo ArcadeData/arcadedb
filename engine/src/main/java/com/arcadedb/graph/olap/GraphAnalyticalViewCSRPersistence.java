@@ -26,8 +26,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
@@ -35,6 +35,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -49,6 +51,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
+import java.util.zip.CheckedInputStream;
+import java.util.zip.CheckedOutputStream;
 
 /**
  * Reads and writes a {@link GraphAnalyticalView}'s built CSR (adjacency indexes, node ID mapping and columnar
@@ -85,7 +89,11 @@ class GraphAnalyticalViewCSRPersistence {
   private static final int    MAGIC          = 0x47415643; // "GAVC"
   // 3: a listed vertex type brings its sub-types (issue #10208), so a file written for the type alone is not reused
   // 4: the header carries the scan's coverage of the edge types (issue #10214)
-  private static final int    FORMAT_VERSION = 4;
+  // 5: the payload is a sequence of frames, each encrypted on its own, so neither side holds it whole (issue #11011)
+  private static final int    FORMAT_VERSION   = 5;
+  private static final int    FRAME_SIZE       = 1 << 20;
+  private static final int    ARRAY_CHUNK_SIZE = 1 << 16;
+  private static final int    IO_BUFFER_SIZE   = 1 << 16;
   // NODE-LOCAL (#9638): DECLARED IN NodeLocalFiles SO A CROSS-NODE CHECKSUM LEAVES THE FILE OUT
   private static final String FILE_PREFIX    = NodeLocalFiles.GAV_CSR_FILE_PREFIX;
   private static final String FILE_EXTENSION = NodeLocalFiles.GAV_CSR_FILE_EXTENSION;
@@ -131,21 +139,7 @@ class GraphAnalyticalViewCSRPersistence {
   static void save(final Database database, final String viewName, final String[] vertexTypes, final String[] edgeTypes,
       final String[] propertyFilter, final String[] edgePropertyFilter, final GraphAnalyticalView.Snapshot snapshot,
       final String[] scannedEdgeTypes, final int[] uncoveredEdgeBuckets) throws IOException {
-    final ByteArrayOutputStream payloadBuffer = new ByteArrayOutputStream(1024);
-    try (final DataOutputStream payloadOut = new DataOutputStream(payloadBuffer)) {
-      writeNodeMapping(payloadOut, snapshot.nodeMapping);
-      writeBucketColumns(payloadOut, snapshot.bucketColumns);
-      writeCsrPerType(payloadOut, snapshot.csrPerType);
-      writeOptionalColumnStoreMap(payloadOut, snapshot.edgeColumnStores);
-      writeOptionalIntArrayMap(payloadOut, snapshot.bwdToFwd);
-    }
-    final byte[] rawPayload = payloadBuffer.toByteArray();
-
     final DataEncryption encryption = dataEncryptionOf(database);
-    final byte[] storedPayload = encryption != null ? encryption.encrypt(rawPayload) : rawPayload;
-
-    final CRC32 crc = new CRC32();
-    crc.update(storedPayload);
 
     final File target = fileFor(database, viewName);
     final File parent = target.getParentFile();
@@ -153,7 +147,10 @@ class GraphAnalyticalViewCSRPersistence {
       Files.createDirectories(parent.toPath());
     final File tmp = new File(parent, target.getName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
 
-    try (final DataOutputStream out = new DataOutputStream(new FileOutputStream(tmp))) {
+    // One checksum over the whole file, the header included: a header byte decides what the restored view claims to cover
+    final CRC32 crc = new CRC32();
+    try (final DataOutputStream out = new DataOutputStream(
+        new CheckedOutputStream(new BufferedOutputStream(new FileOutputStream(tmp), IO_BUFFER_SIZE), crc))) {
       out.writeInt(MAGIC);
       out.writeInt(FORMAT_VERSION);
       writeString(out, viewName);
@@ -165,9 +162,21 @@ class GraphAnalyticalViewCSRPersistence {
       writeOptionalInts(out, uncoveredEdgeBuckets);
       out.writeLong(snapshot.asOfTransactionId);
       out.writeBoolean(encryption != null);
-      out.writeInt(storedPayload.length);
-      out.write(storedPayload);
-      out.writeLong(crc.getValue());
+
+      // The payload is streamed to the file in frames rather than assembled in memory first: a buffer of the whole payload
+      // held the view a second time, and its growth and the copy out of it a third, while the view was being written
+      // (issue #11011)
+      final FramedOutputStream frames = new FramedOutputStream(out, encryption);
+      final DataOutputStream payloadOut = new DataOutputStream(frames);
+      writeNodeMapping(payloadOut, snapshot.nodeMapping);
+      writeBucketColumns(payloadOut, snapshot.bucketColumns);
+      writeCsrPerType(payloadOut, snapshot.csrPerType);
+      writeOptionalColumnStoreMap(payloadOut, snapshot.edgeColumnStores);
+      writeOptionalIntArrayMap(payloadOut, snapshot.bwdToFwd);
+      payloadOut.flush();
+      frames.finish();
+      final long checksum = crc.getValue();
+      out.writeLong(checksum);
     } catch (final IOException | RuntimeException e) {
       Files.deleteIfExists(tmp.toPath());
       throw e;
@@ -220,13 +229,11 @@ class GraphAnalyticalViewCSRPersistence {
       out.writeInt(v);
   }
 
-  private static int[] readOptionalInts(final DataInputStream in) throws IOException {
-    final int length = in.readInt();
+  private static int[] readOptionalInts(final BoundedInput in) throws IOException {
+    // READ BEFORE THE CHECKSUM: A CORRUPT HEADER MUST NOT SIZE AN ALLOCATION. ONE ENTRY PER BUCKET, SO THE FILE BOUNDS IT
+    final int length = in.readLength(Integer.BYTES);
     if (length < 0)
       return null;
-    // READ BEFORE THE CHECKSUM: A CORRUPT HEADER MUST NOT SIZE AN ALLOCATION. ONE ENTRY PER BUCKET, SO THE FILE BOUNDS IT
-    if (length > in.available() / Integer.BYTES)
-      throw new EOFException("declared " + length + " bucket ids exceed what the file holds");
     final int[] values = new int[length];
     for (int i = 0; i < length; i++)
       values[i] = in.readInt();
@@ -319,36 +326,42 @@ class GraphAnalyticalViewCSRPersistence {
   }
 
   /**
-   * Writes the array length followed by its raw bytes in one bulk {@link ByteBuffer} conversion and one {@code
-   * write(byte[])} call, instead of one {@code DataOutputStream} call per element - the difference between a handful
-   * of bulk copies and tens of millions of small virtual calls for the multi-million-element offset/neighbor arrays
-   * a 1M-vertex CSR produces.
+   * Writes the array length followed by its raw bytes in bulk {@link ByteBuffer} conversions of {@link #ARRAY_CHUNK_SIZE}
+   * bytes each, instead of one {@code DataOutputStream} call per element - the difference between a handful of bulk
+   * copies and tens of millions of small virtual calls for the multi-million-element offset/neighbor arrays a 1M-vertex
+   * CSR produces - and without a byte copy of the whole array, which for a neighbour array is the size of the slice.
    */
   private static void writeIntArray(final DataOutputStream out, final int[] array) throws IOException {
     out.writeInt(array.length);
-    if (array.length == 0)
-      return;
-    final byte[] bytes = new byte[Math.multiplyExact(array.length, Integer.BYTES)];
-    ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asIntBuffer().put(array);
-    out.write(bytes);
+    final byte[] chunk = new byte[(int) Math.min(ARRAY_CHUNK_SIZE, (long) array.length * Integer.BYTES)];
+    final int perChunk = ARRAY_CHUNK_SIZE / Integer.BYTES;
+    for (int from = 0; from < array.length; from += perChunk) {
+      final int count = Math.min(perChunk, array.length - from);
+      ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).asIntBuffer().put(array, from, count);
+      out.write(chunk, 0, count * Integer.BYTES);
+    }
   }
 
   private static void writeLongArray(final DataOutputStream out, final long[] array) throws IOException {
     out.writeInt(array.length);
-    if (array.length == 0)
-      return;
-    final byte[] bytes = new byte[Math.multiplyExact(array.length, Long.BYTES)];
-    ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asLongBuffer().put(array);
-    out.write(bytes);
+    final byte[] chunk = new byte[(int) Math.min(ARRAY_CHUNK_SIZE, (long) array.length * Long.BYTES)];
+    final int perChunk = ARRAY_CHUNK_SIZE / Long.BYTES;
+    for (int from = 0; from < array.length; from += perChunk) {
+      final int count = Math.min(perChunk, array.length - from);
+      ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).asLongBuffer().put(array, from, count);
+      out.write(chunk, 0, count * Long.BYTES);
+    }
   }
 
   private static void writeDoubleArray(final DataOutputStream out, final double[] array) throws IOException {
     out.writeInt(array.length);
-    if (array.length == 0)
-      return;
-    final byte[] bytes = new byte[Math.multiplyExact(array.length, Double.BYTES)];
-    ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asDoubleBuffer().put(array);
-    out.write(bytes);
+    final byte[] chunk = new byte[(int) Math.min(ARRAY_CHUNK_SIZE, (long) array.length * Double.BYTES)];
+    final int perChunk = ARRAY_CHUNK_SIZE / Double.BYTES;
+    for (int from = 0; from < array.length; from += perChunk) {
+      final int count = Math.min(perChunk, array.length - from);
+      ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).asDoubleBuffer().put(array, from, count);
+      out.write(chunk, 0, count * Double.BYTES);
+    }
   }
 
   // --- Load ---
@@ -365,13 +378,11 @@ class GraphAnalyticalViewCSRPersistence {
     if (!file.isFile())
       return null;
 
-    final byte[] storedPayload;
-    final boolean encrypted;
-    final long asOfTransactionId;
-    final String[] scannedEdgeTypes;
-    final int[] uncoveredEdgeBuckets;
-
-    try (final DataInputStream in = new DataInputStream(new FileInputStream(file))) {
+    // Every length the file declares is checked against what the file can hold before it sizes an allocation: the payload
+    // is parsed as it is read, so its checksum is known only once the arrays are built
+    final CRC32 crc = new CRC32();
+    try (final BoundedInput in = new BoundedInput(
+        new CheckedInputStream(new BufferedInputStream(new FileInputStream(file), IO_BUFFER_SIZE), crc), file.length())) {
       if (in.readInt() != MAGIC || in.readInt() != FORMAT_VERSION)
         return null;
       if (!viewName.equals(readString(in))
@@ -380,26 +391,28 @@ class GraphAnalyticalViewCSRPersistence {
           || !Arrays.equals(readStringArray(in), propertyFilter)
           || !Arrays.equals(readStringArray(in), edgePropertyFilter))
         return null;
-      scannedEdgeTypes = readStringArray(in);
-      uncoveredEdgeBuckets = readOptionalInts(in);
-      asOfTransactionId = in.readLong();
+      final String[] scannedEdgeTypes = readStringArray(in);
+      final int[] uncoveredEdgeBuckets = readOptionalInts(in);
+      final long asOfTransactionId = in.readLong();
       if (asOfTransactionId != currentLastTransactionId)
         return null;
-      encrypted = in.readBoolean();
-      final int payloadLength = in.readInt();
-      // A corrupt header could carry a huge but individually plausible length; check it against the file's total
-      // size before allocating, rather than relying on readFully() to eventually fail with EOFException after the
-      // allocation already happened. Looser than checking against what's actually left after the header (a length
-      // just under the file's full size would still pass here and then legitimately fail readFully() a few bytes
-      // later), but that remaining failure is already handled as corruption, so this bound only needs to reject the
-      // implausible case cheaply, not pinpoint the exact one.
-      if (payloadLength < 0 || payloadLength > file.length())
-        throw new EOFException("declared payload length " + payloadLength + " exceeds the file's total size");
-      storedPayload = new byte[payloadLength];
-      in.readFully(storedPayload);
+      final boolean encrypted = in.readBoolean();
+      final DataEncryption encryption = dataEncryptionOf(database);
+      if (encrypted && encryption == null)
+        throw new IOException("persisted CSR is encrypted but no DataEncryption is configured on this database");
 
-      final CRC32 crc = new CRC32();
-      crc.update(storedPayload);
+      // The payload is parsed while it streams in, frame by frame, so the view is held once while it is read back, not
+      // once as the bytes read and again as the arrays built from them (issue #11011)
+      final FramedInputStream frames = new FramedInputStream(in, encrypted ? encryption : null);
+      final BoundedInput payloadIn = new BoundedInput(frames, file.length());
+      final NodeIdMapping mapping = readNodeMapping(payloadIn);
+      final ColumnStore[] bucketColumns = readBucketColumns(payloadIn);
+      final Map<String, CSRAdjacencyIndex> csrPerType = readCsrPerType(payloadIn);
+      final Map<String, ColumnStore> edgeColumnStores = readOptionalColumnStoreMap(payloadIn);
+      final Map<String, int[]> bwdToFwd = readOptionalIntArrayMap(payloadIn);
+      frames.finish();
+
+      // Taken before the stored value is read, which the checked stream would add to it
       final long computedCrc = crc.getValue();
       final long storedCrc = in.readLong();
       if (computedCrc != storedCrc) {
@@ -409,55 +422,33 @@ class GraphAnalyticalViewCSRPersistence {
         delete(database, viewName);
         return null;
       }
-    } catch (final EOFException | NegativeArraySizeException | OutOfMemoryError e) {
-      LogManager.instance().log(GraphAnalyticalViewCSRPersistence.class, Level.WARNING,
-          "Persisted CSR for GraphAnalyticalView '%s' is truncated or corrupt (%s), discarding and falling back to rebuild",
-          null, viewName, e.toString());
-      delete(database, viewName);
-      return null;
-    }
 
-    try {
-      final DataEncryption encryption = dataEncryptionOf(database);
-      if (encrypted && encryption == null)
-        throw new IOException("persisted CSR is encrypted but no DataEncryption is configured on this database");
-      final byte[] rawPayload = encrypted ? encryption.decrypt(storedPayload) : storedPayload;
-
-      try (final DataInputStream payloadIn = new DataInputStream(new ByteArrayInputStream(rawPayload))) {
-        final NodeIdMapping mapping = readNodeMapping(payloadIn);
-        final ColumnStore[] bucketColumns = readBucketColumns(payloadIn);
-        final Map<String, CSRAdjacencyIndex> csrPerType = readCsrPerType(payloadIn);
-        final Map<String, ColumnStore> edgeColumnStores = readOptionalColumnStoreMap(payloadIn);
-        final Map<String, int[]> bwdToFwd = readOptionalIntArrayMap(payloadIn);
-
-        // Nothing was committed since the file was written (the certificate above), so the scan's coverage still holds, measured
-        // from the restoring view's own counter of the uncovered edges written
-        IntHashSet uncovered = null;
-        if (uncoveredEdgeBuckets != null) {
-          uncovered = new IntHashSet(Math.max(16, uncoveredEdgeBuckets.length * 2));
-          for (final int bucketId : uncoveredEdgeBuckets)
-            uncovered.add(bucketId);
-        }
-        return new GraphAnalyticalView.Snapshot(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwd,
-            null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
-            vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L,
-            scannedEdgeTypes != null ? Set.copyOf(Arrays.asList(scannedEdgeTypes)) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered);
+      // Nothing was committed since the file was written (the certificate above), so the scan's coverage still holds, measured
+      // from the restoring view's own counter of the uncovered edges written
+      IntHashSet uncovered = null;
+      if (uncoveredEdgeBuckets != null) {
+        uncovered = new IntHashSet(Math.max(16, uncoveredEdgeBuckets.length * 2));
+        for (final int bucketId : uncoveredEdgeBuckets)
+          uncovered.add(bucketId);
       }
+      return new GraphAnalyticalView.Snapshot(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwd,
+          null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
+          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L,
+          scannedEdgeTypes != null ? Set.copyOf(Arrays.asList(scannedEdgeTypes)) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered);
     } catch (final IOException | OutOfMemoryError | RuntimeException e) {
-      // IOException here also catches the "encrypted but no DataEncryption configured" case thrown above:
-      // routed through the same log+delete+return-null path as truncation/corruption for consistency, rather
-      // than propagating past this method to be caught (still safely, just less informatively) by the broad
-      // Exception handling in tryRestoreFromPersistedCsr()/persistCsrIfPossible().
+      // Truncation, corruption, a payload that does not decrypt, and the "encrypted but no DataEncryption configured" case
+      // thrown above all take the same log+delete+return-null path, rather than propagating past this method to be caught
+      // (still safely, just less informatively) by the broad Exception handling in tryRestoreFromPersistedCsr()
       LogManager.instance().log(GraphAnalyticalViewCSRPersistence.class, Level.WARNING,
-          "Persisted CSR for GraphAnalyticalView '%s' is unusable (%s), discarding and falling back to rebuild",
+          "Persisted CSR for GraphAnalyticalView '%s' is truncated, corrupt or unusable (%s), discarding and falling back to rebuild",
           null, viewName, e.toString());
       delete(database, viewName);
       return null;
     }
   }
 
-  private static String readString(final DataInputStream in) throws IOException {
-    final int len = in.readInt();
+  private static String readString(final BoundedInput in) throws IOException {
+    final int len = in.readLength(1);
     if (len < 0)
       return null;
     final byte[] bytes = new byte[len];
@@ -465,8 +456,9 @@ class GraphAnalyticalViewCSRPersistence {
     return new String(bytes, StandardCharsets.UTF_8);
   }
 
-  private static String[] readStringArray(final DataInputStream in) throws IOException {
-    final int len = in.readInt();
+  private static String[] readStringArray(final BoundedInput in) throws IOException {
+    // Each entry takes at least the four bytes of its own length
+    final int len = in.readLength(Integer.BYTES);
     if (len < 0)
       return null;
     final String[] values = new String[len];
@@ -475,8 +467,8 @@ class GraphAnalyticalViewCSRPersistence {
     return values;
   }
 
-  private static NodeIdMapping readNodeMapping(final DataInputStream in) throws IOException {
-    final int numBuckets = in.readInt();
+  private static NodeIdMapping readNodeMapping(final BoundedInput in) throws IOException {
+    final int numBuckets = in.readLength(Integer.BYTES);
     final int[] bucketIds = new int[numBuckets];
     final String[] bucketTypeNames = new String[numBuckets];
     final long[][] positions = new long[numBuckets][];
@@ -490,27 +482,32 @@ class GraphAnalyticalViewCSRPersistence {
     return NodeIdMapping.restore(bucketIds, bucketTypeNames, positions, oldToNew);
   }
 
-  private static ColumnStore[] readBucketColumns(final DataInputStream in) throws IOException {
-    final int numBuckets = in.readInt();
+  private static ColumnStore[] readBucketColumns(final BoundedInput in) throws IOException {
+    final int numBuckets = in.readLength(Integer.BYTES);
     final ColumnStore[] result = new ColumnStore[numBuckets];
     for (int i = 0; i < numBuckets; i++)
       result[i] = readColumnStore(in);
     return result;
   }
 
-  private static ColumnStore readColumnStore(final DataInputStream in) throws IOException {
+  private static ColumnStore readColumnStore(final BoundedInput in) throws IOException {
     final int nodeCount = in.readInt();
-    final int columnCount = in.readInt();
+    if (nodeCount < 0)
+      throw new EOFException("negative node count " + nodeCount + " in the persisted CSR");
+    final int columnCount = in.readLength(Integer.BYTES);
     final ColumnStore store = new ColumnStore(nodeCount);
     for (int c = 0; c < columnCount; c++)
       store.putColumn(readColumn(in, nodeCount));
     return store;
   }
 
-  private static Column readColumn(final DataInputStream in, final int nodeCount) throws IOException {
+  private static Column readColumn(final BoundedInput in, final int nodeCount) throws IOException {
     final String name = readString(in);
     final Column.Type type = Column.Type.values()[in.readUnsignedByte()];
     final long[] nullBitset = readLongArray(in);
+    // The column is sized by the node count before the checksum is known: its null bitset, bounded by the file, must cover it
+    if (nullBitset.length < ((nodeCount + 63L) >>> 6))
+      throw new EOFException("node count " + nodeCount + " exceeds the null bitset of column '" + name + "' in the persisted CSR");
     int[] intData = null;
     long[] longData = null;
     double[] doubleData = null;
@@ -534,8 +531,8 @@ class GraphAnalyticalViewCSRPersistence {
     return Column.restore(name, type, nodeCount, nullBitset, intData, longData, doubleData, stringCodes, dictionaryValues);
   }
 
-  private static Map<String, CSRAdjacencyIndex> readCsrPerType(final DataInputStream in) throws IOException {
-    final int count = in.readInt();
+  private static Map<String, CSRAdjacencyIndex> readCsrPerType(final BoundedInput in) throws IOException {
+    final int count = in.readLength(Integer.BYTES);
     final Map<String, CSRAdjacencyIndex> result = new HashMap<>(Math.max(16, count * 2));
     for (int i = 0; i < count; i++) {
       final String edgeTypeName = readString(in);
@@ -550,20 +547,20 @@ class GraphAnalyticalViewCSRPersistence {
     return result;
   }
 
-  private static Map<String, ColumnStore> readOptionalColumnStoreMap(final DataInputStream in) throws IOException {
+  private static Map<String, ColumnStore> readOptionalColumnStoreMap(final BoundedInput in) throws IOException {
     if (!in.readBoolean())
       return null;
-    final int count = in.readInt();
+    final int count = in.readLength(Integer.BYTES);
     final Map<String, ColumnStore> result = new LinkedHashMap<>(Math.max(16, count * 2));
     for (int i = 0; i < count; i++)
       result.put(readString(in), readColumnStore(in));
     return result;
   }
 
-  private static Map<String, int[]> readOptionalIntArrayMap(final DataInputStream in) throws IOException {
+  private static Map<String, int[]> readOptionalIntArrayMap(final BoundedInput in) throws IOException {
     if (!in.readBoolean())
       return null;
-    final int count = in.readInt();
+    final int count = in.readLength(Integer.BYTES);
     final Map<String, int[]> result = new LinkedHashMap<>(Math.max(16, count * 2));
     for (int i = 0; i < count; i++)
       result.put(readString(in), readIntArray(in));
@@ -571,39 +568,192 @@ class GraphAnalyticalViewCSRPersistence {
   }
 
   /**
-   * Reads the length written by {@link #writeIntArray} followed by one bulk read and one bulk {@link ByteBuffer}
-   * conversion, mirroring the write side.
+   * Reads the length written by {@link #writeIntArray} followed by bulk reads and bulk {@link ByteBuffer} conversions of
+   * {@link #ARRAY_CHUNK_SIZE} bytes each, mirroring the write side: the array is the only full-size allocation.
    */
-  private static int[] readIntArray(final DataInputStream in) throws IOException {
-    final int len = in.readInt();
-    final int[] array = new int[len];
-    if (len == 0)
-      return array;
-    final byte[] bytes = new byte[Math.multiplyExact(len, Integer.BYTES)];
-    in.readFully(bytes);
-    ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asIntBuffer().get(array);
+  private static int[] readIntArray(final BoundedInput in) throws IOException {
+    final int[] array = new int[in.readLength(Integer.BYTES)];
+    final byte[] chunk = new byte[(int) Math.min(ARRAY_CHUNK_SIZE, (long) array.length * Integer.BYTES)];
+    final int perChunk = ARRAY_CHUNK_SIZE / Integer.BYTES;
+    for (int from = 0; from < array.length; from += perChunk) {
+      final int count = Math.min(perChunk, array.length - from);
+      in.readFully(chunk, 0, count * Integer.BYTES);
+      ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).asIntBuffer().get(array, from, count);
+    }
     return array;
   }
 
-  private static long[] readLongArray(final DataInputStream in) throws IOException {
-    final int len = in.readInt();
-    final long[] array = new long[len];
-    if (len == 0)
-      return array;
-    final byte[] bytes = new byte[Math.multiplyExact(len, Long.BYTES)];
-    in.readFully(bytes);
-    ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asLongBuffer().get(array);
+  private static long[] readLongArray(final BoundedInput in) throws IOException {
+    final long[] array = new long[in.readLength(Long.BYTES)];
+    final byte[] chunk = new byte[(int) Math.min(ARRAY_CHUNK_SIZE, (long) array.length * Long.BYTES)];
+    final int perChunk = ARRAY_CHUNK_SIZE / Long.BYTES;
+    for (int from = 0; from < array.length; from += perChunk) {
+      final int count = Math.min(perChunk, array.length - from);
+      in.readFully(chunk, 0, count * Long.BYTES);
+      ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).asLongBuffer().get(array, from, count);
+    }
     return array;
   }
 
-  private static double[] readDoubleArray(final DataInputStream in) throws IOException {
-    final int len = in.readInt();
-    final double[] array = new double[len];
-    if (len == 0)
-      return array;
-    final byte[] bytes = new byte[Math.multiplyExact(len, Double.BYTES)];
-    in.readFully(bytes);
-    ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asDoubleBuffer().get(array);
+  private static double[] readDoubleArray(final BoundedInput in) throws IOException {
+    final double[] array = new double[in.readLength(Double.BYTES)];
+    final byte[] chunk = new byte[(int) Math.min(ARRAY_CHUNK_SIZE, (long) array.length * Double.BYTES)];
+    final int perChunk = ARRAY_CHUNK_SIZE / Double.BYTES;
+    for (int from = 0; from < array.length; from += perChunk) {
+      final int count = Math.min(perChunk, array.length - from);
+      in.readFully(chunk, 0, count * Double.BYTES);
+      ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN).asDoubleBuffer().get(array, from, count);
+    }
     return array;
+  }
+
+  /**
+   * A {@link DataInputStream} that checks every length the file declares against the bytes the file can hold before the
+   * caller sizes an allocation with it. A payload is parsed as it streams in, before its checksum is known, so a corrupt
+   * length must be refused on sight rather than reach the allocator: it would otherwise ask for up to 16 GB.
+   */
+  private static final class BoundedInput extends DataInputStream {
+    private long unclaimed;
+
+    private BoundedInput(final InputStream in, final long bound) {
+      super(in);
+      this.unclaimed = bound;
+    }
+
+    /**
+     * Reads a length of entries of at least {@code entryBytes} bytes each, refusing one the file cannot hold. A negative
+     * length is returned as is: it is how an absent value is written.
+     */
+    int readLength(final int entryBytes) throws IOException {
+      final int length = readInt();
+      if (length < 0)
+        return length;
+      final long bytes = (long) length * entryBytes;
+      if (bytes > unclaimed)
+        throw new EOFException("declared " + length + " entries exceed what the file holds");
+      unclaimed -= bytes;
+      return length;
+    }
+  }
+
+  /**
+   * Writes the payload as a sequence of frames of at most {@link #FRAME_SIZE} bytes, each prefixed with its stored length
+   * and encrypted on its own when the database encrypts, followed by a {@code -1} end marker. The stream under it checksums
+   * what it writes. Only one frame is held in memory, whatever the payload's size (issue #11011).
+   */
+  private static final class FramedOutputStream extends OutputStream {
+    private final DataOutputStream out;
+    private final DataEncryption   encryption;
+    private final byte[]           frame = new byte[FRAME_SIZE];
+    private       int              fill;
+
+    private FramedOutputStream(final DataOutputStream out, final DataEncryption encryption) {
+      this.out = out;
+      this.encryption = encryption;
+    }
+
+    @Override
+    public void write(final int b) throws IOException {
+      if (fill == frame.length)
+        writeFrame();
+      frame[fill++] = (byte) b;
+    }
+
+    @Override
+    public void write(final byte[] bytes, int offset, int length) throws IOException {
+      while (length > 0) {
+        if (fill == frame.length)
+          writeFrame();
+        final int count = Math.min(length, frame.length - fill);
+        System.arraycopy(bytes, offset, frame, fill, count);
+        fill += count;
+        offset += count;
+        length -= count;
+      }
+    }
+
+    /** Writes the last frame and the end marker. */
+    void finish() throws IOException {
+      writeFrame();
+      out.writeInt(-1);
+    }
+
+    private void writeFrame() throws IOException {
+      if (fill == 0)
+        return;
+      final byte[] stored = encryption != null ? encryption.encrypt(Arrays.copyOf(frame, fill)) : frame;
+      final int length = encryption != null ? stored.length : fill;
+      out.writeInt(length);
+      out.write(stored, 0, length);
+      fill = 0;
+    }
+  }
+
+  /** Reads what {@link FramedOutputStream} wrote, one frame in memory at a time. */
+  private static final class FramedInputStream extends InputStream {
+    private final DataInputStream in;
+    private final DataEncryption  encryption;
+    private       byte[]          frame = new byte[0];
+    private       int             position;
+    private       int             limit;
+    private       boolean         ended;
+
+    private FramedInputStream(final DataInputStream in, final DataEncryption encryption) {
+      this.in = in;
+      this.encryption = encryption;
+    }
+
+    @Override
+    public int read() throws IOException {
+      while (position == limit)
+        if (!nextFrame())
+          return -1;
+      return frame[position++] & 0xFF;
+    }
+
+    @Override
+    public int read(final byte[] bytes, final int offset, final int length) throws IOException {
+      if (length == 0)
+        return 0;
+      while (position == limit)
+        if (!nextFrame())
+          return -1;
+      final int count = Math.min(length, limit - position);
+      System.arraycopy(frame, position, bytes, offset, count);
+      position += count;
+      return count;
+    }
+
+    /** Checks that the payload ends where its content does: a frame left over means the file is not what was written. */
+    void finish() throws IOException {
+      if (position != limit || nextFrame())
+        throw new EOFException("the persisted CSR holds more than its content");
+    }
+
+    private boolean nextFrame() throws IOException {
+      if (ended)
+        return false;
+      final int length = in.readInt();
+      if (length < 0) {
+        ended = true;
+        return false;
+      }
+      // An encrypted frame is its plain frame plus the cipher's own overhead, never twice its size
+      if (length == 0 || length > 2 * FRAME_SIZE)
+        throw new EOFException("invalid frame length " + length + " in the persisted CSR");
+      // Without encryption the frame buffer is read into again: safe, since a frame is read only once the previous one is
+      // consumed (position == limit), and nothing keeps a reference to its bytes
+      final byte[] stored = encryption == null && frame.length >= length ? frame : new byte[length];
+      in.readFully(stored, 0, length);
+      if (encryption != null) {
+        frame = encryption.decrypt(stored);
+        limit = frame.length;
+      } else {
+        frame = stored;
+        limit = length;
+      }
+      position = 0;
+      return true;
+    }
   }
 }

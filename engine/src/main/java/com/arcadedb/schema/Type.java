@@ -31,12 +31,15 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.NonFiniteNumbers;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
@@ -49,6 +52,7 @@ import java.text.SimpleDateFormat;
 import java.time.*;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -342,6 +346,14 @@ public enum Type {
   }
 
   /**
+   * The name a property declaration stores the type under (its JSON {@code type}) and {@link #getTypeByName} resolves, such as
+   * {@code Float[]} for {@link #ARRAY_OF_FLOATS}: not always the constant's {@link #name()}.
+   */
+  public String getName() {
+    return name;
+  }
+
+  /**
    * Convert types based on the iTargetClass parameter.
    *
    * @param value       Value to convert
@@ -351,6 +363,43 @@ public enum Type {
    */
   public static Object convert(final Database database, final Object value, final Class<?> targetClass) {
     return convert(database, value, targetClass, null);
+  }
+
+  /**
+   * The count of epoch days a number stands for in a conversion to a DATE. Only a value WRITTEN into a DATE property reads the
+   * milliseconds of a UTC midnight as that day (issue #10865, see {@link DateUtils#dateNumberToEpochDays(long)}): that is where
+   * a {@code LocalDate} query parameter or an HTTP client's date arrives as milliseconds. A conversion with no property behind
+   * it, a comparison above all, keeps reading every number as a count of days, so a number never equals a date (#8913).
+   */
+  private static long dateNumberToEpochDays(final long number, final Property property) {
+    return property != null ? DateUtils.dateNumberToEpochDays(number) : number;
+  }
+
+  /**
+   * True when {@code property} is a DATE column: a number written into it is a count of epoch days (or the milliseconds of a UTC
+   * midnight) whatever Java class the DATE is held as, not the epoch milliseconds a {@code java.util.Date}, {@code Calendar} or
+   * {@code LocalDateTime} target reads for a DATETIME (issue #10910).
+   */
+  private static boolean isDateProperty(final Property property) {
+    return property != null && property.getType() == DATE;
+  }
+
+  /**
+   * The epoch milliseconds a number written into a DATE column stands for when the DATE is held as a {@code java.util.Date} or a
+   * {@code Calendar}, on the day {@link DateUtils#dateNumberToEpochDays(long)} reads, the one day every class of a DATE reads
+   * for that number (issues #10910 and #11025): the UTC midnight of a day count, or the milliseconds a number read as
+   * milliseconds already is. A day count is within {@link DateUtils#MAX_DATE_DAY_COUNT} of zero, so its milliseconds always fit
+   * a {@code long}.
+   */
+  private static long dateNumberToEpochMillis(final long number) {
+    final long days = DateUtils.dateNumberToEpochDays(number);
+    return DateUtils.isDateNumberMillis(number) ? number : days * DateUtils.MS_IN_A_DAY;
+  }
+
+  /** The same for a DATE held as a {@code LocalDateTime} (issues #10910 and #11025). */
+  private static LocalDateTime dateNumberToLocalDateTime(final long number) {
+    final long days = DateUtils.dateNumberToEpochDays(number);
+    return DateUtils.isDateNumberMillis(number) ? DateUtils.localDateTimeFromEpochMillis(number) : LocalDate.ofEpochDay(days).atStartOfDay();
   }
 
   /**
@@ -447,6 +496,53 @@ public enum Type {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return null;
     }
+  }
+
+  /**
+   * Whether {@code value}, the operand of an index LOOKUP (an equality, an {@code IN} element or a range bound), can be read as a key of
+   * {@code targetClass} (issue #10541). A value of a kind the key type cannot hold - a {@code LocalDate} for a BOOLEAN key, a list for an
+   * INTEGER one - is answered by {@link #convertIndexKeyOrNull} in one of two ways that are not a key: left as it was, which the key
+   * comparison then casts ({@code ClassCastException}, or "Comparison between type N and N not supported"), or {@code null}, which a
+   * range bound reads as "no bound" and answers every row. A lookup of such a value matches no entry, as the same predicate matches no
+   * row without the index.
+   * <p>
+   * Only the scalar key classes are held to it, the ones whose conversion has a defined result: string, boolean, the numbers and the
+   * temporals. A key class with a structure of its own (a RID, an array, an embedded document) keeps the conversion it had.
+   * A {@code null} value is not asked about: it is a lookup of the null key, which the index answers on its own.
+   */
+  public static boolean canBeIndexLookupKey(final Database database, final Object value, final Class<?> targetClass) {
+    if (value == null || targetClass == null || !isScalarKeyClass(targetClass))
+      return true;
+
+    final Object converted;
+    try {
+      converted = convertIndexKeyOrNull(database, value, targetClass);
+    } catch (final IllegalArgumentException e) {
+      // a value the key type cannot read ('7.0' for an INTEGER key, a number past the range of the type) equals no key (issue #8888)
+      return false;
+    }
+    return isReadAsIndexKey(value, converted, targetClass);
+  }
+
+  /**
+   * Whether {@code converted}, what {@link #convertIndexKeyOrNull} made of the lookup value {@code original}, is a key of
+   * {@code targetClass}. For the caller that has converted the value already and so does not convert it twice, see
+   * {@link #canBeIndexLookupKey}.
+   */
+  public static boolean isReadAsIndexKey(final Object original, final Object converted, final Class<?> targetClass) {
+    if (original == null || targetClass == null || !isScalarKeyClass(targetClass))
+      return true;
+    return targetClass.isInstance(converted);
+  }
+
+  /**
+   * Whether {@code targetClass} is one of the scalar key classes the index lookup checks hold to: string, boolean, numbers and
+   * temporals.
+   */
+  public static boolean isScalarKeyClass(final Class<?> targetClass) {
+    return targetClass == String.class || targetClass == Boolean.class || Number.class.isAssignableFrom(targetClass)
+        || Temporal.class.isAssignableFrom(targetClass) || Date.class.isAssignableFrom(targetClass)
+        || Calendar.class.isAssignableFrom(targetClass);
   }
 
   /**
@@ -595,10 +691,27 @@ public enum Type {
     // Only coerce plain scalar values; leave nested documents/collections/links to the validation layer.
     // a date value is only coerced towards a date type: in a LIST OF STRING / INTEGER it stays what it is, for the
     // validator to refuse (#9111)
-    if (isPlainScalar(item, ofType))
+    if (isPlainScalar(item, ofType)) {
+      // A number written into a LIST/MAP OF DATE is read like one written into a DATE property: the milliseconds of a UTC
+      // midnight are that day (issue #10865). Done here because the item is converted with no property, see below
+      if (ofType == DATE && item instanceof Number number) {
+        if (ofClass == LocalDate.class)
+          return DateUtils.date(database, DateUtils.dateNumberToEpochDays(DateUtils.numberToEpochUnits(number)), LocalDate.class);
+        // and the same under a java.util.Date / Calendar / LocalDateTime implementation of the DATE (issue #10910)
+        if (ofClass == Date.class)
+          return new Date(dateNumberToEpochMillis(DateUtils.numberToEpochUnits(number)));
+        if (ofClass == Calendar.class) {
+          final Calendar calendar = Calendar.getInstance();
+          calendar.setTimeInMillis(dateNumberToEpochMillis(DateUtils.numberToEpochUnits(number)));
+          return calendar;
+        }
+        if (ofClass == LocalDateTime.class)
+          return dateNumberToLocalDateTime(DateUtils.numberToEpochUnits(number));
+      }
       // the declared property is carried so a number out of the element range is refused instead of clamped; a date
       // conversion expects a date property, not the collection one
       return convert(database, item, ofClass, ofType.isDateOrDateTime() ? null : property);
+    }
 
     return item;
   }
@@ -617,6 +730,11 @@ public enum Type {
 
     if (targetClass == null)
       return value;
+
+    // A WRITE TO A DECLARED PROPERTY THAT DID NOT COME THROUGH A RECORD (MutableDocument.set UNWRAPS FIRST): A QUERY RESULT IS
+    // CONVERTED AS THE RECORD OR THE MAP IT STANDS FOR, NEVER REFUSED FOR BEING A WRAPPER (issue #10737)
+    if (property != null && value instanceof Result)
+      return convert(database, toRecordValue(value), targetClass, property);
 
     // Coerce the nested scalar values of a collection declared with a scalar "ofType" (e.g. LIST OF LONG, MAP OF LONG) to the
     // declared type. JSON parsing on the write path (e.g. the remote client re-serializing a full record with UPDATE ... CONTENT)
@@ -665,18 +783,27 @@ public enum Type {
         // the singleton-List case below and get wrapped as a single element instead of having its items copied.
         // Normalize it to a real List and re-enter the conversion so the collection/array branches handle it (issue #5091).
         return convert(database, jsonArray.toList(), targetClass, property);
+      } else if ((value instanceof int[] || value instanceof short[]) && isArrayOfNumbers(targetClass)) {
+        // Widened to long[], which is lossless, and converted by the long[] branches below, which narrow to every
+        // ARRAY_OF_* target with the range checks (issue #10938: an int[] for an ARRAY_OF_FLOATS had no branch)
+        return convert(database, toLongArray(value), targetClass, property);
+      } else if (value instanceof Object[] items && isArrayOfNumbers(targetClass)) {
+        // A boxed array (Float[], Double[], Number[], Object[]) is converted item by item by the collection branches below,
+        // which refuse a null or non-numeric item (issue #10938)
+        return convert(database, Arrays.asList(items), targetClass, property);
       } else if (targetClass.equals(float[].class) && value instanceof Collection<?> collection) {
         // Convert Collection to float[]
         final float[] array = new float[collection.size()];
         int i = 0;
+        // a finite item that overflows to an infinity is refused, as for a FLOAT property (issue #10938)
         for (final Object item : collection)
-          array[i++] = requireNonNullNumber(item, "FLOAT", property).floatValue();
+          array[i++] = narrowToFloat(requireNonNullNumber(item, "FLOAT", property), property);
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof double[] src) {
-        // Fast path: primitive narrowing copy
+        // Fast path: primitive narrowing copy, refusing a finite item that overflows to an infinity (issue #10938)
         final float[] array = new float[src.length];
         for (int i = 0; i < src.length; i++)
-          array[i] = (float) src[i];
+          array[i] = narrowToFloat(src[i], property);
         return array;
       } else if (targetClass.equals(float[].class) && value instanceof long[] src) {
         final float[] array = new float[src.length];
@@ -688,7 +815,7 @@ public enum Type {
         final double[] array = new double[collection.size()];
         int i = 0;
         for (final Object item : collection)
-          array[i++] = requireNonNullNumber(item, "DOUBLE", property).doubleValue();
+          array[i++] = narrowToDouble(requireNonNullNumber(item, "DOUBLE", property), property);
         return array;
       } else if (targetClass.equals(double[].class) && value instanceof float[] src) {
         // Issue #3864 follow-up: HTTP vector params arrive as float[] from JSON parsing.
@@ -724,15 +851,15 @@ public enum Type {
           array[i] = (int) narrowToIntegral(src[i], Integer.MIN_VALUE, Integer.MAX_VALUE, "INTEGER", property);
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof Collection<?> collection) {
-        // Convert Collection to long[]. LONG is the widest integral type, so only the NaN guard applies (no
-        // narrower range to check - see narrowToIntegral()).
+        // Convert Collection to long[]. LONG is the widest integral type: besides the NaN guard, only a value beyond the
+        // 64-bit range is refused (see narrowToIntegral()).
         final long[] array = new long[collection.size()];
         int i = 0;
         for (final Object item : collection)
           array[i++] = narrowToIntegral((Number) item, Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property).longValue();
         return array;
       } else if (targetClass.equals(long[].class) && value instanceof double[] src) {
-        // LONG is the widest integral type, so only the NaN guard applies (no narrower range to check - see narrowToIntegral()).
+        // LONG is the widest integral type: besides the NaN guard, only a value beyond the 64-bit range is refused (see narrowToIntegral()).
         final long[] array = new long[src.length];
         for (int i = 0; i < src.length; i++)
           array[i] = narrowToIntegral(src[i], Long.MIN_VALUE, Long.MAX_VALUE, "LONG", property);
@@ -815,7 +942,7 @@ public enum Type {
         if (value instanceof Float)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : Float.parseFloat(string);
+          return string.isEmpty() ? emptyNumericString(0f, "FLOAT", property) : parseFloat(string);
         else
           return narrowToFloat(asNumber(value, "FLOAT", property), property);
 
@@ -829,7 +956,7 @@ public enum Type {
         if (value instanceof Double)
           return value;
         else if (value instanceof String string)
-          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : Double.parseDouble(string);
+          return string.isEmpty() ? emptyNumericString(0d, "DOUBLE", property) : parseDouble(string);
         else if (value instanceof Float float1)
           // The primitive widening would carry the float's rounding error into the double; widenFloat re-reads its
           // decimal instead, and skips the round-trip where it provably cannot matter (issue #7609).
@@ -920,10 +1047,10 @@ public enum Type {
         if (value instanceof String text)
           return CypherDuration.parse(text);
       } else if (targetClass.equals(Date.class)) {
-        return convertToDate(database, value);
+        return convertToDate(database, value, property);
       } else if (targetClass.equals(Calendar.class)) {
         final Calendar cal = Calendar.getInstance();
-        cal.setTime(convertToDate(database, value));
+        cal.setTime(convertToDate(database, value, property));
         return cal;
       } else if (targetClass.equals(LocalDate.class)) {
         if (value instanceof LocalDateTime time)
@@ -935,7 +1062,7 @@ public enum Type {
         else if (value instanceof OffsetDateTime offset)
           return offset.toInstant().atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
-          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
+          return DateUtils.date(database, dateNumberToEpochDays(DateUtils.numberToEpochUnits(number), property), LocalDate.class);
         else if (value instanceof Date date)
           // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
           // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
@@ -946,7 +1073,7 @@ public enum Type {
               LocalDate.class);
         else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
-            return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
+            return DateUtils.date(database, dateNumberToEpochDays(Long.parseLong(valueAsString), property), LocalDate.class);
           else
             // The one chain, not a second copy of it: parseDateTimeKeepingWallClock already tries the schema's
             // dateTimeFormat and then its dateFormat before the built-in shapes, which is precisely what this branch
@@ -966,6 +1093,10 @@ public enum Type {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
+          // a DATE held as a LocalDateTime reads a number as the day every other implementation of it reads (issues #10910,
+          // #11025)
+          if (isDateProperty(property))
+            return dateNumberToLocalDateTime(DateUtils.numberToEpochUnits(number));
           // epoch MILLIS of a DATETIME, not the day count DateUtils.date() reads (issue #9324)
           return DateUtils.localDateTimeFromEpochMillis(DateUtils.numberToEpochUnits(number));
         } else if (value instanceof LocalDate date) {
@@ -996,12 +1127,12 @@ public enum Type {
             // literal carrying more digits than the column holds reads back the same before and after a reload
             // instead of keeping digits the serializer is about to drop.
             //
-            // ...KeepingWallClock: this branch has always dropped the offset of an offset-bearing string rather than
-            // rebasing it onto the database's zone, because Cypher's datetime() renders itself with a Z and
-            // `SET n.t = datetime('2026-01-01T00:00:00')` must read back 00:00 (issue #4125). Only the ACCEPTED
-            // FORMATS are unified here; the zone disagreement with the bulk path is its own change.
-            return truncateToPropertyPrecision(DateUtils.parseDateTimeKeepingWallClock(database, valueAsString),
-                property);
+            // ...AsUtc: the instant an offset-bearing string names is stored the way the same instant typed as an
+            // OffsetDateTime / ZonedDateTime is (the branches above), so HTTP, SQL, Bolt and Java write one value for one
+            // instant (issue #10489). The Z Cypher's datetime() renders itself with is UTC, so
+            // `SET n.t = datetime('2026-01-01T00:00:00')` still reads back 00:00 (issue #4125), and an offset-less string
+            // keeps its wall clock. Not the bulk path's rebasing onto the database's zone: a LocalDateTime is a UTC wall clock.
+            return truncateToPropertyPrecision(DateUtils.parseDateTime(database, valueAsString), property);
         }
       } else if (targetClass.equals(ZonedDateTime.class)) {
         if (value instanceof ZonedDateTime time) {
@@ -1229,15 +1360,65 @@ public enum Type {
     throw inconvertible(value, targetType, property);
   }
 
+  /**
+   * An ARRAY_OF_* property is one of these too (issue #10938): a scalar, a string or a map kept as it came was stored, then
+   * refused by a vector index that existed when it was written, and skipped by one built over it later.
+   */
   private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
     return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
-        || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class);
+        || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class)
+        || isArrayOfNumbers(targetClass);
+  }
+
+  /** The class of an ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES value. */
+  private static boolean isArrayOfNumbers(final Class<?> targetClass) {
+    return targetClass == float[].class || targetClass == double[].class || targetClass == int[].class || targetClass == long[].class
+        || targetClass == short[].class;
+  }
+
+  private static long[] toLongArray(final Object value) {
+    if (value instanceof int[] src) {
+      final long[] array = new long[src.length];
+      for (int i = 0; i < src.length; i++)
+        array[i] = src[i];
+      return array;
+    }
+    final short[] src = (short[]) value;
+    final long[] array = new long[src.length];
+    for (int i = 0; i < src.length; i++)
+      array[i] = src[i];
+    return array;
+  }
+
+  /**
+   * Parses a FLOAT from text, accepting the {@link NonFiniteNumbers} markers the JSON writers use for a non-finite
+   * number besides what {@link Float#parseFloat} takes. {@code Float.parseFloat} already reads {@code NaN} and
+   * {@code Infinity} but refuses {@code PosInfinity}/{@code NegInfinity}, so a FLOAT the server wrote as one of them
+   * could not be read back by the remote client, nor a LIST OF FLOAT holding one (issue #10899).
+   */
+  private static float parseFloat(final String text) {
+    final Double marker = NonFiniteNumbers.decode(text);
+    return marker != null ? marker.floatValue() : Float.parseFloat(text);
+  }
+
+  /** The DOUBLE twin of {@link #parseFloat(String)} (issue #10899). */
+  private static double parseDouble(final String text) {
+    final Double marker = NonFiniteNumbers.decode(text);
+    return marker != null ? marker : Double.parseDouble(text);
   }
 
   /** A finite number that overflows to an infinity is refused for a declared FLOAT (issue #9110, as #9024 for LONG). */
   private static float narrowToFloat(final Number value, final Property property) {
     final float result = value.floatValue();
     if (property != null && Float.isInfinite(result) && !isInfinite(value))
+      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
+    return result;
+  }
+
+  /** The primitive form of {@link #narrowToFloat(Number, Property)}, for an ARRAY_OF_FLOATS item: no boxing per item. */
+  private static float narrowToFloat(final double value, final Property property) {
+    final float result = (float) value;
+    if (property != null && Float.isInfinite(result) && !Double.isInfinite(value))
       throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
     return result;
   }
@@ -1366,17 +1547,19 @@ public enum Type {
           "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
-    final long longValue;
-    if (value instanceof BigDecimal bigDecimal)
-      longValue = bigDecimal.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
-          : bigDecimal.compareTo(BigDecimal.valueOf(Long.MIN_VALUE)) < 0 ? Long.MIN_VALUE : bigDecimal.longValue();
-    else if (value instanceof BigInteger bigInteger)
-      longValue = bigInteger.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0 ? Long.MAX_VALUE
-          : bigInteger.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0 ? Long.MIN_VALUE : bigInteger.longValue();
-    else
-      longValue = value.longValue();
+    // A BIG NUMBER BEYOND THE 64-BIT RANGE IS OUT OF EVERY INTEGRAL RANGE, LONG'S INCLUDED: CLAMPING IT TO Long.MAX_VALUE
+    // PASSED THE LONG CHECK BELOW AND STORED EVERY SUCH ELEMENT AS THE SAME NUMBER (issue #10756)
+    final boolean beyondLong = switch (value) {
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
+      // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
+      case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
+      case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
+      default -> false;
+    };
+    final long longValue = value.longValue();
 
-    if (longValue < min || longValue > max)
+    if (beyondLong || longValue < min || longValue > max)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
@@ -1397,8 +1580,9 @@ public enum Type {
           "Value '" + value + "' is NaN and cannot be converted to type " + targetType //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
+    // THE CAST SATURATES: 2^63 IS THE FIRST DOUBLE ABOVE THE LONG RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
     final long longValue = (long) value;
-    if (longValue < min || longValue > max)
+    if (value >= 0x1p63 || value < -0x1p63 || longValue < min || longValue > max)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
@@ -1414,7 +1598,7 @@ public enum Type {
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
     final long longValue = (long) value;
-    if (longValue < min || longValue > max)
+    if (value >= 0x1p63f || value < -0x1p63f || longValue < min || longValue > max)
       throw new IllegalArgumentException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
@@ -2357,14 +2541,27 @@ public enum Type {
       }
       return new PrimitiveArrayKey(value);
     }
-    return value;
+    // A temporal keys as the value "=" reads it, whatever Java class holds it: a stored DATETIME, a java.util.Date and the
+    // ZonedDateTime in UTC of one instant are one group, the rule openCypher's grouping applies (issues #10526, #10696)
+    // ZonedDateTime, LocalDate, LocalTime and OffsetTime are their own key: only the classes that are not pay the lookup
+    return needsTemporalKey(value) ? TemporalUtil.distinctKey(value) : value;
   }
 
   private static boolean holdsOnlyPlainValues(final Collection<?> values) {
     for (final Object item : values)
-      if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray()))
+      // the commonest element, and none of the kinds below
+      if (item instanceof String)
+        continue;
+      else if (item instanceof Number || item instanceof Collection || item instanceof Map || (item != null && item.getClass().isArray())
+          || needsTemporalKey(item))
         return false;
     return true;
+  }
+
+  /** A temporal whose key is not the value itself, see {@link TemporalUtil#distinctKey(Object)}. */
+  private static boolean needsTemporalKey(final Object value) {
+    return value instanceof Date || value instanceof Calendar || value instanceof LocalDateTime || value instanceof OffsetDateTime
+        || value instanceof Instant || value instanceof CypherTemporalValue || value instanceof Duration || value instanceof Period;
   }
 
   /**
@@ -2562,11 +2759,15 @@ public enum Type {
     return convert(null, value, javaDefaultType);
   }
 
-  private static Date convertToDate(final Database database, final Object value) {
+  private static Date convertToDate(final Database database, final Object value, final Property property) {
     if (value instanceof Date date)
       return date;
-    if (value instanceof Number number)
+    if (value instanceof Number number) {
+      // a DATE column takes a count of days, whatever class holds it (issue #10910)
+      if (isDateProperty(property))
+        return new Date(dateNumberToEpochMillis(DateUtils.numberToEpochUnits(number)));
       return new Date(number.longValue());
+    }
     else if (value instanceof Calendar calendar)
       return calendar.getTime();
     else if (value instanceof LocalDateTime time)
@@ -2580,6 +2781,8 @@ public enum Type {
     else if (value instanceof LocalDate date)
       return new Date(date.toEpochDay() * DateUtils.MS_IN_A_DAY);
     else if (value instanceof String valueAsString) {
+      if (isDateProperty(property) && FileUtils.isLong(valueAsString))
+        return new Date(dateNumberToEpochMillis(Long.parseLong(valueAsString)));
       if (database != null)
         return parseDate(database, valueAsString, database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
       if (FileUtils.isLong(valueAsString))
@@ -2680,6 +2883,115 @@ public enum Type {
   public static boolean isPrimitiveNumberArray(final Object value) {
     return value instanceof long[] || value instanceof double[] || value instanceof int[] || value instanceof float[]
         || value instanceof short[];
+  }
+
+  /**
+   * The list a JSON array is once its numbers are read one by one: a {@code long[]} gives an {@link Integer} for every element
+   * that fits one, as the JSON parser answers a scalar number, and a {@link Long} for the others. Any other primitive array
+   * is boxed as {@link #primitiveArrayToList} does.
+   */
+  public static List<Object> primitiveArrayToJsonList(final Object array) {
+    if (array instanceof long[] longs) {
+      final List<Object> list = new ArrayList<>(longs.length);
+      for (final long v : longs)
+        list.add(v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE ? (Object) (int) v : (Object) v);
+      return list;
+    }
+    return primitiveArrayToList(array);
+  }
+
+  /**
+   * Answers {@code value} with every {@code long[]}/{@code double[]} nested inside it turned into the list it stands for, or
+   * {@code value} itself when it holds none. A primitive array is what a JSON parser configured for large numeric payloads
+   * (the HTTP {@code params}, see {@code JSONObject.toMap(true)}) leaves at ANY depth of a request, while the stored value of a
+   * list or map holds lists: the same value written as a literal or from Java is a list, and {@code =}, {@code .type()} and
+   * {@code GROUP BY} tell the two apart (issue #10488). The array that IS the value is left alone: its target decides what it
+   * becomes (a list, an {@code ARRAY_OF_FLOATS}). A query {@link Result} nested in the value is unwrapped by the same walk, as
+   * {@link #toRecordValue} describes.
+   * <p>
+   * Only {@code long[]} and {@code double[]} are replaced: they are the two shapes {@code JSONArray.toPrimitiveNumericArrayOrNull}
+   * produces, and the only ones a request can leave in a value. A new shape added there has to be added here.
+   * <p>
+   * Nothing is copied unless something is to be replaced, so the common case costs one walk over the nested containers and no
+   * garbage. A container holding a replacement is copied, in the same family: a {@link List} to an {@link ArrayList}, a
+   * {@link Set} to a {@link LinkedHashSet}, a {@link Map} to a {@link LinkedHashMap}. A sorted or otherwise special container
+   * ({@code TreeMap}, {@code TreeSet}, a custom comparator) therefore loses its type and its ordering rule when it holds an
+   * array, and keeps both when it does not; a stored value is read back as the plain family anyway.
+   */
+  public static Object unwrapNestedPrimitiveArrays(final Object value) {
+    if (value instanceof Collection<?> collection)
+      return holdsNestedPrimitiveArray(collection) ? rebuildWithoutPrimitiveArrays(collection) : value;
+    if (value instanceof Map<?, ?> map)
+      return holdsNestedPrimitiveArray(map.values()) ? rebuildWithoutPrimitiveArrays(map) : value;
+    return value;
+  }
+
+  /**
+   * What a value assigned to a record property is stored as, decided where the value enters the record and BEFORE the schema
+   * conversion, so a declared property and an undeclared one receive the same value (issue #10737): a query {@link Result} is
+   * unwrapped once into the record or the map it stands for ({@link BinaryTypes#unwrapResult}), whether it is the value or is
+   * nested at any depth of a list or a map, and every nested {@code long[]}/{@code double[]} becomes the list it stands for
+   * ({@link #unwrapNestedPrimitiveArrays}, issue #10488). The unwrap used to happen only in the serializer, below
+   * {@code Type.convert}, which refused a {@code Result} assigned to a declared {@code LINK} or {@code EMBEDDED} property that
+   * an undeclared one stored. The serializer keeps its own unwrap for the writers that serialize without a record.
+   * <p>
+   * A row that is not a record is stored as a copy of its map: the map a {@code Result} answers is its own content, which the
+   * record must not share.
+   */
+  public static Object toRecordValue(final Object value) {
+    if (value instanceof Result result)
+      return toRecordValue(unwrapQueryResult(result));
+    return unwrapNestedPrimitiveArrays(value);
+  }
+
+  private static Object unwrapQueryResult(final Result result) {
+    final Object unwrapped = BinaryTypes.unwrapResult(result);
+    if (unwrapped instanceof Map<?, ?> map)
+      return new LinkedHashMap<>(map);
+    // A ROW WITH NEITHER A RECORD NOR A CONTENT: THE EMPTY MAP IT STANDS FOR, AS THE SERIALIZER LABELS IT
+    return unwrapped != null ? unwrapped : new LinkedHashMap<>();
+  }
+
+  private static boolean holdsNestedPrimitiveArray(final Collection<?> items) {
+    for (final Object item : items) {
+      // The scalars come first: the common content of a list is numbers and text, and a vector held as a list of floats runs
+      // through here on every write
+      if (item == null || item instanceof Number || item instanceof String)
+        continue;
+      // A QUERY RESULT NESTED IN A LIST OR A MAP IS UNWRAPPED BY THE SAME WALK (issue #10737), SO IT COSTS NOTHING MORE
+      if (item instanceof long[] || item instanceof double[] || item instanceof Result)
+        return true;
+      if (item instanceof Collection<?> collection) {
+        if (holdsNestedPrimitiveArray(collection))
+          return true;
+      } else if (item instanceof Map<?, ?> map && holdsNestedPrimitiveArray(map.values()))
+        return true;
+    }
+    return false;
+  }
+
+  private static Object unwrapItem(final Object item) {
+    if (item instanceof long[] || item instanceof double[])
+      return primitiveArrayToJsonList(item);
+    if (item instanceof Result result)
+      return toRecordValue(unwrapQueryResult(result));
+    return unwrapNestedPrimitiveArrays(item);
+  }
+
+  private static Object rebuildWithoutPrimitiveArrays(final Object container) {
+    if (container instanceof Map<?, ?> map) {
+      final Map<Object, Object> copy = new LinkedHashMap<>((int) (map.size() / 0.75f) + 1);
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        copy.put(entry.getKey(), unwrapItem(entry.getValue()));
+      return copy;
+    }
+
+    final Collection<?> collection = (Collection<?>) container;
+    final Collection<Object> copy =
+        container instanceof Set<?> ? new LinkedHashSet<>((int) (collection.size() / 0.75f) + 1) : new ArrayList<>(collection.size());
+    for (final Object item : collection)
+      copy.add(unwrapItem(item));
+    return copy;
   }
 
   /** Boxes the elements of a primitive array into a mutable list (the shape a collection target expects). */

@@ -55,7 +55,7 @@ class RaftServerDatabaseBackupIT extends BaseRaftHATest {
   @Test
   void sqlBackup() {
     for (int i = 0; i < getServerCount(); i++) {
-      final Database database = getServer(i).getDatabase(getDatabaseName());
+      final Database database = getServer(i).getDatabaseForOperator(getDatabaseName());
       final ResultSet result = database.command("sql", "backup database");
       assertThat(result.hasNext()).isTrue();
       final Result response = result.next();
@@ -74,7 +74,7 @@ class RaftServerDatabaseBackupIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("Expected a Raft leader to be elected").isGreaterThanOrEqualTo(0);
 
-    final Database database = getServer(leaderIndex).getDatabase(getDatabaseName());
+    final Database database = getServer(leaderIndex).getDatabaseForOperator(getDatabaseName());
     final ResultSet result = database.command("sqlscript", "backup database");
     assertThat(result.hasNext()).isTrue();
     final Result response = result.next();

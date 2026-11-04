@@ -19,12 +19,14 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -34,6 +36,12 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,6 +58,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       leader, and replicated to all nodes.</li>
  * </ul>
  *
+ * <p>It also covers concurrent transactions issued through one shared follower handle (issue #5503).
+ *
  * <p>The component that does the forwarding is {@code RaftReplicatedDatabase.forwardCommandToLeaderViaRaft},
  * reached from {@code PostCommandHandler} through the engine. This class was called {@code RaftLeaderProxyIT}
  * and its javadoc credited {@code LeaderProxy} - a transparent follower-to-leader HTTP proxy that nothing ever
@@ -59,6 +69,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RaftFollowerWriteForwardIT extends BaseRaftHATest {
 
   private static final String     PROXIED_TYPE = "ProxiedType";
+  private static final String     CONCURRENT_TYPE_NAME = "Concurrent";
+  private static final int        WRITER_THREADS       = 3;
+  private static final int        RECORDS_PER_THREAD   = 150;
+  private static final int        TOTAL_RECORDS        = WRITER_THREADS * RECORDS_PER_THREAD;
+  private static final int        MAX_RETRIES          = 100;
   private static final HttpClient HTTP_CLIENT  = HttpClient.newBuilder()
       .version(HttpClient.Version.HTTP_1_1)
       .connectTimeout(Duration.ofSeconds(10))
@@ -197,6 +212,97 @@ class RaftFollowerWriteForwardIT extends BaseRaftHATest {
     assertThat(numericResponse.statusCode())
         .as("SELECT with all-numeric positional params (primitive-array path) should not throw ClassCastException, body: " + numericResponse.body())
         .isEqualTo(200);
+  }
+
+  /**
+   * Issue #5503, from {@code Issue5503ConcurrentFollowerWritesIT}: concurrent transactions through a shared follower handle must not
+   * corrupt or lose records; each either commits or fails retryably, and every node ends with every record exactly once.
+   */
+  @Test
+  @Tag("slow")
+  void concurrentWritesOnAFollowerHandleKeepEveryRecord() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a leader must be elected before the test starts").isGreaterThanOrEqualTo(0);
+
+    getServer(leaderIndex).getDatabaseForOperator(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + CONCURRENT_TYPE_NAME);
+    waitForAllServers();
+
+    // ALL WRITES GO THROUGH A FOLLOWER, FROM SEVERAL THREADS SHARING THE SAME EMBEDDED HANDLE
+    final Database follower = getServer((leaderIndex + 1) % getServerCount()).getDatabaseForOperator(getDatabaseName());
+
+    final ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
+    final AtomicInteger retries = new AtomicInteger();
+    final CountDownLatch start = new CountDownLatch(1);
+    final Thread[] writers = new Thread[WRITER_THREADS];
+
+    for (int t = 0; t < WRITER_THREADS; t++) {
+      final int threadId = t;
+      writers[t] = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < RECORDS_PER_THREAD; i++) {
+            final int value = threadId * RECORDS_PER_THREAD + i;
+            commitWithRetry(follower, value, retries);
+          }
+        } catch (final Throwable e) {
+          failures.add(e);
+        }
+      }, "issue5503-writer-" + t);
+      writers[t].start();
+    }
+
+    start.countDown();
+    for (final Thread writer : writers)
+      writer.join(TimeUnit.MINUTES.toMillis(5));
+
+    assertThat(failures).as("no writer may fail with a non-retryable error").isEmpty();
+
+    waitForAllServers();
+
+    // EVERY NODE MUST HOLD EVERY RECORD EXACTLY ONCE: A LOST OR CORRUPTED RECORD SHOWS UP AS A GAP
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database db = getServer(i).getDatabaseForOperator(getDatabaseName());
+      final String role = i == leaderIndex ? "leader" : "follower";
+
+      assertThat(scanCount(db)).as("record count on the %s (server %d), %d retries observed", role, i, retries.get())
+          .isEqualTo(TOTAL_RECORDS);
+      assertThat(distinctValues(db)).as("distinct values on the %s (server %d)", role, i).hasSize(TOTAL_RECORDS);
+    }
+  }
+
+  /**
+   * Commits a single-record transaction, retrying the conflicts the engine is allowed to raise. A
+   * concurrent writer losing the race for a page must surface a retryable {@link NeedRetryException}
+   * rather than silently dropping or corrupting the record.
+   */
+  private void commitWithRetry(final Database db, final int value, final AtomicInteger retries) {
+    for (int attempt = 0; ; attempt++) {
+      try {
+        db.transaction(() -> db.newDocument(CONCURRENT_TYPE_NAME).set("value", value).save());
+        return;
+      } catch (final NeedRetryException e) {
+        retries.incrementAndGet();
+        if (attempt >= MAX_RETRIES)
+          throw e;
+      }
+    }
+  }
+
+  private long scanCount(final Database db) {
+    // count(@rid) forces a scan: count(*) reads the cached per-bucket counter, which would hide a
+    // record the engine deleted as malformed.
+    try (final ResultSet rs = db.query("sql", "SELECT count(@rid) AS c FROM " + CONCURRENT_TYPE_NAME)) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  private Set<Integer> distinctValues(final Database db) {
+    final Set<Integer> values = new HashSet<>();
+    try (final ResultSet rs = db.query("sql", "SELECT value FROM " + CONCURRENT_TYPE_NAME)) {
+      while (rs.hasNext())
+        values.add(rs.next().<Number>getProperty("value").intValue());
+    }
+    return values;
   }
 
   // -------------------------------------------------------------------------

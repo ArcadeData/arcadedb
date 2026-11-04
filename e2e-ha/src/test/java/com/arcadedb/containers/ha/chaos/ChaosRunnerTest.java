@@ -286,10 +286,128 @@ class ChaosRunnerTest {
     assertThat(result.violations()).extracting(Violation::invariant).contains("I1");
   }
 
+  /** Issue #10159: a plain pause is the long pause with a shorter hold, and a reformat after it is the same destructive recovery. */
   @Test
-  void reformatIsOnlyForbiddenForTheLongPause() throws IOException {
+  void reformatAfterAPauseIsASafetyFailure() throws IOException {
     final Harness harness = harness(config("chaos.faults", "pause"));
     harness.control().reformatOnUnpause = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.message()).contains("pause");
+  }
+
+  /** Issue #10159: a graceful stop and start leaves the other nodes healthy, so a node discarding its log on the way up is the finding. */
+  @Test
+  void reformatAfterAGracefulStopIsASafetyFailure() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "stop"));
+    harness.control().reformatOnStart = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.steps()).isEqualTo(1);
+    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.message()).contains("reformat").contains("stop");
+  }
+
+  @Test
+  void reformatDuringARollingRestartIsASafetyFailureNamingTheNode() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "rolling"));
+    harness.control().reformatOnStartOfNode = 1;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.message()).contains("rolling").contains("node 1 x1");
+  }
+
+  /**
+   * The counts restart with the server process, so a node a graceful stop restarted reports fewer than it did before the step.
+   * That is the restart the fault performed, not an unexplained one: the count since the restart is what the step did.
+   */
+  @Test
+  void aProcessRestartTheFaultPerformedIsNotAHarnessFailure() throws IOException {
+    for (final String fault : new String[] { "stop", "rolling" }) {
+      final Harness harness = harness(config("chaos.faults", fault, "chaos.maxSteps", "2"));
+      // reformats of earlier steps, still in the counters the restart is about to reset
+      Arrays.fill(harness.control().reformatted, 3);
+      final ChaosResult result = harness.runner().run();
+      assertThat(result.kind()).as(fault).isEqualTo(ResultKind.PASS);
+      assertThat(result.steps()).as(fault).isEqualTo(2);
+    }
+  }
+
+  /** A node that did not restart keeps its count, so the reformats of earlier steps are not blamed on this one. */
+  @Test
+  void reformatsOfEarlierStepsAreNotBlamedOnAGracefulStopOfAnotherNode() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "stop", "chaos.maxSteps", "1"));
+    for (int node = 0; node < 3; node++)
+      harness.control().reformatted[node] = 2;
     assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+  }
+
+  /**
+   * Issue #10159: a fault that may reformat (a SIGKILL can leave a node genuinely diverged) does not fail the run, but the
+   * step still says so: in steps.log and in the summary, so the decision about which faults may reformat is not also the
+   * decision about whether anyone can see it.
+   */
+  @Test
+  void aReformatAFaultMayCauseIsLoggedAndInTheSummaryButDoesNotFail() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "kill", "chaos.maxSteps", "2"));
+    harness.control().reformatOnStart = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).hasSize(2).allSatisfy(line -> assertThat(line).contains("reformats=1"));
+    assertThat(new JSONObject(Files.readString(dir.resolve("7/summary.json"))).getInt("reformats")).isEqualTo(2);
+  }
+
+  /**
+   * A count that went down on a node the fault did not restart is a restart nobody explains. Where the fault may reformat that does not
+   * fail the step, and it is not counted either: what the node has counted since holds the reformats of earlier steps too, so the step
+   * says "?" instead of reporting them as its own.
+   */
+  @Test
+  void anUnexplainedDropOfACountIsReportedAsUnknownWhereTheFaultMayReformat() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "isolate", "chaos.maxSteps", "1"));
+    Arrays.fill(harness.control().reformatted, 3);
+    harness.control().processRestartsOnReconnect = true;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("reformats=?");
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getInt("reformats")).isZero();
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isEqualTo(1);
+  }
+
+  @Test
+  void aCleanStepReportsNoReformat() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "stop", "chaos.maxSteps", "1"));
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("reformats=0");
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getInt("reformats")).isZero();
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isZero();
+  }
+
+  /**
+   * Counts that cannot be read are an observation lost, not a failure, for a fault that is allowed to reformat. The step says so
+   * ("?", and a count of such steps in the summary) rather than reading as a step in which no reformat happened.
+   */
+  @Test
+  void unreadableRestartCountsDoNotFailAFaultThatMayReformat() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "kill", "chaos.maxSteps", "1"));
+    harness.control().restartCountsUnreadable = true;
+    assertThat(harness.runner().run().kind()).isEqualTo(ResultKind.PASS);
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("reformats=?");
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("7/summary.json")));
+    assertThat(summary.getInt("reformats")).isZero();
+    assertThat(summary.getInt("stepsWithUnreadReformats")).isEqualTo(1);
+  }
+
+  /** ... and still a harness failure for one that forbids it, which is what the counts are there to prove. */
+  @Test
+  void unreadableRestartCountsStillFailAFaultThatForbidsAReformat() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "stop", "chaos.maxSteps", "1"));
+    harness.control().restartCountsUnreadable = true;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.HARNESS);
+    assertThat(result.message()).contains("in-place restart counts");
   }
 }

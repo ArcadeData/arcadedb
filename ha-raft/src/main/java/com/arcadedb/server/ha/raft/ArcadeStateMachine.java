@@ -44,10 +44,12 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.FullSchemaLoadReason;
 import com.arcadedb.schema.IncrementalLoadRefusal;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -120,6 +122,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -299,6 +302,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Tracks the highest term observed so notifyTermIndexUpdated can log only the first time we
   // see each term (otherwise it fires on every config/metadata entry, which is noisy).
   private final    AtomicLong                highestTermSeen  = new AtomicLong(-1);
+  // Publications whose outcome a proposer is waiting for (issue #11240), settled by the entries this node applies
+  private final    Set<PendingPublication>   pendingPublications = ConcurrentHashMap.newKeySet();
   // Raft term seen at the last notifyLeaderChanged. Lets us tell a genuine re-election (term
   // advanced) from a same-term re-notification, so we only warn about real leader churn (#4809 follow-up).
   private volatile long                      lastNotifiedLeaderTerm = -1;
@@ -595,6 +600,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * operations on one database nest and overlap. See {@link #beginLeaderExclusive}.
    */
   private final ConcurrentHashMap<String, Integer> databasesExclusiveOnLeader = new ConcurrentHashMap<>();
+
+  /**
+   * The databases a restore on this server holds from its claim to its release (issue #10974): transaction entries of other
+   * nodes for them are refused exactly as during a {@link #beginLeaderExclusive leader-exclusive} operation. Owned by the
+   * {@link RaftHAServer}, which hands the same set to every state machine it creates ({@link #shareRestoreHolds}), so a hold
+   * taken before an in-place Ratis restart still stands after it; a machine outside a Raft server keeps its own.
+   */
+  private volatile Set<String> databasesHeldForRestore = ConcurrentHashMap.newKeySet();
 
   /**
    * Per database, the Raft log index of the last schema-changing entry this node applied (issue #8686). The leader holds a
@@ -1057,6 +1070,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // longer than this means something is not releasing, and failing the apply loudly is better than installing
   // a sealed store that a copy in flight can pair with the wrong page image.
   private static final long              SEALED_INSTALL_LOCK_TIMEOUT_MS    = 120_000L;
+  /** The keys of the range a continuous aggregate records as invalidated, in the schema JSON (see ContinuousAggregateImpl.toJSON). */
+  private static final String            INVALIDATED_FROM_KEY              = "invalidatedFromTs";
+  private static final String            INVALIDATED_TO_KEY                = "invalidatedToTs";
 
   // The transactions this node originated that are in flight between replication and the publication of their
   // pages, and the page versions the Raft log has assigned but this node has not applied yet (issue #6965).
@@ -1474,6 +1490,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
     }
 
+    // The drop and the install of a restore are fenced to the leadership that held the database for it (issue #10974): a restore
+    // whose leader lost the leadership would otherwise reach the next leader through the Ratis client's resend, and replace the
+    // database under the writes that leader accepted. Decoded only for these two types, which carry nothing but a name and a flag
+    if (localClientId != null && content != null && !content.isEmpty()) {
+      final RaftLogEntryType type = RaftLogEntryType.fromId(content.byteAt(0));
+      if (type == RaftLogEntryType.DROP_DATABASE_ENTRY || type == RaftLogEntryType.INSTALL_DATABASE_ENTRY) {
+        final NeedRetryException refusal;
+        try {
+          final RaftLogEntryCodec.DecodedEntry fenced = RaftLogEntryCodec.decode(content);
+          refusal = staleRestoreRefusal(fenced.databaseName(), fenced.restoreFenceTerm(), isLocalOrigin);
+        } catch (final RuntimeException e) {
+          return context.build().setException(e);
+        }
+        if (refusal != null) {
+          LogManager.instance().log(this, Level.WARNING, "%s", refusal.getMessage());
+          return context.build().setException(refusal);
+        }
+      }
+    }
+
     // A transaction entry is validated here against the page versions the log has assigned so far (issue #6965):
     // one validated on its originating node against a version the log has already moved past is refused before Ratis
     // touches it, through the context's exception. That reply is exactly the retryable
@@ -1508,7 +1544,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // claims the same next version as the DDL's embedded WAL and the followers would splice the two; the write lock that
     // excludes the leader's own writers says nothing about a replica's. Only entries of other nodes: the leader's own
     // writers are already excluded by that lock. The check is repeated after the reservation below.
-    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+    // A restore holding the database (issue #10974) refuses them for the same reason, see holdForRestore.
+    if (!isLocalOrigin && refusesEntriesOfOtherNodes(databaseName)) {
       HALog.log(this, HALog.DETAILED, "Refusing a transaction of another node on database '%s': the leader is running an exclusive operation on it",
           databaseName);
       return context.build().setException(exclusiveOperationRefusal(databaseName));
@@ -1534,6 +1571,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
             databaseName, decoded.txPreparedAtIndex(), schemaChanged);
         return context.build().setException(
             new ReplicatedSchemaConflictException(databaseName, decoded.txPreparedAtIndex(), schemaChanged));
+      }
+    }
+
+    // Not accepted from another node while this leader's copy refuses writes (issue #10965): an 'overwrite' restore puts that
+    // refusal on the leader's target (issue #10689), and a replica commits its phase 1 locally, where nothing knows of it, so
+    // its entry would be acknowledged during the download and destroyed by the swap. The leader's own commits are refused in
+    // the database itself. Lock-free: one volatile read of the refusals. Repeated after the reservation below.
+    // Issue10965ReplicaEntryRefusedDuringRestoreClaimTest counts the databaseFor() lookups of this method (this one is the first,
+    // the validation lookup below the second): adding a lookup before the reservation means updating that test.
+    if (!isLocalOrigin && databaseName != null) {
+      final NeedRetryException writesRefused = writesRefusedOnLeader(databaseForValidation(databaseName));
+      if (writesRefused != null) {
+        HALog.log(this, HALog.DETAILED, "Refusing a transaction of another node on database '%s': %s", databaseName,
+            writesRefused.getMessage());
+        return context.build().setException(writesRefused);
       }
     }
 
@@ -1564,12 +1616,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // registers and reserve just after. Registration happens BEFORE the operation waits for the reservations in flight
     // (beginLeaderExclusive), so an entry either sees the registration here and backs out, or its reservation is one the
     // operation waits for. Neither order lets it slip in unseen.
-    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+    if (!isLocalOrigin && refusesEntriesOfOtherNodes(databaseName)) {
       pageVersions.release(databaseName, pages, decoded.walData());
       return context.build().setException(exclusiveOperationRefusal(databaseName));
     }
 
+    // The same second half for the write refusal (issue #10965): the claim may go up between the first check and the reservation
+    if (!isLocalOrigin) {
+      final NeedRetryException writesRefused = writesRefusedOnLeader(db);
+      if (writesRefused != null) {
+        pageVersions.release(databaseName, pages, decoded.walData());
+        return context.build().setException(writesRefused);
+      }
+    }
+
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
+  }
+
+  /**
+   * The retryable refusal for an entry of another node when {@code db}, this leader's copy, refuses writes (a restore is replacing
+   * it, issue #10965), or {@code null} when it accepts them or is not resolved here (the caller refuses that case on its own).
+   */
+  private static NeedRetryException writesRefusedOnLeader(final DatabaseInternal db) {
+    if (db != null && db.getEmbedded() instanceof LocalDatabase local) {
+      final String reason = local.getWriteRefusal();
+      if (reason != null)
+        return new NeedRetryException(
+            "Database '" + local.getName() + "' does not accept writes on the leader right now: " + reason + ". Please retry");
+    }
+    return null;
   }
 
   /**
@@ -1621,6 +1696,32 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return new NeedRetryException("Refused a schema change on database '" + databaseName + "' allocated in Raft term "
           + sessionTerm + " while this leader is in term " + term + ": entries committed by the leaders in between can "
           + "already use the file ids it allocated. Please retry");
+    return null;
+  }
+
+  /**
+   * Why the leader must not append a drop or an install of {@code databaseName} fenced to {@code restoreFenceTerm}, or {@code null}
+   * when it may (issue #10974). A restore fences them to the term in which its leader held the database: from another node the
+   * entry is the resend of a leader that lost the leadership during the restore, and in another term this leader was elected again
+   * after an interim leader accepted writes; either way the swap it completes would destroy them. An entry without the fence (a
+   * drop or an install no restore made, or one written by a build without the section) is not refused here.
+   * <p>
+   * The term is read here, before Ratis appends: if this node is deposed in between, Ratis itself refuses the append, because a
+   * leader only appends in its own term. Refused through the context, so the entry reaches no node.
+   */
+  // @VisibleForTesting
+  NeedRetryException staleRestoreRefusal(final String databaseName, final long restoreFenceTerm, final boolean isLocalOrigin) {
+    if (restoreFenceTerm < 0)
+      return null;
+    if (!isLocalOrigin)
+      return new NeedRetryException("Refused the drop or install of database '" + databaseName + "' of a restore run by another "
+          + "node: a restore replaces a database from the leader, so this is the resend of a node that lost the leadership while "
+          + "restoring it, and the writes accepted since would be destroyed. Please retry the restore on the leader");
+    final long term = currentRaftTerm();
+    if (term != restoreFenceTerm)
+      return new NeedRetryException("Refused the drop or install of database '" + databaseName + "' of a restore that held it in "
+          + "Raft term " + restoreFenceTerm + " while this leader is in term " + term + ": the leaders in between may have accepted "
+          + "writes the restore would destroy. Please retry the restore");
     return null;
   }
 
@@ -1719,8 +1820,54 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
-    return new NeedRetryException("Database '" + databaseName + "' is running a schema change, or being dropped or "
-        + "reinstalled, on the leader, so the leader cannot accept a transaction on it right now. Please retry");
+    return new NeedRetryException("Database '" + databaseName + "' is running a schema change, or being dropped, "
+        + "reinstalled or restored, on the leader, so the leader cannot accept a transaction on it right now. Please retry");
+  }
+
+  /**
+   * Whether a transaction entry of another node for {@code databaseName} must be refused because this leader runs an operation
+   * on it that such an entry must not interleave with: a {@link #beginLeaderExclusive leader-exclusive} one, or a restore
+   * holding it ({@link #holdForRestore}). Two lock-free map lookups.
+   */
+  private boolean refusesEntriesOfOtherNodes(final String databaseName) {
+    return databaseName != null && (databasesExclusiveOnLeader.containsKey(databaseName) || databasesHeldForRestore.contains(
+        databaseName));
+  }
+
+  /**
+   * Holds {@code databaseName} for a restore that has just claimed it (issue #10974), until {@link #releaseRestoreHold}: from
+   * here on, transaction entries of other nodes for it are refused with a retryable error, and the call returns once the entries
+   * this leader had already accepted for it - their page versions reserved, not applied yet - are applied. Without the wait such
+   * an entry, accepted before the claim, would be appended and acknowledged to its client during the download, and destroyed
+   * by the swap and the snapshot the restore then forces onto every node.
+   * <p>
+   * The same order as {@link #beginLeaderExclusive}, the registration before the wait, and the same bound. Not counted like
+   * that registration: a restore claims a database once (the backup coordinator refuses a second restore of it), and a hold
+   * taken again by the same restore must still end with one release.
+   *
+   * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up; the hold stands either way
+   */
+  boolean holdForRestore(final String databaseName, final long drainTimeoutMs) {
+    databasesHeldForRestore.add(databaseName);
+    return awaitReservationsApplied(databaseName, drainTimeoutMs);
+  }
+
+  /** Ends the hold {@link #holdForRestore} took; a database not held is left alone. */
+  void releaseRestoreHold(final String databaseName) {
+    databasesHeldForRestore.remove(databaseName);
+  }
+
+  /** Whether a restore holds {@code databaseName}, see {@link #holdForRestore}. */
+  boolean isHeldForRestore(final String databaseName) {
+    return databasesHeldForRestore.contains(databaseName);
+  }
+
+  /**
+   * Makes this machine read and write {@code holds} as its restore holds, see {@link #databasesHeldForRestore}. Called by the
+   * {@link RaftHAServer} before the machine is handed to Ratis.
+   */
+  void shareRestoreHolds(final Set<String> holds) {
+    this.databasesHeldForRestore = holds;
   }
 
   /**
@@ -1750,6 +1897,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   boolean beginLeaderExclusive(final String databaseName, final long drainTimeoutMs) {
     databasesExclusiveOnLeader.merge(databaseName, 1, Integer::sum);
+    return awaitReservationsApplied(databaseName, drainTimeoutMs);
+  }
+
+  /**
+   * Waits, at most {@code drainTimeoutMs}, for the page versions the log has reserved on {@code databaseName} to be applied
+   * here. Never throws; an interruption ends the wait and re-sets the interrupt flag.
+   *
+   * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up
+   */
+  private boolean awaitReservationsApplied(final String databaseName, final long drainTimeoutMs) {
     final long deadline = System.currentTimeMillis() + drainTimeoutMs;
     long pauseMs = 2L;
     int live;
@@ -1839,6 +1996,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
+    // A configuration or no-op entry of a later term settles a pending publication as well (issue #11240)
+    settlePublicationsBefore(term);
     try {
       super.notifyTermIndexUpdated(term, index);
     } catch (final Throwable t) {
@@ -1893,6 +2052,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           appended.decoded() :
           RaftLogEntryCodec.decode(data);
       targetDatabase = decoded.databaseName();
+
+      // Before the entry is applied: one of a later term means a pending publication of an earlier term was truncated, and
+      // its proposer must not keep the layout it published (issue #11240)
+      settlePublicationsBefore(termIndex.getTerm());
 
       if (decoded.type() == null) {
         // A committed entry whose leading type byte is unrecognised (e.g. written by a newer node
@@ -2005,6 +2168,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       if (staleNoDatabaseEntry)
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
+
+      // After the apply, so the proposer persists its swap over a state the entry is already applied to (issue #11240)
+      if (decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
+        confirmPublication(decoded, termIndex.getTerm(), index);
 
       final long previousApplied;
       synchronized (appliedPositionLock) {
@@ -2359,7 +2526,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The lowest index of an entry held for the replay, {@link Long#MAX_VALUE} when none is. A hold at or below the boundary
    * a Raft install covered is dropped on the way: the installed copy carries what the entry did (issue #10086).
    */
-  private long lowestHeldEntry() {
+  // @VisibleForTesting
+  long lowestHeldEntry() {
     if (heldEntryFloors.isEmpty() && heldConfigurations.isEmpty())
       return Long.MAX_VALUE;
     final long boundary = installedRaftBoundary.get();
@@ -2573,7 +2741,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // (issue #7752). The same ordering argument holds: the apply pins the entry (SecurityDurabilityFloor.afterInstall)
     // before lastAppliedIndex moves past it, so an applied index read first is never paired with a floor that does not
     // yet cover it.
-    final long floor = Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor());
+    // A compaction whose entry is applied here but whose swap its proposer has not persisted yet is held the same way
+    // (issue #11240), raised before the applied index moves past it as well
+    final long floor = Math.min(Math.min(Math.min(replayFloor.get(), lowestHeld), securityDurabilityFloor.floor()),
+        lowestUnpersistedPublication());
     final long currentIndex = floor == Long.MAX_VALUE ? appliedIndex : Math.min(appliedIndex, floor - 1);
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
@@ -2968,6 +3139,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (membershipHolder != null) {
       membershipHolder.invalidateTxPreparedAtCapability();
       membershipHolder.invalidateFullTextCorpusDeltaCapability();
+      // A peer that joins may predate the fixed-width float arrays: no record is written in that form until it answers (#10856)
+      membershipHolder.invalidateFixedWidthFloatArraysCapability();
       // A consistent read waiting here asks again whether this node is still a member (issue #9606)
       membershipHolder.notifyMembershipChanged();
     }
@@ -3556,7 +3729,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // reservation that stayed unconfirmed past its grace - must not enter the log now. Refused like the expired
     // reservation below, at the cost of one Ratis pending-write permit, for a window only a stalled request opens.
     if (trx.getStateMachineContext() instanceof AppendedEntry appended && !appended.originatedLocally()
-        && databasesExclusiveOnLeader.containsKey(appended.decoded().databaseName())) {
+        && refusesEntriesOfOtherNodes(appended.decoded().databaseName())) {
       pageVersions.release(appended.decoded().databaseName(), appended.pages(), appended.decoded().walData());
       // Logged because each of these costs a Ratis pending-write permit (see startTransaction): a leak, if this window
       // turns out to be wider than assumed, must be diagnosable.
@@ -3888,7 +4061,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new DatabaseIsClosedException(
             "Database '" + databaseName + "' is closed and this node is shutting down, so it is not reopened to apply a "
                 + "Raft entry; the entry is left for the replay on restart");
-      return server.getDatabase(databaseName);
+      return server.getDatabaseForOperator(databaseName);
     }
   }
 
@@ -4208,9 +4381,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // it from walOnlyEntry below: the change is carried OUTSIDE schemaJson, so an entry holding one does publish
     // a schema change and does need the reload. No producer ships both today - the compaction path always
     // carries the whole document - and this keeps that from becoming a silent skip if one ever does.
+    // Issue #10677: a delete of sealed samples ships the same shape, and DOES change the schema - the range it invalidated on the
+    // continuous aggregates over the type (issue #10428), which a follower promoted to leader refreshes them with. Taken for a
+    // compaction, the entry's schema was never applied and the follower never held the record
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
         && isEmptyMap(decoded.filesToRename()) && decoded.schemaDelta() == null
-        && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()));
+        && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()))
+        && !carriesAContinuousAggregateRecordNotHeldHere(db, decoded.schemaJson());
 
     // A non-final chunk of a schema change split across several entries (see
     // RaftTransactionBroker.splitSchemaEntry) only DELIVERS pages: the change is published by the last
@@ -4786,7 +4963,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         out.seek(chunk.offset());
         out.write(chunk.bytes());
         if (chunk.last())
-          out.getFD().sync();
+          FileUtils.sync(out.getFD());
       }
 
       if (!chunk.last()) {
@@ -4902,7 +5079,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final File incoming = new File(target.getPath() + ".incoming");
     try (final FileOutputStream out = new FileOutputStream(incoming)) {
       out.write(blob.bytes());
-      out.getFD().sync();
+      FileUtils.sync(out.getFD());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Received TimeSeries sealed blob for type '%s' shard %d (db=%s) whose storage engine is unavailable, and "
@@ -5032,6 +5209,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return db != null ? db.getName() : "?";
   }
 
+  /**
+   * Whether {@code schemaJson} records, on a continuous aggregate, a range of invalidated samples that differs from the one this node
+   * holds, or that this node does not hold at all (issue #10677). A TimeSeries delete writes that record inside the replication session
+   * that ships the sealed bytes it rewrote, so its entry looks like a compaction's, which changes no schema; the record is what tells
+   * them apart. A compaction's schema carries one only while a range is pending, and then this node holds it already, so it still
+   * skips the reload. Any difference counts, a narrower range included: the reload it costs is the one a delete over mutable samples
+   * always takes, and the leader's record is the one to hold.
+   * <p>
+   * The common case - no record anywhere in the document - costs one scan of the string and no parse. The document is parsed only
+   * for a sealed entry while a range is pending on the leader, which lasts until its next refresh.
+   */
+  static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
+    if (schemaJson == null || !schemaJson.contains(INVALIDATED_FROM_KEY))
+      return false;
+    final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
+    // the key elsewhere in the document (a property or type named after it) is no record: the entry stays a compaction's
+    if (aggregates == null)
+      return false;
+    final Schema schema = db.getSchema();
+    for (final String name : aggregates.keySet()) {
+      final JSONObject definition = aggregates.getJSONObject(name, null);
+      if (definition == null || !definition.has(INVALIDATED_FROM_KEY) || !definition.has(INVALIDATED_TO_KEY))
+        continue;
+      if (!schema.existsContinuousAggregate(name)
+          || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
+        return true;
+      final ContinuousAggregateImpl.Invalidation record = held.getInvalidation();
+      if (record == null || record.fromTs() != definition.getLong(INVALIDATED_FROM_KEY, Long.MIN_VALUE)
+          || record.toTs() != definition.getLong(INVALIDATED_TO_KEY, Long.MIN_VALUE))
+        return true;
+    }
+    // A record this node holds and the document does not is left alone: the leader cleared it with a refresh, whose plain schema save
+    // is not shipped (issue #10634), and a promoted leader holding it only recomputes those buckets once more
+    return false;
+  }
+
   private static boolean isEmptyMap(final Map<?, ?> map) {
     return map == null || map.isEmpty();
   }
@@ -5050,7 +5263,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * to the full rebuild, without a restart.
    */
   // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
-  // which is the half a reader cannot tell from the call site and which Issue6988FullRebuildFallbackIT cannot show
+  // which is the half a reader cannot tell from the call site and which HaSchemaDeltaReplicationFullRebuildIT cannot show
   // (it sets the value once, at server start).
   boolean incrementalSchemaApplyEnabled() {
     // The server-scoped value when this state machine is wired to one, the global default otherwise: tests drive
@@ -5134,7 +5347,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Null is reachable, not hypothetical: no production caller nulls the field (grep for setRaftHAServer -
       // RaftHAServer:1419 is the only one), but it starts null and a state machine that has not been rewired
       // yet still carries null. Forgetting exactly that rewire on the recovery path is the regression
-      // Issue4839RecoveryRewiresStateMachineIT exists to catch.
+      // HaInPlaceRestartRecoveryIT.restartRewiresStateMachineRaftHAServer exists to catch.
       //
       // The skip ASSERTS its premise rather than assuming it (issue #8067, the sibling of #7901). "The leader's own
       // files are authoritative" says nothing about a leader that has no files: a node that applied this entry in a
@@ -5544,7 +5757,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "install and this node is shutting down, so it is not reopened; the entry is left for the replay on "
                 + "restart");
           try {
-            server.getDatabase(dbName);
+            server.getDatabaseForOperator(dbName);
           } catch (final Exception reopenEx) {
             // Deliberate last resort: the database is both unusable and unreopenable, so there is nothing
             // safe to serve. Unlike the transient leader-unavailable case above (local copy intact, retried
@@ -7627,6 +7840,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     releaseHeldConfiguration(databaseName);
     // Nor a compaction hold-off (issue #9558): it described a payload of the database being dropped
     clearCompactionHoldOff(databaseName);
+    // Nor a compaction whose swap could not be persisted (issue #11240): there is nothing left to replay it into
+    releaseHeldEntry(unpersistedPublicationKey(databaseName));
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
@@ -9576,6 +9791,136 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *
    * @return {@code true} when this call quarantined the database
    */
+  /**
+   * A schema entry its proposer published from this node and whose outcome it may have to wait for (issue #11240): a
+   * publication that timed out is either committed or truncated by a leadership change, and the entries this node applies
+   * tell which, because they are applied in log order. The proposer's entry is bound to the term it was proposed in (issue
+   * #9547), so it is committed when this node applies it, and truncated when this node applies an entry of a later term
+   * first: every entry ahead of that one in the log is settled, and the proposal is not among them.
+   */
+  static final class PendingPublication {
+    final         String                     databaseName;
+    final         long                       term;
+    private final CompletableFuture<Boolean> outcome = new CompletableFuture<>();
+    private volatile String                  schemaJson;
+    // The log index this node applied the entry at, once it did: the checkpoint stays below it until the proposer has
+    // persisted what the entry publishes and forgets the publication (see takeSnapshot)
+    private volatile long                    appliedAtIndex = -1L;
+
+    private PendingPublication(final String databaseName, final long term) {
+      this.databaseName = databaseName;
+      this.term = term;
+    }
+
+    /** The schema document the publishing entry carries, which tells it apart from another entry of the same term. */
+    void identify(final String schemaJson) {
+      this.schemaJson = schemaJson;
+    }
+
+    /**
+     * @return {@code TRUE} once the entry is committed and applied here, {@code FALSE} once it is truncated, {@code null}
+     * when neither happened within {@code timeoutMs}
+     */
+    Boolean awaitOutcome(final long timeoutMs) throws InterruptedException {
+      try {
+        return outcome.get(timeoutMs, TimeUnit.MILLISECONDS);
+      } catch (final TimeoutException e) {
+        return null;
+      } catch (final ExecutionException e) {
+        // never completed exceptionally
+        return null;
+      }
+    }
+
+    private boolean matches(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm) {
+      if (entryTerm != term || decoded.moreChunksFollow() || !databaseName.equals(decoded.databaseName()))
+        return false;
+      final String expected = schemaJson;
+      return expected == null || decoded.schemaJson() == null || expected.equals(decoded.schemaJson());
+    }
+  }
+
+  /**
+   * Registers a publication of {@code databaseName} its proposer may wait on, BEFORE the entry is dispatched, so an apply
+   * that races the proposer's timeout is not missed (issue #11240). Forgotten with {@link #forgetPublication}.
+   */
+  PendingPublication expectPublication(final String databaseName, final long term) {
+    final PendingPublication pending = new PendingPublication(databaseName, term);
+    pendingPublications.add(pending);
+    return pending;
+  }
+
+  void forgetPublication(final PendingPublication pending) {
+    pendingPublications.remove(pending);
+  }
+
+  /** Settles as truncated every pending publication of a term before {@code entryTerm} (issue #11240). */
+  private void settlePublicationsBefore(final long entryTerm) {
+    if (pendingPublications.isEmpty())
+      return;
+    for (final PendingPublication pending : pendingPublications)
+      if (pending.term < entryTerm && pending.outcome.complete(Boolean.FALSE))
+        LogManager.instance().log(this, Level.WARNING,
+            "The schema entry of database '%s' proposed in term %d was truncated: this node applies an entry of term %d first "
+                + "(issue #11240)", pending.databaseName, pending.term, entryTerm);
+  }
+
+  /**
+   * Settles as committed the pending publication the applied {@code decoded} entry is (issue #11240). Called before the
+   * applied position moves past {@code index}, so a checkpoint that reads the advanced position also reads the floor
+   * {@link #lowestUnpersistedPublication()} derives from it.
+   */
+  private void confirmPublication(final RaftLogEntryCodec.DecodedEntry decoded, final long entryTerm, final long index) {
+    for (final PendingPublication pending : pendingPublications)
+      if (pending.matches(decoded, entryTerm)) {
+        pending.appliedAtIndex = index;
+        pending.outcome.complete(Boolean.TRUE);
+      }
+  }
+
+  /**
+   * The lowest log index of an applied publication whose proposer has not persisted it yet, or {@link Long#MAX_VALUE}
+   * (issue #11240). An HA compaction saves its schema and drops the files it replaced only after its entry is applied here,
+   * and on the proposer the apply skips the entry: until the proposer has persisted the swap, only a replay of the entry
+   * could restore it after a crash, so the log must not be purged through it. This covers the short window while the
+   * proposer persists; one whose persistence failed hands the entry to the holds of {@link #lowestHeldEntry()} instead
+   * ({@link #holdUnpersistedPublication}). A Raft install past the entry carries what it published, so it no longer holds.
+   */
+  long lowestUnpersistedPublication() {
+    if (pendingPublications.isEmpty())
+      return Long.MAX_VALUE;
+    final long boundary = installedRaftBoundary.get();
+    long lowest = Long.MAX_VALUE;
+    for (final PendingPublication pending : pendingPublications) {
+      final long index = pending.appliedAtIndex;
+      if (index > boundary && index < lowest)
+        lowest = index;
+    }
+    return lowest;
+  }
+
+  /**
+   * Keeps the entry of a publication its proposer could not persist replayable until a restart replays it, a Raft install
+   * covers it or the database is dropped (issue #11240): one of the holds of {@link #lowestHeldEntry()}, which drops it past
+   * an install and reminds the operator while it stands. Raised before the publication is forgotten, so the entry is never
+   * left uncovered in between.
+   */
+  void holdUnpersistedPublication(final PendingPublication pending) {
+    final long index = pending.appliedAtIndex;
+    if (index > -1) {
+      final String key = unpersistedPublicationKey(pending.databaseName);
+      final long lowest = heldEntryFloors.merge(key, index, Math::min);
+      LogManager.instance().log(this, lowest == index ? Level.SEVERE : Level.FINE,
+          "Raft entry at index %d of database '%s' publishes a compaction this node could not persist: no snapshot checkpoint "
+              + "will cover it, so a restart replays it (issue #11240)", index, pending.databaseName);
+    }
+    forgetPublication(pending);
+  }
+
+  private static String unpersistedPublicationKey(final String databaseName) {
+    return "compaction:" + databaseName;
+  }
+
   boolean quarantineUnpublishedSchemaChange(final String dbName, final String session, final Throwable refusal) {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA != null && !isDatabaseDiverged(dbName) && raftHA.isSoleVoter()) {
@@ -9725,6 +10070,110 @@ public class ArcadeStateMachine extends BaseStateMachine {
             dbName, cause, getAppliedIndexFile());
       return true;
     }
+  }
+
+  /**
+   * Quarantines every open database whose crash recovery, run when the server opened it, did not replay every transaction
+   * (issue #11250), so the node does not serve it, does not lead with it, and re-installs it from the cluster.
+   * <p>
+   * Called once the Raft server is up, which is after the server opened the databases: the recovery the check reads has
+   * already run. Before this, a node whose recovery had aborted on a WAL gap still rejoined the cluster, won an election
+   * and answered queries from pages a power loss had left behind.
+   * <p>
+   * A sole voter is left alone, for the reason {@link #handleUnexpectedApplyError} spells out: there is no copy to resync
+   * from, so the quarantine could never lift. It is reported instead.
+   *
+   * @return the databases quarantined by this call
+   */
+  List<String> quarantineDatabasesWithIncompleteRecovery() {
+    final ArcadeDBServer srv = this.server;
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (srv == null || raftHA == null)
+      return List.of();
+
+    final List<String> quarantined = new ArrayList<>();
+    for (final String dbName : srv.getDatabaseNames()) {
+      if (ArcadeDBServer.isReservedDatabaseName(dbName))
+        continue;
+      final boolean incomplete;
+      final List<String> unavailableUnique;
+      try {
+        final ServerDatabase db = srv.getDatabase(dbName, false, false);
+        incomplete = db != null && db.getEmbedded().getTransactionManager().isLastRecoveryIncomplete();
+        unavailableUnique = db != null ? db.getEmbedded().getSchema().getEmbedded().getUnavailableUniqueIndexNames() : List.of();
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot read the recovery outcome of database '%s': %s", dbName,
+            e.getMessage());
+        continue;
+      }
+      if (incomplete) {
+        if (quarantineAfterIncompleteRecovery(dbName))
+          quarantined.add(dbName);
+      } else if (!unavailableUnique.isEmpty() && quarantineAfterUnavailableUniqueIndex(dbName, unavailableUnique))
+        quarantined.add(dbName);
+    }
+    return quarantined;
+  }
+
+  /**
+   * The decision for one database whose crash recovery did not replay every transaction (issue #11250): quarantine it, start
+   * the targeted resync and hand leadership off, unless this node is the only voter (nothing to resync from, so the
+   * quarantine could never lift: reported at SEVERE instead).
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterIncompleteRecovery(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The crash recovery of database '%s' did not complete and this node is the only voter, so there is no peer to "
+              + "re-install it from. It is NOT quarantined; it may be missing committed data: run CHECK DATABASE and "
+              + "restore it from a backup if it is damaged (issue #11250)", dbName);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.LOCAL_RECOVERY_INCOMPLETE))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "The crash recovery of database '%s' did not complete, so its local copy may be missing committed data: "
+            + "quarantining it and re-installing it from the leader (issue #11250)", dbName);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
+  }
+
+  /**
+   * The decision for one database that opened with a unique index it could not load, for a file with no header page (issue
+   * #11258): the index enforces nothing on this node, and the load cannot tell a half-arrived compaction file from one a power
+   * loss emptied. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines the database and re-installs it from the
+   * leader, unless this node is the only voter.
+   *
+   * @return {@code true} when this call quarantined the database
+   */
+  boolean quarantineAfterUnavailableUniqueIndex(final String dbName, final List<String> indexNames) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null)
+      return false;
+
+    if (raftHA.isSoleVoter()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' opened without its unique indexes %s (no header page) and this node is the only voter, so there is "
+              + "no peer to re-install it from. It is NOT quarantined; the constraint is not enforced: run REBUILD INDEX "
+              + "(issue #11258)", null, dbName, indexNames);
+      return false;
+    }
+    if (!quarantineDatabase(dbName, DivergenceCause.UNAVAILABLE_UNIQUE_INDEX))
+      return false;
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
+            + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+    triggerDatabaseResync(dbName);
+    handOffLeadershipIfLeader(dbName);
+    return true;
   }
 
   /**

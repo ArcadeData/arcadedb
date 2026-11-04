@@ -55,6 +55,7 @@ import com.arcadedb.utility.IPAddressBlocklist;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -64,9 +65,11 @@ import java.net.UnknownHostException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -822,7 +825,8 @@ public class ServerControlPlane {
    * The databases {@code user} is allowed to see on this server.
    */
   public Set<String> listAuthorizedDatabases(final ServerSecurityUser user) {
-    return filterAuthorizedDatabases(user, server.getDatabaseNames());
+    // Open or not (issue #11068): the next request opens one closed for idleness or not opened at startup
+    return filterAuthorizedDatabases(user, server.getAvailableDatabaseNames());
   }
 
   /**
@@ -1118,10 +1122,11 @@ public class ServerControlPlane {
 
     beginExclusive(databaseName, Operation.DROP);
     try {
-      if (!server.existsDatabase(databaseName))
+      // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened to be dropped
+      if (!server.isDatabaseAvailable(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
 
-      dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+      dropDatabaseClusterWide(server.getDatabaseForOperator(databaseName), databaseName);
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.DROP);
     }
@@ -1145,7 +1150,7 @@ public class ServerControlPlane {
   public void openDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    server.getDatabase(databaseName);
+    server.getDatabaseForOperator(databaseName);
   }
 
   /**
@@ -1170,7 +1175,7 @@ public class ServerControlPlane {
 
     beginExclusive(databaseName, Operation.CLOSE);
     try {
-      final ServerDatabase database = server.getDatabase(databaseName);
+      final ServerDatabase database = server.getDatabaseForOperator(databaseName);
       // CLOSED ON PURPOSE: AN HTTP REQUEST DOES NOT REOPEN IT, 'open database' DOES (#10234). MARKED BEFORE THE CLOSE, SO NO
       // REQUEST REOPENS IT WHILE IT CLOSES, AND DEREGISTERED TOGETHER WITH ITS MARK, SO NONE DOES BETWEEN THE TWO
       server.markClosedByCommand(database.getName());
@@ -1193,7 +1198,7 @@ public class ServerControlPlane {
   public void alignDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    final Database database = server.getDatabase(databaseName);
+    final Database database = server.getDatabaseForOperator(databaseName);
 
 
     try (final var rs = database.command("sql", "align database")) {
@@ -1208,7 +1213,7 @@ public class ServerControlPlane {
   public void setDatabaseSetting(final String databaseName, final String key, final String value) throws IOException {
     requireDatabaseName(databaseName);
 
-    final DatabaseInternal database = server.getDatabase(databaseName);
+    final DatabaseInternal database = server.getDatabaseForOperator(databaseName);
     // Under Raft HA the save replicates the configuration and can be refused or fail to commit: the setting must not
     // then stay in force on this node alone (issue #9763), so the value it replaced is put back. Only that setting, so
     // a change to another one that lands meanwhile is kept. The value replaced is captured and the new one stored in one
@@ -1216,6 +1221,10 @@ public class ServerControlPlane {
     // between and be undone with a value it replaced (issue #9919).
     final String storedKey = storedKey(key);
     final LocalDatabase local = database.getEmbedded() instanceof LocalDatabase l ? l : null;
+    // A setting saved into a database that refuses writes is lost like any other write: a restore replacing it discards the
+    // configuration.json the swap deletes (issue #10689), and one saved before the HA plugin wrapped it is never replicated (#8270)
+    if (local != null)
+      local.checkWritesAccepted();
     final LocalDatabase.SettingChange change;
     final GlobalConfiguration setting = GlobalConfiguration.findByKey(storedKey);
     if (local != null && (setting == GlobalConfiguration.DATE_IMPLEMENTATION
@@ -1477,7 +1486,25 @@ public class ServerControlPlane {
    * is a set of permissions, and the users holding it are named in the user documents, not here.
    */
   public JSONObject listGroups() {
-    return server.getSecurity().groupsToJSON();
+    // A copy: groupsToJSON() shares the repository's live document, which the defaults below must not touch
+    final JSONObject document = new JSONObject(server.getSecurity().groupsToJSON().toString());
+
+    // A group written by hand (or seeded by an older release) may omit resultSetLimit/readTimeout, which the server reads as
+    // -1. The listing is a contract (GroupDefinition requires all four members), so report the effective value, as saveGroup does
+    final JSONObject databases = document.getJSONObject("databases");
+    for (final String database : databases.keySet()) {
+      final JSONObject groups = databases.getJSONObject(database).getJSONObject("groups");
+      for (final String name : groups.keySet()) {
+        final JSONObject group = groups.getJSONObject(name);
+        group.put("resultSetLimit", group.getLong("resultSetLimit", -1L));
+        group.put("readTimeout", group.getLong("readTimeout", -1L));
+        if (!group.has("access"))
+          group.put("access", new JSONArray());
+        if (!group.has("types"))
+          group.put("types", new JSONObject());
+      }
+    }
+    return document;
   }
 
   /**
@@ -1539,7 +1566,7 @@ public class ServerControlPlane {
     final ServerSecurity security = server.getSecurity();
     for (final String databaseName : server.getDatabaseNames()) {
       if ("*".equals(database) || databaseName.equals(database))
-        security.updateSchema((DatabaseInternal) server.getDatabase(databaseName));
+        security.updateSchema((DatabaseInternal) server.getDatabaseForOperator(databaseName));
     }
   }
 
@@ -1793,6 +1820,13 @@ public class ServerControlPlane {
    * first, with the count and the total size of the same files. Both were previously read off the scheduler's
    * retention manager and left out when the plugin was off, so the listing carried a count only when the
    * scheduler was running (issue #7392).
+   * <p>
+   * Every number in the answer is read from the file system, never a stand-in: an archive is listed only once its
+   * attributes have been read, and as a regular file, so {@code delete backup} and {@code restore backup} can act on
+   * every entry. One whose attributes cannot be read is left out, since nothing can restore it: it used to be listed
+   * with a size and a modification time of 0, a zero-byte archive dated 1970 that a retention or monitoring tool takes
+   * for a broken or the oldest backup (issue #10880). The common cause is the retention sweep deleting it under the
+   * listing, which is logged at FINE; any other failure (permissions, a broken mount) is logged as a WARNING.
    */
   public JSONObject listBackups(final String databaseName) {
     requireBackupDatabaseName(databaseName);
@@ -1801,30 +1835,45 @@ public class ServerControlPlane {
     long totalSize = 0;
 
     final Path dbBackupDir = resolveBackupDirectory().resolve(databaseName);
-    if (Files.isDirectory(dbBackupDir)) {
-      try (final var stream = Files.list(dbBackupDir)) {
-        for (final Path p : stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList()) {
-          final JSONObject backup = new JSONObject();
-          backup.put("fileName", p.getFileName().toString());
-          try {
-            final long size = Files.size(p);
-            totalSize += size;
-            backup.put("size", size);
-            backup.put("lastModified", Files.getLastModifiedTime(p).toMillis());
-          } catch (final IOException e) {
-            backup.put("size", 0);
-            backup.put("lastModified", 0);
-          }
+    // Listed without asking Files.isDirectory() first: it answers false for a directory the server cannot reach as well
+    // as for an absent one, and the first is a failure to report, not "no backups"
+    List<Path> archives;
+    try (final var stream = Files.list(dbBackupDir)) {
+      archives = stream.filter(ServerControlPlane::isBackupArchive).sorted(Comparator.reverseOrder()).toList();
+    } catch (final NoSuchFileException e) {
+      // no backup was ever taken of this database
+      archives = List.of();
+    } catch (final IOException | UncheckedIOException e) {
+      // an UncheckedIOException is a failure while the stream walks the directory
+      throw new CommandExecutionException("Error listing backups for database '" + databaseName + "'", e);
+    }
 
-          // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
-          final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
-          backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
-
-          backups.put(backup);
-        }
+    for (final Path p : archives) {
+      // One read for both values, so the size and the time always describe the same file
+      final BasicFileAttributes attributes;
+      try {
+        attributes = Files.readAttributes(p, BasicFileAttributes.class);
+      } catch (final NoSuchFileException e) {
+        LogManager.instance().log(this, Level.FINE, "Backup archive '%s' was removed while listing the backups", p);
+        continue;
       } catch (final IOException e) {
-        throw new RuntimeException("Error listing backups for database '" + databaseName + "'", e);
+        LogManager.instance().log(this, Level.WARNING, "Cannot read the backup archive '%s', it is not listed", e, p);
+        continue;
       }
+      if (!attributes.isRegularFile())
+        continue;
+
+      final JSONObject backup = new JSONObject();
+      backup.put("fileName", p.getFileName().toString());
+      backup.put("size", attributes.size());
+      backup.put("lastModified", attributes.lastModifiedTime().toMillis());
+      totalSize += attributes.size();
+
+      // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
+      final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
+      backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
+
+      backups.put(backup);
     }
 
     final JSONObject response = new JSONObject();
@@ -1988,7 +2037,7 @@ public class ServerControlPlane {
     final Path dbBackupPath = resolveBackupDirectory().resolve(databaseName);
     try {
       // Perform backup using reflection (same as BackupTask)
-      final Database database = server.getDatabase(databaseName);
+      final Database database = server.getDatabaseForOperator(databaseName);
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
 
       final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
@@ -2379,6 +2428,21 @@ public class ServerControlPlane {
 
       server.reserveDatabaseNameForRestore(databaseName);
     }
+    // Out of the registry lock: an existing target now refuses writes, and the commits already past that check are waited for,
+    // so none of them is acknowledged during the download and destroyed by the swap (issue #10689). On an HA leader that includes
+    // the commits still on their way to quorum (issue #10881), so the wait can be interrupted: the claim taken above is then
+    // released here, since the caller's finally that releases it is entered only after this method returns
+    try {
+      server.awaitCommitsInFlightOn(databaseName);
+      // Under HA the hold just taken on the writes of the other nodes has to be the leader's (issue #10974): refused now, before the
+      // download, rather than after it, before the swap
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null)
+        ha.ensureReplicatedWritesHeldForRestore(databaseName);
+    } catch (final RuntimeException | Error e) {
+      server.releaseDatabaseNameReservedForRestore(databaseName);
+      throw e;
+    }
   }
 
   /**
@@ -2633,11 +2697,23 @@ public class ServerControlPlane {
       }
 
       progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, RESTORE_STEPS, 0, -1);
+      // The hold the claim took on the writes of the other nodes is this node's (issue #10974): a leadership that moved during the
+      // download let the new leader accept writes the swap and the forced snapshot would destroy. Refused, retryable, before
+      // anything is replaced
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null) {
+        try {
+          ha.ensureReplicatedWritesHeldForRestore(databaseName);
+        } catch (final RuntimeException e) {
+          FileUtils.deleteRecursively(tempDir);
+          throw e;
+        }
+      }
       swapRestoredDatabase(databaseName, finalDir, tempDir, replaceExisting);
 
       // A no-op outside HA, and minutes inside it: forceSnapshot makes every replica pull the restored files.
       progress.onProgress(RESTORE_STEP_REPLICATE, 3, RESTORE_STEPS, 0, -1);
-      replicateRestoredDatabase(server.getDatabase(databaseName), databaseName);
+      replicateRestoredDatabase(server.getDatabaseForOperator(databaseName), databaseName);
       // Completion is the transport's to announce, not this method's: HTTP writes a 'completed' SSE
       // frame, gRPC a final message with completed=true, and a synchronous caller just returns.
     } finally {
@@ -2738,7 +2814,7 @@ public class ServerControlPlane {
    * every peer including this one, rather than performed locally behind the cluster's back.
    */
   private void dropDatabaseForRestore(final String databaseName) {
-    dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+    dropDatabaseClusterWide(server.getDatabaseForOperator(databaseName), databaseName);
   }
 
   /**

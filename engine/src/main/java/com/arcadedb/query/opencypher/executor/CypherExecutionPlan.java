@@ -105,14 +105,17 @@ import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
+import com.arcadedb.query.opencypher.executor.steps.DistinctEndpointCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CountChainedEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
@@ -147,6 +150,7 @@ import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.VertexPredicate;
 import com.arcadedb.query.opencypher.executor.steps.QuantifiedPathStep;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
+import com.arcadedb.query.opencypher.executor.steps.SemiJoinStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
@@ -164,7 +168,6 @@ import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
-import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.RangeIndex;
@@ -177,6 +180,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
+import com.arcadedb.query.sql.executor.ExecutionStepInternal;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -223,6 +227,9 @@ public class CypherExecutionPlan {
    */
   private static final String ROW_COUNT_ALIAS = " rowCount";
 
+  /** The rows a seeded body ({@code CALL { }}, a subquery expression) reads at a time when its caller names no demand. */
+  public static final int SEEDED_BATCH_SIZE = 100;
+
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
   private final Map<String, Object>  parameters;
@@ -234,6 +241,8 @@ public class CypherExecutionPlan {
 
   // Query-level counter for unique anonymous variable names across MATCH clauses
   private int anonymousVarCounter = 0;
+  // Set when a semi-join chain was planned but did not read the row it is handed: the plan is then built without one
+  private boolean semiJoinDisabled = false;
 
   /** See {@link #foldedCountPlan()}: null until computed, empty when there is nothing to fold. */
   private volatile Optional<CypherExecutionPlan> foldedCountPlan;
@@ -541,6 +550,15 @@ public class CypherExecutionPlan {
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow, final CommandContext outerContext) {
+    return executeWithSeedRow(seedRow, outerContext, SEEDED_BATCH_SIZE);
+  }
+
+  /**
+   * {@link #executeWithSeedRow(Result, CommandContext)}, reading {@code batchSize} rows at a time: a {@code CALL { }} whose
+   * rows stream asks for no more than its own consumer did, so the {@code LIMIT 3} after it reads three rows of the body
+   * and not a batch of a hundred (issue #11082).
+   */
+  public ResultSet executeWithSeedRow(final Result seedRow, final CommandContext outerContext, final int batchSize) {
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
       final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
@@ -552,36 +570,20 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
-      // The deadline is inherited because the WorkGuard below reads it; nothing else is, because nothing else
+      // The deadline is inherited because the UnionStep's WorkGuard reads it; nothing else is, because nothing else
       // is read. No expression is ever evaluated against this ctx - each branch re-enters this method with the
       // REAL outerContext - so inheriting the statement clock here would be dead weight.
       inheritCommandDeadline(ctx, outerContext);
 
-      // Execute each branch with the seed row, collect all results
-      final WorkGuard unionGuard = WorkGuard.forCommandDeadline(ctx);
-      final List<ResultInternal> allResults = new ArrayList<>();
-      final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
-      for (final CypherExecutionPlan branchPlan : branchPlans) {
-        // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext,
-        // so it takes the non-union path below and does its own inherit under the same gate. A second copy
-        // here would be one more thing to keep in step with that gate (issue #6977).
-        try (final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext)) {
-          while (rs.hasNext()) {
-            unionGuard.check();
-            final Result row = rs.next();
-            if (removeDuplicates) {
-              final String key = buildResultKey(row);
-              if (!seen.add(key))
-                continue;
-            }
-            final ResultInternal copy = new ResultInternal();
-            for (final String prop : row.getPropertyNames())
-              copy.setProperty(prop, row.getProperty(prop));
-            allResults.add(copy);
-          }
-        }
-      }
-      return new IteratorResultSet(allResults.iterator());
+      // Each branch runs seeded with the row, one after the other and only as far as the consumer pulls: collecting every
+      // branch first ran the whole body for a LIMIT the first branch could satisfy (issue #11082). The UNION de-duplicates
+      // on the canonical keys of the statement-level UNION, under the same heap limit.
+      // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext, so it takes
+      // the non-union path below and does its own inherit under the same gate. A second copy here would be one more
+      // thing to keep in step with that gate (issue #6977).
+      final UnionStep unionStep = new UnionStep(branchPlans, removeDuplicates,
+          branchPlan -> branchPlan.executeWithSeedRow(seedRow, outerContext, batchSize), ctx);
+      return unionStep.syncPull(ctx, batchSize);
     }
 
     final BasicCommandContext context = new BasicCommandContext();
@@ -648,7 +650,7 @@ public class CypherExecutionPlan {
     if (rootStep == null)
       return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
 
-    return rootStep.syncPull(context, 100);
+    return rootStep.syncPull(context, batchSize);
   }
 
   /**
@@ -822,17 +824,6 @@ public class CypherExecutionPlan {
     Object boundValue(final String name) {
       return seedRow.getProperty(name);
     }
-  }
-
-  private static String buildResultKey(final Result result) {
-    final StringBuilder sb = new StringBuilder();
-    for (final String prop : result.getPropertyNames()) {
-      sb.append(prop).append("=");
-      final Object value = result.getProperty(prop);
-      sb.append(value == null ? "null" : value.toString());
-      sb.append("|");
-    }
-    return sb.toString();
   }
 
   /**
@@ -1442,6 +1433,9 @@ public class CypherExecutionPlan {
     final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
+        // The physical plan runs every MATCH ahead of the clauses below: only one that starts the statement binds a row each.
+        // An identity check on purpose: the loop walks the statement's own list, not a copy
+        final boolean startsStatement = entry == clausesInOrder.getFirst();
         switch (entry.getType()) {
         case MATCH: {
           // MATCH pattern AND its WHERE are handled by the optimizer above: the physical plan applies every MATCH-level
@@ -1450,6 +1444,7 @@ public class CypherExecutionPlan {
           final MatchClause matchClause = entry.getTypedClause();
           currentSegmentMatchClauses.add(matchClause);
           eagerness.observeRead(matchClause);
+          eagerness.observeClause(entry, startsStatement, optimizerBoundVariables);
           collectPatternVariables(matchClause, optimizerBoundVariables);
           break;
         }
@@ -1463,20 +1458,30 @@ public class CypherExecutionPlan {
             createStep.setPrevious(currentStep);
             currentStep = createStep;
             eagerness.observeWriteClause();
+            eagerness.observeClause(entry, false, optimizerBoundVariables);
+            // What the CREATE binds is bound from here on, as in buildExecutionStepsWithOrder(): a later CREATE that names one
+            // of them refers to that entity rather than creating a new one each row
+            collectPatternVariables(createClause.getPathPatterns(), optimizerBoundVariables);
           }
           break;
         }
 
         case SET: {
           final SetClause setClause = entry.getTypedClause();
-          if (!setClause.isEmpty() && !absorbsSet(currentStep, setClause)) {
-            if (currentStep != null && eagerness.needsBarrier(setClause))
+          // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889), and one of a key a
+          // clause before it read for another row after that read of every row (issue #11005): it gets the barrier, so the
+          // MERGE step must not absorb it
+          final boolean barrierFirst = !setClause.isEmpty()
+              && (eagerness.needsBarrierAfterMerge(setClause) || eagerness.needsBarrierForPropertyWrites(setClause));
+          if (!setClause.isEmpty() && (barrierFirst || !absorbsSet(currentStep, setClause))) {
+            if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
             eagerness.observeWriteClause();
           }
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           break;
         }
 
@@ -1488,6 +1493,7 @@ public class CypherExecutionPlan {
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
             eagerness.observeWriteClause();
+            eagerness.observeClause(entry, false, optimizerBoundVariables);
           }
           break;
         }
@@ -1495,7 +1501,8 @@ public class CypherExecutionPlan {
         case REMOVE: {
           final RemoveClause removeClause = entry.getTypedClause();
           if (!removeClause.isEmpty()) {
-            if (currentStep != null && eagerness.needsBarrier(removeClause))
+            if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
+                || eagerness.needsBarrierForPropertyWrites(removeClause)))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
             removeStep.setPrevious(currentStep);
@@ -1507,12 +1514,16 @@ public class CypherExecutionPlan {
 
         case MERGE: {
           final MergeClause mergeClause = entry.getTypedClause();
-          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables))
+          if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables) || eagerness.needsBarrierAfterMerge(mergeClause)
+              || eagerness.needsBarrierForPropertyWrites(mergeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
           eagerness.observeWriteClause();
+          eagerness.observeMergeRead(mergeClause);
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
+          collectPatternVariables(List.of(mergeClause.getPathPattern()), optimizerBoundVariables);
           break;
         }
 
@@ -1521,6 +1532,7 @@ public class CypherExecutionPlan {
           final UnwindStep unwindStep = new UnwindStep(unwindClause, context, functionFactory);
           unwindStep.setPrevious(currentStep);
           currentStep = unwindStep;
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           optimizerBoundVariables.add(unwindClause.getVariable());
           break;
         }
@@ -1530,6 +1542,7 @@ public class CypherExecutionPlan {
           currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
           markDrainOnZeroLimit(currentStep, withClause, eagerness);
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           if (withClause.hasAggregations())
             eagerness.observeAggregationBoundary();
           applyProjectionToScope(withClause.getItems(), optimizerBoundVariables);
@@ -1548,6 +1561,7 @@ public class CypherExecutionPlan {
           final LoadCSVStep loadCSVStep = new LoadCSVStep(loadCSVClause, context, functionFactory);
           loadCSVStep.setPrevious(currentStep);
           currentStep = loadCSVStep;
+          eagerness.observeClause(entry, false, optimizerBoundVariables);
           break;
         }
 
@@ -1576,8 +1590,14 @@ public class CypherExecutionPlan {
       if (countOpt != null) {
         currentStep = countOpt;
       } else if (statement.getReturnClause().hasAggregations()) {
+        // A reachability search counts its end vertices itself: no row is built per end vertex (issue #10548)
+        final AbstractExecutionStep endpointCount = tryCountDistinctEndpoints(statement.getReturnClause().getReturnItems(),
+            currentStep, context);
+        if (endpointCount != null)
+          currentStep = endpointCount;
         // The fused chain counts its paths itself and answers the aggregated rows: no step aggregates them (issue #9738)
-        final boolean fusedIntoChain = tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep);
+        final boolean fusedIntoChain =
+            endpointCount != null || tryFuseAggregationIntoChain(statement.getReturnClause().getReturnItems(), currentStep);
         if (!fusedIntoChain) {
           // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
           final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
@@ -1647,7 +1667,7 @@ public class CypherExecutionPlan {
       currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final int limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -1808,9 +1828,23 @@ public class CypherExecutionPlan {
         }
       };
     }
+    // The one-row source the clauses start from (the dummy row, or the seed row of a CALL subquery body), or null
+    final AbstractExecutionStep singleRowSource = currentStep;
+
+    // The clauses a RETURN DISTINCT needs only for whether a row survives run as the chain of a SemiJoinStep (#11009).
+    // A look-ahead that consumes the start clause together with the one before it leaves the plan as it was.
+    final DistinctSemiJoin.Plan semiJoin =
+        initialStep == null && !semiJoinDisabled ? DistinctSemiJoin.plan(statement, clausesInOrder) : null;
+    AbstractExecutionStep semiJoinOuter = null;
+    SemiJoinStep.ChainInputStep semiJoinInput = null;
 
     // Process clauses in order (indexed loop to support look-ahead for optimizations)
     for (int entryIndex = 0; entryIndex < clausesInOrder.size(); entryIndex++) {
+      if (semiJoin != null && entryIndex == semiJoin.start() && currentStep != null) {
+        semiJoinOuter = currentStep;
+        semiJoinInput = new SemiJoinStep.ChainInputStep(context);
+        currentStep = semiJoinInput;
+      }
       final ClauseEntry entry = clausesInOrder.get(entryIndex);
       switch (entry.getType()) {
       case UNWIND:
@@ -1821,6 +1855,7 @@ public class CypherExecutionPlan {
           unwindStep.setPrevious(currentStep);
         }
         currentStep = unwindStep;
+        eagerness.observeClause(entry, false, boundVariables);
         // Track the UNWIND variable as bound so subsequent MATCH clauses can
         // push down WHERE predicates referencing it (e.g., WHERE a.uid = e.src)
         boundVariables.add(unwindClause.getVariable());
@@ -1834,6 +1869,7 @@ public class CypherExecutionPlan {
           loadCSVStep.setPrevious(currentStep);
         }
         currentStep = loadCSVStep;
+        eagerness.observeClause(entry, false, boundVariables);
         boundVariables.add(loadCSVClause.getVariable());
         break;
 
@@ -1844,6 +1880,7 @@ public class CypherExecutionPlan {
         if (currentStep != null && eagerness.needsBarrier(matchClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         eagerness.observeRead(matchClause);
+        eagerness.observeClause(entry, currentStep == singleRowSource, boundVariables);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
           final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
@@ -1855,6 +1892,8 @@ public class CypherExecutionPlan {
             if (clausesInOrder.get(entryIndex + 1).getType() == ClauseEntry.ClauseType.MATCH)
               eagerness.observeRead(clausesInOrder.get(entryIndex + 1).getTypedClause());
             entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
+            eagerness.observeClause(clausesInOrder.get(entryIndex - 1), false, boundVariables);
+            eagerness.observeClause(clausesInOrder.get(entryIndex), false, boundVariables);
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
@@ -1870,6 +1909,7 @@ public class CypherExecutionPlan {
           if (optimized != null) {
             currentStep = optimized;
             entryIndex++; // skip the WITH clause (already handled)
+            eagerness.observeClause(clausesInOrder.get(entryIndex), false, boundVariables);
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
@@ -1887,6 +1927,8 @@ public class CypherExecutionPlan {
         currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         markDrainOnZeroLimit(currentStep, withClause, eagerness);
+        // What the projection reads per row, before an aggregation drains it (issue #11005)
+        eagerness.observeClause(entry, false, boundVariables);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
         // A WITH boundary starts a new segment (issue #6631) - but a WITH that plainly forwards a
@@ -1905,8 +1947,11 @@ public class CypherExecutionPlan {
 
       case MERGE:
         final MergeClause mergeClause = entry.getTypedClause();
-        if (currentStep != null && eagerness.needsBarrier(mergeClause, boundVariables))
+        if (currentStep != null && (eagerness.needsBarrier(mergeClause, boundVariables)
+            || eagerness.needsBarrierAfterMerge(mergeClause) || eagerness.needsBarrierForPropertyWrites(mergeClause)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
+        // A MERGE that starts the statement runs its lookup once: no later write can change what it finds (issue #10889)
+        final boolean mergeRunsPerRow = currentStep != null && currentStep != singleRowSource;
         final MergeStep mergeStep =
             new MergeStep(mergeClause, context, functionFactory);
         if (currentStep != null) {
@@ -1914,6 +1959,12 @@ public class CypherExecutionPlan {
         }
         currentStep = mergeStep;
         eagerness.observeWrite(mergeClause);
+        if (mergeRunsPerRow)
+          eagerness.observeMergeRead(mergeClause);
+        eagerness.observeClause(entry, false, boundVariables);
+        // What the MERGE binds is as much a bound name as what a MATCH binds: a MATCH after it that ends at one of them
+        // starts from that entity instead of scanning the side it leaves open (issue #10515)
+        collectPatternVariables(List.of(mergeClause.getPathPattern()), boundVariables);
         break;
 
       case CREATE:
@@ -1927,6 +1978,8 @@ public class CypherExecutionPlan {
           }
           currentStep = createStep;
           eagerness.observeWriteClause();
+          eagerness.observeClause(entry, false, boundVariables);
+          collectPatternVariables(createClause.getPathPatterns(), boundVariables);
         }
         break;
 
@@ -1934,9 +1987,14 @@ public class CypherExecutionPlan {
         final SetClause setClause = entry.getTypedClause();
         if (!setClause.isEmpty() && currentStep != null) {
           // absorbsSet() hands the clause over to the step, so it is asked exactly once: a second call finds the
-          // clause already taken, answers false and plans the SET a second time as a step of its own (issue #8809)
-          if (!absorbsSet(currentStep, setClause)) {
-            if (eagerness.needsBarrier(setClause))
+          // clause already taken, answers false and plans the SET a second time as a step of its own (issue #8809).
+          // A SET of what a MERGE before it matches on runs after the MERGE of every row (issue #10889): it gets the
+          // barrier, so the MERGE step must not absorb it.
+          // A SET of a key a clause before it read for another row runs after that read of every row (issue #11005): the same
+          // barrier, so the step before it must not absorb it either.
+          final boolean barrierFirst = eagerness.needsBarrierAfterMerge(setClause) || eagerness.needsBarrierForPropertyWrites(setClause);
+          if (barrierFirst || !absorbsSet(currentStep, setClause)) {
+            if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
                 new SetStep(setClause, context, functionFactory);
@@ -1945,13 +2003,15 @@ public class CypherExecutionPlan {
           }
           // A SET a MERGE/CREATE absorbs still writes, so it is observed either way
           eagerness.observeWrite(setClause);
+          eagerness.observeClause(entry, false, boundVariables);
         }
         break;
 
       case REMOVE:
         final RemoveClause removeClause = entry.getTypedClause();
         if (!removeClause.isEmpty() && currentStep != null) {
-          if (eagerness.needsBarrier(removeClause))
+          if (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
+              || eagerness.needsBarrierForPropertyWrites(removeClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
               new RemoveStep(removeClause, context, functionFactory);
@@ -1970,6 +2030,7 @@ public class CypherExecutionPlan {
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
           eagerness.observeWriteClause();
+          eagerness.observeClause(entry, false, boundVariables);
         }
         break;
 
@@ -1997,6 +2058,7 @@ public class CypherExecutionPlan {
           callStep.setCountOnlyOptimization(true);
         }
         currentStep = callStep;
+        eagerness.observeClause(entry, false, boundVariables);
         // A CALL binds the names it yields the way UNWIND binds its variable: they belong to the scope a
         // following MATCH starts from, not to that MATCH's own clause. Registering them is what lets the
         // MATCH push a predicate that reads one of them down into its scan, and what keeps a yielded
@@ -2012,7 +2074,8 @@ public class CypherExecutionPlan {
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && graphReadFollows(clausesInOrder, entryIndex);
-        if (currentStep != null && eagerness.needsBarrier(foreachClause, boundVariables))
+        if (currentStep != null && (eagerness.needsBarrier(foreachClause, boundVariables)
+            || eagerness.needsBarrierAfterMerge(foreachClause) || eagerness.needsBarrierForPropertyWrites(foreachClause)))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
@@ -2021,23 +2084,49 @@ public class CypherExecutionPlan {
         }
         currentStep = foreachStep;
         eagerness.observeWriteClause();
+        eagerness.observeClause(entry, false, boundVariables);
         break;
 
       case SUBQUERY:
         final SubqueryClause subqueryClause = entry.getTypedClause();
+        final CypherStatement subqueryBody = subqueryClause.getInnerStatement();
+        // The body runs once per row the enumeration behind it hands over, so a node it deletes is unlinked while that
+        // enumeration is still walking it (issue #10512). The rows are read ahead of the first run on the same terms as for
+        // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided
+        if (currentStep != null && ((subqueryBodyDeletes(subqueryBody)
+            && (matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()))
+            || eagerness.needsBarrierForPropertyWrites(subqueryBody)))
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
+        // Nothing in a statement that cannot write needs the body's reads finished before the next clause: its rows stream,
+        // so a LIMIT after the CALL stops the body too (issue #11082)
+        subqueryStep.setStreamBody(statement.isReadOnly());
         if (currentStep != null) {
           subqueryStep.setPrevious(currentStep);
         }
         currentStep = subqueryStep;
         if (!subqueryClause.getInnerStatement().isReadOnly())
           eagerness.observeWriteClause();
+        eagerness.observeClause(entry, false, boundVariables);
         // What the subquery returns joins the outer scope, exactly as a CALL's YIELD names do, so a following
         // MATCH can push a predicate that reads one of them into its scan instead of filtering behind it.
         collectSubqueryOutputVariables(subqueryClause, boundVariables);
         break;
       }
+    }
+
+    if (semiJoinOuter != null) {
+      if (!feedsFrom(currentStep, semiJoinInput)) {
+        // A step that started a source of its own instead of reading the row it was handed would answer the same for
+        // every input row: plan the statement again without the semi-join rather than risk it
+        semiJoinDisabled = true;
+        return buildExecutionStepsWithOrder(context, clausesInOrder, initialStep, correlation, seedVariableNames);
+      }
+      final SemiJoinStep semiJoinStep = new SemiJoinStep(semiJoinInput, currentStep, semiJoin.distinctKey(),
+          semiJoin.memoKey(), context);
+      semiJoinStep.setPrevious(semiJoinOuter);
+      currentStep = semiJoinStep;
     }
 
     // Apply statement-level WHERE clause if present
@@ -2115,7 +2204,7 @@ public class CypherExecutionPlan {
       currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -2128,6 +2217,15 @@ public class CypherExecutionPlan {
     }
 
     return currentStep;
+  }
+
+  /** Whether {@code source} is reached from {@code end} through the steps' previous links. */
+  private static boolean feedsFrom(final AbstractExecutionStep end, final AbstractExecutionStep source) {
+    for (ExecutionStepInternal step = end; step != null; step = step instanceof AbstractExecutionStep abstractStep ?
+        abstractStep.getPrev() : null)
+      if (step == source)
+        return true;
+    return false;
   }
 
   /**
@@ -2173,48 +2271,57 @@ public class CypherExecutionPlan {
       currentStep = withStep;
     }
 
-    // Apply ORDER BY if present in WITH
-    if (withClause.getOrderByClause() != null) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results
-      Integer limitVal = withClause.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-              new ResultInternal(), context) : null;
-      final Integer originalLimitVal = limitVal;
-      if (limitVal != null && withClause.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
+  }
+
+  /**
+   * Chains the ORDER BY, SKIP and LIMIT of a WITH after the step that projects it. A plain {@link WithStep} pages its own
+   * rows when there is no ORDER BY, but an aggregating WITH is projected by an aggregation step that knows nothing of SKIP
+   * and LIMIT, so they are chained after it here: without them {@code WITH collect(x) AS q LIMIT 0} still passed its row on,
+   * and a CREATE behind it ran (issue #10892).
+   */
+  private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
+      final CommandContext context, final CypherFunctionFactory functionFactory) {
+    final boolean ordered = withClause.getOrderByClause() != null;
+    if (!ordered && !withClause.hasAggregations())
+      return currentStep;
+
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+    final Integer skipVal = withClause.getSkip() != null ?
+        evaluator.evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context) : null;
+    final Integer limitVal = withClause.getLimit() != null ?
+        evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
+
+    if (ordered) {
+      // Top-K keeps SKIP + LIMIT rows so enough survive the skip; a sum past int range sorts everything instead
+      Integer topKVal = null;
+      if (limitVal != null) {
+        final long topK = (long) limitVal + (skipVal != null ? skipVal : 0);
+        topKVal = topK <= Integer.MAX_VALUE ? (int) topK : null;
       }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = withClause.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-      final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
+      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
       currentStep = orderByStep;
-
-      // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-      if (skipVal != null) {
-        final SkipStep skipStep = new SkipStep(skipVal, context);
-        skipStep.setPrevious(currentStep);
-        currentStep = skipStep;
-      }
-      if (withClause.getLimit() != null) {
-        final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-        limitStep.setPrevious(currentStep);
-        currentStep = limitStep;
-      }
-
-      // Strip non-projected variables that were kept for ORDER BY evaluation
-      currentStep = addWithProjection(withClause, currentStep, context);
     }
 
+    // Pagination happens after sorting and after aggregating
+    if (skipVal != null) {
+      final SkipStep skipStep = new SkipStep(skipVal, context);
+      if (currentStep != null)
+        skipStep.setPrevious(currentStep);
+      currentStep = skipStep;
+    }
+    if (limitVal != null) {
+      final LimitStep limitStep = newLimitStep(limitVal, context);
+      if (currentStep != null)
+        limitStep.setPrevious(currentStep);
+      currentStep = limitStep;
+    }
+
+    // Strip non-projected variables that were kept for ORDER BY evaluation
+    if (ordered)
+      currentStep = addWithProjection(withClause, currentStep, context);
     return currentStep;
   }
 
@@ -2261,43 +2368,7 @@ public class CypherExecutionPlan {
       currentStep = withStep;
     }
 
-    // Apply ORDER BY if present in WITH
-    if (withClause.getOrderByClause() != null) {
-      Integer limitVal = withClause.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-              new ResultInternal(), context) : null;
-      final Integer originalLimitVal = limitVal;
-      if (limitVal != null && withClause.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      final Integer skipVal = withClause.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-      final OrderByStep orderByStep =
-          new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
-      orderByStep.setPrevious(currentStep);
-      currentStep = orderByStep;
-
-      if (skipVal != null) {
-        final SkipStep skipStep = new SkipStep(skipVal, context);
-        skipStep.setPrevious(currentStep);
-        currentStep = skipStep;
-      }
-      if (withClause.getLimit() != null) {
-        final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-        limitStep.setPrevious(currentStep);
-        currentStep = limitStep;
-      }
-
-      currentStep = addWithProjection(withClause, currentStep, context);
-    }
-
-    return currentStep;
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
   }
 
   /**
@@ -2776,6 +2847,7 @@ public class CypherExecutionPlan {
     if (isOptional && matchChainStart != null) {
       final OptionalMatchStep optionalStep =
           new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
+      rememberOptionalMatches(optionalStep, matchClause);
 
       if (stepBeforeMatch != null) {
         optionalStep.setPrevious(stepBeforeMatch);
@@ -2825,7 +2897,7 @@ public class CypherExecutionPlan {
         boundVariables.add(item.getOutputName());
       return;
     }
-    final CypherProcedure procedure = CypherProcedureRegistry.get(callClause.getProcedureName());
+    final CypherProcedure procedure = callClause.resolveProcedure();
     if (procedure == null)
       return;
     final List<String> yieldFields = procedure.getYieldFields();
@@ -3312,6 +3384,41 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * True when the body of a {@code CALL { }} subquery deletes anything: a DELETE clause, a FOREACH that holds one, or a nested
+   * subquery that does, in any branch of a UNION.
+   */
+  private static boolean subqueryBodyDeletes(final CypherStatement body) {
+    if (body == null)
+      return false;
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (subqueryBodyDeletes(branch))
+          return true;
+      return false;
+    }
+    final List<ClauseEntry> clauses = body.getClausesInOrder();
+    // a body that kept no clause order is classified by the flag the parser set
+    if (clauses == null || clauses.isEmpty())
+      return body.hasDelete();
+    for (final ClauseEntry bodyClause : clauses)
+      switch (bodyClause.getType()) {
+      case DELETE:
+        return true;
+      case FOREACH:
+        if (((ForeachClause) bodyClause.getClause()).containsDelete())
+          return true;
+        break;
+      case SUBQUERY:
+        if (subqueryBodyDeletes(((SubqueryClause) bodyClause.getClause()).getInnerStatement()))
+          return true;
+        break;
+      default:
+        break;
+      }
+    return false;
+  }
+
+  /**
    * True when a DELETE (or a FOREACH containing one) fed by the given MATCH clause(s) must read its whole
    * upstream row set before applying the first deletion, because that MATCH can let a later row observe
    * what an earlier row's deletion already removed.
@@ -3417,6 +3524,24 @@ public class CypherExecutionPlan {
       withStep.setDrainOnZeroLimit(true);
   }
 
+  /**
+   * Lets an OPTIONAL MATCH hand its matches to the next input rows that hold the same values for what it reads, instead of
+   * running its chain again for each (issue #11083). Only in a statement that cannot write: nothing can then change what
+   * the chain reads between two input rows.
+   */
+  private void rememberOptionalMatches(final OptionalMatchStep optionalStep, final MatchClause matchClause) {
+    if (statement.isReadOnly())
+      optionalStep.setMemoKey(DistinctSemiJoin.matchMemoKey(matchClause));
+  }
+
+  /**
+   * A LIMIT of this statement. A {@code LIMIT 0} drains its input so the writes behind it run; a statement that cannot write
+   * has none, so its {@code LIMIT 0} answers without running anything behind it (issue #11081).
+   */
+  private LimitStep newLimitStep(final int limit, final CommandContext context) {
+    return new LimitStep(limit, context).setDrainOnZeroLimit(!statement.isReadOnly());
+  }
+
   private static long keepFirst(final CypherFunctionFactory functionFactory, final CommandContext context, final boolean dropsRows,
       final Expression skip, final Expression limit) {
     if (dropsRows)
@@ -3434,13 +3559,23 @@ public class CypherExecutionPlan {
    * {@code MATCH (a:A), (b:B) MERGE (a)-[:R]->(b)} from being read as creating unlabelled vertices.
    */
   private static void collectPatternVariables(final MatchClause matchClause, final Set<String> target) {
-    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+    collectPatternVariables(matchClause.getPathPatterns(), target);
+  }
+
+  /**
+   * Adds every node, relationship and path variable of the given patterns to {@code target}: the names a MATCH, a
+   * CREATE or a MERGE leaves bound in the row.
+   */
+  private static void collectPatternVariables(final List<PathPattern> pathPatterns, final Set<String> target) {
+    for (final PathPattern pathPattern : pathPatterns) {
       for (final NodePattern node : pathPattern.getNodes())
         if (node.getVariable() != null)
           target.add(node.getVariable());
       for (final RelationshipPattern relationship : pathPattern.getRelationships())
         if (relationship.getVariable() != null)
           target.add(relationship.getVariable());
+      if (pathPattern.hasPathVariable())
+        target.add(pathPattern.getPathVariable());
     }
   }
 
@@ -3920,6 +4055,7 @@ public class CypherExecutionPlan {
             // for pulling results through the entire chain including any filter steps
             final OptionalMatchStep optionalStep =
                 new OptionalMatchStep(matchChainStart, currentStep, matchVariables, context);
+            rememberOptionalMatches(optionalStep, matchClause);
 
             // OptionalMatchStep pulls from stepBeforeMatch
             if (stepBeforeMatch != null) {
@@ -4005,47 +4141,7 @@ public class CypherExecutionPlan {
         currentStep = withStep;
       }
 
-      // Apply ORDER BY if present in WITH
-      if (withClause.getOrderByClause() != null) {
-        // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-        // When SKIP is also present, TopK must keep SKIP + LIMIT results
-        Integer limitVal = withClause.getLimit() != null ?
-            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getLimit(),
-                new ResultInternal(), context) : null;
-        final Integer originalLimitVal = limitVal;
-        if (limitVal != null && withClause.getSkip() != null) {
-          final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-              new ResultInternal(), context);
-          limitVal = limitVal + skipVal;
-        }
-
-        // Top-K must account for SKIP so enough rows survive after skipping
-        final Integer skipVal = withClause.getSkip() != null ?
-            new ExpressionEvaluator(functionFactory).evaluateSkipLimit(withClause.getSkip(),
-                new ResultInternal(), context) : null;
-        final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
-
-        final OrderByStep orderByStep =
-            new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal);
-        if (currentStep != null)
-          orderByStep.setPrevious(currentStep);
-        currentStep = orderByStep;
-
-        // Chain SKIP/LIMIT after ORDER BY so pagination happens after sorting
-        if (skipVal != null) {
-          final SkipStep skipStep = new SkipStep(skipVal, context);
-          skipStep.setPrevious(currentStep);
-          currentStep = skipStep;
-        }
-        if (withClause.getLimit() != null) {
-          final LimitStep limitStep = new LimitStep(originalLimitVal, context);
-          limitStep.setPrevious(currentStep);
-          currentStep = limitStep;
-        }
-
-        // Strip non-projected variables that were kept for ORDER BY evaluation
-        currentStep = addWithProjection(withClause, currentStep, context);
-      }
+      currentStep = addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
     }
 
     // The read/write barrier analysis of buildExecutionStepsWithOrder(), over the flat clause lists this
@@ -4066,6 +4162,8 @@ public class CypherExecutionPlan {
       // MERGE is typically standalone, but can be chained
       if (currentStep != null) {
         mergeStep.setPrevious(currentStep);
+        // run once per row: a later write of what it matches on needs the barrier (issue #10889)
+        eagerness.observeMergeRead(statement.getMergeClause());
       }
       currentStep = mergeStep;
       eagerness.observeWriteClause();
@@ -4086,9 +4184,10 @@ public class CypherExecutionPlan {
     }
 
     // Step 5: SET clause - update properties
+    final boolean setAfterMerge = eagerness.needsBarrierAfterMerge(statement.getSetClause());
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null
-        && !absorbsSet(currentStep, statement.getSetClause())) {
-      if (eagerness.needsBarrier(statement.getSetClause()))
+        && (setAfterMerge || !absorbsSet(currentStep, statement.getSetClause()))) {
+      if (setAfterMerge || eagerness.needsBarrier(statement.getSetClause()))
         currentStep = withEagerBarrier(currentStep, context, eagerness);
       final SetStep setStep = new SetStep(
           statement.getSetClause(), context, functionFactory);
@@ -4116,7 +4215,7 @@ public class CypherExecutionPlan {
     // Step 6a: REMOVE clauses - remove properties
     for (final RemoveClause removeClause : statement.getRemoveClauses()) {
       if (!removeClause.isEmpty() && currentStep != null) {
-        if (eagerness.needsBarrier(removeClause))
+        if (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
         removeStep.setPrevious(currentStep);
@@ -4196,7 +4295,7 @@ public class CypherExecutionPlan {
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(),
           context);
-      final LimitStep limitStep = new LimitStep(limitVal, context);
+      final LimitStep limitStep = newLimitStep(limitVal, context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }
@@ -4881,6 +4980,56 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Replaces the rows of {@code MATCH (a)-[:T*0|1..k]->(b) [WHERE b <> a] RETURN count(DISTINCT b)}, walked through a Graph
+   * Analytical View, with a {@link DistinctEndpointCountStep} that counts the end vertices while the walks run (issue #10548):
+   * the expansion would otherwise build one row per end vertex, the filter test each, and the aggregation hash them.
+   * <p>
+   * Only where nothing but that count reads the rows: the statement is the MATCH and the RETURN, the RETURN is one
+   * {@code count(DISTINCT)} of one end of the expansion, and the physical plan is the {@link GAVVarLengthExpand} itself or a
+   * filter over it testing nothing but {@code b <> a} between its two ends. The expansion is then in distinct-endpoint mode,
+   * the only one a {@link GAVVarLengthExpand} has, so each row it would produce is a distinct (start, end) pair.
+   *
+   * @return the counting step, or null to keep the rows and aggregate them
+   */
+  private AbstractExecutionStep tryCountDistinctEndpoints(final List<ReturnClause.ReturnItem> items,
+      final AbstractExecutionStep currentStep, final CommandContext context) {
+    if (physicalPlan == null || !(currentStep instanceof OptimizedMatchStep) || items.size() != 1
+        || statement.getWhereClause() != null || statement.getClausesInOrder() == null
+        || statement.getClausesInOrder().size() != 2)
+      return null;
+    final Expression expression = items.getFirst().getExpression();
+    if (!(expression instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
+        || !count.isDistinct() || count.getArguments().size() != 1
+        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+      return null;
+
+    PhysicalOperator root = physicalPlan.getRootOperator();
+    boolean excludeSource = false;
+    if (root instanceof FilterOperator filter && filter.getChild() instanceof GAVVarLengthExpand expand) {
+      if (!(filter.getPredicate() instanceof ComparisonExpression comparison)
+          || comparison.getOperator() != ComparisonExpression.Operator.NOT_EQUALS
+          || !(comparison.getLeft() instanceof VariableExpression left) || !(comparison.getRight() instanceof VariableExpression right)
+          || !isPairOfEnds(expand, left.getVariableName(), right.getVariableName()))
+        return null;
+      excludeSource = true;
+      root = expand;
+    }
+    if (!(root instanceof GAVVarLengthExpand expand) || expand.getSourceVariable().equals(expand.getTargetVariable()))
+      return null;
+    // The counted end is the one the walk reaches, or the one the plan starts it from when it anchored on the other end
+    final boolean countSources = expand.getSourceVariable().equals(counted.getVariableName());
+    if (!countSources && !expand.getTargetVariable().equals(counted.getVariableName()))
+      return null;
+    return new DistinctEndpointCountStep(expand, excludeSource, countSources, items.getFirst().getOutputName(), context);
+  }
+
+  private static boolean isPairOfEnds(final VarLengthExpand expand, final String left, final String right) {
+    final String source = expand.getSourceVariable();
+    final String target = expand.getTargetVariable();
+    return (left.equals(source) && right.equals(target)) || (left.equals(target) && right.equals(source));
+  }
+
+  /**
    * Replaces the rows of {@code MATCH (a:A)-[:T]->(b:B) [WHERE pred(a, b)]}, feeding an aggregating RETURN, with a
    * {@link GAVOneHopScanStep} that reads both endpoints from a Graph Analytical View (issue #8335). The optimizer's plan
    * for such a query scans {@code A} through its records and expands every source through the view; the view then
@@ -5125,6 +5274,10 @@ public class CypherExecutionPlan {
 
     // At least one side must have a variable
     if (sourceVar == null && targetVar == null)
+      return null;
+    // The same node at both ends, (a)-[:R]->(a), asks for the edges that close on a, its self-loops; the step counts every
+    // edge of the anchor (issue #10182, the grouped sibling of #8941)
+    if (sourceVar != null && sourceVar.equals(targetVar))
       return null;
 
     // Target node must not have property filters (would need filtering)
@@ -6873,7 +7026,7 @@ public class CypherExecutionPlan {
     }
     if (statement.getLimit() != null) {
       final LimitStep limitStep =
-          new LimitStep(evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
+          newLimitStep(evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context), context);
       limitStep.setPrevious(currentStep);
       currentStep = limitStep;
     }

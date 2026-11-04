@@ -72,6 +72,17 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  /** A third argument used to be ignored without a word: it is refused instead (issue #11069). */
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
       final Object[] iParams, final CommandContext iContext) {
 
@@ -156,6 +167,8 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   public Iterable<Record> searchFromTarget(final FromClause target, final BinaryCompareOperator operator,
       final Object rightValue, final CommandContext context, final Expression[] oExpressions,
       final IndexedFunctionPushdown pushdown) {
+    if (oExpressions != null)
+      checkArity(oExpressions);
     final FullTextFunctionSearch search = search(target, context, oExpressions);
     if (search == null)
       return List.of();

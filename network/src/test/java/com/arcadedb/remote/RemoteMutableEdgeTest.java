@@ -69,9 +69,9 @@ class RemoteMutableEdgeTest {
   }
 
   @Test
-  void getTypeThrowsUnsupported() {
-    assertThatThrownBy(() -> edge.getType())
-        .isInstanceOf(UnsupportedOperationException.class);
+  void getTypeAnswersTheTypeItHolds() {
+    // As the immutable edge it was copied from does (issue #11053)
+    assertThat(edge.getType()).isSameAs(mockEdgeType);
   }
 
   @Test
@@ -153,7 +153,7 @@ class RemoteMutableEdgeTest {
     final Result mockResult = mock(Result.class);
     final ResultSet mockResultSet = mock(ResultSet.class);
 
-    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#1:0"))).thenReturn(mockResultSet);
+    when(mockDatabase.readRecordOrEmpty(new RID("#1:0"))).thenReturn(mockResultSet);
     when(mockResultSet.hasNext()).thenReturn(true);
     when(mockResultSet.next()).thenReturn(mockResult);
     when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
@@ -167,7 +167,7 @@ class RemoteMutableEdgeTest {
     final Result mockResult = mock(Result.class);
     final ResultSet mockResultSet = mock(ResultSet.class);
 
-    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#2:0"))).thenReturn(mockResultSet);
+    when(mockDatabase.readRecordOrEmpty(new RID("#2:0"))).thenReturn(mockResultSet);
     when(mockResultSet.hasNext()).thenReturn(true);
     when(mockResultSet.next()).thenReturn(mockResult);
     when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
@@ -181,7 +181,7 @@ class RemoteMutableEdgeTest {
     final Result mockResult = mock(Result.class);
     final ResultSet mockResultSet = mock(ResultSet.class);
 
-    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#1:0"))).thenReturn(mockResultSet);
+    when(mockDatabase.readRecordOrEmpty(new RID("#1:0"))).thenReturn(mockResultSet);
     when(mockResultSet.hasNext()).thenReturn(true);
     when(mockResultSet.next()).thenReturn(mockResult);
     when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));
@@ -195,7 +195,7 @@ class RemoteMutableEdgeTest {
     final Result mockResult = mock(Result.class);
     final ResultSet mockResultSet = mock(ResultSet.class);
 
-    when(mockDatabase.query(ArgumentMatchers.eq("sql"), ArgumentMatchers.contains("#2:0"))).thenReturn(mockResultSet);
+    when(mockDatabase.readRecordOrEmpty(new RID("#2:0"))).thenReturn(mockResultSet);
     when(mockResultSet.hasNext()).thenReturn(true);
     when(mockResultSet.next()).thenReturn(mockResult);
     when(mockResult.getVertex()).thenReturn(Optional.of(mockVertex));

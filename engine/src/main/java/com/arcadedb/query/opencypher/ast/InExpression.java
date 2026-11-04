@@ -90,16 +90,7 @@ public class InExpression implements BooleanExpression {
 
       if (listValue == null)
         return null; // x IN null -> null
-      if (listValue instanceof Collection<?> coll) {
-        valuesToCheck = coll;
-      } else if (MultiValue.isSequenceArray(listValue)) {
-        // Includes primitive arrays (long[], int[], double[], ...) coming from JSON numeric-array
-        // query parameters (issue #4284). A byte[] (BINARY) is deliberately excluded: it is one opaque
-        // value everywhere in openCypher, the same rule UNWIND already applies (issue #8098).
-        valuesToCheck = MultiValue.getMultiValueAsList(listValue);
-      } else
-        throw new IllegalArgumentException(
-            "InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
+      valuesToCheck = listOperand(listValue);
     } else {
       // Multiple expressions (parsed list literal items)
       final List<Object> evaluated = new ArrayList<>(list.size());
@@ -168,6 +159,30 @@ public class InExpression implements BooleanExpression {
       return null;
 
     return Boolean.FALSE;
+  }
+
+  /**
+   * The elements of the right side of an {@code IN} that is a single value (a variable, a parameter, a function call), or the refusal of
+   * a value that is not a list. Shared with the index seek that answers an {@code IN} without evaluating this node, so that a right side
+   * that is no list is refused by both and not answered with no rows by one of them (issue #10541).
+   * <p>
+   * For a collection or an array this is a zero-copy view; primitive arrays ({@code long[]}, {@code double[]}, ...) are auto-boxed in a
+   * single pass.
+   *
+   * @param listValue the right side, not {@code null}: {@code x IN null} is null, which is decided before this
+   *
+   * @throws IllegalArgumentException when the value is not a list
+   */
+  public static Iterable<?> listOperand(final Object listValue) {
+    if (listValue instanceof Collection<?> coll)
+      return coll;
+    if (MultiValue.isSequenceArray(listValue))
+      // Includes primitive arrays (long[], int[], double[], ...) coming from JSON numeric-array query parameters (issue #4284). A
+      // byte[] (BINARY) is deliberately excluded: it is one opaque value everywhere in openCypher, the same rule UNWIND already
+      // applies (issue #8098).
+      return MultiValue.getMultiValueAsList(listValue);
+    throw new IllegalArgumentException(
+        "InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
   }
 
   /**

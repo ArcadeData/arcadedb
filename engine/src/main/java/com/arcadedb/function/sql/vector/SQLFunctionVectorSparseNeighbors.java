@@ -88,6 +88,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (params == null || params.length < 4 || params.length > 5)
       throw new CommandSQLParsingException(getSyntax());
 
+    // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
+    validateNotNull(params[0], NAME + " index name");
     final String indexSpec = params[0].toString();
 
     final int[]   queryIndices = sparseToIntArray(params[1]);
@@ -98,7 +100,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       throw new CommandSQLParsingException(
           "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
 
-    final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
+    final int k = parseNeighborCount(params[3]);
 
     Set<RID> allowedRIDs = null;
     String groupBy = null;

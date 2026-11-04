@@ -67,7 +67,7 @@ class Issue10107AppendBatchCallersConvertTest {
    * The engine itself, the class that appends the converted grid, and the two classes that reach the storage with a source they
    * hold to the same rules themselves: the SQL step converts and checks the one row of the statement
    * ({@code SaveElementStep.saveToTimeSeries}), and the async task appends a source the executor converted and checked on the
-   * calling thread before scheduling it ({@code TimeSeriesStorableRows.requireStorable} / {@code requireConstraints}).
+   * calling thread before scheduling it ({@code TimeSeriesStorableRows.requireStorable}, either overload).
    */
   private static final Set<String> ALLOWED = Set.of( //
       "engine/src/main/java/com/arcadedb/engine/timeseries/TimeSeriesEngine.java",
@@ -106,7 +106,7 @@ class Issue10107AppendBatchCallersConvertTest {
     assertThat(offenders)
         .as("production classes that reach the storage of a time series engine (appendBatch, appendSamples, newRowSource) with a "
             + "grid of their own, bypassing the conversion and the column constraints every ingestion path shares: build the rows "
-            + "with TimeSeriesStorableRows (convert + appendTo, or requireStorable / requireConstraints for the async API) "
+            + "with TimeSeriesStorableRows (convert + appendTo, or requireStorable for the async API) "
             + "(issues #10107, #10381)")
         .isEmpty();
   }

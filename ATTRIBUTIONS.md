@@ -128,7 +128,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| io.github.jbellis | jvector | 4.0.0-rc.7 | Apache 2.0 | https://github.com/jbellis/jvector |
+| io.github.jbellis | jvector | 4.0.2 | Apache 2.0 | https://github.com/jbellis/jvector |
 | org.apache.commons | commons-math3 | 3.6.1 | Apache 2.0 | https://commons.apache.org/proper/commons-math/ |
 | org.agrona | agrona | 1.20.0 | Apache 2.0 | https://github.com/real-logic/agrona |
 
@@ -198,7 +198,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| com.google.guava | guava | 33.5.0-android | Apache 2.0 | https://github.com/google/guava |
+| com.google.guava | guava | 33.7.2-android | Apache 2.0 | https://github.com/google/guava |
 | com.google.code.findbugs | jsr305 | 3.0.2 | Apache 2.0 | https://code.google.com/archive/p/jsr-305/ |
 | com.google.errorprone | error_prone_annotations | 2.45.0 | Apache 2.0 | https://errorprone.info/ |
 
@@ -260,6 +260,46 @@ plugin; not on the core/server compile classpath.
 | org.jetbrains.kotlin | kotlin-stdlib | 2.2.21 | Apache 2.0 | https://kotlinlang.org/ |
 | org.jetbrains | annotations | 13.0 | Apache 2.0 | https://github.com/JetBrains/java-annotations |
 
+### Studio (Web UI) Charting
+
+Studio's charts are drawn with Apache ECharts, bundled in the `arcadedb-studio` jar as `static/dist/js/echarts.min.js`
+(the library's "common" build, which includes ZRender and tslib). It replaced ApexCharts in 26.11.1: ApexCharts is no
+longer open source from 5.1.0 on (issue #10579).
+
+| npm package | Version | License | Homepage |
+|-------------|---------|---------|----------|
+| echarts | 6.1.0 | Apache 2.0 | https://echarts.apache.org/ |
+| zrender (bundled in echarts) | 6.1.0 | BSD 3-Clause | https://github.com/ecomfe/zrender |
+| tslib (bundled in echarts) | 2.3.0 | 0BSD | https://github.com/microsoft/tslib |
+
+ECharts also includes code derived from d3 (Copyright 2010-2016 Mike Bostock, BSD 3-Clause).
+
+### Studio (Web UI) Graph Physics
+
+The live force layout of the graph view (node repulsion, link springs, centre gravity) is driven by d3-force, bundled in the
+`arcadedb-studio` jar as `static/dist/js/d3-*.min.js`.
+
+| npm package | Version | License | Homepage |
+|-------------|---------|---------|----------|
+| d3-force | 3.0.0 | ISC | https://github.com/d3/d3-force |
+| d3-dispatch | 3.0.1 | ISC | https://github.com/d3/d3-dispatch |
+| d3-quadtree | 3.0.1 | ISC | https://github.com/d3/d3-quadtree |
+| d3-timer | 3.0.1 | ISC | https://github.com/d3/d3-timer |
+
+### Studio (Web UI) Icons and Fonts
+
+Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-list since issue #10626; the
+`studio/test/dependency-licenses.test.js` unit test checks every package Studio ships against that list.
+
+| npm package | Version | License | Pulled in via | Homepage |
+|-------------|---------|---------|---------------|----------|
+| @fortawesome/fontawesome-free | 7.3.1 | Icons CC-BY-4.0, fonts OFL-1.1, code MIT | direct dependency | https://fontawesome.com/ |
+
+**Font Awesome attribution (required by CC-BY-4.0):** Studio's icons are Font Awesome Free by Fonticons, Inc.
+(https://fontawesome.com), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). The webfonts are
+licensed under the SIL Open Font License 1.1 (https://openfontlicense.org/) and the CSS under MIT. Full terms:
+https://fontawesome.com/license/free. Both are shipped unmodified.
+
 ### Transitive Dependencies Found by the #5651 License Audit
 
 Not declared directly in any module's `pom.xml`; pulled in transitively and missing from this
@@ -302,6 +342,7 @@ These dependencies are used only for testing and are not included in production 
 | com.jayway.jsonpath | json-path | 2.10.0 | Apache 2.0 | https://github.com/json-path/JsonPath |
 | com.github.docker-java | docker-java-api | 3.7.0 | Apache 2.0 | https://github.com/docker-java/docker-java |
 | net.bytebuddy | byte-buddy | 1.18.3 | Apache 2.0 | https://bytebuddy.net/ |
+| org.ow2.asm | asm (engine, reads the compiled SQL functions in a narrowing-read scan) | 9.7.1 | BSD 3-Clause | https://asm.ow2.io/ |
 | org.openjdk.jmh | jmh-core | 1.37 | GPL-2.0 WITH Classpath-exception-2.0 | https://openjdk.java.net/projects/code-tools/jmh/ |
 | org.openjdk.jmh | jmh-generator-annprocess | 1.37 | GPL-2.0 WITH Classpath-exception-2.0 | https://openjdk.java.net/projects/code-tools/jmh/ |
 | com.fasterxml.jackson.core | jackson-databind (engine, JSON library Cucumber 8 needs for the openCypher TCK reports) | 2.22.x | Apache 2.0 | https://github.com/FasterXML/jackson |

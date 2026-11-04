@@ -19,11 +19,9 @@
 package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-
-import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * Splits a string using a delimiter.
@@ -43,16 +41,18 @@ public class SQLMethodSplit extends AbstractSQLMethod {
     if (value == null || null == params || null == params[0])
       return value;
 
-    // The delimiter is a literal string, not a regex (issue #5886: matches split()/text.split()/Cypher split(),
-    // which all wrap the delimiter in Pattern.quote() for the same reason - this method was the only one of the
-    // four that passed the caller-supplied delimiter straight to String.split(regex) unescaped, exposing it to
-    // the same catastrophic-backtracking risk as every other regex entry point in that issue).
+    // The delimiter is a literal string, not a regex (issue #5886: matches split()/text.split()/Cypher split(), which
+    // all treat it as a literal for the same reason - this method was the only one of the four that passed the
+    // caller-supplied delimiter straight to String.split(regex) unescaped, exposing it to the same
+    // catastrophic-backtracking risk as every other regex entry point in that issue).
     // A List, not the String[] String.split() hands back (issue #7027): the SQL split() function, the Cypher split()
     // function and the documentation of this very method all answer a list, and this was the only one of the four
     // that leaked the raw Java array - the one receiver shape most of the collection methods then mishandled.
-    // Immutable on purpose (and safe: String.split() never yields a null element, which List.of() would reject). A
-    // consumer that needs to mutate the result copies it first, as every collection method does through
-    // AbstractSQLMethod.listReceiverOrNull().
-    return List.of(value.toString().split(Pattern.quote(params[0].toString())));
+    // Immutable on purpose. A consumer that needs to mutate the result copies it first, as every collection method does
+    // through AbstractSQLMethod.listReceiverOrNull().
+    // The one split of the engine, shared with the other three (issue #10485): the empty trailing pieces are kept, as
+    // openCypher split() keeps them ('a,'.split(',') is ['a', '']), and a surrogate pair is never cut, however the
+    // delimiter is written.
+    return CypherFunctionHelper.splitLiteral(value.toString(), params[0].toString());
   }
 }

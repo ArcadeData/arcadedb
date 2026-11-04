@@ -346,7 +346,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     if (isPresenceRequested(exchange)) {
       checkRootUser(user);
       if (isLeader)
-        response.put("databasePresence", buildPresenceMatrix(raftHAServer, localPeerId));
+        response.put("databasePresence", buildPresenceMatrix(httpServer.getServer(), raftHAServer, localPeerId, membership,
+            GetClusterHandler::listPeerDatabases));
     }
 
     // Cluster-level health alerts (e.g. single-bucket types that serialize concurrent writes on the
@@ -614,11 +615,45 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     return v == null || v.isEmpty() || "true".equalsIgnoreCase(v) || "1".equals(v);
   }
 
+  /** How the presence matrix lists the databases of one peer: a seam, so the enumeration can be driven without a network. */
+  @FunctionalInterface
+  interface PeerDatabaseLister {
+    /**
+     * @throws Exception when the peer does not answer; the matrix then reports it {@code unreachable}
+     */
+    Set<String> list(ArcadeDBServer server, String peerId, PeerDialAddress dial, String clusterToken) throws Exception;
+  }
+
+  /** The production {@link PeerDatabaseLister}: the bootstrap-state RPC, bounded by {@link #PRESENCE_QUERY_TIMEOUT_MS}. */
+  private static Set<String> listPeerDatabases(final ArcadeDBServer server, final String peerId, final PeerDialAddress dial,
+      final String clusterToken) throws Exception {
+    // Use a short per-peer timeout (not HA_BOOTSTRAP_TIMEOUT_MS, which defaults to 120s): this fan-out runs on an
+    // Undertow worker thread (the dispatch above), and a peer that accepts the connection but then hangs would
+    // otherwise tie up the worker for the full bootstrap budget per peer. A worker is a far cheaper thing to hold
+    // than the IO thread this used to run on, but it is still one of a bounded pool, so the bound stays short.
+    // A few seconds is plenty for a peer to list its databases; a
+    // slower peer is simply reported unreachable in the matrix.
+    final Set<String> dbNames = new TreeSet<>();
+    for (final LeaderDatabaseQuery.DatabaseInfo info : LeaderDatabaseQuery.fetch(peerId, dial.httpAddress(),
+        dial.httpsAddress(), clusterToken, PRESENCE_QUERY_TIMEOUT_MS, server).databases())
+      dbNames.add(info.name());
+    return dbNames;
+  }
+
   /**
    * Builds a per-database x per-node presence matrix (issue #4727) by fanning out the bootstrap-state RPC to
-   * every peer. Returns {@code {nodes:[peerId...], unreachable:[peerId...], databases:[{name, present:[...],
-   * missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable} and omitted from the
-   * present/missing accounting so a transient blip is not mistaken for a dropped database.
+   * every peer. Returns {@code {nodes:[peerId...], unreachable:[peerId...], notInConfiguration:[peerId...],
+   * databases:[{name, present:[...], missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable}
+   * and omitted from the present/missing accounting so a transient blip is not mistaken for a dropped database.
+   * <p>
+   * The nodes are every peer this node knows, {@code membership.peers()}: the server list reconciled with the live
+   * configuration, from the same sample the {@code peers} array of the response is built from, so the two halves of one
+   * response cannot disagree about which nodes exist (issue #10933). The parsed server list alone left out a peer that
+   * joined at runtime (the Kubernetes auto-join, {@code addPeer}): it was in neither {@code nodes} nor {@code unreachable},
+   * and every database it lacked read as present everywhere. A node the cluster replicates to is a row of the matrix, one
+   * the matrix cannot reach is in {@code unreachable}, and no node is absent from both. A declared peer the configuration
+   * does not hold is still queried and listed in {@code notInConfiguration}: the leader does not replicate to it, so what
+   * it lacks is not a replication gap.
    * <p>
    * The fan-out is sequential on an Undertow worker thread - which {@link #mustExecuteOnWorkerThread()}
    * is what makes true (issue #7861) - with a short per-peer timeout
@@ -630,16 +665,10 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * Note the queried peer's bootstrap-state handler may open a closed database to fingerprint it, so this path -
    * unlike the no-open cheap poll - can trigger a database load on the remote peer.
    */
-  private JSONObject buildPresenceMatrix(final RaftHAServer raftHAServer, final RaftPeerId localPeerId) {
-    final ArcadeDBServer server = httpServer.getServer();
+  // @VisibleForTesting
+  static JSONObject buildPresenceMatrix(final ArcadeDBServer server, final RaftHAServer raftHAServer,
+      final RaftPeerId localPeerId, final ClusterMembership membership, final PeerDatabaseLister lister) {
     final String clusterToken = raftHAServer.getClusterToken();
-    // Use a short per-peer timeout (not HA_BOOTSTRAP_TIMEOUT_MS, which defaults to 120s): this fan-out runs on an
-    // Undertow worker thread (the dispatch above), and a peer that accepts the connection but then hangs would
-    // otherwise tie up the worker for the full bootstrap budget per peer. A worker is a far cheaper thing to hold
-    // than the IO thread this used to run on, but it is still one of a bounded pool, so the bound stays short.
-    // A few seconds is plenty for a peer to list its databases; a
-    // slower peer is simply reported unreachable in the matrix.
-    final long timeoutMs = PRESENCE_QUERY_TIMEOUT_MS;
 
     // Preserve a stable node order; collect each reachable peer's database set.
     final Set<String> nodes = new LinkedHashSet<>();
@@ -647,7 +676,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final Map<String, Set<String>> dbsByNode = new TreeMap<>();
     final Set<String> allDbs = new TreeSet<>();
 
-    for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
+    for (final RaftPeer peer : membership.peers()) {
       final RaftPeerId peerId = peer.getId();
       final String peerIdStr = peerId.toString();
       nodes.add(peerIdStr);
@@ -665,25 +694,22 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         // guard the resync and verify paths use, so the three cannot drift apart.
         final PeerDialAddress dial = PeerDialAddress.resolve(raftHAServer, peerId, "peer");
         if (dial.refused()) {
-          LogManager.instance().log(this, Level.WARNING,
+          LogManager.instance().log(GetClusterHandler.class, Level.WARNING,
               "Presence matrix: not querying peer '%s': %s", peerIdStr, dial.refusal());
           unreachable.add(peerIdStr);
           continue;
         }
         try {
-          final List<LeaderDatabaseQuery.DatabaseInfo> infos =
-              LeaderDatabaseQuery.fetch(peerIdStr, dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server)
-                  .databases();
-          for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
-            dbNames.add(info.name());
+          dbNames.addAll(lister.list(server, peerIdStr, dial, clusterToken));
         } catch (final InterruptedException e) {
           // Preserve the interrupt so the worker thread can be shut down cleanly.
           Thread.currentThread().interrupt();
-          LogManager.instance().log(this, Level.WARNING, "Presence matrix query interrupted for peer '%s'", peerIdStr);
+          LogManager.instance().log(GetClusterHandler.class, Level.WARNING, "Presence matrix query interrupted for peer '%s'",
+              peerIdStr);
           unreachable.add(peerIdStr);
           continue;
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
+          LogManager.instance().log(GetClusterHandler.class, Level.WARNING,
               "Presence matrix: could not query peer '%s' (%s)", peerIdStr, e.getMessage());
           unreachable.add(peerIdStr);
           continue;
@@ -713,9 +739,14 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     for (final String n : unreachable)
       unreachableArray.put(n);
 
+    final JSONArray notInConfigurationArray = new JSONArray();
+    for (final String n : membership.notInConfiguration())
+      notInConfigurationArray.put(n);
+
     return new JSONObject()
         .put("nodes", nodesArray)
         .put("unreachable", unreachableArray)
+        .put("notInConfiguration", notInConfigurationArray)
         .put("databases", databases);
   }
 }

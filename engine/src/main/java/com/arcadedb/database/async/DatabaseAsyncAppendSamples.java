@@ -36,8 +36,8 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
    * ownership passes to this task: see
    * {@link DatabaseAsyncExecutor#appendSamples(String, TimeSeriesRowSource)}.
    * <p>
-   * The source must already have been converted and held to the constraints of the type by the caller
-   * ({@code TimeSeriesStorableRows.requireStorable} / {@code requireConstraints}, issue #10381): this task appends it
+   * The source must already have been converted and held to what the columns can store and to the constraints of the type by the
+   * caller ({@code TimeSeriesStorableRows.requireStorable}, issues #10381, #10487): this task appends it
    * on an async thread, where a refusal reaches nobody. It takes no boxed arrays of its own for that reason - the constructor
    * that did was the way around that conversion.
    */
@@ -51,6 +51,9 @@ public class DatabaseAsyncAppendSamples implements DatabaseAsyncTask {
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
       engine.getShard(shardIndex).appendSamples(source);
+      // issue #10686: the continuous aggregates over the type owe the samples a refresh. The worker's batch transaction is open, so
+      // it is registered once per aggregate and runs when the batch ends, not once per task
+      engine.refreshContinuousAggregates();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Error appending timeseries samples to shard %d of type '%s' (%d points)",

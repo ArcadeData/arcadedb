@@ -224,7 +224,7 @@ public class GrpcTransactionScriptingAuthorizationIT extends BaseGrpcServerTest 
 
       assertThat(countMarker(marker)).as("the committed admin write is visible").isEqualTo(1L);
     } finally {
-      getServer(0).getDatabase(getDatabaseName())
+      getServer(0).getDatabaseForOperator(getDatabaseName())
           .command("sql", "DELETE FROM " + VERTEX1_TYPE_NAME + " WHERE tag = ?", marker);
     }
   }
@@ -264,7 +264,7 @@ public class GrpcTransactionScriptingAuthorizationIT extends BaseGrpcServerTest 
   }
 
   private long countMarker(final String marker) {
-    return getServer(0).getDatabase(getDatabaseName())
+    return getServer(0).getDatabaseForOperator(getDatabaseName())
         .query("sql", "SELECT count(*) AS c FROM " + VERTEX1_TYPE_NAME + " WHERE tag = ?", marker)
         .next().<Number>getProperty("c").longValue();
   }

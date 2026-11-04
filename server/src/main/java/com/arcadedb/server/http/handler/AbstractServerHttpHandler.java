@@ -717,8 +717,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get(PeerRequest.CLUSTER_TOKEN_HEADER);
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
+          // Says which side of the comparison failed, and leaves where this node's token came from to its own log
+          // (issue #10601): the cluster name and the password file path are not for an unauthenticated caller.
+          HAServerPlugin.reportClusterTokenRefusal(httpServer.getServer(), String.valueOf(exchange.getSourceAddress()));
           exchange.setStatusCode(401);
-          sendErrorResponse(exchange, 401, "Invalid cluster token", null, null);
+          sendErrorResponse(exchange, 401, INVALID_CLUSTER_TOKEN_MESSAGE, null, null);
           return;
         }
 
@@ -1376,29 +1379,51 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // DatabaseIsReopeningException subtype. A concurrent DROP/CLOSE DATABASE admin action, or a shutdown, raises the
     // plain DatabaseIsClosedException on a still in-flight request, and that close is permanent: answered as the 404
     // below, the same verdict the retry it used to be given ended in once it re-resolved the name (issues #6778,
-    // #8199). ErrorCategory draws the same line for every other wire protocol.
+    // #8199). ErrorCategory draws the same line between the two for every other wire protocol: RETRY for the reopen, and
+    // UNAVAILABLE, not a server fault, for the plain close (issue #10692).
     final DatabaseIsReopeningException databaseReopening = firstOf(e, cause, DatabaseIsReopeningException.class);
     if (databaseReopening != null) {
       return retryable(databaseReopening);
     }
 
-    // 404: the wasted retry the comment above describes re-resolves the database with allowLoad=false
-    // (DatabaseAbstractHandler.execute), which raises this narrower type - not the generic
-    // DatabaseOperationException - once the registry entry is gone. Answered as an accurate "not there"
-    // instead of falling through to the generic 500 below (issue #6778).
+    // 404: the caller named a database this server does not have - permanent, and the caller's to correct. The resolver raises
+    // this narrower type for every such name, allowLoad=false included (issue #10872), so it is decided first.
+    final DatabaseNotFoundException noDatabase = firstOf(e, cause, DatabaseNotFoundException.class);
+    if (noDatabase != null) {
+      return new ErrorClassification(404, "Database not found", noDatabase, null, ErrorLogKind.USER);
+    }
+
+    // 503: the database exists and cannot serve the request now - closed by a 'close database', held by a restore (which also
+    // refuses its writes while it stays readable, issue #10689), being dropped, or a copy an HA install or resync has to reconcile
+    // first. The operator or the cluster caused it, and it clears without the caller changing anything: ErrorCategory.UNAVAILABLE,
+    // which every other wire protocol answers apart from a missing database too. It used to be the 404 of a name that is no
+    // database, with the same label and exception class, so in production mode, which conceals the detail, the two bodies were
+    // identical (issue #10872). The label names the state, since the detail is concealed, and the reason travels in
+    // exceptionArgs for the remote client to rebuild. No Retry-After: how long an operator keeps a database closed is not
+    // something the server knows.
     final DatabaseNotAvailableException notAvailable = firstOf(e, cause, DatabaseNotAvailableException.class);
     if (notAvailable != null) {
-      return new ErrorClassification(404, "Database not found", notAvailable, null, ErrorLogKind.USER);
+      return new ErrorClassification(503, notAvailable.getReason().label(), notAvailable, notAvailable.getReason().name(),
+          ErrorLogKind.RETRYABLE);
     }
 
     // The close the arm above leaves out (issue #8199). A server shutting down closes every database under the requests
     // still in flight: transient for a client, which retries on another node or once this one is back, so it keeps the
-    // 503 it has always had. Otherwise a DROP/CLOSE DATABASE closed the handle a request had resolved: permanent, a 404,
-    // not retryable against the same name.
+    // 503 it has always had. Otherwise a DROP/CLOSE DATABASE, or a restore, closed the handle a request had resolved. The
+    // answer is the one the next request gets from the resolver (issue #10872): 503 while the database is still there - closed
+    // by command, held by a restore, its files still being deleted - and 404 once nothing of it is left.
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
       if (isServerShuttingDown())
         return retryable(databaseClosed);
+      final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
+      final String closedName = databaseClosed.getDatabaseName();
+      // Reported as the typed refusal the resolver gives the next request, with its reason: an untyped 503 would reach the remote
+      // client as a NeedRetryException and have the command sent again to whatever replaces the database
+      if (server != null && closedName != null && server.isDatabaseOfServer(closedName))
+        return new ErrorClassification(503, DatabaseNotAvailableException.Reason.CLOSED.label(),
+            new DatabaseNotAvailableException(databaseClosed.getMessage(), DatabaseNotAvailableException.Reason.CLOSED),
+            DatabaseNotAvailableException.Reason.CLOSED.name(), ErrorLogKind.RETRYABLE);
       return new ErrorClassification(404, "Database is closed", databaseClosed, null, ErrorLogKind.USER);
     }
 
@@ -1422,15 +1447,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(400, "Cannot execute command", arithmetic, null, ErrorLogKind.USER);
     }
 
-    // A value a property cannot hold - openCypher refusing a map, or a list containing one. Like the arithmetic
-    // arm above it has to be decided before the generic CommandExecutionException arm further down, which it
-    // extends and which answers 500: the statement is fine and so is the server, the value the caller asked to
-    // store is not storable. It answered 400 as an IllegalArgumentException before #7729 gave it its own type, and
-    // this keeps that answer rather than silently downgrading it to a server fault. The whole chain is searched,
-    // for the same reason the arithmetic arm searches it: the wrapping depends on how the request arrived.
-    final InvalidPropertyTypeException invalidPropertyType = invalidPropertyType(e);
-    if (invalidPropertyType != null) {
-      return new ErrorClassification(400, "Cannot execute command", invalidPropertyType, null, ErrorLogKind.USER);
+    // A value of the wrong type for what the query did with it - a property read off a list (issue #11211), a map a
+    // property cannot hold (InvalidPropertyTypeException, issue #7729). Like the arithmetic arm above it has to be
+    // decided before the generic CommandExecutionException arm further down, which it extends and which answers
+    // 500: the statement is fine and so is the server, the value the caller made the operation meet is not one it
+    // is defined for. The whole chain is searched, for the same reason the arithmetic arm searches it: the wrapping
+    // depends on how the request arrived.
+    final TypeMismatchException typeMismatch = typeMismatch(e);
+    if (typeMismatch != null) {
+      return new ErrorClassification(400, "Cannot execute command", typeMismatch, null, ErrorLogKind.USER);
     }
 
     // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
@@ -2142,8 +2167,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final String db = rawDatabaseParameter(exchange);
     if (db == null)
       return "none";
-    return server != null && server.existsDatabase(db) ? db : UNKNOWN_DB_TAG;
+    // Open or not (issue #11068): still bounded by the databases on disk, and a request that reopens one closed for idleness
+    // is tagged with its name like every other request of it
+    return server != null && server.isDatabaseAvailable(db) ? db : UNKNOWN_DB_TAG;
   }
+
+  /**
+   * The body of a 401 answered to a request whose cluster token does not match this node's (issue #10601). It starts
+   * with the string issue #9554 was filed about, so existing log searches still match.
+   */
+  static final String INVALID_CLUSTER_TOKEN_MESSAGE =
+      "Invalid cluster token: the caller's cluster token does not match this node's. See this node's log for where its "
+          + "token comes from";
 
   /**
    * Whether {@code providedToken} is the shared secret this cluster's members authenticate to each other
@@ -2211,6 +2246,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * types it was not entitled to (GHSA-c23x-pqcj-7hfm). Binding here - mirroring {@code DatabaseAbstractHandler}
    * - makes the per-type layer enforce. The binding is dropped in {@link #handleRequest}'s finally so it
    * cannot leak onto the pooled worker thread and be inherited by a later request.
+   * <p>
+   * Only a database that is already open is bound here. A handler that then resolves the database itself, opening it
+   * from disk on the first request ({@link com.arcadedb.server.ArcadeDBServer#getDatabaseForRequest}), MUST bind the
+   * principal again on the database it resolved with {@link #bindPrincipal}: the database was not open when this ran,
+   * so nothing was bound and the request would run with every per-type check skipped.
    */
   protected void checkAuthorizationOnDatabase(final ServerSecurityUser user, final String databaseName) {
     if (databaseName == null || databaseName.isEmpty())
@@ -2220,14 +2260,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
     // Bind the authenticated principal so the engine's per-type ACL layer enforces on this handler.
     // A null user (unauthenticated handler) leaves the engine in its no-user no-op mode, matching prior behavior.
-    if (user != null && httpServer.getServer().existsDatabase(databaseName)) {
-      final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
-      DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-      if (context == null)
-        context = DatabaseContext.INSTANCE.init(database);
-      context.setCurrentUser(user.getDatabaseUser(database));
-      BOUND_PRINCIPAL_DB.set(database);
-    }
+    if (user != null && httpServer.getServer().existsDatabase(databaseName))
+      bindPrincipal(user, httpServer.getServer().getDatabase(databaseName, false, false));
+  }
+
+  /**
+   * Binds the authenticated principal onto this thread's {@link DatabaseContext} for {@code database}, so the engine's
+   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A no-op for a null user.
+   */
+  protected void bindPrincipal(final ServerSecurityUser user, final DatabaseInternal database) {
+    if (user == null)
+      return;
+    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      context = DatabaseContext.INSTANCE.init(database);
+    context.setCurrentUser(user.getDatabaseUser(database));
+    BOUND_PRINCIPAL_DB.set(database);
   }
 
   /**
@@ -2709,8 +2757,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     return CauseChain.find(error, ArithmeticErrorException.class);
   }
 
-  private static InvalidPropertyTypeException invalidPropertyType(final Throwable error) {
-    return CauseChain.find(error, InvalidPropertyTypeException.class);
+  private static TypeMismatchException typeMismatch(final Throwable error) {
+    return CauseChain.find(error, TypeMismatchException.class);
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,

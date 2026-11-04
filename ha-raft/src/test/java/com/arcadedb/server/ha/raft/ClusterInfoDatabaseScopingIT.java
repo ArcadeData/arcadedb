@@ -238,7 +238,7 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
   private void createOnEveryNode(final String databaseName, final String typeName, final int serverIndex) {
     for (int i = 0; i < getServerCount(); i++)
       getServer(i).createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    final ServerDatabase db = getServer(serverIndex).getDatabase(databaseName);
+    final ServerDatabase db = getServer(serverIndex).getDatabaseForOperator(databaseName);
     db.getSchema().createDocumentType(typeName, 1);
   }
 
@@ -250,7 +250,7 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
       // ServerDatabase refuses drop()/close() because the handle is shared, and dropping through the
       // Raft-wrapped handle would replicate the drop; go through the embedded instance so each node
       // cleans up its own copy, then unregister it from that server's registry.
-      server.getDatabase(databaseName).getEmbedded().drop();
+      server.getDatabaseForOperator(databaseName).getEmbedded().drop();
       server.removeDatabase(databaseName);
     }
   }

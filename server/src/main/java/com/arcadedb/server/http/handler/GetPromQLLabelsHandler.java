@@ -23,7 +23,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -70,11 +69,9 @@ public class GetPromQLLabelsHandler extends AbstractObservabilityHandler {
     final Set<String> labelNames = new LinkedHashSet<>();
     labelNames.add("__name__");
 
-    for (final DocumentType type : database.getSchema().getTypes()) {
+    // Label discovery must not expose the tag names of a type the caller cannot read.
+    for (final DocumentType type : SecurityHelper.readableTypes(database)) {
       if (!(type instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
-        continue;
-      // Label discovery must not expose the tag names of a type the caller cannot read.
-      if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
         continue;
       for (final ColumnDefinition col : tsType.getTsColumns())
         if (col.getRole() == ColumnDefinition.ColumnRole.TAG)

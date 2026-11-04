@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -234,11 +235,26 @@ class Issue10208ViewVertexSubtypesTest {
     final GraphAnalyticalView view = createView(mode);
     assertThat(view.getNodeCount()).isEqualTo(6);
 
-    database.getSchema().getType("Y").addSuperType("V");
+    // The first question that finds Y dispatches the rebuild that takes it in: held before its scan, or a scan of seven vertices
+    // can publish before the next question is asked, which then rightly finds Y held
+    final CountDownLatch gate = new CountDownLatch(1);
+    view.setBeforeBuildScanForTest(() -> {
+      try {
+        gate.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    try {
+      database.getSchema().getType("Y").addSuperType("V");
 
-    assertThat(view.coversVertexType("Y")).as("the CSR holds none of Y's vertices").isFalse();
-    assertThat(view.coversVertexType(null)).isFalse();
-    assertThat(count(ONE_HOP)).as("answered from the records").isEqualTo(expectedPaths("E", 1));
+      assertThat(view.coversVertexType("Y")).as("the CSR holds none of Y's vertices").isFalse();
+      assertThat(view.coversVertexType(null)).isFalse();
+      assertThat(count(ONE_HOP)).as("answered from the records").isEqualTo(expectedPaths("E", 1));
+    } finally {
+      gate.countDown();
+      view.setBeforeBuildScanForTest(null);
+    }
 
     if (mode == GraphAnalyticalView.UpdateMode.OFF) {
       // turned STALE off the query thread that found Y

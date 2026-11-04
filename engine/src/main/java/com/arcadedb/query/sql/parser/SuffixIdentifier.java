@@ -108,6 +108,41 @@ public class SuffixIdentifier extends SimpleNode {
     return name != null && !name.isEmpty() && name.charAt(0) == '$';
   }
 
+  /**
+   * Whether {@code name} is one of the plain names {@code out} / {@code in} that, on an edge with no property of that name,
+   * read the edge's endpoints (issue #10684). The endpoints are {@code @out} / {@code @in}, which are not properties, so
+   * the plain names used to answer null for every path through them - silently, for a query written the OrientDB way.
+   */
+  private static boolean isEndpointName(final String name) {
+    return "out".equals(name) || "in".equals(name);
+  }
+
+  /**
+   * For a row that is an edge with no property named {@code out} / {@code in}, the endpoint that name reads (issue
+   * #10684); null for every other row or name. The ORDER BY of a bare name reads the row directly instead of through a
+   * suffix identifier, and asks this so that it orders by what the projection of the same name answers.
+   */
+  public static Object edgeEndpointIfUnshadowed(final Result row, final String name) {
+    if (row == null || !isEndpointName(name) || !row.isEdge() || row.hasProperty(name))
+      return null;
+    return edgeEndpoint(row.getEdge().orElse(null), name);
+  }
+
+  /**
+   * The endpoint of {@code edge} that {@code name} names, or null when {@code name} is neither {@code out} nor {@code in}.
+   * Callers reach this only when the edge record has no property of that name: a real property always wins, and so does
+   * a property the edge's type declares under that name, set on this record or not.
+   */
+  private static Object edgeEndpoint(final Edge edge, final String name) {
+    if (edge == null || edge.getType().existsPolymorphicProperty(name))
+      return null;
+    if ("out".equals(name))
+      return edge.getOut();
+    if ("in".equals(name))
+      return edge.getIn();
+    return null;
+  }
+
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
     if (star) {
       return currentRecord;
@@ -122,8 +157,12 @@ public class SuffixIdentifier extends SimpleNode {
 
       if (currentRecord != null) {
         final Record record = currentRecord.getRecord();
-        if (record instanceof Document doc)
-          return doc.get(varName);
+        if (record instanceof Document doc) {
+          final Object value = doc.get(varName);
+          if (value == null && isEndpointName(varName) && record instanceof Edge edge && !doc.has(varName))
+            return edgeEndpoint(edge, varName);
+          return value;
+        }
       }
 
       // Return null instead of the variable name for uninitialized variables (issue #1939)
@@ -188,6 +227,7 @@ public class SuffixIdentifier extends SimpleNode {
         if (currentRecord instanceof ResultInternal internal && internal.getTemporaryProperties().contains(varName)) {
           return internal.getTemporaryProperty(varName);
         }
+        return edgeEndpointIfUnshadowed(currentRecord, varName);
       }
       return null;
     }

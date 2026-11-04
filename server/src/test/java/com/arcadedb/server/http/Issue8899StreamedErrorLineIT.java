@@ -197,7 +197,7 @@ public class Issue8899StreamedErrorLineIT extends BaseGraphServerTest {
   @Test
   void aRetryLaterFailureCarriesItsBackOffOnTheBatchStream() throws Exception {
     // Thrown while GraphBatch.close() finalizes the vertices: after the progress lines, so the 200 is on the wire
-    getServer(0).getDatabase(getDatabaseName()).getSchema().getType(VERTEX_TYPE).getEvents()
+    getServer(0).getDatabaseForOperator(getDatabaseName()).getSchema().getType(VERTEX_TYPE).getEvents()
         .registerListener((BeforeRecordUpdateListener) record -> {
           if (batchArmed)
             throw new RetryLaterException("snapshot install in progress", 9);

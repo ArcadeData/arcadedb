@@ -41,6 +41,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -57,6 +58,76 @@ public class DocumentValidator {
   private static final int  REGEXP_SEARCH_MAX_LENGTH = 64;
   private static final int  REGEXP_SEARCH_MAX_PROBES = 65_536;
   private static final long REGEXP_SEARCH_TIMEOUT_MS = 1_000;
+
+  // Threads with a link-target deferral open (issue #10483), so the write path pays one volatile read for it unless a restore is running
+  private static final AtomicInteger      LINK_TARGET_DEFERRING_THREADS = new AtomicInteger();
+  // No initial value: a thread that never opens a scope allocates nothing, whatever the others do
+  private static final ThreadLocal<int[]> LINK_TARGET_DEFERRAL_DEPTH    = new ThreadLocal<>();
+
+  /**
+   * The scope returned by {@link #deferLinkTargetTypeChecks()}. Closing it ends the scope once: a second close is ignored, so it can
+   * neither end an enclosing scope nor lift the deferral of another one, and a try-with-resources on it needs no catch. It has to be
+   * closed on the thread that opened it, or {@link IllegalStateException} tells the caller it was not.
+   */
+  public interface LinkTargetTypeDeferral extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  private static final class LinkTargetTypeScope implements LinkTargetTypeDeferral {
+    private final Thread  owner = Thread.currentThread();
+    // Plain: only the owner thread reads and writes it, close() refuses any other thread before touching it
+    private       boolean closed;
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      if (Thread.currentThread() != owner)
+        throw new IllegalStateException("A link target type deferral has to be closed on the thread that opened it ('" + owner.getName()
+            + "'), not on '" + Thread.currentThread().getName() + "'");
+      closed = true;
+      endLinkTargetTypeDeferral();
+    }
+  }
+
+  /**
+   * Suspends, on the calling thread until the returned scope is closed, the check that the record a {@code LINK OF T}, {@code LIST OF T}
+   * or {@code MAP OF T} points at is a {@code T}. For a restore that writes the records in the order of a file and so meets a link
+   * BEFORE the record it names: the link still holds the identity it had in the source database, which names - if anything - a record
+   * of another type in this one, and refusing the write for that would refuse every restore of such a schema (issue #10483). The caller
+   * owes the check back: it writes the record again once the link is resolved, and that write validates the whole record, this check
+   * included. Nothing else is relaxed - MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are checked as always. Scopes nest.
+   * <p>
+   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources. It relaxes the check for
+   * every record that thread writes while it is open, a listener's or a trigger's included, so keep it as narrow as the one write that
+   * needs it. Closing it from another thread throws and leaves it open on the owner, whose writes stay relaxed until it closes it.
+   */
+  public static LinkTargetTypeDeferral deferLinkTargetTypeChecks() {
+    int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
+    if (depth == null) {
+      depth = new int[1];
+      LINK_TARGET_DEFERRAL_DEPTH.set(depth);
+    }
+    if (depth[0]++ == 0)
+      LINK_TARGET_DEFERRING_THREADS.incrementAndGet();
+    return new LinkTargetTypeScope();
+  }
+
+  private static void endLinkTargetTypeDeferral() {
+    final int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
+    if (depth != null && depth[0] > 0 && --depth[0] == 0) {
+      LINK_TARGET_DEFERRING_THREADS.decrementAndGet();
+      LINK_TARGET_DEFERRAL_DEPTH.remove();
+    }
+  }
+
+  private static boolean linkTargetTypeCheckDeferred() {
+    if (LINK_TARGET_DEFERRING_THREADS.get() == 0)
+      return false;
+    final int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
+    return depth != null && depth[0] > 0;
+  }
 
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
@@ -1160,13 +1231,13 @@ public class DocumentValidator {
         throwValidationException(document.getType(), p,
             "has been declared as LINK but an EMBEDDED document is used. Value: " + fieldValue);
 
-      if (ofType != null) {
+      if (ofType != null && !linkTargetTypeCheckDeferred()) {
         final RID rid = ((Identifiable) fieldValue).getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-        if (!embSchemaType.instanceOf(ofType))
-          throwValidationException(document.getType(), p,
-              "has been declared as LINK of '" + ofType + "' but a link to type '" + embSchemaType + "' is used. Value: "
-                  + fieldValue);
+        if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
+          throwValidationException(document.getType(), p, "has been declared as LINK of '" + ofType + "' but a link to " + (
+              embSchemaType != null ? "type '" + embSchemaType + "'" : "a record in a bucket that belongs to no type") + " is used. Value: "
+              + fieldValue);
       }
     }
     break;
@@ -1251,12 +1322,15 @@ public class DocumentValidator {
             "has been declared as " + declaredAs(isMap, ofType) + " but an embedded document of type '" + embeddedDocument.getType().getName()
                 + "' is used. Value: " + fieldValue);
     } else if (item instanceof Identifiable identifiable) {
-      final RID rid = identifiable.getIdentity();
-      final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
-      if (!embSchemaType.instanceOf(ofType))
-        throwValidationException(document.getType(), p,
-            "has been declared as " + declaredAs(isMap, ofType) + " but a link to type '" + embSchemaType.getName() + "' is used. Value: "
-                + fieldValue);
+      if (!linkTargetTypeCheckDeferred()) {
+        final RID rid = identifiable.getIdentity();
+        final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
+        if (embSchemaType == null || !embSchemaType.instanceOf(ofType)) {
+          throwValidationException(document.getType(), p, "has been declared as " + declaredAs(isMap, ofType) + " but a link to " + (
+              embSchemaType != null ? "type '" + embSchemaType.getName() + "'" : "a record in a bucket that belongs to no type")
+              + " is used. Value: " + fieldValue);
+        }
+      }
     } else if (!(item instanceof String link && RID.is(link)))
       // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted
       throwValidationException(document.getType(), p,

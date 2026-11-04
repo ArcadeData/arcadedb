@@ -50,7 +50,9 @@ class Issue10233TimeSeriesTemporalColumnContractTest extends TestHelper {
   void textOfDigitsIsRefusedByCommandExecutionExceptionNamingTheColumn() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE D TIMESTAMP ts TAGS (k DATETIME) FIELDS (d DATETIME, dd DATE) SHARDS 1");
 
-    for (final String column : new String[] { "k", "d", "dd" })
+    // not on the DATE column: digits there read as the number they spell, and one the size of epoch millis is that day (issue
+    // #11025, pinned in Issue10398TemporalSurfaceMatrixTest)
+    for (final String column : new String[] { "k", "d" })
       assertThatThrownBy(() -> database.command("sql", "INSERT INTO D SET ts = 1, " + column + " = '" + MILLIS + "'"))
           .isInstanceOf(CommandExecutionException.class).hasMessageContaining("column '" + column + "'");
     // a document property of the same type refuses it too: SQL treats the column as its document twin
@@ -70,8 +72,9 @@ class Issue10233TimeSeriesTemporalColumnContractTest extends TestHelper {
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("column 'd'");
     assertThatThrownBy(() -> database.command("sql", "INSERT INTO B SET ts = 1, d = true"))
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("column 'd'");
-    // a number of days no date can hold, as on a DATE document property
-    assertThatThrownBy(() -> database.command("sql", "INSERT INTO B SET ts = 1, dd = " + MILLIS))
+    // a number no date can hold, as on a DATE document property: past any day count it is epoch millis (issue #11025), and these
+    // fall before the first day a java.util.Date can hold
+    assertThatThrownBy(() -> database.command("sql", "INSERT INTO B SET ts = 1, dd = " + (Long.MIN_VALUE + 1)))
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("column 'dd'");
     assertThat(rows("B")).isEmpty();
   }

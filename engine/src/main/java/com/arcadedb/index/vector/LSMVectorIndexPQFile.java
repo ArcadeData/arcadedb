@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
+import io.github.jbellis.jvector.disk.RandomAccessReader;
 import io.github.jbellis.jvector.disk.SimpleMappedReader;
 import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.quantization.PQVectors;
@@ -59,11 +60,46 @@ public class LSMVectorIndexPQFile {
 
   private static final String TEMPORARY_SUFFIX = ".tmp";
 
+  // The identity trailer: this magic, then the fingerprint (LSMVectorIndexGraphManifest) of the ordinal -> (vector id, RID)
+  // map of the graph the codes were built for, 16 bytes at the very end of the file. JVector's loaders stop at the end of
+  // the codes and ignore what follows, so a file with a trailer loads exactly as one without, and a file written before the
+  // trailer existed simply has none: it is read as "identity unknown" and the reopen takes the walk, never a fast path.
+  static final long GRAPH_IDENTITY_MAGIC = 0x5051475241504831L; // "PQGRAPH1"
+  static final int  GRAPH_IDENTITY_BYTES = 16;
+
+  // The codebook trailer (issue #10847): this magic, the number of vectors the index held when the codebook was trained, and
+  // the mean relative reconstruction error of the codebook on its training vectors, 24 bytes right BEFORE the identity
+  // trailer (or at the very end of a file with none). The identity stays the last 16 bytes, which is where every build
+  // looks for it, so a build that predates this trailer reads a file carrying one exactly as before. A file without one has
+  // unknown statistics, which the next rebuild answers by training a new codebook.
+  static final long CODEBOOK_STATS_MAGIC = 0x5051434F44454231L; // "PQCODEB1"
+  static final int  CODEBOOK_STATS_BYTES = 24;
+
   private final Path pqFilePath;
 
+  /**
+   * What a codebook was trained on, which decides whether a rebuild may keep it (issue #10847).
+   *
+   * @param trainedAtCount the number of vectors the index held when the codebook was trained
+   * @param baselineError  the mean relative reconstruction error ({@code |v - decode(encode(v))|^2 / |v|^2}) of the codebook
+   *                       on a sample of the vectors it was trained on
+   */
+  public record CodebookStats(long trainedAtCount, double baselineError) {
+  }
+
+  /**
+   * The codebook, the codes and the identity of the graph they were built for, as one immutable value. They are published
+   * and cleared together by a single volatile write, so a reader never sees the codes of one write with the codebook or
+   * the identity of another, whatever lock the writer and the reader hold. {@code graphFingerprint} is {@code null} when
+   * the file carries none (written by a build older than the trailer, or while the graph's manifest could not vouch for an
+   * ordinal map of the same size). {@code stats} is {@code null} when the file carries no codebook trailer.
+   */
+  private record Loaded(ProductQuantization productQuantization, PQVectors pqVectors, Long graphFingerprint,
+                        CodebookStats stats) {
+  }
+
   // Cached PQ structures loaded into memory for zero-disk-I/O search
-  private volatile ProductQuantization productQuantization;
-  private volatile PQVectors           pqVectors;
+  private volatile Loaded loaded;
 
   // Set when loadPQ() found the file on disk and could not read it, cleared by anything that replaces or removes it.
   // Sticky on purpose: even a transient read error costs one extra rebuild at the next open, which is the safe side,
@@ -84,7 +120,8 @@ public class LSMVectorIndexPQFile {
    * Returns null if PQ data hasn't been loaded yet.
    */
   public PQVectors getPQVectors() {
-    return pqVectors;
+    final Loaded current = loaded;
+    return current != null ? current.pqVectors : null;
   }
 
   /**
@@ -92,14 +129,32 @@ public class LSMVectorIndexPQFile {
    * Returns null if PQ data hasn't been loaded yet.
    */
   public ProductQuantization getProductQuantization() {
-    return productQuantization;
+    final Loaded current = loaded;
+    return current != null ? current.productQuantization : null;
+  }
+
+  /**
+   * The identity of the graph the given codes were built for: the fingerprint recorded with them, or {@code null} when
+   * {@code codes} is not the instance this handler holds or carries no recorded identity. The caller compares it with the
+   * fingerprint of the graph it is about to pair them with. The codes and the identity are one published value, so they
+   * always belong to the same write.
+   */
+  Long graphFingerprintOf(final PQVectors codes) {
+    final Loaded current = loaded;
+    return codes != null && current != null && codes == current.pqVectors ? current.graphFingerprint : null;
+  }
+
+  /** The statistics of the codebook that encoded {@code codes}, or {@code null}: the twin of {@link #graphFingerprintOf}. */
+  CodebookStats codebookStatsOf(final PQVectors codes) {
+    final Loaded current = loaded;
+    return codes != null && current != null && codes == current.pqVectors ? current.stats : null;
   }
 
   /**
    * Checks if PQ data is loaded and ready for approximate search.
    */
   public boolean isPQReady() {
-    return pqVectors != null && productQuantization != null;
+    return loaded != null;
   }
 
   /**
@@ -139,6 +194,24 @@ public class LSMVectorIndexPQFile {
    * @param vectors The PQVectors containing encoded vectors
    */
   public void writePQ(final ProductQuantization pq, final PQVectors vectors) {
+    writePQ(pq, vectors, null);
+  }
+
+  /**
+   * As {@link #writePQ(ProductQuantization, PQVectors)}, recording in the file which graph the codes were built for.
+   *
+   * @param graphFingerprint the fingerprint of the ordinal map of that graph, or {@code null} to record none
+   */
+  public void writePQ(final ProductQuantization pq, final PQVectors vectors, final Long graphFingerprint) {
+    writePQ(pq, vectors, graphFingerprint, null);
+  }
+
+  /**
+   * As {@link #writePQ(ProductQuantization, PQVectors, Long)}, recording also what the codebook was trained on (issue #10847).
+   *
+   * @param stats the statistics of the codebook, or {@code null} to record none
+   */
+  public void writePQ(final ProductQuantization pq, final PQVectors vectors, final Long graphFingerprint, final CodebookStats stats) {
     Path temporary = null;
     try {
       LogManager.instance().log(this, Level.INFO,
@@ -163,6 +236,16 @@ public class LSMVectorIndexPQFile {
         pq.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
         // Write encoded vectors
         vectors.write(writer, OnDiskGraphIndex.CURRENT_VERSION);
+        // Before the identity, which stays the last 16 bytes of the file
+        if (stats != null) {
+          writer.writeLong(CODEBOOK_STATS_MAGIC);
+          writer.writeLong(stats.trainedAtCount());
+          writer.writeLong(Double.doubleToLongBits(stats.baselineError()));
+        }
+        if (graphFingerprint != null) {
+          writer.writeLong(GRAPH_IDENTITY_MAGIC);
+          writer.writeLong(graphFingerprint);
+        }
         // The rename is atomic, the content behind the new name is not durable until it is forced
         writer.force();
       }
@@ -185,8 +268,7 @@ public class LSMVectorIndexPQFile {
 
       // Update cached references
       this.loadFailed = false;
-      this.productQuantization = pq;
-      this.pqVectors = vectors;
+      this.loaded = new Loaded(pq, vectors, graphFingerprint, stats);
 
       LogManager.instance().log(this, Level.INFO,
           "PQ data written successfully: %.2f MB",
@@ -227,22 +309,29 @@ public class LSMVectorIndexPQFile {
           "Loading PQ data from disk: %.2f MB", fileSize / (1024.0 * 1024.0));
 
       final long startTime = System.currentTimeMillis();
+      final Loaded read;
 
       // Use JVector's SimpleMappedReader for memory-mapped file access
       try (SimpleMappedReader.Supplier supplier = new SimpleMappedReader.Supplier(pqFilePath)) {
         final var reader = supplier.get();
         // Read ProductQuantization codebook first
-        this.productQuantization = ProductQuantization.load(reader);
+        final ProductQuantization loadedPq = ProductQuantization.load(reader);
         // Read encoded vectors (at current position after PQ load)
-        this.pqVectors = PQVectors.load(reader, reader.getPosition());
+        final PQVectors loadedCodes = PQVectors.load(reader, reader.getPosition());
+        // The identity is read from this same mapped snapshot, right where the codes ended: a second open of the path could
+        // meet a file a concurrent write has since renamed over this one, and pair these codes with its identity
+        final long codesEnd = reader.getPosition();
+        final Long fingerprint = readGraphFingerprint(reader);
+        read = new Loaded(loadedPq, loadedCodes, fingerprint, readCodebookStats(reader, codesEnd, fingerprint != null));
       }
+      this.loaded = read;
 
       this.loadFailed = false;
 
       final long elapsed = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO,
           "PQ data loaded: %d vectors, %d subspaces in %d ms",
-          pqVectors.count(), productQuantization.getSubspaceCount(), elapsed);
+          read.pqVectors.count(), read.productQuantization.getSubspaceCount(), elapsed);
 
       return true;
 
@@ -251,8 +340,7 @@ public class LSMVectorIndexPQFile {
           "Error loading PQ data from %s: %s. The file is treated as missing: the next graph load rebuilds the graph and the PQ together",
           pqFilePath, e.getMessage());
       // Clear cached data on failure
-      this.productQuantization = null;
-      this.pqVectors = null;
+      this.loaded = null;
       this.loadFailed = true;
       return false;
     }
@@ -263,8 +351,41 @@ public class LSMVectorIndexPQFile {
    * Called when the index is being rebuilt or closed.
    */
   public void clearPQCache() {
-    this.productQuantization = null;
-    this.pqVectors = null;
+    this.loaded = null;
+  }
+
+  /**
+   * @param reader positioned where the codes ended
+   *
+   * @return the graph fingerprint in the identity trailer that follows them, or {@code null} when there is none (a file
+   * written before the trailer existed, or without an identity)
+   */
+  private static Long readGraphFingerprint(final RandomAccessReader reader) throws IOException {
+    final long length = reader.length();
+    if (length - reader.getPosition() < GRAPH_IDENTITY_BYTES)
+      return null;
+    reader.seek(length - GRAPH_IDENTITY_BYTES);
+    return reader.readLong() == GRAPH_IDENTITY_MAGIC ? reader.readLong() : null;
+  }
+
+  /**
+   * The codebook trailer, read where {@link #writePQ(ProductQuantization, PQVectors, Long, CodebookStats)} puts it: right
+   * before the identity trailer when the file has one, at the very end otherwise. {@code null} when there is none, or when
+   * what is there is not a plausible statistic: an implausible one would keep a codebook the next rebuild could not judge.
+   */
+  private static CodebookStats readCodebookStats(final RandomAccessReader reader, final long codesEnd, final boolean hasIdentity)
+      throws IOException {
+    final long end = reader.length() - (hasIdentity ? GRAPH_IDENTITY_BYTES : 0);
+    if (end - codesEnd < CODEBOOK_STATS_BYTES)
+      return null;
+    reader.seek(end - CODEBOOK_STATS_BYTES);
+    if (reader.readLong() != CODEBOOK_STATS_MAGIC)
+      return null;
+    final long trainedAtCount = reader.readLong();
+    final double baselineError = Double.longBitsToDouble(reader.readLong());
+    return trainedAtCount > 0 && Double.isFinite(baselineError) && baselineError >= 0 ?
+        new CodebookStats(trainedAtCount, baselineError) :
+        null;
   }
 
   /**

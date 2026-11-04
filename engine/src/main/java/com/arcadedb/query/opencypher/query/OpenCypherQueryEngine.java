@@ -70,17 +70,27 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -235,6 +245,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           database.getCypherStatementCache().getParameterized(actualQuery);
       final ParsedQuery parsed = lookup.statement();
       final CypherStatement statement = parsed.statement();
+      // A namespaced function no built-in answers is refused before anything runs, as an unknown plain one is at parse time
+      // (issue #11115); before the idempotency refusal below, which such a call would otherwise trip first
+      CYPHER_FUNCTION_FACTORY.checkNamespacedFunctionsResolve(parsed.namespacedFunctionCalls(), database);
 
       // Make any session parameters (SESSION SET) visible to this query as $name.
       final QuerySession session = currentQuerySession();
@@ -337,6 +350,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           database.getCypherStatementCache().getParameterized(actualQuery);
       final ParsedQuery parsed = lookup.statement();
       final CypherStatement statement = parsed.statement();
+      // A namespaced function no built-in answers is refused before anything runs, as an unknown plain one is at parse time
+      // (issue #11115); before the idempotency refusal below, which such a call would otherwise trip first
+      CYPHER_FUNCTION_FACTORY.checkNamespacedFunctionsResolve(parsed.namespacedFunctionCalls(), database);
 
       // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
       // once and thread it to the merge, the parameter check and executeSession (avoids repeated
@@ -353,7 +369,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       // DDL statements (constraints) are executed directly without the planner pipeline
       if (statement instanceof CypherDDLStatement)
-        return executeDDL((CypherDDLStatement) statement);
+        return executeDDL((CypherDDLStatement) statement, effectiveParameters);
 
       // SHOW CONSTRAINTS / SHOW INDEXES are answered from the schema (issue #9706)
       if (statement instanceof CypherShowSchemaStatement show)
@@ -629,7 +645,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Executes a DDL statement (constraint creation/deletion) directly against the schema.
    */
-  private ResultSet executeDDL(final CypherDDLStatement ddl) {
+  private ResultSet executeDDL(final CypherDDLStatement ddl, final Map<String, Object> parameters) {
     final Schema schema = database.getSchema();
     final QueryStatistics stats = new QueryStatistics();
 
@@ -649,7 +665,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case CREATE_INDEX:
       // Under the constraint lock too: an index name is checked against the constraint names before it is taken (#9705)
       synchronized (CypherConstraintRegistry.lockFor(database)) {
-        executeCreateIndex(ddl, schema, stats);
+        executeCreateIndex(ddl, schema, stats, parameters);
       }
       break;
     case DROP_INDEX:
@@ -749,7 +765,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     final JSONObject previous = existing.toJSON();
     final JSONObject retyped = new JSONObject(previous.toMap());
-    retyped.put("type", newType.name());
+    // the name the declaration JSON resolves, which for an ARRAY_OF_* is not the constant's name (#10862)
+    retyped.put("type", newType.getName());
     // a LIST<T> names its element type, so the declaration takes it rather than carrying the old one over (#9709)
     if (target.replacesOfType()) {
       if (target.ofType() != null)
@@ -923,11 +940,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // Neo4j, rather than silently replacing it (#9706). Checked before anything is created, like the name.
     if (isTyped && schema.existsType(typeName)) {
       final String conflicting = CypherConstraintRegistry.findConflictingTyped(schema.getType(typeName), ddl.getPropertyNames(),
-          explicitPropertyType.type(), explicitPropertyType.ofType());
+          explicitPropertyType.type(), explicitPropertyType.ofType(), explicitPropertyType.dimension());
       if (conflicting != null)
         throw new SchemaException("Constraint '" + conflicting + "' already requires another type of " + typeName + "."
             + String.join(", " + typeName + ".", ddl.getPropertyNames()) + ": drop it before requiring IS :: " + ddl.getTypedName());
     }
+
+    // A vector's dimension is the MIN and MAX of its declaration (an item count): bounds already there that say something else
+    // cannot hold it, and are not this statement's to replace. Checked before anything is created (#10862)
+    if (isTyped && explicitPropertyType.isVector() && schema.existsType(typeName))
+      for (final String propName : propertyNames) {
+        final Property existing = schema.getType(typeName).getPropertyIfExists(propName);
+        if (existing != null && (existing.getMin() != null || existing.getMax() != null) && !hasDimensionBounds(existing,
+            explicitPropertyType.dimension()))
+          throw new CommandExecutionException("Cannot require " + typeName + "." + propName + " IS :: " + ddl.getTypedName()
+              + ": the property already carries MIN " + existing.getMin() + " and MAX " + existing.getMax()
+              + ", and a vector's dimension is enforced through them. Change or remove them with ALTER PROPERTY first");
+      }
 
     autoCreateDDLType(schema, ddl, typeName);
 
@@ -957,6 +986,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // constraint is dropped (#9706)
     final List<String> declared = new ArrayList<>(propertyNames.length);
     final JSONObject previous = new JSONObject();
+    // The properties whose MIN and MAX a vector type constraint set to its dimension, cleared when it is dropped (#10862)
+    final List<String> ownedBounds = new ArrayList<>(0);
     for (int i = 0; i < propertyNames.length; i++) {
       final String propName = propertyNames[i];
       final Property existing = schema.getType(typeName).getPropertyIfExists(propName);
@@ -971,7 +1002,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
           previous.put(propName, replaced);
           typedChanged = true;
         }
-      } else if (existing == null) {
+      }
+      if (isTyped && explicitPropertyType.isVector()) {
+        // the dimension, enforced on every later write as the item count of the array
+        final Property vector = schema.getType(typeName).getProperty(propName);
+        if (vector.getMin() == null && vector.getMax() == null) {
+          final String bound = String.valueOf(explicitPropertyType.dimension());
+          vector.setMin(bound);
+          vector.setMax(bound);
+          ownedBounds.add(propName);
+          typedChanged = true;
+        }
+      } else if (!isTyped && existing == null) {
         final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
         if (inferred != null) {
           schema.getType(typeName).createProperty(propName, inferred);
@@ -1067,7 +1109,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
       if (typedChanged)
-        requireStoredValuesConform(schema, typeName, propertyNames, ddl.getTypedName(), declared, previous);
+        requireStoredValuesConform(schema, typeName, propertyNames, ddl.getTypedName(), declared, previous, ownedBounds);
       changed = typedChanged;
       if (typedChanged)
         stats.incConstraintsAdded();
@@ -1084,13 +1126,37 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final Type recordedType = isTyped ? explicitPropertyType.type() : null;
     final String recordedOfType = isTyped ? explicitPropertyType.ofType() : null;
     String recordAs = constraintName;
+    final int recordedDimension = isTyped ? explicitPropertyType.dimension() : CypherTypeName.NO_DIMENSION;
     if (recordAs == null && changed && CypherConstraintRegistry.findEquivalent(constrained, kind, ddl.getPropertyNames(), recordedType,
-        recordedOfType) == null)
+        recordedOfType, recordedDimension) == null)
       recordAs = CypherConstraintRegistry.freeGeneratedName(schema, typeName, kind, ddl.getPropertyNames());
     if (recordAs != null && (changed || !ddl.isIfNotExists()))
       CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames,
           new CypherConstraintRegistry.Ownership(ownedIndex, ownedMandatory, declared, previous, recordedType, recordedOfType,
-              isTyped ? ddl.getTypedName().toString() : null));
+              recordedDimension, ownedBounds, isTyped ? ddl.getTypedName().toString() : null));
+  }
+
+  /** A stored value as a refusal names it: an array by its component type and length, which is what a vector type checks. */
+  private static String describeStoredValue(final Object value) {
+    final Class<?> component = value.getClass().getComponentType();
+    if (component != null)
+      return component.getSimpleName() + "[" + Array.getLength(value) + "]";
+    return value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")";
+  }
+
+  /** Whether the property's MIN and MAX are both the item count {@code dimension}, as a vector type constraint sets them. */
+  private static boolean hasDimensionBounds(final Property property, final int dimension) {
+    return isBound(property.getMin(), dimension) && isBound(property.getMax(), dimension);
+  }
+
+  private static boolean isBound(final String bound, final int dimension) {
+    if (bound == null)
+      return false;
+    try {
+      return Long.parseLong(bound.trim()) == dimension;
+    } catch (final NumberFormatException e) {
+      return false;
+    }
   }
 
   /**
@@ -1101,7 +1167,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * {@code IS :: type}, in one scan of the type.
    */
   private void requireStoredValuesConform(final Schema schema, final String typeName, final String[] propertyNames,
-      final CypherTypeName cypherType, final List<String> declared, final JSONObject previous) {
+      final CypherTypeName cypherType, final List<String> declared, final JSONObject previous, final List<String> ownedBounds) {
     final Iterator<Record> records = database.iterateType(typeName, true);
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
@@ -1114,8 +1180,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
         // the refusal is what the caller has to see: an undo step that fails is attached to it, never thrown in its place
         final CommandExecutionException refusal = new CommandExecutionException(
             "Cannot require " + typeName + "." + propertyName + " IS :: " + cypherType + ": record " + document.getIdentity()
-                + " holds " + value + " (" + CypherFunctionHelper.cypherTypeName(value) + ")");
+                + " holds " + describeStoredValue(value));
         final DocumentType type = schema.getType(typeName);
+        for (final String bounded : ownedBounds)
+          try {
+            final Property property = type.getPropertyIfExists(bounded);
+            if (property != null) {
+              property.setMin(null);
+              property.setMax(null);
+            }
+          } catch (final RuntimeException e) {
+            refusal.addSuppressed(e);
+          }
         for (final String undeclared : declared)
           try {
             if (type.existsProperty(undeclared))
@@ -1142,7 +1218,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * @param replacesOfType true when the Cypher type names the element type (a {@code LIST<T>}, where {@code LIST<ANY>} names
    *                       none), so the declaration takes it instead of carrying the previous one over
    */
-  private record DeclaredType(Type type, String ofType, boolean replacesOfType) {
+  private record DeclaredType(Type type, String ofType, boolean replacesOfType, int dimension) {
+    DeclaredType(final Type type, final String ofType, final boolean replacesOfType) {
+      this(type, ofType, replacesOfType, CypherTypeName.NO_DIMENSION);
+    }
+
+    boolean isVector() {
+      return dimension != CypherTypeName.NO_DIMENSION;
+    }
+
     /**
      * Whether a property already declared satisfies the constraint, so it is left as it is. Every DATETIME precision holds a
      * LOCAL DATETIME: a property declared at a coarser precision keeps it rather than being widened behind its owner's back.
@@ -1168,6 +1252,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (cypherType.nonNull())
       throw new CommandParsingException("A property type constraint cannot require NOT NULL (`IS :: " + cypherType
           + "`): declare the type without it and add an existence constraint (`REQUIRE n.p IS NOT NULL`)");
+    if (cypherType.isVector())
+      return mapVectorType(cypherType);
     if (cypherType.isList()) {
       final String element = cypherType.elementName();
       if (element == null || "ANY".equals(element))
@@ -1205,6 +1291,28 @@ public class OpenCypherQueryEngine implements QueryEngine {
       case "POINT", "MAP" -> Type.MAP;
       default -> throw new CommandParsingException("Unsupported Cypher type in a property type constraint: " + written);
     };
+  }
+
+  /**
+   * Maps {@code VECTOR<T>(n)} onto the primitive array ArcadeDB holds a vector of {@code T} in (an {@code INT8} vector is the
+   * byte array of a BINARY), whose dimension the property's MIN and MAX enforce, as an item count, on every write (#10862).
+   * Both the coordinate type and the dimension are required: a constraint without the dimension would not be the one Neo4j
+   * enforces, and one without the coordinate type has no declaration to map to.
+   */
+  private static DeclaredType mapVectorType(final CypherTypeName cypherType) {
+    if (cypherType.elementName() == null || cypherType.dimension() == CypherTypeName.NO_DIMENSION)
+      throw new CommandParsingException("A property type constraint on a vector names its coordinate type and its dimension, "
+          + "as in `IS :: VECTOR<FLOAT32>(768)`: found `IS :: " + cypherType + "`");
+    final Type arrayType = switch (cypherType.elementName()) {
+      case "INT8" -> Type.BINARY;
+      case "INT16" -> Type.ARRAY_OF_SHORTS;
+      case "INT32" -> Type.ARRAY_OF_INTEGERS;
+      case "INTEGER" -> Type.ARRAY_OF_LONGS;
+      case "FLOAT32" -> Type.ARRAY_OF_FLOATS;
+      case "FLOAT" -> Type.ARRAY_OF_DOUBLES;
+      default -> throw new CommandParsingException("Unsupported vector coordinate type in a property type constraint: " + cypherType);
+    };
+    return new DeclaredType(arrayType, null, true, cypherType.dimension());
   }
 
   /**
@@ -1447,14 +1555,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * are unique across indexes and constraints, as in Neo4j: a taken name raises, and with {@code IF NOT EXISTS} it is a
    * no-op, like an equivalent index under another name.
    */
-  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
+  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats,
+      final Map<String, Object> parameters) {
+    if (ddl.getLabelNames().size() > 1) {
+      executeCreateMultiTypeIndex(ddl, schema, stats, parameters);
+      return;
+    }
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
     final String indexName = ddl.getConstraintName();
 
     // Checked before anything is created, so a refused statement leaves no type or property behind
     if (indexName != null) {
-      final boolean taken = schema.existsIndex(indexName);
+      final boolean taken = schema.existsIndex(indexName) || MultiTypeIndexes.find(schema, indexName) != null;
       if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
         if (ddl.isIfNotExists())
           return;
@@ -1463,6 +1576,126 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     }
 
+    // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
+    final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
+      case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames,
+          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]));
+      case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
+      case RANGE -> null;
+    };
+
+    final BuiltIndex built = buildTypeIndex(ddl, schema, typeName, propertyNames, indexName, indexMetadata);
+    if (!built.existedBefore())
+      stats.incIndexesAdded();
+  }
+
+  /**
+   * The index one type got from a {@code CREATE INDEX}, whether the type already had an equivalent one, and the properties the
+   * statement declared on the type for it (what a later failure of the same statement has to take back).
+   */
+  private record BuiltIndex(TypeIndex index, boolean existedBefore, String typeName, List<String> declared) {
+  }
+
+  /**
+   * {@code CREATE VECTOR INDEX} and {@code CREATE FULLTEXT INDEX} over several labels or relationship types (issue #10914):
+   * one index per type, tied together by the name {@link MultiTypeIndexes} records. The name is taken like any index
+   * name; with none, one is made from the labels and the properties. A statement that fails part-way drops the indexes it
+   * built, so it leaves nothing behind but the types it named.
+   */
+  private void executeCreateMultiTypeIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats,
+      final Map<String, Object> parameters) {
+    final List<String> labels = ddl.getLabelNames();
+    final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
+    final CypherDDLStatement.IndexKind kind = ddl.getIndexKind();
+    final String indexName = ddl.getConstraintName() != null ?
+        ddl.getConstraintName() :
+        String.join("_", labels) + "_" + String.join("_", propertyNames) + "_" + kind.name().toLowerCase(Locale.ROOT);
+
+    final boolean taken = schema.existsIndex(indexName) || MultiTypeIndexes.find(schema, indexName) != null;
+    if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
+      if (ddl.isIfNotExists())
+        return;
+      throw new AlreadyExistsException(taken ? AlreadyExistsException.Kind.INDEX : AlreadyExistsException.Kind.CONSTRAINT,
+          "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
+    }
+
+    // The OPTIONS are read for every type before anything is created, as for one type
+    final Object options = evaluateIndexOptions(ddl, parameters);
+    final List<JSONObject> metadata = new ArrayList<>(labels.size());
+    for (final String label : labels)
+      metadata.add(switch (kind) {
+        case VECTOR -> CypherIndexOptions.vectorMetadata(options, label, propertyNames,
+            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]));
+        case FULLTEXT -> CypherIndexOptions.fullTextMetadata(options, label, propertyNames);
+        case RANGE -> throw new CommandParsingException("Only a vector or a full-text index can span several labels");
+      });
+
+    final List<String> indexNames = new ArrayList<>(labels.size());
+    final List<String> owned = new ArrayList<>(labels.size());
+    final List<BuiltIndex> builtSoFar = new ArrayList<>(labels.size());
+    try {
+      for (int i = 0; i < labels.size(); i++) {
+        final BuiltIndex built = buildTypeIndex(ddl, schema, labels.get(i), propertyNames, null, metadata.get(i));
+        builtSoFar.add(built);
+        indexNames.add(built.index().getName());
+        if (!built.existedBefore())
+          owned.add(built.index().getName());
+      }
+      if (kind == CypherDDLStatement.IndexKind.VECTOR)
+        requireSameVectorShape(schema, indexNames);
+      final MultiTypeIndexes.Kind logicalKind =
+          kind == CypherDDLStatement.IndexKind.VECTOR ? MultiTypeIndexes.Kind.VECTOR : MultiTypeIndexes.Kind.FULLTEXT;
+      MultiTypeIndexes.register(schema, new MultiTypeIndexes.Entry(indexName, logicalKind, ddl.isForRelationship(), labels,
+          ddl.getPropertyNames(), indexNames, owned));
+    } catch (final RuntimeException e) {
+      for (final String name : owned)
+        try {
+          schema.dropIndex(name);
+        } catch (final RuntimeException dropFailure) {
+          e.addSuppressed(dropFailure);
+        }
+      // the properties the statement declared for the indexes it just dropped go too, or the types keep a declaration nobody
+      // asked for, which coerces every later write (issue #8999)
+      for (final BuiltIndex built : builtSoFar)
+        for (final String declared : built.declared())
+          try {
+            final DocumentType type = schema.getType(built.typeName());
+            if (type.existsProperty(declared))
+              type.dropProperty(declared);
+          } catch (final RuntimeException dropFailure) {
+            e.addSuppressed(dropFailure);
+          }
+      throw e;
+    }
+
+    if (!owned.isEmpty())
+      stats.incIndexesAdded();
+  }
+
+  /**
+   * The vector indexes one logical index spans answer one query: their distances are comparable only when they measure the
+   * same thing, so a statement whose types ended up with other dimensions or another similarity function is refused.
+   */
+  private static void requireSameVectorShape(final Schema schema, final List<String> indexNames) {
+    int dimensions = -1;
+    VectorSimilarityFunction similarity = null;
+    for (final String name : indexNames) {
+      final IndexInternal[] bucketIndexes = ((TypeIndex) schema.getIndexByName(name)).getIndexesOnBuckets();
+      if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMVectorIndex vector))
+        continue;
+      if (similarity == null) {
+        dimensions = vector.getDimensions();
+        similarity = vector.getSimilarityFunction();
+      } else if (dimensions != vector.getDimensions() || similarity != vector.getSimilarityFunction())
+        throw new CommandParsingException("A vector index over several labels needs the same vector.dimensions and "
+            + "vector.similarity_function on each of them: '" + name + "' has " + vector.getDimensions() + " and "
+            + vector.getSimilarityFunction() + ", the first has " + dimensions + " and " + similarity);
+    }
+  }
+
+  /** Builds the index of one type, creating the type and declaring the properties it needs. */
+  private BuiltIndex buildTypeIndex(final CypherDDLStatement ddl, final Schema schema, final String typeName,
+      final String[] propertyNames, final String indexName, final JSONObject indexMetadata) {
     autoCreateDDLType(schema, ddl, typeName);
 
     // Cypher properties are dynamically typed and travel over Bolt with their actual Java type
@@ -1474,6 +1707,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     //   2. If no record carries the property, keep the property undeclared and tell the index
     //      builder to fall back to STRING serialisation for its keys. Writes then preserve the
     //      original Java type and downstream Cypher comparisons work correctly.
+    // A vector index is the exception: it reads its property as an ARRAY_OF_FLOATS, so an undeclared one is declared so, as
+    // SQL CREATE INDEX ... LSM_VECTOR asks the user to do first (#10678). A full-text index tokenizes the text of the value,
+    // so its keys are always strings and its properties stay undeclared.
     final DocumentType type = schema.getType(typeName);
     final Type[] defaultKeyTypes = new Type[propertyNames.length];
     final List<String> declaredHere = new ArrayList<>();
@@ -1482,7 +1718,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final String propName = propertyNames[i];
       if (type.getPolymorphicPropertyIfExists(propName) != null)
         continue;
-      final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
+      final Type inferred = switch (ddl.getIndexKind()) {
+        case VECTOR -> Type.ARRAY_OF_FLOATS;
+        case FULLTEXT -> null;
+        case RANGE -> inferPropertyTypeFromExistingData(typeName, propName);
+      };
       if (inferred != null) {
         type.createProperty(propName, inferred);
         declaredHere.add(propName);
@@ -1493,18 +1733,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
 
     final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
-    final TypeIndexBuilder builder = schema.buildTypeIndex(typeName, propertyNames);
-    builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-    builder.withUnique(false);
-    builder.withIgnoreIfExists(ddl.isIfNotExists());
+    final TypeIndexBuilder generic = schema.buildTypeIndex(typeName, propertyNames);
+    generic.withUnique(false);
+    generic.withIgnoreIfExists(ddl.isIfNotExists());
     // An equivalent index under another name satisfies IF NOT EXISTS, as in Neo4j: the name is not asked for then, or the
     // builder would refuse the request over the name alone (#6921)
     if (indexName != null && !(existedBefore && ddl.isIfNotExists()))
-      builder.withIndexName(indexName);
+      generic.withIndexName(indexName);
     if (anyUndeclared)
-      builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+      generic.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+    final TypeIndexBuilder builder;
+    final TypeIndex created;
     try {
-      builder.create();
+      builder = withIndexKind(generic, ddl.getIndexKind(), indexMetadata);
+      created = builder.create();
     } catch (final RuntimeException e) {
       // The declarations above are part of this statement: a build that fails must not leave the type with properties
       // nobody asked for, which coerce every later write (issue #8999)
@@ -1517,8 +1759,101 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
       throw e;
     }
-    if (!existedBefore)
-      stats.incIndexesAdded();
+
+    // Build the graph of a vector index now, as SQL CREATE INDEX does by default: only for an index this statement built, and
+    // not inside the caller's transaction, whose entries are not on the index pages yet (issue #10438)
+    if (ddl.getIndexKind() == CypherDDLStatement.IndexKind.VECTOR && builder.isBuilt() && !builder.isBuiltInCallerTransaction())
+      for (final Index bucketIndex : created.getIndexesOnBuckets())
+        if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+          vectorIndex.buildVectorGraphNow();
+
+    return new BuiltIndex(created, existedBefore, typeName, declaredHere);
+  }
+
+  /**
+   * Turns the builder into the one of the index kind the statement asks for, configured from the metadata its OPTIONS were
+   * translated into. The metadata is also the request IF NOT EXISTS compares an existing index with, so an index already on
+   * the property with other settings is reported rather than taken for the one asked for (#5765).
+   */
+  private static TypeIndexBuilder withIndexKind(final TypeIndexBuilder builder, final CypherDDLStatement.IndexKind kind,
+      final JSONObject metadata) {
+    switch (kind) {
+    case VECTOR: {
+      final TypeLSMVectorIndexBuilder vectorBuilder = (TypeLSMVectorIndexBuilder) builder.withType(Schema.INDEX_TYPE.LSM_VECTOR);
+      try {
+        vectorBuilder.withMetadata(metadata);
+      } catch (final IndexException | IllegalArgumentException e) {
+        throw new CommandParsingException("Invalid vector index OPTIONS: " + e.getMessage(), e);
+      }
+      vectorBuilder.withUserMetadata(metadata);
+      return vectorBuilder;
+    }
+    case FULLTEXT: {
+      final TypeFullTextIndexBuilder ftBuilder = builder.withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType();
+      if (!metadata.isEmpty()) {
+        try {
+          ftBuilder.withMetadata(metadata);
+        } catch (final IndexException | IllegalArgumentException e) {
+          throw new CommandParsingException("Invalid full-text index OPTIONS: " + e.getMessage(), e);
+        }
+        ftBuilder.withUserMetadata(metadata);
+      }
+      return ftBuilder;
+    }
+    default:
+      return builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+    }
+  }
+
+  /** The OPTIONS of a CREATE INDEX, evaluated against the statement's parameters: a map literal or a {@code $parameter}. */
+  private Object evaluateIndexOptions(final CypherDDLStatement ddl, final Map<String, Object> parameters) {
+    if (ddl.getOptions() == null)
+      return null;
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    return EXPRESSION_EVALUATOR.evaluate(ddl.getOptions(), new ResultInternal(), context);
+  }
+
+  /**
+   * The number of dimensions of the first vector the type's records (polymorphic) hold in {@code propertyName}, for a
+   * {@code CREATE VECTOR INDEX} that does not name it (issue #10863), or -1 when the type does not exist or no record holds a
+   * vector there. The walk stops at the first vector: a record whose vector has another length is left out of the index by its
+   * build, as it is for an index whose statement named the dimensions. A type whose records hold no vector there is read
+   * whole before the index is created to take its dimensions from its first vector (issue #10915): a DDL cost, paid only by a
+   * statement that does not name the dimensions.
+   */
+  private int dimensionsOfExistingVectors(final Schema schema, final String typeName, final String propertyName) {
+    if (!schema.existsType(typeName))
+      return -1;
+    final Iterator<Record> it = database.iterateType(typeName, true);
+    while (it.hasNext()) {
+      if (!(it.next() instanceof Document doc))
+        continue;
+      final int length = vectorLength(doc.get(propertyName));
+      if (length > 0)
+        return length;
+    }
+    return -1;
+  }
+
+  /**
+   * The number of dimensions of {@code value} when it is a vector - an array of primitive numbers, or an array or a list of
+   * numbers - or -1. Read off the shape, without converting the value or throwing for one that is no vector, so a walk over
+   * records that hold something else in the property costs neither an allocation nor an exception per record. A string is no
+   * vector here, though {@link VectorUtils#toFloatArray(Object)} parses one written as text: '3' is not a vector of one
+   * dimension.
+   */
+  private static int vectorLength(final Object value) {
+    return switch (value) {
+      case float[] a -> a.length;
+      case double[] a -> a.length;
+      case long[] a -> a.length;
+      case int[] a -> a.length;
+      case Object[] a -> a.length > 0 && a[0] instanceof Number ? a.length : -1;
+      case List<?> l -> !l.isEmpty() && l.getFirst() instanceof Number ? l.size() : -1;
+      case null, default -> -1;
+    };
   }
 
   /**
@@ -1653,6 +1988,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String indexName = ddl.getConstraintName();
+    final MultiTypeIndexes.Entry logical = MultiTypeIndexes.find(schema, indexName);
+    if (logical != null) {
+      // the indexes the statement built go with the name; one that was there before it stays
+      MultiTypeIndexes.drop(schema, logical);
+      stats.incIndexesRemoved();
+      return;
+    }
     if (!schema.existsIndex(indexName)) {
       if (ddl.isIfExists())
         return;
@@ -1662,6 +2004,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (owner != null)
       throw new SchemaException(
           "Index '" + indexName + "' belongs to constraint '" + owner + "': use DROP CONSTRAINT " + owner + " to drop it");
+    MultiTypeIndexes.requireNotMember(schema, indexName);
     schema.dropIndex(indexName);
     stats.incIndexesRemoved();
   }

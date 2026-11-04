@@ -18,12 +18,14 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -47,8 +49,15 @@ class WalRecoveryCorrectnessTest {
 
   private static final String DB_PATH = "target/databases/WalRecoveryCorrectnessTest";
 
+  @BeforeEach
+  void fileSyncOn() {
+    // cleanCloseAfterFailedFsyncPreservesWal needs a real fsync, which the unit-test lanes turn off (arcadedb.fileSync)
+    GlobalConfiguration.FILE_SYNC.setValue(true);
+  }
+
   @AfterEach
   void cleanup() {
+    GlobalConfiguration.FILE_SYNC.reset();
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     try {
       if (factory.exists())

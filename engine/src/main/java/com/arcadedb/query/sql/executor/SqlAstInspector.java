@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.AlterTypeStatement;
 import com.arcadedb.query.sql.parser.CaseAlternative;
@@ -32,6 +33,7 @@ import com.arcadedb.query.sql.parser.NamedParameter;
 import com.arcadedb.query.sql.parser.OrderByItem;
 import com.arcadedb.query.sql.parser.Pattern;
 import com.arcadedb.query.sql.parser.PositionalParameter;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
 
@@ -41,6 +43,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -48,6 +51,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
+import java.util.logging.Level;
 
 /**
  * Answers questions about everything a parsed SQL fragment can run - every function and method call, every nested
@@ -94,6 +98,23 @@ public final class SqlAstInspector {
       JsonItem.class, Pattern.class, AlterTypeStatement.Item.class, CreateIndexStatement.Property.class,
       CreateTimeSeriesTypeStatement.ColumnDef.class);
 
+  /**
+   * Whether the fields of the parse tree can be read reflectively at all. A GraalVM native image answers
+   * {@code getDeclaredFields()} with an empty array for a class it did not register for reflection, and a walk over such a
+   * tree visits the root alone and reports it complete: a write nested in a SELECT would then pass every read-only gate. So
+   * a node that is known to hold other nodes is asked once, and when it reports no field every walk answers "incomplete",
+   * which each caller already treats as the worst case. Declared after {@link #AST_HOLDER_CLASSES}, which the field lookup
+   * reads. Non-final for the test that pins that answer.
+   */
+  static volatile boolean astFieldsReadable = AST_FIELDS.get(SelectStatement.class).length > 0;
+
+  static {
+    if (!astFieldsReadable)
+      LogManager.instance().log(SqlAstInspector.class, Level.SEVERE,
+          "The fields of the SQL parse tree cannot be read reflectively (a native image built without their reflection "
+              + "metadata?): every statement that may nest another one is treated as a write and refused by the read-only paths");
+  }
+
   private static boolean isAstClass(final Class<?> type) {
     return SimpleNode.class.isAssignableFrom(type) || AST_HOLDER_CLASSES.contains(type);
   }
@@ -104,40 +125,51 @@ public final class SqlAstInspector {
 
   /**
    * Whether every node reachable from {@code root} - through AST fields, collections, maps and arrays - satisfies
-   * {@code test}. A {@code null} root trivially does.
+   * {@code test}. A {@code null} root trivially does. The nodes are tested in the order the tree holds them, depth first.
+   * <p>
+   * Iterative, not recursive, like {@link #forEachNestedStatement}: a parsed expression chain can be thousands of nodes deep
+   * (issue #9148), and this runs on every execution that binds parameters (issue #11098), on whatever stack the caller has.
    */
   public static boolean allNodesMatch(final Object root, final Predicate<SimpleNode> test) {
-    return allNodesMatch(root, test, new IdentityHashMap<>());
-  }
-
-  private static boolean allNodesMatch(final Object node, final Predicate<SimpleNode> test, final IdentityHashMap<Object, Boolean> visited) {
-    if (isAstObject(node)) {
-      if (visited.put(node, Boolean.TRUE) != null)
-        return true;
-      if (node instanceof SimpleNode simpleNode && !test.test(simpleNode))
-        return false;
-      for (final Field f : AST_FIELDS.get(node.getClass())) {
-        final Object value;
-        try {
-          value = f.get(node);
-        } catch (final IllegalAccessException e) {
+    if (root == null)
+      return true;
+    if (!astFieldsReadable)
+      return false;
+    final IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
+    final ArrayDeque<Object> pending = new ArrayDeque<>();
+    final List<Object> children = new ArrayList<>();
+    pending.push(root);
+    while (!pending.isEmpty()) {
+      final Object node = pending.pop();
+      children.clear();
+      if (isAstObject(node)) {
+        if (visited.put(node, Boolean.TRUE) != null)
+          continue;
+        if (node instanceof SimpleNode simpleNode && !test.test(simpleNode))
           return false;
+        for (final Field f : AST_FIELDS.get(node.getClass())) {
+          try {
+            children.add(f.get(node));
+          } catch (final IllegalAccessException e) {
+            return false;
+          }
         }
-        if (value != null && !allNodesMatch(value, test, visited))
-          return false;
+      } else if (node instanceof Collection<?> collection)
+        children.addAll(collection);
+      else if (node instanceof Map<?, ?> map)
+        for (final Map.Entry<?, ?> entry : map.entrySet()) {
+          children.add(entry.getKey());
+          children.add(entry.getValue());
+        }
+      else if (node instanceof Object[] array)
+        Collections.addAll(children, array);
+
+      // PUSHED IN REVERSE, SO THEY ARE POPPED IN THE ORDER THE NODE HOLDS THEM
+      for (int i = children.size() - 1; i >= 0; i--) {
+        final Object child = children.get(i);
+        if (child != null)
+          pending.push(child);
       }
-    } else if (node instanceof Collection<?> collection) {
-      for (final Object item : collection)
-        if (!allNodesMatch(item, test, visited))
-          return false;
-    } else if (node instanceof Map<?, ?> map) {
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        if (!allNodesMatch(entry.getKey(), test, visited) || !allNodesMatch(entry.getValue(), test, visited))
-          return false;
-    } else if (node instanceof Object[] array) {
-      for (final Object item : array)
-        if (!allNodesMatch(item, test, visited))
-          return false;
     }
     return true;
   }
@@ -156,6 +188,8 @@ public final class SqlAstInspector {
    * worst, as {@link #allNodesMatch} does by answering false
    */
   public static boolean forEachNestedStatement(final Statement root, final BiPredicate<Statement, Statement> visitor) {
+    if (!astFieldsReadable)
+      return false;
     final IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
     final ArrayDeque<Object> nodes = new ArrayDeque<>();
     final ArrayDeque<Statement> enclosing = new ArrayDeque<>();

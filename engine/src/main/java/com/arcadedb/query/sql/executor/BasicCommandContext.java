@@ -27,6 +27,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.sql.parser.RecordAttribute;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.HashMap;
@@ -90,6 +91,13 @@ public class BasicCommandContext implements CommandContext {
    * that has no entry published. See {@link #getRunningQuery()}.
    */
   private            RunningQuery         runningQuery            = RunningQuery.current();
+  /**
+   * The budget published with {@link CommandTimeoutOverride} on the thread that builds the context, captured at construction for
+   * the same reason as {@link #runningQuery}: the budget is resolved lazily, and a root context can be resolved first by a
+   * parallel worker, on a thread that publishes none, which then resolved "no timeout" for the whole command (issue #10609).
+   * {@code -1} for none. Only a root context reads it: a derived one takes its parent's.
+   */
+  private final      long                 forwardedTimeout        = CommandTimeoutOverride.get();
 
   @Override
   public Object getVariablePath(final String name) {
@@ -146,21 +154,17 @@ public class BasicCommandContext implements CommandContext {
         otherParts = pos > -1 ? otherParts.substring(pos + 1) : "";
 
         if (result instanceof Result result1) {
-          // Handle special metadata properties for Result objects
-          if ("@rid".equals(firstPart))
-            result = result1.getIdentity().orElse(null);
-          else if ("@type".equals(firstPart))
-            result = result1.getElement().map(Document::getTypeName).orElse(null);
+          // Record attributes as the projection reads them: off the record, or off the row when it wraps none (issue #11131)
+          if (RecordAttribute.isRowAttribute(firstPart))
+            result = RecordAttribute.resolve(result1, firstPart);
           else
             result = result1.getProperty(firstPart);
         } else if (result instanceof Map map)
           result = map.get(firstPart);
         else if (result instanceof Document document) {
           // Handle special metadata properties that are not stored in the document
-          if ("@rid".equals(firstPart))
-            result = document.getIdentity();
-          else if ("@type".equals(firstPart))
-            result = document.getTypeName();
+          if (RecordAttribute.isRowAttribute(firstPart))
+            result = RecordAttribute.evaluateOnRecord(document, firstPart);
           else
             result = document.get(firstPart);
         }
@@ -223,8 +227,9 @@ public class BasicCommandContext implements CommandContext {
       result = database.getGlobalVariable(name);
 
     if (fieldName != null) {
+      // record attributes as getVariablePath() reads them: off the record, or off the row when it wraps none (issue #11131)
       if (result instanceof Result result1)
-        result = result1.getProperty(fieldName);
+        result = RecordAttribute.isRowAttribute(fieldName) ? RecordAttribute.resolve(result1, fieldName) : result1.getProperty(fieldName);
     }
     return result != null ? result : defaultValue;
   }
@@ -305,7 +310,7 @@ public class BasicCommandContext implements CommandContext {
       else
         // The budget a peer forwarded this request with takes the place of this node's own setting, so the node that
         // forwarded it and this one enforce the same number (issue #8313).
-        commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase());
+        commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase(), forwardedTimeout);
     }
     return commandTimeout;
   }
@@ -524,6 +529,14 @@ public class BasicCommandContext implements CommandContext {
     if (query != null)
       return query;
     return parent != null ? parent.getRunningQuery() : null;
+  }
+
+  @Override
+  public boolean isUnderEnclosingRow() {
+    for (CommandContext ancestor = parent; ancestor != null; ancestor = ancestor.getParent())
+      if (ancestor instanceof BasicCommandContext basic && basic.variables != null && basic.variables.get("current") != null)
+        return true;
+    return false;
   }
 
   /** Binds this context to the registry entry of a statement, for a context built apart from the statement's tree. */

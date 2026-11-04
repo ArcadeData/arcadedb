@@ -63,7 +63,7 @@ class Issue8589UnverifiedClosedCopyReopenGateTest {
       for (final String name : new String[] { MARKED, UNMARKED })
         try {
           if (server.existsDatabase(name))
-            ((DatabaseInternal) server.getDatabase(name)).getEmbedded().close();
+            ((DatabaseInternal) server.getDatabaseForOperator(name)).getEmbedded().close();
         } catch (final Exception ignore) {
           // best-effort cleanup; the @TempDir is removed regardless
         }
@@ -91,7 +91,7 @@ class Issue8589UnverifiedClosedCopyReopenGateTest {
     server = startServer(true, null);
     server.setHA(ha(false));
 
-    assertThatThrownBy(() -> server.getDatabase(MARKED))
+    assertThatThrownBy(() -> server.getDatabaseForOperator(MARKED))
         .isInstanceOf(DatabaseNotAvailableException.class)
         .hasMessageContaining("could not verify");
     assertThat(server.existsDatabase(MARKED)).isFalse();
@@ -104,7 +104,7 @@ class Issue8589UnverifiedClosedCopyReopenGateTest {
     createDatabaseOnDisk(MARKED, true);
     server = startServer(true, null);
 
-    assertThatThrownBy(() -> server.getDatabase(MARKED)).isInstanceOf(DatabaseNotAvailableException.class);
+    assertThatThrownBy(() -> server.getDatabaseForOperator(MARKED)).isInstanceOf(DatabaseNotAvailableException.class);
   }
 
   /**
@@ -119,7 +119,7 @@ class Issue8589UnverifiedClosedCopyReopenGateTest {
     when(leader.refuseToReopenUnverifiedClosedCopy(MARKED)).thenReturn(null);
     server.setHA(leader);
 
-    assertThat(server.getDatabase(MARKED).isOpen()).isTrue();
+    assertThat(server.getDatabaseForOperator(MARKED).isOpen()).isTrue();
     assertThat(Files.exists(marker(MARKED))).isFalse();
   }
 

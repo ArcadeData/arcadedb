@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.ParallelScanProducerPool;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -108,6 +109,10 @@ class Issue8594ParallelScanLimitReleaseTest extends TestHelper {
   void satisfiedLimitReleasesTheProducersWithoutClose() throws Exception {
     createAndPopulate();
     final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
+
+    // THE POOL IS JVM-WIDE: A THREAD STILL HELD BY ANOTHER TEST'S SCAN WOULD READ BELOW AS ONE THIS TEST'S LIMIT KEPT
+    Awaitility.await("the producer pool is idle before the test, or the count below is not this test's").atMost(30, TimeUnit.SECONDS)
+        .until(() -> ParallelScanProducerPool.getInstance().getPoolStats().activeThreads() == 0);
 
     for (int i = 0; i < maxThreads * 2; i++) {
       // NEVER CLOSED, ON PURPOSE

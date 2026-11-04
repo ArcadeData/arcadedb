@@ -67,7 +67,24 @@ public enum DivergenceCause {
    * other node has. Nothing failed to apply: the change simply never entered the log.
    */
   UNPUBLISHED_SCHEMA_CHANGE("a schema change or compaction this node ran locally whose replication was refused or "
-      + "could not be published, so no other node holds it");
+      + "could not be published, so no other node holds it"),
+
+  /**
+   * The crash recovery this node ran when it opened the database stopped before replaying every transaction, for instance
+   * on a WAL gap after a power loss that dropped pages the WAL no longer covers (issue #11250). What is on disk is not known
+   * to hold what its commits promised, and the node must not serve it, nor lead with it, until a copy from the cluster
+   * replaces it.
+   */
+  LOCAL_RECOVERY_INCOMPLETE("a crash recovery of this node's own copy that did not replay every transaction, so the "
+      + "copy may be missing committed data"),
+
+  /**
+   * A UNIQUE index of this node's copy was left out when the database opened, for a file with no header page that a power
+   * loss emptied or a half-arrived compaction left (issue #11258). The index enforces nothing here, and nothing local can
+   * tell the two cases apart, so the node must not serve the database until a copy from the cluster replaces it.
+   */
+  UNAVAILABLE_UNIQUE_INDEX("a unique index of this node's own copy that could not be loaded for a missing header page, so "
+      + "its constraint is not enforced here");
 
   private final String description;
 

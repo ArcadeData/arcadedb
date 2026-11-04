@@ -24,11 +24,16 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.MultiTypeIndexes;
+import com.arcadedb.schema.Schema;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -55,21 +60,47 @@ public class DropIndexStatement extends DDLStatement {
     final Database db = context.getDatabase();
 
     if (all) {
-      for (final Index idx : db.getSchema().getIndexes()) {
-        db.getSchema().dropIndex(idx.getName());
+      // ONE statement, ONE drop (issue #10734): asked one index at a time, a refusal of the Nth came after the ones before it were
+      // already gone, and said "Nothing was changed". dropIndexes() asks every index and probes every file before the first drop.
+      // A bucket sub-index goes with its type index, so only the indexes that are not part of another are named
+      final Index[] indexes = db.getSchema().getIndexes();
+      final List<String> toDrop = new ArrayList<>(indexes.length);
+      for (final Index idx : indexes)
+        if (!(idx instanceof IndexInternal internal) || internal.getTypeIndex() == null)
+          toDrop.add(idx.getName());
 
+      // the logical indexes over several types (issue #11014) are read first: their per-type indexes go with the rest, and the names
+      // are forgotten once they have
+      final List<MultiTypeIndexes.Entry> logicalIndexes = MultiTypeIndexes.entries(db.getSchema());
+      db.getSchema().getEmbedded().dropIndexes(toDrop);
+      for (final MultiTypeIndexes.Entry logical : logicalIndexes)
+        MultiTypeIndexes.remove(db.getSchema(), logical.name());
+
+      for (final Index idx : indexes) {
         final ResultInternal result = new ResultInternal(db);
         result.setProperty("operation", "drop index");
+        result.setProperty("indexName", idx.getName());
+        // kept for the clients that read it before indexName was added: it is the index name, not a bucket's
         result.setProperty("bucketName", idx.getName());
         rs.add(result);
       }
 
     } else {
-      if (!db.getSchema().existsIndex(name.getValue()) && !ifExists) {
-        throw new CommandExecutionException("Index not found: " + name.getValue());
-      }
+      final Schema schema = db.getSchema();
+      final String indexName = name.getValue();
+      // The name of a logical index over several types (issue #11014): what its statement built goes with the name. An index name is
+      // unique across the database, so a name that is an index is not a logical one
+      final MultiTypeIndexes.Entry logical = schema.existsIndex(indexName) ? null : MultiTypeIndexes.find(schema, indexName);
+      if (logical != null)
+        MultiTypeIndexes.drop(schema, logical);
+      else {
+        if (!schema.existsIndex(indexName) && !ifExists)
+          throw new CommandExecutionException("Index not found: " + indexName);
 
-      db.getSchema().dropIndex(name.getValue());
+        // dropping a member alone would leave the logical index naming it, and covering fewer types than it says
+        MultiTypeIndexes.requireNotMember(schema, indexName);
+        schema.dropIndex(indexName);
+      }
 
       final ResultInternal result = new ResultInternal();
       result.setProperty("operation", "drop index");

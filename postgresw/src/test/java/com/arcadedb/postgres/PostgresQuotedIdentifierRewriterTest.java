@@ -76,8 +76,19 @@ class PostgresQuotedIdentifierRewriterTest {
   void escapedQuotesInsideStringLiteralsDoNotBreakScanning() {
     assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"a\" FROM V WHERE x = 'it''s \"ok\"' AND \"b\" = 1")).isEqualTo(
         "SELECT `a` FROM V WHERE x = 'it''s \"ok\"' AND `b` = 1");
-    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"a\" FROM V WHERE x = 'it\\'s \"ok\"' AND \"b\" = 1")).isEqualTo(
+    // A backslash escapes the quote only where PostgreSQL reads escapes: an E'...' literal, or any literal with
+    // standard_conforming_strings off (issue #10871)
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"a\" FROM V WHERE x = E'it\\'s \"ok\"' AND \"b\" = 1")).isEqualTo(
+        "SELECT `a` FROM V WHERE x = E'it\\'s \"ok\"' AND `b` = 1");
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"a\" FROM V WHERE x = 'it\\'s \"ok\"' AND \"b\" = 1", false)).isEqualTo(
         "SELECT `a` FROM V WHERE x = 'it\\'s \"ok\"' AND `b` = 1");
+  }
+
+  @Test
+  void aBackslashEndsNoLiteralWithStandardConformingStrings() {
+    // 'C:\' is a complete literal in PostgreSQL: the identifier after it is still an identifier (issue #10871)
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"a\" FROM V WHERE p = 'C:\\' AND \"b\" = 1")).isEqualTo(
+        "SELECT `a` FROM V WHERE p = 'C:\\' AND `b` = 1");
   }
 
   @Test

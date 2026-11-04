@@ -99,7 +99,8 @@ class Issue7868OwnerJoinTest {
 
     final PostgresCatalog.Answer types = resolve(
         "SELECT t.typname, t.typowner, r.oid, r.rolname FROM pg_type t JOIN pg_roles r ON r.oid = t.typowner");
-    assertThat(types.rows).hasSize(PostgresTypeCatalog.types().size());
+    // the built-in types and the row type of the one relation (issue #10873)
+    assertThat(types.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
     assertThat(types.rows).allSatisfy(row -> {
       assertThat(row.get("rolname")).isEqualTo(USER);
       assertThat(row.get("oid")).isEqualTo(row.get("typowner"));
@@ -120,34 +121,33 @@ class Issue7868OwnerJoinTest {
   }
 
   /**
-   * The ranking half. pg_namespace is the one relation this catalog models that can never be the subject of a
-   * query naming anything else - it models exactly one schema - so every family that CAN be a subject now
-   * outranks SCHEMAS, not only TYPES.
+   * The ranking half. A single-row relation joined to pg_namespace reads its one row on every schema, so the answer is never one
+   * nameless role - the #7224 outcome. pg_namespace has two rows since issue #10745 - pg_catalog, which every type names in
+   * typnamespace, and the database's schema - so the join is the owner of each schema, as in PostgreSQL.
    */
   @Test
   void aRoleQueryThatNamesPgNamespaceIsStillAboutRoles() {
     final PostgresCatalog.Answer answer = resolve("SELECT r.rolname FROM pg_roles r JOIN pg_namespace n ON n.nspowner = r.oid");
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0).get("rolname")).as("one nameless role, the #7224 outcome").isEqualTo(USER);
+    assertThat(names(answer.rows, "rolname")).as("the owner of each schema, never a nameless role").containsExactly(USER, USER);
   }
 
   @Test
   void theOtherFormerlyUnrankedFamiliesNoLongerLoseToPgNamespace() {
     assertThat(names(resolve("SELECT d.datname FROM pg_database d, pg_namespace n").rows, "datname"))
-        .containsExactly(database.getName());
+        .containsExactly(database.getName(), database.getName());
 
     assertThat(names(resolve(
         "SELECT p.privilege_type FROM information_schema.usage_privileges p, pg_namespace n").rows, "privilege_type"))
-        .containsExactly("USAGE");
+        .containsExactly("USAGE", "USAGE");
 
     assertThat(names(resolve(
         "SELECT c.character_set_name FROM information_schema.character_sets c, pg_namespace n").rows, "character_set_name"))
-        .containsExactly("UTF8");
+        .containsExactly("UTF8", "UTF8");
 
     assertThat(names(resolve(
         "SELECT c.collation_name FROM information_schema.collations c, pg_namespace n").rows, "collation_name"))
-        .containsExactly("default");
+        .containsExactly("default", "default");
   }
 
   /** The FROM order must not decide it, for these families any more than it does for TYPES. */
@@ -181,9 +181,12 @@ class Issue7868OwnerJoinTest {
           from.append(", ").append(relations[i]).append(' ').append(aliases[i]);
 
       final PostgresCatalog.Answer answer = resolve("SELECT " + projection + " FROM " + from);
-      assertThat(answer.rows).as("one row per singleton, whichever relation is named first").hasSize(1);
-      assertThat(answer.rows.get(0)).as("no column may fall through to Row.complete()'s null fill (first=%s)",
-          relations[first]).doesNotContainValue(null);
+      // one row per schema, the one relation of the six with two rows (issue #10745), each carrying the five singletons
+      assertThat(names(answer.rows, "nspname")).as("one row per schema, whichever relation is named first")
+          .containsExactlyInAnyOrder("pg_catalog", database.getName());
+      for (final Map<String, Object> row : answer.rows)
+        assertThat(row).as("no column may fall through to Row.complete()'s null fill (first=%s)", relations[first])
+            .doesNotContainValue(null);
     }
   }
 
@@ -195,7 +198,7 @@ class Issue7868OwnerJoinTest {
     assertThat(names(resolve("SELECT a.attname, r.rolname FROM pg_attribute a, pg_roles r").rows, "attname"))
         .contains("id");
     assertThat(resolve("SELECT t.typname, r.rolname FROM pg_roles r, pg_type t").rows)
-        .hasSize(PostgresTypeCatalog.types().size());
+        .hasSize(PostgresTypeCatalog.types().size() + 1);
   }
 
   /**
@@ -210,8 +213,14 @@ class Issue7868OwnerJoinTest {
         "SELECT t.typname, n.nspname, s.schema_name, s.catalog_name, p.object_schema, p.object_name, p.object_catalog "
             + "FROM pg_type t, pg_namespace n, information_schema.schemata s, information_schema.usage_privileges p");
 
-    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size());
-    assertThat(answer.rows).allSatisfy(row -> {
+    // the built-in types, in pg_catalog, and the row type of the one relation (issue #10873), which is in the relation's schema
+    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size() + 1);
+    assertThat(answer.rows).filteredOn(row -> "Article".equals(row.get("typname"))).singleElement().satisfies(row -> {
+      assertThat(row.get("nspname")).isEqualTo(database.getName());
+      assertThat(row.get("schema_name")).isEqualTo(database.getName());
+      assertThat(row.get("object_schema")).isEqualTo(database.getName());
+    });
+    assertThat(answer.rows).filteredOn(row -> !"Article".equals(row.get("typname"))).allSatisfy(row -> {
       assertThat(row.get("nspname")).isEqualTo("pg_catalog");
       assertThat(row.get("schema_name")).as("schemata is the information_schema spelling of pg_namespace")
           .isEqualTo("pg_catalog");
@@ -222,24 +231,23 @@ class Issue7868OwnerJoinTest {
       assertThat(row.get("object_catalog")).isEqualTo(database.getName());
     });
 
-    // And a row that is NOT about a type still names the database's own schema everywhere.
+    // And a row that is NOT about a type names its own schema everywhere: pg_catalog's row and the database's (issue #10745)
     final PostgresCatalog.Answer schemas = resolve(
         "SELECT n.nspname, s.schema_name, p.object_schema FROM pg_namespace n, information_schema.schemata s, "
             + "information_schema.usage_privileges p");
+    assertThat(names(schemas.rows, "nspname")).containsExactly("pg_catalog", database.getName());
     assertThat(schemas.rows).allSatisfy(row -> {
-      assertThat(row.get("nspname")).isEqualTo(database.getName());
-      assertThat(row.get("schema_name")).isEqualTo(database.getName());
-      assertThat(row.get("object_schema")).isEqualTo(database.getName());
+      assertThat(row.get("schema_name")).isEqualTo(row.get("nspname"));
+      assertThat(row.get("object_schema")).isEqualTo(row.get("nspname"));
     });
   }
 
-  /** And pg_namespace alone is still a question about schemas, one row. */
+  /** And pg_namespace alone is still a question about schemas: pg_catalog and the database's own (issue #10745). */
   @Test
   void pgNamespaceOnItsOwnIsStillASchemaQuery() {
     final PostgresCatalog.Answer answer = resolve("SELECT nspname FROM pg_catalog.pg_namespace");
 
-    assertThat(answer.rows).hasSize(1);
-    assertThat(answer.rows.get(0).get("nspname")).isEqualTo(database.getName());
+    assertThat(names(answer.rows, "nspname")).containsExactly("pg_catalog", database.getName());
   }
 
   private PostgresCatalog.Answer resolve(final String query) {

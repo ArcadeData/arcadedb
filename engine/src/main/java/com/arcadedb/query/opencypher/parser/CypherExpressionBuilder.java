@@ -22,6 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
@@ -1405,6 +1407,10 @@ class CypherExpressionBuilder {
    * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
    * Does NOT recurse into FunctionInvocationContext to avoid matching map literals inside function arguments.
    * This ensures that func({a: 1}) is recognized as a function call, not as the map literal.
+   * <p>
+   * Does NOT recurse into a map projection either: a map literal inside one ({@code n { c: { e: 1 } }}) is the value of
+   * one of its entries, and the projection is what the expression is (issue #11112). {@link #findMapProjectionRecursive}
+   * stops at a map literal for the same reason, so between the two the OUTERMOST of them is the one found.
    */
   Cypher25Parser.MapContext findMapRecursive(final ParseTree node) {
     if (node == null)
@@ -1415,7 +1421,7 @@ class CypherExpressionBuilder {
 
     // Do NOT recurse into function invocations - they should be recognized separately
     // and their internal arguments (including map literals) parsed later
-    if (node instanceof Cypher25Parser.FunctionInvocationContext)
+    if (node instanceof Cypher25Parser.FunctionInvocationContext || node instanceof Cypher25Parser.MapProjectionContext)
       return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
@@ -1508,6 +1514,10 @@ class CypherExpressionBuilder {
 
   /**
    * Recursively find MapProjectionContext in the parse tree.
+   * <p>
+   * Does NOT recurse into a map literal: a projection inside one ({@code { a: n { .k }, b: 1 }}) is the value of one of
+   * its entries, and answering it for the whole expression dropped the literal's keys and every other entry (issue
+   * #11112). {@link #findMapRecursive} stops at a projection for the same reason.
    */
   Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
       final ParseTree node) {
@@ -1516,6 +1526,9 @@ class CypherExpressionBuilder {
 
     if (node instanceof Cypher25Parser.MapProjectionContext)
       return (Cypher25Parser.MapProjectionContext) node;
+
+    if (node instanceof Cypher25Parser.MapContext)
+      return null;
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.MapProjectionContext found = findMapProjectionRecursive(node.getChild(i));
@@ -1684,9 +1697,9 @@ class CypherExpressionBuilder {
       // (Integer, String, Boolean, List, etc.) don't have properties, so accessing one is a type
       // error - mirroring PropertyAccessExpression (variable-bound access) and Neo4j semantics.
       // Note: a null base short-circuits to null above (property access on null propagates null).
-      throw new CommandExecutionException(
-          "TypeError: Cannot access property '" + propertyName + "' on " +
-          baseValue.getClass().getSimpleName() + " value");
+      throw new TypeMismatchException(
+          "TypeError: Cannot access property '" + propertyName + "' on a " + CypherFunctionHelper.cypherTypeName(baseValue)
+              + " value");
     }
 
     @Override
@@ -2895,6 +2908,17 @@ class CypherExpressionBuilder {
     final List<Expression> args = new ArrayList<>();
     args.add(parseExpression(ctx.vectorValue));
     args.add(parseExpression(ctx.dimension));
+    // the coordinate type, in its canonical spelling, decides the array the vector is built as (#10917)
+    final StringBuilder spelling = new StringBuilder();
+    for (int i = 0; i < ctx.vectorCoordinateType().getChildCount(); i++) {
+      if (ctx.vectorCoordinateType().getChild(i) instanceof Cypher25Parser.TypeNullabilityContext)
+        continue;
+      if (!spelling.isEmpty())
+        spelling.append(' ');
+      spelling.append(ctx.vectorCoordinateType().getChild(i).getText().toUpperCase(Locale.ROOT));
+    }
+    final String coordinateType = CypherTypeName.canonical(spelling.toString());
+    args.add(new LiteralExpression(coordinateType, coordinateType));
     return new FunctionCallExpression("vector.create", args, false);
   }
 

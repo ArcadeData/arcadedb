@@ -40,12 +40,11 @@ permissions:
 jobs:
   ha-integration-tests:
     runs-on: ubuntu-latest
-    # Defense-in-depth safety net for issue #5973, which livelocked this job for 6 hours. Raised from 90
-    # to 120: a normal run finishes in ~80 minutes, but a slow runner has been seen taking 90m15s, and at
-    # 90 that run was killed mid-suite and reported as `cancelled` - which hides the list of tests that
-    # actually failed behind a word that reads like somebody pressed a button. 120 keeps the livelock net
-    # while leaving the failure list intact.
-    timeout-minutes: 120
+    # Defense-in-depth safety net for issue #5973, which livelocked this job for 6 hours. Run 41176861440
+    # summed 115.7 min of class time across 240 of 244 classes and was cancelled at 120, so the cap is
+    # raised to 150 (25 percent above the old cap): it keeps the livelock net and leaves room for the 4
+    # classes that did not run.
+    timeout-minutes: 150
     permissions:
       contents: read
       checks: write
@@ -53,7 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: "temurin"
           java-version: 21
@@ -62,7 +61,7 @@ jobs:
       # In `mvn-test.yml` this lane downloaded `arcadedb-maven-artifacts` from `build-and-package`. There
       # is no such producer here, and `check-workflow-artifact-deps.py` rightly refuses a download whose
       # producer it cannot find in the same workflow, so the modules are installed directly. One build of
-      # the reactor against an 80-minute test run is not a cost worth a second job to avoid.
+      # the reactor against a test run of well over an hour is not a cost worth a second job to avoid.
       - name: Install ArcadeDB modules
         run: ./mvnw clean install -DskipTests --batch-mode --errors --show-version
         env:

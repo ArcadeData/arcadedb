@@ -33,9 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * not a truncated one. The records themselves always replicate, so a short index is silent - a query
  * answered by that node simply returns fewer rows than the same query on the leader.
  * <p>
- * The scenario is shared because the bug has two independent causes that need the same setup and the
- * same assertions, and differ only in how the compaction's schema change reaches the followers: in one
- * Raft entry, or split across many. A subclass supplies that difference and nothing else.
+ * The bug has two independent causes that need the same setup and the same assertions, and differ only in
+ * how the compaction's schema change reaches the followers: in one Raft entry
+ * ({@link HaCompactionReplicationSingleEntryIT}, which extends this class), or split across many
+ * ({@link HaCompactionReplicationIT}, which runs the same scenario on a type of its own on a shared cluster).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

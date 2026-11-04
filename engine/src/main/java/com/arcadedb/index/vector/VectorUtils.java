@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -26,6 +27,7 @@ import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -69,6 +71,14 @@ public final class VectorUtils {
   public static boolean isZeroVector(final float[] vector) {
     for (final float v : vector)
       if (v != 0.0f)
+        return false;
+    return true;
+  }
+
+  /** Whether every component is a finite number: no similarity can rank a NaN or an Infinity (issue #8962). */
+  public static boolean isFinite(final float[] vector) {
+    for (final float v : vector)
+      if (!Float.isFinite(v))
         return false;
     return true;
   }
@@ -150,6 +160,20 @@ public final class VectorUtils {
   }
 
   /**
+   * Variant of {@link #toFloatArray(Object)} for a Cypher vector, whose {@code byte[]} is an INT8 vector of plain integer
+   * coordinates (#10917) and not a quantized one: the coordinates are widened as they are, not dequantized.
+   */
+  public static float[] toFloatArrayOfCoordinates(final Object vectorObj) {
+    if (vectorObj instanceof byte[] b) {
+      final float[] result = new float[b.length];
+      for (int i = 0; i < b.length; i++)
+        result[i] = b[i];
+      return result;
+    }
+    return toFloatArray(vectorObj, false);
+  }
+
+  /**
    * Variant of {@link #toFloatArray(Object)} that maps {@code null} collection elements to
    * {@link Float#NaN} instead of throwing. Used by the validity-check functions
    * {@code vector.hasNaN} and {@code vector.hasInf} (issue #3099): an invalid SQL math op such as
@@ -180,6 +204,12 @@ public final class VectorUtils {
       final float[] result = new float[d.length];
       for (int i = 0; i < d.length; i++)
         result[i] = (float) d[i];
+      return result;
+    }
+    if (vectorObj instanceof short[] sh) {
+      final float[] result = new float[sh.length];
+      for (int i = 0; i < sh.length; i++)
+        result[i] = sh[i];
       return result;
     }
     if (vectorObj instanceof long[] l) {
@@ -358,38 +388,137 @@ public final class VectorUtils {
     if (arrayObj instanceof long[] src) {
       final int[] out = new int[src.length];
       for (int i = 0; i < src.length; i++)
-        out[i] = (int) src[i];
+        out[i] = toIndex(src[i]);
       return out;
     }
     if (arrayObj instanceof Integer[] arr) {
       final int[] out = new int[arr.length];
       for (int i = 0; i < arr.length; i++)
-        out[i] = arr[i];
+        out[i] = toIndex(arr[i]);
       return out;
     }
     if (arrayObj instanceof Object[] objArray) {
       final int[] out = new int[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num)
-          out[i] = num.intValue();
-        else
-          throw new IllegalArgumentException("Array elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
-      }
+      for (int i = 0; i < objArray.length; i++)
+        out[i] = toIndex(objArray[i]);
       return out;
     }
     if (arrayObj instanceof List<?> list) {
       final int[] out = new int[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num)
-          out[i] = num.intValue();
-        else
-          throw new IllegalArgumentException("Array elements must be numbers, found: " + elem.getClass().getSimpleName());
-      }
+      for (int i = 0; i < out.length; i++)
+        out[i] = toIndex(list.get(i));
       return out;
     }
     throw new IllegalArgumentException("Array must be int[], long[], Integer[], Object[] or List<Number>, found: "
-        + arrayObj.getClass().getSimpleName());
+        + (arrayObj == null ? "null" : arrayObj.getClass().getSimpleName()));
+  }
+
+  /**
+   * One element of {@link #toIntArray(Object)}. A cast or {@code intValue()} read {@code 1.5} as index 1 and
+   * {@code 3000000000} as a negative one, so an element that is not a whole number in the int range is refused (issue
+   * #10699). {@code 2.0} is a whole number and is accepted.
+   */
+  private static int toIndex(final Object element) {
+    if (!(element instanceof Number number))
+      throw new IllegalArgumentException(
+          "Array elements must be numbers, found: " + (element == null ? "null" : element.getClass().getSimpleName()));
+    try {
+      return NumberUtils.toIntWhole(number);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException(
+          "Array elements must be whole numbers in the int range, found: " + NumberUtils.describeRejectedNumber(number));
+    }
+  }
+
+  /**
+   * The median of {@code values}: the middle element in {@link Float#compare} order, or the mean of the two middle ones
+   * for an even length. The same number sorting a copy and reading the middle gives, in linear time: BINARY quantization
+   * takes the median of every vector it stores and of every query it answers, and sorting a 1536-dimension query was a
+   * quarter of the cost of a BINARY search (issue #10968).
+   *
+   * @param values not empty; left untouched
+   */
+  public static float median(final float[] values) {
+    // Selected as ints that order like Float.compare orders the floats, so every comparison is one int compare
+    final int[] keys = new int[values.length];
+    for (int i = 0; i < keys.length; i++)
+      keys[i] = sortableKey(values[i]);
+    final int upper = keys.length >>> 1;
+    select(keys, upper);
+    final float upperValue = fromSortableKey(keys[upper]);
+    if ((keys.length & 1) == 1)
+      return upperValue;
+    // Everything before `upper` is at or below it, so the lower middle element is the largest of them
+    int lower = keys[0];
+    for (int i = 1; i < upper; i++)
+      if (keys[i] > lower)
+        lower = keys[i];
+    return (fromSortableKey(lower) + upperValue) / 2.0f;
+  }
+
+  /**
+   * An int whose signed order is {@link Float#compare}'s order of the floats: the bits of a positive float already order
+   * like its value, and flipping every bit but the sign of a negative one reverses the order of its magnitude. NaN is
+   * canonical first, as {@link Float#compare} has it, so it sorts after every number.
+   */
+  private static int sortableKey(final float value) {
+    final int bits = Float.floatToIntBits(value);
+    return bits ^ ((bits >> 31) & 0x7FFFFFFF);
+  }
+
+  private static float fromSortableKey(final int key) {
+    return Float.intBitsToFloat(key ^ ((key >> 31) & 0x7FFFFFFF));
+  }
+
+  /**
+   * Moves the {@code rank}-th smallest element of {@code a} to {@code a[rank]}, with every element before it at or below it
+   * and every element after it at or above it. Quickselect on a median-of-three pivot, which falls back to sorting the
+   * range it is left with once it has partitioned more often than a balanced run would, so a hostile input costs a sort
+   * and never a quadratic walk.
+   */
+  private static void select(final int[] a, final int rank) {
+    int low = 0;
+    int high = a.length - 1;
+    int budget = 2 * (32 - Integer.numberOfLeadingZeros(a.length));
+    while (high > low) {
+      if (--budget < 0) {
+        Arrays.sort(a, low, high + 1);
+        return;
+      }
+      final int middle = (low + high) >>> 1;
+      if (a[middle] < a[low])
+        swap(a, middle, low);
+      if (a[high] < a[low])
+        swap(a, high, low);
+      if (a[high] < a[middle])
+        swap(a, high, middle);
+      final int pivot = a[middle];
+
+      // Hoare partition: a[low..j] <= pivot <= a[j+1..high]
+      int i = low - 1;
+      int j = high + 1;
+      while (true) {
+        do
+          i++;
+        while (a[i] < pivot);
+        do
+          j--;
+        while (a[j] > pivot);
+        if (i >= j)
+          break;
+        swap(a, i, j);
+      }
+      if (rank <= j)
+        high = j;
+      else
+        low = j + 1;
+    }
+  }
+
+  private static void swap(final int[] a, final int i, final int j) {
+    final int t = a[i];
+    a[i] = a[j];
+    a[j] = t;
   }
 
   /**
@@ -641,7 +770,9 @@ public final class VectorUtils {
      * {@code k}.
      *
      * @param fetchK       the candidates to ask each index for
-     * @param staleSkipped incremented once per candidate skipped because its record no longer exists
+     * @param staleSkipped incremented once per candidate skipped because its record no longer exists, or because a filter
+     *                     of the caller rejected it (the {@code SEARCH} clause, issue #10776): either way the answer is
+     *                     short of a candidate the index could replace. Local to the search, no metric reads it
      * @param saturated    set to true when an index answered with all {@code fetchK} candidates, so it may hold more
      */
     R run(int fetchK, int[] staleSkipped, boolean[] saturated);

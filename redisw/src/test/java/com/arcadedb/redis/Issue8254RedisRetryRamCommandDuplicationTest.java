@@ -106,30 +106,34 @@ public class Issue8254RedisRetryRamCommandDuplicationTest extends BaseRedisServe
   }
 
   /**
-   * PR #8309 review: the overlay used to store the raw key, but {@code setGlobalVariable}/{@code
-   * getGlobalVariable} strip a leading {@code $} before touching the real map. {@code SET $seq 1} followed by
-   * {@code GET seq} in the same block missed the buffered write, since {@code "$seq"} and {@code "seq"} were two
-   * different overlay entries. Both spellings must now agree, inside the block and after it publishes.
+   * PR #8309 review: the overlay of a block and the shared map must name a key by the same string, inside the block and after it
+   * publishes. That string is the client's key as it is (issues #10694, #10790): {@code $seq} and {@code seq} are two keys, as in
+   * Redis, where PR #8309 had made them one by stripping the {@code $} the SQL accessors strip.
    */
   @Test
-  void dollarPrefixedKeyIsVisibleToAPlainGetInTheSameBlock() {
+  void aDollarPrefixedKeyIsItsOwnKeyInsideTheBlockAndAfterIt() {
     final Database database = getServerDatabase(0, getDatabaseName());
 
     final String transaction = """
         MULTI
         SET $seq 1
         GET seq
+        GET $seq
         EXEC
         """;
 
     try (final ResultSet rs = database.command("redis", transaction)) {
       final List<?> replies = (List<?>) rs.next().getProperty("value");
-      assertThat(replies).hasSize(2);
-      assertThat(replies.get(1)).as("GET seq must see the SET $seq buffered earlier in the same block").isEqualTo("1");
+      assertThat(replies).hasSize(3);
+      assertThat(replies.get(1)).as("GET seq is another key than the SET $seq buffered earlier in the same block").isNull();
+      assertThat(replies.get(2)).as("GET $seq sees the SET $seq buffered earlier in the same block").isEqualTo("1");
     }
 
-    try (final ResultSet rs = database.command("redis", "GET seq")) {
-      assertThat(rs.next().<Object>getProperty("value")).as("published under the normalized key, not the raw \"$seq\"").isEqualTo("1");
+    try (final ResultSet rs = database.command("redis", "GET $seq")) {
+      assertThat(rs.next().<Object>getProperty("value")).as("published under the client's key").isEqualTo("1");
+    }
+    try (final ResultSet rs = database.command("redis", "EXISTS seq")) {
+      assertThat(((Number) rs.next().getProperty("value")).intValue()).isZero();
     }
   }
 
@@ -168,20 +172,22 @@ public class Issue8254RedisRetryRamCommandDuplicationTest extends BaseRedisServe
   }
 
   /**
-   * PR #8309 review: key validation was deferred to the publish loop, which runs AFTER the block's document
-   * writes already committed. A reserved name must be refused at the point the offending command itself runs,
-   * inside the retried block, so the refusal rolls back the whole EXEC - including the document write - instead
-   * of leaving a committed document with the RAM write silently missing.
+   * PR #8309 review: a RAM command that is refused must be refused at the point it runs, inside the retried block, so the refusal
+   * rolls back the whole EXEC - including the document write - instead of leaving a committed document with the RAM write
+   * silently missing. An INCR of a value that is not a number is such a refusal (a reserved SQL name used to be another, until
+   * issue #10790 made it an ordinary key), and the SET of the same block is not published either.
    */
   @Test
-  void reservedKeyNameRollsBackTheWholeBlockInsteadOfLeavingTheDocumentCommitted() {
+  void aRefusedRamCommandRollsBackTheWholeBlockInsteadOfLeavingTheDocumentCommitted() {
     final Database database = getServerDatabase(0, getDatabaseName());
     database.command("sql", "CREATE DOCUMENT TYPE Widget");
+    database.command("redis", "SET notANumber abc");
 
     final String transaction = """
         MULTI
         HSET Widget {"id":1}
-        SET parent 1
+        SET flag8309 on
+        INCR notANumber
         EXEC
         """;
 
@@ -189,11 +195,14 @@ public class Issue8254RedisRetryRamCommandDuplicationTest extends BaseRedisServe
       try (final ResultSet rs = database.command("redis", transaction)) {
         rs.next();
       }
-    }).as("\"parent\" is a reserved variable name");
+    }).as("an INCR of a value that is not a number is refused").hasMessageContaining("not an integer");
 
     assertThat(countOf(database, "Widget"))
-        .as("the reserved-name refusal must roll back the HSET from the same block, not leave it committed")
+        .as("the refusal must roll back the HSET from the same block, not leave it committed")
         .isZero();
+    try (final ResultSet rs = database.command("redis", "EXISTS flag8309")) {
+      assertThat(((Number) rs.next().getProperty("value")).intValue()).as("nor publish its SET").isZero();
+    }
   }
 
   private long countOf(final Database database, final String typeName) {

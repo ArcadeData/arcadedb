@@ -20,15 +20,19 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.CommittedReadScope;
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexBuildTestHooks;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -48,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -60,7 +65,7 @@ import java.util.logging.Level;
 public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   private static final ThreadLocal<Consumer<SortedIndexBuildMetrics>> SORTED_BUILD_METRICS_TEST_HOOK = new ThreadLocal<>();
 
-  private static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
+  static final int DEFAULT_SORTED_BUILD_MERGE_FAN_IN = 8;
   private static final long MIN_SORTED_BUILD_MEMORY_BUDGET    = 1L << 20;
   private static final long SORTED_BUILD_PROGRESS_INTERVAL    = 1_000_000L;
 
@@ -334,7 +339,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         // Read without the lock, so a concurrent replacer can be dropping the index while it is decided over here (issue
         // #9741). It stays registered - dropping, then invalid - until that drop completes under the schema write lock, so
         // the request is decided there instead, over whatever replaced it or over nothing. Any other refusal is the answer.
-        if (found.isValid() && !found.isDropping())
+        if (!found.isDropped() && !found.isDropping())
           throw e;
         found = null;
       }
@@ -449,12 +454,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final List<Bucket> buckets = type.getBuckets(true);
     final Index[] indexes = new Index[buckets.size()];
     final boolean sortedBuild = buildMode == IndexBuildMode.SORTED || isSortedBuildChosenFor(buckets);
+    // A large UNIQUE index the sorted build cannot take (a replicated database, a transaction with pending writes to its buckets) checks its keys
+    // once, over the finished index, instead of at every commit (issue #10349)
+    final boolean deferredUniqueCheck = !sortedBuild && isUniqueCheckDeferredFor(buckets);
     final SortedIndexBuildRecoveryMarker[] recoveryMarker = new SortedIndexBuildRecoveryMarker[1];
     final SortedIndexBuildMetrics[] sortedBuildMetrics = new SortedIndexBuildMetrics[1];
     final long sortedBuildStarted = sortedBuild ? System.nanoTime() : 0L;
 
     if (sortedBuild)
-      validateSortedBuildPreconditions();
+      validateSortedBuildPreconditions(buckets);
 
     // The replaced index is dropped as the last thing before the build, under the lock below: everything above can still
     // refuse the request (an undeclared property, a BY ITEM on a non-LIST, a sorted build on a replicated database), and
@@ -462,7 +470,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     //
     // NOT ATOMIC, and deliberately so. The drop is its own committed schema change - LocalSchema.dropIndex wraps itself
     // in recordFileChanges, and so does the build below - so the two cannot be rolled back as one. The window is
-    // covered for a FAILING build (restoreReplacedIndex in the catch arms below) but not for a process that dies inside
+    // covered for a FAILING build (restoreReplacedIndex, inside the schema session since issue #10569, or in the catch arms
+    // below when the session could not do it) but not for a process that dies inside
     // it: the type then reopens with no index on those properties and has to be given one again. Making it atomic means
     // holding a schema transaction across a full index build, which is the wrong trade for a DDL statement that already
     // rebuilds every entry. Narrowing it further would mean building the new index alongside the old one, which
@@ -492,12 +501,23 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // Held across the whole build rather than only across the scan: the registration is what the window is measured
     // from, and it happens inside recordFileChanges. Reentrant, so the nested quiescence of any builder reached from
     // here simply rides on this one.
+    //
+    // The async workers are the one writer this can park. A client thread's transaction, or an outer frame of the caller's own
+    // stack, that wrote before the registration and commits after the build is out of its reach, and is not left to it: that
+    // transaction makes up its own entries at its commit (issue #10588, LocalSchema#reconcileIndexesRegisteredSince).
     // Registered from here to the end of the build: the index is visible to the planners bucket by bucket while it is
     // populated, and until it is complete it must not answer a query (issue #9331)
     type.beginIndexConstruction(metadata.propertyNames);
+    // Whether this build still holds the deferral: set under the write lock below, given back under it once the final pass has run
+    final boolean[] deferralHeld = new boolean[1];
+    // Whether the clean-up of a failed build already ran inside the schema session, and with what outcome (issue #10506)
+    final Boolean[] cleanedInSession = new Boolean[1];
+    // The refusal of a replacing build that put the replaced index back inside the schema session (issue #10569)
+    final Throwable[] refusedWithReplacedRestored = new Throwable[1];
     try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
-      schema.recordFileChanges(() -> {
+      schema.recordFileChanges(restoringReplacedIndexOnFailure(type, replaced, cleanedInSession, deferralHeld, sortedBuild,
+          refusedWithReplacedRestored, cleaningUpOnFailure(schema, indexes, cleanedInSession, () -> {
         // ASKED AGAIN UNDER THE LOCK. The lookup at the top runs before it, so concurrent creators of the same index all
         // found nothing there and then built one each, one after the other: the type ended up with one sub-index per
         // creator on every bucket, all fed by every write (issue #9741). Every build runs inside this write lock, so an
@@ -528,9 +548,19 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           replaced[0] = definition;
         }
 
+        if (deferredUniqueCheck) {
+          // UNDER THE WRITE LOCK, AFTER THE DECISION OVER AN EXISTING INDEX AND THE DROP OF A REPLACED ONE: NO OTHER INDEX ON THESE
+          // PROPERTIES IS LIVE, AND NOBODY ELSE CAN COMMIT TO THE ONE BUILT HERE UNTIL verifyUniqueKeys HAS RUN. Set any earlier, a
+          // commit to an index another creator had just published would skip its check while this build waited for the lock
+          type.deferUniqueCheck(metadata.propertyNames);
+          deferralHeld[0] = true;
+        }
+
         if (sortedBuild) {
-          // The sorted build writes its pages outside any transaction, so the caller's - empty, see
-          // validateSortedBuildPreconditions - is set aside for its duration and given back untouched. An HTTP command
+          // The sorted build writes its pages outside any transaction, so the caller's - free of writes to these buckets,
+          // see validateSortedBuildPreconditions - is set aside for its duration and given back untouched. Whatever the
+          // caller wrote ELSEWHERE stays pending in it (issue #10466): the build writes only into the index files it
+          // creates below, which no transaction of the caller can hold a page of, and reads only these buckets. An HTTP command
           // always arrives inside the auto-commit transaction of its handler, which is how CREATE INDEX from Studio runs
           // (issue #10334). Reading outside a transaction misses nothing: no other transaction can commit while the build
           // holds the database write lock taken by recordFileChanges, and the async workers are quiesced above.
@@ -573,17 +603,33 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             }, false, maxAttempts, null, null);
 
-            // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the
-            // pages that transaction has modified first, the committed ones underneath. That is what lets it see
-            // records the caller has written and not yet committed - `INSERT INTO V SET id = 7;
-            // CREATE INDEX ON V (id)` in one transaction used to end with the record present and NO entry for it, in
-            // neither the scan nor the index - and it makes the entries commit, or roll back, with the records they
-            // describe.
+            // The BUILD then indexes the COMMITTED records in a transaction of its own and queues on the caller's
+            // transaction only what the caller itself created, updated or deleted in the bucket (issue #10490, see
+            // IndexBuilder#buildCreatedIndex). A scan that read the caller's transaction saw the records the caller has
+            // written and not yet committed - `INSERT INTO V SET id = 7; CREATE INDEX ON V (id)` in one transaction used
+            // to end with the record present and NO entry for it, in neither the scan nor the index - but it queued the
+            // committed records' entries there too, and a rollback of the caller took them all away. Now the entries of
+            // the pending records commit, or roll back, with the records they describe and the committed ones are not
+            // the caller's to roll back.
             database.transaction(() -> buildCreatedIndex(indexes[finalIdx], true), true, maxAttempts, null, null);
           }
 
+        if (deferredUniqueCheck) {
+          // EVERY BUCKET IS BUILT: A KEY TWO RECORDS SHARE ACROSS BUCKETS IS ONLY VISIBLE FROM HERE. A REFUSAL ENDS THE BUILD LIKE
+          // THE DUPLICATE OF A BATCH ALWAYS DID, THROUGH THE CLEAN-UP BELOW
+          verifyUniqueKeys(type.getIndexByProperties(metadata.propertyNames));
+          // STILL UNDER THE WRITE LOCK: EVERY COMMIT AFTER THE LOCK IS RELEASED CHECKS THE INDEX AGAIN, WHATEVER THE SCHEMA SESSION
+          // DOES NEXT (A REPLICATED ONE SHIPS ITS ENTRY AFTER THE LOCK IS GONE)
+          type.resumeUniqueCheck(metadata.propertyNames);
+          deferralHeld[0] = false;
+        }
+
         return null;
-      }, sortedBuild);
+      })), sortedBuild);
+      // The build was refused and the session ended with the replaced index already back (issue #10569): the failure goes out
+      // through the arms below, which find nothing left to clean up or to restore
+      if (refusedWithReplacedRestored[0] != null)
+        throw refusedWithReplacedRestored[0];
       final long recordFileChangesNanos = System.nanoTime() - recordFileChangesStarted;
 
       long cleanupNanos = 0L;
@@ -609,13 +655,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       } else
         created = null;
     } catch (final NeedRetryException e) {
-      if (cleanupIndexes(schema, indexes, e)
+      if (cleanedUp(cleanedInSession[0], schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
       restoreReplacedIndex(replaced[0], e);
       throw e;
     } catch (final Throwable e) {
-      if (cleanupIndexes(schema, indexes, e)
+      if (cleanedUp(cleanedInSession[0], schema, indexes, e)
           && (recoveryMarker[0] == null || recoveryMarker[0].baselineRestored(database)))
         clearRecoveryMarker(recoveryMarker[0], e);
       restoreReplacedIndex(replaced[0], e);
@@ -626,6 +672,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
           + describeFailure(e), e);
     } finally {
+      // A build that failed holds the deferral still (a finished one gave it back under the lock): the index it was filling is
+      // being cleaned up, and giving the check back only costs the commits that reach it meanwhile a lookup
+      if (deferralHeld[0])
+        type.resumeUniqueCheck(metadata.propertyNames);
       type.endIndexConstruction(metadata.propertyNames);
     }
 
@@ -839,8 +889,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         metadata, build);
   }
 
-  private void validateSortedBuildPreconditions() {
-    final String refusal = sortedBuildRefusal();
+  private void validateSortedBuildPreconditions(final List<Bucket> buckets) {
+    final String refusal = sortedBuildRefusal(buckets);
     if (refusal != null)
       throw new IndexException(refusal);
   }
@@ -851,25 +901,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * {@link #isSortedBuildChosenFor}, which falls back to the record-at-a-time build instead: a guard known to one and not the
    * other would turn a DEFAULT build into a refused one.
    */
-  private String sortedBuildRefusal() {
+  private String sortedBuildRefusal(final List<Bucket> buckets) {
     if (indexType != Schema.INDEX_TYPE.LSM_TREE)
       return "Sorted build currently supports only LSM_TREE indexes";
     if (database.isReplicated() || database.getWrappedDatabaseInstance().isReplicated())
       return "Sorted build is not supported on replicated databases";
-    if (anyCallerTransactionHasChanges())
-      // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction
-      return "Sorted build requires no pending changes in any active transaction";
+    if (anyCallerTransactionHasChangesIn(database, buckets))
+      // The build has to see those changes, and only the record-at-a-time build reads through the caller's transaction. A
+      // write elsewhere does not count (issue #10466): the scan would not find it in these buckets either way
+      return "Sorted build requires no pending changes to the indexed buckets in any active transaction";
     return null;
-  }
-
-  /**
-   * Asks EVERY transaction stacked on this thread, not only the innermost one {@link #callerTransactionHasChangesIn} answers for: the
-   * sorted build sets the whole stack aside ({@link CommittedReadScope}), so an empty nested transaction over an outer one that
-   * wrote a record would hide that record from the scan - and nothing would add it to the index when the outer one commits.
-   */
-  private boolean anyCallerTransactionHasChanges() {
-    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    return context != null && context.hasActiveTransactionWithChanges();
   }
 
   /**
@@ -884,7 +925,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
    * every key, which a bulk build over existing records does not need, and the sorted build skips it, so its threshold is far
    * higher and only where the saving is felt.
    * <p>
-   * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal()}). The record count is the buckets' cached
+   * Never chosen where the sorted build cannot run ({@link #sortedBuildRefusal(List)}). The record count is the buckets' cached
    * counters, polymorphic like the build itself, so asking costs nothing; a counter that is off after an unclean shutdown only
    * picks the other build, which produces the same index.
    */
@@ -904,12 +945,12 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (records < minRecords)
       return false;
 
-    final String refusal = sortedBuildRefusal();
+    final String refusal = sortedBuildRefusal(buckets);
     if (refusal != null) {
       if (unique)
         // Said out loud: on a type this large the record-at-a-time build is the slow one, and this is the only place that knows why
         LogManager.instance().log(this, Level.INFO,
-            "Building unique index on %s%s over %,d records one record at a time, which slows down as the index grows: %s",
+            "Building unique index on %s%s over %,d records one record at a time, checking the keys once over the finished index: %s",
             metadata.typeName, metadata.propertyNames, records, refusal);
       else
         LogManager.instance().log(this, Level.FINE, "Building index on %s%s over %,d records one record at a time: %s",
@@ -920,6 +961,106 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     LogManager.instance().log(this, Level.INFO, "Building %s index on %s%s over %,d records with the sorted build (%s=%,d)",
         unique ? "unique" : "non-unique", metadata.typeName, metadata.propertyNames, records, threshold.getKey(), minRecords);
     return true;
+  }
+
+  /**
+   * Whether the uniqueness check of a record-at-a-time build is left to {@link #verifyUniqueKeys} (issue #10349): a UNIQUE LSM_TREE
+   * index, in the default build mode, over a type holding at least {@link GlobalConfiguration#INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS}
+   * records. Those are the sizes the sorted build takes when it can run (issue #10334), so this is what the builds it cannot take
+   * are left with: a replicated database, whose sorted build would write pages no replica receives, and a transaction with pending
+   * writes to the buckets it indexes, which the sorted build cannot read through (issue #10466).
+   * <p>
+   * The record-at-a-time build checks every key it adds against the index it is filling, and that lookup reads every page written so
+   * far. Nothing compacts the index while it is built - a replicated build cannot even ask, it runs inside the schema session that
+   * ships its pages - so the build time grew with the square of the record count. The build owns the database write lock, so nobody
+   * else commits to the index until it ends, and the keys of the build are the only ones the index holds: one ordered pass over
+   * them at the end is the same check, at the cost of reading the pages once.
+   * <p>
+   * A smaller type keeps the check of every batch: it fails at the first duplicate instead of after the last record, and no lookup
+   * is long enough to matter.
+   */
+  private boolean isUniqueCheckDeferredFor(final List<Bucket> buckets) {
+    if (!unique || buildMode != IndexBuildMode.DEFAULT || indexType != Schema.INDEX_TYPE.LSM_TREE)
+      return false;
+
+    final long minRecords = database.getConfiguration().getValueAsLong(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS);
+    if (minRecords <= 0)
+      return false;
+
+    long records = 0;
+    for (final Bucket bucket : buckets)
+      records += bucket.count();
+    return records >= minRecords;
+  }
+
+  /**
+   * The uniqueness check a build left to the end (issue #10349): one pass over the finished index, in the order of the index itself
+   * and across every bucket, refuses the first key two records share with the refusal a commit gives - the index, the key and the
+   * record already holding it.
+   * <p>
+   * Two keys are the same key when the comparator of the index says so, the one that merges the buckets here and that a lookup uses,
+   * so the key types and the collation decide what a duplicate is exactly as they do for the check of a commit. A key whose values
+   * are all null is skipped, as the check of a commit skips it: any number of records may hold it.
+   * <p>
+   * Read outside the caller's transaction: it holds none of the build's entries, and what the caller wrote queues entries of its own
+   * that are checked when it commits.
+   */
+  private void verifyUniqueKeys(final TypeIndex index) {
+    verifyUniqueKeys(database, index, maxAttempts, false);
+  }
+
+  /**
+   * See {@link #verifyUniqueKeys(TypeIndex)}.
+   *
+   * @param confirmWithLookup the index can be written while it is walked ({@link InPlaceIndexRebuild}): a key two records seem
+   *                          to share is confirmed by looking it up again before it is refused, because a commit that moved the
+   *                          key from one record to the other between two page reads of the walk shows both records once
+   */
+  static void verifyUniqueKeys(final DatabaseInternal database, final TypeIndex index, final int maxAttempts,
+      final boolean confirmWithLookup) {
+    final String indexName = index.getName();
+    try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
+      database.transaction(() -> {
+        try (final IndexCursor cursor = index.iterator(true)) {
+          Object[] previousKeys = null;
+          RID previousRid = null;
+          while (cursor.hasNext()) {
+            final RID rid = cursor.next().getIdentity();
+            // EVERY ENTRY DESERIALIZES ITS OWN KEY ARRAY (PageIterator.getKeys()), AND THE MERGE ONLY PASSES IT ON: HOLDING THE PREVIOUS ONE
+            // ACROSS next() IS SAFE
+            final Object[] keys = cursor.getKeys();
+            if (previousKeys != null && !rid.equals(previousRid) && !LSMTreeIndexAbstract.isKeyNull(keys)
+                && LSMTreeIndexAbstract.compareKeys(cursor.getComparator(), cursor.getBinaryKeyTypes(), previousKeys, keys) == 0
+                && (!confirmWithLookup || isKeyHeldByMoreThanOneRecord(index, keys)))
+              throw new DuplicatedKeyException(indexName, Arrays.toString(keys), previousRid);
+            previousKeys = keys;
+            previousRid = rid;
+          }
+        }
+      }, false, maxAttempts, null, null);
+    }
+  }
+
+  /**
+   * Asked of every bucket index on its own: a lookup through the type index of a UNIQUE index stops at the first record it finds,
+   * which is exactly the answer that cannot tell one holder from two.
+   */
+  private static boolean isKeyHeldByMoreThanOneRecord(final TypeIndex index, final Object[] keys) {
+    RID first = null;
+    for (final IndexInternal onBucket : index.getIndexesOnBuckets())
+      try (final IndexCursor cursor = onBucket.get(keys)) {
+        while (cursor.hasNext()) {
+          final Identifiable next = cursor.next();
+          if (next == null)
+            continue;
+          final RID rid = next.getIdentity();
+          if (first == null)
+            first = rid;
+          else if (!first.equals(rid))
+            return true;
+        }
+      }
+    return false;
   }
 
   private SortedIndexBuildMetrics createWithSortedBuild(final LocalSchema schema, final LocalDocumentType type,
@@ -961,6 +1102,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
           bulkLoader.add(bucketIndex, record);
           final long total = scannedRecords.incrementAndGet();
+          IndexBuildTestHooks.recordIndexed(bucketIndex, record.getIdentity());
           if (total % SORTED_BUILD_PROGRESS_INTERVAL == 0)
             LogManager.instance().log(this, Level.INFO, "Building sorted index '%s': scanned %,d records (%,.0f records/sec)...",
                 logicalIndexName, total, total / Math.max(0.001, (System.nanoTime() - sourceScanStarted) / 1e9));
@@ -1016,6 +1158,78 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (!((IndexInternal) index).setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
           IndexInternal.INDEX_STATUS.AVAILABLE))
         throw new IndexException("Cannot publish sorted index bucket '" + index.getName() + "'");
+  }
+
+  /**
+   * The build callback of the schema session, taking the indexes of a failed build away BEFORE the failure leaves the session
+   * (issue #10506). A replicated session decides whether it left a change on this node only by what is still there when its
+   * callback ends: a batch committed before the refusal is buffered with pages in the new index files, and when those files are
+   * still on disk at that moment the leader quarantines its database and resyncs it, for a CREATE INDEX that only had to cost the
+   * caller an error. Dropped in here, each drop cancels the create the session recorded and the buffered pages name files that
+   * are gone, so the session finds nothing left behind. The index a replacing build dropped is put back by the frame around
+   * this one, {@link #restoringReplacedIndexOnFailure}, once the clean-up here has run.
+   *
+   * @param cleanedInSession set to the outcome of the clean-up when the build failed, left null when it did not
+   */
+  private Callable<Object> cleaningUpOnFailure(final LocalSchema schema, final Index[] indexes, final Boolean[] cleanedInSession,
+      final Callable<Object> build) {
+    return () -> {
+      try {
+        return build.call();
+      } catch (final Throwable failure) {
+        cleanedInSession[0] = cleanupIndexes(schema, indexes, failure);
+        throw failure;
+      }
+    };
+  }
+
+  /**
+   * The schema session of a REPLACING build that is refused, ending with the replaced index built again inside it (issue
+   * #10569). The replacement dropped that index inside the session, a change every other node does not have: ended by the
+   * failure, a replicated session finds the drop unpublished and quarantines its database, for a CREATE INDEX that only had to
+   * cost the caller an error. Restored in here, after {@code build} has cleaned up what it created, the session returns
+   * normally and publishes the net state - the replaced files removed, the restored ones added - and the refusal is handed
+   * over through {@code refusal} to be raised once the session is over.
+   * <p>
+   * Left to the restore after the session, as before, when the clean-up of the failed build did not complete (its files are
+   * still there, and publishing them is not the answer), for an {@link Error}, and for the sorted build, which never runs on
+   * a replicated database and writes outside any transaction.
+   */
+  private Callable<Object> restoringReplacedIndexOnFailure(final LocalDocumentType type, final ReplacedIndexDefinition[] replaced,
+      final Boolean[] cleanedInSession, final boolean[] deferralHeld, final boolean sortedBuild, final Throwable[] refusal,
+      final Callable<Object> build) {
+    return () -> {
+      try {
+        return build.call();
+      } catch (final Throwable failure) {
+        // An Error (out of memory, a stack overflow) is no refusal to answer with another full build inside the session: it
+        // ends the session as before, and the restore after it is the fallback
+        if (failure instanceof Error || replaced[0] == null || sortedBuild || !Boolean.TRUE.equals(cleanedInSession[0]))
+          throw failure;
+
+        // Given back before the restore, which builds an index on the same properties and must see every commit checked
+        if (deferralHeld[0]) {
+          type.resumeUniqueCheck(metadata.propertyNames);
+          deferralHeld[0] = false;
+        }
+        // Never throws: a restore that fails is logged and attached to the refusal as suppressed, the refusal stays what the
+        // caller sees, and the session publishes the state this node is left with (the replaced index gone, as without HA)
+        restoreReplacedIndex(replaced[0], failure);
+        replaced[0] = null;
+        refusal[0] = failure;
+        return null;
+      }
+    };
+  }
+
+  /**
+   * Whether the indexes of a failed build are gone: answered by the clean-up the schema session already ran when that one
+   * succeeded (issue #10506), otherwise by running it now - for a failure that never reached the session's callback, or a
+   * clean-up that failed inside it, this is the last chance to drop them.
+   */
+  private boolean cleanedUp(final Boolean cleanedInSession, final LocalSchema schema, final Index[] indexes,
+      final Throwable originalError) {
+    return Boolean.TRUE.equals(cleanedInSession) || cleanupIndexes(schema, indexes, originalError);
   }
 
   private boolean cleanupIndexes(final LocalSchema schema, final Index[] indexes, final Throwable originalError) {

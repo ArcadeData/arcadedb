@@ -19,6 +19,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CommittedReadScope;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
@@ -489,7 +491,9 @@ public abstract class IndexBuilder<T extends Index> {
    * Only the innermost transaction is asked, the one a shared build would join. An OUTER transaction's writes are out
    * of reach of either answer: a nested transaction does not see its outer transaction's uncommitted pages, so neither
    * a build that joins the innermost transaction nor one in a transaction of its own would index them. That was the
-   * case before issue #10450 too, and narrowing the test to the scanned buckets does not change it. A record's content
+   * case before issue #10450 too, and narrowing the test to the scanned buckets does not change it. Those writes are not lost:
+   * the outer transaction makes up the entries of the new index at its own commit (issue #10588,
+   * {@link LocalSchema#reconcileIndexesRegisteredSince}), as a transaction of another session does. A record's content
    * can also live in the paired external-property bucket of its own bucket, so that one counts as written to as well.
    * <p>
    * Timing is the whole trap: inside the component-creation transaction there is ALWAYS one open, it is EMPTY, and the
@@ -503,7 +507,42 @@ public abstract class IndexBuilder<T extends Index> {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx == null || !tx.hasChanges())
       return false;
+    return tx.hasChangesInFiles(scannedFileIds(database, buckets));
+  }
 
+  /**
+   * The same question as {@link #callerTransactionHasChangesIn}, asked of EVERY active transaction stacked on this thread rather
+   * than only the innermost one, for the sorted build (issue #10466). That build sets the whole stack aside
+   * ({@link CommittedReadScope}), so a write any frame made to the scanned buckets would be missed by the
+   * scan and never added to the index when that frame commits - an empty nested transaction over an outer one that wrote a record
+   * is the shape that matters. A write a frame made ELSEWHERE is invisible to the scan anyway, and the build writes only into
+   * index files it creates itself, which no frame of the caller can hold a page of.
+   *
+   * @param buckets the buckets the build is about to scan
+   */
+  static boolean anyCallerTransactionHasChangesIn(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      return false;
+
+    IntHashSet fileIds = null;
+    for (int i = context.transactions.size() - 1; i > -1; --i) {
+      final TransactionContext tx = context.transactions.get(i);
+      if (!tx.isActive() || !tx.hasChanges())
+        continue;
+      if (fileIds == null)
+        fileIds = scannedFileIds(database, buckets);
+      if (tx.hasChangesInFiles(fileIds))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * The files a scan of {@code buckets} reads: each bucket and the paired external-property bucket a record's content can
+   * live in.
+   */
+  private static IntHashSet scannedFileIds(final DatabaseInternal database, final Collection<? extends Bucket> buckets) {
     final LocalSchema schema = database.getSchema().getEmbedded();
     final IntHashSet fileIds = new IntHashSet(buckets.size() * 2);
     for (final Bucket bucket : buckets) {
@@ -519,7 +558,7 @@ public abstract class IndexBuilder<T extends Index> {
           fileIds.add(externalBucketId);
       }
     }
-    return tx.hasChangesInFiles(fileIds);
+    return fileIds;
   }
 
   /**
@@ -533,17 +572,48 @@ public abstract class IndexBuilder<T extends Index> {
    * inside {@code recordFileChanges}.
    */
   protected void buildCreatedIndex(final Index index, final boolean sharesCallerTransaction) {
-    buildCreatedIndex(index, batchSize, sharesCallerTransaction, callback);
+    buildCreatedIndex(database, index, batchSize, sharesCallerTransaction, callback);
   }
 
-  /** @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above. */
-  static void buildCreatedIndex(final Index index, final int batchSize, final boolean sharesCallerTransaction,
-      final Index.BuildIndexCallback callback) {
+  /**
+   * @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above.
+   * <p>
+   * A build that shares the caller's transaction is NOT one scan inside it (issue #10490). That scan reads the caller's
+   * pending pages first and the committed ones underneath, so it queued an entry for every record, the committed ones
+   * included, on a transaction the caller may then roll back, and the index - whose component is committed on its own -
+   * was left with the schema entry and no entries. It is two steps instead:
+   * <ol>
+   *   <li>the COMMITTED state is indexed with the caller's transaction set aside, in a transaction of its own that commits
+   *   in chunks like any build that shares nothing, so those entries survive whatever the caller does;</li>
+   *   <li>what the caller itself created, updated or deleted in the bucket is queued on the caller's transaction by
+   *   {@link IndexBuildCallerChanges}, so it commits, or rolls back, with the records it describes.</li>
+   * </ol>
+   * No writer can slip in between the two: every caller runs inside the schema's write lock ({@code recordFileChanges}), which
+   * no other transaction commits under, and the index is registered on its type before the first step, so what the caller writes
+   * afterwards is indexed live. A transaction of another session, or an outer frame of the caller's own stack, that wrote before
+   * the registration is not covered by either step, and does not need to be: it began before the registration, so it queues the
+   * entries it owes the index when it commits (issue #10588, {@link LocalSchema#reconcileIndexesRegisteredSince}). The second step
+   * reads the committed version of the caller's writes a chunk at a time. A failure in the second step leaves the committed entries of a component the callers then drop (the cleanup arms of
+   * {@code TypeIndexBuilder#create} and {@code BucketIndexBuilder}, the guard around the super-type propagation), the same
+   * as a failure anywhere in a build.
+   */
+  static void buildCreatedIndex(final DatabaseInternal database, final Index index, final int batchSize,
+      final boolean sharesCallerTransaction, final Index.BuildIndexCallback callback) {
     final IndexInternal internal = (IndexInternal) index;
     if (!internal.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
         IndexInternal.INDEX_STATUS.AVAILABLE))
       throw new IndexException("Cannot build the index '" + index.getName() + "' because it is not available");
-    internal.build(batchSize, sharesCallerTransaction, callback);
+
+    if (!sharesCallerTransaction) {
+      internal.build(batchSize, false, callback);
+      return;
+    }
+
+    final long[] committedRecords = new long[1];
+    try (final CommittedReadScope committedOnly = CommittedReadScope.open(database)) {
+      database.transaction(() -> committedRecords[0] = internal.build(batchSize, false, callback), false, 1, null, null);
+    }
+    IndexBuildCallerChanges.apply(database, internal, callback, committedRecords[0]);
   }
 
   /**

@@ -269,7 +269,7 @@ class Issue7395RestoreTargetExistsIT extends BaseGraphServerTest {
    */
   private String registeredWithoutADirectory(final String databaseName) {
     getServer(0).createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
-    getServer(0).getDatabase(databaseName).getEmbedded().drop();
+    getServer(0).getDatabaseForOperator(databaseName).getEmbedded().drop();
     registeredToUnregister.add(databaseName);
 
     assertThat(getServer(0).existsDatabase(databaseName)).isTrue();

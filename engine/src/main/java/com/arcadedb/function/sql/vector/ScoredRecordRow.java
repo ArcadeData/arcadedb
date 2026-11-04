@@ -18,7 +18,11 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.vector.LSMVectorIndex;
 
 import java.util.AbstractMap;
 import java.util.Collection;
@@ -31,9 +35,9 @@ import java.util.Set;
  * the record, its {@code @rid} and {@code @type}, every property of the record, and the row's score under
  * {@code scoreKey}.
  * <p>
- * It answers exactly what the {@code LinkedHashMap} these functions used to build answers - same keys, same values, same
- * order, the score and {@code @rid}/{@code @type} overriding a record property of the same name - but reads the record's
- * properties on demand instead of copying all of them up front (issue #10129). A consumer that only wants the record,
+ * It answers what the {@code LinkedHashMap} these functions used to build answers - same values, same order, the score
+ * and {@code @rid}/{@code @type} overriding a record property of the same name, the {@code record} key aside (see below) -
+ * but reads the record's properties on demand instead of copying all of them up front (issue #10129). A consumer that only wants the record,
  * the RID or the score, such as {@code vector.rerank} over {@code vector.fuse}, therefore no longer pays for copying
  * every property (an embedding and a passage of text, typically) of every candidate. {@code expand()} wraps the row as
  * the content of a {@code ResultInternal} without copying it, so the outer query reads the properties it projects
@@ -42,21 +46,46 @@ import java.util.Set;
  * Enumerating the row ({@link #entrySet()}, {@link #size()}, {@code SELECT *}, JSON serialization) or writing to it
  * builds the eager copy once and answers from it afterwards, so a write lands on the row and never on the record.
  * Until then the property values are those of the record at the time they are read, not at the time the row was made.
+ * <p>
+ * The {@code record} key is answered by {@link #get} and {@link #containsKey} but never enumerated (issue #10898): the
+ * flattened properties, {@code @rid} and {@code @type} already are the record, so {@code SELECT expand(...)} and the JSON of a
+ * row carried every property twice - the embedding and the passage, the largest ones, included. A projection, a
+ * {@code record.name} path, a re-ranker and any caller that asks for the key still get the record. A record property named
+ * {@code record}, or a value written under the key, is a real entry and is enumerated.
+ * <p>
+ * The record itself can be one whose content is not read yet (issue #10973, see {@code SQLFunctionVectorNeighbors}): its
+ * {@code @rid} and {@code @type} are answered without reading it, and the first property asked of the row reads it. A record
+ * found gone by that read (removed from its bucket behind the index's back) answers no property, rather than failing the
+ * query that asked, and is reported by {@link StaleVectorEntryReporter} (issue #11202).
  */
 final class ScoredRecordRow extends AbstractMap<String, Object> {
-  private static final String RECORD = "record";
+  static final         String RECORD = "record";
   private static final String RID    = "@rid";
   private static final String TYPE   = "@type";
 
   private final Document                      record;
   private final String                        scoreKey;
   private final Object                        score;
+  private final LSMVectorIndex                deferredBy;
   private       LinkedHashMap<String, Object> materialized;
+  // set once the `record` key was removed from the row: it no longer answers the record
+  private       boolean                       recordKeyRemoved;
+  // set once a read found the record gone (issue #11202)
+  private       boolean                       recordGone;
 
   ScoredRecordRow(final Document record, final String scoreKey, final float score) {
+    this(record, scoreKey, score, null);
+  }
+
+  /**
+   * @param deferredBy the vector index that made this row without reading its record (issue #10973), asked whether it still holds
+   *                   the vector when the record turns out to be gone; null for a row whose record was read when it was made
+   */
+  ScoredRecordRow(final Document record, final String scoreKey, final float score, final LSMVectorIndex deferredBy) {
     this.record = record;
     this.scoreKey = scoreKey;
     this.score = score;
+    this.deferredBy = deferredBy;
   }
 
   /**
@@ -68,8 +97,10 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
 
   @Override
   public Object get(final Object key) {
-    if (materialized != null)
-      return materialized.get(key);
+    if (materialized != null) {
+      final Object value = materialized.get(key);
+      return value != null || materialized.containsKey(key) || !isRecordKey(key) ? value : record;
+    }
     if (!(key instanceof String name))
       return null;
     if (name.equals(scoreKey))
@@ -79,18 +110,18 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
     if (name.equals(TYPE))
       return record.getTypeName();
     if (name.equals(RECORD))
-      // the eager copy put "record" first and let a property of the same name overwrite it
-      return record.has(RECORD) ? record.get(RECORD) : record;
-    return record.get(name);
+      // a property of the same name wins over the record, as it did in the eager copy
+      return has(RECORD) ? property(RECORD) : record;
+    return property(name);
   }
 
   @Override
   public boolean containsKey(final Object key) {
     if (materialized != null)
-      return materialized.containsKey(key);
+      return materialized.containsKey(key) || isRecordKey(key);
     if (!(key instanceof String name))
       return false;
-    return name.equals(scoreKey) || name.equals(RID) || name.equals(TYPE) || name.equals(RECORD) || record.has(name);
+    return name.equals(scoreKey) || name.equals(RID) || name.equals(TYPE) || name.equals(RECORD) || has(name);
   }
 
   @Override
@@ -126,7 +157,13 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
 
   @Override
   public Object remove(final Object key) {
-    return materialize().remove(key);
+    final LinkedHashMap<String, Object> copy = materialize();
+    if (!RECORD.equals(key))
+      return copy.remove(key);
+    // whether the key held a real entry or only answered the record, it answers nothing once removed
+    final boolean answeredTheRecord = isRecordKey(key) && !copy.containsKey(RECORD);
+    recordKeyRemoved = true;
+    return answeredTheRecord ? record : copy.remove(key);
   }
 
   @Override
@@ -137,15 +174,73 @@ final class ScoredRecordRow extends AbstractMap<String, Object> {
   @Override
   public void clear() {
     materialize().clear();
+    recordKeyRemoved = true;
+  }
+
+  /**
+   * True for the {@code record} key while it still answers the record without being an entry of the eager copy.
+   */
+  private boolean isRecordKey(final Object key) {
+    return !recordKeyRemoved && RECORD.equals(key);
+  }
+
+  /** A property of the record, or null when the record is gone (see the class javadoc). */
+  private Object property(final String name) {
+    if (recordGone)
+      return null;
+    try {
+      return record.get(name);
+    } catch (final RecordNotFoundException e) {
+      recordFoundGone();
+      return null;
+    }
+  }
+
+  private boolean has(final String name) {
+    if (recordGone)
+      return false;
+    try {
+      return record.has(name);
+    } catch (final RecordNotFoundException e) {
+      recordFoundGone();
+      return false;
+    }
+  }
+
+  /**
+   * Never looked up again: each lookup of a record that is gone is a page read for nothing. Reported once per row, and only when the
+   * index that deferred the read still holds the vector: a delete committed since the search took it out of the index as well, which
+   * is no damage to report.
+   */
+  private void recordFoundGone() {
+    // Deleted by the open transaction, not gone: the committed index still holds the vector until the commit, and a rollback
+    // brings the record back, so the row neither reports nor stops reading it
+    if (deletedInOpenTransaction())
+      return;
+    recordGone = true;
+    if (deferredBy != null && deferredBy.hasLiveVector(record.getIdentity()))
+      StaleVectorEntryReporter.reportMissingRecord(record);
+  }
+
+  private boolean deletedInOpenTransaction() {
+    if (!(record.getDatabase() instanceof DatabaseInternal database))
+      return false;
+    final TransactionContext transaction = database.getTransactionIfExists();
+    return transaction != null && transaction.isActive() && transaction.isDeletedInTransaction(record.getIdentity());
   }
 
   private LinkedHashMap<String, Object> materialize() {
     if (materialized == null) {
-      final Set<String> names = record.getPropertyNames();
-      final LinkedHashMap<String, Object> copy = new LinkedHashMap<>(names.size() + 6);
-      copy.put(RECORD, record);
+      Set<String> names = Set.of();
+      if (!recordGone)
+        try {
+          names = record.getPropertyNames();
+        } catch (final RecordNotFoundException e) {
+          recordFoundGone();
+        }
+      final LinkedHashMap<String, Object> copy = new LinkedHashMap<>(names.size() + 5);
       for (final String prop : names)
-        copy.put(prop, record.get(prop));
+        copy.put(prop, property(prop));
       copy.put(RID, record.getIdentity());
       copy.put(TYPE, record.getTypeName());
       copy.put(scoreKey, score);

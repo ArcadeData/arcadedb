@@ -35,6 +35,8 @@ import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -51,7 +53,7 @@ import java.util.stream.Stream;
  * implementation in {@link GraphAlgorithms#labelPropagation} for maximum performance.
  * </p>
  * <p>
- * Config map parameters (all optional):
+ * Config map parameters (all optional, any other key is refused):
  * <ul>
  *   <li>maxIterations (int, default 10): maximum number of propagation iterations</li>
  *   <li>direction (string, default "BOTH"): edge direction to follow (IN, OUT, BOTH)</li>
@@ -59,6 +61,13 @@ import java.util.stream.Stream;
  *   smallest value wins (LDBC Graphalytics CDLP breaks ties by the smallest vertex id). Without it the smallest
  *   internal node index wins, which follows load order. Values must be mutually comparable (numbers with numbers, or
  *   the same class); a vertex without the property loses every tie</li>
+ *   <li>seedProperty (string, optional): vertex property holding a pre-assigned integer label. Every vertex carrying the
+ *   same value starts in the same community, and a vertex without the property starts with a label of its own. The
+ *   communityId of a community that grew from a seed is the seed value itself; any other community is numbered past the
+ *   largest seed, so the two never collide (the convention of Neo4j GDS {@code seedProperty})</li>
+ *   <li>fixedSeeds (boolean, default false): keeps every seeded vertex on its seed label for the whole run while it still
+ *   spreads that label to its neighbours, which is semi-supervised classification: the reviewed vertices hold their class
+ *   and the graph classifies the rest. Requires seedProperty</li>
  * </ul>
  * </p>
  * <p>
@@ -67,6 +76,10 @@ import java.util.stream.Stream;
  * CALL algo.labelpropagation({maxIterations: 10})
  * YIELD node, communityId
  * RETURN communityId, count(*) AS size ORDER BY size DESC
+ *
+ * CALL algo.labelpropagation({seedProperty: 'label', fixedSeeds: true})
+ * YIELD node, communityId
+ * RETURN node.name, communityId
  * </pre>
  * </p>
  *
@@ -74,6 +87,10 @@ import java.util.stream.Stream;
  */
 public class AlgoLabelPropagation extends AbstractAlgoProcedure {
   public static final String NAME = "algo.labelpropagation";
+
+  /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
+  private static final Set<String> CONFIG_KEYS = Set.of("maxIterations", "direction", "tieBreakProperty", "seedProperty",
+      "fixedSeeds");
 
   @Override
   public String getName() {
@@ -92,7 +109,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
   @Override
   public String getDescription() {
-    return "Detects communities using the Label Propagation Algorithm";
+    return "Detects communities using the Label Propagation Algorithm, optionally from pre-assigned seed labels";
   }
 
   @Override
@@ -104,16 +121,23 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Map<String, Object> config = extractMap(argOrDefault(args, 0, null), "config");
+    final Map<String, Object> config = extractConfig(argOrDefault(args, 0, null), "config", CONFIG_KEYS);
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
         extractInt(n, "maxIterations", 1) : 10;
 
     final Object tieBreakConfig = config != null ? config.get("tieBreakProperty") : null;
     final String tieBreakProperty = tieBreakConfig != null ? extractString(tieBreakConfig, "tieBreakProperty") : null;
+    final Object seedConfig = config != null ? config.get("seedProperty") : null;
+    final String seedProperty = seedConfig != null ? extractString(seedConfig, "seedProperty") : null;
+    final Object fixedSeedsConfig = config != null ? config.get("fixedSeeds") : null;
+    if (fixedSeedsConfig != null && !(fixedSeedsConfig instanceof Boolean))
+      throw new IllegalArgumentException(getName() + "(): fixedSeeds must be a boolean, got " + fixedSeedsConfig);
+    final boolean fixedSeeds = Boolean.TRUE.equals(fixedSeedsConfig);
+    if (fixedSeeds && seedProperty == null)
+      throw new IllegalArgumentException(getName() + "(): fixedSeeds needs seedProperty, the vertex property holding the seed labels");
     // Every option is read before the dispatch below and handed to both paths: one read after it reached only the OLTP
     // path, and a view covering the types silently answered BOTH for OUT and IN (issue #9767)
-    final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
-    final Vertex.DIRECTION direction = parseDirection(directionStr);
+    final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.BOTH);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -125,55 +149,143 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
     // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
     if (provider instanceof GraphAnalyticalView.Pinned gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, maxIterations, direction, tieBreakProperty, guard);
+      final int n = gav.getNodeCount();
+      if (n == 0)
+        return Stream.empty();
+      final Labelling labelling = initialLabelling(n,
+          property -> i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(property), tieBreakProperty,
+          seedProperty, fixedSeeds);
+      // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
+      // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
+      final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, labelling.initial, labelling.fixed, direction,
+          guard::check);
+      return results(n, gav::getRID, labels, labelling);
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, maxIterations, direction, tieBreakProperty, guard);
-  }
-
-  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView.Pinned gav,
-      final int maxIterations, final Vertex.DIRECTION direction, final String tieBreakProperty, final WorkGuard guard) {
-    final int n = gav.getNodeCount();
-    if (n == 0)
-      return Stream.empty();
-
-    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n,
-        i -> context.getDatabase().lookupByRID(gav.getRID(i), true).asVertex().get(tieBreakProperty), tieBreakProperty) : null;
-
-    // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
-    // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
-    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, rank, direction, guard::check);
-
-    return IntStream.range(0, n).mapToObj(i -> {
-      final ResultInternal result = new ResultInternal();
-      result.setProperty("node", gav.getRID(i));
-      result.setProperty("communityId", labels[i]);
-      return (Result) result;
-    });
-  }
-
-  private Stream<Result> executeWithOLTP(final Database db, final int maxIterations,
-      final Vertex.DIRECTION direction, final String tieBreakProperty, final WorkGuard guard) {
     final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
     if (vertices.isEmpty())
       return Stream.empty();
-
     final int n = vertices.size();
-    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n,
-        i -> vertices.get(i).get(tieBreakProperty), tieBreakProperty) : null;
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-
+    final Labelling labelling = initialLabelling(n, property -> i -> vertices.get(i).get(property), tieBreakProperty, seedProperty,
+        fixedSeeds);
     // Build adjacency once to avoid repeated OLTP traversal
-    final int[][] adj = buildAdjacencyList(vertices, ridToIdx, direction, null);
+    final int[][] adj = buildAdjacencyList(vertices, buildRidIndex(vertices), direction, null);
+    final int[] labels = propagate(adj, labelling, maxIterations, guard);
+    return results(n, i -> vertices.get(i).getIdentity(), labels, labelling);
+  }
 
-    // Initialize: each node gets its own index as label. With a tie-break property labels live in rank space, so the
-    // "smallest label wins" rule below follows the property order; they are translated back to indexes at the end.
-    int[] label = new int[n];
+  /**
+   * The starting labels of a run, in the label space the propagation works in: dense ints where the smallest label wins a
+   * tie, so the order of the label ids IS the tie-break order. {@code valueOfLabel} turns a final label back into the
+   * communityId a caller reads.
+   *
+   * @param initial      starting label of every dense node
+   * @param fixed        the nodes that keep their label for the whole run, or null for none
+   * @param valueOfLabel the communityId of every label id
+   * @param seeded       whether the run was seeded, which makes communityId the seed value (a long) rather than the dense
+   *                     index of the node whose label was adopted (an int, the shape of an unseeded run)
+   */
+  private record Labelling(int[] initial, boolean[] fixed, long[] valueOfLabel, boolean seeded) {
+  }
+
+  /**
+   * Builds the starting labels. Without a seed property each node starts with its own label, ordered by the tie-break
+   * property when one is given, by node index otherwise: exactly the labelling this procedure always started from.
+   * <p>
+   * With one (issue #11145), a node carrying the property starts on that value and a node without it on
+   * {@code largestSeed + 1 + nodeIndex}, which can never be a seed: the label values are what communityId reports, the
+   * convention of Neo4j GDS. Equal values share one label id, so every seed of a class pulls the same way. The label ids are
+   * ordered by value, so a tie goes to the smallest value; with a tie-break property they are ordered instead by the
+   * smallest tie-break rank among the nodes that start on them, which for an unseeded node is its own rank, as before.
+   */
+  private Labelling initialLabelling(final int n, final Function<String, IntFunction<Object>> reader, final String tieBreakProperty,
+      final String seedProperty, final boolean fixedSeeds) {
+    final int[] rank = tieBreakProperty != null ? computeTieBreakRank(n, reader.apply(tieBreakProperty), tieBreakProperty) : null;
+
+    if (seedProperty == null) {
+      final int[] initial = new int[n];
+      final long[] valueOfLabel = new long[n];
+      for (int i = 0; i < n; i++) {
+        final int label = rank != null ? rank[i] : i;
+        initial[i] = label;
+        valueOfLabel[label] = i;
+      }
+      return new Labelling(initial, null, valueOfLabel, false);
+    }
+
+    // The value every node starts on: its seed, or a label of its own past the largest seed
+    final IntFunction<Object> seedOf = reader.apply(seedProperty);
+    final long[] value = new long[n];
+    final boolean[] hasSeed = new boolean[n];
+    long largestSeed = -1L;
+    for (int i = 0; i < n; i++) {
+      final Object seed = seedOf.apply(i);
+      if (seed == null)
+        continue;
+      if (!(seed instanceof Number num) || !isIntegral(num))
+        throw new IllegalArgumentException(getName() + "(): seedProperty '" + seedProperty + "' must hold an integer, node " + i
+            + " has " + (seed instanceof Number ? seed : seed.getClass().getSimpleName() + " '" + seed + "'"));
+      value[i] = num.longValue();
+      hasSeed[i] = true;
+      if (value[i] > largestSeed)
+        largestSeed = value[i];
+    }
+    if (largestSeed > Long.MAX_VALUE - n)
+      throw new IllegalArgumentException(getName() + "(): seedProperty '" + seedProperty + "' holds " + largestSeed
+          + ", which leaves no room to number the " + n + " nodes past the largest seed");
     for (int i = 0; i < n; i++)
-      label[i] = rank != null ? rank[i] : i;
+      if (!hasSeed[i])
+        value[i] = largestSeed + 1 + i;
 
-    // Synchronous label propagation: compute all new labels, then apply
+    // One label id per distinct value, in value order: a sort of primitives, no boxing per node
+    final long[] sorted = value.clone();
+    Arrays.sort(sorted);
+    int distinct = 0;
+    for (int i = 0; i < n; i++)
+      if (i == 0 || sorted[i] != sorted[i - 1])
+        sorted[distinct++] = sorted[i];
+    final int[] initial = new int[n];
+    for (int i = 0; i < n; i++)
+      initial[i] = Arrays.binarySearch(sorted, 0, distinct, value[i]);
+    long[] valueOfLabel = Arrays.copyOf(sorted, distinct);
+
+    if (rank != null) {
+      // Reorder the label ids by the smallest tie-break rank among the nodes starting on each. Those minima are distinct,
+      // since every rank belongs to one node, so they index a dense array: O(n), no comparator.
+      final int[] smallestRank = new int[distinct];
+      Arrays.fill(smallestRank, Integer.MAX_VALUE);
+      for (int i = 0; i < n; i++)
+        if (rank[i] < smallestRank[initial[i]])
+          smallestRank[initial[i]] = rank[i];
+      final int[] labelAtRank = new int[n];
+      Arrays.fill(labelAtRank, -1);
+      for (int label = 0; label < distinct; label++)
+        labelAtRank[smallestRank[label]] = label;
+      final int[] reordered = new int[distinct];
+      final long[] reorderedValue = new long[distinct];
+      int next = 0;
+      for (int r = 0; r < n; r++) {
+        final int label = labelAtRank[r];
+        if (label >= 0) {
+          reordered[label] = next;
+          reorderedValue[next++] = valueOfLabel[label];
+        }
+      }
+      for (int i = 0; i < n; i++)
+        initial[i] = reordered[initial[i]];
+      valueOfLabel = reorderedValue;
+    }
+
+    return new Labelling(initial, fixedSeeds ? hasSeed : null, valueOfLabel, true);
+  }
+
+  /** Synchronous label propagation over a record-built adjacency: compute every new label, then apply them all. */
+  private static int[] propagate(final int[][] adj, final Labelling labelling, final int maxIterations, final WorkGuard guard) {
+    final int n = adj.length;
+    final boolean[] fixed = labelling.fixed;
+    int[] label = labelling.initial.clone();
+
     for (int iter = 0; iter < maxIterations; iter++) {
       // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the labelling settles,
       // so the outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
@@ -185,7 +297,8 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
         // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
         guard.checkPeriodically(i);
         final int[] neighbors = adj[i];
-        if (neighbors.length == 0) {
+        // A seed keeps its label for the whole run, and so does a node with nobody to listen to
+        if (neighbors.length == 0 || (fixed != null && fixed[i])) {
           newLabel[i] = label[i];
           continue;
         }
@@ -203,7 +316,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
             best[0] = lbl;
           }
         });
-        int bestLabel = best[0];
+        final int bestLabel = best[0];
 
         newLabel[i] = bestLabel;
         if (bestLabel != label[i])
@@ -214,20 +327,28 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
       if (!changed)
         break;
     }
+    return label;
+  }
 
-    // Return raw label values (no sequential remapping)
-    if (rank != null) {
-      final int[] nodeOfRank = GraphAlgorithms.invertRank(rank);
-      for (int i = 0; i < n; i++)
-        label[i] = nodeOfRank[label[i]];
-    }
-    final int[] finalLabel = label;
+  private static Stream<Result> results(final int n, final IntFunction<RID> ridOf, final int[] labels, final Labelling labelling) {
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i).getIdentity());
-      result.setProperty("communityId", finalLabel[i]);
+      result.setProperty("node", ridOf.apply(i));
+      final long communityId = labelling.valueOfLabel[labels[i]];
+      // An unseeded run keeps reporting the dense node index as an int, the shape it always had
+      result.setProperty("communityId", labelling.seeded ? (Object) communityId : (Object) (int) communityId);
       return (Result) result;
     });
+  }
+
+  private static boolean isIntegral(final Number n) {
+    if (isFixedIntegral(n))
+      return true;
+    if (n instanceof BigDecimal d)
+      return d.stripTrailingZeros().scale() <= 0 && d.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) <= 0
+          && d.compareTo(BigDecimal.valueOf(Long.MIN_VALUE)) >= 0;
+    final double d = n.doubleValue();
+    return Double.isFinite(d) && d == Math.rint(d) && Math.abs(d) < 0x1p63;
   }
 
   /**

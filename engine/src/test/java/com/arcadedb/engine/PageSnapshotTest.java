@@ -240,7 +240,12 @@ class PageSnapshotTest extends TestHelper {
         final Database restored = restoredFactory.open();
         try {
           assertThat(restored.command("sql", "check database").nextIfAvailable().<Long>getProperty("totalErrors")).isZero();
-          assertThat(restored.countType(TYPE, false)).isBetween(committedBeforeBarrier, committedAfterBarrier);
+          // A commit in flight at the barrier can be in the snapshot before it is in committedAfterBarrier:
+          // TransactionContext.commit2ndPhase() publishes the pages before it bumps the bucket's cached record count,
+          // outside the lock the barrier takes, so countType() read right after openSnapshot() may lag the snapshot by
+          // at most one commit per writer thread (each writer has one transaction in flight). The CHECK DATABASE
+          // assertion above stays the torn-snapshot detector
+          assertThat(restored.countType(TYPE, false)).isBetween(committedBeforeBarrier, committedAfterBarrier + writers.size());
         } finally {
           restored.drop();
         }

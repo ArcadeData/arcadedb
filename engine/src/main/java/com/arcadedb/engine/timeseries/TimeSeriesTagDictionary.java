@@ -427,8 +427,11 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     if (id >= 0 && id < values.length && values[id] != null)
       return values[id];
 
-    // An id inside what is already loaded is not a staleness miss, and reloading cannot conjure it.
-    if (id < 0 || id <= entryCount)
+    // Not "an id at or below entryCount is loaded already" (issue #10868): an id this instance's map has no value for is a miss
+    // wherever it falls, and only the header can say whether the pages hold it. A count kept beside the map is a claim about
+    // the map, and one interning over pages that grew from outside used to make it cover ids the map never received, which turned
+    // the self-heal off for good.
+    if (id < 0)
       return null;
 
     try {
@@ -516,16 +519,21 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     internLock.lock();
     try {
       // Re-check under the lock: another shard may have interned these while we were queued.
-      final List<String> toAdd = new ArrayList<>();
-      final Set<String> pending = new HashSet<>();
-      for (final String value : values) {
-        if (value == null || value.isEmpty() || idByValue.containsKey(value))
-          continue;
-        if (pending.add(value))
-          toAdd.add(value);
-      }
+      List<String> toAdd = notYetInterned(values);
       if (toAdd.isEmpty())
         return;
+
+      // Pages that grew from outside this instance (issue #10868) - an HA follower receives them through the Raft WAL, and interns
+      // once it is promoted - hold values this instance's map does not: a value only they hold would be interned a SECOND time,
+      // under a new id, against the cardinality cap. The header says whether there are any, at the cost of one cached page read,
+      // paid only by a batch that carries a value this instance has never seen.
+      final StoredHeader header = readStoredHeader();
+      if (header != null && header.entryCount() > entryCount) {
+        load(header);
+        toAdd = notYetInterned(values);
+        if (toAdd.isEmpty())
+          return;
+      }
 
       if (entryCount + toAdd.size() > maxSize)
         throw new IllegalStateException(
@@ -563,11 +571,29 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       }
 
       // Publish to RAM only now: before the commit, disk is the single source of truth, so a failed
-      // commit leaves nothing to undo.
-      publish(appended[0], appended[1], toAdd);
+      // commit leaves nothing to undo. The new ids follow what this instance holds, unless entries landed from outside between the
+      // check above and the append (issue #10868): publishing then would leave the ids in between unmapped, so the mapping is
+      // rebuilt from the pages instead, which holds them and these alike.
+      if (appended[0] - 1 == entryCount)
+        publish(appended[0], appended[1], toAdd);
+      else
+        load();
     } finally {
       internLock.unlock();
     }
+  }
+
+  /** The values of {@code values} this instance holds no id for, each once, in the order they come. */
+  private List<String> notYetInterned(final Collection<String> values) {
+    final List<String> toAdd = new ArrayList<>();
+    final Set<String> pending = new HashSet<>();
+    for (final String value : values) {
+      if (value == null || value.isEmpty() || idByValue.containsKey(value))
+        continue;
+      if (pending.add(value))
+        toAdd.add(value);
+    }
+    return toAdd;
   }
 
   /**

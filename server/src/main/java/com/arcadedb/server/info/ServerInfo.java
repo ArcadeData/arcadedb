@@ -52,7 +52,8 @@ public class ServerInfo {
       result.put("instanceId", instanceId);
     result.put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
 
-    final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());
+    // Open or not (issue #11068): the next request opens one closed for idleness or not opened at startup
+    final Set<String> installedDatabases = new TreeSet<>(server.getAvailableDatabaseNames());
     installedDatabases.removeIf(databaseName -> !databaseVisible.test(databaseName));
     result.put("databases", new JSONArray(installedDatabases));
 

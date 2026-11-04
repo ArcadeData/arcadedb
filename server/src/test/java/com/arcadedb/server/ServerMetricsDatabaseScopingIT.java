@@ -97,7 +97,7 @@ class ServerMetricsDatabaseScopingIT extends BaseGraphServerTest {
       return;
     // ServerDatabase refuses drop() because the handle is shared: go through the embedded instance,
     // then unregister the now-deleted database from the server registry.
-    server.getDatabase(OTHER_TENANT_DATABASE).getEmbedded().drop();
+    server.getDatabaseForOperator(OTHER_TENANT_DATABASE).getEmbedded().drop();
     server.removeDatabase(OTHER_TENANT_DATABASE);
   }
 

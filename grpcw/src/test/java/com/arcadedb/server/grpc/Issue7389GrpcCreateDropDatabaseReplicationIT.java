@@ -116,7 +116,7 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
     awaitDatabaseOnEveryServer(GRPC_CREATED_DB, leaderIndex, "created over gRPC");
 
     // The 'graph' variant still initialises the default types on the node that served the call.
-    final Database leaderDb = getServer(leaderIndex).getDatabase(GRPC_CREATED_DB);
+    final Database leaderDb = getServer(leaderIndex).getDatabaseForOperator(GRPC_CREATED_DB);
     assertThat(leaderDb.getSchema().existsType("V")).as("the 'graph' type must still create V").isTrue();
     assertThat(leaderDb.getSchema().existsType("E")).as("the 'graph' type must still create E").isTrue();
   }

@@ -19,12 +19,11 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.HeapUsage;
 
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
-import java.lang.management.MemoryType;
-import java.lang.management.MemoryUsage;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -96,23 +95,7 @@ final class VectorHeapBudget {
    * caller that gets {@code -1} must fall back to the whole heap rather than assume zero pressure.
    */
   static long liveHeapBytes() {
-    long live = -1L;
-    for (final MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
-      if (pool == null || pool.getType() != MemoryType.HEAP)
-        continue;
-      final MemoryUsage collectionUsage;
-      try {
-        collectionUsage = pool.getCollectionUsage();
-      } catch (final RuntimeException e) {
-        // An implementation that refuses the query is indistinguishable from one that does not publish it.
-        continue;
-      }
-      if (collectionUsage == null)
-        continue;
-      if (live < 0)
-        live = 0L;
-      live += Math.max(0L, collectionUsage.getUsed());
-    }
+    final long live = HeapUsage.liveHeapBytes();
     if (live < 0 && COLLECTION_USAGE_UNAVAILABLE_REPORTED.compareAndSet(false, true))
       LogManager.instance().log(VectorHeapBudget.class, Level.FINE,
           "No heap pool on this JVM publishes a collection usage, so vector index heap budgets fall back to the "

@@ -113,9 +113,9 @@ public class FilterPropertiesStep extends AbstractExecutionStep implements Paral
           }
         }
 
-        if (!prevResults.hasNext()) {
+        // A full buffer leaves the input unasked: asking it would read its next batch ahead of any demand (issue #11082)
+        if (buffer.size() < n)
           finished = true;
-        }
       }
 
       @Override
