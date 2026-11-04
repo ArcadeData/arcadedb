@@ -338,6 +338,10 @@ public enum GlobalConfiguration {
       "Wipe out record content on delete. If enabled, assures deleted records cannot be analyzed by parsing the raw files and backups will be more compressed, but it also makes deletes a little bit slower",
       Boolean.class, true),
 
+  BUCKET_SELF_DESCRIBING_CHUNK_LINKS("arcadedb.bucketSelfDescribingChunkLinks", SCOPE.DATABASE,
+      "Store the next-chunk link of a multi-page record in the self-describing form -(position + 1) instead of the absolute position, which lets a continuation chunk live at position 0 of a bucket (issues #10948/#10949). Every release from 26.11.1 reads both forms, but a release older than that cannot read a record whose chain holds a new-form link: enable it only once no node, replica or backup restore target runs an older release, and note that already written links keep their form until their chunk is rewritten. Disabled by default",
+      Boolean.class, false),
+
   ASYNC_WORKER_THREADS("arcadedb.asyncWorkerThreads", SCOPE.DATABASE,
       "Number of asynchronous worker threads. 0 (default) = available cores minus 1", Integer.class,
       Runtime.getRuntime().availableProcessors() > 1 ? Runtime.getRuntime().availableProcessors() - 1 : 1),
