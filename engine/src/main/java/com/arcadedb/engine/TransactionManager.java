@@ -1072,7 +1072,7 @@ public class TransactionManager {
             // incomplete, so the open completes and a node with another copy (an HA node) quarantines and resyncs the database.
             // Any other failure (an I/O error, an injected one) says nothing about the pages and still escapes, WAL kept for a retry
             LogManager.instance().log(this, Level.SEVERE,
-                "Recovery aborted for database '%s': replaying the WAL (txId=%d) failed on what the pages hold. WAL files have been preserved for manual inspection. No further transactions will be replayed.",
+                "Recovery aborted for database '%s': replaying the WAL (txId=%d) failed on what the pages hold. WAL files have been preserved with the '.corrupt' extension for manual inspection. No further transactions will be replayed: a standalone node can only recover them by hand or from a backup, an HA node re-installs the database from its leader.",
                 e, database, lowerTxId);
             walGapDetected = true;
             break;
