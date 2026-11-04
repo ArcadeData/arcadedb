@@ -29,6 +29,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
+import com.arcadedb.index.sparsevector.SparsePostingLog;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexCompacted;
 import com.arcadedb.index.vector.LSMVectorIndexMutable;
@@ -1606,6 +1607,7 @@ public class TransactionManager {
     // fold, every page of the entry would already be at or beyond its target version, so nothing could advance.
     boolean versionAdvanced = false;
     boolean involveDictionary = false;
+    List<SparsePostingLog> appliedPostingLogs = null;
 
     final int dictionaryId =
         database.getSchema().getDictionary() != null ? database.getSchema().getDictionary().file.getFileId() : -1;
@@ -1803,7 +1805,13 @@ public class TransactionManager {
 
           // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
           // to keep in-memory metadata synchronized with replicated pages.
-          if (component instanceof TimeSeriesBucket timeSeriesBucket) {
+          if (component instanceof SparsePostingLog postingLog) {
+            // Decoded once the whole entry is applied, so a commit's postings reach the memtables together (issue #11257)
+            if (appliedPostingLogs == null)
+              appliedPostingLogs = new ArrayList<>(2);
+            if (!appliedPostingLogs.contains(postingLog))
+              appliedPostingLogs.add(postingLog);
+          } else if (component instanceof TimeSeriesBucket timeSeriesBucket) {
             // A replay can rewrite a page at its SAME version (the torn-write repair above), so a tag summary cached
             // for that version may describe bytes the page no longer holds (issue #8574). A strictly newer version
             // needs nothing: the summary is keyed on the version it was built from.
@@ -1870,6 +1878,10 @@ public class TransactionManager {
       if (corpusDeltas != null && !corpusDeltas.isEmpty())
         FullTextCorpusDeltas.applyReplicated(database.getSchema(), corpusDeltas);
     }
+
+    if (appliedPostingLogs != null)
+      for (final SparsePostingLog postingLog : appliedPostingLogs)
+        postingLog.onPagesApplied();
 
     if (involveDictionary) {
       try {

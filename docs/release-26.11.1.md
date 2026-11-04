@@ -254,7 +254,10 @@ reports the database as resyncing (`503` on `/api/v1/ready`, the `local-resync-i
   index empty, nor loses every transaction committed after the build: the build makes its pages durable before reporting the
   index ready, and WAL recovery applies a full page image over a version gap.
 - **#11239** Committed `LSM_SPARSE_VECTOR` postings survive a crash: each sparse index logs them with the commit in two
-  `.sparselog` files and replays them at open (roughly 5-10% on a sparse-heavy write load). Not yet on HA (#11257).
+  `.sparselog` files and replays them at open (roughly 5-10% on a sparse-heavy write load).
+- **#11257** HA: every node of a cluster answers a sparse vector search with the postings the leader has not sealed into a
+  segment yet, without waiting for a flush, and they survive the leader going away: each node feeds its memtable from the
+  posting logs it applies.
 - **#11240** A file id freed by a drop is no longer handed out again after a restart, and a schema save that fails is retried at
   the next transaction end or close instead of being forgotten.
 

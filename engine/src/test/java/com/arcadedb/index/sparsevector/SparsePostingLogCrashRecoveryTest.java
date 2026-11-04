@@ -113,14 +113,14 @@ class SparsePostingLogCrashRecoveryTest {
 
   /**
    * A kill in the middle of a flush, after a commit landed in the log the flush moved to: both logs hold postings at the reopen,
-   * the next flush has nowhere to move the commits to and seals both, and a second kill after it still loses nothing.
+   * the next flush seals the closed one, then the other, and a second kill after it still loses nothing.
    */
   @Test
   void aCrashInTheMiddleOfAFlushLeavesBothLogsReplayable() throws Exception {
     final Path path = crash("crash-mid-flush");
 
     // Reopened in a child, since a clean close here would seal and reset both logs: the flush after the reopen finds both logs
-    // holding postings, seals them together and resets both; then a write and a kill
+    // holding postings, seals them one after the other and resets both; then a write and a kill
     final CrashingChildJvm.Result crashed = CrashingChildJvm.run(getClass(), 120, "flush-both-then-crash", path.toString());
     assertThat(crashed.exitCode()).as(crashed.output()).isEqualTo(CrashingChildJvm.CRASH_EXIT_CODE);
 
@@ -335,10 +335,10 @@ class SparsePostingLogCrashRecoveryTest {
       ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> flush(database));
       database.newDocument("Other").set("id", 1).save();
       database.commit();
-      // Both logs held postings, so there was no empty one to move the commits to: the older one is reset, the commits keep
-      // appending to the newer one, which the next flush resets
-      if (Integer.bitCount(engine(database).activePostingLogsForTest()) != 1)
-        throw new IllegalStateException("The flush was expected to reset the older posting log only");
+      // Both logs held postings: the flush seals the closed one first and resets it, then closes the other, seals it and resets
+      // it too (issue #11257), so the commits start over on an empty log
+      if (engine(database).activePostingLogsForTest() != 0)
+        throw new IllegalStateException("The flush was expected to seal and reset both posting logs");
       insert(database, 200, 300);
     }
     case "conflict" -> {

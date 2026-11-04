@@ -1084,7 +1084,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (tx != null && tx.getStatus() == TransactionContext.STATUS.BEGUN) {
       // Before the commit, holding none of its locks: the posting logs exist and are replayed, and the backpressure a write
       // owes is paid here rather than at the publication, which runs under the commit's locks (issue #11239)
-      engine.beforeTransactionalWrite(tx);
+      engine.beforeTransactionalWrite();
       tx.addIndexOperation(this,
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
