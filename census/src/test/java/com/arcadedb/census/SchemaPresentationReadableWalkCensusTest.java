@@ -128,7 +128,6 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("graph/GraphDatabaseChecker#collectEdgesToReconnect", MAINTENANCE),
       Map.entry("graph/GraphDatabaseChecker#reclaimOrphanedEdgeSegments", MAINTENANCE),
       Map.entry("query/opencypher/procedures/db/DbMigrateLegacyTemporals#execute", "a maintenance write, through the per-bucket gate"),
-      Map.entry("server/ha/raft/ClusterAlerts#findSingleBucketTypes", "server-internal, answers no caller"),
       // GRAPH ENGINE
       Map.entry("graph/GraphEngine#forEachLightEdgeFarCopy", GRAPH_INTERNAL),
       Map.entry("graph/GraphEngine#getAllVertices", READ_THROUGH_GATE),

@@ -66,6 +66,12 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
   private static final String TENANT_USER     = "tenant79wq";
   private static final String TENANT_PASSWORD = "tenantpassword79wq";
 
+  /** Single-bucket types of the tenant's own database, one of which its group denies it. */
+  private static final String READABLE_SINGLE_BUCKET_TYPE = "ZzReadableSingleBucket";
+  private static final String HIDDEN_SINGLE_BUCKET_TYPE   = "ZzHiddenSingleBucket";
+  private static final String SCOPED_GROUP                = "zzpertypescoped";
+  private static final String SCOPED_USER                 = "zzpertypeuser";
+
   @Override
   protected int getServerCount() {
     return 2;
@@ -116,6 +122,53 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
       assertThat(root.body).as("nor may its schema leak through the alert payload")
           .doesNotContain(RESERVED_TYPE);
     });
+  }
+
+  /**
+   * Scoping the alerts to the databases the caller may open is not enough: inside its own database a tenant can be
+   * denied a type by its group, and the {@code single-bucket-types} alert must not name that type to it, the rule every
+   * route describing the schema follows. The alert walks the database through the server's own handle, which no request
+   * is bound to, so the caller's permissions have to be carried to it. Root keeps naming every type.
+   */
+  @Test
+  void clusterEndpointNamesOnlyTheTypesTheCallerMayRead() throws Exception {
+    final int node = findLeaderIndex();
+    assertThat(node).as("a leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final ArcadeDBServer server = getServer(node);
+    final ServerDatabase db = server.getDatabaseForOperator(getDatabaseName());
+    db.getSchema().createDocumentType(READABLE_SINGLE_BUCKET_TYPE, 1);
+    db.getSchema().createDocumentType(HIDDEN_SINGLE_BUCKET_TYPE, 1);
+    try {
+      server.getSecurity().saveGroup(getDatabaseName(), SCOPED_GROUP, new JSONObject()
+          .put("access", new JSONArray())
+          .put("types", new JSONObject()
+              .put("*", new JSONObject().put("access", new JSONArray().put("readRecord")))
+              .put(HIDDEN_SINGLE_BUCKET_TYPE, new JSONObject().put("access", new JSONArray()))));
+      server.getSecurity().createUser(new JSONObject()
+          .put("name", SCOPED_USER)
+          .put("password", server.getSecurity().encodePassword(TENANT_PASSWORD))
+          .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray(new String[] { SCOPED_GROUP }))));
+
+      final Response scoped = call(node, "GET", "/api/v1/cluster", null, SCOPED_USER, TENANT_PASSWORD);
+      assertThat(scoped.status).isEqualTo(200);
+      assertThat(singleBucketAlertTypes(scoped.json(), getDatabaseName()))
+          .as("precondition: the alert names the single-bucket type the caller may read")
+          .contains(READABLE_SINGLE_BUCKET_TYPE);
+      assertThat(scoped.body).as("the alert must not name a type the caller's group denies it")
+          .doesNotContain(HIDDEN_SINGLE_BUCKET_TYPE);
+
+      final Response root = call(node, "GET", "/api/v1/cluster", null, "root", DEFAULT_PASSWORD_FOR_TESTS);
+      assertThat(root.status).isEqualTo(200);
+      assertThat(singleBucketAlertTypes(root.json(), getDatabaseName())).as("root keeps the unfiltered operator view")
+          .contains(READABLE_SINGLE_BUCKET_TYPE, HIDDEN_SINGLE_BUCKET_TYPE);
+    } finally {
+      if (server.getSecurity().getUser(SCOPED_USER) != null)
+        server.getSecurity().dropUserLocally(SCOPED_USER);
+      server.getSecurity().deleteGroup(getDatabaseName(), SCOPED_GROUP);
+      db.getSchema().dropType(HIDDEN_SINGLE_BUCKET_TYPE);
+      db.getSchema().dropType(READABLE_SINGLE_BUCKET_TYPE);
+    }
   }
 
   /**
@@ -282,6 +335,19 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
       final JSONObject alert = alerts.getJSONObject(i);
       if ("single-bucket-types".equals(alert.getString("id", "")))
         return new ArrayList<>(alert.getJSONObject("details").getJSONObject("databases").keySet());
+    }
+    return List.of();
+  }
+
+  /** The type names the {@code single-bucket-types} alert reports for {@code databaseName}, or an empty list. */
+  private static List<Object> singleBucketAlertTypes(final JSONObject response, final String databaseName) {
+    final JSONArray alerts = response.getJSONArray("alerts");
+    for (int i = 0; i < alerts.length(); i++) {
+      final JSONObject alert = alerts.getJSONObject(i);
+      if ("single-bucket-types".equals(alert.getString("id", ""))) {
+        final JSONObject databases = alert.getJSONObject("details").getJSONObject("databases");
+        return databases.has(databaseName) ? databases.getJSONArray(databaseName).toList() : List.of();
+      }
     }
     return List.of();
   }
