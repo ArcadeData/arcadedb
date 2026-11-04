@@ -755,23 +755,22 @@ public class HashIndex implements IndexInternal {
     });
     final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
     schema.setMigratedFileId(previous.getFileId(), newBucket.getFileId(), false);
-    boolean saved = true;
     try {
       schema.saveConfigurationOrThrow();
     } catch (final IOException e) {
-      // The schema stays dirty and names the new file at the next save; until then the file on disk names the previous one
-      saved = false;
-      LogManager.instance().log(this, Level.WARNING,
-          "Keeping the previous file '%s' of hash index '%s': the schema that replaces it could not be saved now", e,
-          previous.getName(), name);
+      // The schema on disk still names the previous file: the index goes back to it before any commit can write the new one (the
+      // caller still holds the commit locks), so what a restart reopens is what the index holds. The caller drops the new file
+      lock.executeInWriteLock(() -> {
+        bucket = previous;
+        return null;
+      });
+      schema.removeMigratedFileId(previous.getFileId(), newBucket.getFileId());
+      throw new IndexException("Cannot rebuild hash index '" + name + "' in place: the schema naming its new file could not be saved",
+          e);
     }
 
     if (swapHook != null)
       swapHook.accept(SwapPhase.AFTER_SWAP);
-
-    if (!saved)
-      // a restart before the next save reopens the index on it; once a save names the new file, the next open drops it
-      return;
 
     try {
       previous.drop();

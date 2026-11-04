@@ -264,11 +264,12 @@ class RebuildHashIndexInPlaceTest extends TestHelper {
 
   /**
    * The swap of a bucket index is committed by the schema save. When that save does not happen (here postponed by a transaction
-   * open on the thread, as a failed write would leave it), the schema on disk still names the previous file: it must stay, so a
-   * restart before the next save can open the index on it.
+   * open on the thread, as a failed write would leave it), the schema on disk still names the previous file: the index goes back
+   * to it and the rebuild fails, so a write committed afterwards lands in the file a restart reopens, and the previous file is
+   * never dropped.
    */
   @Test
-  void thePreviousFileIsKeptWhenTheSwapIsNotSaved() {
+  void aSwapThatIsNotSavedGoesBackToThePreviousFile() {
     createSchema(true, RECORDS);
     final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(INDEX);
     final List<Path> previousFiles = new ArrayList<>();
@@ -277,23 +278,25 @@ class RebuildHashIndexInPlaceTest extends TestHelper {
 
     final AtomicInteger swaps = new AtomicInteger();
     HashIndex.setSwapTestHook(phase -> {
-      if (swaps.get() == 0 && phase == HashIndex.SwapPhase.BEFORE_SWAP)
+      if (phase == HashIndex.SwapPhase.BEFORE_SWAP && swaps.getAndIncrement() == 0)
         database.begin();
-      else if (swaps.getAndIncrement() == 0 && phase == HashIndex.SwapPhase.AFTER_SWAP)
-        database.rollback();
     });
     try {
-      database.command("sql", "REBUILD INDEX `" + INDEX + "`");
+      assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `" + INDEX + "`")).hasMessageContaining(
+          "could not be saved");
     } finally {
       HashIndex.setSwapTestHook(null);
+      if (database.isTransactionActive())
+        database.rollback();
     }
 
-    assertThat(previousFiles.stream().filter(Files::exists).count()).as("previous files kept").isEqualTo(1);
+    assertThat(previousFiles.stream().filter(Files::exists).count()).as("previous files kept").isEqualTo(previousFiles.size());
     assertIndexMatchesTheRecords();
 
-    // the close saves the schema naming the new file: the previous one is then an orphan the open drops
+    // a write after the failed rebuild reaches the file the schema names, and survives the reopen
+    database.transaction(() -> database.newDocument(TYPE).set("uid", "after-the-rebuild").save());
     reopenDatabase();
-    assertThat(previousFiles.stream().filter(Files::exists).count()).as("previous files left after the reopen").isZero();
+    assertThat(count(database.lookupByKey(TYPE, "uid", "after-the-rebuild"))).isEqualTo(1);
     assertIndexMatchesTheRecords();
   }
 

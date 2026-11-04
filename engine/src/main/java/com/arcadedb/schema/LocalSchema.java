@@ -5997,6 +5997,11 @@ public class LocalSchema implements Schema {
       saveConfiguration();
   }
 
+  /** Withdraws a migration {@link #setMigratedFileId} recorded, for a swap undone before the schema naming it was saved. */
+  public void removeMigratedFileId(final int oldFileId, final int newFileId) {
+    migratedFileIds.remove(oldFileId, newFileId);
+  }
+
   public Integer getMigratedFileId(final int oldFileId) {
     return migratedFileIds.get(oldFileId);
   }
