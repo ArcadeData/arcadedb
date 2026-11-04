@@ -1486,7 +1486,25 @@ public class ServerControlPlane {
    * is a set of permissions, and the users holding it are named in the user documents, not here.
    */
   public JSONObject listGroups() {
-    return server.getSecurity().groupsToJSON();
+    // A copy: groupsToJSON() shares the repository's live document, which the defaults below must not touch
+    final JSONObject document = new JSONObject(server.getSecurity().groupsToJSON().toString());
+
+    // A group written by hand (or seeded by an older release) may omit resultSetLimit/readTimeout, which the server reads as
+    // -1. The listing is a contract (GroupDefinition requires all four members), so report the effective value, as saveGroup does
+    final JSONObject databases = document.getJSONObject("databases");
+    for (final String database : databases.keySet()) {
+      final JSONObject groups = databases.getJSONObject(database).getJSONObject("groups");
+      for (final String name : groups.keySet()) {
+        final JSONObject group = groups.getJSONObject(name);
+        group.put("resultSetLimit", group.getLong("resultSetLimit", -1L));
+        group.put("readTimeout", group.getLong("readTimeout", -1L));
+        if (!group.has("access"))
+          group.put("access", new JSONArray());
+        if (!group.has("types"))
+          group.put("types", new JSONObject());
+      }
+    }
+    return document;
   }
 
   /**

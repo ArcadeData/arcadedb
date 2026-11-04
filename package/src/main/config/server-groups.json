@@ -15,6 +15,7 @@
         "crud": {
           "access": [],
           "resultSetLimit": -1,
+          "readTimeout": -1,
           "types": {
             "*": { "access": ["createRecord", "readRecord", "updateRecord", "deleteRecord"] }
           }
