@@ -2588,7 +2588,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // healthy node.
     final boolean passPending = stateMachine != null && stateMachine.isBootstrapPassPending(getName());
     final boolean bootstrapInstall = stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName());
-    if (!anyInstall && !passPending && !bootstrapInstall)
+    // Issue #11281: a copy a crash left torn is quarantined and waits for its resync; until it lands it must not answer.
+    final DivergenceCause quarantine = stateMachine != null ? stateMachine.quarantineCause(getName()) : null;
+    final boolean tornCopy = quarantine != null && quarantine.isLocalCopyUntrustworthy();
+    if (!anyInstall && !passPending && !bootstrapInstall && !tornCopy)
       return;
     if (ProtocolContext.INTERNAL.equals(ProtocolContext.get()))
       return;
@@ -2596,6 +2599,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new NeedRetryException("Database '" + getName() + "' is being replaced on this server from the leader's "
           + "snapshot: the copy on disk is one the cluster has decided to discard, so it cannot serve this request. "
           + "Retry shortly, or send the request to another server of the cluster");
+    // Issue #11281: the copy on disk is torn and the resync that replaces it is pending or running.
+    if (tornCopy)
+      throw new NeedRetryException("Database '" + getName() + "' is quarantined on this server because its local copy may be "
+          + "incomplete (" + quarantine.getDescription() + ") and is waiting to be re-installed from the leader. Retry "
+          + "shortly, or send the request to another server of the cluster");
     // Issue #8368: the start of the same window, before the baseline reaches this node.
     if (passPending)
       throw new NeedRetryException("Database '" + getName() + "' cannot serve this request yet: the cluster's "

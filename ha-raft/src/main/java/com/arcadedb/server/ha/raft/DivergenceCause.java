@@ -76,7 +76,7 @@ public enum DivergenceCause {
    * replaces it.
    */
   LOCAL_RECOVERY_INCOMPLETE("a crash recovery of this node's own copy that did not replay every transaction, so the "
-      + "copy may be missing committed data"),
+      + "copy may be missing committed data", true),
 
   /**
    * A UNIQUE index of this node's copy was left out when the database opened, for a file with no header page that a power
@@ -84,12 +84,27 @@ public enum DivergenceCause {
    * tell the two cases apart, so the node must not serve the database until a copy from the cluster replaces it.
    */
   UNAVAILABLE_UNIQUE_INDEX("a unique index of this node's own copy that could not be loaded for a missing header page, so "
-      + "its constraint is not enforced here");
+      + "its constraint is not enforced here", true);
 
-  private final String description;
+  private final String  description;
+  private final boolean localCopyUntrustworthy;
 
   DivergenceCause(final String description) {
+    this(description, false);
+  }
+
+  DivergenceCause(final String description, final boolean localCopyUntrustworthy) {
     this.description = description;
+    this.localCopyUntrustworthy = localCopyUntrustworthy;
+  }
+
+  /**
+   * {@code true} when the files on this node's disk are known or suspected to be torn (issues #11250, #11258, #11281), as
+   * opposed to merely behind the cluster: a client must not be served from them while the resync is pending, because
+   * they can answer with rows that never existed or with part of the data. The other causes keep serving their stale copy.
+   */
+  public boolean isLocalCopyUntrustworthy() {
+    return localCopyUntrustworthy;
   }
 
   /** The phrase the alert reads, as the tail of "quarantined after ...". */
