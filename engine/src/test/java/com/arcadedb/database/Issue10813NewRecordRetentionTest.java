@@ -58,7 +58,7 @@ class Issue10813NewRecordRetentionTest extends TestHelper {
     database.setReadYourWrites(false);
     database.begin();
     final WeakReference<MutableDocument> saved = saveAndDrop(1);
-    final RID rid = saved.get() != null ? saved.get().getIdentity() : null;
+    final RID rid = identityOf(saved);
     assertThat(rid).isNotNull();
 
     assertThat(collected(saved)).as("nothing in the transaction holds the document").isTrue();
@@ -121,6 +121,12 @@ class Issue10813NewRecordRetentionTest extends TestHelper {
     final MutableDocument document = database.newDocument(TYPE).set("id", id);
     document.save();
     return new WeakReference<>(document);
+  }
+
+  /** Reads the reference once, in a frame of its own, so the caller holds nothing that keeps the document reachable. */
+  private static RID identityOf(final WeakReference<MutableDocument> reference) {
+    final MutableDocument document = reference.get();
+    return document != null ? document.getIdentity() : null;
   }
 
   private static boolean collected(final WeakReference<?> reference) {

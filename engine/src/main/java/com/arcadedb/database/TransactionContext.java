@@ -684,7 +684,8 @@ public class TransactionContext implements Transaction {
   public void registerNewRecord(final Record record) {
     if (record.getIdentity() != null)
       noteBucketWritten(record.getIdentity().getBucketId());
-    // With read-your-writes on the record cache holds it anyway; off, nothing but the caller may (issue #10813)
+    // With read-your-writes on the record cache holds it anyway; off, nothing but the caller may (issue #10813). Decided per
+    // record: one registered before a mid-transaction toggle keeps the mode it was registered in, and either mode resets it
     newRecords.add(record, !database.isReadYourWrites());
     if (newRecordRIDs != null)
       newRecordRIDs.add(record.getIdentity());

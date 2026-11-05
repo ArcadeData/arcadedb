@@ -108,6 +108,8 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -2405,7 +2407,7 @@ public class SelectExecutionPlanner {
 
       // Check if right side is a RID literal
       final RID vertexRid = extractRidValue(bc.getRight(), context);
-      if (vertexRid == null)
+      if (vertexRid == null || !isAnsweredByTheAdjacencyWalk(docType, vertexRid, isIn, context))
         continue;
 
       // Found the pattern! Create vertex-centric edge fetch step
@@ -2431,6 +2433,36 @@ public class SelectExecutionPlanner {
     }
 
     return false;
+  }
+
+  /**
+   * Whether walking the adjacency of {@code vertexRid} answers what the scan of {@code edgeType} answers (issue #10807). The walk
+   * loads the vertex, so the scan stays for a RID whose bucket holds no vertex type (no edge can name it, and the scan says so
+   * instead of failing to load it) and for a user who may read the edges but not that vertex. An incoming walk reads the incoming
+   * lists, which a unidirectional edge type, or any of its subtypes, does not keep.
+   */
+  private static boolean isAnsweredByTheAdjacencyWalk(final DocumentType edgeType, final RID vertexRid, final boolean incoming,
+      final CommandContext context) {
+    final DatabaseInternal database = context.getDatabase();
+    if (!(database.getSchema().getTypeByBucketId(vertexRid.getBucketId()) instanceof VertexType))
+      return false;
+    if (incoming && !keepsIncomingLists(edgeType))
+      return false;
+    try {
+      database.checkPermissionsOnFile(vertexRid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+      return true;
+    } catch (final SecurityException e) {
+      return false;
+    }
+  }
+
+  private static boolean keepsIncomingLists(final DocumentType type) {
+    if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
+      return false;
+    for (final DocumentType subType : type.getSubTypes())
+      if (!keepsIncomingLists(subType))
+        return false;
+    return true;
   }
 
   /**

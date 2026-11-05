@@ -124,6 +124,56 @@ class Issue10807BareEndpointNameAdjacencyWalkTest extends TestHelper {
     assertThat(qtys(query)).as("on E2 the declared, unset, property reads null").containsExactly(3);
   }
 
+  /** A RID that names no vertex answers no row, as the scan does, rather than failing: a deleted vertex, and a document. */
+  @Test
+  void aRidThatNamesNoVertexAnswersNoRow() {
+    database.getSchema().createDocumentType("D");
+    final RID[] created = new RID[2];
+    database.transaction(() -> {
+      created[0] = database.newDocument("D").set("name", "d").save().getIdentity();
+      final MutableVertex gone = database.newVertex("V1").set("name", "gone").save();
+      gone.newEdge("E", a.asVertex()).set("qty", 9).save();
+      created[1] = gone.getIdentity();
+    });
+    final RID document = created[0];
+    final RID deleted = created[1];
+    database.transaction(() -> deleted.asVertex().delete());
+
+    for (final String endpoint : new String[] { "out", "@out", "in", "@in" }) {
+      final String walked = "SELECT FROM E WHERE " + endpoint + " = " + deleted;
+      assertThat(plan(walked)).as(walked).contains(WALK);
+      assertThat(qtys(walked)).as(walked).isEmpty();
+
+      final String scanned = "SELECT FROM E WHERE " + endpoint + " = " + document;
+      assertThat(plan(scanned)).as(scanned).doesNotContain(WALK);
+      assertThat(qtys(scanned)).as(scanned).isEmpty();
+    }
+  }
+
+  /** A unidirectional edge type keeps no incoming lists: an incoming endpoint is answered by the scan, the outgoing one walks. */
+  @Test
+  void anIncomingEndpointOfAUnidirectionalTypeKeepsTheScan() {
+    database.getSchema().buildEdgeType().withName("U").withBidirectional(false).create();
+    database.getSchema().buildEdgeType().withName("U2").withBidirectional(false).create().addSuperType("E");
+    database.transaction(() -> {
+      a.asVertex().modify().newEdge("U", c.asVertex()).set("qty", 5).save();
+      a.asVertex().modify().newEdge("U2", c.asVertex()).set("qty", 6).save();
+    });
+
+    for (final String endpoint : new String[] { "in", "@in" }) {
+      final String unidirectional = "SELECT FROM U WHERE " + endpoint + " = " + c;
+      assertThat(plan(unidirectional)).as(unidirectional).doesNotContain(WALK);
+      assertThat(qtys(unidirectional)).as(unidirectional).containsExactly(5);
+
+      // a unidirectional subtype keeps the scan of its super type too, or its edges would be missed
+      final String polymorphic = "SELECT FROM E WHERE " + endpoint + " = " + c;
+      assertThat(plan(polymorphic)).as(polymorphic).doesNotContain(WALK);
+      assertThat(qtys(polymorphic)).as(polymorphic).containsExactly(2, 3, 6);
+    }
+    assertThat(plan("SELECT FROM U WHERE out = " + a)).contains(WALK);
+    assertThat(qtys("SELECT FROM U WHERE out = " + a)).containsExactly(5);
+  }
+
   private String plan(final String query) {
     try (final ResultSet rs = database.query("sql", query)) {
       return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
