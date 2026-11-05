@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -37,10 +36,30 @@ import java.util.List;
  * View the count is a bitmap of node ids.
  * <p>
  * The planner replaces the operators' rows with this step only when nothing reads them but that count (see
- * {@code CypherExecutionPlan#tryCountDistinctEndpoints}), so the row it answers is the one the aggregation would have.
+ * {@code CypherExecutionPlan#tryCountDistinctEndpoints}), so the row it answers is the one the aggregation would have. The
+ * step-based executor does the same with its {@link ExpandPathStep} (issue #10557), whose rows otherwise feed a filter for
+ * {@code WHERE b <> a} and the aggregation as separate steps: this replaces all three.
  */
 public final class DistinctEndpointCountStep extends AbstractExecutionStep {
-  private final VarLengthExpand expand;
+  /** A distinct-endpoint expansion that counts its end vertices, or the starts that reach one, while its walks run. */
+  public interface Walk {
+    /**
+     * {@code count(DISTINCT v)} over every row the expansion would produce, for {@code v} its target or its source.
+     *
+     * @param excludeSource leave each row's start out of its own walk, for a {@code WHERE target <> source}
+     * @param countSources  count the sources that reach an end vertex rather than the end vertices
+     */
+    long countDistinct(CommandContext context, boolean excludeSource, boolean countSources);
+
+    String getSourceVariable();
+
+    String getTargetVariable();
+
+    /** The name of the expansion, for the plan. */
+    String getWalkName();
+  }
+
+  private final Walk            expand;
   private final boolean         excludeSource;
   private final boolean         countSources;
   private final String          countAlias;
@@ -51,7 +70,7 @@ public final class DistinctEndpointCountStep extends AbstractExecutionStep {
    * @param countSources  count the expansion's start vertices that reach an end vertex, for a counted variable the plan starts
    *                      the walk from, rather than the end vertices
    */
-  public DistinctEndpointCountStep(final VarLengthExpand expand, final boolean excludeSource, final boolean countSources,
+  public DistinctEndpointCountStep(final Walk expand, final boolean excludeSource, final boolean countSources,
       final String countAlias, final CommandContext context) {
     super(context);
     this.expand = expand;
@@ -88,7 +107,7 @@ public final class DistinctEndpointCountStep extends AbstractExecutionStep {
     builder.append("  ".repeat(Math.max(0, depth * indent)));
     builder.append("+ DISTINCT ENDPOINT COUNT count(DISTINCT ")
         .append(countSources ? expand.getSourceVariable() : expand.getTargetVariable()).append(") AS ").append(countAlias);
-    builder.append(" [").append(expand.getOperatorType()).append("(").append(expand.getSourceVariable()).append(")");
+    builder.append(" [").append(expand.getWalkName()).append("(").append(expand.getSourceVariable()).append(")");
     if (excludeSource)
       builder.append(", ").append(expand.getTargetVariable()).append(" <> ").append(expand.getSourceVariable());
     builder.append("]");

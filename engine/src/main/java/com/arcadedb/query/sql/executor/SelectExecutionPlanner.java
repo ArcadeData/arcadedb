@@ -2393,8 +2393,8 @@ public class SelectExecutionPlanner {
       if (!(bc.getOperator() instanceof EqualsCompareOperator))
         continue;
 
-      // Check if left side is @out or @in
-      final String attrName = extractRecordAttribute(bc.getLeft());
+      // Check if left side is @out or @in, or a bare out / in that reads the same endpoint (issue #10807)
+      final String attrName = extractEndpointName(bc.getLeft(), context);
       if (attrName == null)
         continue;
 
@@ -2431,6 +2431,28 @@ public class SelectExecutionPlanner {
     }
 
     return false;
+  }
+
+  /**
+   * The record attribute {@code expr} reads ({@code @out}, {@code @in}, ...), or {@code @out} / {@code @in} for a bare {@code out}
+   * / {@code in} that reads the same endpoint, or null. Since #10684 a bare {@code out} / {@code in} on an edge with no property of
+   * that name is its endpoint, and that holds for every edge of the database while the dictionary does not know the name (issue
+   * #10807): a property name reaches a record, and a declared property is created, only through the dictionary, so a name it does
+   * not hold is stored by no record and declared by no type. Asked at planning time, which is exact because a plan holding a
+   * {@link FetchEdgesFromVertexStep} is never cached: every execution plans again and sees a name a write has added since. Once a
+   * record or a type uses the name the scan stays, whose per-record fallback lets a stored property win.
+   */
+  private static String extractEndpointName(final Expression expr, final CommandContext context) {
+    final String attribute = extractRecordAttribute(expr);
+    if (attribute != null)
+      return attribute;
+    if (expr == null || !(expr.getMathExpression() instanceof BaseExpression base) || base.identifier == null
+        || base.identifier.suffix == null || base.modifier != null)
+      return null;
+    final String name = expr.toString().trim();
+    if (!"out".equals(name) && !"in".equals(name))
+      return null;
+    return context.getDatabase().getSchema().getDictionary().getIdByName(name, false) < 0 ? "@" + name : null;
   }
 
   /**

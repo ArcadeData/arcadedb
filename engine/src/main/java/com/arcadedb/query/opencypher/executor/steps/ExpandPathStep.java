@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
+import com.arcadedb.query.opencypher.traversal.DistinctVertexCounter;
 import com.arcadedb.query.opencypher.traversal.GAVDistinctEndpointTraverser;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -47,6 +48,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.graph.Edge;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -60,7 +62,7 @@ import java.util.Set;
  * Uses specialized traversers (BFS/DFS) to efficiently find paths
  * within the specified hop range.
  */
-public class ExpandPathStep extends AbstractExecutionStep {
+public class ExpandPathStep extends AbstractExecutionStep implements DistinctEndpointCountStep.Walk {
   private final String sourceVariable;
   private final String pathVariable;
   private final String relationshipVariable;
@@ -137,6 +139,108 @@ public class ExpandPathStep extends AbstractExecutionStep {
   public ExpandPathStep withDistinctEndpoints() {
     this.distinctEndpoints = true;
     return this;
+  }
+
+  public boolean isDistinctEndpoints() {
+    return distinctEndpoints;
+  }
+
+  @Override
+  public String getSourceVariable() {
+    return sourceVariable;
+  }
+
+  @Override
+  public String getTargetVariable() {
+    return targetVariable;
+  }
+
+  @Override
+  public String getWalkName() {
+    // The view the last execution walked, as the plan of the step itself names it
+    return "EXPAND PATH " + pattern + (viewName != null ? ", provider=" + viewName : "");
+  }
+
+  /**
+   * {@code count(DISTINCT v)} over every row {@link #syncPull} would produce, for {@code v} its target or its source, counted while
+   * the walks run (issue #10557): no row is built per end vertex, and through a view whose node ids the end vertices are counted by,
+   * no vertex either. Every row of the previous step is walked exactly as {@link #syncPull} walks it, and an end vertex is counted
+   * only when the row would have been produced: the target node pattern (labels, inline properties, dynamic labels), a target an
+   * earlier step of the clause bound and a bound relationship list are all honoured. Only for a step in distinct-endpoint mode
+   * feeding nothing but that count, which the planner checks.
+   */
+  @Override
+  public long countDistinct(final CommandContext context, final boolean excludeSource, final boolean countSources) {
+    if (!distinctEndpoints)
+      throw new IllegalStateException("Only a distinct-endpoint expansion counts its end vertices itself");
+    checkForPrevious("ExpandPathStep requires a previous step");
+
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    final GAVDistinctEndpointTraverser viewTraverser = createViewTraverser(context);
+    // The view tests at most one static label on the node id; anything else in the target pattern is tested on the vertex
+    final boolean countableByView = targetNodePattern == null || (!targetNodePattern.hasProperties()
+        && !targetNodePattern.hasDynamicLabels() && targetNodePattern.getLabels().size() <= 1);
+    final String viewLabel = countableByView && targetNodePattern != null && targetNodePattern.hasLabels() ?
+        targetNodePattern.getLabels().getFirst() : null;
+    final DistinctVertexCounter counted = new DistinctVertexCounter(viewTraverser);
+
+    final ResultSet input = prev.syncPull(context, 100);
+    while (input.hasNext()) {
+      guard.check();
+      final Result row = input.next();
+      if (!(row.getProperty(sourceVariable) instanceof Vertex source))
+        continue;
+      final Vertex boundTarget = row.getProperty(targetVariable) instanceof Vertex vertex ? vertex : null;
+      final boolean boundPath = GraphTraverser.isBoundRelationshipList(row, relationshipVariable);
+      final boolean byView = viewTraverser != null && countableByView && boundTarget == null && !boundPath;
+
+      if (countSources) {
+        if (counted.contains(source))
+          continue;
+        final int fromView = byView ? viewTraverser.reachesAny(source, excludeSource, viewLabel) : -1;
+        if (fromView == 1 || (fromView < 0 && nextEnd(endpointsOf(row, source, boundPath, viewTraverser), row, source, boundTarget,
+            excludeSource) != null))
+          counted.add(source);
+        continue;
+      }
+
+      if (byView && counted.countThroughView(source, excludeSource, viewLabel))
+        continue;
+      final Iterator<Vertex> endpoints = endpointsOf(row, source, boundPath, viewTraverser);
+      for (Vertex target = nextEnd(endpoints, row, source, boundTarget, excludeSource); target != null;
+          target = nextEnd(endpoints, row, source, boundTarget, excludeSource))
+        counted.add(target);
+    }
+    return counted.getCount();
+  }
+
+  /** The end vertices {@link #syncPull} reaches from {@code source} for {@code row}, before the target pattern is tested. */
+  private Iterator<Vertex> endpointsOf(final Result row, final Vertex source, final boolean boundPath,
+      final GAVDistinctEndpointTraverser viewTraverser) {
+    final VariableLengthPathTraverser traverser = createTraverser(row);
+    if (boundPath) {
+      final TraversalPath bound = traverser.matchBoundPath(source, row.getProperty(relationshipVariable), reverseResultPath,
+          relationshipVariable);
+      if (bound == null || hasEdgeConflict(row, reverseResultPath ? bound.reversed() : bound))
+        return Collections.emptyIterator();
+      return List.of(bound.getEndVertex()).iterator();
+    }
+    // A start vertex the view does not map (created after its last build) walks the records
+    final Iterator<Vertex> fromView = viewTraverser != null ? viewTraverser.traverse(source) : null;
+    return fromView != null ? fromView : traverser.traverseDistinctEndpoints(source);
+  }
+
+  /** The next end vertex the row would be produced for, or null when there is none. */
+  private Vertex nextEnd(final Iterator<Vertex> endpoints, final Result row, final Vertex source, final Vertex boundTarget,
+      final boolean excludeSource) {
+    while (endpoints.hasNext()) {
+      final Vertex target = endpoints.next();
+      if (excludeSource && target.getIdentity().equals(source.getIdentity()))
+        continue;
+      if (acceptsTarget(target, row, boundTarget))
+        return target;
+    }
+    return null;
   }
 
   @Override
