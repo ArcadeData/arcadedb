@@ -34,7 +34,12 @@ import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
-public class LocalProperty extends AbstractProperty {
+/**
+ * A property of a {@link LocalDocumentType}. One declared {@code EMBEDDED}, {@code LINK}, {@code LIST} or {@code MAP OF} a type
+ * stores the name of that type, and is a {@link TypeNameDependant} like a materialized view or a trigger (issue #11305):
+ * {@link #setOfType} refuses a name that resolves to no type, and the drop guard and the rename carry keep it that way.
+ */
+public class LocalProperty extends AbstractProperty implements TypeNameDependant {
 
   /**
    * The CUSTOM key a user reaches for when trying to turn an existing property into a time-series column, as in
@@ -173,8 +178,8 @@ public class LocalProperty extends AbstractProperty {
 
   /**
    * Refuses an OF naming a type the schema does not define, except on a schema that is not loaded yet: the load restores what
-   * the file declares, and a type a property names can be gone from it for a supported reason (DROP TYPE does not refuse a type
-   * another property names). The load warns instead, the way {@link #checkBound} does. The LINK/EMBEDDED branch always had that
+   * the file declares, and a type a property names can be gone from it (a schema written before DROP TYPE refused a type another
+   * property names, issue #11305). The load warns instead, the way {@link #checkBound} does. The LINK/EMBEDDED branch always had that
    * exemption and the LIST/MAP branch did not, so one LIST OF a dropped type aborted the load of every property after it
    * (issue #11301).
    */
@@ -192,6 +197,50 @@ public class LocalProperty extends AbstractProperty {
 
     throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
         + "' because the type is not defined");
+  }
+
+  /**
+   * Whether {@code ofType} is the name of a type of the schema, as opposed to none or to the scalar a {@code LIST} or a
+   * {@code MAP} is declared of ({@code LIST OF STRING}): the same split {@link #setOfType} makes, the scalar winning.
+   */
+  boolean storesATypeName() {
+    final String of = ofType;
+    if (of == null)
+      return false;
+    return switch (type) {
+      case EMBEDDED, LINK -> true;
+      case LIST, MAP -> Type.getTypeByName(of) == null;
+      default -> false;
+    };
+  }
+
+  /**
+   * Refuses the drop of the type this property is declared of (issue #11305): the type that declares the property survives the
+   * drop, and from then on every write of the property and every read of a record holding one fails to resolve the name. A
+   * property of the type being dropped goes with it, a property declared of its own type included. A name that resolves to no
+   * type at all does not refuse every drop, unlike the other dependants: such a property cannot be written already, and it is
+   * the declaring type's own, not a definition built from the dropped one.
+   */
+  @Override
+  public void checkTypeDrop(final LocalSchema schema, final String typeName, final String canonicalTypeName) {
+    final String of = ofType;
+    if (of == null || owner.getName().equals(canonicalTypeName))
+      return;
+    if (canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(schema, of)))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because the property '" + owner.getName() + "." + name
+          + "' is declared " + type + " OF it. Drop the property first with: DROP PROPERTY " + owner.getName() + "." + name
+          + ", or declare it of another type");
+  }
+
+  /**
+   * Names {@code newName} where this property was declared of {@code oldName}: one stored name, so always exact, and nothing to
+   * refuse. A property declared of one of the type's aliases needs nothing, the alias staying with the type. Inside the recording
+   * session that publishes the rename, so the name {@code schema.json} gets is the new one.
+   */
+  @Override
+  public void carryTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    if (oldName.equals(ofType))
+      ofType = newName;
   }
 
   @Override

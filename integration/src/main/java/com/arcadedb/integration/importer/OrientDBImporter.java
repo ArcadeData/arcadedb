@@ -448,7 +448,9 @@ public class OrientDBImporter {
     // all run, leaving a real window for a caller's transaction to be resolved out from under this call before
     // parseRecords() itself gets here. Once pushed, every later batch in this call reuses the same transaction
     // (no periodic commit - this path exists only to keep the rare, invariant-violation case correct, not fast).
-    boolean pushedTransaction = false;
+    // Resolved through ImporterTransactions, the protocol every importer row loop shares (issue #11271).
+    final boolean[] pushedTransaction = { false };
+    final TransactionContext[] ownTx = { null };
 
     try {
       while (reader.peek() == BEGIN_OBJECT) {
@@ -478,13 +480,12 @@ public class OrientDBImporter {
             }
           }, false, CONCURRENT_MAX_RETRY);
         } else {
-          if (!pushedTransaction && !database.isTransactionActive()) {
+          if (!pushedTransaction[0] && !database.isTransactionActive()) {
             logger.errorLine(
                 "- WARNING: importOwnsTransaction() answered false but no transaction was active on entry to "
                     + "parseRecords(): the invariant it documents did not hold. Proceeding as if this import owns "
                     + "the transaction it is about to push.");
-            database.begin();
-            pushedTransaction = true;
+            ImporterTransactions.beginOwnTransaction(database, pushedTransaction, ownTx);
           }
           try {
             executeBatch(processedItems, batch);
@@ -496,21 +497,19 @@ public class OrientDBImporter {
         batch.clear();
       }
 
-      if (pushedTransaction)
-        database.commit();
+      // A refusal reaches the catch below with the flag restored, which rolls the transaction back instead of stranding it
+      ImporterTransactions.commitOwnTransaction(database, pushedTransaction, ownTx[0]);
       // Also catches IOException, not just RuntimeException/Error: this loop reads directly off reader (a Gson
       // JsonReader) via peek()/parseRecord()/skipValue(), whose malformed-input or truncated-source failures
       // (MalformedJsonException, EOFException) are IOException subtypes, not wrapped the way executeBatch()'s own
       // IOException is - and a truncated/corrupted export is a real-world way to reach this catch, not just the
       // batch-execution failures the RuntimeException/Error branch already covered.
     } catch (final IOException | RuntimeException | Error e) {
-      if (pushedTransaction && database.isTransactionActive()) {
-        try {
-          database.rollback();
-        } catch (final Exception rollbackFailure) {
-          logger.errorLine("- Could not roll back after the record import failed: the transaction it opened may "
-              + "still be on the stack: %s", rollbackFailure.getMessage());
-        }
+      try {
+        ImporterTransactions.rollbackOwnTransaction(database, pushedTransaction, ownTx);
+      } catch (final Exception rollbackFailure) {
+        logger.errorLine("- Could not roll back after the record import failed: the transaction it opened may "
+            + "still be on the stack: %s", rollbackFailure.getMessage());
       }
       throw e;
     }

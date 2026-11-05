@@ -190,28 +190,15 @@ public class JSONImporterFormat implements FormatImporter {
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     if (ownsTransaction)
-      beginOwnTransaction(database, txOpen, ownTx);
+      ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
     try {
       parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen, ownTx, ownsTransaction);
     } catch (final IOException | RuntimeException e) {
       // Gated on the loop's own transaction being the live one rather than on database.isTransactionActive() alone: a
       // failure that left our own level on the stack still has to discard it, and one that did not - a commit() that
       // popped it - must not reach past it for whatever is underneath.
-      rollbackOwnTransaction(database, txOpen, ownTx);
+      ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
       throw e;
-    }
-  }
-
-  private static void beginOwnTransaction(final Database database, final boolean[] txOpen, final TransactionContext[] ownTx) {
-    database.begin();
-    txOpen[0] = true;
-    ownTx[0] = ImporterTransactions.currentTransaction(database);
-  }
-
-  private static void rollbackOwnTransaction(final Database database, final boolean[] txOpen, final TransactionContext[] ownTx) {
-    if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
-      txOpen[0] = false;
-      database.rollback();
     }
   }
 
@@ -231,7 +218,7 @@ public class JSONImporterFormat implements FormatImporter {
         // else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the end of
         // the previous iteration), so rolling it back is right - txOpen says so and is true on every path that
         // reaches this line.
-        rollbackOwnTransaction(database, txOpen, ownTx);
+        ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
         throw e;
       }
       if (next != BEGIN_OBJECT) {
@@ -280,7 +267,7 @@ public class JSONImporterFormat implements FormatImporter {
         if (ownsTransaction)
           ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
       } catch (final RuntimeException e) {
-        rollbackOwnTransaction(database, txOpen, ownTx);
+        ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
 
         context.createdDocuments.set(createdDocumentsBefore);
         context.createdVertices.set(createdVerticesBefore);
@@ -296,7 +283,7 @@ public class JSONImporterFormat implements FormatImporter {
       }
 
       if (ownsTransaction)
-        beginOwnTransaction(database, txOpen, ownTx);
+        ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
 
       // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
       // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record

@@ -3767,7 +3767,8 @@ public class LocalSchema implements Schema {
    * Every schema object that stores the NAME of a type (issue #10368): the one list the drop guard, the rename check and the
    * rename carry walk, so a kind of dependant is protected by all three or by none. Materialized views, continuous aggregates
    * and triggers live in this schema; Graph Analytical Views keep their definitions in the schema extension
-   * {@code graphAnalyticalViews}, which is what a reopen restores them from.
+   * {@code graphAnalyticalViews}, which is what a reopen restores them from. A property declared {@code EMBEDDED}, {@code LINK},
+   * {@code LIST} or {@code MAP OF} a type lives in the type that declares it, and is collected from the types (issue #11305).
    */
   public List<TypeNameDependant> getTypeNameDependants() {
     synchronized (this) {
@@ -3779,6 +3780,11 @@ public class LocalSchema implements Schema {
         if (trigger instanceof TriggerImpl impl)
           dependants.add(impl);
       dependants.addAll(GraphAnalyticalViewPersistence.getTypeNameDependants(database));
+      // getTypes(), not the type map: an alias maps to the same type, whose properties would be collected once per name
+      for (final DocumentType type : getTypes())
+        for (final Property property : type.getProperties())
+          if (property instanceof LocalProperty local && local.storesATypeName())
+            dependants.add(local);
       return dependants;
     }
   }

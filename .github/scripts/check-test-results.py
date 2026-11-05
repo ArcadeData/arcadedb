@@ -42,8 +42,10 @@
 # reached through a different attribute. An aborted case is told from a disabled one (@Disabled,
 # @EnabledIf, a tag) by the exception type surefire writes on its <skipped> element; a disabled
 # test is a decision taken in the source, an abort is the runner's state deciding, so only the
-# second is evidence that went missing. A class that aborts only some of its tests still ran the
-# rest, and an assumption is often deliberate (a filesystem that reserves no blocks, a graph
+# second is evidence that went missing. The rule is therefore that some case of the class ran: a
+# class whose cases are part aborted and part disabled ran none of them either (#11275), while one
+# whose every case is disabled carries no abort and passes. A class that aborts only some of its
+# tests still ran the rest, and an assumption is often deliberate (a filesystem that reserves no blocks, a graph
 # feature TinkerPop's suite gates on), so those are not failures: every aborted case is listed in
 # the log instead, with its reason, so an assumption reading live state (#11030) is visible on the
 # run where it fired rather than only once someone thinks to look. A class that is meant to run on
@@ -83,11 +85,11 @@ def report_files(root, reports_dir):
 
 
 def suite_counts(path):
-    """(tests, failures, errors, skipped, cases, aborted) for one report, or None when the file cannot be read.
+    """(tests, failures, errors, skipped, cases, aborted, disabled) for one report, or None when the file cannot be read.
 
     cases is the number of <testcase> elements and aborted the (name, reason) of every case whose
     <skipped> element names an exception type: an assumption that failed, as opposed to a test
-    disabled in the source, whose <skipped> carries a message only.
+    disabled in the source, whose <skipped> carries a message only and is counted in disabled.
 
     A report surefire could not finish writing - a forked JVM killed mid-flush - is not evidence
     of success, so an unreadable file is reported rather than skipped.
@@ -100,7 +102,7 @@ def suite_counts(path):
     # A testsuite may be wrapped in a testsuites element; sum whichever level carries the counts.
     suites = [root] if root.tag == "testsuite" else root.iter("testsuite")
 
-    tests = failures = errors = skipped = cases = 0
+    tests = failures = errors = skipped = cases = disabled = 0
     aborted = []
     for suite in suites:
         tests += int(suite.get("tests", 0))
@@ -110,9 +112,13 @@ def suite_counts(path):
         for case in suite.iter("testcase"):
             cases += 1
             skip = case.find("skipped")
-            if skip is not None and skip.get("type"):
+            if skip is None:
+                continue
+            if skip.get("type"):
                 aborted.append((case.get("name", "?"), abort_reason(skip)))
-    return tests, failures, errors, skipped, cases, aborted
+            else:
+                disabled += 1
+    return tests, failures, errors, skipped, cases, aborted, disabled
 
 
 def abort_reason(skip):
@@ -169,10 +175,11 @@ def main(arguments):
         if counts[1] or counts[2]:
             failed.append((path, counts[1], counts[2]))
         if counts[5]:
-            aborting.append((path, counts[4], counts[5]))
-            # Every case of the class aborted: it ran, and asserted nothing
-            if len(counts[5]) == counts[4]:
-                all_aborted.append((path, counts[4], counts[5][0][1]))
+            aborting.append((path, counts[4], counts[5], counts[6]))
+            # No case of the class ran (#11275): each one aborted or was disabled, so it asserted nothing. A class whose
+            # every case is disabled has no abort and stays out: that is a decision taken in the source
+            if len(counts[5]) + counts[6] == counts[4]:
+                all_aborted.append((path, counts[4], len(counts[5]), counts[6], counts[5][0][1]))
 
     print(
         "check-test-results: %d test(s) in %d %s file(s), %d failure(s), %d error(s), %d skipped (%d aborted by an assumption)"
@@ -183,8 +190,10 @@ def main(arguments):
     # is the only place that says so
     if aborting:
         print("\nAborted by an assumption, so not asserted on this run:")
-        for path, cases, suite_aborted in aborting[:MAX_LISTED]:
-            print("  %s: %d of %d test(s) aborted, e.g. %s: %s" % (path.relative_to(root), len(suite_aborted), cases, suite_aborted[0][0], suite_aborted[0][1]))
+        for path, cases, suite_aborted, suite_disabled in aborting[:MAX_LISTED]:
+            # The disabled cases are named too: beside them "1 of 2 aborted" would read as a class that ran the other one
+            print("  %s: %d of %d test(s) aborted%s, e.g. %s: %s" % (path.relative_to(root), len(suite_aborted), cases,
+                  " and %d disabled" % suite_disabled if suite_disabled else "", suite_aborted[0][0], suite_aborted[0][1]))
         if len(aborting) > MAX_LISTED:
             print("  ... and %d more" % (len(aborting) - MAX_LISTED))
 
@@ -198,8 +207,12 @@ def main(arguments):
         print("  ... and %d more" % (len(failed) - MAX_LISTED), file=sys.stderr)
     for path in broken[:MAX_LISTED]:
         print("  %s: report is unreadable" % path.relative_to(root), file=sys.stderr)
-    for path, cases, reason in all_aborted[:MAX_LISTED]:
-        print("  %s: every one of its %d test(s) aborted, so the class asserted nothing (%s)" % (path.relative_to(root), cases, reason), file=sys.stderr)
+    for path, cases, suite_aborted, suite_disabled, reason in all_aborted[:MAX_LISTED]:
+        if suite_disabled:
+            print("  %s: none of its %d test(s) ran (%d aborted, %d disabled), so the class asserted nothing (%s)"
+                  % (path.relative_to(root), cases, suite_aborted, suite_disabled, reason), file=sys.stderr)
+        else:
+            print("  %s: every one of its %d test(s) aborted, so the class asserted nothing (%s)" % (path.relative_to(root), cases, reason), file=sys.stderr)
     if len(all_aborted) > MAX_LISTED:
         print("  ... and %d more" % (len(all_aborted) - MAX_LISTED), file=sys.stderr)
     print(

@@ -760,6 +760,11 @@ public class LocalDocumentType implements DocumentType {
         schema.bucketMembershipChanged();
         // THE DEPENDANTS FOLLOW THE NEW NAME HERE, UNDER THE WRITE LOCK AND BEFORE THE SESSION SAVES THE SCHEMA (#10096)
         schema.carryTypeRenameToDependants(oldName, newName);
+        // AN EMBEDDED DOCUMENT STORES ITS TYPE AS THE DICTIONARY ID OF THE TYPE'S NAME, WHICH THE CREATION OF A DOCUMENT TYPE
+        // REGISTERS: WITHOUT THE NEW NAME IN THE DICTIONARY NO EMBEDDED DOCUMENT OF THE RENAMED TYPE COULD BE WRITTEN AGAIN
+        // ("Cannot find type ... declared in embedded document", issue #11305)
+        if (!(this instanceof LocalVertexType) && !(this instanceof LocalEdgeType))
+          schema.getDictionary().getIdByName(newName, true);
         final FileManager fileManager = database.getFileManager();
         // The type's files as they are NOW, not only the ones listed before the move: a component attached to the type
         // in between (an index built concurrently) was moved with the others but has no "before" name. Recording a file
