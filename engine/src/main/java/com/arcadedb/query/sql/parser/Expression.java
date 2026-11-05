@@ -469,17 +469,42 @@ public class Expression extends SimpleNode {
   }
 
   public Expression copy() {
-    final Expression result = new Expression();
-    result.singleQuotes = singleQuotes;
-    result.doubleQuotes = doubleQuotes;
-    result.isNull = isNull;
-    result.rid = rid == null ? null : rid.copy();
-    result.mathExpression = mathExpression == null ? null : mathExpression.copy();
-    result.whereCondition = whereCondition == null ? null : whereCondition.copy();
-    result.arrayConcatExpression = arrayConcatExpression == null ? null : arrayConcatExpression.copy();
-    result.json = json == null ? null : json.copy();
-    result.booleanValue = booleanValue;
-    return result;
+    return copyInto(new Expression());
+  }
+
+  /**
+   * Deep-copies every field this class declares into {@code target}. The single place that lists them: a subclass's
+   * {@code copy()} calls it and adds only its own fields, so a field added here cannot be left behind by it (issue
+   * #11300, where {@link ArrayConcatExpressionElement} re-listed them by hand and dropped two).
+   */
+  protected <T extends Expression> T copyInto(final T target) {
+    target.singleQuotes = singleQuotes;
+    target.doubleQuotes = doubleQuotes;
+    target.isNull = isNull;
+    target.rid = rid == null ? null : rid.copy();
+    target.mathExpression = mathExpression == null ? null : mathExpression.copy();
+    target.whereCondition = whereCondition == null ? null : whereCondition.copy();
+    target.arrayConcatExpression = arrayConcatExpression == null ? null : arrayConcatExpression.copy();
+    target.json = json == null ? null : json.copy();
+    target.booleanValue = booleanValue;
+    return target;
+  }
+
+  /**
+   * Takes over, without copying, every field this class declares from {@code source}: how a subclass turns the plain
+   * {@link Expression} that {@link #splitForAggregation} or the parser answers into an instance of its own type. The
+   * single place that lists them for that, as {@link #copyInto} is for a copy.
+   */
+  public void takeFieldsOf(final Expression source) {
+    singleQuotes = source.singleQuotes;
+    doubleQuotes = source.doubleQuotes;
+    isNull = source.isNull;
+    rid = source.rid;
+    mathExpression = source.mathExpression;
+    whereCondition = source.whereCondition;
+    arrayConcatExpression = source.arrayConcatExpression;
+    json = source.json;
+    booleanValue = source.booleanValue;
   }
 
   public void setMathExpression(final MathExpression mathExpression) {
