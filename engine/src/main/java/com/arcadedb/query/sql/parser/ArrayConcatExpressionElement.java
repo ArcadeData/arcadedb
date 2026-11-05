@@ -94,6 +94,8 @@ public class ArrayConcatExpressionElement extends Expression {
     result.isNull = isNull;
     result.rid = rid == null ? null : rid.copy();
     result.mathExpression = mathExpression == null ? null : mathExpression.copy();
+    result.whereCondition = whereCondition == null ? null : whereCondition.copy();
+    result.arrayConcatExpression = arrayConcatExpression == null ? null : arrayConcatExpression.copy();
     result.json = json == null ? null : json.copy();
     result.booleanValue = booleanValue;
     result.nestedProjection = nestedProjection == null ? null : nestedProjection.copy();

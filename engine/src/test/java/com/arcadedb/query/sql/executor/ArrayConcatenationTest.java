@@ -121,4 +121,15 @@ class ArrayConcatenationTest {
     assertThat(combined).hasSize(5);
     assertThat(combined).containsExactly("java", "database", "middle", "tech", "software");
   }
+
+  @Test
+  void arrayConcatPreservesParenthesizedConditions() {
+    try (final ResultSet result = database.query("sql", "SELECT (1 > 0) || [1] AS combined")) {
+      assertThat(result.next().<List<Object>>getProperty("combined")).containsExactly(true, 1);
+    }
+
+    try (final ResultSet result = database.query("sql", "SELECT [1] || (2 > 1) AS combined")) {
+      assertThat(result.next().<List<Object>>getProperty("combined")).containsExactly(1, true);
+    }
+  }
 }
