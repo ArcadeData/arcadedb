@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -99,6 +100,8 @@ public class DropIndexStatement extends DDLStatement {
 
         // dropping a member alone would leave the logical index naming it, and covering fewer types than it says
         MultiTypeIndexes.requireNotMember(schema, indexName);
+        // the bucket index of a type index goes with the type index, never alone (#11303)
+        TypeIndex.requireNotABucketIndex(schema, indexName);
         schema.dropIndex(indexName);
       }
 

@@ -68,6 +68,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   private final boolean             graphBuilding;
   private final int[]               ordinalToVectorId;
   private final LSMVectorIndex      lsmIndex;         // Used for reading quantized vectors
+  // The in-place reader of the documents (issue #11298), made for the thread that read last: not volatile, since a thread that
+  // sees another's reader, or none, only makes one of its own
+  private       StoredVectorReader  storedVectorReader;
 
   // Sentinel vector returned for deleted/missing ordinals to prevent NPE in JVector's GraphSearcher (issue #3715).
   // It is a placeholder of the right shape, NOT a low score: no vector scores low against every query, so callers
@@ -342,6 +345,25 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       return deletedSentinelVector;
 
     try {
+      // Where the record lies on its page first (issue #11298): two lookups, a copy of the record and a copy of the
+      // property per vector otherwise. Only a usable vector is taken from there, and never the calling transaction's own
+      // write, so it is cached as below; every other answer is read again through the record, which reports it.
+      if (lsmIndex != null) {
+        // One reader for the life of these values (a search, a build) per thread that reads through them: a copy handed to
+        // another thread, or a thread of the build reading through a shared instance, gets one of its own
+        StoredVectorReader reader = storedVectorReader;
+        if (reader == null || !reader.isOwnedByCurrentThread())
+          storedVectorReader = reader = lsmIndex.storedVectorReader(vectorPropertyName, dimensions);
+        final float[] inPlace = lsmIndex.readStoredVectorInPlace(reader, rid);
+        if (inPlace != null) {
+          final VectorFloat<?> result = vts.createFloatVector(inPlace);
+          lsmIndex.metrics.incrementVectorFetchFromDocuments();
+          if (vectorCache != null || searchCache != null)
+            cache(vectorId, result);
+          return result;
+        }
+      }
+
       final Record record = database.lookupByRID(rid, false);
 
       final Document doc = (Document) record;

@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -503,6 +504,8 @@ public class TimeSeriesTypeBuilder {
     type.setRetentionMs(retentionMs);
     type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);
     type.setDownsamplingTiers(downsamplingTiers);
+    // drawn here, once: a follower and every later open read it from the schema, which is what the sealed files are checked against
+    type.setSealedOwner(TimeSeriesSealedStore.newOwner());
     type.checkNoSealedFileInTheWay();
 
     // DECLARATION order, deliberately (issue #7740, and the IT that caught the first answer to it): the stored

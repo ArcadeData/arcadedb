@@ -2331,7 +2331,9 @@ class PostgresTypeTest {
     // Removed legacy Long.parseLong fallback - epoch-millis strings are no longer accepted.
     assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.DATE.code, 0,
         "1716138311000".getBytes()))
-        .isInstanceOf(DateTimeParseException.class);
+        // the client's value, refused as one with the parse failure as its cause, which the wire answers 22007 (issue #11314)
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasCauseInstanceOf(DateTimeParseException.class);
   }
 
   // ==================== BYTEA Tests (issue #6411) ====================

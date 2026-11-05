@@ -1485,6 +1485,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(400, "Cannot execute command", parsing, null, ErrorLogKind.USER);
     }
 
+    // A call of a function nothing answers (issue #11314): the caller's mistake, as the parsing arm above treats openCypher's
+    // refusal of the same call. Ahead of the generic CommandExecutionException arm, which it extends and which answers 500
+    final UnknownFunctionException unknownFunction = firstOf(e, cause, UnknownFunctionException.class);
+    if (unknownFunction != null) {
+      return new ErrorClassification(400, "Cannot execute command", unknownFunction, null, ErrorLogKind.USER);
+    }
+
+    // A value a declared constraint refuses - NOT NULL, a MAX, a REGEXP - or that a listener vetoed (RecordVetoedException):
+    // the request is refused, the server is fine. It answered 500 "Internal error" with a stack trace in the log, since no arm
+    // named the type (issue #11314). The constraint goes in exceptionArgs, so the Java client rebuilds the kind, and in the
+    // label, which survives production mode where 'detail' is concealed
+    final ValidationException invalid = firstOf(e, cause, ValidationException.class);
+    if (invalid != null) {
+      final ValidationException.Kind kind = invalid.getKind();
+      return new ErrorClassification(400, kind != null ? "Constraint violated (" + kind.name() + ")" : "Validation error", invalid,
+          kind != null ? kind.name() : null, ErrorLogKind.USER);
+    }
+
     // The request payload is missing a property, carries a null where a value is required, or holds the wrong
     // type for it: a malformed request, not a server fault. Without this it degraded to 500 (issue #5935).
     final JSONException invalidJson = firstOf(e, cause, JSONException.class);

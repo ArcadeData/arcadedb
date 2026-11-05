@@ -19,10 +19,13 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
+import java.util.Collections;
 import java.util.Iterator;
 
 /**
@@ -52,8 +55,16 @@ public class FetchEdgesFromVertexStep extends AbstractExecutionStep {
 
     if (!inited) {
       inited = true;
-      final Vertex vertex = (Vertex) context.getDatabase().lookupByRID(vertexRid, true);
-      edgeIterator = vertex.getEdges(direction, edgeTypeName).iterator();
+      // A vertex that is not there has no edge: the scan this step replaces answers no row for it, and so does the walk (#10807)
+      Record record;
+      try {
+        record = context.getDatabase().lookupByRID(vertexRid, true);
+      } catch (final RecordNotFoundException e) {
+        record = null;
+      }
+      edgeIterator = record instanceof Vertex vertex ?
+          vertex.getEdges(direction, edgeTypeName).iterator() :
+          Collections.emptyIterator();
     }
 
     return new ResultSet() {

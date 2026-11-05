@@ -101,6 +101,16 @@ public class TimeSeriesEngine implements AutoCloseable {
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount,
       final long compactionBucketIntervalMs, final int mutableFormatVersion) throws IOException {
+    this(database, typeName, columns, shardCount, compactionBucketIntervalMs, mutableFormatVersion, TimeSeriesSealedStore.NO_OWNER);
+  }
+
+  /**
+   * @param sealedOwner the type's owner id, which the sealed file of every shard records and is checked against (issue #11274), or
+   *                    {@link TimeSeriesSealedStore#NO_OWNER} for a type of a database written before it
+   */
+  public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
+      final List<ColumnDefinition> columns, final int shardCount,
+      final long compactionBucketIntervalMs, final int mutableFormatVersion, final long sealedOwner) throws IOException {
     // LOADS THE SIMD OPS (AND STARTS THEIR WARM-UP) WHEN THE TYPE IS OPENED, NOT AT THE FIRST AGGREGATE (#9171)
     TimeSeriesVectorOpsProvider.getInstance();
     this.database = database;
@@ -121,7 +131,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       // One dictionary per type, resolved before the shards so every shard shares the same id space.
       this.tagDictionary = TimeSeriesTagDictionary.openOrCreate(database, typeName, columns, mutableFormatVersion);
       for (int i = 0; i < shardCount; i++)
-        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs, tagDictionary, mutableFormatVersion);
+        shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs, tagDictionary, mutableFormatVersion,
+            sealedOwner);
     } catch (final Exception e) {
       shardExecutor.shutdownNow();
       // Release the shards that were successfully created - their sealed stores only, NOT their mutable buckets.

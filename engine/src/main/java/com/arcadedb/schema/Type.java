@@ -27,6 +27,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -449,6 +450,12 @@ public enum Type {
       return converted == null && value != null ? value : converted;
     } catch (final InconvertibleValueException e) {
       // a value the declared type cannot take, read by a caller that has no schema to blame: keep what arrived
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return value;
+    } catch (final ValueOutOfRangeException e) {
+      // a number out of range is one of those for a declared property; without one it propagates, as it always did
+      if (property == null)
+        throw e;
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return value;
     } catch (final IllegalArgumentException e) {
@@ -1411,7 +1418,7 @@ public enum Type {
   private static float narrowToFloat(final Number value, final Property property) {
     final float result = value.floatValue();
     if (property != null && Float.isInfinite(result) && !isInfinite(value))
-      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
+      throw new ValueOutOfRangeException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property));
     return result;
   }
 
@@ -1419,14 +1426,14 @@ public enum Type {
   private static float narrowToFloat(final double value, final Property property) {
     final float result = (float) value;
     if (property != null && Float.isInfinite(result) && !Double.isInfinite(value))
-      throw new InconvertibleValueException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property), null);
+      throw new ValueOutOfRangeException("Value '" + value + "' is out of range for type FLOAT" + forProperty(property));
     return result;
   }
 
   private static double narrowToDouble(final Number value, final Property property) {
     final double result = value.doubleValue();
     if (property != null && Double.isInfinite(result) && !isInfinite(value))
-      throw new InconvertibleValueException("Value '" + value + "' is out of range for type DOUBLE" + forProperty(property), null);
+      throw new ValueOutOfRangeException("Value '" + value + "' is out of range for type DOUBLE" + forProperty(property));
     return result;
   }
 
@@ -1481,9 +1488,9 @@ public enum Type {
       default -> false;
     };
     if (outOfRange)
-      throw new InconvertibleValueException(
+      throw new ValueOutOfRangeException(
           "Value '" + value + "' is out of range for type LONG (" + Long.MIN_VALUE + " to " + Long.MAX_VALUE + ")" //
-              + forProperty(property), null);
+              + forProperty(property));
 
     return value.longValue();
   }
@@ -1560,7 +1567,7 @@ public enum Type {
     final long longValue = value.longValue();
 
     if (beyondLong || longValue < min || longValue > max)
-      throw new IllegalArgumentException(
+      throw new ValueOutOfRangeException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
@@ -1583,7 +1590,7 @@ public enum Type {
     // THE CAST SATURATES: 2^63 IS THE FIRST DOUBLE ABOVE THE LONG RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
     final long longValue = (long) value;
     if (value >= 0x1p63 || value < -0x1p63 || longValue < min || longValue > max)
-      throw new IllegalArgumentException(
+      throw new ValueOutOfRangeException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
@@ -1599,7 +1606,7 @@ public enum Type {
 
     final long longValue = (long) value;
     if (value >= 0x1p63f || value < -0x1p63f || longValue < min || longValue > max)
-      throw new IllegalArgumentException(
+      throw new ValueOutOfRangeException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 
@@ -1612,7 +1619,7 @@ public enum Type {
    */
   private static long narrowToIntegral(final long value, final long min, final long max, final String targetType, final Property property) {
     if (value < min || value > max)
-      throw new IllegalArgumentException(
+      throw new ValueOutOfRangeException(
           "Value '" + value + "' is out of range for type " + targetType + " (" + min + " to " + max + ")" //
               + (property != null ? " for property '" + property.getName() + "'" : ""));
 

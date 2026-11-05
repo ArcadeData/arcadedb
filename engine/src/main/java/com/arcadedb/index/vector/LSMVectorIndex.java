@@ -7456,24 +7456,54 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private float[] readRecordVectorArray(final RID rid) {
     if (rid == null)
       return null;
+    final StoredVectorReader reader = storedVectorReader();
+    return getDatabase().executeInReadLock(() -> readRecordVectorArray(reader, rid, null));
+  }
 
-    final String vectorProp = vectorPropertyName();
+  /**
+   * {@link #readRecordVectorArray(RID)} through {@code reader}, for a caller that reads many records under the database read
+   * lock it already holds: the rerank of a quantized search (issue #11298).
+   *
+   * @param scratch receives the vector when it is read in place, so a caller that scores one vector at a time allocates nothing
+   *                per record; {@code null} for a new array
+   *
+   * @return the vector, which may be {@code scratch} or an array the record owns (never to be modified), or {@code null}
+   * when the record is gone, carries no vector, or carries an unusable one
+   */
+  private float[] readRecordVectorArray(final StoredVectorReader reader, final RID rid, final float[] scratch) {
     try {
-      final Document doc = (Document) getDatabase().lookupByRID(rid, false);
-      final Object raw = doc.get(vectorProp);
-      if (raw == null)
-        return null;
-
-      final float[] vector = VectorUtils.toFloatArray(raw, metadata.encoding);
       // Same validity rule as readPersistedVectorArray: a vector of the wrong arity, or an all-zero one, is not
       // something this index can score against and must be skipped rather than scored as if it were at the origin.
-      if (vector.length == metadata.dimensions && !isUnscorable(vector))
-        return vector;
+      return reader.read(rid, scratch);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE,
-          "Could not read back the pending vector of %s for index '%s': %s", rid, indexName, e.getMessage());
+          "Could not read back the stored vector of %s for index '%s': %s", rid, indexName, e.getMessage());
     }
     return null;
+  }
+
+  /**
+   * A reader of the vectors this index's records store under {@code propertyName}, for the calling thread (issue #11298): one
+   * per search or build, reused for every vector it reads.
+   */
+  StoredVectorReader storedVectorReader(final String propertyName, final int dimensions) {
+    return new StoredVectorReader(getDatabase(), propertyName, dimensions, metadata.encoding,
+        metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN);
+  }
+
+  /**
+   * The vector the record at {@code rid} stores, read by {@code reader} where the record lies on its page, or {@code null}
+   * when it cannot be read there and the caller must read the record (issue #11298): see
+   * {@link StoredVectorReader#readInPlaceOnly(RID)}. Never the calling transaction's own write, which is left to the record
+   * layer.
+   */
+  float[] readStoredVectorInPlace(final StoredVectorReader reader, final RID rid) {
+    return getDatabase().executeInReadLock(() -> reader.readInPlaceOnly(rid));
+  }
+
+  /** A reader of the vectors this index's records store, for one thread (issue #11298). */
+  private StoredVectorReader storedVectorReader() {
+    return storedVectorReader(vectorPropertyName(), metadata.dimensions);
   }
 
   /**
@@ -7527,21 +7557,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
           VectorLocationIndex.isCompactedOf(offsetAndFlag));
 
       if (vector == null) {
-        final String vectorProp = vectorPropertyName();
         final RID rid = locations.getRid(vectorId);
         if (rid == null)
           return null;
-        final Document doc = (Document) getDatabase().lookupByRID(rid, false);
-        final Object raw = doc.get(vectorProp);
-        if (raw == null)
-          return null;
+        // Read where the record lies on its page when it can be (issue #11298), through the record layer otherwise
+        final StoredVectorReader reader = storedVectorReader();
         try {
-          vector = VectorUtils.toFloatArray(raw, metadata.encoding);
+          vector = getDatabase().executeInReadLock(() -> reader.read(rid, null));
         } catch (final IllegalArgumentException e) {
           // WARNING, not FINE: an index whose vectors cannot be read back is silently losing rows from searches.
           LogManager.instance().log(this, Level.WARNING,
-              "Vector property '%s' has unsupported type %s (RID=%s, vectorId=%d): %s",
-              vectorProp, raw.getClass().getName(), rid, vectorId, e.getMessage());
+              "Vector property '%s' has an unsupported type (RID=%s, vectorId=%d): %s",
+              vectorPropertyName(), rid, vectorId, e.getMessage());
           return null;
         }
       }
@@ -9355,6 +9382,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Re-scores {@code candidates} with the similarity function against the vectors the records store, nearest first,
    * truncated to {@code k}. A candidate whose record is gone or carries no usable vector is dropped: its approximate
    * distance is on another scale and cannot be ordered against the exact ones.
+   * <p>
+   * Each stored vector is read where its record lies on its page, into one array reused for every candidate, under one
+   * acquisition of the database read lock (issue #11298): a read through the record layer cost two lookups, a copy of the
+   * whole record and a new array per candidate, for the {@code k * rerankOversample} candidates of every search.
    */
   private List<Pair<RID, Float>> rerankOnStoredVectors(final float[] queryVector, final List<Pair<RID, Float>> candidates, final int k,
       final WorkGuard guard) {
@@ -9362,17 +9393,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return candidates;
 
     final VectorFloat<?> query = vts.createFloatVector(queryVector);
+    final StoredVectorReader reader = storedVectorReader();
+    final float[] scratch = new float[metadata.dimensions];
     final List<Pair<RID, Float>> reranked = new ArrayList<>(candidates.size());
-    int checked = 0;
-    for (final Pair<RID, Float> candidate : candidates) {
-      // One record read per candidate, and the candidates are k * oversample of them
-      guard.checkPeriodically(++checked);
-      final float[] stored = readRecordVectorArray(candidate.getFirst());
-      if (stored == null)
-        continue;
-      reranked.add(new Pair<>(candidate.getFirst(),
-          scoreToDistance(metadata.similarityFunction, metadata.similarityFunction.compare(query, vts.createFloatVector(stored)))));
-    }
+    getDatabase().executeInReadLock(() -> {
+      int checked = 0;
+      for (final Pair<RID, Float> candidate : candidates) {
+        // One stored-vector read per candidate, and the candidates are k * oversample of them
+        guard.checkPeriodically(++checked);
+        final float[] stored = readRecordVectorArray(reader, candidate.getFirst(), scratch);
+        if (stored == null)
+          continue;
+        reranked.add(new Pair<>(candidate.getFirst(),
+            scoreToDistance(metadata.similarityFunction, metadata.similarityFunction.compare(query, vts.createFloatVector(stored)))));
+      }
+      return null;
+    });
     reranked.sort(Comparator.comparingDouble(Pair::getSecond));
     return reranked.size() > k ? new ArrayList<>(reranked.subList(0, k)) : reranked;
   }
@@ -9888,17 +9924,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int total = approximate.size();
       final float[] distances = new float[total];
       final int[] positions = new int[total];
-      int rescored = 0;
-      for (int i = 0; i < total; i++) {
-        guard.checkPeriodically(i);
-        final float[] stored = readRecordVectorArray(approximate.get(i).getFirst());
-        if (stored == null)
-          continue; // the record is gone: its approximate distance cannot be ranked against the exact ones
-        distances[rescored] = scoreToDistance(metadata.similarityFunction,
-            metadata.similarityFunction.compare(query, vts.createFloatVector(stored)));
-        positions[rescored] = i;
-        rescored++;
-      }
+      // Read in place into one reused array, under one acquisition of the read lock, as the ungrouped rerank (issue #11298)
+      final StoredVectorReader reader = storedVectorReader();
+      final float[] scratch = new float[metadata.dimensions];
+      final int rescored = getDatabase().executeInReadLock(() -> {
+        int scored = 0;
+        for (int i = 0; i < total; i++) {
+          guard.checkPeriodically(i);
+          final float[] stored = readRecordVectorArray(reader, approximate.get(i).getFirst(), scratch);
+          if (stored == null)
+            continue; // the record is gone: its approximate distance cannot be ranked against the exact ones
+          distances[scored] = scoreToDistance(metadata.similarityFunction,
+              metadata.similarityFunction.compare(query, vts.createFloatVector(stored)));
+          positions[scored] = i;
+          scored++;
+        }
+        return scored;
+      });
 
       final GroupAdmissionState groups =
           onlyGroups == null ? new GroupAdmissionState(limit, groupSize) : new GroupAdmissionState(onlyGroups, groupSize);

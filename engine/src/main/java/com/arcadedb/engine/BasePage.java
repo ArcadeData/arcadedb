@@ -98,6 +98,22 @@ public abstract class BasePage {
   }
 
   /**
+   * Reads an unsigned variable-length number without allocating or moving the position, the twin of {@link #readNumber(int)}
+   * for the numbers a record header holds. It occupies {@link #readNumberSize(int)} bytes.
+   */
+  public long readUnsignedNumber(final int index) {
+    return this.content.getUnsignedNumberAt(PAGE_HEADER_SIZE + index);
+  }
+
+  /**
+   * Reads {@code count} little-endian floats, as a fixed-width float array is stored, into {@code values}, without moving the
+   * position (issue #11298).
+   */
+  public void readFloatArray(final int index, final float[] values, final int count) {
+    this.content.getFloatArrayAt(PAGE_HEADER_SIZE + index, values, count);
+  }
+
+  /**
    * Reads a signed variable-length number. Allocates the returned pair on every call: a hot path uses
    * {@link #readNumber(int)} and {@link #readNumberSize(int)} instead.
    *

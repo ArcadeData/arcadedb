@@ -46,9 +46,9 @@ class Issue10876BucketPageSizeFloorTest extends TestHelper {
 
   @Test
   void theMinimumIsDerivedFromTheBucketFormatAndStatedBySettings() {
-    // page header (8) + record count and slot table (2 + slots * 4) + the head chunk of a record (14)
-    assertThat(LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)).isEqualTo(8 + 2 + 2048 * 4 + 14);
-    assertThat(LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)).isEqualTo(8 + 2 + 256 * 4 + 14);
+    // page header (8) + record count and slot table (2 + slots * 4) + 4KB of record area (#11286)
+    assertThat(LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)).isEqualTo(8 + 2 + 2048 * 4 + 4096);
+    assertThat(LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)).isEqualTo(8 + 2 + 256 * 4 + 4096);
 
     assertThat(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getMinimum()).isEqualTo(
         LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION));

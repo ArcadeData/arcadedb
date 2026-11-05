@@ -23,14 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.net.http.HttpRequest;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,59 +33,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the token with no principal, a probe spelling the root principal as a literal, and seven dials that fell back to plain
  * HTTP on an SSL cluster without a word, the follower's write forward among them.
  * <p>
- * The two helpers are now one builder, {@link PeerRequest}, and the guarantee is a scan of this module's main sources:
- * no request is built, and neither header is spelled, anywhere in them. A helper with two adopters reads the same as a
- * helper with eleven in a diff; this is the form of the fix the twelfth dial cannot quietly bypass.
- * <p>
- * The builder lives in the {@code server} module since issue #10068, which brought that module's own dials onto it too and
- * scans its sources with {@code Issue10068ServerPeerDialsGoThroughOneBuilderTest}. This module therefore holds no builder
- * source at all: every hit of the scan is a bypass.
- * <p>
- * It is a tripwire, not a proof: a text scan cannot see a header name assembled at runtime or a call split across lines.
- * It catches the shape every dial in this module has actually taken, which is the shape the next one will copy.
+ * The two helpers are now one builder, {@link PeerRequest} (server module since issue #10068). That no dial of this module or of
+ * the server starts its request, or attaches either header, outside it is held by {@code PeerDialsGoThroughOneBuilderCensusTest}
+ * (census module), over the compiled classes (#11288); this class pins the drifts the issue found, through their dials.
  */
 class Issue9999PeerDialsGoThroughOneBuilderTest {
-
-  private static final Path MAIN_SOURCES = Path.of("src", "main", "java");
-
-  /** Every shape a peer dial in this module could take to bypass the builder. */
-  private static final String[] BYPASSES = {
-      "\"X-ArcadeDB-Cluster-Token\"",   // the token, spelled by hand
-      "\"X-ArcadeDB-Forwarded-User\"",  // the principal, spelled by hand
-      "HttpRequest.newBuilder(",        // a request built without the credential and the notice
-      ".openConnection()",              // the same, in the HttpURLConnection form
-      "toURL()",                        // any URL-level dial (openConnection, openStream) starts from one
-  };
 
   @BeforeEach
   @AfterEach
   void rearmTheNotice() {
     PeerRequest.rearmForTests();
-  }
-
-  @Test
-  void noPeerDialBuildsItsRequestOrSpellsItsCredentialOutsideTheBuilder() throws IOException {
-    assertThat(MAIN_SOURCES).as("the scan runs from the ha-raft module directory").isDirectory();
-
-    final List<String> offenders = new ArrayList<>();
-    int scanned = 0;
-    try (final Stream<Path> files = Files.walk(MAIN_SOURCES)) {
-      for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
-        scanned++;
-        final List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
-        for (int i = 0; i < lines.size(); i++)
-          for (final String bypass : BYPASSES)
-            if (lines.get(i).contains(bypass))
-              offenders.add(file.getFileName() + ":" + (i + 1) + "  " + lines.get(i).strip());
-      }
-    }
-
-    assertThat(scanned).as("the scan reached this module's sources, so an empty offender list means something")
-        .isGreaterThan(50);
-    assertThat(offenders)
-        .as("every peer-to-peer dial starts its request from PeerRequest.newRequest/openConnection, which attaches the "
-            + "cluster token and forwarded user together and says the plain-HTTP fallback notice (issue #9999)")
-        .isEmpty();
   }
 
   // ------------------------------------------------------------------ the drifts the issue found, through their dials

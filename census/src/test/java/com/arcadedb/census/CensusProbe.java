@@ -68,6 +68,14 @@ final class CensusProbe {
     return registry.getTypes().size();
   }
 
+  /** A named nested class keeps its own key, so its {@code hoisted} is not the reviewed-looking one around it. */
+  static final class Nested {
+    static int hoisted(final Database database) {
+      final Schema s = database.getSchema();
+      return s.getTypes().size();
+    }
+  }
+
   /** Another {@code getTypes()}, on a class that is no schema. */
   interface Registry {
     Collection<? extends DocumentType> getTypes();

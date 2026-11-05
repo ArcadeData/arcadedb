@@ -136,12 +136,7 @@ public class ArrayConcatExpression extends SimpleNode {
           } else {
             // Convert Expression to ArrayConcatExpressionElement
             final ArrayConcatExpressionElement element = new ArrayConcatExpressionElement();
-            element.mathExpression = splitResult.mathExpression;
-            element.json = splitResult.json;
-            element.rid = splitResult.rid;
-            element.isNull = splitResult.isNull;
-            element.booleanValue = splitResult.booleanValue;
-            element.arrayConcatExpression = splitResult.arrayConcatExpression;
+            element.takeFieldsOf(splitResult);
             element.nestedProjection = expr.nestedProjection;
             result.childExpressions.add(element);
           }

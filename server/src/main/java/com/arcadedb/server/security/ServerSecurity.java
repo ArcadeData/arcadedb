@@ -247,7 +247,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
     } catch (final NoSuchAlgorithmException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Security algorithm '%s' not available (error=%s)", e, algorithm);
+      LogManager.instance().log(this, Level.SEVERE, "Security algorithm '%s' not available (error=%s)", e, algorithm, e.getMessage());
       throw new ServerSecurityException("Security algorithm '" + algorithm + "' not available", e);
     }
   }

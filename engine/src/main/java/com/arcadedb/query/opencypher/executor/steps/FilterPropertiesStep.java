@@ -53,6 +53,10 @@ public class FilterPropertiesStep extends AbstractExecutionStep implements Paral
     this.whereClause = whereClause;
   }
 
+  public WhereClause getWhereClause() {
+    return whereClause;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("FilterPropertiesStep requires a previous step");

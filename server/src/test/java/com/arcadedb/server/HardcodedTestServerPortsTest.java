@@ -54,6 +54,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * module. The scan runs from the {@code server} module and walks its siblings; {@link PluginPortFixtureScan} and the
  * ha-raft {@code Issue8203}/{@code Issue8222} guards cover the plugin and Raft ports.
  * <p>
+ * It reads source text rather than compiled classes, and that is a recorded decision (#11288,
+ * {@code SourceTextTestsAreRecordedTest}): the offender is a literal, which javac folds - a {@code static final int}
+ * port is inlined at every use and a concatenated URL survives only as a {@code makeConcatWithConstants} recipe - so the
+ * bytecode no longer ties the number to the setting it is handed to; and the population is the TEST sources of every
+ * module, whose classes no one module's classpath carries.
+ * <p>
  * <b>A held-bound ephemeral listener is not an offender</b>, and the scan deliberately leaves
  * {@code new ServerSocket(0, backlog, address)} alone when the test keeps that socket bound and dials the port it reads
  * back from it: the fake leaders of {@link FakeLeader}, the

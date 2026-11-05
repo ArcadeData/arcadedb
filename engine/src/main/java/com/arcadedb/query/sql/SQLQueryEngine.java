@@ -29,6 +29,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
@@ -488,7 +489,8 @@ public class SQLQueryEngine implements QueryEngine {
         throw new CommandExecutionException(
             "'distinct' is supported only as the whole SELECT projection (e.g. `SELECT distinct(field)` or `SELECT DISTINCT field`), "
                 + "not nested inside another function or as the base of a method");
-      throw new CommandExecutionException("Unknown function name '" + name + "'");
+      // its own type, so every protocol reports it as the caller's mistake rather than a server fault (issue #11314)
+      throw new UnknownFunctionException(name, "Unknown function name '" + name + "'");
     }
 
     return sqlFunction;

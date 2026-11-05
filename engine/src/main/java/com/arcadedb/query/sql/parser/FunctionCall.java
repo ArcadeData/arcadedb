@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.graph.SQLFunctionMove;
 import com.arcadedb.query.sql.SQLQueryEngine;
@@ -153,7 +154,7 @@ public class FunctionCall extends SimpleNode {
         throw new CommandExecutionException("Invalid value for $current: " + record);
       }
     } else {
-      throw new CommandExecutionException("Function not found: " + name);
+      throw new UnknownFunctionException(name, "Function not found: " + name);
     }
   }
 

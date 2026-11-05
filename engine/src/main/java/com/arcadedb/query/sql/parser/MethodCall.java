@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -115,7 +116,7 @@ public class MethodCall extends SimpleNode {
     if (isGraphFunction()) {
       final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function == null)
-        throw new CommandExecutionException("Function not found: " + name);
+        throw new UnknownFunctionException(name, "Function not found: " + name);
 
       final Object[] functionParams = paramValues.toArray();
       function.checkArity(functionParams);

@@ -36,18 +36,12 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,7 +55,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link RaftClusterManager.CommittedConfiguration} and nothing else, and refuses with the reason when it cannot be read.
  * <p>
  * The cluster view is a {@link FakeRaftHAServer} whose declared list (what {@code getLivePeers()} answers) and committed
- * configuration differ on purpose; the Raft client is a {@link Proxy} that records what would have been sent.
+ * configuration differ on purpose; the Raft client is a {@link Proxy} that records what would have been sent. That every
+ * precondition of the code base is built in a method handed the committed configuration is held by
+ * {@code MembershipPreconditionCensusTest} (census module).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -243,44 +239,6 @@ class Issue10769MembershipChangeReadsCommittedConfigurationTest {
     assertThat(Stream.of(RaftClusterManager.CommittedConfiguration.class.getDeclaredConstructors())
         .allMatch(c -> Modifier.isPrivate(c.getModifiers())))
         .as("only RaftClusterManager.readCommittedConfiguration builds one").isTrue();
-  }
-
-  /**
-   * The census half, enumerated from the sources rather than from a hand-written list: every place in the module that
-   * builds a compare-and-set precondition does it in a method handed a {@code CommittedConfiguration}.
-   */
-  @Test
-  void everyPreconditionInTheModuleIsBuiltFromTheCommittedConfiguration() throws IOException {
-    final Path sources = Path.of("src/main/java/com/arcadedb/server/ha/raft");
-    assertThat(sources).isDirectory();
-
-    // A method declaration: modifiers, a return type, a name, a parameter list, an optional throws clause, then a body
-    final Pattern methodHeader = Pattern.compile("^\\s*(?:(?:private|static|final|public|protected|synchronized)\\s+)*"
-        + "[A-Za-z][\\w.<>\\[\\], ?]*\\s+(\\w+)\\(([^)]*)\\)\\s*(?:throws\\s+[\\w., ]+)?\\{", Pattern.MULTILINE);
-    final List<String> preconditionSites = new ArrayList<>();
-    try (Stream<Path> files = Files.list(sources)) {
-      for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
-        final String source = Files.readString(file, StandardCharsets.UTF_8);
-        int at = source.indexOf(".setServersInCurrentConf(");
-        while (at >= 0) {
-          // The nearest method declaration above the call: its parameters must carry the committed configuration
-          final Matcher matcher = methodHeader.matcher(source.substring(0, at));
-          String method = null;
-          String parameters = null;
-          while (matcher.find()) {
-            method = matcher.group(1);
-            parameters = matcher.group(2);
-          }
-          preconditionSites.add(file.getFileName() + "#" + method);
-          assertThat(parameters).as(file.getFileName() + "#" + method
-              + " builds a compare-and-set precondition without being handed the committed configuration").contains(
-              "CommittedConfiguration");
-          at = source.indexOf(".setServersInCurrentConf(", at + 1);
-        }
-      }
-    }
-    assertThat(preconditionSites).as("the add and the removal")
-        .contains("RaftClusterManager.java#buildAddArgs", "RaftClusterManager.java#buildRemoveArgs");
   }
 
   private static RaftPeer peer(final String id) {

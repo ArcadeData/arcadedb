@@ -189,7 +189,10 @@ class FlushPageIndex {
   MutablePage remove(final PageId pageId) {
     final MutablePage removed = pages.remove(pageId);
     if (removed != null)
-      release(pageId.getDatabase());
+      // The REMOVED page's own database, not the argument's (issue #11315): the argument only has to be equals() to the
+      // retained key, i.e. path-equal, so with two instances at one path it can name the other one, and releasing its
+      // counter drove that one negative and left the live owner's above zero on an empty index.
+      release(removed.getPageId().getDatabase());
     return removed;
   }
 
@@ -335,11 +338,16 @@ class FlushPageIndex {
   /**
    * The same question {@link #pendingOf} answers, computed the expensive way by walking the whole index. Exists only
    * so the regression test of issue #6133 can prove the counter agrees with the map after every kind of mutation.
+   * <p>
+   * Over the VALUES, matched on the value's own {@link PageId} by reference identity, the two rules every accessor of
+   * this class follows (#6440, #6931): an oracle walking the retained keys under path equality attributed a page to a
+   * same-path instance that no longer owned it, so it disagreed with a correct counter and would have agreed with one
+   * regressed to key-based accounting (issue #11315).
    */
   int scanPendingOf(final BasicDatabase database) {
     int count = 0;
-    for (final PageId pageId : pages.keySet())
-      if (database.equals(pageId.getDatabase()))
+    for (final MutablePage page : pages.values())
+      if (page.getPageId().getDatabase() == database)
         ++count;
     return count;
   }

@@ -68,6 +68,9 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   private volatile long                   retentionMs;
   private volatile long                   compactionBucketIntervalMs;
   private volatile int                    sealedFormatVersion  = TimeSeriesSealedStore.CURRENT_VERSION;
+  // The id every sealed file of the type records and is checked against at open (issue #11274): drawn when the type is created, kept
+  // across a rename, NO_OWNER for a type of a database written before it, whose files record none
+  private volatile long                   sealedOwner          = TimeSeriesSealedStore.NO_OWNER;
   // A type created by this build writes the current mutable row format; one restored from JSON keeps
   // whatever version wrote its pages, which is what lets a pre-#5519 database open unchanged.
   private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
@@ -111,7 +114,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
       return;
     try {
       engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns,
-          shardCount > 0 ? shardCount : 1, compactionBucketIntervalMs, mutableFormatVersion);
+          shardCount > 0 ? shardCount : 1, compactionBucketIntervalMs, mutableFormatVersion, sealedOwner);
     } catch (final IOException | RuntimeException e) {
       // Record why THIS attempt failed, so a retry that fails for a new reason does not keep reporting the old
       // one. Since #6839 this method is retried outside schema load - the HA sealed-blob repair path drives it -
@@ -202,6 +205,19 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
 
   public boolean isEngineAvailable() {
     return engine != null;
+  }
+
+  /**
+   * The id every sealed file of this type records, shard by shard, and is checked against when the engine opens it (issue #11274), or
+   * {@code TimeSeriesSealedStore.NO_OWNER} for a type of a database written before it.
+   */
+  public long getSealedOwner() {
+    return sealedOwner;
+  }
+
+  /** Set by {@link TimeSeriesTypeBuilder} on the type it creates, before its engine exists; read back from the schema afterwards. */
+  void setSealedOwner(final long sealedOwner) {
+    this.sealedOwner = sealedOwner;
   }
 
   /**
@@ -648,6 +664,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
     if (compactionBucketIntervalMs > 0)
       json.put("compactionBucketIntervalMs", compactionBucketIntervalMs);
     json.put("sealedFormatVersion", sealedFormatVersion);
+    if (sealedOwner != TimeSeriesSealedStore.NO_OWNER)
+      json.put("sealedOwner", sealedOwner);
     // The version that wrote this type's pages, NOT the current constant: rewriting an existing v0
     // type as v1 would tell the next open to read inline tag bytes as dictionary ids.
     json.put("mutableFormatVersion", mutableFormatVersion);
@@ -698,6 +716,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
       throw new IllegalStateException(
           "Unsupported sealed store format version " + sealedFormatVersion + " (this build supports up to " +
               TimeSeriesSealedStore.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
+    sealedOwner = json.getLong("sealedOwner", TimeSeriesSealedStore.NO_OWNER);
     // Older mutable formats stay readable: the version selects the row layout rather than gating the
     // open, so a type written before the tag dictionary (issue #5519) keeps its inline tag columns.
     // Only a version this build does not know about is refused.

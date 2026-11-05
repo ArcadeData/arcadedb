@@ -47,7 +47,7 @@ class BucketNameValidationTest extends TestHelper {
   void createBucketRejectsNamesThatLeaveTheDatabaseDirectory() {
     final File databaseDirectory = new File(database.getDatabasePath());
     final File parent = databaseDirectory.getParentFile();
-    final int filesInParentBefore = parent.listFiles().length;
+    final int filesInParentBefore = regularFilesIn(parent);
 
     for (final String name : ESCAPING_NAMES)
       assertThatThrownBy(() -> database.getSchema().createBucket(name))
@@ -55,13 +55,13 @@ class BucketNameValidationTest extends TestHelper {
           .isInstanceOf(SchemaException.class);
 
     // Nothing may have been created next to the database directory.
-    assertThat(parent.listFiles().length).isEqualTo(filesInParentBefore);
+    assertThat(regularFilesIn(parent)).isEqualTo(filesInParentBefore);
   }
 
   @Test
   void createBucketViaSqlRejectsNamesThatLeaveTheDatabaseDirectory() {
     final File parent = new File(database.getDatabasePath()).getParentFile();
-    final int filesInParentBefore = parent.listFiles().length;
+    final int filesInParentBefore = regularFilesIn(parent);
 
     // Identifier.quote() backtick-quotes and escapes, so the name the engine receives is the one intended here.
     // Building the statement by hand would let the lexer eat a backslash as an escape and change the name.
@@ -76,7 +76,7 @@ class BucketNameValidationTest extends TestHelper {
     }
     assertThat(accepted).as("bucket names accepted through SQL that address another directory").isEmpty();
 
-    assertThat(parent.listFiles().length).isEqualTo(filesInParentBefore);
+    assertThat(regularFilesIn(parent)).isEqualTo(filesInParentBefore);
   }
 
   @Test
@@ -151,5 +151,15 @@ class BucketNameValidationTest extends TestHelper {
       assertThatCode(() -> database.getSchema().createBucket(name))
           .as("bucket name '%s' must be accepted", name)
           .doesNotThrowAnyException();
+  }
+
+  /**
+   * The component files directly in {@code directory}. Only files are counted: a bucket that escaped would leave its component
+   * file there, while the directory is shared with the databases the tests of the other forks create at the same time, which
+   * made a count of every entry fail when one appeared between the two reads.
+   */
+  private static int regularFilesIn(final File directory) {
+    final File[] files = directory.listFiles(File::isFile);
+    return files != null ? files.length : 0;
   }
 }

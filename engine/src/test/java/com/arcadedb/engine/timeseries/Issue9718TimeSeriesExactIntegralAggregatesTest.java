@@ -123,7 +123,8 @@ class Issue9718TimeSeriesExactIntegralAggregatesTest extends TestHelper {
       file.seek(4);
       assertThat(file.readByte()).isEqualTo((byte) TimeSeriesSealedStore.CURRENT_VERSION);
     }
-    assertThat(TimeSeriesSealedStore.CURRENT_VERSION).isEqualTo(3);
+    // 4 since issue #11274, which put the owner into the header after the layout version 3 introduced
+    assertThat(TimeSeriesSealedStore.CURRENT_VERSION).isEqualTo(4);
   }
 
   @Test

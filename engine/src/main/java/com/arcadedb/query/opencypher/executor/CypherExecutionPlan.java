@@ -200,6 +200,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -1429,7 +1430,7 @@ public class CypherExecutionPlan {
     final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
     // See buildExecutionStepsWithOrder(): the same read/write barrier analysis, over the same clause list
     // (issue #7171). This path never sees a CALL or a FOREACH, so only CREATE and MERGE are weighed here.
-    final CypherEagernessAnalyzer eagerness = new CypherEagernessAnalyzer();
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
     final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
@@ -1761,7 +1762,7 @@ public class CypherExecutionPlan {
 
     // Shape of everything read so far, weighed against each write clause's own shape to decide where an
     // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
-    final CypherEagernessAnalyzer eagerness = new CypherEagernessAnalyzer();
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
 
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
@@ -2146,7 +2147,13 @@ public class CypherExecutionPlan {
       if (countOpt != null)
         currentStep = countOpt;
       else if (statement.getReturnClause().hasAggregations()) {
-        if (statement.getReturnClause().hasNonAggregations()) {
+        // A distinct-endpoint walk counts its end vertices itself: no row per end vertex, no filter, no aggregation (issue #10557)
+        // Not for a body seeded with rows from outside (a subquery), which may be run once per outer row
+        final AbstractExecutionStep endpointCount = statement.getReturnClause().hasNonAggregations() || initialStep != null ? null :
+            tryCountDistinctEndpointsOfSteps(clausesInOrder, statement.getReturnClause().getReturnItems(), currentStep, context);
+        if (endpointCount != null)
+          currentStep = endpointCount;
+        else if (statement.getReturnClause().hasNonAggregations()) {
           final GroupByAggregationStep groupByAggStep =
               new GroupByAggregationStep(
                   statement.getReturnClause(), context, functionFactory);
@@ -2435,6 +2442,9 @@ public class CypherExecutionPlan {
     // The other half of the relationship-uniqueness scope: see clauseRelationshipVariables().
     final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
     final boolean isOptional = matchClause.isOptional();
+    // The WHERE conjuncts a node step of this clause already decides on every row it passes on: a later node step does not take
+    // them again, and the clause's filter applies only the rest (issue #11102). By identity: the conjuncts are the parsed nodes.
+    final Set<BooleanExpression> pushedConjuncts = Collections.newSetFromMap(new IdentityHashMap<>());
 
     // Reorder independent (disconnected) comma-separated pattern parts so the expensive edge-bearing
     // component drives the Cartesian product as the outer loop regardless of the written order
@@ -2496,9 +2506,9 @@ public class CypherExecutionPlan {
         final String idFilter = extractIdFilter(whereClause, variable);
         // OPTIMIZATION: Extract WHERE predicates referencing only available variables for pushdown
         final BooleanExpression pushdownFilter = extractPushdownFilter(whereClause, variable,
-            boundVariables, matchVariables);
-        final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter,
-            pushdownFilter);
+            boundVariables, matchVariables, pushedConjuncts);
+        final MatchNodeStep matchStep = takePushdown(new MatchNodeStep(variable, nodePattern, context, idFilter,
+            pushdownFilter), pushedConjuncts);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -2539,10 +2549,8 @@ public class CypherExecutionPlan {
             ("  tgt" + anonymousVarCounter++);
         final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
 
-        // Track path variable
-        if (pathVariable != null) {
-          matchVariables.add(pathVariable);
-        }
+        // The path variable is tracked once the ShortestPathStep that binds it is planned: the endpoints' node steps run before
+        // it, so a predicate on the path pushed into one of them read an unbound path and dropped every row (issue #11102)
 
         // For shortestPath, both endpoints must be matched first
         // Check both boundVariables (from previous MATCH clauses) and matchVariables (from earlier
@@ -2552,9 +2560,9 @@ public class CypherExecutionPlan {
         if (!boundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
           final String sourceIdFilter = extractIdFilter(whereClause, sourceVar);
           final BooleanExpression sourcePushdown = extractPushdownFilter(whereClause, sourceVar,
-              boundVariables, matchVariables);
-          final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
-              sourcePushdown);
+              boundVariables, matchVariables, pushedConjuncts);
+          final MatchNodeStep sourceStep = takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+              sourcePushdown), pushedConjuncts);
           if (currentStep != null) {
             sourceStep.setPrevious(currentStep);
           }
@@ -2568,9 +2576,9 @@ public class CypherExecutionPlan {
         if (!boundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
           final String targetIdFilter = extractIdFilter(whereClause, targetVar);
           final BooleanExpression targetPushdown = extractPushdownFilter(whereClause, targetVar,
-              boundVariables, matchVariables);
-          final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
-              targetPushdown);
+              boundVariables, matchVariables, pushedConjuncts);
+          final MatchNodeStep targetStep = takePushdown(new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
+              targetPushdown), pushedConjuncts);
           if (currentStep != null) {
             targetStep.setPrevious(currentStep);
           }
@@ -2587,6 +2595,8 @@ public class CypherExecutionPlan {
           shortestStep.setPrevious(currentStep);
         }
         currentStep = shortestStep;
+        if (pathVariable != null)
+          matchVariables.add(pathVariable);
 
         if (isOptional && matchChainStart == null) {
           matchChainStart = shortestStep;
@@ -2654,16 +2664,18 @@ public class CypherExecutionPlan {
         // correctly (uses bound vertex and validates labels/properties)
         final String sourceIdFilter = sourceAlreadyBound ? null : extractIdFilter(whereClause, sourceVar);
         final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
-            extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables);
+            extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables, pushedConjuncts);
         final AbstractExecutionStep sourceStep;
         if (reversedFromIndexedAnchor && physicalPlan.getAnchor().getPropertyValue() instanceof InListValues) {
+          // The seek decides none of the pushdown: it stays with the clause's filter
           final var anchor = physicalPlan.getAnchor();
           sourceStep = new IndexSeekStep(anchor.getVariable(), anchor.getIndex().getTypeName(),
               anchor.getPropertyName(), anchor.getPropertyValue(), anchor.getIndex().getIndexName(),
               anchor.getIndex().getPropertyNames(),
               anchor.getEstimatedCost(), anchor.getEstimatedCardinality(), context);
         } else
-          sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter, sourcePushdown);
+          sourceStep = takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter, sourcePushdown),
+              pushedConjuncts);
 
         if (isOptional) {
           if (matchChainStart == null) {
@@ -2827,9 +2839,10 @@ public class CypherExecutionPlan {
       }
     }
 
-    // Apply WHERE clause scoped to this MATCH
-    if (matchClause.hasWhereClause() && currentStep != null) {
-      final FilterPropertiesStep filterStep = new FilterPropertiesStep(matchClause.getWhereClause(), context);
+    // Apply WHERE clause scoped to this MATCH: only what no node step of the clause decided already (issue #11102)
+    final WhereClause residualWhere = residualWhere(matchClause, pushedConjuncts);
+    if (residualWhere != null && currentStep != null) {
+      final FilterPropertiesStep filterStep = new FilterPropertiesStep(residualWhere, context);
 
       if (isOptional) {
         filterStep.setPrevious(currentStep);
@@ -3763,6 +3776,8 @@ public class CypherExecutionPlan {
           final Set<String> matchVariables = new HashSet<>();
           final Set<String> clauseRelVariables = clauseRelationshipVariables(matchClause);
           final boolean isOptional = matchClause.isOptional();
+          // The WHERE conjuncts a node step of this clause already decides (issue #11102)
+          final Set<BooleanExpression> pushedConjuncts = Collections.newSetFromMap(new IdentityHashMap<>());
 
           // For optional match, we build the match chain separately (not chained to stepBeforeMatch)
           // Then wrap it in OptionalMatchStep which manages the input
@@ -3783,10 +3798,7 @@ public class CypherExecutionPlan {
                   ("  tgt" + anonymousVarCounter++);
               final String pathVariable = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
 
-              // Track path variable
-              if (pathVariable != null) {
-                matchVariables.add(pathVariable);
-              }
+              // The path variable is tracked once its ShortestPathStep is planned: see the ordered builder above (issue #11102)
 
               // Check both legacyBoundVariables (from previous MATCH clauses) and matchVariables (from earlier
               // patterns in this same MATCH clause) to avoid re-matching already-bound variables
@@ -3797,9 +3809,9 @@ public class CypherExecutionPlan {
                     statement.getWhereClause();
                 final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
                 final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
-                    legacyBoundVariables, matchVariables);
-                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
-                    sourcePushdown);
+                    legacyBoundVariables, matchVariables, pushedConjuncts);
+                final MatchNodeStep sourceStep = takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+                    sourcePushdown), pushedConjuncts);
                 if (currentStep != null) {
                   sourceStep.setPrevious(currentStep);
                 }
@@ -3815,9 +3827,9 @@ public class CypherExecutionPlan {
                     statement.getWhereClause();
                 final String targetIdFilter = extractIdFilter(matchWhere, targetVar);
                 final BooleanExpression targetPushdown = extractPushdownFilter(matchWhere, targetVar,
-                    legacyBoundVariables, matchVariables);
-                final MatchNodeStep targetStep = new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
-                    targetPushdown);
+                    legacyBoundVariables, matchVariables, pushedConjuncts);
+                final MatchNodeStep targetStep = takePushdown(new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
+                    targetPushdown), pushedConjuncts);
                 if (currentStep != null) {
                   targetStep.setPrevious(currentStep);
                 }
@@ -3834,6 +3846,8 @@ public class CypherExecutionPlan {
                 shortestStep.setPrevious(currentStep);
               }
               currentStep = shortestStep;
+              if (pathVariable != null)
+                matchVariables.add(pathVariable);
 
               if (isOptional && matchChainStart == null) {
                 matchChainStart = shortestStep;
@@ -3857,9 +3871,9 @@ public class CypherExecutionPlan {
               final String idFilter = extractIdFilter(matchWhere, variable);
               // OPTIMIZATION: Extract WHERE predicates for inline pushdown
               final BooleanExpression pushdownFilter = extractPushdownFilter(matchWhere, variable,
-                  legacyBoundVariables, matchVariables);
-              final MatchNodeStep matchStep = new MatchNodeStep(variable, nodePattern, context, idFilter,
-                  pushdownFilter);
+                  legacyBoundVariables, matchVariables, pushedConjuncts);
+              final MatchNodeStep matchStep = takePushdown(new MatchNodeStep(variable, nodePattern, context, idFilter,
+                  pushdownFilter), pushedConjuncts);
 
               if (isOptional) {
                 // For optional match, chain within the match steps only
@@ -3897,11 +3911,11 @@ public class CypherExecutionPlan {
                 final String sourceIdFilter = extractIdFilter(matchWhere, sourceVar);
                 // OPTIMIZATION: Extract WHERE predicates for inline pushdown
                 final BooleanExpression sourcePushdown = extractPushdownFilter(matchWhere, sourceVar,
-                    legacyBoundVariables, matchVariables);
+                    legacyBoundVariables, matchVariables, pushedConjuncts);
 
                 // Start with source node (or chain if we have previous patterns)
-                final MatchNodeStep sourceStep = new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
-                    sourcePushdown);
+                final MatchNodeStep sourceStep = takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
+                    sourcePushdown), pushedConjuncts);
 
                 if (isOptional) {
                   // For optional match, chain within the match steps only
@@ -4030,8 +4044,9 @@ public class CypherExecutionPlan {
 
           // Apply WHERE clause scoped to this MATCH (if present)
           // For OPTIONAL MATCH, this filters within the optional match chain
-          if (matchClause.hasWhereClause() && currentStep != null) {
-            final FilterPropertiesStep filterStep = new FilterPropertiesStep(matchClause.getWhereClause(), context);
+          final WhereClause legacyResidualWhere = residualWhere(matchClause, pushedConjuncts);
+          if (legacyResidualWhere != null && currentStep != null) {
+            final FilterPropertiesStep filterStep = new FilterPropertiesStep(legacyResidualWhere, context);
 
             if (isOptional) {
               // For OPTIONAL MATCH: apply WHERE within the match chain (before wrapping)
@@ -4149,7 +4164,7 @@ public class CypherExecutionPlan {
     // single-segment by construction, so the whole MATCH list is the read footprint for both writes below.
     // legacyBoundVariables already holds every variable the MATCH clauses above bound, which is what tells a
     // CREATE/MERGE node that names an existing entity from one that creates a new one.
-    final CypherEagernessAnalyzer eagerness = new CypherEagernessAnalyzer();
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
     for (final MatchClause matchClause : statement.getMatchClauses())
       eagerness.observeRead(matchClause);
 
@@ -4997,10 +5012,8 @@ public class CypherExecutionPlan {
         || statement.getWhereClause() != null || statement.getClausesInOrder() == null
         || statement.getClausesInOrder().size() != 2)
       return null;
-    final Expression expression = items.getFirst().getExpression();
-    if (!(expression instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
-        || !count.isDistinct() || count.getArguments().size() != 1
-        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+    final String counted = countedDistinctVariable(items.getFirst());
+    if (counted == null)
       return null;
 
     PhysicalOperator root = physicalPlan.getRootOperator();
@@ -5017,16 +5030,78 @@ public class CypherExecutionPlan {
     if (!(root instanceof GAVVarLengthExpand expand) || expand.getSourceVariable().equals(expand.getTargetVariable()))
       return null;
     // The counted end is the one the walk reaches, or the one the plan starts it from when it anchored on the other end
-    final boolean countSources = expand.getSourceVariable().equals(counted.getVariableName());
-    if (!countSources && !expand.getTargetVariable().equals(counted.getVariableName()))
+    final boolean countSources = expand.getSourceVariable().equals(counted);
+    if (!countSources && !expand.getTargetVariable().equals(counted))
       return null;
     return new DistinctEndpointCountStep(expand, excludeSource, countSources, items.getFirst().getOutputName(), context);
   }
 
-  private static boolean isPairOfEnds(final VarLengthExpand expand, final String left, final String right) {
+  private static boolean isPairOfEnds(final DistinctEndpointCountStep.Walk expand, final String left, final String right) {
     final String source = expand.getSourceVariable();
     final String target = expand.getTargetVariable();
     return (left.equals(source) && right.equals(target)) || (left.equals(target) && right.equals(source));
+  }
+
+  /**
+   * The step-based twin of {@link #tryCountDistinctEndpoints} (issue #10557): replaces the rows of
+   * {@code MATCH (a)-[:T*0|1..k]->(b) [WHERE b <> a] RETURN count(DISTINCT b)} that an {@link ExpandPathStep} in distinct-endpoint
+   * mode produces, the filter of the {@code WHERE} and the aggregation, with a {@link DistinctEndpointCountStep} counting while the
+   * walks run, through a view or the records. The step-based executor plans such a statement when, for instance, the end node has no
+   * label.
+   * <p>
+   * Only where nothing but that count reads the rows: the statement is one non-optional MATCH and the RETURN, the RETURN is one
+   * {@code count(DISTINCT)} of one end of the expansion, and the step chain ends with the expansion, under nothing but filters each
+   * testing {@code b <> a} between its two ends. What else decides whether a row is produced - the target node pattern, a bound
+   * target, a bound relationship list - is tested by {@link ExpandPathStep#countDistinct} exactly as the rows test it.
+   *
+   * @return the counting step, or null to keep the rows and aggregate them
+   */
+  private AbstractExecutionStep tryCountDistinctEndpointsOfSteps(final List<ClauseEntry> clausesInOrder,
+      final List<ReturnClause.ReturnItem> items, final AbstractExecutionStep currentStep, final CommandContext context) {
+    if (items.size() != 1 || clausesInOrder == null || clausesInOrder.size() != 2
+        || clausesInOrder.getFirst().getType() != ClauseEntry.ClauseType.MATCH
+        || clausesInOrder.get(1).getType() != ClauseEntry.ClauseType.RETURN
+        || ((MatchClause) clausesInOrder.getFirst().getTypedClause()).isOptional())
+      return null;
+    final String counted = countedDistinctVariable(items.getFirst());
+    if (counted == null)
+      return null;
+
+    AbstractExecutionStep root = currentStep;
+    final List<FilterPropertiesStep> filters = new ArrayList<>(2);
+    while (root instanceof FilterPropertiesStep filter) {
+      filters.add(filter);
+      root = (AbstractExecutionStep) filter.getPrev();
+    }
+    if (!(root instanceof ExpandPathStep expand) || !expand.isDistinctEndpoints() || expand.getPrev() == null
+        || expand.getSourceVariable().equals(expand.getTargetVariable()))
+      return null;
+    for (final FilterPropertiesStep filter : filters)
+      if (filter.getWhereClause() == null
+          || !(filter.getWhereClause().getConditionExpression() instanceof ComparisonExpression comparison)
+          || comparison.getOperator() != ComparisonExpression.Operator.NOT_EQUALS
+          || !(comparison.getLeft() instanceof VariableExpression left) || !(comparison.getRight() instanceof VariableExpression right)
+          || !isPairOfEnds(expand, left.getVariableName(), right.getVariableName()))
+        return null;
+
+    // The counted end is the one the walk reaches, or the one it starts from when the planner anchored it on the other end
+    final boolean countSources = expand.getSourceVariable().equals(counted);
+    if (!countSources && !expand.getTargetVariable().equals(counted))
+      return null;
+    final DistinctEndpointCountStep step = new DistinctEndpointCountStep(expand, !filters.isEmpty(), countSources,
+        items.getFirst().getOutputName(), context);
+    // For the plan and the close only: the rows are pulled by the expansion, from that same step
+    step.setPrevious(expand.getPrev());
+    return step;
+  }
+
+  /** The variable a RETURN item {@code count(DISTINCT v)} counts, or null for any other item. */
+  private static String countedDistinctVariable(final ReturnClause.ReturnItem item) {
+    if (!(item.getExpression() instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
+        || !count.isDistinct() || count.getArguments().size() != 1
+        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+      return null;
+    return counted.getVariableName();
   }
 
   /**
@@ -5845,10 +5920,11 @@ public class CypherExecutionPlan {
    * @param currentVar     the variable being scanned by the MatchNodeStep
    * @param boundVariables variables bound in previous MATCH clauses
    * @param matchVariables variables bound earlier in the current MATCH clause
+   * @param pushedConjuncts conjuncts an earlier node step of the clause decides already: every row this step sees passed them
    * @return the extractable predicate, or null if none qualifies
    */
   private BooleanExpression extractPushdownFilter(final WhereClause whereClause, final String currentVar,
-      final Set<String> boundVariables, final Set<String> matchVariables) {
+      final Set<String> boundVariables, final Set<String> matchVariables, final Set<BooleanExpression> pushedConjuncts) {
     if (whereClause == null || whereClause.getConditionExpression() == null)
       return null;
 
@@ -5858,7 +5934,8 @@ public class CypherExecutionPlan {
     available.addAll(matchVariables);
     available.add(currentVar);
 
-    final BooleanExpression extracted = WhereClause.extractForVariables(whereClause.getConditionExpression(), available);
+    final BooleanExpression extracted = WhereClause.extractForVariables(
+        WhereClause.withoutConjuncts(whereClause.getConditionExpression(), pushedConjuncts), available);
     // Strip {@code id(var) = X} / {@code elementId(var) = X} predicates whose RHS is statically
     // resolvable (literal or parameter): the static idFilter optimisation already enforces them via
     // direct RID lookup, so re-evaluating them in the row-by-row pushdown filter is wasted work and
@@ -5867,6 +5944,34 @@ public class CypherExecutionPlan {
     // dynamic RHS (e.g. {@code id(a) = b.id}) are left alone because extractIdFilter does not consume
     // them.
     return stripStaticIdEqualities(extracted);
+  }
+
+  /**
+   * Records the conjuncts the node step decides on every row it passes on, and returns the step. Only what the step actually kept
+   * is recorded: an {@code id(var) = X} it enforces through its id lookup instead is left to the clause's filter, as before.
+   */
+  private static MatchNodeStep takePushdown(final MatchNodeStep step, final Set<BooleanExpression> pushedConjuncts) {
+    pushedConjuncts.addAll(WhereClause.conjuncts(step.getWhereFilter()));
+    return step;
+  }
+
+  /**
+   * The part of a MATCH clause's own WHERE that no node step of the clause decided, or {@code null} when nothing is left to decide
+   * (issue #11102). A node step evaluates its pushed predicate on the very row it passes on, and the steps of a clause form one
+   * chain ending in the clause's filter, so every row that reaches the filter passed every pushed conjunct already: evaluating
+   * them again cost one more call per surviving row, twice the price of an expensive predicate.
+   */
+  private static WhereClause residualWhere(final MatchClause matchClause, final Set<BooleanExpression> pushedConjuncts) {
+    if (!matchClause.hasWhereClause())
+      return null;
+    final WhereClause where = matchClause.getWhereClause();
+    final BooleanExpression condition = where.getConditionExpression();
+    if (condition == null || pushedConjuncts.isEmpty())
+      return where;
+    final BooleanExpression residual = WhereClause.withoutConjuncts(condition, pushedConjuncts);
+    if (residual == null)
+      return null;
+    return residual == condition ? where : new WhereClause(residual);
   }
 
   /**

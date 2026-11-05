@@ -64,6 +64,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   final                long             limit;
   private final        boolean          forwardDirection;
   int      nextPageNumber;
+  // READ ONLY AT ABSOLUTE POSITIONS, ACROSS CALLS TOO: THE PAGE CACHE'S SHARED VIEW SERVES IT, NO VIEW PER PAGE (#10820)
   BasePage currentPage = null;
   short    recordCountInCurrentPage;
   int      totalPages;
@@ -166,7 +167,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     writeIndex = 1;
     nextPageNumber = (int) (position.getPosition() / bucket.getMaxRecordsInPage());
     currentRecordInPage = (int) (position.getPosition() % bucket.getMaxRecordsInPage()) + 1;
-    currentPage = database.getTransaction().getPage(new PageId(database, position.getBucketId(), nextPageNumber),
+    currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, position.getBucketId(), nextPageNumber),
         bucket.pageSize);
     recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
   }
@@ -402,7 +403,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         // GONE: THE BUCKET NEVER HAD THIS PAGE, OR NOT ANY MORE
         return true;
       nextPageNumber = pageNumber;
-      currentPage = database.getTransaction().getPage(new PageId(database, bucket.file.getFileId(), pageNumber), bucket.pageSize);
+      currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, bucket.file.getFileId(), pageNumber), bucket.pageSize);
       recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
     }
 
@@ -488,7 +489,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
             }
 
             currentPage = database.getTransaction()
-                .getPage(new PageId(database, bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
+                .getPageForAbsoluteReads(new PageId(database, bucket.file.getFileId(), nextPageNumber), bucket.pageSize);
             recordCountInCurrentPage = currentPage.readShort(LocalBucket.PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
             if (!forwardDirection && currentRecordInPage == Integer.MAX_VALUE)

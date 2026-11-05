@@ -604,9 +604,16 @@ public class MutablePage extends BasePage implements TrackableContent {
   @Override
   public void updateModifiedRange(final int start, final int end) {
     checkNotPublished();
-    if (start < 0 || end >= getPhysicalSize())
+    if (start < 0 || end >= getPhysicalSize() || end < start - 1)
       throw new IllegalArgumentException(
-          "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
+          "Invalid update range (" + start + "-" + end + ") of page " + pageId + ": it must lie in (0-" + (getPhysicalSize()
+              - 1) + ") and must not be shorter than empty");
+
+    // #11316: a zero-length write (end == start - 1, what both callers compute for a length of 0) dirties no byte, so
+    // it records nothing. Stored, the inverted interval survived to commit, where the WAL refused it as a corrupt page
+    // and aborted the transaction, naming the page instead of the write. Every stored interval is thus non-empty.
+    if (end < start)
+      return;
 
     // #10346: every write passes here BEFORE it changes the bytes, so a statement that has to be taken back finds them as they were
     if (undoLog != null)

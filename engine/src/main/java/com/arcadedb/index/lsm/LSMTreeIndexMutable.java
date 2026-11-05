@@ -317,7 +317,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage,
       final boolean ascendingOrder) throws IOException {
-    final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+    final BasePage page = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageId), pageSize);
     return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), storageKeyTypes,
         getCount(page), ascendingOrder);
   }

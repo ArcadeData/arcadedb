@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
@@ -70,6 +71,8 @@ class Issue10149GhostProbeNeedsNoEdgeGrantTest {
       factory.open().drop();
 
     database = factory.create();
+    // These walks skip a ghost only with the probe on, off by default since #10809
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE, true);
     database.getSchema().createVertexType("G");
     database.getSchema().createEdgeType("LINK");
     database.transaction(() -> {
