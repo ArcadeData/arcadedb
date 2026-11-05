@@ -156,8 +156,9 @@ public class TransactionContext implements Transaction {
   private       Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(RECORDS_CACHE_CAPACITY);
   // Records created in this transaction (they got an optimistically-assigned RID at creation time). On rollback that
   // RID no longer exists, so the identity is reset to provisional (null) letting the same in-memory object be cleanly
-  // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562).
-  private final List<Record>                         newRecords            = new ArrayList<>();
+  // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562). Held weakly
+  // when read-your-writes is off, so a record the caller dropped does not survive until the commit (issue #10813).
+  private final TransactionNewRecords                newRecords            = new TransactionNewRecords();
   private final TransactionIndexContext              indexChanges;
   // #7931/#7933: what an index hands over so this transaction's CONCLUSION can be applied to the non-transactional
   // state its replay touched. The replay runs inside commit1stPhase BEFORE the page versions are validated, so a
@@ -683,7 +684,9 @@ public class TransactionContext implements Transaction {
   public void registerNewRecord(final Record record) {
     if (record.getIdentity() != null)
       noteBucketWritten(record.getIdentity().getBucketId());
-    newRecords.add(record);
+    // With read-your-writes on the record cache holds it anyway; off, nothing but the caller may (issue #10813). Decided per
+    // record: one registered before a mid-transaction toggle keeps the mode it was registered in, and either mode resets it
+    newRecords.add(record, !database.isReadYourWrites());
     if (newRecordRIDs != null)
       newRecordRIDs.add(record.getIdentity());
   }
@@ -1034,8 +1037,7 @@ public class TransactionContext implements Transaction {
   void restoreAppendOnlyState(final int newRecordsMark, final int reservationMark, final int callbackMark,
       final long completedWrites, final long unidirectionalSequence) {
     // The records the statement created exist no more: like a rolled back transaction, their object can be inserted again
-    for (int i = newRecords.size() - 1; i >= newRecordsMark; i--)
-      ((RecordInternal) newRecords.remove(i)).setIdentity(null);
+    newRecords.truncateResettingIdentity(newRecordsMark);
     // Hashed again at the next question, from the records that are left
     newRecordRIDs = null;
 
@@ -1065,14 +1067,13 @@ public class TransactionContext implements Transaction {
    * just registered is, so the case this exists for costs one comparison.
    */
   public void unregisterNewRecord(final Record record) {
-    for (int i = newRecords.size() - 1; i >= 0; i--)
-      if (newRecords.get(i) == record) {
-        // A statement takes back the records it registered by their position: one registered before it left the list shifted under it
-        if (statement != null && i < statement.getNewRecordsMark())
-          statement.markUnrestorable("a record created by an earlier statement of the transaction was taken back");
-        newRecords.remove(i);
-        return;
-      }
+    final int i = newRecords.lastIndexOf(record);
+    if (i < 0)
+      return;
+    // A statement takes back the records it registered by their position: one registered before it left the list shifted under it
+    if (statement != null && i < statement.getNewRecordsMark())
+      statement.markUnrestorable("a record created by an earlier statement of the transaction was taken back");
+    newRecords.remove(i);
   }
 
   public void updateRecordInCache(final Record record) {
@@ -1304,8 +1305,8 @@ public class TransactionContext implements Transaction {
     // RECORDS CREATED IN THIS TX HAVE NO COMMITTED VERSION TO RELOAD TO: PULL THEM OUT OF THE MODIFIED-RECORDS CACHE SO
     // THE RELOAD LOOP BELOW LEAVES THEIR IN-MEMORY CONTENT INTACT (reload() WOULD WIPE map/buffer), THEN RESET THEIR
     // IDENTITY TO PROVISIONAL SO THE SAME OBJECT CAN BE CLEANLY RE-INSERTED INSTEAD OF UPDATING A MISSING RECORD (#4562).
-    for (final Record r : newRecords) {
-      final RID rid = r.getIdentity();
+    for (int i = 0; i < newRecords.size(); i++) {
+      final RID rid = newRecords.getIdentity(i);
       if (rid != null)
         modifiedRecordsCache.remove(rid);
     }
@@ -1319,8 +1320,7 @@ public class TransactionContext implements Transaction {
           // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
         }
 
-    for (final Record r : newRecords)
-      ((RecordInternal) r).setIdentity(null);
+    newRecords.resetIdentities();
 
     // Taken before reset(), which drops them, and run once it is done: the work they do is owed whatever the outcome (#10687). Only
     // by the thread that registered them: a sweep rolling back the transaction of a dead thread runs on a thread that is in the
@@ -3030,7 +3030,7 @@ public class TransactionContext implements Transaction {
   public List<RID> getWrittenRecordIdsIn(final IntHashSet bucketIds) {
     final Set<RID> result = new LinkedHashSet<>();
     for (int i = 0; i < newRecords.size(); i++) {
-      final RID rid = newRecords.get(i).getIdentity();
+      final RID rid = newRecords.getIdentity(i);
       if (rid != null && bucketIds.contains(rid.getBucketId()))
         result.add(rid);
     }
@@ -3963,8 +3963,7 @@ public class TransactionContext implements Transaction {
         // Documented asymmetry vs the happy rollback(): user-held MODIFIED records are NOT reloaded here
         // (that loop also never ran) and keep their uncommitted in-memory content - the safest available
         // degradation, since reloading is exactly what just failed.
-        for (final Record newRecord : newRecords)
-          ((RecordInternal) newRecord).setIdentity(null);
+        newRecords.resetIdentities();
         reset();
       }
   }
@@ -4398,7 +4397,7 @@ public class TransactionContext implements Transaction {
       if (createdHere[0] == null) {
         createdHere[0] = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size()));
         for (int i = 0; i < newRecords.size(); i++)
-          createdHere[0].add(newRecords.get(i).getIdentity());
+          createdHere[0].add(newRecords.getIdentity(i));
       }
       if (createdHere[0].contains(target))
         return;
@@ -4800,7 +4799,7 @@ public class TransactionContext implements Transaction {
     if (newRecordRIDs == null) {
       newRecordRIDs = new RidHashSet(Math.max(DELETED_SET_CAPACITY, newRecords.size() * 2));
       for (int i = 0; i < newRecords.size(); i++)
-        newRecordRIDs.add(newRecords.get(i).getIdentity());
+        newRecordRIDs.add(newRecords.getIdentity(i));
     }
     return newRecordRIDs.contains(rid);
   }

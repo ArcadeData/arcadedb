@@ -44,9 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #10658: the ghost-edge probe of the walks that follow adjacency entries without loading the edge (#10148, #10149) costs one
  * edge-bucket page read per vertex reached, about a third of a variable-length hop that reaches many vertices.
- * {@link GlobalConfiguration#GRAPH_GHOST_EDGE_PROBE} keeps the probe by default and lets a database known to hold no dangling entry
- * turn it off, which every one of those walks then honours: each follows the ghost entry, as a fixed-length hop and SQL
- * {@code out()} do, and reports nothing.
+ * {@link GlobalConfiguration#GRAPH_GHOST_EDGE_PROBE} governs it, and every one of those walks honours it: turned off, each follows
+ * the ghost entry, as a fixed-length hop and SQL {@code out()} do, and reports nothing. Since #10809 off is the default: the probe
+ * was paid by every database for the benefit of a corrupt one, and a database suspected to hold dangling entries turns it on.
  */
 class Issue10658GhostEdgeProbeSettingTest extends TestHelper {
   private static final String   FROM_GA = "MATCH (a:G {name: 'ga'})";
@@ -77,9 +77,28 @@ class Issue10658GhostEdgeProbeSettingTest extends TestHelper {
     database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, ghost));
   }
 
+  /**
+   * Issue #10809: off by default, so a variable-length hop answers what the fixed-length hop of the same pattern answers, and
+   * nothing is probed or reported.
+   */
   @Test
-  void theProbeIsOnByDefault() {
-    assertThat(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE.getDefValue()).isEqualTo(true);
+  void theProbeIsOffByDefault() {
+    assertThat(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE.getDefValue()).isEqualTo(false);
+    assertThat(GhostEdgeReporter.isProbing(database)).isFalse();
+
+    final long before = GhostEdgeReporter.getTotalSkipped();
+    assertThat(rows(FROM_GA + "-[:LINK*1..1]->(b:G) RETURN DISTINCT b.name AS n"))
+        .isEqualTo(rows(FROM_GA + "-[:LINK]->(b:G) RETURN DISTINCT b.name AS n")).containsExactly("gb", "gc");
+    assertThat(rows(FROM_GA + "-[:LINK*1..3]->(b:G) RETURN DISTINCT b.name AS n")).containsExactly("gb", "gc");
+    assertThat(rows("MATCH (a:G {name: 'ga'}) CALL path.subgraphNodes(a, {maxLevel: 3}) YIELD node RETURN node.name AS n"))
+        .containsExactly("ga", "gb", "gc");
+    assertThat(GhostEdgeReporter.getTotalSkipped()).as("nothing probed, so nothing reported").isEqualTo(before);
+  }
+
+  /** Turned on, the probing walks skip the ghost and report it. */
+  @Test
+  void turnedOnTheProbingWalksSkipAndReportTheGhost() {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE, true);
     assertThat(GhostEdgeReporter.isProbing(database)).isTrue();
 
     final long before = GhostEdgeReporter.getTotalSkipped();
