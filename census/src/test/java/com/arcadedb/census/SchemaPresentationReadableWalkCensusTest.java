@@ -223,7 +223,7 @@ class SchemaPresentationReadableWalkCensusTest {
    * The class root (a directory or a jar) of every module with main sources, found through one of its own source files,
    * so no naming convention decides which module a root belongs to.
    */
-  private static Map<String, Path> classRootsOfEveryModule() throws IOException, URISyntaxException {
+  static Map<String, Path> classRootsOfEveryModule() throws IOException, URISyntaxException {
     assertThat(REACTOR_ROOT.resolve("engine").resolve("pom.xml")).as("the census must start at the reactor root, or it checks "
         + "nothing").isRegularFile();
 
@@ -274,7 +274,7 @@ class SchemaPresentationReadableWalkCensusTest {
   }
 
   /** Every class file under the {@code com/arcadedb} packages of each root, keyed by its path in the root. */
-  private static Map<String, byte[]> readClasses(final Map<String, Path> roots) throws IOException {
+  static Map<String, byte[]> readClasses(final Map<String, Path> roots) throws IOException {
     final Map<String, byte[]> classes = new HashMap<>();
     for (final Map.Entry<String, Path> root : roots.entrySet()) {
       final int before = classes.size();
@@ -381,14 +381,14 @@ class SchemaPresentationReadableWalkCensusTest {
   }
 
   /** {@code a/b/C$1.class} -> {@code a/b/C}: lambdas and nested classes count for their file. */
-  private static String outerClassOf(final String relative) {
+  static String outerClassOf(final String relative) {
     final String withoutExtension = relative.endsWith(".class") ? relative.substring(0, relative.length() - ".class".length()) : relative;
     final int nested = withoutExtension.indexOf('$');
     return nested < 0 ? withoutExtension : withoutExtension.substring(0, nested);
   }
 
   /** {@code lambda$execute$3} -> {@code execute}: a lambda counts for the method it is written in, whatever its number. */
-  private static String methodOf(final String methodName) {
+  static String methodOf(final String methodName) {
     if (methodName.startsWith("lambda$")) {
       final int end = methodName.lastIndexOf('$');
       return end > "lambda$".length() ? methodName.substring("lambda$".length(), end) : methodName;

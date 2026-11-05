@@ -286,7 +286,7 @@ public class DocumentValidator {
     if (type == Type.STRING && constraints.checkType() && !(stored instanceof String)) {
       final String text = String.valueOf(stored);
       final String property = Identifier.quote(p.getName());
-      throwValidationException(document.getType(), p, "is declared as STRING but a stored value is a " + stored.getClass()
+      throwValidationException(document.getType(), p, ValidationException.Kind.TYPE, "is declared as STRING but a stored value is a " + stored.getClass()
           .getSimpleName() + ", not a string: " + (text.length() > 100 ? text.substring(0, 100) + "..." : text)
           + " (convert the stored values first, e.g. with UPDATE " + Identifier.quote(document.getTypeName()) + " SET "
           + property + " = " + property + ".asString())");
@@ -306,7 +306,7 @@ public class DocumentValidator {
           converted));
       if (!readable) {
         if (constraints.checkType())
-          throwValidationException(document.getType(), p,
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
               "is declared as " + type + " but a stored value cannot be read as such: " + stored);
         return;
       }
@@ -314,7 +314,7 @@ public class DocumentValidator {
           && !sameIntegralValue(original, narrowed)) {
         // a LONG over an INTEGER declaration, or 3.7 over a SHORT, would be silently truncated: not the same value
         if (constraints.checkType())
-          throwValidationException(document.getType(), p,
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
               "is declared as " + type + " but a stored value does not fit it without loss: " + stored);
         return;
       }
@@ -332,7 +332,7 @@ public class DocumentValidator {
         coerced = null;
       }
       if (coerced == null)
-        throwValidationException(document.getType(), p, "is declared as " + type + " but a stored value cannot be read as such: "
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE, "is declared as " + type + " but a stored value cannot be read as such: "
             + stored);
       validateEmbeddedValues(document, p, type, coerced);
       value = coerced;
@@ -340,7 +340,7 @@ public class DocumentValidator {
 
     if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(),
         regexpTextOrRefuse(document, p, value), TimeBoundRegex.newDeadline(constraints.regexTimeoutMs())))
-      throwValidationException(document.getType(), p,
+      throwValidationException(document.getType(), p, ValidationException.Kind.REGEXP,
           "does not match the regular expression '" + constraints.regexp() + "'. Field value is: " + stored);
 
     if (constraints.min() != null)
@@ -520,7 +520,7 @@ public class DocumentValidator {
   private static String regexpTextOrRefuse(final Document document, final Property p, final Object value) {
     final String text = regexpText(p.getType(), value);
     if (text == null)
-      throwValidationException(document.getType(), p,
+      throwValidationException(document.getType(), p, null,
           "has the REGEXP '" + p.getRegexp() + "', which " + noTextForm(p.getType()) + ". Remove it with ALTER PROPERTY `"
               + document.getType().getName() + "`.`" + p.getName() + "` REGEXP null");
     return text;
@@ -534,7 +534,7 @@ public class DocumentValidator {
     try {
       return p.getRegexpPattern();
     } catch (final PatternSyntaxException e) {
-      throwValidationException(document.getType(), p,
+      throwValidationException(document.getType(), p, null,
           "has the REGEXP '" + p.getRegexp() + "', which is not a valid regular expression: " + e.getDescription()
               + ". Remove it with ALTER PROPERTY `" + document.getType().getName() + "`.`" + p.getName() + "` REGEXP null");
       return null; // unreachable: throwValidationException always throws
@@ -881,10 +881,10 @@ public class DocumentValidator {
       if (DeferredExistenceChecks.defer(document))
         deferred = true;
       else if (unmetExistence == ExistenceConstraint.MANDATORY)
-        throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MANDATORY, "is mandatory, but not found on record: " + document);
       else
         // NULLITY
-        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
+        throwValidationException(document.getType(), p, ValidationException.Kind.NOT_NULL, "cannot be null, record: " + document);
     }
 
     final Object fieldValue = document.get(p.getName());
@@ -899,7 +899,7 @@ public class DocumentValidator {
         // worker thread indefinitely.
         if (!TimeBoundRegex.matchesUntil(regexp, regexpTextOrRefuse(document, p, fieldValue), regexDeadline))
           // the pattern matched, not a second read of the property that a concurrent ALTER PROPERTY may have changed
-          throwValidationException(document.getType(), p,
+          throwValidationException(document.getType(), p, ValidationException.Kind.REGEXP,
               "does not match the regular expression '" + regexp.pattern() + "'. Field value is: " + fieldValue + ", record: "
                   + document);
 
@@ -927,7 +927,7 @@ public class DocumentValidator {
         final Document originalDocument = embedded.getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
         if (!sameReadonlyValue(fieldValue, originalFieldValue))
-          throwValidationException(document.getType(), p,
+          throwValidationException(document.getType(), p, ValidationException.Kind.READONLY,
               "is immutable and cannot be altered. Field value is: " + printableValue(fieldValue));
       }
     }
@@ -1042,75 +1042,75 @@ public class DocumentValidator {
     case LONG -> {
       final long maxAsLong = Long.parseLong(max);
       if (((Number) fieldValue).longValue() > maxAsLong)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case INTEGER -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (((Number) fieldValue).intValue() > maxAsInteger)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case SHORT -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (((Number) fieldValue).shortValue() > maxAsInteger)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case BYTE -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (((Number) fieldValue).byteValue() > maxAsInteger)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case FLOAT -> {
       final float maxAsFloat = Float.parseFloat(max);
       if (((Number) fieldValue).floatValue() > maxAsFloat)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case DOUBLE -> {
       final double maxAsDouble = Double.parseDouble(max);
       if (((Number) fieldValue).doubleValue() > maxAsDouble)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case DECIMAL -> {
       final BigDecimal maxAsDecimal = new BigDecimal(max);
       if (((BigDecimal) fieldValue).compareTo(maxAsDecimal) > 0)
-        throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
     case STRING -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (fieldValue.toString().length() > maxAsInteger)
-        throwValidationException(document.getType(), p, "contains more characters than " + max + " requested");
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX_LENGTH, "contains more characters than " + max + " requested");
     }
     case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
       final Date maxAsDate = boundAsDate(document, p, max, "max");
       final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
       if (fieldValueAsDate.compareTo(maxAsDate) > 0)
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX,
             "contains the date " + fieldValue + " which is after the last acceptable date (" + max + ")");
     }
     case BINARY -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (fieldValue instanceof Binary binary) {
         if (binary.size() > maxAsInteger)
-          throwValidationException(document.getType(), p, "contains more bytes than " + max + " requested");
+          throwValidationException(document.getType(), p, ValidationException.Kind.MAX_LENGTH, "contains more bytes than " + max + " requested");
       } else if (((byte[]) fieldValue).length > maxAsInteger)
-        throwValidationException(document.getType(), p, "contains more bytes than " + max + " requested");
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX_LENGTH, "contains more bytes than " + max + " requested");
     }
     case LIST -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (((Collection) fieldValue).size() > maxAsInteger)
-        throwValidationException(document.getType(), p, "contains more items than " + max + " requested");
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "contains more items than " + max + " requested");
     }
     case MAP -> {
       final int maxAsInteger = Integer.parseInt(max);
       if (((Map) fieldValue).size() > maxAsInteger)
-        throwValidationException(document.getType(), p, "contains more items than " + max + " requested");
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "contains more items than " + max + " requested");
     }
     case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS, ARRAY_OF_LONGS, ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> {
       // the number of elements, as for a LIST (issue #9026)
       final int maxAsInteger = Integer.parseInt(max);
       if (sizeOf(document, p, fieldValue) > maxAsInteger)
-        throwValidationException(document.getType(), p, "contains more items than " + max + " requested");
+        throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "contains more items than " + max + " requested");
     }
-    default -> throwValidationException(document.getType(), p, "value " + fieldValue + " is greater than " + max);
+    default -> throwValidationException(document.getType(), p, ValidationException.Kind.MAX, "value " + fieldValue + " is greater than " + max);
     }
   }
 
@@ -1205,7 +1205,7 @@ public class DocumentValidator {
     };
 
     if (result.hasError)
-      throwValidationException(document.getType(), p, result.message);
+      throwValidationException(document.getType(), p, ValidationException.Kind.MIN, result.message);
   }
 
   private record ValidationResult(boolean hasError, String message) {
@@ -1216,7 +1216,8 @@ public class DocumentValidator {
     if (value instanceof Collection<?> collection)
       return collection.size();
     if (!value.getClass().isArray())
-      throwValidationException(document.getType(), p, "has been declared as " + p.getType() + " but the value is not an array: " + value);
+      throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+          "has been declared as " + p.getType() + " but the value is not an array: " + value);
     return Array.getLength(value);
   }
 
@@ -1228,14 +1229,15 @@ public class DocumentValidator {
     switch (propertyType) {
     case LINK: {
       if (fieldValue instanceof EmbeddedDocument)
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as LINK but an EMBEDDED document is used. Value: " + fieldValue);
 
       if (ofType != null && !linkTargetTypeCheckDeferred()) {
         final RID rid = ((Identifiable) fieldValue).getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
         if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
-          throwValidationException(document.getType(), p, "has been declared as LINK of '" + ofType + "' but a link to " + (
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+              "has been declared as LINK of '" + ofType + "' but a link to " + (
               embSchemaType != null ? "type '" + embSchemaType + "'" : "a record in a bucket that belongs to no type") + " is used. Value: "
               + fieldValue);
       }
@@ -1244,13 +1246,13 @@ public class DocumentValidator {
 
     case EMBEDDED: {
       if (!(fieldValue instanceof EmbeddedDocument))
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as EMBEDDED but an incompatible type is used. Value: " + fieldValue);
 
       if (ofType != null) {
         final DocumentType embSchemaType = ((EmbeddedDocument) fieldValue).getType();
         if (!embSchemaType.instanceOf(ofType))
-          throwValidationException(document.getType(), p,
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
               "has been declared as EMBEDDED of '" + ofType + "' but a document of type '" + embSchemaType
                   + "' is used. Value: " + fieldValue);
       }
@@ -1261,7 +1263,7 @@ public class DocumentValidator {
 
     case LIST: {
       if (!(fieldValue instanceof List))
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as LIST but an incompatible type is used. Value: " + fieldValue);
 
       final Type embType = ofType != null ? Type.getTypeByName(ofType) : null;
@@ -1277,7 +1279,7 @@ public class DocumentValidator {
 
     case MAP: {
       if (!(fieldValue instanceof Map))
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as MAP but an incompatible type is used. Value: " + fieldValue);
 
       final Type embType = ofType != null ? Type.getTypeByName(ofType) : null;
@@ -1313,12 +1315,12 @@ public class DocumentValidator {
 
     if (embType != null) {
       if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)))
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as " + declaredAs(isMap, ofType) + " but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
                 + fieldValue);
     } else if (item instanceof EmbeddedDocument embeddedDocument) {
       if (!embeddedDocument.getType().instanceOf(ofType))
-        throwValidationException(document.getType(), p,
+        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as " + declaredAs(isMap, ofType) + " but an embedded document of type '" + embeddedDocument.getType().getName()
                 + "' is used. Value: " + fieldValue);
     } else if (item instanceof Identifiable identifiable) {
@@ -1326,14 +1328,15 @@ public class DocumentValidator {
         final RID rid = identifiable.getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
         if (embSchemaType == null || !embSchemaType.instanceOf(ofType)) {
-          throwValidationException(document.getType(), p, "has been declared as " + declaredAs(isMap, ofType) + " but a link to " + (
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+              "has been declared as " + declaredAs(isMap, ofType) + " but a link to " + (
               embSchemaType != null ? "type '" + embSchemaType.getName() + "'" : "a record in a bucket that belongs to no type")
               + " is used. Value: " + fieldValue);
         }
       }
     } else if (!(item instanceof String link && RID.is(link)))
       // a link written as a "#bucket:position" string is what JSON and HTTP clients send, and has always been accepted
-      throwValidationException(document.getType(), p,
+      throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
           "has been declared as " + declaredAs(isMap, ofType) + " but a value that is not a document of that type is used (" + item.getClass()
               .getSimpleName() + "). Value: " + fieldValue);
   }
@@ -1368,13 +1371,20 @@ public class DocumentValidator {
     try {
       return (Date) Type.convert(document.getDatabase(), value, Date.class);
     } catch (final IllegalArgumentException e) {
-      throwValidationException(document.getType(), p, "has a " + side + " that is not a readable date: " + value);
+      // an unreadable value is the caller's, an unreadable bound is the schema's own and violates no constraint
+      throwValidationException(document.getType(), p, "value".equals(side) ? ValidationException.Kind.TYPE : null,
+          "has a " + side + " that is not a readable date: " + value);
       return null; // unreachable: throwValidationException always throws
     }
   }
 
-  private static void throwValidationException(final DocumentType type, final Property p, final String message)
-      throws ValidationException {
-    throw new ValidationException("The property '" + type.getName() + "." + p.getName() + "' " + message);
+  /**
+   * @param kind the constraint the value violates (issue #11314), which a protocol answers with its own code for it, or
+   *             {@code null} when the refusal is the schema's own fault rather than the value's (a REGEXP that does not
+   *             compile, a bound that is no date): passed explicitly at every call so no new refusal forgets it
+   */
+  private static void throwValidationException(final DocumentType type, final Property p, final ValidationException.Kind kind,
+      final String message) throws ValidationException {
+    throw new ValidationException(kind, "The property '" + type.getName() + "." + p.getName() + "' " + message);
   }
 }

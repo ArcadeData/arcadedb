@@ -1339,7 +1339,8 @@ public class RemoteHttpComponent extends RWLockContext {
         // A LISTENER REFUSED THE WRITE (ISSUES #10085, #10161): ITS OWN TYPE, SO A CALLER CAN TELL A REFUSAL FROM A FAULT
         return new RecordVetoedException(detail);
       } else if (exception.equals(ValidationException.class.getName())) {
-        return new ValidationException(detail);
+        // WITH THE CONSTRAINT IT VIOLATES IN exceptionArgs (ISSUE #11314), NULL FROM A SERVER THAT DOES NOT SEND IT
+        return new ValidationException(ValidationException.Kind.fromName(exceptionArgs), detail);
       } else if (exception.equals(NoSuchElementException.class.getName())) {
         return new NoSuchElementException(detail);
       } else if (exception.equals(SecurityException.class.getName())) {

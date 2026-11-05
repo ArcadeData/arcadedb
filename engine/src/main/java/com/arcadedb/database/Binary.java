@@ -395,7 +395,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
         questionMarksInChars++;
       // more '?' bytes than '?' chars only suspects a replacement (a replacement is the only way a '?' byte can exceed the '?' chars), so the encoder confirms it
       if (questionMarksInBytes > questionMarksInChars && !charset.newEncoder().canEncode(value))
-        throw new ValidationException("The string cannot be stored with the " + charset
+        throw new ValidationException(ValidationException.Kind.ENCODING, "The string cannot be stored with the " + charset
             + " charset because it holds a lone UTF-16 surrogate or a character the charset cannot encode: it would be stored as '?' (string length "
             + value.length() + ")");
     }

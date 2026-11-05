@@ -37,6 +37,10 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.UnknownFunctionException;
+import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
@@ -57,6 +61,7 @@ import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.CreateVertexStatement;
+import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.Expression;
@@ -109,6 +114,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.time.DateTimeException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharsetEncoder;
@@ -1045,7 +1051,7 @@ public class PostgresNetworkExecutor extends Thread {
       else if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
         // CommandComplete, not NoData - NoData ('n') is a Describe-only reply and is never a legal answer to
-        // Execute (issue #6930). The tag comes from portal.query, so getTag() spells it BEGIN/COMMIT/ROLLBACK
+        // Execute (issue #6930). The tag comes from portal.query, so PostgresCommandTag spells it BEGIN/COMMIT/ROLLBACK
         // exactly as it did when these three carried an empty result set instead (issue #7905). ROLLBACK TO
         // used to be one of these too, but fails at Parse instead since issue #7846, so it never reaches here.
         writeCommandComplete(portal.query, 0);
@@ -1197,13 +1203,13 @@ public class PostgresNetworkExecutor extends Thread {
           if (portal.suspended)
             portalSuspendedResponse();
           else
-            writeCommandComplete(portal.query, portal.resultCursor);
+            writeCommandComplete(portal.sqlStatement, portal.query, portal.resultCursor);
           profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
           final long serStart = System.nanoTime();
           // Query doesn't return data (INSERT/UPDATE/DELETE without RETURNING) or empty result
           final int affectedRows = portal.cachedResultSet != null ? portal.cachedResultSet.size() : 0;
-          writeCommandComplete(portal.query, affectedRows);
+          writeCommandComplete(portal.sqlStatement, portal.query, affectedRows);
           profile.addSerializationNanos(System.nanoTime() - serStart);
         }
       }
@@ -1239,7 +1245,7 @@ public class PostgresNetworkExecutor extends Thread {
   private void answerRowlessWrite(final PostgresPortal portal) {
     portal.resultCursor = portal.fullResultSet.size();
     portal.suspended = false;
-    writeCommandComplete(portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
+    writeCommandComplete(portal.sqlStatement, portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
   }
 
   /**
@@ -1274,8 +1280,14 @@ public class PostgresNetworkExecutor extends Thread {
 
   /**
    * True for a SQL write whose result PostgreSQL would not return as a result set: INSERT, UPDATE, DELETE and
-   * CREATE VERTEX/EDGE with no RETURN clause. ArcadeDB answers them with the records (or the count) they wrote, which
-   * a client that prepared them expects only as a CommandComplete tag.
+   * CREATE VERTEX/EDGE with no RETURN clause, and every schema change. ArcadeDB answers them with the records (or the
+   * count) they wrote, or a row describing the schema change, which a client that prepared them expects only as a
+   * CommandComplete tag.
+   * <p>
+   * A schema change (every {@link DDLStatement}: CREATE TYPE, CREATE INDEX, ALTER PROPERTY, REBUILD INDEX...) is answered as
+   * PostgreSQL answers CREATE TABLE (issue #11312): NoData to a Describe, no DataRow, a bare tag. Its row reached the client as
+   * a result set, which pgjdbc's {@code executeUpdate()} refuses ("A result was returned when none was expected"), and after
+   * a Describe('S') answered NoData, as the refusal of a statement the engine had already run.
    */
   static boolean isRowlessWrite(final Statement statement) {
     return switch (statement) {
@@ -1285,6 +1297,7 @@ public class PostgresNetworkExecutor extends Thread {
       case CreateEdgeStatement ignored -> true;
       case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
       case DeleteStatement delete -> !delete.isReturnBefore();
+      case DDLStatement ignored -> true;
       case null, default -> false;
     };
   }
@@ -1400,7 +1413,7 @@ public class PostgresNetworkExecutor extends Thread {
       // on the extended protocol, and untrue since the setting is recorded (issue #8217).
       boolean answersNoRows = false;
       // The text the command tag is derived from: the statement itself, but the canonical keyword for a
-      // transaction-control statement recognized through the grammar, whose text getTag() cannot read (issue #8273)
+      // transaction-control statement recognized through the grammar, whose text PostgresCommandTag cannot read (issue #8273)
       String commandTag = query.query;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
@@ -1489,10 +1502,12 @@ public class PostgresNetworkExecutor extends Thread {
         writeRowDescription(columns);
         writeDataRows(cachedResultSet, columns);
       }
-      // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
-      // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
-      // with an empty command tag instead of e.g. "BEGIN".
-      writeCommandComplete(commandTag, rowlessWrite ? affectedRecords(parsedStatement, cachedResultSet) : cachedResultSet.size());
+      // query.query is the language-prefix-stripped text (the tag matches bare "BEGIN"/"COMMIT"/... against it); the raw
+      // queryText still carries a "{sql}" prefix when the client sends one, which the tag doesn't recognise and answers
+      // with an empty command tag instead of e.g. "BEGIN". A statement the engine ran is tagged from what it parsed, not its
+      // text (issue #11313); one answered with a canonical tag (transaction control, SET, a session command) keeps that tag
+      writeCommandComplete(answersNoRows ? null : parsedStatement, commandTag,
+          rowlessWrite ? affectedRecords(parsedStatement, cachedResultSet) : cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
@@ -3531,7 +3546,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Normalized HERE, once, for every branch below and for everything that reads portal.query later (issue
       // #8245): PostgresTransactionStatement.parse() matches whole tokens up to the end of the text, and
-      // getTag() reads portal.query for the command tag. The healthy transaction-control branch used to read the
+      // PostgresCommandTag reads portal.query for the command tag. The healthy transaction-control branch used to read the
       // raw wire text, so "BEGIN;", "COMMIT;", "\nCOMMIT" or "COMMIT " fell through to sqlEngine.parse(), whose
       // grammar accepts them (parse : statement SEMICOLON? EOF): the ENGINE began/committed/rolled back at
       // Execute while the protocol's own block state - explicitTransactionStarted, errorInTransaction, the
@@ -3711,7 +3726,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.ignoreExecution = true;
       } else if ("sql".equalsIgnoreCase(portal.language) && PostgresSessionCommand.isSessionCommand(upperCaseText)) {
         // Parsed here, applied at Execute like a SET (issue #9328). The text becomes the command tag, which is what
-        // getTag() reads at Execute, and a statement this server cannot parse is refused here, at Parse
+        // PostgresCommandTag reads at Execute, and a statement this server cannot parse is refused here, at Parse
         portal.sessionCommand = PostgresSessionCommand.parse(portal.query);
         portal.query = portal.sessionCommand.tag();
         portal.ignoreExecution = true;
@@ -3787,7 +3802,7 @@ public class PostgresNetworkExecutor extends Thread {
             // PostgreSQL's own spellings (issue #9631) are recognized by PostgresTransactionStatement: START
             // TRANSACTION, ABORT, BEGIN <modes>, AND [NO] CHAIN. One this server cannot honor is refused HERE, at
             // Parse, like a SET it cannot honor, so no statement is registered for it. The query becomes the tag
-            // (START TRANSACTION, or the canonical BEGIN/COMMIT/ROLLBACK), which is what getTag() reads at Execute.
+            // (START TRANSACTION, or the canonical BEGIN/COMMIT/ROLLBACK), which is what PostgresCommandTag reads at Execute.
             final PostgresTransactionStatement transactionStatement = PostgresTransactionStatement.parse(upperCaseText);
             if (transactionStatement != null) {
               transactionStatement.checkSupported();
@@ -3802,7 +3817,7 @@ public class PostgresNetworkExecutor extends Thread {
               if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
                 // applied exactly like the three above, never executed by the engine behind the block state. The
-                // query becomes the canonical keyword, which is what getTag() reads the command tag from.
+                // query becomes the canonical keyword, which is what PostgresCommandTag reads the command tag from.
                 portal.transactionControl = transactionControl;
                 portal.isolationLevel = isolationOf(portal.sqlStatement);
                 portal.sqlStatement = null;
@@ -4536,8 +4551,10 @@ public class PostgresNetworkExecutor extends Thread {
       case NOT_FOUND -> "P0002";      // no_data_found - class 02 is a completion condition, not an error
       case SCHEMA -> "42P01";         // undefined_table - a type is this database's table
       case SECURITY -> "42501";       // insufficient_privilege
-      case VALIDATION -> "22023";     // invalid_parameter_value
-      case PARSING -> "42601";        // syntax_error
+      case VALIDATION -> validationSqlState(error);
+      case PARSING -> CauseChain.contains(error, UnknownFunctionException.class) ?
+          "42883" :                   // undefined_function (issue #11314)
+          "42601";                    // syntax_error
       case TIMEOUT -> "57014";        // query_canceled
       case TERMINATED -> "57014";     // query_canceled - what a CancelRequest or pg_cancel_backend ends a statement with
       case UNAVAILABLE -> SQLSTATE_CANNOT_CONNECT_NOW; // cannot_connect_now - a database that is held, not one that does not exist
@@ -4563,6 +4580,46 @@ public class PostgresNetworkExecutor extends Thread {
       case PROPERTY -> "42701";                                             // duplicate_column
       default -> "42710";                                                   // duplicate_object
     };
+  }
+
+  /**
+   * The SQLSTATE Postgres answers the same refused value with (issue #11314). Every one of them was {@code 22023}
+   * invalid_parameter_value, so a client that branches on the code (Rails' NotNullViolation, Django's IntegrityError for class
+   * 23 against DataError for class 22, Hibernate's ConstraintViolationException) could not tell a violated constraint from a bad
+   * argument:
+   * <ul>
+   * <li>a declared constraint, by the {@link ValidationException.Kind} it carries: MANDATORY and NOTNULL are {@code 23502}
+   * not_null_violation; MIN, MAX, REGEXP and READONLY, rules on the value that Postgres writes as CHECK constraints, are
+   * {@code 23514} check_violation; a string or a binary over its MAX length is {@code 22001} string_data_right_truncation, what
+   * a {@code varchar(n)} answers; a value of another type is {@code 42804} datatype_mismatch; a character the storage charset
+   * cannot encode is {@code 22021} character_not_in_repertoire;</li>
+   * <li>a conversion the value fails: a number the type cannot hold is {@code 22003} numeric_value_out_of_range, text that is
+   * not a date {@code 22007} invalid_datetime_format, text that is not a number {@code 22P02} invalid_text_representation;</li>
+   * <li>a runtime type error ({@link TypeMismatchException}) is {@code 42804} datatype_mismatch.</li>
+   * </ul>
+   * Anything else keeps {@code 22023}. The kind is read first: it is the engine's own verdict, while a conversion's cause can
+   * sit anywhere below a refusal that says more.
+   */
+  private static String validationSqlState(final Throwable error) {
+    final ValidationException refused = CauseChain.find(error, ValidationException.class);
+    final ValidationException.Kind kind = refused != null ? refused.getKind() : null;
+    if (kind != null)
+      return switch (kind) {
+        case MANDATORY, NOT_NULL -> "23502";       // not_null_violation
+        case MIN, MAX, REGEXP, READONLY -> "23514"; // check_violation
+        case MAX_LENGTH -> "22001";                // string_data_right_truncation
+        case TYPE -> "42804";                      // datatype_mismatch
+        case ENCODING -> "22021";                  // character_not_in_repertoire
+      };
+    if (CauseChain.contains(error, ValueOutOfRangeException.class))
+      return "22003";                              // numeric_value_out_of_range
+    if (CauseChain.contains(error, DateTimeException.class))
+      return "22007";                              // invalid_datetime_format
+    if (CauseChain.contains(error, NumberFormatException.class))
+      return "22P02";                              // invalid_text_representation
+    if (CauseChain.contains(error, TypeMismatchException.class))
+      return "42804";                              // datatype_mismatch
+    return "22023";                                // invalid_parameter_value
   }
 
   /**
@@ -4778,49 +4835,19 @@ public class PostgresNetworkExecutor extends Thread {
       readNextByte();
   }
 
+  /** A CommandComplete for a statement the server did not parse: tagged from its text, see {@link PostgresCommandTag}. */
   private void writeCommandComplete(final String queryText, final long resultSetCount) {
-    final String upperCaseText = queryText.toUpperCase(Locale.ENGLISH);
-    final String tag = getTag(upperCaseText, resultSetCount);
-    writeMessage("command complete",
-        () -> writeString(tag), 'C', 4 + tag.length() + 1);
+    writeCommandComplete(null, queryText, resultSetCount);
   }
 
-  private String getTag(String upperCaseText, long resultSetCount) {
-    if (upperCaseText.startsWith("CREATE VERTEX") || upperCaseText.startsWith("INSERT INTO")) {
-      return "INSERT 0 " + resultSetCount;
-    } else if (upperCaseText.startsWith("COPY")) {
-      return "COPY " + resultSetCount;
-    } else if (upperCaseText.startsWith("SELECT") || upperCaseText.startsWith("MATCH")) {
-      return "SELECT " + resultSetCount;
-    } else if (upperCaseText.startsWith("UPDATE")) {
-      return "UPDATE " + resultSetCount;
-    } else if (upperCaseText.startsWith("DELETE")) {
-      return "DELETE " + resultSetCount;
-    } else if (PostgresTransactionStatement.TAG_START_TRANSACTION.equals(upperCaseText)) {
-      // The one transaction-control tag that is not the statement's first word (issue #9631)
-      return PostgresTransactionStatement.TAG_START_TRANSACTION;
-    } else if ("BEGIN".equals(upperCaseText) || "COMMIT".equals(upperCaseText) || "ROLLBACK".equals(upperCaseText)) {
-      // Never the client's own text: once recognized, every transaction-control statement - PostgresTransactionStatement
-      // or the #8273 grammar fallback - leaves its canonical tag as portal.query (extended) or commandTag (simple), which
-      // is the text that reaches here. A new recognition path must do the same, or its statement is tagged ""
-      return upperCaseText;
-    } else if (upperCaseText.startsWith("SAVEPOINT ")) {
-      return "SAVEPOINT";
-    } else if (upperCaseText.startsWith("RELEASE ")) {
-      return "RELEASE";
-    } else if (upperCaseText.startsWith("SET ")) {
-      return "SET";
-    } else if (upperCaseText.startsWith("RESET ")) {
-      return "RESET";
-    } else if (upperCaseText.startsWith("SHOW ")) {
-      // PostgreSQL tags SHOW ALL the same way (issue #9326)
-      return "SHOW";
-    } else if (PostgresSessionCommand.isTag(upperCaseText)) {
-      // A DISCARD/DEALLOCATE/CLOSE leaves its canonical tag as the text of the statement (issue #9328)
-      return upperCaseText;
-    } else {
-      return "";
-    }
+  /**
+   * A CommandComplete tagged from {@code statement} when the server parsed one, and from {@code queryText} otherwise (issues
+   * #11312, #11313): see {@link PostgresCommandTag}.
+   */
+  private void writeCommandComplete(final Statement statement, final String queryText, final long resultSetCount) {
+    final String tag = PostgresCommandTag.of(statement, queryText, resultSetCount);
+    writeMessage("command complete",
+        () -> writeString(tag), 'C', 4 + tag.length() + 1);
   }
 
   /**
@@ -4960,7 +4987,7 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Trims a statement's text and strips ONE trailing {@code ';'} (and the whitespace in front of it), the form every
    * statement matcher of this class expects: {@link PostgresTransactionStatement#parse} matches whole tokens up to the
-   * end of the text, and {@link #getTag} derives the command tag from the text. Shared by the simple-query and the
+   * end of the text, and {@link PostgresCommandTag} derives the command tag from the text. Shared by the simple-query and the
    * extended-query protocol so the two cannot disagree on what a transaction-control statement looks like (issue #8245).
    */
   static String normalizeStatementText(final String text) {
@@ -5548,7 +5575,7 @@ public class PostgresNetworkExecutor extends Thread {
     final ResultSet cursor = portal.cursor;
     if (cursor == null) {
       // Drained by an earlier Execute: no row is sent twice, exactly as for a drained materialized portal
-      writeCommandComplete(portal.query, 0);
+      writeCommandComplete(portal.sqlStatement, portal.query, 0);
       return;
     }
 
@@ -5588,7 +5615,7 @@ public class PostgresNetworkExecutor extends Thread {
       portalSuspendedResponse();
     else {
       closePortalCursor(portal);
-      writeCommandComplete(portal.query, portal.cursorRows);
+      writeCommandComplete(portal.sqlStatement, portal.query, portal.cursorRows);
     }
     profile.addSerializationNanos(System.nanoTime() - serStart);
   }

@@ -54,6 +54,7 @@ import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
@@ -1987,6 +1988,9 @@ public class BoltNetworkExecutor extends Thread {
    *       however it was reached - by a map literal or by copying a value SQL had stored (issue #7729). Tested
    *       only once the category is known, so the {@link ErrorCategory#RETRY}-first precedence documented on
    *       {@link ErrorCategory#of} still decides a chain carrying both;</li>
+   *   <li>a {@link ValidationException} of a constraint the schema declares (its
+   *       {@link ValidationException.Kind#isDeclaredConstraint() kind}): Neo4j's ConstraintValidationFailed rather than the
+   *       ArgumentError of a bad argument (issue #11314);</li>
    *   <li>a {@link ServerIsNotTheLeaderException} naming the leader - a write sent to a follower. Its
    *       {@link NeedRetryException} ancestry puts it in {@link ErrorCategory#RETRY}, whose
    *       DeadlockDetected a managed-transaction driver retries on the same follower until its budget runs out.
@@ -2004,6 +2008,12 @@ public class BoltNetworkExecutor extends Thread {
 
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, TypeMismatchException.class))
       return BoltErrorCodes.TYPE_ERROR;
+
+    // A value a constraint the schema declares refuses - NOT NULL, a MIN, a REGEXP, a property type: what Neo4j answers for a
+    // violated property existence or type constraint, where the category alone says ArgumentError (issue #11314)
+    if (category == ErrorCategory.VALIDATION && CauseChain.find(error, ValidationException.class) instanceof ValidationException refused
+        && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
+      return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
 
     // A follower's refusal of leader-only work that names the leader: a redirect, not a conflict to retry in place (#9845)
     // (redirectIn asks for the RETRY category itself, so a termination still wins)

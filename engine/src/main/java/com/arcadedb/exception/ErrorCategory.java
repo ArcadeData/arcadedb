@@ -90,7 +90,9 @@ public enum ErrorCategory {
    * The statement could not be parsed, or failed semantic validation. Includes
    * {@link FullTextQueryParseException}, the Lucene parser refusing the search expression a caller supplied: it
    * extends {@code IndexException} and so would otherwise be a {@link #SERVER} fault on every wire, which is the
-   * defect issue #7393 reported on HTTP and #7862 found still open at four more call sites.
+   * defect issue #7393 reported on HTTP and #7862 found still open at four more call sites. Also
+   * {@link UnknownFunctionException}, a call of a function nothing answers, which openCypher refuses at parse time and SQL
+   * only when the statement runs (issue #11314).
    */
   PARSING,
 
@@ -168,6 +170,8 @@ public enum ErrorCategory {
       new Rule(SecurityException.class, SECURITY),
       new Rule(CommandParsingException.class, PARSING),
       new Rule(FullTextQueryParseException.class, PARSING),
+      // a CommandExecutionException, which no rule classifies, so a misspelled SQL function was a server fault (issue #11314)
+      new Rule(UnknownFunctionException.class, PARSING),
       new Rule(ValidationException.class, VALIDATION),
       new Rule(QueryNotIdempotentException.class, VALIDATION),
       // every runtime type error, InvalidPropertyTypeException among them (issue #11211)

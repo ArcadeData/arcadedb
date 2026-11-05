@@ -23,9 +23,11 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.OwnTransaction;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -269,7 +271,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the translation into MongoDB's error codes is here. The categories MongoDB has no code for keep the uncoded
    * exception they already had.
    * <p>
-   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized, MaxTimeMSExpired and TemporarilyUnavailable are given as literals
+   * WriteConflict, NotWritablePrimary, NamespaceNotFound, Unauthorized, MaxTimeMSExpired, TemporarilyUnavailable and
+   * DocumentValidationFailure are given as literals
    * because the bundled {@code de.bwaldvogel} {@link ErrorCode} enum does not define them; the rest come from the enum.
    */
   static MongoServerException wireException(final String message, final Exception e) {
@@ -289,7 +292,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return new MongoServerError(10107, "NotWritablePrimary",
           message + ": not primary. " + notTheLeader.leaderSentence(), e);
 
-    return switch (ErrorCategory.of(e)) {
+    // A value a constraint the schema declares refuses (issue #11314): what MongoDB answers a document its collection's validator
+    // refuses, where the category alone says BadValue
+    final ErrorCategory category = ErrorCategory.of(e);
+    if (category == ErrorCategory.VALIDATION && CauseChain.find(e, ValidationException.class) instanceof ValidationException refused
+        && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
+      return new MongoServerError(121, "DocumentValidationFailure", message, e);
+
+    return switch (category) {
       case RETRY -> new MongoServerError(112, "WriteConflict", message, e);
       case ARITHMETIC, VALIDATION -> new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), message, e);
       case DUPLICATED_KEY ->
