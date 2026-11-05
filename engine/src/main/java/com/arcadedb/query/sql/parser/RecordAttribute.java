@@ -27,8 +27,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import static com.arcadedb.schema.Property.*;
 
@@ -41,7 +43,24 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(name);
+    // A name the lexer has no bare token for is only readable back-ticked, which is how the parser accepts any attribute name
+    // (issue #11308: `@cat` rendered bare before it had a token, and CREATE MATERIALIZED VIEW could not parse its own rendering)
+    if (isBareToken(name))
+      builder.append(name);
+    else
+      builder.append('`').append(name).append('`');
+  }
+
+  /**
+   * The names, lower case, the SQL lexer reads as a record attribute token of its own: {@code THIS} and every {@code *_ATTR} token
+   * of {@code SQLLexer.g4}. A census test holds this set to the lexer's vocabulary, so a token added to one is added to the other.
+   */
+  public static final Set<String> BARE_TOKEN_NAMES = Set.of(THIS_PROPERTY, RID_PROPERTY, TYPE_PROPERTY, IN_PROPERTY, OUT_PROPERTY,
+      CAT_PROPERTY, PROPERTY_TYPES_PROPERTY, "@rid_id", "@rid_pos");
+
+  /** Whether the lexer reads {@code name} bare, case-insensitively as the lexer does. */
+  private static boolean isBareToken(final String name) {
+    return name != null && BARE_TOKEN_NAMES.contains(name.toLowerCase(Locale.ENGLISH));
   }
 
   public RecordAttribute copy() {

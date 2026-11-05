@@ -68,6 +68,13 @@ public class SuffixIdentifier extends SimpleNode {
     this.recordAttribute = attr;
   }
 
+  /**
+   * The record attribute ({@code @rid}, {@code @cat}, ...) this suffix names, or null when it names a property or {@code *}.
+   */
+  public RecordAttribute getRecordAttribute() {
+    return recordAttribute;
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (identifier != null) {
       identifier.toString(params, builder);

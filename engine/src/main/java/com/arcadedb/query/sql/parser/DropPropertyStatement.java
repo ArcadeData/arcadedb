@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -64,7 +65,10 @@ public class DropPropertyStatement extends DDLStatement {
 
     // getPropertyIfExists(), NOT getProperty(): the latter throws SchemaException instead of returning null when the
     // property is missing, which made the IF EXISTS no-op branch below unreachable dead code (issue #7871).
-    if (sourceClass.getPropertyIfExists(propertyName.getStringValue()) == null) {
+    // a property the schema file declares but the last load could not create is dropped too: it is the one way to remove its
+    // definition from the file (issue #11301)
+    if (sourceClass.getPropertyIfExists(propertyName.getStringValue()) == null && !(sourceClass instanceof LocalDocumentType local
+        && local.isUnrestorableProperty(propertyName.getStringValue()))) {
       if (ifExists) {
         final ResultInternal result = new ResultInternal(database);
         result.setProperty("operation", "drop property");

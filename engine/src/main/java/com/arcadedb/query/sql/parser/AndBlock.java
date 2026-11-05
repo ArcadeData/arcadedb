@@ -100,7 +100,8 @@ public class AndBlock extends BooleanExpression {
       if (!first)
         builder.append(" AND ");
 
-      expr.toString(params, builder);
+      // an OR operand keeps the brackets it was written with, or AND binds tighter and the rendering means something else (#11299)
+      toStringAsOperand(expr, false, params, builder);
       first = false;
     }
   }

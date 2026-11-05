@@ -317,6 +317,8 @@ TYPE_ATTR: AT T Y P E;
 RID_ID_ATTR: AT R I D UNDERSCORE I D;
 RID_POS_ATTR: AT R I D UNDERSCORE P O S;
 PROPS_ATTR: AT P R O P S;
+// the only record attribute that had no bare spelling, so its rendering could not be read back (issue #11308)
+CAT_ATTR: AT C A T;
 
 // ============================================================================
 // OPERATORS
