@@ -23,8 +23,10 @@ import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.GorillaXORCodec;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
@@ -112,6 +114,37 @@ class Issue11274SealedFileOwnerTest extends TestHelper {
     database.command("sql", "COMPACT TIMESERIES TYPE R2");
     reopenDatabase();
     assertThat(values("R2")).containsExactly(3.0, 3.0, 3.0, 4.0);
+  }
+
+  /**
+   * A schema written before the owner existed has no {@code sealedOwner}: the type opens with no owner and reads its files as
+   * before, whatever they record, and saving the schema again does not invent one.
+   */
+  @Test
+  void aSchemaWithoutTheOwnerOpensItsTypeAsBefore() throws IOException {
+    createSealedType("L", 5.0);
+    final Path schemaFile = Path.of(database.getDatabasePath(), LocalSchema.SCHEMA_FILE_NAME);
+    database.close();
+
+    final JSONObject schema = new JSONObject(Files.readString(schemaFile));
+    final JSONObject type = schema.getJSONObject("types").getJSONObject("L");
+    assertThat(type.has("sealedOwner")).isTrue();
+    type.remove("sealedOwner");
+    Files.writeString(schemaFile, schema.toString());
+
+    database = factory.open();
+    final LocalTimeSeriesType legacy = (LocalTimeSeriesType) database.getSchema().getType("L");
+    assertThat(legacy.getSealedOwner()).isEqualTo(TimeSeriesSealedStore.NO_OWNER);
+    assertThat(legacy.isEngineAvailable()).isTrue();
+    assertThat(values("L")).containsExactly(5.0, 5.0, 5.0);
+
+    // a schema change saves the schema: still no owner, and the samples are still read after a reopen
+    database.command("sql", "CREATE DOCUMENT TYPE Unrelated");
+    reopenDatabase();
+    final LocalTimeSeriesType reopened = (LocalTimeSeriesType) database.getSchema().getType("L");
+    assertThat(reopened.getSealedOwner()).isEqualTo(TimeSeriesSealedStore.NO_OWNER);
+    assertThat(values("L")).containsExactly(5.0, 5.0, 5.0);
+    assertThat(new JSONObject(Files.readString(schemaFile)).getJSONObject("types").getJSONObject("L").has("sealedOwner")).isFalse();
   }
 
   @Test
