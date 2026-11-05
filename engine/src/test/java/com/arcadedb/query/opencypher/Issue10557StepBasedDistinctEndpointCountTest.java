@@ -150,6 +150,12 @@ class Issue10557StepBasedDistinctEndpointCountTest extends TestHelper {
         "MATCH (b:V)-[:F]->(c), (a:V)-[:E*1..3]->(b) RETURN count(DISTINCT a) AS c" };
     for (final String query : either)
       assertThat(rows(query)).as(query).isEqualTo(rows(query.replace("(a:V)-", "p = (a:V)-")));
+
+    // a subquery body is run once per outer row: each run counts its own walks, whatever the plan
+    final String correlated =
+        "MATCH (x:V) CALL { WITH x MATCH (x)-[:E*1..3]->(b) RETURN count(DISTINCT b) AS c } RETURN x.id AS s, c ORDER BY s";
+    assertThat(rows(correlated)).isEqualTo(rows(correlated.replace("MATCH (x)-", "MATCH p = (x)-")))
+        .anyMatch(row -> !row.endsWith("c=0"));
     final String[] notFused = {
         "MATCH (a:V)-[:E*1..3]->(b) WHERE b <> a AND b.id > 1 RETURN count(DISTINCT b) AS c",
         "MATCH (a:V)-[:E*1..3]->(b) WHERE b.id <> a.id RETURN count(DISTINCT b) AS c",
