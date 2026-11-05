@@ -174,7 +174,9 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
     final Object decoded;
     try {
       decoded = TypedValueMapperHolder.MAPPER.readValue(typedJson, Object.class);
-    } catch (final IOException | RuntimeException e) {
+    } catch (final IOException | RuntimeException | LinkageError e) {
+      // LinkageError: TinkerPop's GraphSONTypeDeserializer reports an unresolvable type through a Jackson method (mappingException)
+      // that the bundled Jackson no longer has, which surfaces as a NoSuchMethodError and means the same: not decodable
       // THE TYPE AND THE FAILURE, NOT THE VALUE NOR A MESSAGE THAT MAY QUOTE IT: IMPORTED DATA DOES NOT BELONG IN THE LOG
       LogManager.instance().log(ArcadeGraphSONValuesModule.class, Level.WARNING,
           "Cannot decode a GraphSON value of type '%s' (%s): it is imported as it is in the file", null, typeName,
