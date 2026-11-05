@@ -278,7 +278,7 @@ public enum GlobalConfiguration {
       1),
 
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for buckets. Existing buckets keep their page size. Minimum is 8216 bytes, the room a page needs for its header, its slot table and one record. Default is 64KB",
+      "Default page size in bytes for buckets. Existing buckets keep their page size. Minimum is 12298 bytes, the room a page needs for its header, its slot table and 4KB of records. Default is 64KB",
       Integer.class, 65_536, () -> LocalBucket.minimumPageSize(LocalBucket.CURRENT_VERSION)),
 
   INDEX_DEFAULT_PAGE_SIZE("arcadedb.indexDefaultPageSize", SCOPE.DATABASE,
@@ -286,7 +286,7 @@ public enum GlobalConfiguration {
       Integer.class, 262_144),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
-      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Existing buckets keep their page size. Minimum is 1048 bytes. Matches the LSM-index default (256KB)",
+      "Default page size in bytes for paired external-property buckets. They hold heavy property payloads (vector embeddings, large strings, embedded JSON) so the default is larger than for primary buckets to reduce multi-page chunking. Existing buckets keep their page size. Minimum is 5130 bytes. Matches the LSM-index default (256KB)",
       Integer.class, 262_144, () -> LocalBucket.minimumPageSize(LocalBucket.EXTERNAL_BUCKET_VERSION)),
 
   EXTERNAL_PROPERTY_BUCKET_PATH("arcadedb.externalPropertyBucketPath", SCOPE.DATABASE,
