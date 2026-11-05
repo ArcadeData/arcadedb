@@ -68,6 +68,8 @@ class Issue10930SharedPageViewVarIntTest extends TestHelper {
       Map.entry("readNumber(int)", "an absolute varint decode, #10930"),//
       Map.entry("readNumberSize(int)", "an absolute varint scan, #10930"),//
       Map.entry("readNumberAndSize(int)", "readNumber + readNumberSize"),//
+      Map.entry("readUnsignedNumber(int)", "an absolute varint decode, #11298"),//
+      Map.entry("readFloatArray(int,float[],int)", "an absolute slice, a buffer of the caller's own, #11298"),//
       Map.entry("readLong(int)", "an absolute read"),//
       Map.entry("readInt(int)", "an absolute read"),//
       Map.entry("readFloat(int)", "an absolute read"),//

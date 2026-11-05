@@ -1929,6 +1929,19 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * {@link #getPageNotHeld(PageId, int)} for a reader that reads the page only at absolute positions, as
+   * {@link #getPageForAbsoluteReads} is to {@link #getPage}: a record read that has just been told by
+   * {@link #getPinnedPage(PageId)} that the transaction holds no page for {@code pageId} gets the page cache's shared view on a
+   * {@code READ_COMMITTED} miss, instead of a new {@code ImmutablePage}, {@code Binary} and buffer per record (issue #10820).
+   * {@code REPEATABLE_READ} reads as {@code getPageNotHeld} does, which keeps the page for the rest of the transaction.
+   */
+  public BasePage getPageNotHeldForAbsoluteReads(final PageId pageId, final int size) throws IOException {
+    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+      return getPageNotHeld(pageId, size);
+    return database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
    * The page this transaction holds for {@code pageId}, looked up in the order both {@link #getPage} and
    * {@link #getPageForAbsoluteReads} rely on: modified, new, then the immutable pages it keeps. {@code null} when it holds none.
    */
