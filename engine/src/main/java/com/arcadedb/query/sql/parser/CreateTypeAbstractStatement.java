@@ -348,6 +348,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
         first = false;
       }
     }
+    toStringTypeModifiers(builder);
     if (buckets != null && buckets.size() > 0) {
       builder.append(" BUCKET ");
       boolean first = true;
@@ -379,6 +380,14 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
         first = false;
       }
     }
+  }
+
+  /**
+   * Appends the modifiers only one kind of type declares, which the grammar places right after EXTENDS and before BUCKET. A
+   * subclass that parses its own modifiers renders them here, or the rendering (what EXPLAIN reports) declares a different type
+   * from the statement (issue #11307).
+   */
+  protected void toStringTypeModifiers(final StringBuilder builder) {
   }
 
   protected CreateTypeAbstractStatement copy(final CreateTypeAbstractStatement result) {

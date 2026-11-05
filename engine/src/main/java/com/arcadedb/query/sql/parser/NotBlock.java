@@ -79,13 +79,16 @@ public class NotBlock extends BooleanExpression {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (negate) {
-      builder.append("NOT ");
-    }
-    if (sub != null)
-      sub.toString(params, builder);
-    else
+    if (sub == null) {
+      if (negate)
+        builder.append("NOT ");
       builder.append("NULL");
+    } else if (negate) {
+      builder.append("NOT ");
+      // NOT binds to the condition right after it, so a compound operand keeps its brackets (#11299)
+      toStringAsOperand(sub, true, params, builder);
+    } else
+      sub.toString(params, builder);
   }
 
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {

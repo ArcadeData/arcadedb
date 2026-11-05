@@ -104,6 +104,9 @@ public class LocalDocumentType implements DocumentType {
   // ConcurrentModificationException straight out of a plain HashMap. Concurrent, so a reader crossing an in-flight
   // mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
   protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
+  // The definitions, by property name, of the properties the last load could not create (issue #11301): not served, written back
+  // to schema.json as read until CREATE PROPERTY or DROP PROPERTY of the name. Replaced whole, never mutated in place
+  private volatile Map<String, JSONObject>          unrestorableProperties       = Map.of();
   // Read on every write of a record (getPolymorphicBucketIndexByBucketId) with no lock held, mutated in place by CREATE and
   // DROP INDEX: concurrent, and so is each list it holds (#9989)
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new ConcurrentHashMap<>();
@@ -1445,6 +1448,8 @@ public class LocalDocumentType implements DocumentType {
         property.setOfType(ofType);
 
       properties.put(propertyName, property);
+      // the property now declared replaces the definition the load could not create under its name (#11301)
+      forgetUnrestorableProperty(propertyName);
       // AFTER THE PROPERTY IS VISIBLE: AN ANSWER DERIVED FROM THE PROPERTIES BEFORE IT IS NEVER SERVED AGAIN (#9997)
       schema.typesChanged();
       return property;
@@ -1604,9 +1609,37 @@ public class LocalDocumentType implements DocumentType {
         // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
         // the failure looked like it healed on restart.
         setPropertyHasDefault(propertyName, false);
-      }
+      } else
+        // the one way to remove a definition the load could not create (#11301)
+        forgetUnrestorableProperty(propertyName);
       return removed;
     });
+  }
+
+  /**
+   * Keeps the definition of a property the schema load could not create (issue #11301), in the JSON form of
+   * {@link Property#toJSON()}, so the next save writes it back instead of losing it.
+   */
+  void keepUnrestorableProperty(final String propertyName, final JSONObject definition) {
+    final Map<String, JSONObject> updated = new HashMap<>(unrestorableProperties);
+    updated.put(propertyName, definition);
+    unrestorableProperties = Collections.unmodifiableMap(updated);
+  }
+
+  /**
+   * Whether the schema file declares {@code propertyName} in this type although the last load could not create it, so the type
+   * does not serve it: DROP PROPERTY removes the definition.
+   */
+  public boolean isUnrestorableProperty(final String propertyName) {
+    return unrestorableProperties.containsKey(propertyName);
+  }
+
+  private void forgetUnrestorableProperty(final String propertyName) {
+    if (!unrestorableProperties.containsKey(propertyName))
+      return;
+    final Map<String, JSONObject> updated = new HashMap<>(unrestorableProperties);
+    updated.remove(propertyName);
+    unrestorableProperties = updated.isEmpty() ? Map.of() : Collections.unmodifiableMap(updated);
   }
 
   /**
@@ -3068,13 +3101,14 @@ public class LocalDocumentType implements DocumentType {
     type.put("properties", propertiesJSON);
 
     // Properties, indexes and custom values in name order, like every map in the schema file: see LocalSchema.toJSON().
-    final String[] propertyNames = properties.keySet().toArray(new String[0]);
-    Arrays.sort(propertyNames);
-    for (final String propertyName : propertyNames) {
-      final Property property = properties.get(propertyName);
-      if (property != null)
-        propertiesJSON.put(propertyName, property.toJSON());
-    }
+    final Map<String, JSONObject> propertiesByName = new TreeMap<>();
+    // a property the last load could not create keeps its definition until one is declared under its name (#11301)
+    for (final Map.Entry<String, JSONObject> entry : unrestorableProperties.entrySet())
+      propertiesByName.put(entry.getKey(), entry.getValue().copy());
+    for (final Map.Entry<String, Property> entry : properties.entrySet())
+      propertiesByName.put(entry.getKey(), entry.getValue().toJSON());
+    for (final Map.Entry<String, JSONObject> entry : propertiesByName.entrySet())
+      propertiesJSON.put(entry.getKey(), entry.getValue());
 
     final JSONObject indexes = new JSONObject();
     type.put("indexes", indexes);

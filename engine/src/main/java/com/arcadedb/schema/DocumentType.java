@@ -34,6 +34,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 
 /**
  * Schema Document Type.
@@ -161,37 +162,55 @@ public interface DocumentType {
   Property createProperty(String propertyName, Class<?> propertyType);
 
   default Property createProperty(String propName, JSONObject prop) {
+    return createProperty(propName, prop, (attribute, e) -> {
+      throw e;
+    });
+  }
+
+  /**
+   * Creates the property {@code prop} describes, in the JSON form of {@link Property#toJSON()}, applying each attribute on its
+   * own: an attribute whose setter refuses the value is handed to {@code onRefusedAttribute} with the refusal, under its JSON key
+   * ({@code "custom.<key>"} for a custom value), and the next attribute is applied whatever the handler does unless it throws.
+   * The schema loader uses this to restore every attribute it can rather than abandon the rest of the schema on the first one it
+   * cannot (issue #11301). A refusal to create the property itself is thrown.
+   */
+  default Property createProperty(final String propName, final JSONObject prop,
+      final BiConsumer<String, RuntimeException> onRefusedAttribute) {
     final Property p = createProperty(propName, prop.getString("type"));
 
-    if (prop.has("of"))
-      p.setOfType(prop.getString("of"));
-    if (prop.has("default"))
-      p.setDefaultValue(prop.get("default"));
-    if (prop.has("readonly"))
-      p.setReadonly(prop.getBoolean("readonly"));
-    if (prop.has("mandatory"))
-      p.setMandatory(prop.getBoolean("mandatory"));
-    if (prop.has("notNull"))
-      p.setNotNull(prop.getBoolean("notNull"));
-    if (prop.has("hidden"))
-      p.setHidden(prop.getBoolean("hidden"));
-    if (prop.has("external"))
-      p.setExternal(prop.getBoolean("external"));
-    if (prop.has("compression"))
-      p.setCompression(prop.getString("compression"));
-    if (prop.has("max"))
-      p.setMax(prop.getString("max"));
-    if (prop.has("min"))
-      p.setMin(prop.getString("min"));
-    if (prop.has("regexp"))
-      p.setRegexp(prop.getString("regexp"));
+    applyAttribute(prop, "of", onRefusedAttribute, () -> p.setOfType(prop.getString("of")));
+    applyAttribute(prop, "default", onRefusedAttribute, () -> p.setDefaultValue(prop.get("default")));
+    applyAttribute(prop, "readonly", onRefusedAttribute, () -> p.setReadonly(prop.getBoolean("readonly")));
+    applyAttribute(prop, "mandatory", onRefusedAttribute, () -> p.setMandatory(prop.getBoolean("mandatory")));
+    applyAttribute(prop, "notNull", onRefusedAttribute, () -> p.setNotNull(prop.getBoolean("notNull")));
+    applyAttribute(prop, "hidden", onRefusedAttribute, () -> p.setHidden(prop.getBoolean("hidden")));
+    applyAttribute(prop, "external", onRefusedAttribute, () -> p.setExternal(prop.getBoolean("external")));
+    applyAttribute(prop, "compression", onRefusedAttribute, () -> p.setCompression(prop.getString("compression")));
+    applyAttribute(prop, "max", onRefusedAttribute, () -> p.setMax(prop.getString("max")));
+    applyAttribute(prop, "min", onRefusedAttribute, () -> p.setMin(prop.getString("min")));
+    applyAttribute(prop, "regexp", onRefusedAttribute, () -> p.setRegexp(prop.getString("regexp")));
 
     if (prop.has("custom")) {
       for (Map.Entry<String, Object> entry : prop.getJSONObject("custom").toMap().entrySet())
-        p.setCustomValue(entry.getKey(), entry.getValue());
+        try {
+          p.setCustomValue(entry.getKey(), entry.getValue());
+        } catch (final RuntimeException e) {
+          onRefusedAttribute.accept("custom." + entry.getKey(), e);
+        }
     }
 
     return p;
+  }
+
+  private static void applyAttribute(final JSONObject prop, final String attribute,
+      final BiConsumer<String, RuntimeException> onRefusedAttribute, final Runnable setter) {
+    if (!prop.has(attribute))
+      return;
+    try {
+      setter.run();
+    } catch (final RuntimeException e) {
+      onRefusedAttribute.accept(attribute, e);
+    }
   }
 
   Property createProperty(String propertyName, Type propertyType);

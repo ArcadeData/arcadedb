@@ -1681,6 +1681,46 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Restores one property of {@code type} from its definition in the schema file, and contains the failure to it (issue #11301): a
+   * property loop that aborts on its first refusal loses every property, type index and inheritance link the loop had not reached
+   * yet, so a UNIQUE index stopped being enforced, and the next DDL statement saved the truncated schema over the file. Like the
+   * index pass below (unavailable index definitions), what cannot be served is kept, not dropped: an attribute a setter refuses is
+   * written back as read until it is set again, and a property that cannot be created at all keeps its whole definition until
+   * CREATE PROPERTY or DROP PROPERTY of its name.
+   */
+  private void restoreProperty(final LocalDocumentType type, final String propName, final JSONObject definition) {
+    final JSONObject unrestored = new JSONObject();
+    final Property property;
+    try {
+      property = type.createProperty(propName, definition, (attribute, e) -> {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Cannot restore the attribute '%s' of property '%s.%s' from the schema (%s): the property is loaded without it, and the "
+                + "schema keeps the stored value until the attribute is set again", null, attribute, type.getName(), propName,
+            e.getMessage());
+        if (attribute.startsWith("custom.")) {
+          final String customKey = attribute.substring("custom.".length());
+          JSONObject customKept = unrestored.getJSONObject("custom", null);
+          if (customKept == null) {
+            customKept = new JSONObject();
+            unrestored.put("custom", customKept);
+          }
+          customKept.put(customKey, definition.getJSONObject("custom").get(customKey));
+        } else
+          unrestored.put(attribute, definition.get(attribute));
+      });
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot restore property '%s.%s' from the schema (%s): the property is not loaded, and the schema keeps its definition "
+              + "until the property is created or dropped", null, type.getName(), propName, e.getMessage());
+      type.keepUnrestorableProperty(propName, definition.copy());
+      return;
+    }
+
+    if (!unrestored.isEmpty() && property instanceof LocalProperty local)
+      local.keepUnrestoredAttributes(unrestored);
+  }
+
+  /**
    * The definitions, keyed by file name, of the bucket indexes of {@code typeName} that the last load found bound to a file
    * with no header page (issue #10046): not served, but kept in the schema file until they can be again.
    */
@@ -4610,10 +4650,8 @@ public class LocalSchema implements Schema {
         if (schemaType.has("properties")) {
           final JSONObject schemaProperties = schemaType.getJSONObject("properties");
           if (schemaProperties != null) {
-            for (final String propName : schemaProperties.keySet()) {
-              final JSONObject prop = schemaProperties.getJSONObject(propName);
-              type.createProperty(propName, prop);
-            }
+            for (final String propName : schemaProperties.keySet())
+              restoreProperty(type, propName, schemaProperties.getJSONObject(propName));
           }
         }
       }

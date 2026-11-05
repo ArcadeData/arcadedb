@@ -89,12 +89,40 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
+  protected void toStringTypeModifiers(final StringBuilder builder) {
+    // in the grammar's order: UNIDIRECTIONAL? (LIGHTWEIGHT | UNIQUE)*
+    if (unidirectional)
+      builder.append(" UNIDIRECTIONAL");
+    if (lightweight)
+      builder.append(" LIGHTWEIGHT");
+    if (unique)
+      builder.append(" UNIQUE");
+  }
+
+  @Override
   public CreateEdgeTypeStatement copy() {
     final CreateEdgeTypeStatement copy = (CreateEdgeTypeStatement) super.copy(new CreateEdgeTypeStatement());
     copy.unidirectional = unidirectional;
     copy.lightweight = lightweight;
     copy.unique = unique;
     return copy;
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+    if (!super.equals(o))
+      return false;
+    final CreateEdgeTypeStatement that = (CreateEdgeTypeStatement) o;
+    return unidirectional == that.unidirectional && lightweight == that.lightweight && unique == that.unique;
+  }
+
+  @Override
+  public int hashCode() {
+    int result = super.hashCode();
+    result = 31 * result + (unidirectional ? 1 : 0);
+    result = 31 * result + (lightweight ? 1 : 0);
+    result = 31 * result + (unique ? 1 : 0);
+    return result;
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

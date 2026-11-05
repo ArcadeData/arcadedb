@@ -68,6 +68,10 @@ public class SuffixIdentifier extends SimpleNode {
     this.recordAttribute = attr;
   }
 
+  public RecordAttribute getRecordAttribute() {
+    return recordAttribute;
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (identifier != null) {
       identifier.toString(params, builder);

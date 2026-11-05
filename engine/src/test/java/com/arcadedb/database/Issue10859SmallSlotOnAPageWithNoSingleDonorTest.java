@@ -57,11 +57,12 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
   /** Slots of a page of a bucket created now: the content area below is sized against it. */
   private static final int    SLOTS_IN_PAGE     = 2048;
   /**
-   * A page of about 1 KB of content: small enough for records no bigger than a pointer to fill it before its slot table
-   * runs out, which a page of the default size, with the same slots, never lets them do.
+   * A page of 4 KB of content, the least a bucket accepts (#11286): small enough for records no bigger than a pointer to
+   * fill it before its slot table runs out (about 455 of them against 2048 slots), which a page of the default size, with
+   * the same slots, never lets them do.
    */
   private static final int    PAGE_SIZE         =
-      BasePage.PAGE_HEADER_SIZE + Binary.SHORT_SERIALIZED_SIZE + SLOTS_IN_PAGE * Binary.INT_SERIALIZED_SIZE + 1024;
+      BasePage.PAGE_HEADER_SIZE + Binary.SHORT_SERIALIZED_SIZE + SLOTS_IN_PAGE * Binary.INT_SERIALIZED_SIZE + 4096;
   private static final String QUOTED            = "q".repeat(40);
 
   /**

@@ -27,6 +27,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.logging.Level;
@@ -40,6 +41,10 @@ public class LocalProperty extends AbstractProperty {
    * {@code ALTER PROPERTY Reading.value CUSTOM role = "FIELD"}.
    */
   private static final String TIMESERIES_ROLE_CUSTOM_KEY = "role";
+  private static final String CUSTOM_KEY                 = "custom";
+
+  // see keepUnrestoredAttributes(): null on every property the load restored whole
+  private volatile JSONObject unrestoredAttributes;
 
   public LocalProperty(final LocalDocumentType owner, final String name, final Type type) {
     super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
@@ -139,6 +144,7 @@ public class LocalProperty extends AbstractProperty {
         return null;
       });
     }
+    forgetUnrestoredAttribute("default");
     return this;
   }
 
@@ -150,23 +156,42 @@ public class LocalProperty extends AbstractProperty {
       final LocalSchema schema = (LocalSchema) owner.getSchema();
       String resolved = ofType;
       if (type == Type.LIST || type == Type.MAP) {
-        if (Type.getTypeByName(ofType) != null) {
+        // a scalar is normalised whenever it is set, the load included: the load depends on it
+        if (Type.getTypeByName(ofType) != null)
           resolved = ofType.toUpperCase(Locale.ENGLISH);
-        } else {
-          if (!schema.existsType(ofType))
-            throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
-                + "' because the type is not defined");
-        }
-      } else if (type == Type.LINK || type == Type.EMBEDDED) {
-        if (schema.isSchemaLoaded() && !schema.existsType(ofType))
-          throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
-              + "' because the type is not defined");
-      }
+        else
+          checkOfTypeExists(schema, ofType);
+      } else if (type == Type.LINK || type == Type.EMBEDDED)
+        checkOfTypeExists(schema, ofType);
 
       final String newOfType = resolved;
       publish(() -> this.ofType = newOfType);
     }
+    forgetUnrestoredAttribute("of");
     return this;
+  }
+
+  /**
+   * Refuses an OF naming a type the schema does not define, except on a schema that is not loaded yet: the load restores what
+   * the file declares, and a type a property names can be gone from it for a supported reason (DROP TYPE does not refuse a type
+   * another property names). The load warns instead, the way {@link #checkBound} does. The LINK/EMBEDDED branch always had that
+   * exemption and the LIST/MAP branch did not, so one LIST OF a dropped type aborted the load of every property after it
+   * (issue #11301).
+   */
+  private void checkOfTypeExists(final LocalSchema schema, final String ofType) {
+    if (schema.existsType(ofType))
+      return;
+
+    if (!schema.isSchemaLoaded()) {
+      if (schema.isReadingFromFile())
+        LogManager.instance().log(this, Level.WARNING,
+            "Property '%s.%s' is declared %s OF '%s', a type the schema does not define: a record or document stored in the "
+                + "property is refused until the type exists again", owner.getName(), name, type, ofType);
+      return;
+    }
+
+    throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
+        + "' because the type is not defined");
   }
 
   @Override
@@ -175,6 +200,7 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.readonly, readonly);
     if (changed)
       publish(() -> this.readonly = readonly);
+    forgetUnrestoredAttribute("readonly");
     return this;
   }
 
@@ -189,6 +215,7 @@ public class LocalProperty extends AbstractProperty {
           ((LocalDocumentType) owner).checkNoLightweightEdgeTypeBelow(this, "MANDATORY");
         this.mandatory = mandatory;
       });
+    forgetUnrestoredAttribute("mandatory");
     return this;
   }
 
@@ -201,6 +228,7 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.notNull, notNull);
     if (changed)
       publish(() -> this.notNull = notNull);
+    forgetUnrestoredAttribute("notNull");
     return this;
   }
 
@@ -212,6 +240,7 @@ public class LocalProperty extends AbstractProperty {
     final boolean changed = !Objects.equals(this.hidden, hidden);
     if (changed)
       publish(() -> this.hidden = hidden);
+    forgetUnrestoredAttribute("hidden");
     return this;
   }
 
@@ -241,6 +270,7 @@ public class LocalProperty extends AbstractProperty {
         }
       });
     }
+    forgetUnrestoredAttribute("external");
     return this;
   }
 
@@ -263,6 +293,7 @@ public class LocalProperty extends AbstractProperty {
     if (!Objects.equals(this.compression, normalized)) {
       publish(() -> this.compression = normalized);
     }
+    forgetUnrestoredAttribute("compression");
     return this;
   }
 
@@ -278,6 +309,7 @@ public class LocalProperty extends AbstractProperty {
         this.max = max;
       });
     }
+    forgetUnrestoredAttribute("max");
     return this;
   }
 
@@ -293,6 +325,7 @@ public class LocalProperty extends AbstractProperty {
         this.min = min;
       });
     }
+    forgetUnrestoredAttribute("min");
     return this;
   }
 
@@ -348,6 +381,7 @@ public class LocalProperty extends AbstractProperty {
         this.regexp = compiled;
       });
     }
+    forgetUnrestoredAttribute("regexp");
     return this;
   }
 
@@ -454,10 +488,72 @@ public class LocalProperty extends AbstractProperty {
     // An unchanged value is not a schema change: answered here, without a recording session (under HA, a Raft round
     // trip) for nothing
     final Object current = custom.get(key);
-    if (Objects.equals(current, value))
+    if (Objects.equals(current, value)) {
+      forgetUnrestoredCustomValue(key);
       return current;
+    }
 
-    return owner.getSchema().getEmbedded().recordFileChanges(() -> replaceCustomValue(key, value));
+    final Object previous = owner.getSchema().getEmbedded().recordFileChanges(() -> replaceCustomValue(key, value));
+    forgetUnrestoredCustomValue(key);
+    return previous;
+  }
+
+  /**
+   * Keeps what the schema file declared for the attributes of this property that the load could not restore (issue #11301), in
+   * the JSON form of {@link #toJSON()} (custom values under {@code "custom"}): they are not served, and they are written back as
+   * read, so a save does not lose what the file declared, until the attribute is set again.
+   */
+  void keepUnrestoredAttributes(final JSONObject attributes) {
+    unrestoredAttributes = attributes == null || attributes.isEmpty() ? null : attributes;
+  }
+
+  @Override
+  public JSONObject toJSON() {
+    final JSONObject json = super.toJSON();
+    final JSONObject unrestored = unrestoredAttributes;
+    if (unrestored != null)
+      for (final String key : unrestored.keySet()) {
+        if (CUSTOM_KEY.equals(key)) {
+          final JSONObject customJSON = json.getJSONObject(CUSTOM_KEY, null);
+          final JSONObject kept = unrestored.getJSONObject(CUSTOM_KEY);
+          for (final String customKey : kept.keySet())
+            if (customJSON != null && !customJSON.has(customKey))
+              customJSON.put(customKey, kept.get(customKey));
+        } else if (!json.has(key))
+          json.put(key, unrestored.get(key));
+      }
+    return json;
+  }
+
+  /**
+   * Forgets the kept value of {@code attribute}, which a setter calls once it has accepted a value of its own, and saves the
+   * schema when there was one, so the file stops declaring it even when the accepted value changed nothing in memory.
+   */
+  private void forgetUnrestoredAttribute(final String attribute) {
+    final JSONObject unrestored = unrestoredAttributes;
+    if (unrestored == null || !unrestored.has(attribute))
+      return;
+    final JSONObject remaining = unrestored.copy();
+    remaining.remove(attribute);
+    unrestoredAttributes = remaining.isEmpty() ? null : remaining;
+    publish(() -> {
+    });
+  }
+
+  private void forgetUnrestoredCustomValue(final String key) {
+    final JSONObject unrestored = unrestoredAttributes;
+    if (unrestored == null || !unrestored.has(CUSTOM_KEY) || !unrestored.getJSONObject(CUSTOM_KEY).has(key))
+      return;
+    final JSONObject remaining = unrestored.copy();
+    final JSONObject customKept = remaining.getJSONObject(CUSTOM_KEY).copy();
+    customKept.remove(key);
+    if (customKept.isEmpty())
+      remaining.remove(CUSTOM_KEY);
+    else
+      remaining.put(CUSTOM_KEY, customKept);
+    unrestoredAttributes = remaining.isEmpty() ? null : remaining;
+    publish(() -> {
+    });
   }
 
   @Override
@@ -489,6 +585,7 @@ public class LocalProperty extends AbstractProperty {
     copy.regexp = regexp;
     copy.ofType = ofType;
     copy.defaultValue = defaultValue;
+    copy.unrestoredAttributes = unrestoredAttributes;
     return copy;
   }
 }

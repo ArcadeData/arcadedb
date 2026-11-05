@@ -41,7 +41,22 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(name);
+    // A name the lexer has no bare token for is only readable back-ticked, which is how the parser accepts any attribute name
+    // (issue #11308: `@cat` rendered bare before it had a token, and CREATE MATERIALIZED VIEW could not parse its own rendering)
+    if (isBareToken(name))
+      builder.append(name);
+    else
+      builder.append('`').append(name).append('`');
+  }
+
+  /**
+   * Whether the SQL lexer reads {@code name} as a record attribute token of its own ({@code THIS}, {@code RID_ATTR},
+   * {@code CAT_ATTR}, ... in {@code SQLLexer.g4}), case-insensitively as the lexer does.
+   */
+  private static boolean isBareToken(final String name) {
+    return THIS_PROPERTY.equalsIgnoreCase(name) || RID_PROPERTY.equalsIgnoreCase(name) || TYPE_PROPERTY.equalsIgnoreCase(name)
+        || IN_PROPERTY.equalsIgnoreCase(name) || OUT_PROPERTY.equalsIgnoreCase(name) || CAT_PROPERTY.equalsIgnoreCase(name)
+        || PROPERTY_TYPES_PROPERTY.equalsIgnoreCase(name) || "@rid_id".equalsIgnoreCase(name) || "@rid_pos".equalsIgnoreCase(name);
   }
 
   public RecordAttribute copy() {

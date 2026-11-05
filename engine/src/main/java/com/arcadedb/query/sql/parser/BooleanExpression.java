@@ -215,6 +215,37 @@ public abstract class BooleanExpression extends SimpleNode {
     return Boolean.TRUE.equals(value);
   }
 
+  /**
+   * Renders {@code operand} as an operand of AND (when {@code underNot} is false) or of NOT, bracketing it when its own rendering
+   * would otherwise bind differently: an OR under an AND, and an AND, an OR or another NOT under a NOT (issue #11299). The parser
+   * drops the brackets a condition was written with ({@code visitParenthesizedCondition} returns the inner condition, so the
+   * planner sees the {@code AndBlock}/{@code OrBlock} it branches on), so the renderer is where the grouping has to come back,
+   * from the shape of the tree. What prints nothing of its own is seen through: a pass-through {@link NotBlock} (no NOT) and an
+   * AND or OR of one operand.
+   */
+  protected static void toStringAsOperand(final BooleanExpression operand, final boolean underNot, final Map<String, Object> params,
+      final StringBuilder builder) {
+    BooleanExpression shape = operand;
+    while (true) {
+      if (shape instanceof NotBlock not && !not.negate && not.sub != null)
+        shape = not.sub;
+      else if (shape instanceof AndBlock and && and.subBlocks.size() == 1)
+        shape = and.subBlocks.getFirst();
+      else if (shape instanceof OrBlock or && or.subBlocks != null && or.subBlocks.size() == 1)
+        shape = or.subBlocks.getFirst();
+      else
+        break;
+    }
+
+    final boolean bracket = shape instanceof OrBlock or && or.subBlocks != null && or.subBlocks.size() > 1 ||//
+        underNot && (shape instanceof AndBlock and && and.subBlocks.size() > 1 || shape instanceof NotBlock);
+    if (bracket)
+      builder.append('(');
+    operand.toString(params, builder);
+    if (bracket)
+      builder.append(')');
+  }
+
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final CommandContext context) {
     return null;
   }

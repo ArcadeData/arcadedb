@@ -3801,7 +3801,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // it aggregates above all) it decides by walking the AST.
       if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall())
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
-          && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null) {
+          && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null
+          && firstIdCtx.CAT_ATTR() == null) {
         final String baseIdText = firstIdCtx.getText();
         if (isNamespacedFunctionCall(baseIdText, ctx.methodCall(0)))
           return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(), ctx);
@@ -4080,11 +4081,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * (e.g. {@code .`@rid`}).
    */
   private SuffixIdentifier buildSuffixForIdentifier(final SQLParser.IdentifierContext idCtx) {
-    // Unquoted record attribute tokens (@rid, @type, @in, @out, @this, @rid_id, @rid_pos, @props)
+    // Unquoted record attribute tokens (@rid, @type, @in, @out, @this, @rid_id, @rid_pos, @props, @cat)
     if (idCtx.RID_ATTR() != null || idCtx.TYPE_ATTR() != null ||
         idCtx.IN_ATTR() != null || idCtx.OUT_ATTR() != null ||
         idCtx.THIS() != null || idCtx.RID_ID_ATTR() != null ||
-        idCtx.RID_POS_ATTR() != null || idCtx.PROPS_ATTR() != null) {
+        idCtx.RID_POS_ATTR() != null || idCtx.PROPS_ATTR() != null || idCtx.CAT_ATTR() != null) {
       final RecordAttribute attr = new RecordAttribute();
       attr.setName(idCtx.getText());
       return new SuffixIdentifier(attr);
@@ -4794,15 +4795,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               } else {
                 item.setAlias(identifierValue);
               }
-            } else {
-              // Check for RecordAttribute (e.g., @rid, @type, @this)
-              // Use toString to get the record attribute name
-              final StringBuilder sb = new StringBuilder();
-              suffix.toString(Collections.emptyMap(), sb);
-              final String suffixStr = sb.toString();
-              if (suffixStr != null && suffixStr.startsWith("@")) {
-                item.recordAttr = suffixStr;
-              }
+            } else if (suffix.getRecordAttribute() != null) {
+              // the attribute's NAME, not its rendering, which back-ticks a name the lexer has no token for (#11308)
+              final String attributeName = suffix.getRecordAttribute().getName();
+              if (attributeName != null && attributeName.startsWith("@"))
+                item.recordAttr = attributeName;
             }
           }
         }

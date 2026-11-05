@@ -1680,6 +1680,7 @@ identifier
     | RID_ID_ATTR
     | RID_POS_ATTR
     | PROPS_ATTR
+    | CAT_ATTR
     | OUT_ATTR
     | IN_ATTR
     | TYPE_ATTR
