@@ -2840,7 +2840,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       concatExpr.getChildExpressions().addAll(leftExpr.arrayConcatExpression.getChildExpressions());
     else {
       final ArrayConcatExpressionElement leftElement = new ArrayConcatExpressionElement();
-      copyExpressionFields(leftExpr, leftElement);
+      leftElement.takeFieldsOf(leftExpr);
       leftElement.nestedProjection = extractNestedProjectionFromBaseExpression(leftExpr);
       concatExpr.getChildExpressions().add(leftElement);
     }
@@ -2848,7 +2848,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Visit right side
     final Expression rightExpr = (Expression) visit(ctx.expression(1));
     final ArrayConcatExpressionElement rightElement = new ArrayConcatExpressionElement();
-    copyExpressionFields(rightExpr, rightElement);
+    rightElement.takeFieldsOf(rightExpr);
     rightElement.nestedProjection = extractNestedProjectionFromBaseExpression(rightExpr);
     concatExpr.getChildExpressions().add(rightElement);
 
@@ -2896,18 +2896,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final BaseExpression wrapper = new BaseExpression();
     wrapper.expression = expr;
     return wrapper;
-  }
-
-  /**
-   * Helper method to copy fields from Expression to ArrayConcatExpressionElement.
-   */
-  private void copyExpressionFields(final Expression from, final ArrayConcatExpressionElement to) {
-    to.mathExpression = from.mathExpression;
-    to.isNull = from.isNull;
-    to.booleanValue = from.booleanValue;
-    to.rid = from.rid;
-    to.whereCondition = from.whereCondition;
-    to.json = from.json;
   }
 
   /**
