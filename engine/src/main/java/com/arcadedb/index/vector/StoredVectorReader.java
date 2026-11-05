@@ -82,9 +82,10 @@ final class StoredVectorReader {
   private final boolean          zeroIsUnscorable;
   private final int[]            location     = new int[2];
   private       int              propertyId   = UNRESOLVED;
-  // THE BUCKET OF THE LAST READ AND WHETHER ITS RECORDS CAN BE READ IN PLACE: AN INDEX OF ONE BUCKET ASKS ONCE PER SEARCH
+  // THE BUCKET OF THE LAST READ AND ITS TYPE: AN INDEX OF ONE BUCKET RESOLVES THEM ONCE PER SEARCH
   private       int              lastBucketId = -1;
   private       LocalBucket      lastBucket;
+  private       DocumentType     lastType;
   private       PageId           lastPageId;
 
   /**
@@ -258,23 +259,25 @@ final class StoredVectorReader {
     return cursor <= end ? vector : FALLBACK;
   }
 
-  /** The bucket of {@code bucketId} when its records can be read in place, null when they must be read through the database. */
+  /**
+   * The bucket of {@code bucketId} when its records can be read in place, null when they must be read through the database.
+   * The bucket and its type are resolved once per bucket, the read listeners are asked on every read: one registered while a
+   * search or a build runs sees the reads that follow it, as it would through the database.
+   */
   private LocalBucket bucketReadInPlace(final int bucketId) {
     if (bucketId != lastBucketId) {
       lastBucketId = bucketId;
       lastPageId = null;
-      lastBucket = !hasReadListeners(bucketId) && database.getSchema().getBucketByIdIfExists(bucketId) instanceof LocalBucket bucket ?
-          bucket :
-          null;
+      lastBucket = database.getSchema().getBucketByIdIfExists(bucketId) instanceof LocalBucket bucket ? bucket : null;
+      lastType = database.getSchema().getTypeByBucketId(bucketId);
     }
-    return lastBucket;
+    return lastBucket == null || hasReadListeners(lastType) ? null : lastBucket;
   }
 
-  private boolean hasReadListeners(final int bucketId) {
+  private boolean hasReadListeners(final DocumentType type) {
     final RecordEvents events = database.getEvents();
     if (!(events instanceof RecordEventsRegistry registry) || registry.hasBeforeReadListeners() || registry.hasAfterReadListeners())
       return true;
-    final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
     return type != null && (!(type instanceof LocalDocumentType localType) || localType.hasBeforeReadListeners()
         || localType.hasAfterReadListeners());
   }

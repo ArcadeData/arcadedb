@@ -154,6 +154,29 @@ class Issue11298BinaryRerankReadsInPlaceTest extends TestHelper {
     }
   }
 
+  /**
+   * A reader lives for a whole search or build: a listener registered while it lives sees the reads that follow, because the
+   * reader asks for listeners on every read, not once per bucket.
+   */
+  @Test
+  void listenerRegisteredWhileAReaderLivesSeesTheReadsThatFollow() {
+    final Corpus corpus = createCorpus("LateListener", "DOCUMENT", 50, 37);
+    final LSMVectorIndex index = index(corpus.type);
+    final RID rid = corpus.rids.get(3);
+    final StoredVectorReader reader = index.storedVectorReader("vector", DIMENSIONS);
+    assertThat(index.readStoredVectorInPlace(reader, rid)).as("no listener: read in place").containsExactly(corpus.vectors.get(3));
+
+    final AfterRecordReadListener listener = record -> record;
+    final RecordEvents events = database.getSchema().getType(corpus.type).getEvents();
+    events.registerListener(listener);
+    try {
+      assertThat(index.readStoredVectorInPlace(reader, rid)).as("a listener now: left to the database, which runs it").isNull();
+    } finally {
+      events.unregisterListener(listener);
+    }
+    assertThat(index.readStoredVectorInPlace(reader, rid)).as("the listener gone: in place again").containsExactly(corpus.vectors.get(3));
+  }
+
   /** A record larger than its page is a chunk chain, not a record of its own slot: it is read through the database. */
   @Test
   void recordLargerThanItsPageIsReranked() {
