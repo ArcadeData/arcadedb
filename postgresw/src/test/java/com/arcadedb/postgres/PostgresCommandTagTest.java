@@ -82,6 +82,11 @@ class PostgresCommandTagTest {
     assertThat(PostgresCommandTag.keywordsOf("CreateDocumentTypeStatement")).isEqualTo("CREATE DOCUMENT TYPE");
     assertThat(PostgresCommandTag.keywordsOf("RebuildIndexStatement")).isEqualTo("REBUILD INDEX");
     assertThat(PostgresCommandTag.keywordsOf("AlterTypeStatement")).isEqualTo("ALTER TYPE");
+
+    // a class whose simple name spells nothing (an anonymous subclass) is tagged from the text instead of ""
+    final Statement anonymous = new Statement() {
+    };
+    assertThat(PostgresCommandTag.of(anonymous, "/* h */ SHOW x", 1)).isEqualTo("SHOW");
   }
 
   @Test

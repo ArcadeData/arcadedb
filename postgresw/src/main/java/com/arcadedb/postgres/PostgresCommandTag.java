@@ -68,7 +68,11 @@ final class PostgresCommandTag {
    * @param count     the rows the statement returned or changed
    */
   static String of(final Statement statement, final String text, final long count) {
-    return statement != null ? ofStatement(statement, count) : ofText(text, count);
+    if (statement == null)
+      return ofText(text, count);
+    final String tag = ofStatement(statement, count);
+    // a class whose name spells no keyword (an anonymous subclass) falls back to the text rather than answer ""
+    return tag.isEmpty() ? ofText(text, count) : tag;
   }
 
   static String ofStatement(final Statement statement, final long count) {
