@@ -2652,16 +2652,17 @@ public class LocalDocumentType implements DocumentType {
           created.clear();
           for (final TypeIndex idx : existentIndexes)
             created.add(createBucketIndexFor(idx, bucket));
-        }, true, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
-            failure -> dropFailedAttempt(created));
+        }, true, txRetries(database), null, failure -> dropFailedAttempt(created));
       } catch (final RuntimeException e) {
+        // The refusal is what the caller has to see: a step of the clean-up that fails too travels with it rather than in its
+        // place, and does not skip the steps after it (the detach drops the bucket's sub-indexes on its own too)
+        final RuntimeException refusal = asDuplicatedKeyIfOne(e);
         // A joined transaction hands a retryable failure straight back without calling the callback
-        dropFailedAttempt(created);
-        removeBucketInternal(bucket);
+        runCleanupStep(refusal, () -> dropFailedAttempt(created));
+        runCleanupStep(refusal, () -> removeBucketInternal(bucket));
         if (!needsRepartitionBefore)
-          setNeedsRepartition(false);
-        final DuplicatedKeyException duplicate = findDuplicatedKey(e);
-        throw duplicate != null ? duplicate : e;
+          runCleanupStep(refusal, () -> setNeedsRepartition(false));
+        throw refusal;
       }
     }
 
@@ -3537,11 +3538,10 @@ public class LocalDocumentType implements DocumentType {
             createSubIndexesFor(index, callerTransactionHasChanges && index.getType().buildCanShareCallerTransaction(),
                 created, toBuild);
         }
-      }, false, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
-          failure -> {
-            dropFailedAttempt(created);
-            toBuild.clear();
-          });
+      }, false, txRetries(database), null, failure -> {
+        dropFailedAttempt(created);
+        toBuild.clear();
+      });
 
       if (!toBuild.isEmpty())
         // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the pages
@@ -3565,8 +3565,7 @@ public class LocalDocumentType implements DocumentType {
       // A duplicate reaches the caller as the DuplicatedKeyException it is, whichever frame noticed it: the commit of the
       // component transaction raises it bare, an inline build that meets two records of this type holding one key raises it
       // from inside createBucketIndex, which wraps it in an IndexException
-      final DuplicatedKeyException duplicate = findDuplicatedKey(e);
-      throw duplicate != null ? duplicate : e;
+      throw asDuplicatedKeyIfOne(e);
     }
   }
 
@@ -3584,11 +3583,26 @@ public class LocalDocumentType implements DocumentType {
     created.clear();
   }
 
-  private static DuplicatedKeyException findDuplicatedKey(final Throwable failure) {
+  /** The {@link DuplicatedKeyException} in the cause chain of {@code failure}, or {@code failure} itself when there is none. */
+  private static RuntimeException asDuplicatedKeyIfOne(final RuntimeException failure) {
     for (Throwable t = failure; t != null; t = t.getCause())
       if (t instanceof DuplicatedKeyException duplicate)
         return duplicate;
-    return null;
+    return failure;
+  }
+
+  /** Runs one step of the clean-up of a refusal, attaching its failure to {@code refusal} instead of raising it. */
+  private static void runCleanupStep(final RuntimeException refusal, final Runnable step) {
+    try {
+      step.run();
+    } catch (final RuntimeException cleanupFailure) {
+      refusal.addSuppressed(cleanupFailure);
+    }
+  }
+
+  /** The number of attempts {@code database.transaction} makes by default, for the calls that also pass a callback. */
+  private static int txRetries(final DatabaseInternal database) {
+    return database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES);
   }
 
   /**
