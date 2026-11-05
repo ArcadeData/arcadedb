@@ -1696,7 +1696,7 @@ public class LocalSchema implements Schema {
         LogManager.instance().log(this, Level.SEVERE,
             "Cannot restore the attribute '%s' of property '%s.%s' from the schema (%s): the property is loaded without it, and the "
                 + "schema keeps the stored value until the attribute is set again", null, attribute, type.getName(), propName,
-            e.getMessage());
+            reasonOf(e));
         if (attribute.startsWith("custom.")) {
           final String customKey = attribute.substring("custom.".length());
           JSONObject customKept = unrestored.getJSONObject("custom", null);
@@ -1711,13 +1711,22 @@ public class LocalSchema implements Schema {
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Cannot restore property '%s.%s' from the schema (%s): the property is not loaded, and the schema keeps its definition "
-              + "until the property is created or dropped", null, type.getName(), propName, e.getMessage());
+              + "until the property is created or dropped", null, type.getName(), propName, reasonOf(e));
       type.keepUnrestorableProperty(propName, definition.copy());
       return;
     }
 
     if (!unrestored.isEmpty() && property instanceof LocalProperty local)
       local.keepUnrestoredAttributes(unrestored);
+  }
+
+  /**
+   * The refusal's own message: during the load, {@code recordFileChanges} wraps what a schema change throws in a generic
+   * {@link DatabaseOperationException}, which would otherwise be all the log says.
+   */
+  private static String reasonOf(final RuntimeException e) {
+    final Throwable reason = e instanceof DatabaseOperationException && e.getCause() != null ? e.getCause() : e;
+    return reason.getMessage();
   }
 
   /**
