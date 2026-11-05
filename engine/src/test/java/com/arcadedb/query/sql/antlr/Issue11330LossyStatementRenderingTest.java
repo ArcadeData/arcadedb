@@ -21,10 +21,15 @@ package com.arcadedb.query.sql.antlr;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.grammar.SQLLexer;
 import com.arcadedb.query.sql.parser.CreateEdgeTypeStatement;
+import com.arcadedb.query.sql.parser.RecordAttribute;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.Vocabulary;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -167,6 +172,33 @@ class Issue11330LossyStatementRenderingTest extends TestHelper {
       final String rendered = render(query);
       assertThat(render(rendered)).as("rendering of '%s' is '%s'", query, rendered).isEqualTo(rendered);
     }
+  }
+
+  /**
+   * Census over the lexer's vocabulary, the authority on what reads bare: every record attribute token ({@code THIS} and every
+   * {@code *_ATTR}) is the token of one of {@link RecordAttribute#BARE_TOKEN_NAMES}, and every one of those names lexes as one such
+   * token. A token added to {@code SQLLexer.g4} without its name in the renderer's set goes red here.
+   */
+  @Test
+  void theRenderersBareNamesAreExactlyTheLexersAttributeTokens() {
+    final Vocabulary vocabulary = SQLLexer.VOCABULARY;
+    final Set<String> attributeTokens = new TreeSet<>();
+    for (int type = 1; type <= vocabulary.getMaxTokenType(); type++) {
+      final String symbolic = vocabulary.getSymbolicName(type);
+      if (symbolic != null && (symbolic.equals("THIS") || symbolic.endsWith("_ATTR")))
+        attributeTokens.add(symbolic);
+    }
+    assertThat(attributeTokens).as("the census reaches the lexer's record attribute tokens").contains("CAT_ATTR", "RID_ATTR", "THIS");
+
+    final Set<String> reached = new TreeSet<>();
+    for (final String name : RecordAttribute.BARE_TOKEN_NAMES) {
+      final List<? extends Token> tokens = new SQLLexer(CharStreams.fromString(name)).getAllTokens();
+      assertThat(tokens).as("'%s' lexes as one token", name).hasSize(1);
+      final String symbolic = vocabulary.getSymbolicName(tokens.getFirst().getType());
+      assertThat(attributeTokens).as("'%s' lexes as %s, a record attribute token", name, symbolic).contains(symbolic);
+      reached.add(symbolic);
+    }
+    assertThat(reached).as("every record attribute token of the lexer renders bare").isEqualTo(attributeTokens);
   }
 
   @Test
