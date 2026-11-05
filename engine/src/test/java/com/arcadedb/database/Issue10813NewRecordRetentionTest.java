@@ -86,7 +86,8 @@ class Issue10813NewRecordRetentionTest extends TestHelper {
     database.begin();
     final MutableDocument held = database.newDocument(TYPE).set("id", 1);
     held.save();
-    saveAndDrop(2);
+    // the entry of the dropped one is cleared before the rollback walks the entries
+    assertThat(collected(saveAndDrop(2))).isTrue();
     assertThat(held.getIdentity()).isNotNull();
     database.rollback();
 
