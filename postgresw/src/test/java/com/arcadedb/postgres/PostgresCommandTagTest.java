@@ -97,6 +97,10 @@ class PostgresCommandTagTest {
     // bounded: the tag only ever reads the first words
     assertThat(PostgresCommandTag.leadingWords("SELECT " + "x".repeat(10_000))).hasSize(64);
     assertThat(PostgresCommandTag.leadingWords("/* never closed")).isEmpty();
+    // the 64 characters are counted after the leading comments, so a comment of any length still finds the statement
+    assertThat(PostgresCommandTag.ofText("/* " + "c".repeat(500) + " */ -- " + "l".repeat(200) + "\nSHOW search_path", 1)).isEqualTo("SHOW");
+    // and a comment that never ends tags nothing rather than something else
+    assertThat(PostgresCommandTag.ofText("/* " + "SELECT ".repeat(50), 1)).isEmpty();
   }
 
   private static Statement instantiate(final Class<? extends Statement> type) throws Exception {
