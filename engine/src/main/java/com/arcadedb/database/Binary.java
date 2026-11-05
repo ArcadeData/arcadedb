@@ -313,6 +313,17 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return values;
   }
 
+  /**
+   * Reads {@code count} floats written by {@link #putFloatArray(float[])} at {@code index} into {@code values}, without
+   * moving the position, so a reader sharing the buffer with other threads reads it in place (issue #11298).
+   */
+  public void getFloatArrayAt(final int index, final float[] values, final int count) {
+    final int bytes = arrayBytes(count, FLOAT_SERIALIZED_SIZE);
+    if (index < 0 || count > values.length || (long) index + bytes > Math.min(size, buffer.limit()))
+      throw new BufferUnderflowException();
+    buffer.slice(index, bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(values, 0, count);
+  }
+
   /** The double twin of {@link #putFloatArray(float[])}: raw little-endian IEEE-754 doubles, 8 bytes each. */
   public void putDoubleArray(final double[] values) {
     final int bytes = arrayBytes(values.length, DOUBLE_SERIALIZED_SIZE);
