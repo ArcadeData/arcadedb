@@ -30,20 +30,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,7 +49,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * Every case runs the reporter's window: the transaction appends to the vertex's OUT chunk and removes an entry of it
  * through an iterator, a second thread commits an append to the same chunk, then the transaction commits. The commit
- * must fail with the retryable conflict every other removal site gives, and the graph must be left as it was.
+ * must fail with the retryable conflict every other removal site gives, and the graph must be left as it was. That every other
+ * segment write goes through {@link EdgeLinkedList#updateRewrittenSegment} is held by {@code EdgeSegmentRewriteCensusTest} (census
+ * module).
  */
 class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
   private static final int COMMITTED_EDGES = 5;
@@ -199,63 +193,6 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
     assertThatThrownBy(() -> edges[0].asEdge(true)).isInstanceOf(RecordNotFoundException.class);
     assertThat(outEntries()).doesNotContain(edges[0]).hasSize(COMMITTED_EDGES + 1);
     assertNoDanglingEntry();
-  }
-
-  /**
-   * Every source of the graph package that handles edge segments, and what it hands {@code updateRecord} directly. A
-   * segment write that is not an in-chunk append must go through {@link EdgeLinkedList#updateRewrittenSegment}, which
-   * excludes the page from the edge-append merge: a new direct {@code updateRecord} of a segment fails this census, so
-   * whoever adds one has to say which of the two it is.
-   * <p>
-   * A tripwire, not a proof: it reads the sources line by line, so a write that reaches {@code updateRecord} through
-   * another method, or a call split over several lines, goes unseen. Every argument expression is compared, a cast or a
-   * method call included, and the subpackages are scanned too.
-   */
-  private static final Map<String, Map<String, Integer>> DIRECT_UPDATES = Map.of(
-      // add(): THE TRACKED IN-CHUNK APPEND; updateRewrittenSegment(): THE ONE DOOR FOR EVERY OTHER SEGMENT WRITE
-      "EdgeLinkedList.java", Map.of("lastSegment", 1, "segment", 1),
-      // append(): THE TRACKED IN-CHUNK APPEND; updateSlot(): THE STRIPE DIRECTORY, WHICH POISONS ITS OWN PAGE
-      "StripedEdgeList.java", Map.of("chunk", 1, "dir", 1),
-      // ITS OWN TRANSACTIONS ONLY, WHICH TRACK NO APPEND: SEE THE NOTE ON THE EDGE-APPEND MERGE IN THE CLASS
-      "GraphBatch.java", Map.of("vertex", 5, "outChunk", 2, "inChunk", 2, "currentSegment", 6));
-
-  private static final Pattern UPDATE_RECORD = Pattern.compile("\\.updateRecord\\((.+?)\\);");
-
-  @Test
-  void everySegmentRewriteGoesThroughTheDoorThatExcludesItsPage() throws IOException {
-    // RESOLVED RELATIVE TO THE MODULE ROOT, THE WAY SUREFIRE RUNS
-    final Path graphSources = Path.of("src/main/java/com/arcadedb/graph");
-    assertThat(graphSources).as("the graph sources, read from the engine module's directory (run the test from engine/)")
-        .isDirectory();
-
-    final Map<String, Map<String, Integer>> found = new TreeMap<>();
-    try (final Stream<Path> files = Files.walk(graphSources)) {
-      for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
-        final List<String> lines = Files.readAllLines(file);
-        if (lines.stream().noneMatch(line -> line.contains("EdgeSegment")))
-          continue;
-        for (final String line : lines) {
-          final String code = line.strip();
-          if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*"))
-            continue;
-          final Matcher matcher = UPDATE_RECORD.matcher(code);
-          while (matcher.find())
-            found.computeIfAbsent(file.getFileName().toString(), k -> new TreeMap<>())
-                .merge(matcher.group(1).strip(), 1, Integer::sum);
-        }
-      }
-    }
-
-    assertThat(found).as("direct updateRecord calls in the graph sources that handle edge segments").isNotEmpty();
-    // THE ITERATORS IN PARTICULAR: THEIR remove() IS THE WRITE #10375 FOUND UNEXCLUDED
-    assertThat(found).doesNotContainKey("ResettableIteratorBase.java");
-    // BY COUNT, SO A NEW CALL ON A NAME ALREADY LISTED FAILS TOO
-    for (final Map.Entry<String, Map<String, Integer>> entry : found.entrySet())
-      assertThat(entry.getValue())
-          .as("records %s hands updateRecord directly, and how many times. A segment rewrite must use "
-              + "EdgeLinkedList.updateRewrittenSegment; a call that is a tracked append, or writes no segment, is added to "
-              + "DIRECT_UPDATES with a comment saying which", entry.getKey())
-          .isEqualTo(DIRECT_UPDATES.getOrDefault(entry.getKey(), Map.of()));
   }
 
   /**

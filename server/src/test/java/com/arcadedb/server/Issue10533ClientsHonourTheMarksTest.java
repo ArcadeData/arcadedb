@@ -31,8 +31,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -48,7 +46,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * and lose the writes to the swap.
  * <p>
  * The fix is a second entry point, {@link ArcadeDBServer#getDatabaseForClient(String)}, that every client surface shares with
- * HTTP, and a source-level census that holds the listener modules to it.
+ * HTTP, and a census that holds the client surfaces to it: {@code ClientsHonourTheMarksCensusTest} in the census module, which
+ * reads every call of the entry points that see past the marks in the compiled classes of every module (#11288).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,47 +63,6 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
 
   /** The reactor root, seen from the {@code server} module that surefire runs this class in. */
   private static final Path REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
-
-  /** An {@code arcadedb-server} dependency declared {@code provided}: the module plugs into a server it does not own. */
-  private static final Pattern PROVIDED_SERVER_DEPENDENCY = Pattern.compile(
-      "<artifactId>arcadedb-server</artifactId>(?:(?!</dependency>).)*?<scope>provided</scope>", Pattern.DOTALL);
-
-  /**
-   * A resolution of a database by name through the entry point that sees past the marks: {@code getDatabaseForOperator(name)},
-   * whatever the receiver, since no other class declares that name (issue #10802), and the two that still need a receiver to be told
-   * apart from the listeners' own helpers: the deprecated {@code getDatabase(name)} with the name alone, and
-   * {@code getOrCreateDatabase(name)}. The three-argument form is a plugin initialising the database it owns at start.
-   * <p>
-   * The limit of a census read from sources, for those two: the receiver is an identifier ending in {@code server} or
-   * {@code getServer()}, and a line that starts as a comment is skipped, so a listener that keeps the server in a field named
-   * otherwise ({@code srv}, {@code owner}) would pass it.
-   */
-  private static final Pattern INTERNAL_ENTRY_POINT = Pattern.compile(
-      "\\bgetDatabaseForOperator\\s*\\(|" + "(?:\\b\\w*[sS]erver|\\bgetServer\\(\\))\\s*\\.\\s*(?:" + DEPRECATED_CALL + "|getOrCreateDatabase\\()");
-
-  /**
-   * Modules that plug into the server and resolve no database on behalf of a client, with the reason. Everything else that plugs
-   * in serves clients and must resolve through {@code getDatabaseForClient}.
-   */
-  private static final Map<String, String> NOT_A_CLIENT_SURFACE = Map.of(
-      "ha-raft", "the cluster's own machinery: the snapshot installer, the state machine and the bootstrap are the operator's steps",
-      "metrics", "reads server state to publish gauges, serves no client",
-      "tracing", "reads the protocol tag to attribute trace spans, serves no client");
-
-  /**
-   * The server module's own sources that resolve a database through the entry point that sees past the marks, each the operator's
-   * own step (issue #10690). The census above walks only the modules that declare {@code arcadedb-server} as provided, which by
-   * construction leaves out the server module - the one with the most client surfaces (HTTP, {@code /ws}, the AI handlers, the
-   * schema reader MCP shares). Every other source of the module is held to {@code getDatabaseForClient}, so a new handler cannot
-   * pass by picking the shortest name. Paths are relative to {@code server/src/main/java}.
-   */
-  private static final Map<String, String> SERVER_OPERATOR_STEPS = Map.of(
-      "com/arcadedb/server/ArcadeDBServer.java",
-      "the registry itself: the entry point, its deprecated alias, the databases opened at startup and the startup restore",
-      "com/arcadedb/server/ServerControlPlane.java",
-      "the operator's commands: open, close, drop, restore and import database, and the cluster-wide steps they replicate",
-      "com/arcadedb/server/security/ServerSecurity.java",
-      "the security refresh, which updates the schema of every database the server holds");
 
   @Test
   void aClientDuringARestoreDoesNotOpenTheTargetItIsAboutToReplace() {
@@ -175,114 +133,27 @@ class Issue10533ClientsHonourTheMarksTest extends BaseGraphServerTest {
   }
 
   /**
-   * A listener that resolves a database through {@code server.getDatabaseForOperator(name)} inherits the exemption the operator's own steps
-   * need. The census reads the sources of every module that plugs into the server: the entry point that sees past the marks is
-   * called from the server's operator steps and from the cluster module, and from no listener.
-   */
-  @Test
-  void noListenerModuleResolvesADatabaseThroughTheEntryPointThatSeesPastTheMarks() throws IOException {
-    final TreeSet<String> pluggedIn = new TreeSet<>();
-    try (final Stream<Path> children = Files.list(REACTOR_ROOT)) {
-      children.filter(Files::isDirectory).forEach(dir -> {
-        final Path pom = dir.resolve("pom.xml");
-        if (Files.isRegularFile(pom) && PROVIDED_SERVER_DEPENDENCY.matcher(read(pom)).find())
-          pluggedIn.add(dir.getFileName().toString());
-      });
-    }
-    assertThat(pluggedIn).as("the scan found the modules that depend on the server").hasSizeGreaterThanOrEqualTo(8)
-        .contains("bolt", "grpcw", "mcp", "mongodbw", "postgresw", "redisw");
-    assertThat(pluggedIn).as("every module named as not a client surface still plugs into the server")
-        .containsAll(NOT_A_CLIENT_SURFACE.keySet());
-
-    final List<String> offenders = new ArrayList<>();
-    for (final String module : pluggedIn)
-      if (!NOT_A_CLIENT_SURFACE.containsKey(module))
-        collectOffenders(REACTOR_ROOT.resolve(module).resolve("src/main/java"), offenders);
-
-    assertThat(offenders).as("a listener must resolve the database a client names through ArcadeDBServer.getDatabaseForClient(), "
-        + "which refuses a name an operator has taken away (a restore in progress, a 'close database'). getDatabaseForOperator(String) is "
-        + "the operator's own entry point and sees past those marks. If the module serves no client, add it to "
-        + "NOT_A_CLIENT_SURFACE with the reason").isEmpty();
-  }
-
-  /**
-   * Issue #10690: the census above never walked the server module, and a {@code /ws} SUBSCRIBE frame resolved its database through
-   * {@code getDatabase(String)}: one frame reopened a database an operator had closed, and cleared the mark for every client.
-   */
-  @Test
-  void noClientSurfaceOfTheServerModuleResolvesADatabaseThroughTheEntryPointThatSeesPastTheMarks() throws IOException {
-    final Path sources = REACTOR_ROOT.resolve("server").resolve("src/main/java");
-    assertThat(sources).as("the server module's sources, seen from the module surefire runs in").isDirectory();
-
-    final List<String> found = new ArrayList<>();
-    collectOffenders(sources, found);
-
-    final List<String> offenders = new ArrayList<>();
-    final TreeSet<String> stepsSeen = new TreeSet<>();
-    for (final String offender : found) {
-      final String relative = sources.relativize(Path.of(offender.substring(0, offender.indexOf(".java:") + 5))).toString()
-          .replace(File.separatorChar, '/');
-      if (SERVER_OPERATOR_STEPS.containsKey(relative))
-        stepsSeen.add(relative);
-      else
-        offenders.add(offender);
-    }
-
-    assertThat(offenders).as("a server handler or listener must resolve the database a client names through "
-        + "ArcadeDBServer.getDatabaseForClient() (or getDatabaseForRequest() for HTTP), which refuses a name an operator has taken "
-        + "away. getDatabaseForOperator(String) is the operator's own entry point and sees past those marks. A source that holds only the "
-        + "operator's own steps goes in SERVER_OPERATOR_STEPS with the reason").isEmpty();
-    assertThat(stepsSeen).as("every source named as an operator step still resolves through the operator's entry point: drop "
-        + "the ones that no longer do, so the list cannot hide a new client surface").containsExactlyInAnyOrderElementsOf(
-        SERVER_OPERATOR_STEPS.keySet());
-  }
-
-  /** The census is only as good as its pattern: the gRPC service names its server field {@code arcadeServer}, not {@code server}. */
-  @Test
-  void theCensusPatternRecognisesEveryNameAServerFieldGoes() {
-    for (final String call : new String[] { "server.getDatabaseForOperator(name)", "arcadeServer.getDatabaseForOperator(databaseName)",
-        "httpServer.getServer().getDatabaseForOperator(name)", "getServer().getDatabaseForOperator(name)",
-        "this.server.getDatabaseForOperator(name)", "srv.getDatabaseForOperator(name)", "owner.getDatabaseForOperator(name)",
-        "getDatabaseForOperator(name)", "(DatabaseInternal) arcadeServer.getDatabaseForOperator(databaseName)",
-        "server.getDatabase(name)", "arcadeServer.getDatabase(databaseName)", "httpServer.getServer().getDatabase(name)",
-        "(DatabaseInternal) arcadeServer.getDatabase(databaseName)", "server.getDatabase(names.get(0))",
-        "server.getOrCreateDatabase(name)", "arcadeServer.getOrCreateDatabase(name)" })
-      assertThat(INTERNAL_ENTRY_POINT.matcher(call).find()).as(call).isTrue();
-
-    for (final String call : new String[] { "server.getDatabaseForClient(name)", "arcadeServer.getDatabaseForClient(databaseName)",
-        "server.getDatabase(name, true, true)", "arcadeServer.getDatabase(name, false, false)", "getDatabase(name, credentials)",
-        "database.getDatabase(name)", "client.getDatabase(name)" })
-      assertThat(INTERNAL_ENTRY_POINT.matcher(call).find()).as(call).isFalse();
-
-    for (final String call : new String[] { "server.getDatabase(name)", "getServer(0).getDatabase(DB)", "servers[i].getDatabase(DB)",
-        "leaderServer.getDatabase(name)" })
-      assertThat(DEPRECATED_ENTRY_POINT.matcher(call).find()).as(call).isTrue();
-    for (final String call : new String[] { "server.getDatabaseForOperator(name)", "client.getDatabase(name)",
-        "server.getDatabase(name, false, true)", "getDatabase(0)" })
-      assertThat(DEPRECATED_ENTRY_POINT.matcher(call).find()).as(call).isFalse();
-  }
-
-  /**
    * Issue #10802: {@code getDatabase(String)} became {@code getDatabaseForOperator(String)}, a name that says whom it serves, and
    * the old one is deprecated for removal. Kept only for the embedded servers and plugins outside this repository: no source of the
    * repository, main or test, calls it, so removing it is a one-line change.
+   * <p>
+   * The production classes are held to it by {@code ClientsHonourTheMarksCensusTest} in the census module, which reads every call
+   * of the method in the compiled classes. This half reads the TEST sources of every module as text, because no module's classpath
+   * carries the test classes of the others, and it says what that costs: the receiver must be named like a server (an identifier
+   * ending in {@code server}, {@code getServer(..)} or {@code servers[..]}), and a test calling it on a receiver named otherwise
+   * passes. A miss costs a test that keeps compiling against a deprecated method, not a client surface.
    */
   @Test
-  void noSourceOfTheRepositoryCallsTheDeprecatedNameOfTheOperatorsEntryPoint() throws IOException {
+  void noTestSourceOfTheRepositoryCallsTheDeprecatedNameOfTheOperatorsEntryPoint() throws IOException {
     final List<String> offenders = new ArrayList<>();
     try (final Stream<Path> modules = Files.list(REACTOR_ROOT)) {
       for (final Path module : (Iterable<Path>) modules.filter(Files::isDirectory)::iterator)
-        for (final String sources : new String[] { "src/main/java", "src/test/java" })
-          collect(module.resolve(sources), DEPRECATED_ENTRY_POINT, offenders);
+        collect(module.resolve("src/test/java"), DEPRECATED_ENTRY_POINT, offenders);
     }
     offenders.removeIf(offender -> offender.contains(getClass().getSimpleName() + ".java:"));
 
     assertThat(offenders).as("call ArcadeDBServer.getDatabaseForOperator() for an operator's step, getDatabaseForClient() for a "
         + "database a client names; getDatabase(String) is deprecated for removal").isEmpty();
-  }
-
-  private static void collectOffenders(final Path sources, final List<String> offenders) throws IOException {
-    collect(sources, INTERNAL_ENTRY_POINT, offenders);
   }
 
   private static void collect(final Path sources, final Pattern pattern, final List<String> offenders) throws IOException {

@@ -425,7 +425,9 @@ public final class CypherSchemaCommands {
       final String owner = (String) o[4];
       final String name = (String) o[5];
       final boolean ready = index.isReadyForQueries();
-      final List<Object> row = new ArrayList<>(Arrays.asList(id++, name, ready ? "ONLINE" : "POPULATING", ready ? 100.0 : 0.0,
+      // one missing a bucket's sub-index is not being populated: it stays unusable until REBUILD INDEX (#11303)
+      final String state = ready ? "ONLINE" : index.isComplete() ? "POPULATING" : "FAILED";
+      final List<Object> row = new ArrayList<>(Arrays.asList(id++, name, state, ready ? 100.0 : 0.0,
           neoType, edge ? "RELATIONSHIP" : "NODE", labels, new ArrayList<>(index.getPropertyNames()),
           indexProvider(index.getType()), owner, null, null));
       if (allColumns) {

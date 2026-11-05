@@ -373,6 +373,49 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE Deeper EXTENDS Legacy");
   }
 
+  /**
+   * Issue #11272: {@code DROP TYPE} of an intermediate type attaches its subtypes to its super types, and that reattachment skipped the
+   * #11204 check, so dropping {@code Mid} out of a pre-#11204 {@code Deep -> Mid -> mv} hung {@code Deep} directly under the backing
+   * type. The drop is refused before anything changes, naming the link to take out, after which it goes through.
+   */
+  @Test
+  void dropTypeDoesNotReattachASubtypeUnderABackingType() {
+    createView("");
+    final LocalDocumentType mv = (LocalDocumentType) database.getSchema().getType("mv");
+    final LocalDocumentType mid = (LocalDocumentType) database.getSchema().createDocumentType("Mid");
+    final LocalDocumentType deep = (LocalDocumentType) database.getSchema().createDocumentType("Deep");
+    // the re-establishing linkage of the schema load, which a database written before the check went through
+    mid.addSuperType(mv, false);
+    deep.addSuperType(mid, false);
+    database.transaction(() -> database.newDocument("Deep").set("region", "JUNK").set("total", 1).save());
+    assertThat(count("mv")).isEqualTo(3L);
+
+    for (final String statement : List.of("DROP TYPE Mid", "DROP TYPE Mid IF EXISTS", "DROP TYPE Mid UNSAFE"))
+      assertThatThrownBy(() -> database.command("sql", statement)).as(statement).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("Cannot drop the type 'Mid'").hasMessageContaining("'Deep'")
+          .hasMessageContaining("ALTER TYPE `Deep` SUPERTYPE -`Mid`");
+    assertThatThrownBy(() -> database.getSchema().dropType("Mid")).isInstanceOf(SchemaException.class);
+
+    // nothing changed
+    assertThat(database.getSchema().existsType("Mid")).isTrue();
+    assertThat(database.getSchema().getType("Deep").getSuperTypes()).extracting(DocumentType::getName).containsExactly("Mid");
+    assertThat(database.getSchema().getType("mv").getSubTypes()).extracting(DocumentType::getName).containsExactly("Mid");
+
+    // the repair the message names, then the drop: no subtype of the backing type is left
+    database.command("sql", "ALTER TYPE `Deep` SUPERTYPE -`Mid`");
+    database.command("sql", "DROP TYPE Mid");
+    assertThat(database.getSchema().getType("mv").getSubTypes()).isEmpty();
+    assertThat(database.getSchema().getType("Deep").getSuperTypes()).isEmpty();
+    assertThat(viewRows()).containsExactly("EU=30", "US=5");
+
+    // a drop whose subtypes land under ordinary types is untouched
+    database.command("sql", "CREATE DOCUMENT TYPE Top");
+    database.command("sql", "CREATE DOCUMENT TYPE Middle EXTENDS Top");
+    database.command("sql", "CREATE DOCUMENT TYPE Bottom EXTENDS Middle");
+    database.command("sql", "DROP TYPE Middle");
+    assertThat(database.getSchema().getType("Bottom").getSuperTypes()).extracting(DocumentType::getName).containsExactly("Top");
+  }
+
   // ---- helpers
 
   private void createAggregate() {

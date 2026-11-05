@@ -507,7 +507,9 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
 
     try (final RandomAccessFile raf = new RandomAccessFile(path + ".ts.sealed", "r")) {
       raf.seek(4);
-      assertThat(raf.readByte()).isEqualTo((byte) TimeSeriesSealedStore.CURRENT_VERSION);
+      // the newest version of its own 27-byte layout: an in-place header rewrite cannot make room for the owner of version 4,
+      // which only a rewrite of the whole file writes (issue #11274)
+      assertThat(raf.readByte()).isEqualTo((byte) (TimeSeriesSealedStore.CURRENT_VERSION - 1));
     }
 
     // Mixed file: the first block is legacy, the second current; both read, both answered from the header.

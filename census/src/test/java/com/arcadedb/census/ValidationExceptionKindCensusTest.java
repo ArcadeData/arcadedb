@@ -20,23 +20,11 @@ package com.arcadedb.census;
 
 import com.arcadedb.exception.ValidationException;
 import org.junit.jupiter.api.Test;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.Handle;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
 
-import static com.arcadedb.census.SchemaPresentationReadableWalkCensusTest.classRootsOfEveryModule;
-import static com.arcadedb.census.SchemaPresentationReadableWalkCensusTest.methodOf;
-import static com.arcadedb.census.SchemaPresentationReadableWalkCensusTest.outerClassOf;
-import static com.arcadedb.census.SchemaPresentationReadableWalkCensusTest.readClasses;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -69,67 +57,30 @@ class ValidationExceptionKindCensusTest {
 
   @Test
   void everyValidationExceptionNamesItsConstraintOrIsListed() throws Exception {
-    final Map<String, byte[]> classes = readClasses(classRootsOfEveryModule());
+    final Map<String, byte[]> classes = CompiledClasses.ofEveryModule();
     assertThat(classes).as("the census must read the classes of every module").hasSizeGreaterThan(3000);
 
-    final Map<String, Set<String>> withKind = new TreeMap<>();
-    final Map<String, Set<String>> withoutKind = new TreeMap<>();
-    constructionsOf(classes, withKind, withoutKind);
-
+    final Map<String, Set<String>> withKind = constructions(classes, true);
     // the scan still reaches the authority: the property validator, which raises every declared constraint through one helper
     assertThat(withKind).as("the census no longer reaches the constructions of " + AUTHORITY + " that pass a kind")
         .containsKey("database/DocumentValidator#throwValidationException");
 
-    final List<String> offenders = new ArrayList<>();
-    for (final Map.Entry<String, Set<String>> site : withoutKind.entrySet())
-      if (!ALLOWED.containsKey(site.getKey()))
-        offenders.add(site.getKey() + " " + site.getValue());
-    assertThat(offenders).as("pass the ValidationException.Kind of the constraint the value violates, or list the site in ALLOWED "
-        + "with the reason it names none").isEmpty();
-
-    final List<String> stale = new ArrayList<>();
-    for (final String allowed : ALLOWED.keySet())
-      if (!withoutKind.containsKey(allowed))
-        stale.add(allowed);
-    assertThat(stale).as("ALLOWED entries that no longer construct a ValidationException without a kind: remove them").isEmpty();
+    final Map<String, Set<String>> withoutKind = constructions(classes, false);
+    assertThat(CompiledClasses.unreviewed(withoutKind, ALLOWED)).as("pass the ValidationException.Kind of the constraint the value "
+        + "violates, or list the site in ALLOWED with the reason it names none").isEmpty();
+    assertThat(CompiledClasses.stale(withoutKind, ALLOWED))
+        .as("ALLOWED entries that no longer construct a ValidationException without a kind: remove them").isEmpty();
   }
 
-  /** Every construction of the authority, split by whether it passes a kind, keyed by {@code class#method}. */
-  private static void constructionsOf(final Map<String, byte[]> classes, final Map<String, Set<String>> withKind,
-      final Map<String, Set<String>> withoutKind) {
-    for (final Map.Entry<String, byte[]> entry : classes.entrySet()) {
-      final String outerClass = outerClassOf(entry.getKey()).substring("com/arcadedb/".length());
-      // the constructors delegating to each other inside the authority construct nothing of their own
-      if (("com/arcadedb/" + outerClass).equals(AUTHORITY))
-        continue;
-      new ClassReader(entry.getValue()).accept(new ClassVisitor(Opcodes.ASM9) {
-        @Override
-        public MethodVisitor visitMethod(final int access, final String methodName, final String descriptor, final String signature,
-            final String[] exceptions) {
-          final String key = outerClass + "#" + methodOf(methodName);
-          return new MethodVisitor(Opcodes.ASM9) {
-            @Override
-            public void visitMethodInsn(final int opcode, final String owner, final String name, final String desc,
-                final boolean isInterface) {
-              if (opcode == Opcodes.INVOKESPECIAL && AUTHORITY.equals(owner) && "<init>".equals(name))
-                record(key, desc);
-            }
-
-            @Override
-            public void visitInvokeDynamicInsn(final String name, final String desc, final Handle bootstrap,
-                final Object... bootstrapArguments) {
-              // A CONSTRUCTOR REFERENCE (ValidationException::new) IS A HANDLE PASSED TO THE LAMBDA BOOTSTRAP, NOT A CALL
-              for (final Object argument : bootstrapArguments)
-                if (argument instanceof Handle handle && AUTHORITY.equals(handle.getOwner()) && "<init>".equals(handle.getName()))
-                  record(key, handle.getDesc());
-            }
-
-            private void record(final String site, final String constructor) {
-              (WITH_KIND.equals(constructor) ? withKind : withoutKind).computeIfAbsent(site, k -> new TreeSet<>()).add(constructor);
-            }
-          };
-        }
-      }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-    }
+  /**
+   * Every construction of the authority (a {@code new}, a {@code super(...)} of a subclass, a constructor reference) that passes
+   * a kind, or that does not, keyed by {@code class#method}. The constructors delegating to each other inside the authority
+   * construct nothing of their own.
+   */
+  private static Map<String, Set<String>> constructions(final Map<String, byte[]> classes, final boolean passingAKind) {
+    final Map<String, Set<String>> sites = new TreeMap<>(CompiledClasses.callSitesOf(classes,
+        (owner, name, descriptor) -> AUTHORITY.equals(owner) && "<init>".equals(name) && WITH_KIND.equals(descriptor) == passingAKind));
+    sites.keySet().removeIf(site -> site.startsWith("exception/ValidationException#"));
+    return sites;
   }
 }

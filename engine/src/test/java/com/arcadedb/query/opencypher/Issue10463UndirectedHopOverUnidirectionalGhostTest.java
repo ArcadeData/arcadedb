@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -56,6 +57,8 @@ class Issue10463UndirectedHopOverUnidirectionalGhostTest extends TestHelper {
 
   @Override
   protected void beginTest() {
+    // These walks skip a ghost only with the probe on, off by default since #10809
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE, true);
     database.getSchema().createVertexType("G");
     database.getSchema().buildEdgeType().withName("U").withBidirectional(false).create();
     database.getSchema().createEdgeType("B");

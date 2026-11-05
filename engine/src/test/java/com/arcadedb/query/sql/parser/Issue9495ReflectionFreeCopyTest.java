@@ -25,12 +25,11 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Modifier;
-import java.nio.charset.StandardCharsets;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,40 +40,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code getClass().getConstructor().newInstance()}. A GraalVM native image registers no parser constructor for
  * reflection, so every UPDATE/DELETE (whose plan-cache key copies a synthetic SELECT) failed there with
  * {@code NoSuchMethodException: SelectStatement.<init>()}. The copies now come from an overridable {@code newInstance()}
- * factory, which every subclass must override to keep the runtime type of the copy.
+ * factory, which every subclass must override to keep the runtime type of the copy. That no class of the code base asks for the
+ * constructor of its own runtime type is held by {@code ReflectionFreeCopyCensusTest} (census module).
  */
 class Issue9495ReflectionFreeCopyTest extends TestHelper {
 
-  private static final Path         SQL_SOURCES       = Path.of("src", "main", "java", "com", "arcadedb", "query", "sql");
-  private static final Class<?>[]   FACTORY_BASES     = { SelectStatement.class, CreateVertexStatement.class, MatchPathItem.class,
+  private static final String     SQL_PACKAGE   = "com/arcadedb/query/sql";
+  private static final Class<?>[] FACTORY_BASES = { SelectStatement.class, CreateVertexStatement.class, MatchPathItem.class,
       MathExpression.class };
-  private static final Pattern      REFLECTIVE_CREATE = Pattern.compile(
-      "getClass\\(\\)\\s*\\.\\s*get(Declared)?Constructor\\(");
-
-  /**
-   * A reflective self-instantiation works on the JVM and fails only in the native image, so no JVM test can catch it by
-   * running it: refuse the pattern in the SQL AST sources instead.
-   */
-  @Test
-  void sqlAstSourcesDoNotInstantiateThemselvesReflectively() throws IOException {
-    final List<String> offenders = new ArrayList<>();
-    for (final Path source : javaSources())
-      if (REFLECTIVE_CREATE.matcher(Files.readString(source, StandardCharsets.UTF_8)).find())
-        offenders.add(source.toString());
-
-    assertThat(offenders).as("SQL AST classes must create their copies without reflection (#9495)").isEmpty();
-  }
 
   /**
    * The factory replaced {@code getClass()}, so a subclass that inherits {@code copy()} and forgets to override
    * {@code newInstance()} silently copies itself into its base class. Every concrete subclass, current and future, is
-   * discovered from the sources and checked.
+   * discovered from the compiled classes of the SQL packages and checked.
    */
   @Test
   void copyKeepsTheRuntimeTypeOfEverySubclass() throws Exception {
     int checked = 0;
-    for (final Path source : javaSources()) {
-      final String className = toClassName(source);
+    for (final String className : sqlClassNames()) {
       final Class<?> clazz = Class.forName(className);
       if (Modifier.isAbstract(clazz.getModifiers()) || !Modifier.isPublic(clazz.getModifiers()) || !isFactoryBased(clazz))
         continue;
@@ -168,16 +151,14 @@ class Issue9495ReflectionFreeCopyTest extends TestHelper {
     }
   }
 
-  private static List<Path> javaSources() throws IOException {
-    assertThat(Files.isDirectory(SQL_SOURCES)).as(SQL_SOURCES.toAbsolutePath()
-        + " not found: run this test with the engine module as working directory, as Maven Surefire does").isTrue();
-    try (final Stream<Path> files = Files.walk(SQL_SOURCES)) {
-      return files.filter(p -> p.toString().endsWith(".java")).sorted().toList();
+  /** The top-level classes compiled from the SQL packages, read from the class root that holds {@link SelectStatement}. */
+  private static List<String> sqlClassNames() throws IOException, URISyntaxException {
+    final Path root = Path.of(SelectStatement.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+    final Path sql = root.resolve(SQL_PACKAGE);
+    assertThat(sql).as("the compiled SQL classes").isDirectory();
+    try (final Stream<Path> files = Files.walk(sql)) {
+      return files.map(p -> root.relativize(p).toString().replace('\\', '/')).filter(p -> p.endsWith(".class") && !p.contains("$") && !p.endsWith("package-info.class"))
+          .map(p -> p.substring(0, p.length() - ".class".length()).replace('/', '.')).sorted().toList();
     }
-  }
-
-  private static String toClassName(final Path source) {
-    final String relative = Path.of("src", "main", "java").relativize(source).toString();
-    return relative.substring(0, relative.length() - ".java".length()).replace('\\', '.').replace('/', '.');
   }
 }

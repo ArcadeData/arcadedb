@@ -181,8 +181,8 @@ public class RedisNetworkExecutor extends Thread {
    * for any real command (e.g. a 1-byte max bulk length rejects even the shortest command name) - that is an
    * intentionally low, if impractical, configuration rather than the 0-or-negative case this guards against.
    */
-  // The setting arrives as a PARAMETER, so the SCOPE.SERVER guard test (Issue7233ServerScopeSettingReadsTest)
-  // cannot see this read: it matches the literal GlobalConfiguration.NAME.getValueAs* shape. This site, and any
+  // The setting arrives as a PARAMETER, so the SCOPE.SERVER guard test (ServerScopeSettingReadsCensusTest)
+  // cannot see this read: it needs the GlobalConfiguration constant named at the read. This site, and any
   // future helper of the same shape, has to be checked by hand - reading through the ContextConfiguration here is
   // not something the build will keep true for you.
   static int sanitizedLimit(final ContextConfiguration configuration, final GlobalConfiguration setting,

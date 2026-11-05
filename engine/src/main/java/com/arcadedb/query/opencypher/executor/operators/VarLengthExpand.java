@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.Vertex;
@@ -26,6 +25,8 @@ import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.executor.steps.DistinctEndpointCountStep;
+import com.arcadedb.query.opencypher.traversal.DistinctVertexCounter;
 import com.arcadedb.query.opencypher.traversal.GAVDistinctEndpointTraverser;
 import com.arcadedb.query.opencypher.traversal.GraphTraverser;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -37,8 +38,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -53,7 +52,7 @@ import java.util.function.Predicate;
  * keeping path modes, inline edge predicates, zero-hop behavior, and edge identity semantics in one
  * implementation while allowing the cost-based planner to choose the anchor and surrounding joins.
  */
-public class VarLengthExpand extends AbstractPhysicalOperator {
+public class VarLengthExpand extends AbstractPhysicalOperator implements DistinctEndpointCountStep.Walk {
   public record ExpansionVariables(String source, String relationship, String target, String path) {
   }
 
@@ -115,12 +114,19 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
     this.targetLabel = targetLabel;
   }
 
+  @Override
   public String getTargetVariable() {
     return targetVariable;
   }
 
+  @Override
   public String getSourceVariable() {
     return sourceVariable;
+  }
+
+  @Override
+  public String getWalkName() {
+    return getOperatorType();
   }
 
   /**
@@ -133,12 +139,13 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
    * @param excludeSource leave each row's start out of its own walk, for a {@code WHERE target <> source}
    * @param countSources  count the sources that reach an end vertex rather than the end vertices
    */
+  @Override
   public long countDistinct(final CommandContext context, final boolean excludeSource, final boolean countSources) {
     if (!distinctEndpoints)
       throw new IllegalStateException("Only a distinct-endpoint expansion counts its end vertices itself");
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final GAVDistinctEndpointTraverser viewTraverser = createViewTraverser(context);
-    final DistinctVertices counted = new DistinctVertices(viewTraverser);
+    final DistinctVertexCounter counted = new DistinctVertexCounter(viewTraverser);
     try (final ResultSet inputResults = child.execute(context, 100)) {
       while (inputResults.hasNext()) {
         guard.check();
@@ -154,18 +161,15 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
             counted.add(source);
           continue;
         }
-        final long fromView = viewTraverser != null ? viewTraverser.countInto(source, excludeSource, targetLabel, counted.ids) : -1L;
-        if (fromView >= 0) {
-          counted.count += fromView;
+        if (counted.countThroughView(source, excludeSource, targetLabel))
           continue;
-        }
         final Iterator<Vertex> endpoints = createTraverser(input, context).traverseDistinctEndpoints(source);
         for (Vertex target = nextEnd(endpoints, source, excludeSource); target != null; target = nextEnd(endpoints, source,
             excludeSource))
           counted.add(target);
       }
     }
-    return counted.count;
+    return counted.getCount();
   }
 
   /** The next end vertex of a walk through the records that the row would keep, or null when there is none. */
@@ -179,38 +183,6 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
       return target;
     }
     return null;
-  }
-
-  /** The vertices counted so far: by node id where the view maps them, so a vertex met both ways is counted once, by RID otherwise. */
-  private static final class DistinctVertices {
-    private final GAVDistinctEndpointTraverser view;
-    private final BitSet                       ids = new BitSet();
-    private       Set<RID>                     rids;
-    private       long                         count;
-
-    DistinctVertices(final GAVDistinctEndpointTraverser view) {
-      this.view = view;
-    }
-
-    boolean contains(final Vertex vertex) {
-      final int nodeId = view != null ? view.nodeIdOf(vertex) : -1;
-      return nodeId >= 0 ? ids.get(nodeId) : rids != null && rids.contains(vertex.getIdentity());
-    }
-
-    void add(final Vertex vertex) {
-      final int nodeId = view != null ? view.nodeIdOf(vertex) : -1;
-      if (nodeId >= 0) {
-        if (!ids.get(nodeId)) {
-          ids.set(nodeId);
-          ++count;
-        }
-        return;
-      }
-      if (rids == null)
-        rids = new HashSet<>();
-      if (rids.add(vertex.getIdentity()))
-        ++count;
-    }
   }
 
   @Override

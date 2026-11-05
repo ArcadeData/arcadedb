@@ -1303,6 +1303,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // An index a concurrent DDL has taken away, or is still populating, is no index yet (#9331): isReadyForQueries() is
       // false for both and getType() of the former is null, which a bare dereference would turn into a NullPointerException
       final Schema.INDEX_TYPE indexType = idx.isReadyForQueries() ? idx.getType() : null;
+      if (indexType == null && !idx.isDropped() && !idx.isComplete())
+        // there is no scan to fall back on here: an index missing a bucket's sub-index would answer short (#11303)
+        throw new IllegalArgumentException(
+            "Index '" + idx.getName() + "' on type '" + type + "' has no bucket index for buckets " + idx.getBucketsWithoutIndex()
+                + " and cannot answer a lookup. Run `REBUILD INDEX `" + idx.getName() + "`` to repair it");
       if (indexType == null)
         throw new IllegalArgumentException(
             "No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));

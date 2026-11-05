@@ -108,6 +108,9 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -2393,8 +2396,8 @@ public class SelectExecutionPlanner {
       if (!(bc.getOperator() instanceof EqualsCompareOperator))
         continue;
 
-      // Check if left side is @out or @in
-      final String attrName = extractRecordAttribute(bc.getLeft());
+      // Check if left side is @out or @in, or a bare out / in that reads the same endpoint (issue #10807)
+      final String attrName = extractEndpointName(bc.getLeft(), context);
       if (attrName == null)
         continue;
 
@@ -2405,7 +2408,7 @@ public class SelectExecutionPlanner {
 
       // Check if right side is a RID literal
       final RID vertexRid = extractRidValue(bc.getRight(), context);
-      if (vertexRid == null)
+      if (vertexRid == null || !isAnsweredByTheAdjacencyWalk(docType, vertexRid, isIn, context))
         continue;
 
       // Found the pattern! Create vertex-centric edge fetch step
@@ -2431,6 +2434,75 @@ public class SelectExecutionPlanner {
     }
 
     return false;
+  }
+
+  /**
+   * Whether walking the adjacency of {@code vertexRid} answers what the scan of {@code edgeType} answers (issue #10807). The walk
+   * loads the vertex, so the scan stays for a RID whose bucket holds no vertex type (no edge can name it, and the scan says so
+   * instead of failing to load it) and for a user who may read the edges but not that vertex. It also stays for a user who may not
+   * read every type of the edge hierarchy: the scan applies that grant, while a lightweight edge comes off the vertex with no edge
+   * record to check it on. An incoming walk reads the incoming lists, which a unidirectional edge type, or any of its subtypes, does
+   * not keep.
+   */
+  private static boolean isAnsweredByTheAdjacencyWalk(final DocumentType edgeType, final RID vertexRid, final boolean incoming,
+      final CommandContext context) {
+    final DatabaseInternal database = context.getDatabase();
+    if (!(database.getSchema().getTypeByBucketId(vertexRid.getBucketId()) instanceof VertexType))
+      return false;
+    if (incoming && !keepsIncomingLists(edgeType))
+      return false;
+    return SecurityHelper.canAccessFile(database, vertexRid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD)
+        && canReadTypeHierarchy(database, edgeType);
+  }
+
+  private static boolean canReadTypeHierarchy(final DatabaseInternal database, final DocumentType type) {
+    final List<Integer> bucketIds = type.getBucketIds(false);
+    if (bucketIds.isEmpty()) {
+      // A type with no bucket of its own is granted by name
+      try {
+        database.checkPermissionsOnType(type.getName(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+      } catch (final SecurityException e) {
+        return false;
+      }
+    } else
+      for (final Integer bucketId : bucketIds)
+        if (!SecurityHelper.canAccessFile(database, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
+          return false;
+    for (final DocumentType subType : type.getSubTypes())
+      if (!canReadTypeHierarchy(database, subType))
+        return false;
+    return true;
+  }
+
+  private static boolean keepsIncomingLists(final DocumentType type) {
+    if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
+      return false;
+    for (final DocumentType subType : type.getSubTypes())
+      if (!keepsIncomingLists(subType))
+        return false;
+    return true;
+  }
+
+  /**
+   * The record attribute {@code expr} reads ({@code @out}, {@code @in}, ...), or {@code @out} / {@code @in} for a bare {@code out}
+   * / {@code in} that reads the same endpoint, or null. Since #10684 a bare {@code out} / {@code in} on an edge with no property of
+   * that name is its endpoint, and that holds for every edge of the database while the dictionary does not know the name (issue
+   * #10807): a property name reaches a record, and a declared property is created, only through the dictionary, so a name it does
+   * not hold is stored by no record and declared by no type. Asked at planning time, which is exact because a plan holding a
+   * {@link FetchEdgesFromVertexStep} is never cached: every execution plans again and sees a name a write has added since. Once a
+   * record or a type uses the name the scan stays, whose per-record fallback lets a stored property win.
+   */
+  private static String extractEndpointName(final Expression expr, final CommandContext context) {
+    final String attribute = extractRecordAttribute(expr);
+    if (attribute != null)
+      return attribute;
+    if (expr == null || !(expr.getMathExpression() instanceof BaseExpression base) || base.identifier == null
+        || base.identifier.suffix == null || base.modifier != null)
+      return null;
+    final String name = expr.toString().trim();
+    if (!"out".equals(name) && !"in".equals(name))
+      return null;
+    return context.getDatabase().getSchema().getDictionary().getIdByName(name, false) < 0 ? "@" + name : null;
   }
 
   /**

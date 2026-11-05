@@ -48,7 +48,7 @@ import java.util.Set;
  * {@link #convert} builds is appended with {@link #appendTo}, and no production code outside this class and the engine calls
  * {@code appendBatch(long[], Object[][])} with a grid of its own. The JSONL importer was the third caller and the only one that
  * handed the engine the raw values of its source, so text for a typed column aborted the whole import; a fourth path would have
- * been in the same position, which {@code Issue10107AppendBatchCallersConvertTest} now rules out. The embedded async API was the
+ * been in the same position, which {@code TimeSeriesAppendCallersConvertCensusTest} (census module) now rules out. The embedded async API was the
  * fourth (issue #10381): the two {@code requireStorable} overloads, for a boxed grid and for a primitive source, are its two doors (the
  * second held it only to the declared constraints until issue #10487), and the census now looks for
  * every entry point into the engine's storage, not for one method name.

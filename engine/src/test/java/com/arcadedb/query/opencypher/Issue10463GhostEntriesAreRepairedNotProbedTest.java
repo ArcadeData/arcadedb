@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -39,7 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * entries (the degree of a vertex, the fused {@code count(*)} chains, the analytical views built from the adjacency). They follow a
  * dangling entry - one whose edge record is gone - because that is what answering from the entries means: probing every entry would
  * make the count of a vertex's edges a walk of its edge pages, and a cold graph would pay one edge page per entry on the commonest
- * expand path. The variable-length walks skip and report a ghost (#10149), where the entry is probed once per vertex reached.
+ * expand path. Since #10809 the variable-length walks follow it too by default, and skip and report it (#10149) only with
+ * {@code arcadedb.graph.ghostEdgeProbe} turned on, where the entry is probed once per vertex reached.
  * <p>
  * The anomaly itself is repaired, not worked around at every read: {@code CHECK DATABASE ... FIX} prunes the dangling entries, after
  * which every walk agrees. This pins that sequence, so the two halves of the contract cannot drift apart.
@@ -70,12 +72,20 @@ class Issue10463GhostEntriesAreRepairedNotProbedTest extends TestHelper {
     assertThat(names("SELECT out('LINK').name AS name FROM G WHERE name = 'ga'")).contains("gb", "gc");
     assertThat(degree("ga")).isEqualTo(2L);
 
-    // the walks that skip a ghost agree with the other half of the contract: a variable-length hop, and a read relationship
+    // #10809: by default a variable-length hop answers from the entries too, so its one-hop form agrees with the fixed-length hop
+    assertThat(names("MATCH (a:G {name: 'ga'})-[:LINK*1..1]->(b:G) RETURN b.name AS name")).containsExactly("gb", "gc");
+
+    // the walks that load the edge skip the ghost whatever the setting, from the exception they catch
     final long before = GhostEdgeReporter.getTotalSkipped();
-    assertThat(names("MATCH (a:G {name: 'ga'})-[:LINK*1..1]->(b:G) RETURN b.name AS name")).containsExactly("gc");
     // the relationship is read: a variable nothing reads is an anonymous hop, which follows the entry
     assertThat(names("MATCH (a:G {name: 'ga'})-[r:LINK]->(b:G) RETURN b.name AS name, r.tag AS tag")).containsExactly("gc");
     assertThat(GhostEdgeReporter.getTotalSkipped()).as("the ghost is reported by the walks that skip it").isGreaterThan(before);
+
+    // with the probe turned on, the variable-length hop skips and reports it as well
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_GHOST_EDGE_PROBE, true);
+    final long beforeProbe = GhostEdgeReporter.getTotalSkipped();
+    assertThat(names("MATCH (a:G {name: 'ga'})-[:LINK*1..1]->(b:G) RETURN b.name AS name")).containsExactly("gc");
+    assertThat(GhostEdgeReporter.getTotalSkipped()).as("the probing walk reports the ghost").isGreaterThan(beforeProbe);
   }
 
   @Test

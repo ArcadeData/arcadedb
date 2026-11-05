@@ -2147,7 +2147,13 @@ public class CypherExecutionPlan {
       if (countOpt != null)
         currentStep = countOpt;
       else if (statement.getReturnClause().hasAggregations()) {
-        if (statement.getReturnClause().hasNonAggregations()) {
+        // A distinct-endpoint walk counts its end vertices itself: no row per end vertex, no filter, no aggregation (issue #10557)
+        // Not for a body seeded with rows from outside (a subquery), which may be run once per outer row
+        final AbstractExecutionStep endpointCount = statement.getReturnClause().hasNonAggregations() || initialStep != null ? null :
+            tryCountDistinctEndpointsOfSteps(clausesInOrder, statement.getReturnClause().getReturnItems(), currentStep, context);
+        if (endpointCount != null)
+          currentStep = endpointCount;
+        else if (statement.getReturnClause().hasNonAggregations()) {
           final GroupByAggregationStep groupByAggStep =
               new GroupByAggregationStep(
                   statement.getReturnClause(), context, functionFactory);
@@ -5006,10 +5012,8 @@ public class CypherExecutionPlan {
         || statement.getWhereClause() != null || statement.getClausesInOrder() == null
         || statement.getClausesInOrder().size() != 2)
       return null;
-    final Expression expression = items.getFirst().getExpression();
-    if (!(expression instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
-        || !count.isDistinct() || count.getArguments().size() != 1
-        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+    final String counted = countedDistinctVariable(items.getFirst());
+    if (counted == null)
       return null;
 
     PhysicalOperator root = physicalPlan.getRootOperator();
@@ -5026,16 +5030,78 @@ public class CypherExecutionPlan {
     if (!(root instanceof GAVVarLengthExpand expand) || expand.getSourceVariable().equals(expand.getTargetVariable()))
       return null;
     // The counted end is the one the walk reaches, or the one the plan starts it from when it anchored on the other end
-    final boolean countSources = expand.getSourceVariable().equals(counted.getVariableName());
-    if (!countSources && !expand.getTargetVariable().equals(counted.getVariableName()))
+    final boolean countSources = expand.getSourceVariable().equals(counted);
+    if (!countSources && !expand.getTargetVariable().equals(counted))
       return null;
     return new DistinctEndpointCountStep(expand, excludeSource, countSources, items.getFirst().getOutputName(), context);
   }
 
-  private static boolean isPairOfEnds(final VarLengthExpand expand, final String left, final String right) {
+  private static boolean isPairOfEnds(final DistinctEndpointCountStep.Walk expand, final String left, final String right) {
     final String source = expand.getSourceVariable();
     final String target = expand.getTargetVariable();
     return (left.equals(source) && right.equals(target)) || (left.equals(target) && right.equals(source));
+  }
+
+  /**
+   * The step-based twin of {@link #tryCountDistinctEndpoints} (issue #10557): replaces the rows of
+   * {@code MATCH (a)-[:T*0|1..k]->(b) [WHERE b <> a] RETURN count(DISTINCT b)} that an {@link ExpandPathStep} in distinct-endpoint
+   * mode produces, the filter of the {@code WHERE} and the aggregation, with a {@link DistinctEndpointCountStep} counting while the
+   * walks run, through a view or the records. The step-based executor plans such a statement when, for instance, the end node has no
+   * label.
+   * <p>
+   * Only where nothing but that count reads the rows: the statement is one non-optional MATCH and the RETURN, the RETURN is one
+   * {@code count(DISTINCT)} of one end of the expansion, and the step chain ends with the expansion, under nothing but filters each
+   * testing {@code b <> a} between its two ends. What else decides whether a row is produced - the target node pattern, a bound
+   * target, a bound relationship list - is tested by {@link ExpandPathStep#countDistinct} exactly as the rows test it.
+   *
+   * @return the counting step, or null to keep the rows and aggregate them
+   */
+  private AbstractExecutionStep tryCountDistinctEndpointsOfSteps(final List<ClauseEntry> clausesInOrder,
+      final List<ReturnClause.ReturnItem> items, final AbstractExecutionStep currentStep, final CommandContext context) {
+    if (items.size() != 1 || clausesInOrder == null || clausesInOrder.size() != 2
+        || clausesInOrder.getFirst().getType() != ClauseEntry.ClauseType.MATCH
+        || clausesInOrder.get(1).getType() != ClauseEntry.ClauseType.RETURN
+        || ((MatchClause) clausesInOrder.getFirst().getTypedClause()).isOptional())
+      return null;
+    final String counted = countedDistinctVariable(items.getFirst());
+    if (counted == null)
+      return null;
+
+    AbstractExecutionStep root = currentStep;
+    final List<FilterPropertiesStep> filters = new ArrayList<>(2);
+    while (root instanceof FilterPropertiesStep filter) {
+      filters.add(filter);
+      root = (AbstractExecutionStep) filter.getPrev();
+    }
+    if (!(root instanceof ExpandPathStep expand) || !expand.isDistinctEndpoints() || expand.getPrev() == null
+        || expand.getSourceVariable().equals(expand.getTargetVariable()))
+      return null;
+    for (final FilterPropertiesStep filter : filters)
+      if (filter.getWhereClause() == null
+          || !(filter.getWhereClause().getConditionExpression() instanceof ComparisonExpression comparison)
+          || comparison.getOperator() != ComparisonExpression.Operator.NOT_EQUALS
+          || !(comparison.getLeft() instanceof VariableExpression left) || !(comparison.getRight() instanceof VariableExpression right)
+          || !isPairOfEnds(expand, left.getVariableName(), right.getVariableName()))
+        return null;
+
+    // The counted end is the one the walk reaches, or the one it starts from when the planner anchored it on the other end
+    final boolean countSources = expand.getSourceVariable().equals(counted);
+    if (!countSources && !expand.getTargetVariable().equals(counted))
+      return null;
+    final DistinctEndpointCountStep step = new DistinctEndpointCountStep(expand, !filters.isEmpty(), countSources,
+        items.getFirst().getOutputName(), context);
+    // For the plan and the close only: the rows are pulled by the expansion, from that same step
+    step.setPrevious(expand.getPrev());
+    return step;
+  }
+
+  /** The variable a RETURN item {@code count(DISTINCT v)} counts, or null for any other item. */
+  private static String countedDistinctVariable(final ReturnClause.ReturnItem item) {
+    if (!(item.getExpression() instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
+        || !count.isDistinct() || count.getArguments().size() != 1
+        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+      return null;
+    return counted.getVariableName();
   }
 
   /**

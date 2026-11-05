@@ -49,7 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The allow-list only shrinks: a file that no longer mocks these types must be removed from it (the second test fails
  * otherwise), so every migrated file is locked in. Like {@link InlineMocksOfJitWarmTypesTest} this is a regular
  * expression approximation, not a parser: a mock built through a helper that receives the class as a variable is out of
- * its reach.
+ * its reach. Source text is a recorded decision for the same reason as there (#11288,
+ * {@code SourceTextTestsAreRecordedTest}): the population is the test sources of every module.
  */
 class NoNewMocksOfServerTypesTest {
 
