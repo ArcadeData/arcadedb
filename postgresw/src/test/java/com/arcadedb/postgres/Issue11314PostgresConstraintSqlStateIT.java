@@ -19,17 +19,32 @@
 package com.arcadedb.postgres;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
+import java.util.List;
 import java.util.Properties;
 
+import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
+import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
+import static com.arcadedb.postgres.PostgresWireMessages.sendBind;
+import static com.arcadedb.postgres.PostgresWireMessages.sendExecute;
+import static com.arcadedb.postgres.PostgresWireMessages.sendParseWithTypes;
+import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
+import static com.arcadedb.postgres.PostgresWireMessages.sqlStateOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Issue #11314, end to end: the refusals of the issue's own repro reach pgjdbc with the SQLSTATE PostgreSQL answers the same
@@ -77,6 +92,36 @@ class Issue11314PostgresConstraintSqlStateIT extends PostgresWireProtocolTestBas
       st.execute("INSERT INTO Ty SET i = 1, nn = 'dup'");
       final SQLException duplicate = catchThrowableOfType(SQLException.class, () -> st.execute("INSERT INTO Ty SET i = 2, nn = 'dup'"));
       assertThat(duplicate.getSQLState()).isEqualTo("23505"); // unique_violation
+    }
+  }
+
+  /**
+   * A bound parameter declared DATE or TIMESTAMP whose text is no date is the client's value, answered {@code 22007}
+   * invalid_datetime_format at the Bind, as the same text written into the statement is. Its parse failure reached the wire raw
+   * and was answered {@code XX000} internal_error.
+   */
+  @Test
+  @DisplayName("[#11314] a DATE or TIMESTAMP parameter whose text is no date is refused with 22007 at the Bind")
+  void anUnparsableTemporalParameterIsInvalidDatetimeFormat() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z');
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        for (final int typeOid : new int[] { 1082, 1114 }) { // date, timestamp
+          sendParseWithTypes(out, "", "SELECT ? AS d", typeOid);
+          sendBind(out, "", "", "notadate");
+          sendExecute(out, "");
+          sendSync(out);
+          final List<WireMessage> answer = readUntilReadyForQuery(in);
+          assertThat(sqlStateOf(answer)).as("type oid %s", typeOid).isEqualTo("22007");
+        }
+      });
     }
   }
 

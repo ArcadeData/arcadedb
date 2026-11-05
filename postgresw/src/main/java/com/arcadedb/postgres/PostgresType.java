@@ -272,7 +272,11 @@ public enum PostgresType {
   private static Date parseDateText(final String value) {
     if (value == null)
       throw new PostgresProtocolException("Cannot parse null DATE text value");
-    return Date.from(LocalDate.parse(value).atStartOfDay(ZoneOffset.UTC).toInstant());
+    try {
+      return Date.from(LocalDate.parse(value).atStartOfDay(ZoneOffset.UTC).toInstant());
+    } catch (final DateTimeParseException e) {
+      throw unparsableTemporal("DATE", value, e);
+    }
   }
 
   private static LocalDateTime parseTimestampText(final String value) {
@@ -281,9 +285,22 @@ public enum PostgresType {
     final String iso = value.replace(' ', 'T');
     try {
       return LocalDateTime.parse(iso);
-    } catch (DateTimeParseException e) {
-      return OffsetDateTime.parse(iso).toLocalDateTime();
+    } catch (final DateTimeParseException e) {
+      try {
+        return OffsetDateTime.parse(iso).toLocalDateTime();
+      } catch (final DateTimeParseException offsetRefused) {
+        throw unparsableTemporal("TIMESTAMP", value, offsetRefused);
+      }
     }
+  }
+
+  /**
+   * A parameter whose text is no date: the client's value, refused as an {@link IllegalArgumentException} carrying the parse
+   * failure, which the wire answers {@code 22007} invalid_datetime_format like the same text written into a statement. Raised
+   * raw, the {@link DateTimeParseException} was classified as a server fault and answered {@code XX000} (issue #11314).
+   */
+  private static IllegalArgumentException unparsableTemporal(final String type, final String value, final DateTimeParseException cause) {
+    return new IllegalArgumentException("Cannot parse " + type + " text value: " + value, cause);
   }
 
   private static Number toNumber(final Object value) {
