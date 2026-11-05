@@ -3586,7 +3586,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
     try {
       // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
-      return (Binary) pageManager.executeInLock(() -> readCommittedPlaceholderContent(rid));
+      return (Binary) pageManager.executeInLock(() -> {
+        // #11283: the lock excludes a local commit but not the replicated apply of a replica, so the lock alone proves nothing
+        final long locked = pageManager.getPublicationSequence();
+        final Binary content = (locked & 1) == 0 ? readCommittedPlaceholderContent(rid) : null;
+        if ((locked & 1) != 0 || pageManager.getPublicationSequence() != locked)
+          throw new ConcurrentModificationException(
+                  "Record " + rid + " was being replicated while it was read: the pointer and its content may belong to different commits");
+        return content;
+      });
     } catch (final RuntimeException e) {
       if (e.getCause() instanceof IOException ioException)
         throw ioException;
@@ -6475,8 +6483,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * continuation chunk still at the old one, both equal to what the walk read: a record that never existed accepted as
    * current, and under {@code REPEATABLE_READ} recorded as the transaction's snapshot of it. The publication sequence tells
    * whether a publication overlapped the validation ({@link PageManager#getPublicationSequence()}, #9369); when one did, the
-   * validation runs again under the publication lock, where no commit can be half visible. A chain found changed needs no
-   * second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
+   * validation runs again under the publication lock and, because a replicated apply is not excluded by it (#11283), with the
+   * sequence checked again inside it. A chain found changed needs no second look: a chunk that differs from the newest image belongs to a commit made after the walk read it.
    */
   private int validateChainReadAgainstOneCommit(final long[] chainTrace, final int chunks, final Binary record,
                                                 final long lastNextChunkPointer, final long headMarker) throws IOException {
@@ -6488,8 +6496,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     try {
       // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
-      return (Integer) pageManager.executeInLock(
-              () -> validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false));
+      return (Integer) pageManager.executeInLock(() -> {
+        // #11283: the lock excludes a local commit but not the replicated apply of a replica. A publication open or moved
+        // here makes the proof void: the chain is in motion, which is what the retry is for
+        final long locked = pageManager.getPublicationSequence();
+        if ((locked & 1) != 0)
+          return CHAIN_READ_CHANGED;
+        final int lockedVerdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker, false);
+        return pageManager.getPublicationSequence() == locked ? lockedVerdict : CHAIN_READ_CHANGED;
+      });
     } catch (final RuntimeException e) {
       if (e.getCause() instanceof IOException ioException)
         throw ioException;
@@ -6501,16 +6516,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Runs a proof that a chunk chain is broken against ONE committed state. The proof walks the newest committed images, and a
    * commit being published puts its pages there one at a time: a head chunk already pointing at a slot its commit has not
    * published yet reads as a cleaned slot, and that is a permanent verdict, the record reported as corrupted and handed to
-   * CHECK DATABASE FIX. A proof that a publication overlapped is run again under the publication lock, where none can. A proof
-   * that finds nothing broken is never doubted: it is the one that changes nothing.
+   * CHECK DATABASE FIX. A proof that a publication overlapped is run again under the publication lock,
+   * which excludes a local commit but not the replicated apply of a replica (#11283), so the sequence is checked inside it too and a
+   * proof that a publication still overlapped is void. A proof that finds nothing broken is never doubted: it is the one that changes nothing.
    */
-  private String provenAgainstOneCommit(final Callable<String> proof) throws Exception {
+  // Package-private: visible for testing
+  String provenAgainstOneCommit(final Callable<String> proof) throws Exception {
     final PageManager pageManager = database.getPageManager();
     final long sequence = pageManager.getPublicationSequence();
     final String reason = proof.call();
     if (reason == null || ((sequence & 1) == 0 && pageManager.getPublicationSequence() == sequence))
       return reason;
-    return (String) pageManager.executeInLock(proof::call);
+    return (String) pageManager.executeInLock(() -> {
+      // #11283: the lock excludes a local commit but not the replicated apply of a replica. A publication open or moved
+      // here makes a proof of corruption void: not proven, so the caller falls back to its retry rather than condemn a record
+      final long locked = pageManager.getPublicationSequence();
+      if ((locked & 1) != 0)
+        return null;
+      final String lockedReason = proof.call();
+      return lockedReason == null || pageManager.getPublicationSequence() == locked ? lockedReason : null;
+    });
   }
 
   /** Whether every chunk of the traced chain was read from a page this transaction holds, at the version it read. */
