@@ -1704,7 +1704,7 @@ public class LocalSchema implements Schema {
             customKept = new JSONObject();
             unrestored.put("custom", customKept);
           }
-          customKept.put(customKey, definition.getJSONObject("custom").get(customKey));
+          customKept.put(customKey, definition.getJSONObject("custom", new JSONObject()).opt(customKey));
         } else
           unrestored.put(attribute, definition.get(attribute));
       });

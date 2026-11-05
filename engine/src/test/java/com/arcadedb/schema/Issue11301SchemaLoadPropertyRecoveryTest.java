@@ -140,6 +140,31 @@ class Issue11301SchemaLoadPropertyRecoveryTest extends TestHelper {
   }
 
   /**
+   * DROP TYPE takes a kept definition with the type: nothing of it comes back when a type of the same name is created again.
+   */
+  @Test
+  void droppingTheTypeTakesTheKeptDefinitionsWithIt() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE AaaHolder");
+    database.command("sql", "CREATE PROPERTY AaaHolder.future STRING");
+    database.command("sql", "CREATE PROPERTY AaaHolder.payload STRING");
+    database.close();
+
+    editSchema(root -> {
+      final JSONObject properties = root.getJSONObject("types").getJSONObject("AaaHolder").getJSONObject("properties");
+      properties.getJSONObject("future").put("type", "NO_SUCH_TYPE");
+      properties.getJSONObject("payload").put("compression", "no-such-codec");
+    });
+
+    database = factory.open();
+    database.command("sql", "DROP TYPE AaaHolder");
+    database.command("sql", "CREATE DOCUMENT TYPE AaaHolder");
+    assertThat(readSchema().getJSONObject("types").getJSONObject("AaaHolder").getJSONObject("properties").isEmpty()).isTrue();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("AaaHolder").getPropertyNames()).isEmpty();
+  }
+
+  /**
    * Creating a property under the name of one the loader could not create replaces the kept definition.
    */
   @Test

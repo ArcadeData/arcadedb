@@ -128,8 +128,10 @@ class Issue11330LossyStatementRenderingTest extends TestHelper {
       final String rendered = render(query);
       assertThat(render(rendered)).as("rendering of '%s' is '%s'", query, rendered).isEqualTo(rendered);
     }
-    // the sibling spelling and the other attributes are untouched
+    // the sibling spelling and the other attributes are untouched, and the token takes only the `@` form
     assertThat(render("SELECT a.`@b` FROM V")).isEqualTo("SELECT a.`@b` FROM V");
+    assertThat(render("SELECT cat, category, a.cat FROM V WHERE cat = 1 ORDER BY cat")).isEqualTo(
+        "SELECT cat, category, a.cat FROM V WHERE cat = 1 ORDER BY cat ASC");
     assertThat(render("SELECT @rid, @type, @in, @out, @this, @props FROM V")).isEqualTo(
         "SELECT @rid, @type, @in, @out, @this, @props FROM V");
   }
