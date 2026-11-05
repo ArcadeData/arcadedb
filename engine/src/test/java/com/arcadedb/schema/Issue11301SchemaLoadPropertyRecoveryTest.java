@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -39,11 +40,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue11301SchemaLoadPropertyRecoveryTest extends TestHelper {
 
   /**
-   * The reachable trigger: {@code DROP TYPE} of a type a {@code LIST OF} property names. Before the fix the reopen threw out of
-   * {@code setOfType} for the LIST branch only (EMBEDDED and LINK already accepted a missing type while loading).
+   * The trigger the issue reported: a schema whose {@code LIST OF} property names a type that is gone. {@code DROP TYPE} reached it
+   * until it refused a type a property is declared OF (issue #11305), so it is now the schema of a database written before that, or
+   * a file edited by hand. Before the fix the reopen threw out of {@code setOfType} for the LIST branch only (EMBEDDED and LINK
+   * already accepted a missing type while loading).
    */
   @Test
-  void aListOfADroppedTypeReloadsAndTheTypesAfterItKeepTheirSchema() {
+  void aListOfADroppedTypeReloadsAndTheTypesAfterItKeepTheirSchema() throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE Address");
     database.command("sql", "CREATE DOCUMENT TYPE AaaHolder");
     database.command("sql", "CREATE PROPERTY AaaHolder.tags LIST OF Address");
@@ -51,9 +54,13 @@ class Issue11301SchemaLoadPropertyRecoveryTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY AaaHolder.one EMBEDDED OF Address");
     database.command("sql", "CREATE PROPERTY AaaHolder.link LINK OF Address");
     createGuardedType();
-    database.command("sql", "DROP TYPE Address");
+    assertThatThrownBy(() -> database.command("sql", "DROP TYPE Address")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("AaaHolder.");
+    database.close();
 
-    reopenDatabase();
+    editSchema(root -> root.getJSONObject("types").remove("Address"));
+
+    database = factory.open();
 
     final DocumentType holder = database.getSchema().getType("AaaHolder");
     assertThat(holder.getProperty("tags").getOfType()).isEqualTo("Address");

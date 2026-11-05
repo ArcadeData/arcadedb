@@ -632,6 +632,23 @@ case_report "$disabled/engine/target/surefire-reports/TEST-com.arcadedb.Disabled
 expect "accepts a suite whose every test is disabled" 0 "2 skipped (0 aborted by an assumption)" \
     "$RESULTS" surefire-reports --root "$disabled"
 
+# #11275: the rule is that SOME case of the class asserted, not that some case did not abort. A class
+# whose cases are part aborted and part disabled ran none of them, so it is the false green above
+# reached through a disabled remainder rather than an aborted one.
+mixed="$work/results/aborted-and-disabled"
+case_report "$mixed/engine/target/surefire-reports/TEST-com.arcadedb.Issue1MixedTest.xml" com.arcadedb.Issue1MixedTest abort disable
+expect "rejects a suite whose tests all aborted or were disabled" 1 \
+    "TEST-com.arcadedb.Issue1MixedTest.xml: none of its 2 test(s) ran (1 aborted, 1 disabled)" \
+    "$RESULTS" surefire-reports --root "$mixed"
+expect "lists the disabled remainder beside the aborted cases" 1 "1 of 2 test(s) aborted and 1 disabled" \
+    "$RESULTS" surefire-reports --root "$mixed"
+
+# The fourth shape: a class that aborted some cases, disabled others and ran the rest asserted something.
+ranSome="$work/results/aborted-disabled-and-ran"
+case_report "$ranSome/engine/target/surefire-reports/TEST-com.arcadedb.RanSomeTest.xml" com.arcadedb.RanSomeTest abort disable pass
+expect "accepts a suite in which one test ran beside aborted and disabled ones" 0 "2 skipped (1 aborted by an assumption)" \
+    "$RESULTS" surefire-reports --root "$ranSome"
+
 # JUnit 4's assumption, which the TinkerPop suites gate on graph features with, is an abort too.
 junit4="$work/results/junit4-aborted"
 case_report "$junit4/gremlin-it/target/failsafe-reports/TEST-com.arcadedb.FeatureIT.xml" com.arcadedb.FeatureIT abort

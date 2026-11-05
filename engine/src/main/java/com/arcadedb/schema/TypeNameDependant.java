@@ -24,8 +24,9 @@ import java.util.Collection;
 
 /**
  * A schema object that stores the NAME of a type: a materialized view, a continuous aggregate, a trigger, a Graph Analytical
- * View. The rule every one of them follows is the same - a type a dependant is built from cannot be dropped from under it,
- * and a rename of the type either carries to the dependant or is refused before a single file moves - and
+ * View, a property declared {@code EMBEDDED}, {@code LINK}, {@code LIST} or {@code MAP OF} a type (issue #11305). The rule
+ * every one of them follows is the same - a type a dependant is built from cannot be dropped from under it, and a rename of
+ * the type either carries to the dependant or is refused before a single file moves - and
  * {@link LocalSchema} enforces it by walking {@link LocalSchema#getTypeNameDependants()}, the one list every kind is
  * collected into (issue #10368). A new kind is protected by implementing this interface and joining that list; there is no
  * second place to remember.

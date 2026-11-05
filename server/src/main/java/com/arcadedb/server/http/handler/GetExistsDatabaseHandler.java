@@ -47,8 +47,9 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
     // installed, and accessible to the caller - just evaluated for one name, including its null-user
     // contract, so the two paths cannot drift on what an unauthenticated route is allowed to report.
     final String requested = databaseName.getFirst();
-    // Open or not (issue #11068): a database closed for idleness, or not opened at startup, exists, and its first request opens it
-    final boolean existsDatabase = server.isDatabaseAvailable(requested)
+    // Open or not (issue #11068): a database closed for idleness, or not opened at startup, exists, and its first request opens it.
+    // Held or not (issue #11310): one an operator closed, or a restore or a drop holds, exists too, and a create refuses its name
+    final boolean existsDatabase = server.isDatabaseOfServer(requested)
         && (user == null || user.canAccessToDatabase(requested));
 
     final JSONObject response = new JSONObject();

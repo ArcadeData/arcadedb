@@ -277,8 +277,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       final String name = req.getName(); // proto should define 'name' for the DB
       // Exact name, like createDatabase / dropDatabase (issue #7413): what this reports as existing is what a
       // create of the same name would refuse. Open or not (issue #11068): one closed for idleness, or not opened at startup,
-      // exists, and its first request opens it.
-      final boolean exists = server.isDatabaseAvailable(name) && (user == null || user.canAccessToDatabase(name));
+      // exists, and its first request opens it. Held or not (issue #11310): one an operator closed, or a restore or a drop
+      // holds, exists too.
+      final boolean exists = server.isDatabaseOfServer(name) && (user == null || user.canAccessToDatabase(name));
 
       return ExistsDatabaseResponse.newBuilder().setExists(exists).build();
     });
@@ -296,8 +297,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // Exact name, the registry's and the HTTP command's notion of "the same database": the case-folded guard
       // this used to be let CreateDatabase("MyDb") answer OK for an existing "mydb" and then DropDatabase("MyDb")
       // fail inside the drop (issue #7413). An empty OK told a provisioning tool nothing either way; now the
-      // strict default refuses a taken name as HTTP does, and the idempotent form says which happened.
-      if (server.isDatabaseAvailable(name)) {
+      // strict default refuses a taken name as HTTP does, and the idempotent form says which happened. A database an operator
+      // holds is one too (issue #11310): the idempotent form leaves it as it is instead of failing ALREADY_EXISTS.
+      if (server.isDatabaseOfServer(name)) {
         if (req.getIfNotExists())
           return CreateDatabaseResponse.newBuilder().setCreated(false).build();
         throw new ServerControlPlane.AlreadyExistsException("Database '" + name + "' already exists");
@@ -329,8 +331,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       final String name = req.getName();
 
-      // See createDatabase: exact name, strict by default, explicit outcome either way (issue #7413).
-      if (!server.isDatabaseAvailable(name)) {
+      // See createDatabase: exact name, strict by default, explicit outcome either way (issue #7413). A database an operator holds
+      // exists (issue #11310): a closed one is dropped, and a restore or a drop in progress refuses with its reason (ABORTED),
+      // never with "nothing to drop" for a database left on disk.
+      if (!server.isDatabaseOfServer(name)) {
         if (req.getIfExists())
           return DropDatabaseResponse.newBuilder().setDropped(false).build();
         throw new ServerControlPlane.NotFoundException("Database '" + name + "' does not exist");
@@ -356,7 +360,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       if (user != null && !user.canAccessToDatabase(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
-      if (!server.isDatabaseAvailable(name))
+      // A database an operator holds exists (issue #11310): the open below refuses it UNAVAILABLE with the reason, as the data path
+      // does, rather than NOT_FOUND
+      if (!server.isDatabaseOfServer(name))
         throw Status.NOT_FOUND.withDescription("Database not found: " + name).asException();
 
       // Use getDatabase which returns a shared ServerDatabase - don't close it

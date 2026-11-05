@@ -1851,7 +1851,10 @@ public class ArcadeDBServer {
 
   /**
    * Whether {@code databaseName} is one of {@link #getAvailableDatabaseNames()}: open, or on disk and not held by an operator, so
-   * a client's first request opens it (issue #11068). The question an existence check of one name asks, without building the set.
+   * a client's first request opens it (issue #11068). The question of a path that opens the database for a client, without
+   * building the set. NOT whether the database exists: one an operator holds exists, and a create refuses its name. The control
+   * plane's existence checks ({@code GET /exists}, the create and drop guards, gRPC {@code ExistsDatabase}) ask
+   * {@link #isDatabaseOfServer} (issue #11310).
    */
   public boolean isDatabaseAvailable(final String databaseName) {
     if (databaseName == null || databaseName.isEmpty())

@@ -82,6 +82,9 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("schema/MultiTypeIndexes#entries", SCHEMA_INTERNAL),
       Map.entry("schema/MultiTypeIndexes#find", SCHEMA_INTERNAL),
       Map.entry("schema/MultiTypeIndexes#remove", SCHEMA_INTERNAL),
+      Map.entry("schema/LocalSchema#getTypeNameDependants",
+          "collects the properties declared OF a type for the DROP TYPE guard and the rename carry: a schema write, asked by a "
+              + "user granted UPDATE_SCHEMA (issue #11305)"),
       Map.entry("engine/Dictionary#updateName", "renames a dictionary entry in every type that uses it: a schema write"),
       Map.entry("engine/UnreferencedFiles#collectClaimedFileIds", "collects the files a type claims, to tell the unreferenced ones apart"),
       Map.entry("engine/timeseries/TimeSeriesShardOrder#typesOf", "orders the time series types for the engine's own locking"),

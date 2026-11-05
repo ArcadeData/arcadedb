@@ -1122,8 +1122,10 @@ public class ServerControlPlane {
 
     beginExclusive(databaseName, Operation.DROP);
     try {
-      // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened to be dropped
-      if (!server.isDatabaseAvailable(databaseName))
+      // Open or not (issue #11068): one closed for idleness, or not opened at startup, is opened to be dropped. Held or not (issue
+      // #11310): one a 'close database' closed exists, and is opened to be dropped the same way; a restore and a drop in progress
+      // hold the maintenance slot taken above, which refused this drop with the reason. Never "does not exist" for one on disk
+      if (!server.isDatabaseOfServer(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
 
       dropDatabaseClusterWide(server.getDatabaseForOperator(databaseName), databaseName);

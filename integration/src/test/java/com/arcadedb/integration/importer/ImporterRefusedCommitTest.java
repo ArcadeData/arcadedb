@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.integration.importer.format.JsonlImporterFormat;
 import com.arcadedb.integration.importer.format.RDFImporterFormat;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -48,7 +49,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * flag before such a commit and never restored it, so the rollback that should have discarded the refused transaction skipped
  * it: the outermost transaction is not popped by a failed commit, and it stayed active for the life of the thread, swallowing
  * the caller's next {@code begin()}/{@code commit()} pair. The CSV edge loop and the RDF loop restored the flag by hand; they
- * now share the protocol, and are pinned here against the same real refusal.
+ * now share the protocol, and are pinned here against the same real refusal. So does the JSONL row loop (issue #11271), whose
+ * commit sat in a {@code finally} with no handler after it; {@code ImporterCommitsThroughOneProtocolCensusTest} (census module)
+ * keeps every loop on the protocol.
  * <p>
  * The refusal is the engine's own: a listener marks the import's transaction rollback-only, and {@code commit1stPhase()}
  * refuses it before doing anything, without rolling back first. Nothing is proxied.
@@ -190,6 +193,115 @@ class ImporterRefusedCommitTest {
     assertThat(database.isTransactionActive()).isFalse();
     assertThat(countOf("Marker")).isEqualTo(1);
     assertThat(countOf("Relationship")).isZero();
+  }
+
+  /**
+   * Issue #11271: the JSONL row loop committed in a {@code finally} with no handler after it, so a refused commit left the
+   * import's transaction active on the thread, and the {@code finally} then committed it a second time.
+   */
+  @Test
+  void aRefusedJsonlCommitLeavesNoTransactionOnTheThread() {
+    refuseTheCommitOf("Document");
+
+    assertThatThrownBy(() -> loadJsonl(new ImporterSettings(), jsonlDocument(0, "a"), jsonlDocument(1, "b")))
+        .hasStackTraceContaining("issue 11208: refused commit");
+
+    assertThat(refusals).as("both records land in the one batch whose commit is refused").isEqualTo(2);
+    assertNothingLeftOnTheThread();
+    assertThat(countOf("Document")).isZero();
+  }
+
+  @Test
+  void theCallersNextUnitOfWorkAfterARefusedJsonlImportIsItsOwn() {
+    refuseTheCommitOf("Document");
+    assertThatThrownBy(() -> loadJsonl(new ImporterSettings(), jsonlDocument(0, "a"), jsonlDocument(1, "b")))
+        .hasStackTraceContaining("issue 11208: refused commit");
+
+    database.begin();
+    database.newDocument("Marker").set("name", "next").save();
+    database.commit();
+
+    assertThat(database.isTransactionActive()).as("one begin/commit pair leaves nothing active").isFalse();
+    assertThat(countOf("Marker")).isEqualTo(1);
+  }
+
+  /**
+   * Under {@code -onRowError skip} each record commits on its own, so a record whose commit is refused is a row error like any
+   * other: it is skipped and counted, and the records around it land. The commit used to sit outside the record's handler, so
+   * the refusal aborted the whole import.
+   */
+  @Test
+  void aRefusedJsonlCommitUnderSkipModeSkipsThatRecordOnly() throws Exception {
+    database.getSchema().getType("Document").getEvents().registerListener((AfterRecordCreateListener) record -> {
+      if ("b".equals(record.asDocument().getString("name"))) {
+        ++refusals;
+        ((DatabaseInternal) database).getTransaction().setRollbackOnly("issue 11208: refused commit");
+      }
+    });
+    final ImporterSettings settings = new ImporterSettings();
+    settings.onRowError = "skip";
+
+    final ImporterContext context = loadJsonl(settings, jsonlDocument(0, "a"), jsonlDocument(1, "b"), jsonlDocument(2, "c"));
+
+    assertThat(refusals).isEqualTo(1);
+    assertThat(context.errors.get()).isEqualTo(1);
+    assertNothingLeftOnTheThread();
+    assertThat(countOf("Document")).isEqualTo(2);
+    assertThat(database.query("sql", "select from Document where name = 'b'").hasNext()).isFalse();
+  }
+
+  /**
+   * The refusal skip mode meets in practice: a duplicate key, which a unique index finds when the record's transaction commits.
+   * The duplicate is skipped and counted, and the count of created documents is the records that landed.
+   */
+  @Test
+  void aDuplicateKeyFoundAtCommitUnderSkipModeSkipsThatRecordOnly() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().getType("Document").createProperty("name", Type.STRING);
+      database.getSchema().getType("Document").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    });
+    final ImporterSettings settings = new ImporterSettings();
+    settings.onRowError = "skip";
+
+    final ImporterContext context = loadJsonl(settings, jsonlDocument(0, "a"), jsonlDocument(1, "a"), jsonlDocument(2, "c"));
+
+    assertThat(context.errors.get()).isEqualTo(1);
+    assertThat(context.createdDocuments.get()).as("the skipped duplicate is not counted as created").isEqualTo(2);
+    assertNothingLeftOnTheThread();
+    assertThat(countOf("Document")).isEqualTo(2);
+  }
+
+  /**
+   * A record skipped at its commit leaves no mapping behind: an edge naming it is refused as naming a vertex that is not there,
+   * rather than resolved to the identity the rolled-back record had, which the next record of the bucket takes.
+   */
+  @Test
+  void aVertexSkippedAtItsCommitIsNotTheEndpointOfALaterEdge() throws Exception {
+    database.transaction(() -> database.newVertex("Node").set("Id", "dup").save());
+    final ImporterSettings settings = new ImporterSettings();
+    settings.onRowError = "skip";
+
+    final ImporterContext context = loadJsonl(settings,//
+        "{\"t\":\"v\",\"c\":{\"r\":\"#1:0\",\"t\":\"Node\",\"p\":{\"Id\":\"dup\"}}}",//
+        "{\"t\":\"v\",\"c\":{\"r\":\"#1:1\",\"t\":\"Node\",\"p\":{\"Id\":\"fresh\"}}}",//
+        "{\"t\":\"e\",\"c\":{\"t\":\"Relationship\",\"o\":\"#1:0\",\"i\":\"#1:1\",\"p\":{}}}");
+
+    assertThat(context.errors.get()).as("the duplicate, then the edge naming it").isEqualTo(2);
+    assertNothingLeftOnTheThread();
+    assertThat(countOf("Node")).isEqualTo(2);
+    assertThat(countOf("Relationship")).isZero();
+  }
+
+  private ImporterContext loadJsonl(final ImporterSettings settings, final String... lines) throws IOException {
+    final byte[] bytes = (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8);
+    final Parser parser = new Parser(new Source("records.jsonl", new ByteArrayInputStream(bytes), bytes.length, false, null, null), 0);
+    final ImporterContext context = new ImporterContext();
+    new JsonlImporterFormat().load(null, null, parser, (DatabaseInternal) database, context, settings);
+    return context;
+  }
+
+  private static String jsonlDocument(final int position, final String name) {
+    return "{\"t\":\"d\",\"c\":{\"r\":\"#1:" + position + "\",\"t\":\"Document\",\"p\":{\"name\":\"" + name + "\"}}}";
   }
 
   /** Marks the import's transaction rollback-only from inside it: the engine then refuses the commit before it starts. */

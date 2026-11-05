@@ -75,6 +75,32 @@ public final class ImporterTransactions {
   }
 
   /**
+   * Begins the loop's own transaction and records it: the flag set, and the transaction the {@code begin()} left current, which
+   * is what {@link #isOwnTransactionLive} later proves the live one against.
+   *
+   * @param open           the loop's flag, a one-element array so a lambda can share it
+   * @param ownTransaction the loop's transaction, a one-element array for the same reason
+   */
+  public static void beginOwnTransaction(final Database database, final boolean[] open, final TransactionContext[] ownTransaction) {
+    database.begin();
+    open[0] = true;
+    ownTransaction[0] = currentTransaction(database);
+  }
+
+  /**
+   * Rolls the loop's own transaction back when {@link #isOwnTransactionLive it is the live one}, and does nothing otherwise: a
+   * failure that left it on the stack still discards it, and one that did not - a commit that popped it - never reaches past it
+   * for whatever is underneath.
+   */
+  public static void rollbackOwnTransaction(final Database database, final boolean[] open,
+      final TransactionContext[] ownTransaction) {
+    if (isOwnTransactionLive(database, open[0], ownTransaction[0])) {
+      open[0] = false;
+      database.rollback();
+    }
+  }
+
+  /**
    * Commits the loop's own transaction when {@link #isOwnTransactionLive it is the live one}, and does nothing otherwise.
    * <p>
    * The flag is cleared BEFORE the commit: a commit that throws skips everything after it, and a flag still set would hand

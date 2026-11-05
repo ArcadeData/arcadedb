@@ -29,6 +29,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -47,6 +48,7 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.misc.ValueTypeHints;
@@ -130,6 +132,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   // RID, which after the import names another record.
   private final Map<RID, List<PendingLink>> pendingLinkReconciliation = new HashMap<>();
 
+  // The mappings of the record being loaded, published once it landed (see stageRecord)
+  private RID               stagedOldRid;
+  private RID               stagedNewRid;
+  private List<PendingLink> stagedUnresolvedLinks;
+
   /** A link that pass 1 could not resolve: where it is in the record, and the source RID it holds. */
   private record PendingLink(String property, Object[] path, RID oldRid) {
   }
@@ -194,6 +201,15 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // begin() touches the database, so this reading is the state that begin() will see (issue #7328).
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
+    // The transaction this loop pushed, resolved only through ImporterTransactions, the protocol every importer row loop shares
+    // (issue #11271): a commit refused before it starts - a rollback-only transaction, a terminated statement, a server that
+    // stopped accepting writes - leaves it active, and only the handler that proves it is still the loop's own may roll it back.
+    // It used to be committed in a finally with no handler after it, so the refusal stranded it on the caller's thread, where it
+    // swallowed the caller's next begin()/commit() pair, and the finally then committed it a second time. Never set when the
+    // caller owns the transaction: every commit and rollback below is then a no-op, and the caller decides.
+    final boolean[] txOpen = { false };
+    final TransactionContext[] ownTx = { null };
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       context.startedOn = System.currentTimeMillis();
@@ -201,11 +217,20 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
       pendingLinkReconciliation.clear();
+      discardStagedRecord();
       timeSeriesSamplesSinceCommit = 0;
       importedSchema = null;
 
-      if (!database.isTransactionActive())
-        database.begin();
+      // A transaction already active although the import owns it is the importer's own ambient one, not the caller's: adopted
+      // as the loop's, as it always was, rather than nested under (a TIMESERIES type's creation nests transactions of its own,
+      // and one more level reaches the nesting limit)
+      if (ownsTransaction) {
+        if (database.isTransactionActive()) {
+          txOpen[0] = true;
+          ownTx[0] = ImporterTransactions.currentTransaction(database);
+        } else
+          ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+      }
 
       String line;
       while ((line = reader.readLine()) != null) {
@@ -222,6 +247,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         var jsonLine = new JSONObject(line);
         final String recordType = jsonLine.getString("t");
 
+        // The counters a record bumps before its commit, which a skipped record must not leave bumped
+        final long createdDocumentsBefore = context.createdDocuments.get();
+        final long createdVerticesBefore = context.createdVertices.get();
+        final long createdEdgesBefore = context.createdEdges.get();
+        final long createdSamplesBefore = context.createdTimeSeriesSamples.get();
+
         try {
           switch (recordType) {
           case "schema" -> loadSchema(database, context, settings, jsonLine.getJSONObject("c"));
@@ -230,7 +261,20 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           case "e" -> loadEdge(database, context, jsonLine.getJSONObject("c"));
           case "ts" -> loadTimeSeriesSamples(database, context, jsonLine.getJSONObject("c"), skipOnRowError);
           }
+
+          // Skip mode commits every record on its own, INSIDE the record's handler: a commit refused for this record (a
+          // duplicate key is only found at commit time) is a row error like any other, skipped and counted, where it used to
+          // abort the whole import from outside the handler
+          if (skipOnRowError) {
+            ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+            ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+            timeSeriesSamplesSinceCommit = 0;
+          }
+
+          // The record is in: its mappings become visible to the records after it (see stageRecord)
+          publishStagedRecord();
         } catch (final Exception e) {
+          discardStagedRecord();
           // Every per-record failure (document/vertex/edge, and a broken schema entry too) funnels through here,
           // issue #6468: logging, error counting and the abort/skip decision live in ONE place instead of being
           // duplicated at each call site, which is also what keeps them from drifting out of sync with each other.
@@ -243,26 +287,29 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           // durably persist - e.g. a vertex whose save() succeeded but whose RID-map bookkeeping then failed would
           // otherwise sit in the database uncounted and unreachable by ridIndex, silently cascading into every edge
           // that references it (the exact mechanism issue #6468 describes). Rolling back only this record's own
-          // uncommitted work - never the batch - is what makes that guarantee hold.
-          if (database.isTransactionActive())
-            database.rollback();
-          database.begin();
+          // uncommitted work - never the batch - is what makes that guarantee hold. Skip mode always owns the
+          // transaction (see the guard above), so the loop's own is the one there is to roll back.
+          ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
+          ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
           timeSeriesSamplesSinceCommit = 0;
+          context.createdDocuments.set(createdDocumentsBefore);
+          context.createdVertices.set(createdVerticesBefore);
+          context.createdEdges.set(createdEdgesBefore);
+          context.createdTimeSeriesSamples.set(createdSamplesBefore);
           continue;
         }
 
         context.parsed.incrementAndGet();
 
-        // Skip mode commits every record individually (see above and the field comment on skipOnRowError); the
-        // default "abort" mode keeps the coarser periodic commit for throughput, since any failure there aborts
-        // and rolls back the whole in-flight batch anyway (see the ImportException catch below). Neither runs at
-        // all when the caller already owns the active transaction (skip mode never reaches here - see the guard
-        // above): a caller-managed transaction is never ours to commit piecemeal, only to accumulate into and hand
-        // back to whoever owns it (issue #6561). ownsTransaction is that question, answered once above.
-        if (ownsTransaction && (skipOnRowError || context.parsed.get() % COMMIT_EVERY == 0
+        // The default "abort" mode keeps the coarser periodic commit for throughput, since any failure there aborts
+        // and rolls back the whole in-flight batch anyway (see the catch below); skip mode committed above. Neither
+        // runs at all when the caller already owns the active transaction (skip mode never reaches here - see the
+        // guard above): a caller-managed transaction is never ours to commit piecemeal, only to accumulate into and
+        // hand back to whoever owns it (issue #6561). ownsTransaction is that question, answered once above.
+        if (ownsTransaction && !skipOnRowError && (context.parsed.get() % COMMIT_EVERY == 0
             || timeSeriesSamplesSinceCommit >= COMMIT_EVERY)) {
-          database.commit();
-          database.begin();
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+          ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
           timeSeriesSamplesSinceCommit = 0;
         }
 
@@ -277,27 +324,26 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // Issue #6460: resolve any LINK / LIST-of-LINK / MAP-of-LINK property values that were still forward
       // references when their owning record was loaded (see the field comment on pendingLinkReconciliation).
       // Every RID mapping is known by now, so this is the only point where they can be reliably fixed up.
-      reconcileUnresolvedLinks(database, context, skipOnRowError, ownsTransaction);
+      reconcileUnresolvedLinks(database, context, skipOnRowError, ownsTransaction, txOpen, ownTx);
 
       // LAST, after every record has landed and every forward link has been reconciled - see the field comment on
       // importedSchema for why these five members cannot be restored alongside the types (issue #7886).
       restoreSchemaMembers(database, context);
-    } catch (ImportException e) {
-      // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
-      // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
-      // masquerading as a successful one, and the ownsTransaction guard mirrors JSONImporterFormat's contract of
-      // never discarding a caller's own transaction.
-      if (ownsTransaction && database.isTransactionActive())
-        database.rollback();
+
+      // Inside the try, not in a finally (issue #11271): a refusal reaches the catch below, which finds the flag restored and
+      // rolls back. A transaction that predates this import is never ours to commit, on success or on failure (issue #6561):
+      // the flag was never set for it, so this is then a no-op
+      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+    } catch (final IOException | RuntimeException e) {
+      // Any failure in default "abort" mode fails the whole import loudly (issue #6468), the ones raised outside a record's
+      // handler (a malformed line, a refused commit) included: rolling back the in-flight batch, rather than committing it, is
+      // what keeps a partial import from masquerading as a successful one, and a transaction that is not the loop's own - the
+      // caller's - is left alone
+      ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
       throw e;
-    } catch (ClassNotFoundException e) {
+    } catch (final ClassNotFoundException e) {
+      ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
       throw new RuntimeException(e);
-    } finally {
-      // Gated on ownsTransaction exactly like the ImportException catch above (issue #6561): a
-      // transaction that predates this import is never ours to commit, on success or on failure - it's left open
-      // for whoever owns it to decide.
-      if (ownsTransaction && database.isTransactionActive())
-        database.commit();
     }
     context.lastLapOn = System.currentTimeMillis();
   }
@@ -945,9 +991,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var imported = database.newDocument(document.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, document.getJSONObject(ValueTypeHints.KEY, null));
     saveReadRecord(imported, unresolvedLinks);
-    ridIndex.put(oldRid, imported.getIdentity());
-    if (!unresolvedLinks.isEmpty())
-      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+    stageRecord(oldRid, imported.getIdentity(), unresolvedLinks.isEmpty() ? null : unresolvedLinks);
     context.createdDocuments.incrementAndGet();
   }
 
@@ -962,10 +1006,37 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var imported = database.newVertex(vertex.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, vertex.getJSONObject(ValueTypeHints.KEY, null));
     saveReadRecord(imported, unresolvedLinks);
-    ridIndex.put(oldRid, imported.getIdentity());
-    if (!unresolvedLinks.isEmpty())
-      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+    stageRecord(oldRid, imported.getIdentity(), unresolvedLinks.isEmpty() ? null : unresolvedLinks);
     context.createdVertices.incrementAndGet();
+  }
+
+  /**
+   * Holds the mappings of the record being loaded - its source to new identity, and the links it waits for - until {@link #load}
+   * knows the record landed: under {@code -onRowError skip} only once its own commit succeeded. Published at once, a record whose
+   * commit was refused left behind the identity it had in the rolled-back transaction, which the next record of the bucket takes,
+   * so a later edge or link naming the skipped record resolved to that other one (review of issue #11271).
+   */
+  private void stageRecord(final RID oldRid, final RID newRid, final List<PendingLink> unresolvedLinks) {
+    stagedOldRid = oldRid;
+    stagedNewRid = newRid;
+    stagedUnresolvedLinks = unresolvedLinks;
+  }
+
+  /** Makes the staged mappings of the record that has just landed visible to the records after it. */
+  private void publishStagedRecord() {
+    if (stagedNewRid == null)
+      return;
+    if (stagedOldRid != null)
+      ridIndex.put(stagedOldRid, stagedNewRid);
+    if (stagedUnresolvedLinks != null)
+      pendingLinkReconciliation.put(stagedNewRid, stagedUnresolvedLinks);
+    discardStagedRecord();
+  }
+
+  private void discardStagedRecord() {
+    stagedOldRid = null;
+    stagedNewRid = null;
+    stagedUnresolvedLinks = null;
   }
 
   /**
@@ -1018,7 +1089,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // An edge created while one of its vertices waited for a link had the check of its own links suspended too: it is validated again
     // by the reconciliation even when every one of its links resolved (an empty list), or a resolved link to the wrong type is stored
     if (!lightweight && (!unresolvedLinks.isEmpty() || endpointWaitsForALink && properties.length() > 0))
-      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+      stageRecord(null, imported.getIdentity(), unresolvedLinks);
 
     context.createdEdges.incrementAndGet();
   }
@@ -1354,7 +1425,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * rather than propagating raw and uncounted past this method.
    */
   private void reconcileUnresolvedLinks(final DatabaseInternal database, final ImporterContext context, final boolean skipOnRowError,
-      final boolean ownsTransaction) {
+      final boolean ownsTransaction, final boolean[] txOpen, final TransactionContext[] ownTx) {
     if (pendingLinkReconciliation.isEmpty())
       return;
 
@@ -1406,6 +1477,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           mutable.save();
         else
           mutable.validate();
+
+        // Skip mode commits each record inside its handler, as load() does, so a refused commit skips this record only
+        if (skipOnRowError) {
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+          ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+        }
       } catch (final Exception e) {
         // Same per-record failure handling as the main import loop (issue #6468): logged, counted, and either aborts the
         // whole import or is skipped per -onRowError, exactly like any other record failure, instead of propagating raw and
@@ -1415,23 +1492,22 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         if (!skipOnRowError)
           throw new ImportException("Error on reconciling forward-referenced LINK properties for record " + entry.getKey(), e);
 
-        if (database.isTransactionActive())
-          database.rollback();
-        database.begin();
+        ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
+        ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
         continue;
       }
 
       // Mirrors the periodic commit granularity of the main import loop (see load()): without this, every record
       // touched here rides in the single transaction still open when the main loop finished, on top of the batches
       // already committed for the initial load, producing one very large WAL transaction for a restore with many
-      // forward-referencing LINK properties. Skip mode commits every record individually, same reasoning as the
+      // forward-referencing LINK properties. Skip mode committed every record individually above, same reasoning as the
       // main loop: a failed record's rollback must never discard an earlier, already-reconciled one riding in the
       // same batch. Same ownsTransaction gate as load()'s own periodic commit, and for the same
       // reason (issue #6561): skip mode never reaches here when the caller owns the transaction (rejected eagerly
       // in load()), and the default mode must not commit a transaction it doesn't own either.
-      if (ownsTransaction && (skipOnRowError || ++reconciled % 1000 == 0)) {
-        database.commit();
-        database.begin();
+      if (ownsTransaction && !skipOnRowError && ++reconciled % 1000 == 0) {
+        ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+        ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
       }
     }
 
