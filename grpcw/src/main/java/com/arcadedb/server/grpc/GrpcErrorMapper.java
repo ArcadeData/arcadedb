@@ -27,6 +27,7 @@ import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ArcadeDBServer;
@@ -93,6 +94,12 @@ public final class GrpcErrorMapper {
    * {@link NeedRetryException}: a client that does not know the class the trailer next to it names still reads the verdict.
    */
   public static final Metadata.Key<String> UNAVAILABLE_REASON_KEY = Metadata.Key.of("arcadedb-unavailable-reason",
+      Metadata.ASCII_STRING_MARSHALLER);
+  /**
+   * Trailer carrying the {@link ValidationException.Kind} of the constraint a refused value violates (issue #11314): what the HTTP
+   * body carries in {@code exceptionArgs}, so the client rebuilds the exception with it. A {@link Enum#name()}, plain ASCII.
+   */
+  public static final Metadata.Key<String> VALIDATION_KIND_KEY = Metadata.Key.of("arcadedb-validation-kind",
       Metadata.ASCII_STRING_MARSHALLER);
 
   /**
@@ -227,6 +234,11 @@ public final class GrpcErrorMapper {
         taken != null ? SchemaException.class.getName() : (classified != null ? classified : cause).getClass().getName());
     if (taken != null && taken.getKind() != null)
       trailers.put(ALREADY_EXISTS_KIND_KEY, taken.getKind().name());
+    final ValidationException refused = refusal == null && inProgress == null && category == ErrorCategory.VALIDATION ?
+        CauseChain.find(cause, ValidationException.class) :
+        null;
+    if (refused != null && refused.getKind() != null)
+      trailers.put(VALIDATION_KIND_KEY, refused.getKind().name());
 
     final Status.Code code;
     String redirect = null;

@@ -56,7 +56,9 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
@@ -116,7 +118,10 @@ public final class RemoteExceptionRebuilder {
       Map.entry(TriggerExecutionException.class.getName(), TriggerExecutionException::new),
       Map.entry(InvalidPropertyTypeException.class.getName(), InvalidPropertyTypeException::new),
       Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
+      // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
+      Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       Map.entry(IllegalArgumentException.class.getName(), IllegalArgumentException::new),
+      Map.entry(ValueOutOfRangeException.class.getName(), ValueOutOfRangeException::new),
       // A QUERY REFUSED FOR WHAT IT WOULD COST
       Map.entry(HeapLimitExceededException.class.getName(), HeapLimitExceededException::new),
       Map.entry(QueryAdmissionException.class.getName(), QueryAdmissionException::new),

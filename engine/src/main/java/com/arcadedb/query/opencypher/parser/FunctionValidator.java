@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionArity;
 
 import java.util.HashMap;
@@ -308,10 +309,13 @@ public class FunctionValidator {
    * {@link CommandParsingException} that is not a {@link com.arcadedb.exception.CommandSemanticException}), naming the
    * function as written rather than in the folded spelling it is looked up by. One shape whichever path finds it: the parse
    * of a plain name, the check of a namespaced name against the database before the query runs, or a user-defined
-   * function dropped while a running query still calls it (issue #11115).
+   * function dropped while a running query still calls it (issue #11115). Caused by the {@link UnknownFunctionException} SQL
+   * raises for the same mistake, so a protocol that names it apart from a syntax error (the Postgres wire's {@code 42883}) finds
+   * it whichever language the statement was written in (issue #11314).
    */
   public static CommandParsingException unknownFunction(final String writtenName) {
-    return new CommandParsingException("UnknownFunction: Unknown function '" + writtenName + "'");
+    final String message = "UnknownFunction: Unknown function '" + writtenName + "'";
+    return new CommandParsingException(message, new UnknownFunctionException(writtenName, message));
   }
 
   /**

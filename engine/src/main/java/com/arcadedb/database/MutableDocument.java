@@ -895,7 +895,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     } else if (ofType != null)
       embType = ofType;
     else if (embeddedProperty)
-      throw new ValidationException("Cannot determine the type of the embedded document to store in property '"
+      throw new ValidationException(ValidationException.Kind.TYPE, "Cannot determine the type of the embedded document to store in property '"
           + propertyName + "': the map carries no '@type' entry and the property declares no 'ofType'. Either add "
           + "an \"@type\" entry to the map, or declare the embedded type on the property with `ofType`");
     else
@@ -926,7 +926,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     final DocumentType embSchemaType = database.getSchema().getType(embType);
     if (!embSchemaType.instanceOf(ofType))
-      throw new ValidationException(
+      throw new ValidationException(ValidationException.Kind.TYPE,
           "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '" + ofType
               + "' for property '" + propertyName + "'");
   }

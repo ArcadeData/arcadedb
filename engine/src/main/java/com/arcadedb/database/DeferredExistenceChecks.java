@@ -588,7 +588,9 @@ public class DeferredExistenceChecks {
     else
       outcome = ". " + removed + " of them have been removed; the rest are still in the database";
 
-    throw new ValidationException(
+    // MANDATORY for the pair of existence constraints a record left incomplete fails, NOTNULL among them: every protocol that
+    // tells constraints apart answers the two alike (issue #11314)
+    throw new ValidationException(ValidationException.Kind.MANDATORY,
         (incomplete.size() == 1 ?
             "A record created by this statement was left incomplete: " :
             incomplete.size() + " records created by this statement were left incomplete: ") + violations + outcome);

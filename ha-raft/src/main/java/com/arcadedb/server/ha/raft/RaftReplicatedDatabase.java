@@ -68,6 +68,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.function.sql.misc.SQLFunctionEnsureLabelTypes;
 import com.arcadedb.graph.Edge;
@@ -442,7 +443,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(CommandSQLParsingException.class.getName(), CommandSQLParsingException::new),
       Map.entry(CommandSemanticException.class.getName(), CommandSemanticException::new),
       Map.entry(QueryNotIdempotentException.class.getName(), QueryNotIdempotentException::new),
-      Map.entry(ValidationException.class.getName(), ValidationException::new),
+      // #11314: the caller's mistake, which a TransactionException would turn into a server fault; ValidationException is rebuilt
+      // with its kind by its own arm, ahead of this table
+      Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /**
@@ -5874,6 +5877,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (DuplicatedKeyException.class.getName().equals(exceptionClass)
         && DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey)
       return duplicatedKey;
+
+    // A refused value carries the constraint it violates in exceptionArgs (issue #11314), so this node answers its client with
+    // the same kind the leader would have
+    if (ValidationException.class.getName().equals(exceptionClass))
+      return new ValidationException(ValidationException.Kind.fromName(exceptionArgs), detail != null ? detail : message);
 
     final Function<String, RuntimeException> factory = LEADER_EXCEPTION_FACTORIES.get(exceptionClass);
     if (factory != null)
