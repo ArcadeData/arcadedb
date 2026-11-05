@@ -250,6 +250,27 @@ class ImporterRefusedCommitTest {
     assertThat(database.query("sql", "select from Document where name = 'b'").hasNext()).isFalse();
   }
 
+  /**
+   * The refusal skip mode meets in practice: a duplicate key, which a unique index finds when the record's transaction commits.
+   * The duplicate is skipped and counted, and the count of created documents is the records that landed.
+   */
+  @Test
+  void aDuplicateKeyFoundAtCommitUnderSkipModeSkipsThatRecordOnly() throws Exception {
+    database.transaction(() -> {
+      database.getSchema().getType("Document").createProperty("name", Type.STRING);
+      database.getSchema().getType("Document").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    });
+    final ImporterSettings settings = new ImporterSettings();
+    settings.onRowError = "skip";
+
+    final ImporterContext context = loadJsonl(settings, jsonlDocument(0, "a"), jsonlDocument(1, "a"), jsonlDocument(2, "c"));
+
+    assertThat(context.errors.get()).isEqualTo(1);
+    assertThat(context.createdDocuments.get()).as("the skipped duplicate is not counted as created").isEqualTo(2);
+    assertNothingLeftOnTheThread();
+    assertThat(countOf("Document")).isEqualTo(2);
+  }
+
   private ImporterContext loadJsonl(final ImporterSettings settings, final String... lines) throws IOException {
     final byte[] bytes = (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8);
     final Parser parser = new Parser(new Source("records.jsonl", new ByteArrayInputStream(bytes), bytes.length, false, null, null), 0);
