@@ -342,6 +342,20 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       return deletedSentinelVector;
 
     try {
+      // Where the record lies on its page first (issue #11298): two lookups, a copy of the record and a copy of the
+      // property per vector otherwise. Only a usable vector is taken from there, and never the calling transaction's own
+      // write, so it is cached as below; every other answer is read again through the record, which reports it.
+      if (lsmIndex != null) {
+        final float[] inPlace = lsmIndex.readStoredVectorInPlace(rid, vectorPropertyName, dimensions);
+        if (inPlace != null) {
+          final VectorFloat<?> result = vts.createFloatVector(inPlace);
+          lsmIndex.metrics.incrementVectorFetchFromDocuments();
+          if (vectorCache != null || searchCache != null)
+            cache(vectorId, result);
+          return result;
+        }
+      }
+
       final Record record = database.lookupByRID(rid, false);
 
       final Document doc = (Document) record;
