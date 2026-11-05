@@ -38,6 +38,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -2599,6 +2600,8 @@ public class LocalDocumentType implements DocumentType {
     // skip on the very first bucket of a type (CREATE TYPE adds buckets one by one before any
     // record can exist), and skip when the type is established but empty (no records means
     // there's nothing to repartition - flagging would prompt a no-op rebuild).
+    // What a refused attach puts back, below: the detach that undoes it flags the type as an attach does
+    final boolean needsRepartitionBefore = needsRepartition.get();
     final boolean partitionedAndPopulated = bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy
         && !buckets.isEmpty()
         && hasAnyRecord();
@@ -2633,34 +2636,56 @@ public class LocalDocumentType implements DocumentType {
 
     if (!existentIndexes.isEmpty()) {
       // ONE TRANSACTION OF ITS OWN, and unlike the sibling propagation in addSuperType() this one does NOT have to
-      // join the caller's - do not "fix" it by symmetry (issue #6359, item 1). The bucket being indexed here has just
-      // been created, so no transaction can be holding uncommitted writes into it and the scan has nothing to miss;
-      // joining would only cost the build its chunked commit.
-      schema.getDatabase().transaction(() -> {
-        for (TypeIndex idx : existentIndexes) {
-          // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
-          // to be one the creation path accepts. A HASH index predating #5713 can hold an unaddressable one, and
-          // adding a bucket to its type must not fail because of it (#5713).
-          //
-          // getMetadataForNewFile(), not getMetadata(), for the same reason applied to the configuration: on a WRAPPER
-          // index type the latter answers with the underlying LSM-Tree's plain metadata, so the sub-index minted here
-          // for the new bucket came up with the DEFAULT analyzer, the DEFAULT geohash resolution or - for a sparse
-          // vector index, which refuses a plain IndexMetadata outright - not at all (issue #5742). The instance is
-          // handed over as-is rather than copied: this is one more bucket of the SAME logical index, which is exactly
-          // what index creation does when it passes one metadata instance to every bucket sub-index, and what keeps
-          // the full-text corpus counters type-wide instead of restarting them at zero for the new bucket.
-          schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(),
-              idx.getPageSizeForNewFile(),
-              idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
-              IndexBuilder.BUILD_BATCH_SIZE,
-              idx.getMetadataForNewFile());
-        }
-      });
+      // join the caller's - do not "fix" it by symmetry (issue #6359, item 1). A bucket attached here is either just
+      // created or one no type owns (`ALTER TYPE x BUCKET +y`, checked free above), so no transaction can be holding
+      // uncommitted writes into it through a type and the scan has nothing to miss; joining would only cost the build
+      // its chunked commit.
+      //
+      // A bucket that is not new can hold records, and so a key a UNIQUE index of this type already holds: the attach is
+      // then refused and handed back whole, exactly as addSuperType hands back a link (issue #11302). Every component an
+      // attempt created is dropped when it fails, before the retry: they outlive the rollback, and a retry that created
+      // its own beside them left the bucket with two sub-indexes of the same index.
+      final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+      final List<Index> created = new ArrayList<>();
+      try {
+        database.transaction(() -> {
+          created.clear();
+          for (final TypeIndex idx : existentIndexes)
+            created.add(createBucketIndexFor(idx, bucket));
+        }, true, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
+            failure -> dropFailedAttempt(created));
+      } catch (final RuntimeException e) {
+        // A joined transaction hands a retryable failure straight back without calling the callback
+        dropFailedAttempt(created);
+        removeBucketInternal(bucket);
+        if (!needsRepartitionBefore)
+          setNeedsRepartition(false);
+        final DuplicatedKeyException duplicate = findDuplicatedKey(e);
+        throw duplicate != null ? duplicate : e;
+      }
     }
 
     // IF THE TYPE ALREADY HAS EXTERNAL PROPERTIES, ENSURE A PAIRED EXTERNAL BUCKET FOR THIS NEW PRIMARY BUCKET
     if (hasExternalProperties())
       ensureExternalBucketFor((LocalBucket) bucket);
+  }
+
+  /** The sub-index of {@code idx} over {@code bucket}, created and built in the caller's (own) transaction. */
+  private Index createBucketIndexFor(final TypeIndex idx, final Bucket bucket) {
+    // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
+    // to be one the creation path accepts. A HASH index predating #5713 can hold an unaddressable one, and
+    // adding a bucket to its type must not fail because of it (#5713).
+    //
+    // getMetadataForNewFile(), not getMetadata(), for the same reason applied to the configuration: on a WRAPPER
+    // index type the latter answers with the underlying LSM-Tree's plain metadata, so the sub-index minted here
+    // for the new bucket came up with the DEFAULT analyzer, the DEFAULT geohash resolution or - for a sparse
+    // vector index, which refuses a plain IndexMetadata outright - not at all (issue #5742). The instance is
+    // handed over as-is rather than copied: this is one more bucket of the SAME logical index, which is exactly
+    // what index creation does when it passes one metadata instance to every bucket sub-index, and what keeps
+    // the full-text corpus counters type-wide instead of restarting them at zero for the new bucket.
+    return schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(), idx.getPageSizeForNewFile(),
+        idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
+        IndexBuilder.BUILD_BATCH_SIZE, idx.getMetadataForNewFile());
   }
 
   /** Polymorphic: counts inherited EXTERNAL properties too. O(1) on own count + O(depth) on supertype walk. */
@@ -3499,10 +3524,8 @@ public class LocalDocumentType implements DocumentType {
       // leave the schema pointing at a file with no pages, which fails on the next write with "the file is invalid".
       database.transaction(() -> {
         // Emptied on entry, not on declaration: this transaction retries on its own (a NeedRetryException from a
-        // concurrent schema mutation), and a retry re-runs this lambda from scratch. Left to accumulate, the
-        // rolled-back attempt's indexes would be handed to the build alongside the surviving ones, which reports a
-        // failure that has nothing to do with the conflict that caused the retry. TypeIndexBuilder's equivalent loop
-        // is immune because it assigns into a pre-sized array by position.
+        // concurrent schema mutation, and one retry of a DuplicatedKeyException, #4959), and a retry re-runs this
+        // lambda from scratch. What a failed attempt created is already gone by then, see dropFailedAttempt below.
         created.clear();
         toBuild.clear();
 
@@ -3514,7 +3537,11 @@ public class LocalDocumentType implements DocumentType {
             createSubIndexesFor(index, callerTransactionHasChanges && index.getType().buildCanShareCallerTransaction(),
                 created, toBuild);
         }
-      }, false);
+      }, false, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES), null,
+          failure -> {
+            dropFailedAttempt(created);
+            toBuild.clear();
+          });
 
       if (!toBuild.isEmpty())
         // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the pages
@@ -3534,8 +3561,34 @@ public class LocalDocumentType implements DocumentType {
       // the caller with no line saying which super type's propagation they came out of.
       LogManager.instance()
           .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
-      throw e;
+
+      // A duplicate reaches the caller as the DuplicatedKeyException it is, whichever frame noticed it: the commit of the
+      // component transaction raises it bare, an inline build that meets two records of this type holding one key raises it
+      // from inside createBucketIndex, which wraps it in an IndexException
+      final DuplicatedKeyException duplicate = findDuplicatedKey(e);
+      throw duplicate != null ? duplicate : e;
     }
+  }
+
+  /**
+   * Takes away what a failed attempt of the component transaction created, called after its rollback and before the
+   * transaction retries or gives up (issue #11302). The components outlive the rollback - the schema registered them,
+   * the transaction held only their pages - so a retry found the one it had built on every bucket, took it for a
+   * component the bucket already carried, and committed nothing. A unique index propagated over a key the super type
+   * already held was then attached EMPTY, with no page on disk, and the refusal {@link #addSuperTypeInternal} is written
+   * for never came: the retry of a duplicate (#4959) succeeded by skipping the build it existed to repeat.
+   */
+  private void dropFailedAttempt(final List<Index> created) {
+    for (final Index subIndex : created)
+      IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
+    created.clear();
+  }
+
+  private static DuplicatedKeyException findDuplicatedKey(final Throwable failure) {
+    for (Throwable t = failure; t != null; t = t.getCause())
+      if (t instanceof DuplicatedKeyException duplicate)
+        return duplicate;
+    return null;
   }
 
   /**
