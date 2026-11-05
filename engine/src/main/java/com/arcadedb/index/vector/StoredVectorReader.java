@@ -30,11 +30,13 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.serializer.BinaryTypes;
 
 import java.io.IOException;
+import java.util.logging.Level;
 
 /**
  * Reads the indexed vector of a record where it lies on its bucket page, for the rerank of a quantized search, which reads
@@ -155,7 +157,10 @@ final class StoredVectorReader {
     try {
       return readFromRecord(page, location[0], location[1], scratch);
     } catch (final RuntimeException e) {
-      // A NUMBER OR AN ARRAY THAT RUNS OFF THE PAGE: THE DATABASE READS THE RECORD AND LOGS IT AS DAMAGED, AS IT ALWAYS DID
+      // A NUMBER OR AN ARRAY THAT RUNS OFF THE PAGE: THE DATABASE READS THE RECORD AND LOGS IT AS DAMAGED, AS IT ALWAYS DID. FINE
+      // HERE, SO A PARSE THAT WRONGLY GIVES UP ON A SOUND RECORD (AND QUIETLY TAKES THE SLOW PATH) CAN STILL BE SEEN
+      LogManager.instance().log(this, Level.FINE, "Stored vector of %s not read in place, read through the database: %s", rid,
+          e.getMessage());
       return FALLBACK;
     }
   }
