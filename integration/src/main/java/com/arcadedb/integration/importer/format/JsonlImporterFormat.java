@@ -132,6 +132,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   // RID, which after the import names another record.
   private final Map<RID, List<PendingLink>> pendingLinkReconciliation = new HashMap<>();
 
+  // The mappings of the record being loaded, published once it landed (see stageRecord)
+  private RID               stagedOldRid;
+  private RID               stagedNewRid;
+  private List<PendingLink> stagedUnresolvedLinks;
+
   /** A link that pass 1 could not resolve: where it is in the record, and the source RID it holds. */
   private record PendingLink(String property, Object[] path, RID oldRid) {
   }
@@ -212,6 +217,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
       pendingLinkReconciliation.clear();
+      discardStagedRecord();
       timeSeriesSamplesSinceCommit = 0;
       importedSchema = null;
 
@@ -264,7 +270,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
             timeSeriesSamplesSinceCommit = 0;
           }
+
+          // The record is in: its mappings become visible to the records after it (see stageRecord)
+          publishStagedRecord();
         } catch (final Exception e) {
+          discardStagedRecord();
           // Every per-record failure (document/vertex/edge, and a broken schema entry too) funnels through here,
           // issue #6468: logging, error counting and the abort/skip decision live in ONE place instead of being
           // duplicated at each call site, which is also what keeps them from drifting out of sync with each other.
@@ -981,9 +991,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var imported = database.newDocument(document.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, document.getJSONObject(ValueTypeHints.KEY, null));
     saveReadRecord(imported, unresolvedLinks);
-    ridIndex.put(oldRid, imported.getIdentity());
-    if (!unresolvedLinks.isEmpty())
-      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+    stageRecord(oldRid, imported.getIdentity(), unresolvedLinks.isEmpty() ? null : unresolvedLinks);
     context.createdDocuments.incrementAndGet();
   }
 
@@ -998,10 +1006,37 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var imported = database.newVertex(vertex.getString("t"));
     var unresolvedLinks = loadProperties(database, imported, properties, vertex.getJSONObject(ValueTypeHints.KEY, null));
     saveReadRecord(imported, unresolvedLinks);
-    ridIndex.put(oldRid, imported.getIdentity());
-    if (!unresolvedLinks.isEmpty())
-      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+    stageRecord(oldRid, imported.getIdentity(), unresolvedLinks.isEmpty() ? null : unresolvedLinks);
     context.createdVertices.incrementAndGet();
+  }
+
+  /**
+   * Holds the mappings of the record being loaded - its source to new identity, and the links it waits for - until {@link #load}
+   * knows the record landed: under {@code -onRowError skip} only once its own commit succeeded. Published at once, a record whose
+   * commit was refused left behind the identity it had in the rolled-back transaction, which the next record of the bucket takes,
+   * so a later edge or link naming the skipped record resolved to that other one (review of issue #11271).
+   */
+  private void stageRecord(final RID oldRid, final RID newRid, final List<PendingLink> unresolvedLinks) {
+    stagedOldRid = oldRid;
+    stagedNewRid = newRid;
+    stagedUnresolvedLinks = unresolvedLinks;
+  }
+
+  /** Makes the staged mappings of the record that has just landed visible to the records after it. */
+  private void publishStagedRecord() {
+    if (stagedNewRid == null)
+      return;
+    if (stagedOldRid != null)
+      ridIndex.put(stagedOldRid, stagedNewRid);
+    if (stagedUnresolvedLinks != null)
+      pendingLinkReconciliation.put(stagedNewRid, stagedUnresolvedLinks);
+    discardStagedRecord();
+  }
+
+  private void discardStagedRecord() {
+    stagedOldRid = null;
+    stagedNewRid = null;
+    stagedUnresolvedLinks = null;
   }
 
   /**
@@ -1054,7 +1089,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // An edge created while one of its vertices waited for a link had the check of its own links suspended too: it is validated again
     // by the reconciliation even when every one of its links resolved (an empty list), or a resolved link to the wrong type is stored
     if (!lightweight && (!unresolvedLinks.isEmpty() || endpointWaitsForALink && properties.length() > 0))
-      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
+      stageRecord(null, imported.getIdentity(), unresolvedLinks);
 
     context.createdEdges.incrementAndGet();
   }

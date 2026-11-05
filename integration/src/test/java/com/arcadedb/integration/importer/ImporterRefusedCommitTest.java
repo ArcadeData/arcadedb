@@ -271,6 +271,27 @@ class ImporterRefusedCommitTest {
     assertThat(countOf("Document")).isEqualTo(2);
   }
 
+  /**
+   * A record skipped at its commit leaves no mapping behind: an edge naming it is refused as naming a vertex that is not there,
+   * rather than resolved to the identity the rolled-back record had, which the next record of the bucket takes.
+   */
+  @Test
+  void aVertexSkippedAtItsCommitIsNotTheEndpointOfALaterEdge() throws Exception {
+    database.transaction(() -> database.newVertex("Node").set("Id", "dup").save());
+    final ImporterSettings settings = new ImporterSettings();
+    settings.onRowError = "skip";
+
+    final ImporterContext context = loadJsonl(settings,//
+        "{\"t\":\"v\",\"c\":{\"r\":\"#1:0\",\"t\":\"Node\",\"p\":{\"Id\":\"dup\"}}}",//
+        "{\"t\":\"v\",\"c\":{\"r\":\"#1:1\",\"t\":\"Node\",\"p\":{\"Id\":\"fresh\"}}}",//
+        "{\"t\":\"e\",\"c\":{\"t\":\"Relationship\",\"o\":\"#1:0\",\"i\":\"#1:1\",\"p\":{}}}");
+
+    assertThat(context.errors.get()).as("the duplicate, then the edge naming it").isEqualTo(2);
+    assertNothingLeftOnTheThread();
+    assertThat(countOf("Node")).isEqualTo(2);
+    assertThat(countOf("Relationship")).isZero();
+  }
+
   private ImporterContext loadJsonl(final ImporterSettings settings, final String... lines) throws IOException {
     final byte[] bytes = (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8);
     final Parser parser = new Parser(new Source("records.jsonl", new ByteArrayInputStream(bytes), bytes.length, false, null, null), 0);
