@@ -206,7 +206,8 @@ class Issue9640SealedStoreShortTransferTest {
     try (final TimeSeriesSealedStore store = open()) {
       assertThat(store.getBlockCount()).isZero();
     }
-    assertThat(new File(BASE_PATH + ".ts.sealed").length()).as("the whole empty header").isEqualTo(27);
+    // 27 bytes every version shares plus the owner of version 4 (issue #11274)
+    assertThat(new File(BASE_PATH + ".ts.sealed").length()).as("the whole empty header").isEqualTo(35);
 
     try (final TimeSeriesSealedStore store = open()) {
       assertThat(store.getBlockCount()).isZero();

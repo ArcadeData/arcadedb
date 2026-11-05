@@ -52,6 +52,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #8204 extends the guard to the single-server fixtures, which #8209 moved onto {@link BaseGrpcServerTest}'s
  * ephemeral port: every class in this module that starts the gRPC plugin must now take its port from one of the two
  * fixtures, and none may pin it or dial the production default.
+ * <p>
+ * Source text is a recorded decision (#11288, {@code SourceTextTestsAreRecordedTest}): the offender is a port literal in
+ * a test fixture, which javac folds into every use, so the compiled class no longer ties the number to the setting it
+ * configures.
  */
 class Issue7496GrpcHaItsAllocateTheirPortsTest {
 

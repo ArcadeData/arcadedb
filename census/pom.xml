@@ -273,5 +273,19 @@
             <version>9.11.1</version>
             <scope>test</scope>
         </dependency>
+        <!-- What produced each argument of a call (a format constant, a varargs array, a local), for the censuses whose offender
+             is a call with a particular argument: the same project and version as asm -->
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm-tree</artifactId>
+            <version>9.11.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm-analysis</artifactId>
+            <version>9.11.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

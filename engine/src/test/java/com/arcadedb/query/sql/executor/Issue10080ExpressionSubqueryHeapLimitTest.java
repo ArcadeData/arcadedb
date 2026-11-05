@@ -26,15 +26,8 @@ import com.arcadedb.function.sql.SQLFunctionLibraryDefinition;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * A subquery written inline - in a projection, a function argument, a SET value, a {@code CREATE EDGE ... FROM} clause - ran the
  * hand-rolled drain loop {@code materialize()} was created to retire, so the identical subquery over the identical data was refused
  * as a LET and accepted inline, and a single modifier after a LET subquery moved the planner from the covered step to the
- * uncovered one.
+ * uncovered one. The claim {@code materialize()} makes - no expression, condition, statement or function drains a sub-plan into a
+ * list by hand - is held by {@code SubPlanDrainedByHandCensusTest} (census module).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -175,50 +169,6 @@ class Issue10080ExpressionSubqueryHeapLimitTest extends TestHelper {
     assertThat(database.getSchema().getFunction("lib10080b", "none").execute()).isNull();
     assertThat(database.getSchema().getFunction("lib10080b", "one").execute()).isEqualTo(7);
     assertThat((List<Object>) database.getSchema().getFunction("lib10080b", "many").execute()).containsExactly(0, 1, 2);
-  }
-
-  /**
-   * The claim {@code OperationHeapLimit.materialize()} makes is checkable: no other code of the SQL engine, nor of the openCypher
-   * expressions and procedures (issue #10160), drains a sub-plan into a list.
-   */
-  @Test
-  void onlyOperationHeapLimitDrainsASubPlanIntoAList() throws IOException {
-    // The loops below read a result set without holding it - or hold something other than rows - and say why. A new entry is a
-    // decision that the result set it drains is bounded some other way, not a way to silence this test
-    final Map<String, String> allowed = Map.of(//
-        "InCondition.java", "tests membership row by row and keeps none",//
-        "ProfileStatement.java", "runs the profiled statement to completion and keeps no row",//
-        "TraverseProjectionItem.java", "reads the elements of a value a record already holds",//
-        "FindReferencesStatement.java", "keeps the RID of each row of an administrative statement, not the row",//
-        "CountExpression.java", "counts the rows of a COUNT { ... } subquery and keeps none");
-
-    final Pattern loop = Pattern.compile("while\\s*\\(\\s*(\\w+)\\.hasNext\\(\\)\\s*\\)");
-    final List<String> offenders = new ArrayList<>();
-    // The expressions, conditions and functions: where a sub-plan is evaluated for its value. The steps of query/sql/executor pull
-    // their input in batches of nRecords, and the ones that materialise a sub-plan go through OperationHeapLimit.materialize().
-    // The openCypher expressions, procedures and user functions are the same positions in the other language (issue #10160)
-    for (final String dir : List.of("src/main/java/com/arcadedb/query/sql/parser", "src/main/java/com/arcadedb/query/sql/antlr",
-        "src/main/java/com/arcadedb/function/sql", "src/main/java/com/arcadedb/query/opencypher/ast",
-        "src/main/java/com/arcadedb/query/opencypher/procedures", "src/main/java/com/arcadedb/function/cypher")) {
-      final Path root = Path.of(dir);
-      if (!Files.isDirectory(root))
-        continue;
-      try (final Stream<Path> files = Files.walk(root)) {
-        for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
-          if (allowed.containsKey(file.getFileName().toString()))
-            continue;
-          final String source = Files.readString(file);
-          final Matcher matcher = loop.matcher(source);
-          while (matcher.find()) {
-            final String variable = matcher.group(1);
-            // a loop over a ResultSet, as opposed to an Iterator: the variable is declared as one in the same file
-            if (Pattern.compile("\\b(?:Local)?ResultSet\\s+" + variable + "\\b").matcher(source).find())
-              offenders.add(file.getFileName() + " drains `" + variable + "`");
-          }
-        }
-      }
-    }
-    assertThat(offenders).as("a ResultSet drained by hand, past both heap limits: use OperationHeapLimit.materialize()").isEmpty();
   }
 
   private void createData() {

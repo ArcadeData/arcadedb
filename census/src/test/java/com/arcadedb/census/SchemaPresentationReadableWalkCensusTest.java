@@ -21,34 +21,11 @@ package com.arcadedb.census;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityHelper;
 import org.junit.jupiter.api.Test;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.Handle;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -67,8 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * split its pattern across two lines.
  * <p>
  * It lives in a module of its own because no other place can see every module: a module's tests run before the modules
- * that depend on it are compiled. The modules it reads are listed from the source tree, so a module with main sources
- * the build forgot to put on this module's classpath fails the census rather than escaping it.
+ * that depend on it are compiled. What it reads is {@link CompiledClasses}: every class of every module, whatever its
+ * package (#11273), the modules listed from the source tree, so a module with main sources the build forgot to put on
+ * this module's classpath fails the census rather than escaping it.
  * <p>
  * Every call site is an offender unless {@link #ALLOWED} lists its key with the reason it does not present the schema to
  * a caller, and every entry of {@link #ALLOWED} must still be a call site, so the reviewed set cannot go stale.
@@ -76,15 +54,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SchemaPresentationReadableWalkCensusTest {
-  private static final Path   REACTOR_ROOT = Path.of(System.getProperty("basedir", "."), "..");
   /** The authority: every walk of every type of a schema is a call of this method. */
-  private static final String AUTHORITY    = "com/arcadedb/schema/Schema";
-  private static final String WALK         = "getTypes";
-  private static final String WALK_DESC    = "()Ljava/util/Collection;";
-
-  /** Modules with main sources the default build does not compile, each with why the census does not read them. */
-  private static final Map<String, String> NOT_BUILT = Map.of(//
-      "native", "built only under the 'native' profile: GraalVM image-build features, no route");
+  private static final String AUTHORITY = "com/arcadedb/schema/Schema";
+  private static final String WALK      = "getTypes";
+  private static final String WALK_DESC = "()Ljava/util/Collection;";
 
   // REASONS SHARED BY SEVERAL ENTRIES
   private static final String READ_THROUGH_GATE = "reads the records of each type through the per-bucket gate, which refuses a denied type";
@@ -97,8 +70,8 @@ class SchemaPresentationReadableWalkCensusTest {
   private static final String IMPORT_EXPORT     = "an import or an export: writes or reads the records through the per-bucket gate";
 
   /**
-   * The reviewed call sites, as {@code class#method} relative to {@code com/arcadedb} (nested classes and lambdas counted
-   * for their outer class and method), each with why it does not present the schema to a caller.
+   * The reviewed call sites, keyed as {@link CompiledClasses} keys them, each with why it does not present the schema to
+   * a caller.
    */
   private static final Map<String, String> ALLOWED = new TreeMap<>(Map.ofEntries(//
       // THE READABLE WALK ITSELF
@@ -133,9 +106,9 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("graph/GraphEngine#getAllVertices", READ_THROUGH_GATE),
       Map.entry("graph/GraphEngine#lightEdgeTypesWithoutFarCopy", GRAPH_INTERNAL),
       Map.entry("graph/GraphEngine#reconnectEdgesFromSurvivors", GRAPH_INTERNAL),
-      Map.entry("graph/IncomingEdgeLookup#addLightweightEdges", GRAPH_INTERNAL),
+      Map.entry("graph/IncomingEdgeLookup$Snapshot#addLightweightEdges", GRAPH_INTERNAL),
       Map.entry("graph/IncomingEdgeLookup#closure", GRAPH_INTERNAL),
-      Map.entry("graph/IncomingEdgeLookup#scanEdgesInto", GRAPH_INTERNAL),
+      Map.entry("graph/IncomingEdgeLookup$Snapshot#scanEdgesInto", GRAPH_INTERNAL),
       Map.entry("function/sql/graph/SQLFunctionBellmanFord#getAllVertices", READ_THROUGH_GATE),
       Map.entry("graph/GAVVertex#providerCovers", GAV_INTERNAL),
       Map.entry("graph/olap/CSRBuilder#concreteEdgeTypes", GAV_INTERNAL),
@@ -149,7 +122,7 @@ class SchemaPresentationReadableWalkCensusTest {
       // QUERY PLANNING AND EXECUTION
       Map.entry("query/opencypher/Labels#matchingVertexTypes", PLANNER),
       Map.entry("query/opencypher/executor/CypherExecutionPlan#labelsAreTypeDisjoint", PLANNER),
-      Map.entry("query/opencypher/executor/CypherExecutionPlan#vertices", PLANNER),
+      Map.entry("query/opencypher/executor/CypherExecutionPlan$PairJoinStatistics#vertices", PLANNER),
       Map.entry("query/opencypher/executor/operators/GAVEdgeRef#trackedEdgeTypes", PLANNER),
       Map.entry("query/opencypher/executor/steps/PairHashJoinOp#executeOLTP", PLANNER),
       Map.entry("query/opencypher/executor/steps/PartitionedTriangleOp#executeOLTP", PLANNER),
@@ -171,228 +144,46 @@ class SchemaPresentationReadableWalkCensusTest {
 
   @Test
   void everyWalkOfTheTypesThatAnswersACallerIsTheReadableOne() throws Exception {
-    final Map<String, Path> modules = classRootsOfEveryModule();
-    final Map<String, byte[]> classes = readClasses(modules);
+    final Map<String, byte[]> classes = CompiledClasses.ofEveryModule();
     assertThat(classes).as("the census must read the classes of every module").hasSizeGreaterThan(3000);
 
     final Map<String, Set<String>> callSites = callSitesOf(classes);
     assertThat(callSites).as("the census must reach the call sites it is known to cover")
         .containsKeys("security/SecurityHelper#readableTypes");
 
-    final List<String> offenders = new ArrayList<>();
-    for (final Map.Entry<String, Set<String>> site : callSites.entrySet())
-      if (!ALLOWED.containsKey(site.getKey()))
-        offenders.add(site.getKey() + " (" + String.join(", ", site.getValue()) + ")");
-    assertThat(offenders).as("walk the types with SecurityHelper.readableTypes(database), or list the call site in ALLOWED with "
-        + "the reason it does not present the schema to a caller").isEmpty();
-
-    final List<String> stale = new ArrayList<>();
-    for (final String allowed : ALLOWED.keySet())
-      if (!callSites.containsKey(allowed))
-        stale.add(allowed);
-    assertThat(stale).as("ALLOWED entries that no longer walk the types: remove them").isEmpty();
+    assertThat(CompiledClasses.unreviewed(callSites, ALLOWED)).as(
+        "walk the types with SecurityHelper.readableTypes(database), or list the call site in ALLOWED with the reason it does "
+            + "not present the schema to a caller").isEmpty();
+    assertThat(CompiledClasses.stale(callSites, ALLOWED)).as("ALLOWED entries that no longer walk the types: remove them").isEmpty();
   }
 
   /**
    * The control: the shapes the source-text census could not see - a hoisted schema under another name, a method
-   * reference, a call on an implementation - are call sites here, written in a class of this module's own tests.
+   * reference, a call on an implementation, a class outside the {@code com.arcadedb} packages (#11273) - are call sites
+   * here, written in classes of this module's own tests and read the way the census reads a module.
    */
   @Test
   void theCensusSeesEveryShapeOfTheWalk() throws Exception {
-    final Map<String, byte[]> probe = new HashMap<>();
-    final Path root = Path.of(CensusProbe.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-    try (final Stream<Path> files = Files.walk(root)) {
-      for (final Path file : files.filter(p -> p.toString().endsWith(".class")).toList()) {
-        final String name = root.relativize(file).toString().replace('\\', '/');
-        if (outerClassOf(name).endsWith("/CensusProbe"))
-          probe.put(name, Files.readAllBytes(file));
-      }
-    }
+    final Map<String, byte[]> probes = CompiledClasses.ofTheProbes();
+    assertThat(probes).as("the probes must be read as a module is").containsKey("org/acme/routes/OutOfPackageSchemaProbe.class");
 
-    // the probe implements no Schema: the owners come from the modules, as in the census
-    final Map<String, byte[]> withModules = new HashMap<>(readClasses(classRootsOfEveryModule()));
-    withModules.putAll(probe);
+    // the probes implement no Schema: the owners come from the modules, as in the census
+    final Map<String, byte[]> withModules = new HashMap<>(CompiledClasses.ofEveryModule());
+    withModules.putAll(probes);
     final Map<String, Set<String>> sites = callSitesOf(withModules);
 
     assertThat(sites.keySet()).contains("census/CensusProbe#hoisted", "census/CensusProbe#methodReference",
-        "census/CensusProbe#onTheImplementation", "census/CensusProbe#inALambda");
+        "census/CensusProbe#onTheImplementation", "census/CensusProbe#inALambda", "census/CensusProbe$Nested#hoisted",
+        "org/acme/routes/OutOfPackageSchemaProbe#listEveryTypeToTheCaller");
     assertThat(sites.keySet()).doesNotContain("census/CensusProbe#readable", "census/CensusProbe#notASchema");
   }
 
   /**
-   * The class root (a directory or a jar) of every module with main sources, found through one of its own source files,
-   * so no naming convention decides which module a root belongs to.
+   * Every call site of the walk, keyed by {@code class#method}, with the owners it was called on. The owners are the
+   * authority and every class that implements it, directly or through a super type.
    */
-  private static Map<String, Path> classRootsOfEveryModule() throws IOException, URISyntaxException {
-    assertThat(REACTOR_ROOT.resolve("engine").resolve("pom.xml")).as("the census must start at the reactor root, or it checks "
-        + "nothing").isRegularFile();
-
-    final Map<String, Path> roots = new TreeMap<>();
-    final List<String> missing = new ArrayList<>();
-    try (final Stream<Path> modules = Files.list(REACTOR_ROOT)) {
-      for (final Path module : modules.filter(Files::isDirectory).sorted().toList()) {
-        final Path sources = module.resolve("src").resolve("main").resolve("java");
-        final String name = module.getFileName().toString();
-        if (!Files.isDirectory(sources) || NOT_BUILT.containsKey(name))
-          continue;
-
-        final String anchor = anchorClassOf(sources);
-        final URL resource = SchemaPresentationReadableWalkCensusTest.class.getClassLoader().getResource(anchor);
-        if (resource == null) {
-          missing.add(name + " (" + anchor + ")");
-          continue;
-        }
-        roots.put(name, rootOf(resource, anchor));
-      }
-    }
-    assertThat(missing).as("modules with main sources this module's classpath does not carry: add each one to census/pom.xml")
-        .isEmpty();
-    assertThat(roots).as("the census must find the engine").containsKey("engine");
-    return roots;
-  }
-
-  /** The class file of the first top-level class of a module's sources, as a resource name. */
-  private static String anchorClassOf(final Path sources) throws IOException {
-    try (final Stream<Path> files = Files.walk(sources)) {
-      final Path first = files.filter(p -> p.toString().endsWith(".java"))
-          .filter(p -> !p.getFileName().toString().equals("package-info.java") && !p.getFileName().toString().equals("module-info.java"))
-          .sorted().findFirst().orElseThrow(() -> new AssertionError("no source file under " + sources));
-      final String relative = sources.relativize(first).toString().replace('\\', '/');
-      return relative.substring(0, relative.length() - ".java".length()) + ".class";
-    }
-  }
-
-  private static Path rootOf(final URL resource, final String anchor) throws URISyntaxException {
-    if ("jar".equals(resource.getProtocol())) {
-      final String spec = resource.getPath();
-      return Path.of(URI.create(spec.substring(0, spec.indexOf("!/"))));
-    }
-    Path root = Path.of(resource.toURI());
-    for (int i = anchor.split("/").length; i > 0; i--)
-      root = root.getParent();
-    return root;
-  }
-
-  /** Every class file under the {@code com/arcadedb} packages of each root, keyed by its path in the root. */
-  private static Map<String, byte[]> readClasses(final Map<String, Path> roots) throws IOException {
-    final Map<String, byte[]> classes = new HashMap<>();
-    for (final Map.Entry<String, Path> root : roots.entrySet()) {
-      final int before = classes.size();
-      if (Files.isDirectory(root.getValue()))
-        readClassTree(root.getValue(), classes);
-      else
-        try (final FileSystem jar = FileSystems.newFileSystem(root.getValue())) {
-          readClassTree(jar.getPath("/"), classes);
-        }
-      assertThat(classes.size()).as("no class read from module " + root.getKey() + " at " + root.getValue()).isGreaterThan(before);
-    }
-    return classes;
-  }
-
-  private static void readClassTree(final Path root, final Map<String, byte[]> classes) throws IOException {
-    final Path packages = root.resolve("com").resolve("arcadedb");
-    if (!Files.isDirectory(packages))
-      return;
-    try (final Stream<Path> files = Files.walk(packages)) {
-      files.filter(p -> p.toString().endsWith(".class")).forEach(file -> {
-        try {
-          classes.put(root.relativize(file).toString().replace('\\', '/'), Files.readAllBytes(file));
-        } catch (final IOException e) {
-          throw new UncheckedIOException(e);
-        }
-      });
-    }
-  }
-
-  /**
-   * Every call site of the walk, keyed by {@code class#method} relative to {@code com/arcadedb}, with the owners it was
-   * called on. The owners are the authority and every class that implements it, directly or through a super type.
-   */
-  private static Map<String, Set<String>> callSitesOf(final Map<String, byte[]> classes) throws IOException {
-    final Map<String, List<String>> supertypes = new HashMap<>();
-    for (final byte[] bytes : classes.values()) {
-      final ClassReader reader = new ClassReader(bytes);
-      final List<String> parents = new ArrayList<>(List.of(reader.getInterfaces()));
-      if (reader.getSuperName() != null)
-        parents.add(reader.getSuperName());
-      supertypes.put(reader.getClassName(), parents);
-    }
-    final Set<String> owners = implementationsOf(AUTHORITY, supertypes);
-
-    final Map<String, Set<String>> sites = new TreeMap<>();
-    for (final Map.Entry<String, byte[]> entry : classes.entrySet()) {
-      final String outerClass = outerClassOf(entry.getKey()).substring("com/arcadedb/".length());
-      new ClassReader(entry.getValue()).accept(new ClassVisitor(Opcodes.ASM9) {
-        @Override
-        public MethodVisitor visitMethod(final int access, final String methodName, final String descriptor, final String signature,
-            final String[] exceptions) {
-          final String key = outerClass + "#" + methodOf(methodName);
-          return new MethodVisitor(Opcodes.ASM9) {
-            @Override
-            public void visitMethodInsn(final int opcode, final String owner, final String name, final String desc,
-                final boolean isInterface) {
-              if (owners.contains(owner) && WALK.equals(name) && WALK_DESC.equals(desc))
-                sites.computeIfAbsent(key, k -> new TreeSet<>()).add(owner.substring(owner.lastIndexOf('/') + 1) + "." + name);
-            }
-
-            @Override
-            public void visitInvokeDynamicInsn(final String name, final String desc, final Handle bootstrap,
-                final Object... bootstrapArguments) {
-              // A METHOD REFERENCE (schema::getTypes) IS A HANDLE PASSED TO THE LAMBDA BOOTSTRAP, NOT A CALL
-              for (final Object argument : bootstrapArguments)
-                if (argument instanceof Handle handle && owners.contains(handle.getOwner()) && WALK.equals(handle.getName())
-                    && WALK_DESC.equals(handle.getDesc()))
-                  sites.computeIfAbsent(key, k -> new TreeSet<>())
-                      .add(handle.getOwner().substring(handle.getOwner().lastIndexOf('/') + 1) + "::" + handle.getName());
-            }
-          };
-        }
-      }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-    }
-    return sites;
-  }
-
-  /** {@code type} and every class or interface whose super types reach it. */
-  private static Set<String> implementationsOf(final String type, final Map<String, List<String>> supertypes) {
-    final Set<String> result = new HashSet<>();
-    result.add(type);
-    final Map<String, Boolean> memo = new LinkedHashMap<>();
-    for (final String candidate : supertypes.keySet())
-      if (reaches(candidate, type, supertypes, memo))
-        result.add(candidate);
-    return result;
-  }
-
-  private static boolean reaches(final String from, final String type, final Map<String, List<String>> supertypes,
-      final Map<String, Boolean> memo) {
-    final Deque<String> pending = new ArrayDeque<>(List.of(from));
-    final Set<String> seen = new HashSet<>();
-    while (!pending.isEmpty()) {
-      final String current = pending.pop();
-      if (current.equals(type) || Boolean.TRUE.equals(memo.get(current))) {
-        memo.put(from, true);
-        return true;
-      }
-      if (seen.add(current))
-        pending.addAll(supertypes.getOrDefault(current, List.of()));
-    }
-    memo.put(from, false);
-    return false;
-  }
-
-  /** {@code a/b/C$1.class} -> {@code a/b/C}: lambdas and nested classes count for their file. */
-  private static String outerClassOf(final String relative) {
-    final String withoutExtension = relative.endsWith(".class") ? relative.substring(0, relative.length() - ".class".length()) : relative;
-    final int nested = withoutExtension.indexOf('$');
-    return nested < 0 ? withoutExtension : withoutExtension.substring(0, nested);
-  }
-
-  /** {@code lambda$execute$3} -> {@code execute}: a lambda counts for the method it is written in, whatever its number. */
-  private static String methodOf(final String methodName) {
-    if (methodName.startsWith("lambda$")) {
-      final int end = methodName.lastIndexOf('$');
-      return end > "lambda$".length() ? methodName.substring("lambda$".length(), end) : methodName;
-    }
-    return methodName;
+  private static Map<String, Set<String>> callSitesOf(final Map<String, byte[]> classes) {
+    final Set<String> owners = CompiledClasses.implementationsOf(AUTHORITY, classes);
+    return CompiledClasses.callSitesOf(classes, (owner, name, desc) -> owners.contains(owner) && WALK.equals(name) && WALK_DESC.equals(desc));
   }
 }

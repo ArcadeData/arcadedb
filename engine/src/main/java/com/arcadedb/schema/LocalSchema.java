@@ -1525,7 +1525,8 @@ public class LocalSchema implements Schema {
           LogManager.instance().log(this, Level.SEVERE,
               "Index '%s' on type '%s' has no bucket index for %d of its %d buckets %s: it is NOT valid, queries do not use it and a "
                   + "UNIQUE constraint is not enforced on those buckets. Run `REBUILD INDEX `%s`` to repair it", null,
-              typeIndex.getName(), type.getName(), missing.size(), type.getBuckets(false).size(), names, typeIndex.getName());
+              // out of the buckets it covers, its sub types' included, which is what the missing ones are counted from
+              typeIndex.getName(), type.getName(), missing.size(), type.getBuckets(true).size(), names, typeIndex.getName());
         }
       }
   }
@@ -3360,6 +3361,7 @@ public class LocalSchema implements Schema {
 
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
+        checkSubTypesCanBeReattached(type);
 
         // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
@@ -3410,6 +3412,27 @@ public class LocalSchema implements Schema {
     if (backingType != null)
       collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
     return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
+  }
+
+  /**
+   * Asks, before {@link #dropTypeInternal} changes anything, what linking each sub type of {@code type} directly to each of its super
+   * types would be refused for (issue #11272). The reattachment links them with the flag of a linkage that already holds, which
+   * skips those refusals and creates the link anyway: dropping {@code Mid} out of {@code Deep -> Mid -> mv}, a schema written before
+   * #11204, hung {@code Deep} directly under the backing type {@code mv}. A link the sub type already has is no new linkage.
+   */
+  private void checkSubTypesCanBeReattached(final LocalDocumentType type) {
+    for (final LocalDocumentType sub : type.subTypes)
+      for (final LocalDocumentType parent : type.superTypes) {
+        if (sub.superTypes.contains(parent))
+          continue;
+        try {
+          sub.checkCanAddSuperType(parent, true);
+        } catch (final SchemaException e) {
+          throw new SchemaException("Cannot drop the type '" + type.getName() + "': its sub type '" + sub.getName()
+              + "' would be linked directly to '" + parent.getName() + "', which is refused (" + e.getMessage()
+              + "). Take the link out first with ALTER TYPE `" + sub.getName() + "` SUPERTYPE -`" + type.getName() + "`", e);
+        }
+      }
   }
 
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */

@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -75,7 +76,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
   // The last answer of isComplete(), with what it was computed on: the type's bucket list (replaced, never mutated, on every
-  // change) and the sub-index change counter. Asked by isValid(), which the planners call per candidate index
+  // change) and the sub-index change counter. Asked by isValid() and by isReadyForQueries(), which the planners call per candidate
+  // index (#11303)
   private volatile Completeness     completeness;
 
   private record Completeness(List<Bucket> buckets, long subIndexChanges, boolean complete) {
@@ -1045,8 +1047,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
    * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
    * <p>
-   * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331). The answer is for the
-   * planners and lookups: writes, uniqueness checks and index maintenance do not consult it.
+   * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331), nor is one that lacks the
+   * filled bucket index of a bucket it covers ({@link #isComplete()}, issue #11303): it misses every record of that bucket, so a
+   * lookup through it would answer short with no error, and the planner reads the type instead. The answer is for the planners and
+   * lookups: writes, uniqueness checks and index maintenance do not consult it.
    */
   public boolean isReadyForQueries() {
     if (!valid || dropping)
@@ -1054,6 +1058,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     try {
       final IndexInternal first = firstOrNull();
       if (first == null || first.getType() == null)
+        return false;
+      // cached on the type's copy-on-write bucket list and the sub-index change counter: a hit on the planner's hot path
+      if (!isComplete())
         return false;
       // Complete: while TypeIndexBuilder populates it, the index holds the entries of the buckets built so far only (#9331)
       return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames());
@@ -1104,6 +1111,24 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // a drop under way removes the sub-index files while the index still answers as valid
     return e instanceof IllegalArgumentException iae && isFileNotFound(iae) && !(index instanceof TypeIndex typeIndex
         && !typeIndex.isDropped() && !typeIndex.dropping);
+  }
+
+  /**
+   * Refuses a {@code DROP INDEX} statement naming the bucket index of a type index (issue #11303): the type index would stay, cover
+   * the bucket with no index for it, and be unusable by every query and blind to a duplicate key there until {@code REBUILD INDEX}.
+   * The type index is dropped instead, which takes all its bucket indexes with it. The schema's own drops of a bucket index (a bucket
+   * leaving its type, a rebuild, a repair) do not go through a statement and are not refused.
+   */
+  public static void requireNotABucketIndex(final Schema schema, final String indexName) {
+    if (!schema.existsIndex(indexName))
+      return;
+    if (schema.getIndexByName(indexName) instanceof IndexInternal internal && internal.getTypeIndex() != null
+        && !internal.getTypeIndex().isDropped()) {
+      final String typeIndexName = internal.getTypeIndex().getName();
+      throw new SchemaException(
+          "Index '" + indexName + "' is the bucket index of index '" + typeIndexName + "' and cannot be dropped alone: the index '"
+              + typeIndexName + "' would miss every record of that bucket. Drop '" + typeIndexName + "' instead");
+    }
   }
 
   /**

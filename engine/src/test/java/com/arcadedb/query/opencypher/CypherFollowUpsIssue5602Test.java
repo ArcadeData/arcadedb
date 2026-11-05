@@ -26,20 +26,11 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
-import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
-import java.util.Set;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -107,97 +98,15 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
     });
   }
 
+  // That no class of the code base folds case with the default locale is held by NoDefaultLocaleCaseConversionCensusTest, and that
+  // every AST expression type is walked or declared a leaf by CypherExpressionWalkerCensusTest (census module, #11288)
+
   @Test
   void anExplainPrefixIsRecognisedUnderATurkishDefaultLocale() {
     // The engine upper-cases the whole query text to spot the EXPLAIN / PROFILE prefix; "explain" would become
     // "EXPLAİN" under a Turkish default and the prefix would go unrecognised.
     withDefaultLocale(Locale.forLanguageTag("tr"),
         () -> assertThatCode(() -> consume("explain RETURN 1 AS r")).doesNotThrowAnyException());
-  }
-
-  @Test
-  void noOpenCypherSourceFoldsCaseWithTheDefaultLocale() {
-    // The fix is only as good as its coverage: a new toLowerCase()/toUpperCase() with no explicit locale reintroduces
-    // exactly the #5484 defect somewhere else, and nothing else in the suite would notice - the two forms behave
-    // identically under every locale CI runs in.
-    final List<String> scanned = new ArrayList<>();
-    final List<String> offenders = defaultLocaleFoldingSites(scanned);
-    assertThat(scanned).as("no sources were scanned, so this guard proves nothing - check the working directory")
-        .isNotEmpty();
-    assertThat(offenders)
-        .as("fold identifiers and keywords with Locale.ROOT - the default locale makes 'I' a dotless 'ı' in Turkish")
-        .isEmpty();
-  }
-
-  /**
-   * Every AST expression type is either descended into by {@link CypherExpressionWalker} or listed below as a leaf.
-   * <p>
-   * The walker's {@code default} arm is the one place a regression can hide in silence: a composite type added later
-   * without a case falls into it, and everything it nests escapes every check routed through the walker with nothing
-   * failing to say so. That is not hypothetical - {@code PatternComprehensionExpression} sat in the default arm until
-   * this issue, so a function call in its {@code WHERE} or projection was never validated. Turning the "add a case
-   * here" comment into something the build enforces is the same move as the source scan above.
-   */
-  @Test
-  void everyExpressionTypeIsEitherWalkedOrDeclaredALeaf() {
-    final List<String> types = expressionTypeNames();
-    assertThat(types).as("no AST expression types were found - check the source path").isNotEmpty();
-
-    final String walker = readSource(Path.of(WALKER_SOURCE));
-    final List<String> unhandled = new ArrayList<>();
-    for (final String type : types)
-      if (!LEAF_EXPRESSIONS.contains(type) && !walker.contains("case " + type + " "))
-        unhandled.add(type);
-
-    assertThat(unhandled)
-        .as("add a case to CypherExpressionWalker, or list the type in LEAF_EXPRESSIONS if it nests no expression")
-        .isEmpty();
-    // A leaf that has since grown children, or was removed, leaves a stale entry that quietly excuses a real type.
-    assertThat(types).as("LEAF_EXPRESSIONS names a type that no longer exists").containsAll(LEAF_EXPRESSIONS);
-  }
-
-  private static final String WALKER_SOURCE =
-      "src/main/java/com/arcadedb/query/opencypher/parser/CypherExpressionWalker.java";
-
-  /**
-   * Expression types that genuinely nest nothing, so the walker's {@code default} arm is the right answer for them.
-   * The last three hold their body as unparsed text: it is parsed as a statement of its own and validated then, and
-   * there is no AST here to descend into.
-   */
-  private static final Set<String> LEAF_EXPRESSIONS = Set.of("LiteralExpression", "VariableExpression",
-      "ParameterExpression", "CaseOperandExpression", "PropertyAccessExpression", "StarExpression", "ExistsExpression", "CollectExpression",
-      "CountExpression");
-
-  /**
-   * The names of every {@code Expression} / {@code BooleanExpression} implementation in the AST package, read from the
-   * sources so a type added in a later commit is picked up without anyone remembering to register it here.
-   */
-  private static List<String> expressionTypeNames() {
-    final Path astPackage = Path.of("src/main/java/com/arcadedb/query/opencypher/ast");
-    if (!Files.isDirectory(astPackage))
-      return List.of();
-
-    final List<String> names = new ArrayList<>();
-    try (final Stream<Path> files = Files.list(astPackage)) {
-      files.filter(path -> path.toString().endsWith("Expression.java")).forEach(path -> {
-        final String source = readSource(path);
-        // Only concrete implementations: the interfaces themselves declare nothing to walk.
-        if (source.contains("implements Expression") || source.contains("implements BooleanExpression")
-            || source.contains("implements PropertyReadExpression"))
-          names.add(path.getFileName().toString().replace(".java", ""));
-      });
-    } catch (final IOException e) {
-      throw new UncheckedIOException(e);
-    }
-    return names;
-  }
-
-  private static String readSource(final Path path) {
-    try {
-      return Files.readString(path);
-    } catch (final IOException e) {
-      throw new UncheckedIOException(e);
-    }
   }
 
   // ===================== 3. registered-but-unimplemented functions =====================
@@ -423,47 +332,6 @@ class CypherFollowUpsIssue5602Test extends TestHelper {
       body.run();
     } finally {
       Locale.setDefault(previous);
-    }
-  }
-
-  /**
-   * The OpenCypher and shared-function sources that call {@code toLowerCase()} or {@code toUpperCase()} with no
-   * explicit locale. Reads the sources rather than the compiled classes because the defect is textual: the two forms
-   * behave identically under the JVM's usual default and differ only under a locale the suite never runs in.
-   *
-   * @param scanned collects the files actually read, so the caller can tell "nothing is wrong" from "nothing was read"
-   */
-  private static List<String> defaultLocaleFoldingSites(final List<String> scanned) {
-    final List<String> offenders = new ArrayList<>();
-    for (final String root : new String[] { "src/main/java/com/arcadedb/query/opencypher",
-        "src/main/java/com/arcadedb/function" }) {
-      final Path base = Path.of(root);
-      if (!Files.isDirectory(base))
-        continue;
-      try (final Stream<Path> files = Files.walk(base)) {
-        files.filter(path -> path.toString().endsWith(".java")).forEach(path -> {
-          scanned.add(path.toString());
-          for (final String line : readLines(path)) {
-            final String code = line.strip();
-            // Skip prose: the surviving mentions are all in Javadoc and comments explaining why the locale matters.
-            if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*"))
-              continue;
-            if (code.contains(".toLowerCase()") || code.contains(".toUpperCase()"))
-              offenders.add(path + ": " + code);
-          }
-        });
-      } catch (final IOException e) {
-        throw new UncheckedIOException(e);
-      }
-    }
-    return offenders;
-  }
-
-  private static List<String> readLines(final Path path) {
-    try {
-      return Files.readAllLines(path);
-    } catch (final IOException e) {
-      throw new UncheckedIOException(e);
     }
   }
 

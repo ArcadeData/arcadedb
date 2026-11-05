@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * nor logged, so a read-only filesystem, a permission problem and a full volume were indistinguishable; and
  * the HA single-bucket warning advised {@code CREATE VERTEX TYPE <name> BUCKETS 16} on types that by
  * definition already exist, which cannot work. The third (two log messages printing {@code null} where the
- * offending value belonged) is guarded by {@code LogMessageArityTest}.
+ * offending value belonged) is guarded by {@code LogMessageArityCensusTest} (census module).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

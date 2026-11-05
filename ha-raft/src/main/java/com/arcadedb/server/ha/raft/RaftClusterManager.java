@@ -604,7 +604,9 @@ class RaftClusterManager {
       if (!reply.isSuccess())
         // Often because notifyLeaderChanged closed our client while the RPC was still in flight: confirm below
         // rather than trusting either the reply or a transient "we are no longer leader" state (issue #4809).
-        LogManager.instance().log(this, Level.INFO, "No-target leadership transfer replied: %s", reply.getException());
+        // The reply's exception IS the format argument: passed as a Throwable it would pick the overload that logs it as the
+        // stack trace and print null in its place (#11288)
+        LogManager.instance().log(this, Level.INFO, "No-target leadership transfer replied: %s", String.valueOf(reply.getException()));
     } catch (final Exception e) {
       // When leadership moves, notifyLeaderChanged calls refreshRaftClient() which closes the old client, so the
       // in-flight RPC fails with "is closed". Confirm an actual, settled handoff instead (issue #4809).

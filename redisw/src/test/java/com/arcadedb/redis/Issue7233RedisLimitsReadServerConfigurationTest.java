@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the {@link GlobalConfiguration} enum, which only a system property or an environment variable ever writes.
  * <p>
  * The limit is resolved by a helper that takes the setting as a PARAMETER, which is exactly the shape
- * {@code Issue7233ServerScopeSettingReadsTest} documents it cannot see - so this asserts the runtime value rather
+ * {@code ServerScopeSettingReadsCensusTest} documents it cannot see - so this asserts the runtime value rather
  * than the shape of the call.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
