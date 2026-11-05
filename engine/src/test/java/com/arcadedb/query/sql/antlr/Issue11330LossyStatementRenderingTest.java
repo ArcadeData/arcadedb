@@ -24,9 +24,13 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.CreateEdgeTypeStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -134,6 +138,35 @@ class Issue11330LossyStatementRenderingTest extends TestHelper {
         "SELECT cat, category, a.cat FROM V WHERE cat = 1 ORDER BY cat ASC");
     assertThat(render("SELECT @rid, @type, @in, @out, @this, @props FROM V")).isEqualTo(
         "SELECT @rid, @type, @in, @out, @this, @props FROM V");
+  }
+
+  /**
+   * Census over the record attributes the engine defines ({@link Property#METADATA_PROPERTIES} and {@code @this}, the names the AST
+   * builder turns into a {@code RecordAttribute} however they are spelled): each one, back-ticked, in any case, renders as a bare
+   * token the grammar reads back to the same rendering. The next attribute added to the set without a lexer token goes red here,
+   * not in a stored view. The two lexer-only RID parts are read bare; back-ticked they stay quoted identifiers.
+   */
+  @Test
+  void everyRecordAttributeRendersAsABareTokenTheGrammarReads() {
+    final Set<String> attributes = new TreeSet<>(Property.METADATA_PROPERTIES);
+    attributes.add(Property.THIS_PROPERTY);
+    assertThat(attributes).as("the census reaches the attributes Property.METADATA_PROPERTIES defines")
+        .contains(Property.CAT_PROPERTY, Property.RID_PROPERTY, Property.PROPERTY_TYPES_PROPERTY).hasSizeGreaterThanOrEqualTo(7);
+
+    for (final String attribute : attributes)
+      for (final String spelling : List.of(attribute, attribute.toUpperCase(Locale.ENGLISH)))
+        for (final String query : List.of("SELECT `" + spelling + "` FROM V", "SELECT inE()[0].`" + spelling + "` FROM V",
+            "SELECT FROM V WHERE `" + spelling + "` IS NOT NULL ORDER BY `" + spelling + "`")) {
+          final String rendered = render(query);
+          assertThat(rendered).as("rendering of '%s'", query).doesNotContain("`");
+          // the lexer is case-insensitive, and a bare @THIS reads back as the @this literal
+          assertThat(render(rendered)).as("rendering of '%s' is '%s'", query, rendered).isEqualToIgnoringCase(rendered);
+        }
+
+    for (final String query : List.of("SELECT @rid_id, @rid_pos FROM V", "SELECT `@rid_id`, `@rid_pos` FROM V")) {
+      final String rendered = render(query);
+      assertThat(render(rendered)).as("rendering of '%s' is '%s'", query, rendered).isEqualTo(rendered);
+    }
   }
 
   @Test
