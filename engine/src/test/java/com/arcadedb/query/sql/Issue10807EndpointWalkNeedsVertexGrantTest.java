@@ -60,10 +60,12 @@ class Issue10807EndpointWalkNeedsVertexGrantTest {
     database = factory.create();
     database.getSchema().createVertexType("V1");
     database.getSchema().createEdgeType("E");
+    database.getSchema().buildEdgeType().withName("L").withLightweight(true).create();
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("V1").set("name", "a").save();
       final MutableVertex b = database.newVertex("V1").set("name", "b").save();
       a.newEdge("E", b).set("qty", 1).save();
+      a.newLightEdge("L", b);
       start = a.getIdentity();
     });
   }
@@ -94,6 +96,28 @@ class Issue10807EndpointWalkNeedsVertexGrantTest {
     }
   }
 
+  /**
+   * A lightweight edge has no record, so the walk would hand it out without asking the edge type's grant: for a user who may not read
+   * the edge type the planner keeps the scan, which applies the grant, and the edge is never answered.
+   */
+  @Test
+  void aUserWhoCannotReadTheEdgeTypeIsNeverAnsweredItsLightweightEdges() {
+    for (final String endpoint : new String[] { "out", "@out" })
+      assertThat(plan("SELECT FROM L WHERE " + endpoint + " = " + start)).as("a user who may read both walks").contains(WALK);
+
+    bindUser(fileIdsOf("L"));
+
+    for (final String endpoint : new String[] { "out", "@out" }) {
+      final String query = "SELECT FROM L WHERE " + endpoint + " = " + start;
+      try (final ResultSet rs = database.query("sql", query)) {
+        assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).as(query).doesNotContain(WALK);
+        assertThat(rs.hasNext()).as(query).isFalse();
+      } catch (final SecurityException e) {
+        // the scan refuses the type outright: refused, not answered
+      }
+    }
+  }
+
   private String plan(final String query) {
     try (final ResultSet rs = database.query("sql", query)) {
       return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
@@ -101,14 +125,22 @@ class Issue10807EndpointWalkNeedsVertexGrantTest {
   }
 
   private void bindUserWithoutReadOnVertices() {
-    final Set<Integer> vertexFiles = new HashSet<>();
-    for (final Bucket bucket : database.getSchema().getType("V1").getBuckets(true))
-      vertexFiles.add(bucket.getFileId());
+    bindUser(fileIdsOf("V1"));
+  }
 
+  private Set<Integer> fileIdsOf(final String type) {
+    final Set<Integer> files = new HashSet<>();
+    for (final Bucket bucket : database.getSchema().getType(type).getBuckets(true))
+      files.add(bucket.getFileId());
+    return files;
+  }
+
+  /** Binds a user refused READ_RECORD on {@code deniedFiles} and granted everything else. */
+  private void bindUser(final Set<Integer> deniedFiles) {
     DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).setCurrentUser(new SecurityDatabaseUser() {
       @Override
       public String getName() {
-        return "edgeReader";
+        return "restricted";
       }
 
       @Override
@@ -118,7 +150,7 @@ class Issue10807EndpointWalkNeedsVertexGrantTest {
 
       @Override
       public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
-        return !(access == ACCESS.READ_RECORD && vertexFiles.contains(fileId));
+        return !(access == ACCESS.READ_RECORD && deniedFiles.contains(fileId));
       }
 
       @Override

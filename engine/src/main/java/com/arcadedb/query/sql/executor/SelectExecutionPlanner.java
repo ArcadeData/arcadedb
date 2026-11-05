@@ -110,6 +110,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -2438,8 +2439,10 @@ public class SelectExecutionPlanner {
   /**
    * Whether walking the adjacency of {@code vertexRid} answers what the scan of {@code edgeType} answers (issue #10807). The walk
    * loads the vertex, so the scan stays for a RID whose bucket holds no vertex type (no edge can name it, and the scan says so
-   * instead of failing to load it) and for a user who may read the edges but not that vertex. An incoming walk reads the incoming
-   * lists, which a unidirectional edge type, or any of its subtypes, does not keep.
+   * instead of failing to load it) and for a user who may read the edges but not that vertex. It also stays for a user who may not
+   * read every type of the edge hierarchy: the scan applies that grant, while a lightweight edge comes off the vertex with no edge
+   * record to check it on. An incoming walk reads the incoming lists, which a unidirectional edge type, or any of its subtypes, does
+   * not keep.
    */
   private static boolean isAnsweredByTheAdjacencyWalk(final DocumentType edgeType, final RID vertexRid, final boolean incoming,
       final CommandContext context) {
@@ -2448,12 +2451,27 @@ public class SelectExecutionPlanner {
       return false;
     if (incoming && !keepsIncomingLists(edgeType))
       return false;
-    try {
-      database.checkPermissionsOnFile(vertexRid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
-      return true;
-    } catch (final SecurityException e) {
-      return false;
-    }
+    return SecurityHelper.canAccessFile(database, vertexRid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD)
+        && canReadTypeHierarchy(database, edgeType);
+  }
+
+  private static boolean canReadTypeHierarchy(final DatabaseInternal database, final DocumentType type) {
+    final List<Integer> bucketIds = type.getBucketIds(false);
+    if (bucketIds.isEmpty()) {
+      // A type with no bucket of its own is granted by name
+      try {
+        database.checkPermissionsOnType(type.getName(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+      } catch (final SecurityException e) {
+        return false;
+      }
+    } else
+      for (final Integer bucketId : bucketIds)
+        if (!SecurityHelper.canAccessFile(database, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
+          return false;
+    for (final DocumentType subType : type.getSubTypes())
+      if (!canReadTypeHierarchy(database, subType))
+        return false;
+    return true;
   }
 
   private static boolean keepsIncomingLists(final DocumentType type) {
