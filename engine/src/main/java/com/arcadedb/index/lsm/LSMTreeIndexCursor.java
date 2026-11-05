@@ -180,7 +180,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (serializedFromKeys != null) {
         // SEEK FOR THE FROM RANGE
         final BasePage currentPage = database.getTransaction()
-            .getPage(new PageId(database, index.getFileId(), pageId), index.getPageSize());
+            .getPageForAbsoluteReads(new PageId(database, index.getFileId(), pageId), index.getPageSize());
         final Binary currentPageBuffer = new Binary(currentPage.slice());
         final int count = index.getCount(currentPage);
 
@@ -216,7 +216,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
           pageCursors[cursorIdx] = index.newPageIterator(pageId, -1, true);
         } else {
           final BasePage currentPage = database.getTransaction()
-              .getPage(new PageId(database, index.getFileId(), pageId), index.getPageSize());
+              .getPageForAbsoluteReads(new PageId(database, index.getFileId(), pageId), index.getPageSize());
           pageCursors[cursorIdx] = index.newPageIterator(pageId, index.getCount(currentPage), false);
         }
 

@@ -369,11 +369,14 @@ public class HashIndexBucket extends PaginatedComponent {
    * Reads a page of this index through the current transaction, so the changes of the transaction itself are seen.
    * Outside a transaction (e.g. getStats() from the profiler, CHECK DATABASE on a background thread) it goes
    * straight to the page manager, which returns the same last-committed version the transactional read would.
+   * <p>
+   * Every read of a page of this index is at an absolute position, so a page the transaction does not hold is the page
+   * cache's shared view, not a view built per read (issue #10820).
    */
   private BasePage readPage(final int pageNumber) throws IOException {
     final PageId pageId = new PageId(database, fileId, pageNumber);
     final TransactionContext tx = database.getTransactionIfExists();
-    return tx != null ? tx.getPage(pageId, pageSize) : database.getPageManager().getImmutablePage(pageId, pageSize, false, true);
+    return tx != null ? tx.getPageForAbsoluteReads(pageId, pageSize) : database.getPageManager().getSharedImmutablePage(pageId, pageSize);
   }
 
   private int readGlobalDepth() throws IOException {
@@ -469,7 +472,7 @@ public class HashIndexBucket extends PaginatedComponent {
     while (currentPage != NO_OVERFLOW_PAGE) {
       if (++chainSteps > maxChainPages || !isValidBucketPage(currentPage))
         throw corruptedOverflowChain(currentPage);
-      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPage), pageSize);
+      final BasePage page = database.getTransaction().getPageForAbsoluteReads(new PageId(database, fileId, currentPage), pageSize);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
 
@@ -551,7 +554,7 @@ public class HashIndexBucket extends PaginatedComponent {
         result.subList(sizeBefore, result.size()).clear();
         return false;
       }
-      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, current), pageSize);
+      final BasePage page = database.getTransaction().getPageForAbsoluteReads(new PageId(database, fileId, current), pageSize);
       if (!isRidListPageOf(page, hash)) {
         result.subList(sizeBefore, result.size()).clear();
         return false;
@@ -779,7 +782,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
   long countEntries() throws IOException {
     // Re-read from metadata page for accuracy
-    final BasePage metaPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
+    final BasePage metaPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, fileId, 0), pageSize);
     return metaPage.readInt(META_TOTAL_ENTRIES);
   }
 

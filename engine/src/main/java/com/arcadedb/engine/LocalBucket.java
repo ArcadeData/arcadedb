@@ -2630,8 +2630,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // the chain walk, one the transaction already held has been read by others in the image it has
       final BasePage heldPage = readTransaction.getPinnedPage(headPageId);
       final boolean headPrePinned = heldPage != null;
-      // ONE LOOKUP OF THE TRANSACTION'S PAGES PER RECORD, NOT TWO: getPage() WOULD ASK THEM AGAIN (#11007)
-      final BasePage page = heldPage != null ? heldPage : readTransaction.getPageNotHeld(headPageId, pageSize);
+      // ONE LOOKUP OF THE TRANSACTION'S PAGES PER RECORD, NOT TWO: getPage() WOULD ASK THEM AGAIN (#11007). EVERY READ OF THE
+      // PAGE BELOW IS AT AN ABSOLUTE POSITION, THE CONTENT IS HANDED OUT AS A VIEW OF ITS OWN: THE SHARED VIEW SERVES IT (#10820)
+      final BasePage page = heldPage != null ? heldPage : readTransaction.getPageNotHeldForAbsoluteReads(headPageId, pageSize);
 
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
@@ -6098,7 +6099,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             break;
           }
 
-          if (nextPage.equals(page) && currentRecordPositionInPage == nextRecordPositionInPage) {
+          // BY PAGE ID: BasePage.equals() ALSO COMPARES THE CLASS, AND A HEAD READ THROUGH THE SHARED VIEW IS NOT THE CLASS OF THE
+          // PER-CALL VIEW THE HOP READS (#10820)
+          if (nextPage.getPageId().equals(page.getPageId()) && currentRecordPositionInPage == nextRecordPositionInPage) {
             brokenChainReason = "chain loop detected at chunk " + (chunks - 1) + " (" + chunkPageId + "/"
                     + chunkPositionInPage + ")";
             break;

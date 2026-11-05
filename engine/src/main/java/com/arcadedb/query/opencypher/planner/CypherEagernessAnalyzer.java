@@ -54,6 +54,7 @@ import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -121,19 +122,55 @@ public final class CypherEagernessAnalyzer {
   // The property reads of the clauses planned since the last barrier that evaluate an expression per row (a WITH, an UNWIND,
   // the right-hand side of a SET, ...): a later write of one of those keys runs for one row before the read of the next row
   // (issue #11005). A MATCH's own pattern and WHERE are not among them, see observeClause()
-  private final Set<PropertyReadSite> pendingPropertyReads = new HashSet<>();
+  private final Set<PropertyReadSite> pendingPropertyReads;
   // The property reads of the patterns and WHERE of the MATCH clauses planned since the last barrier: they select which entities a
   // row binds, so only a write that NAMES their key conflicts (an opaque map write is left streaming, see observeClause(), and
   // issue #11173)
-  private final Set<PropertyReadSite> pendingMatchReads = new HashSet<>();
+  private final Set<PropertyReadSite> pendingMatchReads;
   // The variables bound to a different entity on every row: a write through one of them cannot reach a read of another row
-  private final Set<String> rowUniqueVariables     = new HashSet<>();
+  private final Set<String> rowUniqueVariables;
   // The variables known never to hold a record (a LOAD CSV row, an UNWIND of a literal list): no record
   // write can change what a read of one of them answers
-  private final Set<String> nonRecordVariables     = new HashSet<>();
+  private final Set<String> nonRecordVariables;
   // The variables a WITH bound to a property of a variable that cannot hold a record ({@code WITH row, row.id AS id}), to the
   // variable and the key: a lookup by one of them reads the same value as that property (issue #11230)
-  private final Map<String, String[]> projectedProperties = new HashMap<>();
+  private final Map<String, String[]> projectedProperties;
+  // Whether observeClause() collects anything: what it collects is read only to weigh a property write against, and a statement
+  // with no write clause has none, so for it the walk of every clause's expressions is pure planning cost (issue #11323)
+  private final boolean             tracksPropertyReads;
+
+  /** An analyzer that weighs every write it is asked about: the shape of a statement it is not told about. */
+  public CypherEagernessAnalyzer() {
+    this(true);
+  }
+
+  private CypherEagernessAnalyzer(final boolean tracksPropertyReads) {
+    this.tracksPropertyReads = tracksPropertyReads;
+    // Only observeClause() adds to these: an analyzer that tracks nothing shares the empty collections, which read as empty
+    // and clear as a no-op, instead of allocating five per planning (issue #11323)
+    if (tracksPropertyReads) {
+      pendingPropertyReads = new HashSet<>();
+      pendingMatchReads = new HashSet<>();
+      rowUniqueVariables = new HashSet<>();
+      nonRecordVariables = new HashSet<>();
+      projectedProperties = new HashMap<>();
+    } else {
+      pendingPropertyReads = Collections.emptySet();
+      pendingMatchReads = Collections.emptySet();
+      rowUniqueVariables = Collections.emptySet();
+      nonRecordVariables = Collections.emptySet();
+      projectedProperties = Collections.emptyMap();
+    }
+  }
+
+  /**
+   * The analyzer for planning {@code statement}. A read-only statement asks no {@code needsBarrierForPropertyWrites} question,
+   * so its analyzer skips the per-clause property-read walk of {@link #observeClause}: an indexed point lookup planned on every
+   * execution paid about 1.2 KB and 13% of its time for it (issue #11323).
+   */
+  public static CypherEagernessAnalyzer forStatement(final CypherStatement statement) {
+    return new CypherEagernessAnalyzer(statement == null || !statement.isReadOnly());
+  }
 
   /**
    * A property read: the variable it reads through (null when not known) and the key (null when any key). {@code pair} names the
@@ -603,7 +640,7 @@ public final class CypherEagernessAnalyzer {
    * @param boundVariables  the names bound before the clause runs
    */
   public void observeClause(final ClauseEntry entry, final boolean startsStatement, final Set<String> boundVariables) {
-    if (entry == null)
+    if (entry == null || !tracksPropertyReads)
       return;
     if (entry.getType() == ClauseEntry.ClauseType.MATCH)
       CypherExpressionWalker.walk(entry,

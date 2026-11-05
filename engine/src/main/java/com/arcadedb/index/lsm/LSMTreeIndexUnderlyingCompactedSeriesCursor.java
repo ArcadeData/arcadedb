@@ -97,7 +97,7 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
       try {
         final DatabaseInternal database = index.getDatabase();
         final BasePage page = database.getTransaction()
-            .getPage(new PageId(database, index.getFileId(), currentPageNumber), index.getPageSize());
+            .getPageForAbsoluteReads(new PageId(database, index.getFileId(), currentPageNumber), index.getPageSize());
         final int count = index.getCount(page);
 
         pageCursor = new LSMTreeIndexUnderlyingPageCursor(index, page, posInPage == -1 ? ascendingOrder ? -1 : count : posInPage,
@@ -183,7 +183,7 @@ public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnd
         pageNumber += ascendingOrder ? 1 : -1) {
       try {
         final DatabaseInternal database = index.getDatabase();
-        final BasePage page = database.getTransaction().getPage(new PageId(database, index.getFileId(), pageNumber), index.getPageSize());
+        final BasePage page = database.getTransaction().getPageForAbsoluteReads(new PageId(database, index.getFileId(), pageNumber), index.getPageSize());
         final int count = index.getCount(page);
         if (count > 0)
           return new LSMTreeIndexUnderlyingPageCursor(index, page, ascendingOrder ? -1 : count, index.getHeaderSize(pageNumber), keyTypes,

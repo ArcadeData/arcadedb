@@ -276,6 +276,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return variable;
   }
 
+  /**
+   * The WHERE predicate this step decides on every row it passes on, or {@code null}. It is the pushdown it was given minus the
+   * {@code id(variable) = X} equality its dynamic id lookup enforces instead, so the planner can leave exactly these conjuncts out of
+   * the clause's filter (issue #11102).
+   */
+  public BooleanExpression getWhereFilter() {
+    return whereFilter;
+  }
+
   @Override
   public void close() {
     if (openScan != null) {

@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -123,6 +125,48 @@ public class WhereClause {
     if (vars.isEmpty() || !availableVariables.containsAll(vars))
       return expr;
     return null;
+  }
+
+  /**
+   * The top-level AND conjuncts of a predicate, in their evaluation order. A predicate that is not an AND is its own single conjunct,
+   * and {@code null} has none.
+   */
+  public static List<BooleanExpression> conjuncts(final BooleanExpression expr) {
+    final List<BooleanExpression> conjuncts = new ArrayList<>();
+    collectConjuncts(expr, conjuncts);
+    return conjuncts;
+  }
+
+  private static void collectConjuncts(final BooleanExpression expr, final List<BooleanExpression> conjuncts) {
+    if (expr == null)
+      return;
+    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      collectConjuncts(logical.getLeft(), conjuncts);
+      collectConjuncts(logical.getRight(), conjuncts);
+    } else
+      conjuncts.add(expr);
+  }
+
+  /**
+   * The predicate without the top-level AND conjuncts in {@code taken}, which are compared by identity: a step that already decided
+   * a conjunct on every row it passes on takes it out of what is left to decide (issue #11102). Returns {@code null} when every
+   * conjunct was taken, and the predicate itself when none was.
+   */
+  public static BooleanExpression withoutConjuncts(final BooleanExpression expr, final Set<BooleanExpression> taken) {
+    if (expr == null || taken.isEmpty())
+      return expr;
+
+    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      final BooleanExpression left = withoutConjuncts(logical.getLeft(), taken);
+      final BooleanExpression right = withoutConjuncts(logical.getRight(), taken);
+      if (left == logical.getLeft() && right == logical.getRight())
+        return expr;
+      if (left != null && right != null)
+        return new LogicalExpression(LogicalExpression.Operator.AND, left, right);
+      return left != null ? left : right;
+    }
+
+    return taken.contains(expr) ? null : expr;
   }
 
   private static void collectVariablesRecursive(final BooleanExpression expr, final Set<String> vars) {
