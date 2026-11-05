@@ -188,6 +188,9 @@ class Issue11330LossyStatementRenderingTest extends TestHelper {
     // the bare spelling, which the grammar now reads, answers the same, and so does the unaliased column name
     assertThat(database.query("sql", "SELECT inE()[0].@cat AS c FROM VV").next().<String>getProperty("c")).isEqualTo("e");
     assertThat(database.query("sql", "SELECT @cat AS c FROM VV").next().<String>getProperty("c")).isEqualTo("v");
+    // a method call on the bare token is a modifier of the attribute, not a namespaced function call
+    assertThat(database.query("sql", "SELECT @cat.toUpperCase() AS c FROM VV").next().<String>getProperty("c")).isEqualTo("V");
+    assertThat(database.query("sql", "SELECT FROM VV WHERE @cat = 'v' ORDER BY @cat").stream().count()).isEqualTo(1L);
     assertThat(database.query("sql", "SELECT inE()[0].`@cat` FROM VV").next().<String>getProperty("inE()[0].@cat")).isEqualTo("e");
   }
 
