@@ -73,6 +73,8 @@ final class StoredVectorReader {
   // THE IN-PLACE READ'S ANSWER FOR A SHAPE THE RECORD LAYER MUST READ; null IS "NO USABLE VECTOR"
   private static final float[] FALLBACK             = new float[0];
 
+  // THE THREAD THE READER WAS MADE FOR: A HOLDER SHARED BETWEEN THREADS KEEPS ONE READER AND MAKES ANOTHER FOR A NEW THREAD
+  private final Thread           owner        = Thread.currentThread();
   private final DatabaseInternal database;
   private final String           propertyName;
   private final int              dimensions;
@@ -95,6 +97,11 @@ final class StoredVectorReader {
     this.dimensions = dimensions;
     this.encoding = encoding;
     this.zeroIsUnscorable = zeroIsUnscorable;
+  }
+
+  /** Whether the calling thread is the one this reader was made for, the only one that may use it. */
+  boolean isOwnedByCurrentThread() {
+    return owner == Thread.currentThread();
   }
 
   /**
@@ -189,6 +196,8 @@ final class StoredVectorReader {
     int cursor = properties + Binary.INT_SERIALIZED_SIZE;
     final long count = page.readUnsignedNumber(cursor);
     cursor += page.readNumberSize(cursor);
+    // EACH PROPERTY TAKES TWO VARINTS OF AT LEAST ONE BYTE EACH, SO A COUNT THE HEADER CANNOT HOLD IS DAMAGE (THE CHECK OF
+    // BinarySerializer.checkPropertyCount)
     if (count < 0 || count * 2 > headerEnd - cursor)
       return FALLBACK;
 

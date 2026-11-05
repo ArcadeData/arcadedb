@@ -7483,21 +7483,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * The vector the record at {@code rid} stores under {@code propertyName}, read where the record lies on its page, or
-   * {@code null} when it cannot be read there and the caller must read the record (issue #11298): see
+   * A reader of the vectors this index's records store under {@code propertyName}, for the calling thread (issue #11298): one
+   * per search or build, reused for every vector it reads.
+   */
+  StoredVectorReader storedVectorReader(final String propertyName, final int dimensions) {
+    return new StoredVectorReader(getDatabase(), propertyName, dimensions, metadata.encoding,
+        metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN);
+  }
+
+  /**
+   * The vector the record at {@code rid} stores, read by {@code reader} where the record lies on its page, or {@code null}
+   * when it cannot be read there and the caller must read the record (issue #11298): see
    * {@link StoredVectorReader#readInPlaceOnly(RID)}. Never the calling transaction's own write, which is left to the record
    * layer.
    */
-  float[] readStoredVectorInPlace(final RID rid, final String propertyName, final int dimensions) {
-    final StoredVectorReader reader = new StoredVectorReader(getDatabase(), propertyName, dimensions, metadata.encoding,
-        metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN);
+  float[] readStoredVectorInPlace(final StoredVectorReader reader, final RID rid) {
     return getDatabase().executeInReadLock(() -> reader.readInPlaceOnly(rid));
   }
 
   /** A reader of the vectors this index's records store, for one thread (issue #11298). */
   private StoredVectorReader storedVectorReader() {
-    return new StoredVectorReader(getDatabase(), vectorPropertyName(), metadata.dimensions, metadata.encoding,
-        metadata.similarityFunction != VectorSimilarityFunction.EUCLIDEAN);
+    return storedVectorReader(vectorPropertyName(), metadata.dimensions);
   }
 
   /**

@@ -228,7 +228,8 @@ class Issue11298BinaryRerankReadsInPlaceTest extends TestHelper {
     final AtomicReference<Object> outcome = new AtomicReference<>();
     final Thread worker = new Thread(() -> {
       try {
-        outcome.set(index.readStoredVectorInPlace(rid, "vector", DIMENSIONS) == null ? "left to the record layer" : "read");
+        final StoredVectorReader reader = index.storedVectorReader("vector", DIMENSIONS);
+        outcome.set(index.readStoredVectorInPlace(reader, rid) == null ? "left to the record layer" : "read");
       } catch (final Throwable t) {
         outcome.set(t);
       }
@@ -237,8 +238,10 @@ class Issue11298BinaryRerankReadsInPlaceTest extends TestHelper {
     worker.join();
     assertThat(outcome.get()).isEqualTo("left to the record layer");
 
-    // A thread with a context reads it in place
-    assertThat(index.readStoredVectorInPlace(rid, "vector", DIMENSIONS)).containsExactly(corpus.vectors.get(7));
+    // A thread with a context reads it in place, with a reader of its own
+    final StoredVectorReader reader = index.storedVectorReader("vector", DIMENSIONS);
+    assertThat(reader.isOwnedByCurrentThread()).isTrue();
+    assertThat(index.readStoredVectorInPlace(reader, rid)).containsExactly(corpus.vectors.get(7));
   }
 
   /**
