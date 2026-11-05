@@ -120,7 +120,7 @@ class ColumnarAcquireNewDatabaseRebuildTest {
     SnapshotInstaller.acquireNewDatabase(DB_NAME, () -> "localhost:" + leaderPort, () -> null, null, server);
 
     assertThat(server.existsDatabase(DB_NAME)).as("the acquired database is registered").isTrue();
-    final Database acquired = server.getDatabase(DB_NAME);
+    final Database acquired = server.getDatabaseForOperator(DB_NAME);
     final ColumnarIndexManager manager = ((LocalDatabase) ((DatabaseInternal) acquired).getEmbedded()).getColumnarIndexManager();
     Awaitility.await("the rebuild of the acquired projection").atMost(60, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
         .until(() -> manager.getStats().rebuildsTotal() > 0);

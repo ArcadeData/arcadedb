@@ -143,6 +143,34 @@ class JsonSerializerFacetsTest extends TestHelper {
     }
   }
 
+  /**
+   * Issue #10899 for facets: a DOUBLE term, extreme or cursor that is non-finite goes out as its marker string, so it carries the
+   * DOUBLE hint a row's non-finite DOUBLE carries, and the client reads the number back instead of the marker. A finite DOUBLE facet keeps
+   * no hint, as a row's finite DOUBLE does.
+   */
+  @Test
+  void nonFiniteDoubleValuesCarryTheDoubleHint() {
+    final LinkedHashMap<String, FacetResult> map = new LinkedHashMap<>();
+    map.put("t", FacetResult.of("terms", "index", List.of(FacetBucket.term(1.25d, 2L), FacetBucket.term(Double.NaN, 1L)), 0L, 0L)
+        .withValueType(Type.DOUBLE));
+    map.put("s", FacetResult.ofStats("index", new FacetStats(2L, 0L, 1.0d, Double.POSITIVE_INFINITY, null, null)).withValueType(Type.DOUBLE));
+    map.put("c", FacetResult.of("terms", "index", List.of(FacetBucket.term(1.0d, 1L)), 0L, 0L).withValueType(Type.DOUBLE)
+        .withAfter(Double.NaN));
+    map.put("finite", FacetResult.of("terms", "index", List.of(FacetBucket.term(1.25d, 2L)), 0L, 0L).withValueType(Type.DOUBLE));
+    final FacetResults facets = new FacetResults(true, 0L, 0L, map);
+
+    final JSONObject json = serialize(facets, true);
+    for (final String alias : List.of("t", "s", "c"))
+      assertThat(json.getJSONObject(alias).getString("@props")).as(alias).isEqualTo("value:" + Type.DOUBLE.getId());
+    assertThat(json.getJSONObject("finite").has("@props")).isFalse();
+    assertThat(serialize(facets, false).getJSONObject("t").has("@props")).isFalse();
+
+    final FacetResults back = FacetResults.fromJSON(json, JsonSerializerFacetsTest::asRowDecoder);
+    assertThat(back.get("t").buckets().get(1).value()).isEqualTo(Double.NaN);
+    assertThat(back.get("s").stats().max()).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(back.get("c").after()).isEqualTo(Double.NaN);
+  }
+
   @Test
   void dateStatsHintTheExtremesOnly() {
     final FacetResult stats = FacetResult.ofStats("index", new FacetStats(2L, 1L, LocalDate.of(2020, 1, 1), LocalDate.of(2024, 2, 29), null,

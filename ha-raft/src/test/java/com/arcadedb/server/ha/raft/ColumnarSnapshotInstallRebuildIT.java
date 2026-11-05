@@ -134,7 +134,7 @@ class ColumnarSnapshotInstallRebuildIT extends ColumnarHATestSupport {
   private void installSnapshot(final int leader, final int follower) throws Exception {
     final String dbName = getDatabaseName();
     final ArcadeDBServer followerServer = getServer(follower);
-    final String dbPath = ((DatabaseInternal) followerServer.getDatabase(dbName)).getDatabasePath();
+    final String dbPath = ((DatabaseInternal) followerServer.getDatabaseForOperator(dbName)).getDatabasePath();
     final String leaderHttpAddress = "localhost:" + getServer(leader).getHttpServer().getPort();
     final String token = getRaftPlugin(follower).getRaftHAServer().getClusterToken();
     SnapshotInstaller.install(dbName, dbPath, leaderHttpAddress, null, token, followerServer);

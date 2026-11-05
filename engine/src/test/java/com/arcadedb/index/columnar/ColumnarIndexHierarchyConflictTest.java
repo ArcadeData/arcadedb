@@ -95,6 +95,8 @@ class ColumnarIndexHierarchyConflictTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY Tagged.brand STRING");
     database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
     database.command("sql", "CREATE INDEX ON Tagged (brand) COLUMNAR");
+    // the rebuild creating the subtype bucket directories is asynchronous: snapshot only once it is done
+    FacetOracle.awaitCaughtUp(database);
     final Path columnarRoot = Path.of(database.getDatabasePath()).resolve(ColumnarStore.ROOT_DIR);
     final long directoriesBefore = countEntries(columnarRoot);
     final int assetSubIndexes = ((TypeIndex) database.getSchema().getIndexByName("Asset[brand]_columnar")).getSubIndexes().size();
@@ -103,6 +105,7 @@ class ColumnarIndexHierarchyConflictTest extends TestHelper {
         SchemaException.class).hasMessageContaining("brand");
 
     assertThat(database.getSchema().existsType("Both")).isFalse();
+    FacetOracle.awaitCaughtUp(database);
     assertThat(countEntries(columnarRoot)).as("no projection directory left").isEqualTo(directoriesBefore);
     assertThat(((TypeIndex) database.getSchema().getIndexByName("Asset[brand]_columnar")).getSubIndexes()).hasSize(assetSubIndexes);
     assertThat(((TypeIndex) database.getSchema().getIndexByName("Tagged[brand]_columnar")).getSubIndexes()).hasSize(1);

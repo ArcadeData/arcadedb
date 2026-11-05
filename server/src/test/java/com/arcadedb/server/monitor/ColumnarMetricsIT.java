@@ -119,7 +119,7 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
       assertThat(meter("arcadedb.columnar.cache.hits", "database", "*")).isNotNull();
     });
 
-    server.getDatabase(getDatabaseName());
+    server.getDatabaseForOperator(getDatabaseName());
   }
 
   @Test
@@ -137,7 +137,7 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
     assertThatThrownBy(() -> server.getDatabase(getDatabaseName(), false, false)).isInstanceOf(RuntimeException.class);
 
     server.removeDatabase(getDatabaseName());
-    server.getDatabase(getDatabaseName());
+    server.getDatabaseForOperator(getDatabaseName());
   }
 
   @Test
@@ -278,7 +278,7 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
   }
 
   private LocalDatabase local() {
-    return (LocalDatabase) getServer(0).getDatabase(getDatabaseName()).getEmbedded();
+    return (LocalDatabase) getServer(0).getDatabaseForOperator(getDatabaseName()).getEmbedded();
   }
 
   private ColumnarIndexManager manager() {

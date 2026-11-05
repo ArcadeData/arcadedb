@@ -63,7 +63,7 @@ class ColumnarSnapshotExclusionTest {
     SnapshotInstaller.snapshotOpensForTesting = null;
     if (server != null) {
       if (server.existsDatabase(DB_NAME))
-        ((DatabaseInternal) server.getDatabase(DB_NAME)).getEmbedded().drop();
+        ((DatabaseInternal) server.getDatabaseForOperator(DB_NAME)).getEmbedded().drop();
       server.stop();
     }
   }
@@ -131,7 +131,7 @@ class ColumnarSnapshotExclusionTest {
     SnapshotInstaller.swapAndReopen(DB_NAME, dbPath, snapshotNew, dbPath.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR), pendingMarker,
         server);
 
-    final DatabaseInternal installed = (DatabaseInternal) server.getDatabase(DB_NAME);
+    final DatabaseInternal installed = (DatabaseInternal) server.getDatabaseForOperator(DB_NAME);
     assertThat(installed.countType(ColumnarTestData.TYPE, true)).as("the snapshot is the one served").isEqualTo(500);
     FacetOracle.assertEquivalent(installed, ColumnarTestData.TYPE, "brand", null);
     FacetOracle.assertEquivalent(installed, ColumnarTestData.TYPE, "tags", null);

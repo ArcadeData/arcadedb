@@ -59,6 +59,9 @@ class ColumnarIndexExportImportTest {
       db.command("sql", "CREATE DOCUMENT TYPE Asset");
       db.command("sql", "CREATE PROPERTY Asset.brand STRING");
       db.command("sql", "CREATE INDEX ON Asset (brand) NOTUNIQUE");
+      db.command("sql", "CREATE VERTEX TYPE Tag");
+      db.command("sql", "CREATE PROPERTY Tag.path STRING");
+      db.command("sql", "CREATE EDGE TYPE ParentOf");
       db.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR METADATA "
           + "{\"hierarchy\":{\"vertexType\":\"Tag\",\"key\":\"path\",\"parentEdge\":\"ParentOf\"}, \"maxCardinality\": 42}");
       db.transaction(() -> {
