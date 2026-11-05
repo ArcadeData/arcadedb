@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -243,15 +244,18 @@ class HaTlsPeerDialIT extends BaseRaftHASslTest {
         + "/api/v1/ready";
 
     final SSLContext foreignTrust = RaftTestPki.anonymousClientContext(foreignPki);
-    try (final HttpClient client = HttpClient.newBuilder()
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(foreignTrust)
-        .build()) {
+        .build();
+    try {
       assertThatThrownBy(() -> client.send(
           HttpRequest.newBuilder().uri(URI.create(leaderUrl)).timeout(Duration.ofSeconds(10)).GET().build(),
           HttpResponse.BodyHandlers.discarding()))
           .as("a client trusting a foreign CA must not be able to talk to a cluster node over TLS")
           .isInstanceOf(IOException.class);
+        } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 
@@ -435,13 +439,16 @@ class HaTlsPeerDialIT extends BaseRaftHASslTest {
 
   /** Sends a GET over the trust context {@code server}'s own peer-to-peer dials are built from. */
   private static int readyProbeStatus(final ArcadeDBServer server, final String url) throws Exception {
-    try (final HttpClient client = HttpClient.newBuilder()
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(SnapshotInstaller.buildSSLContext(server))
-        .build()) {
+        .build();
+    try {
       return client.send(
           HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofSeconds(10)).GET().build(),
           HttpResponse.BodyHandlers.discarding()).statusCode();
+        } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 
@@ -472,11 +479,14 @@ class HaTlsPeerDialIT extends BaseRaftHASslTest {
   }
 
   private HttpResponse<String> send(final int fromIndex, final HttpRequest request) throws Exception {
-    try (final HttpClient client = HttpClient.newBuilder()
+    final HttpClient client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(SnapshotInstaller.buildSSLContext(getServer(fromIndex)))
-        .build()) {
+        .build();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString());
+        } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

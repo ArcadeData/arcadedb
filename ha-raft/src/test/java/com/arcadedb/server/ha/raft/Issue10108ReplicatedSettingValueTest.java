@@ -125,7 +125,7 @@ class Issue10108ReplicatedSettingValueTest {
 
     database.saveConfiguration(a);
     // The apply of A's entry on this node: what every node, the originator included, does with a committed entry
-    local.applyConfigurationChanges(submitted.getFirst());
+    local.applyConfigurationChanges(submitted.get(0));
     assertThat(local.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS)).isEqualTo(5);
 
     local.undoSettingChange(b);

@@ -236,8 +236,8 @@ class Issue10527WeightedPathMaxDepthTest extends TestHelper {
                 assertThat(answer).as(what).isEmpty();
               } else {
                 assertThat(answer).as(what).isNotEmpty();
-                assertThat(answer.getFirst()).as(what).isEqualTo(rids[s]);
-                assertThat(answer.getLast()).as(what).isEqualTo(rids[t]);
+                assertThat(answer.get(0)).as(what).isEqualTo(rids[s]);
+                assertThat(answer.get(answer.size() - 1)).as(what).isEqualTo(rids[t]);
                 assertThat(answer.size() - 1).as(what + " edges").isLessThanOrEqualTo(maxDepth);
                 assertThat(cost(answer)).as(what + " cost").isEqualTo(expected);
               }

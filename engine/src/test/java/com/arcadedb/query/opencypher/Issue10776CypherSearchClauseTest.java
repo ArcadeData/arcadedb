@@ -154,8 +154,8 @@ class Issue10776CypherSearchClauseTest extends TestHelper {
     final List<Result> rows = rows("MATCH (d:Doc {name: 'd1'}) WITH d MATCH (d) SEARCH d IN (VECTOR INDEX " + INDEX
         + " FOR $q LIMIT 2) SCORE AS s RETURN d.name AS name, s", Q);
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<String>getProperty("name")).isEqualTo("d1");
-    assertThat(((Number) rows.getFirst().getProperty("s")).doubleValue()).isCloseTo(0.5, within(1e-5));
+    assertThat(rows.get(0).<String>getProperty("name")).isEqualTo("d1");
+    assertThat(((Number) rows.get(0).getProperty("s")).doubleValue()).isCloseTo(0.5, within(1e-5));
   }
 
   @Test

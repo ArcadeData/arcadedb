@@ -82,7 +82,7 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
     assertRefused(() -> database.transaction(() -> {
       other[0].asDocument(true).modify().set("v", "after").save();
       database.newDocument("Rollback10859").set("v", "inserted").save();
-      grow(page.small.getFirst());
+      grow(page.small.get(0));
     }));
 
     assertIntact("Rollback10859", countBefore);
@@ -90,7 +90,7 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
     database.transaction(() -> {
       assertThat(other[0].asDocument(true).getString("v")).as("the other update must have been rolled back")
           .isEqualTo("before");
-      assertThat(page.small.getFirst().asDocument(true).getPropertyNames()).isEmpty();
+      assertThat(page.small.get(0).asDocument(true).getPropertyNames()).isEmpty();
     });
   }
 
@@ -104,19 +104,19 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
     final long countBefore = countRecordsFromCounter("Several10859");
     assertThat((Long) bucketStats("Several10859").get("totalPlaceholderRecords")).as("the premise: no pointer yet").isZero();
 
-    database.transaction(() -> grow(page.small.getFirst()));
+    database.transaction(() -> grow(page.small.get(0)));
 
     assertThat((Long) bucketStats("Several10859").get("totalPlaceholderRecords"))
         .as("the grown record and both donors live behind a pointer now").isEqualTo(3L);
     assertIntact("Several10859", countBefore);
     database.transaction(() -> {
-      assertThat(page.small.getFirst().asDocument(true).getString("v")).isEqualTo(BIG);
+      assertThat(page.small.get(0).asDocument(true).getString("v")).isEqualTo(BIG);
       for (final RID donor : page.donors)
         assertThat(donor.asDocument(true).getPropertyNames()).isEmpty();
     });
 
     reopenDatabase();
-    database.transaction(() -> assertThat(database.lookupByRID(page.small.getFirst(), true).asDocument().getString("v"))
+    database.transaction(() -> assertThat(database.lookupByRID(page.small.get(0), true).asDocument().getString("v"))
         .isEqualTo(BIG));
     checkDatabase();
   }
@@ -131,13 +131,13 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
     final FabricatedPage page = fabricate("Content10859", 1, new int[0], true);
     final long countBefore = countRecordsFromCounter("Content10859");
 
-    database.transaction(() -> grow(page.small.getFirst()));
+    database.transaction(() -> grow(page.small.get(0)));
 
     assertThat(markerOf(page.content)).as("the content record is now the head of a chunk chain")
         .isEqualTo(-4L);
     assertIntact("Content10859", countBefore);
     database.transaction(() -> {
-      assertThat(page.small.getFirst().asDocument(true).getString("v")).isEqualTo(BIG);
+      assertThat(page.small.get(0).asDocument(true).getString("v")).isEqualTo(BIG);
       assertThat(page.placeholder.asDocument(true).getString("v")).isEqualTo(QUOTED);
     });
 
@@ -151,7 +151,7 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
 
     database.transaction(() -> database.deleteRecord(database.lookupByRID(page.placeholder, true)));
     assertIntact("Content10859", countBefore - 1);
-    database.transaction(() -> assertThat(database.lookupByRID(page.small.getFirst(), true).asDocument().getString("v"))
+    database.transaction(() -> assertThat(database.lookupByRID(page.small.get(0), true).asDocument().getString("v"))
         .isEqualTo(BIG));
   }
 
@@ -164,19 +164,19 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
   void aPlaceholderWhoseContentGivesTheBytesIsUpdatedInTheSameTransaction() {
     final FabricatedPage page = fabricate("SameTx10859", 1, new int[0], true);
     final String rewritten = "r".repeat(60);
-    assertThat(appliedFirstAtCommit(page.small.getFirst(), page.placeholder))
+    assertThat(appliedFirstAtCommit(page.small.get(0), page.placeholder))
         .as("the premise: this test pins the commit applying the placeholder's update first (its content moves off the page "
             + "before the small slot grows); the head-chunk test below pins the other order")
         .isEqualTo(page.placeholder);
 
     database.transaction(() -> {
       page.placeholder.asDocument(true).modify().set("v", rewritten).save();
-      grow(page.small.getFirst());
+      grow(page.small.get(0));
     });
 
     assertIntact("SameTx10859", 2 + page.fillers);
     database.transaction(() -> {
-      assertThat(page.small.getFirst().asDocument(true).getString("v")).isEqualTo(BIG);
+      assertThat(page.small.get(0).asDocument(true).getString("v")).isEqualTo(BIG);
       assertThat(page.placeholder.asDocument(true).getString("v")).isEqualTo(rewritten);
     });
   }
@@ -190,7 +190,7 @@ class Issue10859SmallSlotOnAPageWithNoSingleDonorTest extends BucketPageLayoutTe
   @Test
   void aPlaceholderWhoseContentHeadChunkGivesTheBytesIsUpdatedInTheSameTransaction() {
     final FabricatedPage page = fabricate("Head10859", 2, new int[0], true);
-    database.transaction(() -> grow(page.small.getFirst()));
+    database.transaction(() -> grow(page.small.get(0)));
     assertThat(markerOf(page.content)).as("the premise: the placeholder's content is a chunk chain").isEqualTo(-4L);
 
     final String rewritten = "r".repeat(70);

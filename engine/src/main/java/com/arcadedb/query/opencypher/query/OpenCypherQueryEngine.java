@@ -1845,15 +1845,19 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * dimension.
    */
   private static int vectorLength(final Object value) {
-    return switch (value) {
-      case float[] a -> a.length;
-      case double[] a -> a.length;
-      case long[] a -> a.length;
-      case int[] a -> a.length;
-      case Object[] a -> a.length > 0 && a[0] instanceof Number ? a.length : -1;
-      case List<?> l -> !l.isEmpty() && l.getFirst() instanceof Number ? l.size() : -1;
-      case null, default -> -1;
-    };
+    if (value instanceof float[] a)
+      return a.length;
+    if (value instanceof double[] a)
+      return a.length;
+    if (value instanceof long[] a)
+      return a.length;
+    if (value instanceof int[] a)
+      return a.length;
+    if (value instanceof Object[] a)
+      return a.length > 0 && a[0] instanceof Number ? a.length : -1;
+    if (value instanceof List<?> l)
+      return !l.isEmpty() && l.get(0) instanceof Number ? l.size() : -1;
+    return -1;
   }
 
   /**

@@ -1182,7 +1182,7 @@ public class RedisNetworkExecutor extends Thread {
     // matters. init() rolls that transaction back and builds a new one, which was one command in ten's worth of time
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     if (context != null && context.transactions.size() == 1) {
-      final TransactionContext idle = context.transactions.getFirst();
+      final TransactionContext idle = context.transactions.get(0);
       if (!idle.isActive() && idle.getDatabase() == database.getWrappedDatabaseInstance()) {
         context.setCurrentUser(user);
         return database;
@@ -1397,7 +1397,7 @@ public class RedisNetworkExecutor extends Thread {
           "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
     // An HTTP request sent to this port (a browser form posting cross-protocol) would otherwise be read line by line as
     // commands: refused at its first line, as Redis refuses it
-    if (!args.isEmpty() && args.getFirst() instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
+    if (!args.isEmpty() && args.get(0) instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
         "HOST:")))
       throw new RedisProtocolLimitException("Protocol error: possible cross-protocol request ('" + name + "'), refused");
     return args;

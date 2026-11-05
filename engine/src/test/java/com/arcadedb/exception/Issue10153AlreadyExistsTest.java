@@ -121,7 +121,7 @@ class Issue10153AlreadyExistsTest extends TestHelper {
 
     // the buckets of a document type named Doc10796_shard are Doc10796_shard_0, ...
     database.command("sql", "create document type Doc10796_shard buckets 1");
-    final String docBucket = database.getSchema().getType("Doc10796_shard").getBuckets(false).getFirst().getName();
+    final String docBucket = database.getSchema().getType("Doc10796_shard").getBuckets(false).get(0).getName();
     assertThat(docBucket).isEqualTo("Doc10796_shard_0");
     assertTaken(() -> database.command("sql", "alter type Ts10796 name Doc10796"), AlreadyExistsException.Kind.BUCKET);
 
@@ -141,8 +141,8 @@ class Issue10153AlreadyExistsTest extends TestHelper {
     // the sample itself, read back: count(*) answers a cached counter, which a sample no longer readable would not change
     final List<Result> samples = database.query("sql", "select ts, value from Ts10796").stream().toList();
     assertThat(samples).hasSize(1);
-    assertThat(DateUtils.toEpochMillis(samples.getFirst().getProperty("ts"))).isEqualTo(1000L);
-    assertThat(samples.getFirst().<Double>getProperty("value")).isEqualTo(1.5);
+    assertThat(DateUtils.toEpochMillis(samples.get(0).getProperty("ts"))).isEqualTo(1000L);
+    assertThat(samples.get(0).<Double>getProperty("value")).isEqualTo(1.5);
   }
 
   @Test

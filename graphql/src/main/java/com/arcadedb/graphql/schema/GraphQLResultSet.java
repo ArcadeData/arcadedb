@@ -289,7 +289,7 @@ public class GraphQLResultSet implements ResultSet {
       }
       return mapProjections(current, projections, type);
     } finally {
-      expansionPath.removeLast();
+      expansionPath.remove(expansionPath.size() - 1);
     }
   }
 
@@ -643,62 +643,71 @@ public class GraphQLResultSet implements ResultSet {
       // A LINK IS READ AS A BARE RID: LOAD THE RECORD IT POINTS TO, OTHERWISE NO ARM BELOW COULD RESOLVE IT (ISSUE #9467)
       projectionValue = loadLinks(projectionValue);
 
-    if (selectionSet != null)
-      return switch (projectionValue) {
-        case null -> null;
-        case Map m -> mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
-        case EmbeddedDocument emb -> mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
-        case Document document -> mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
-        case Result result -> mapBySelections(result, selectionSet, projectionType, cacheable);
-        case Iterable iterable -> {
-          final List<Result> subResults = new ArrayList<>();
-          for (final Object o : iterable) {
-            final Result item = toResult(o);
-            if (item != null)
-              subResults.add(mapBySelections(item, selectionSet, projectionType, cacheable));
-            else if (o != null)
-              throw scalarWithSelection(entry.name(), "its elements are " + o.getClass().getSimpleName() + " values");
-          }
-          yield subResults;
+    if (selectionSet != null) {
+      if (projectionValue == null)
+        return null;
+      if (projectionValue instanceof Map m)
+        return mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
+      if (projectionValue instanceof EmbeddedDocument emb)
+        return mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
+      if (projectionValue instanceof Document document)
+        return mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
+      if (projectionValue instanceof Result result)
+        return mapBySelections(result, selectionSet, projectionType, cacheable);
+      if (projectionValue instanceof Iterable iterable) {
+        final List<Result> subResults = new ArrayList<>();
+        for (final Object o : iterable) {
+          final Result item = toResult(o);
+          if (item != null)
+            subResults.add(mapBySelections(item, selectionSet, projectionType, cacheable));
+          else if (o != null)
+            throw scalarWithSelection(entry.name(), "its elements are " + o.getClass().getSimpleName() + " values");
         }
-        // A SELECTION SET ON A VALUE WITH NO FIELDS: WHAT checkScalarLeafs REFUSES FROM THE SDL, MET HERE ON A FIELD THE SDL DOES
-        // NOT DESCRIBE. DROPPING THE FIELD ANSWERED A ROW WITHOUT IT AND WITHOUT A WORD (#10762)
-        default -> throw scalarWithSelection(entry.name(), "its value is a " + projectionValue.getClass().getSimpleName());
-      };
+        return subResults;
+      }
+      // A SELECTION SET ON A VALUE WITH NO FIELDS: WHAT checkScalarLeafs REFUSES FROM THE SDL, MET HERE ON A FIELD THE SDL DOES
+      // NOT DESCRIBE. DROPPING THE FIELD ANSWERED A ROW WITHOUT IT AND WITHOUT A WORD (#10762)
+      throw scalarWithSelection(entry.name(), "its value is a " + projectionValue.getClass().getSimpleName());
+    }
 
-    if (projectionType != null)
-      return switch (projectionValue) {
-        case null -> null;
-        case Map m -> mapByReturnType(new ResultInternal(m), projectionType);
-        // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
-        // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
-        case EmbeddedDocument emb -> mapByReturnType(new ResultInternal(emb), projectionType);
-        case Document document -> mapByReturnType(new ResultInternal(document), projectionType);
-        case Result result -> mapByReturnType(result, projectionType);
-        case Iterable iterable -> {
-          final List<Result> subResults = new ArrayList<>();
-          for (final Object o : iterable) {
-            final Result item = toResult(o);
-            if (item != null)
-              subResults.add(mapByReturnType(item, projectionType));
-          }
-          yield subResults;
+    if (projectionType != null) {
+      if (projectionValue == null)
+        return null;
+      if (projectionValue instanceof Map m)
+        return mapByReturnType(new ResultInternal(m), projectionType);
+      // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
+      // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
+      if (projectionValue instanceof EmbeddedDocument emb)
+        return mapByReturnType(new ResultInternal(emb), projectionType);
+      if (projectionValue instanceof Document document)
+        return mapByReturnType(new ResultInternal(document), projectionType);
+      if (projectionValue instanceof Result result)
+        return mapByReturnType(result, projectionType);
+      if (projectionValue instanceof Iterable iterable) {
+        final List<Result> subResults = new ArrayList<>();
+        for (final Object o : iterable) {
+          final Result item = toResult(o);
+          if (item != null)
+            subResults.add(mapByReturnType(item, projectionType));
         }
-        // THE SDL DECLARES AN OBJECT AND THE RECORD HOLDS A SCALAR: A FIELD ERROR, WHICH COMPLETES A NULLABLE FIELD AS null
-        default -> null;
-      };
+        return subResults;
+      }
+      // THE SDL DECLARES AN OBJECT AND THE RECORD HOLDS A SCALAR: A FIELD ERROR, WHICH COMPLETES A NULLABLE FIELD AS null
+      return null;
+    }
 
     return projectionValue;
   }
 
   /** An element of a list that a sub-selection can be resolved against, or null for anything else. */
   private static Result toResult(final Object o) {
-    return switch (o) {
-      case Result result -> result;
-      case Document document -> new ResultInternal(document);
-      case Map<?, ?> m -> new ResultInternal((Map<String, Object>) m);
-      case null, default -> null;
-    };
+    if (o instanceof Result result)
+      return result;
+    if (o instanceof Document document)
+      return new ResultInternal(document);
+    if (o instanceof Map<?, ?> m)
+      return new ResultInternal((Map<String, Object>) m);
+    return null;
   }
 
   /**

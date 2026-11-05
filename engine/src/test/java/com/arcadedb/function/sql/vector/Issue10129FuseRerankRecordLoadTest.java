@@ -297,7 +297,7 @@ class Issue10129FuseRerankRecordLoadTest extends TestHelper {
   void lazyRowEqualsTheEagerCopyItReplaces() {
     final List<RID> rids = seed(1);
     database.transaction(() -> {
-      final Document doc = (Document) database.lookupByRID(rids.getFirst(), true);
+      final Document doc = (Document) database.lookupByRID(rids.get(0), true);
 
       // the eager copy, less the `record` key that only answers when asked for (issue #10898)
       final LinkedHashMap<String, Object> eager = new LinkedHashMap<>();

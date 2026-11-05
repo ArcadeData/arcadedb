@@ -127,7 +127,7 @@ class HaSchemaDeltaReplicationIT extends SharedClusterRaftHATest {
     final Database replicaDb = getServerDatabase(replicaIndex, getDatabaseName());
     final LocalSchema replicaSchema = replicaDb.getSchema().getEmbedded();
 
-    final int anchorFileId = replicaSchema.getType(anchor).getBuckets(false).getFirst().getFileId();
+    final int anchorFileId = replicaSchema.getType(anchor).getBuckets(false).get(0).getFileId();
     final Component anchorBefore = replicaSchema.getFileByIdIfExists(anchorFileId);
     assertThat(anchorBefore).as("the follower must have registered the anchor type's bucket").isNotNull();
 

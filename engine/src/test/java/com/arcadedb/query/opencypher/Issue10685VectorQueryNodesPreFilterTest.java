@@ -164,7 +164,7 @@ class Issue10685VectorQueryNodesPreFilterTest extends TestHelper {
     }
     assertThat(rids).hasSize(K);
     // the sub-type's allowed tenant a record is the nearest of them all, the one the filter left out is not answered
-    assertThat(rids.getFirst()).isEqualTo(subA[0]);
+    assertThat(rids.get(0)).isEqualTo(subA[0]);
     assertThat(rids).doesNotContain(subA[1]);
   }
 

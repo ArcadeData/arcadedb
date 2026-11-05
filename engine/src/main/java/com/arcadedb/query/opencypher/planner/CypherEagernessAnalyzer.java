@@ -973,10 +973,10 @@ public final class CypherEagernessAnalyzer {
   private static String singleNodeVariable(final MatchClause matchClause) {
     if (matchClause == null || matchClause.isOptional() || matchClause.getPathPatterns().size() != 1)
       return null;
-    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
     if (pathPattern.getNodes().size() != 1 || !pathPattern.getRelationships().isEmpty())
       return null;
-    return pathPattern.getNodes().getFirst().getVariable();
+    return pathPattern.getNodes().get(0).getVariable();
   }
 
   /** Whether {@code expression} is built from literals alone (a literal list, {@code range(1, 10)}), so it cannot evaluate to a record. */
@@ -1034,9 +1034,9 @@ public final class CypherEagernessAnalyzer {
 
     @Override
     public void visit(final Expression expression) {
-      switch (expression) {
-      case PropertyAccessExpression access -> read(access.getVariableName(), access.getPropertyName(), pairs.get(access));
-      case ListIndexExpression index -> {
+      if (expression instanceof PropertyAccessExpression access)
+        read(access.getVariableName(), access.getPropertyName(), pairs.get(access));
+      else if (expression instanceof ListIndexExpression index) {
         final Expression keyExpression = index.getIndexExpression();
         if (keyExpression instanceof LiteralExpression literal && literal.getValue() instanceof Number)
           return; // an element of a list
@@ -1044,23 +1044,20 @@ public final class CypherEagernessAnalyzer {
             keyExpression instanceof LiteralExpression literal && literal.getValue() instanceof String key ? key : null);
       }
       // a.link.v, properties(n).v: which record is read is only known per row
-      case PropertyReadExpression ignored -> read(null, null);
-      case MapProjectionExpression projection -> {
+      else if (expression instanceof PropertyReadExpression)
+        read(null, null);
+      else if (expression instanceof MapProjectionExpression projection) {
         for (final MapProjectionExpression.ProjectionElement element : projection.getElements())
           if (element.isAllProperties())
             read(projection.getVariableName(), null);
           else if (element.isPropertySelector())
             read(projection.getVariableName(), element.getPropertyName());
-      }
-      case FunctionCallExpression call -> {
-        if (call.getArguments().size() == 1 && call.getArguments().getFirst() instanceof VariableExpression variable
+      } else if (expression instanceof FunctionCallExpression call) {
+        if (call.getArguments().size() == 1 && call.getArguments().get(0) instanceof VariableExpression variable
             && ("properties".equalsIgnoreCase(call.getFunctionName()) || "keys".equalsIgnoreCase(call.getFunctionName())))
           read(variable.getVariableName(), null);
       }
-      default -> {
-        // reads no property
-      }
-      }
+      // any other expression reads no property
     }
 
     @Override
@@ -1101,11 +1098,17 @@ public final class CypherEagernessAnalyzer {
         read(variable, null);
       else if (properties != null)
         for (final Map.Entry<String, Object> entry : properties.entrySet())
-          read(variable, entry.getKey(), switch (entry.getValue()) {
-            case PropertyAccessExpression access when pairs.containsKey(access) -> access.getVariableName();
-            case VariableExpression name -> pairs.get(name);
-            case null, default -> null;
-          });
+        {
+          final Object entryValue = entry.getValue();
+          final String pair;
+          if (entryValue instanceof PropertyAccessExpression access && pairs.containsKey(access))
+            pair = access.getVariableName();
+          else if (entryValue instanceof VariableExpression name)
+            pair = pairs.get(name);
+          else
+            pair = null;
+          read(variable, entry.getKey(), pair);
+        }
     }
 
     private void read(final String variable, final String key) {

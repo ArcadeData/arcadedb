@@ -45,10 +45,11 @@ public class SQLMethodSize extends AbstractSQLMethod {
 
     final int size;
     if (value != null) {
-      switch (value) {
-      case CSRVertexIterable csr -> size = csr.size(); // O(1) via CSR array length
-      case Result result -> size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
-      case Identifiable rid -> {
+      if (value instanceof CSRVertexIterable csr)
+        size = csr.size(); // O(1) via CSR array length
+      else if (value instanceof Result result)
+        size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
+      else if (value instanceof Identifiable rid) {
         int s = 0;
         try {
           final Record record = rid.getRecord(true);
@@ -58,11 +59,11 @@ public class SQLMethodSize extends AbstractSQLMethod {
           // NO DATABASE CONTEXT AVAILABLE
         }
         size = s;
-      }
-      // Unicode characters, as length() counts them, not UTF-16 code units (issue #10378)
-      case String s -> size = CypherFunctionHelper.codePointLength(s);
-      default -> size = MultiValue.getSize(value);
-      }
+      } else if (value instanceof String s)
+        // Unicode characters, as length() counts them, not UTF-16 code units (issue #10378)
+        size = CypherFunctionHelper.codePointLength(s);
+      else
+        size = MultiValue.getSize(value);
 
     } else {
       size = 0;

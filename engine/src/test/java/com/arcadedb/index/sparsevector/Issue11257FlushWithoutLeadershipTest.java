@@ -103,6 +103,6 @@ class Issue11257FlushWithoutLeadershipTest extends TestHelper {
   private static void assertRanked(final PaginatedSparseVectorEngine engine) throws Exception {
     final List<RidScore> top = engine.topK(new int[] { 1 }, new float[] { 1f }, 10);
     assertThat(top).hasSize(5);
-    assertThat(top.getFirst().rid()).isEqualTo(new RID(0, 0));
+    assertThat(top.get(0).rid()).isEqualTo(new RID(0, 0));
   }
 }

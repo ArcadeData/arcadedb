@@ -90,7 +90,7 @@ class Issue10547AppendOnlyInsertsTest extends TestHelper {
         rids.add(database.newDocument("D").set("i", i).set("pad", pad).save().getIdentity());
     });
 
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("D").getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("D").getBuckets(false).get(0);
     assertThat(bucket.getTotalPages()).as("the fixture must span several pages").isGreaterThan(2);
 
     final long recordsPerPage = bucket.getMaxRecordsInPage();

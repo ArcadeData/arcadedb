@@ -13107,7 +13107,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (buildState != BUILD_STATE.READY)
       return "the vector index '" + indexName + "' was not built to the end (" + buildState + ")";
     final List<String> problems = checkIntegrity();
-    return problems.isEmpty() ? null : "the vector index '" + indexName + "' is damaged: " + problems.getFirst();
+    return problems.isEmpty() ? null : "the vector index '" + indexName + "' is damaged: " + problems.get(0);
   }
 
   /**

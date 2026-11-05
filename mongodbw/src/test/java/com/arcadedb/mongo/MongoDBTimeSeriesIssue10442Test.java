@@ -106,7 +106,7 @@ public class MongoDBTimeSeriesIssue10442Test extends BaseMongoServerTest {
 
     final List<Document> sorted = collection.find().sort(Sorts.descending("v")).into(new ArrayList<>());
     assertThat(sorted).hasSize(3);
-    assertThat(((Number) sorted.getFirst().get("v")).doubleValue()).isEqualTo(3.0);
+    assertThat(((Number) sorted.get(0).get("v")).doubleValue()).isEqualTo(3.0);
   }
 
   @Test

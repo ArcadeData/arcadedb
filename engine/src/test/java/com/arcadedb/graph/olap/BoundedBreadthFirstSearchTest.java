@@ -68,7 +68,7 @@ class BoundedBreadthFirstSearchTest extends TestHelper {
     final BoundedBreadthFirstSearch search = new BoundedBreadthFirstSearch(view, Vertex.DIRECTION.OUT, new String[] { "NEXT" },
         WorkCheckpoint.NONE);
 
-    final int first = view.getNodeId(chain.getFirst());
+    final int first = view.getNodeId(chain.get(0));
     search.start(first, 1);
     assertThat(search.size()).isEqualTo(1);
     assertThat(search.depth()).isEqualTo(0);
@@ -127,7 +127,7 @@ class BoundedBreadthFirstSearchTest extends TestHelper {
         () -> {
           throw new IllegalStateException("stop");
         });
-    aborted.start(view.getNodeId(chain.getFirst()), 1);
+    aborted.start(view.getNodeId(chain.get(0)), 1);
     assertThatThrownBy(() -> {
       while (aborted.expandLevel(null))
         ;

@@ -3578,7 +3578,7 @@ public class LocalSchema implements Schema {
     // transaction owes from underneath another would put them in the wrong transaction, and skipping them would publish records the
     // new index does not know: it is refused instead, and the commit of the transaction on top has to come first
     if (database.getTransactionIfExists() != tx)
-      throw new TransactionException("Cannot commit a transaction that owes the entries of the index '" + owed.getFirst().getName()
+      throw new TransactionException("Cannot commit a transaction that owes the entries of the index '" + owed.get(0).getName()
           + "', created after it began, while another transaction is open on top of it: commit or roll back the innermost one first");
 
     for (final IndexInternal index : owed)
@@ -3898,58 +3898,7 @@ public class LocalSchema implements Schema {
 
     @Override
     public Set<Map.Entry<String, V>> entrySet() {
-      return new ReadOnlyEntries<>(super.sequencedEntrySet());
-    }
-
-    // THE SequencedMap MUTATORS AND VIEWS OF LinkedHashMap (JAVA 21) GO AROUND put/remove, SO THEY ARE COVERED TOO
-    @Override
-    public V putFirst(final String key, final V value) {
-      final V previous = super.putFirst(key, value);
-      backingTypeOwnersChanged();
-      return previous;
-    }
-
-    @Override
-    public V putLast(final String key, final V value) {
-      final V previous = super.putLast(key, value);
-      backingTypeOwnersChanged();
-      return previous;
-    }
-
-    // the default ones remove through the entry view, which is read-only here: through remove(key), which refreshes the snapshot
-    @Override
-    public Map.Entry<String, V> pollFirstEntry() {
-      return isEmpty() ? null : poll(super.firstEntry());
-    }
-
-    @Override
-    public Map.Entry<String, V> pollLastEntry() {
-      return isEmpty() ? null : poll(super.lastEntry());
-    }
-
-    private Map.Entry<String, V> poll(final Map.Entry<String, V> entry) {
-      remove(entry.getKey());
-      return entry;
-    }
-
-    @Override
-    public SequencedSet<String> sequencedKeySet() {
-      return Collections.unmodifiableSequencedSet(super.sequencedKeySet());
-    }
-
-    @Override
-    public SequencedCollection<V> sequencedValues() {
-      return Collections.unmodifiableSequencedCollection(super.sequencedValues());
-    }
-
-    @Override
-    public SequencedSet<Map.Entry<String, V>> sequencedEntrySet() {
-      return new ReadOnlyEntries<>(super.sequencedEntrySet());
-    }
-
-    @Override
-    public SequencedMap<String, V> reversed() {
-      return Collections.unmodifiableSequencedMap(super.reversed());
+      return new ReadOnlyEntries<>(super.entrySet());
     }
 
     @Override
@@ -3984,10 +3933,10 @@ public class LocalSchema implements Schema {
    * {@code Collections.unmodifiableMap(registry).entrySet()} asks the registry for its entry set, which is this view, and the
    * sequenced wrappers route back the same way. It wraps the map's own entry set instead, whose iterator walks the map's nodes.
    */
-  private static final class ReadOnlyEntries<V> extends AbstractSet<Map.Entry<String, V>> implements SequencedSet<Map.Entry<String, V>> {
-    private final SequencedSet<Map.Entry<String, V>> entries;
+  private static final class ReadOnlyEntries<V> extends AbstractSet<Map.Entry<String, V>> {
+    private final Set<Map.Entry<String, V>> entries;
 
-    private ReadOnlyEntries(final SequencedSet<Map.Entry<String, V>> entries) {
+    private ReadOnlyEntries(final Set<Map.Entry<String, V>> entries) {
       this.entries = entries;
     }
 
@@ -4016,11 +3965,6 @@ public class LocalSchema implements Schema {
     @Override
     public boolean contains(final Object o) {
       return entries.contains(o);
-    }
-
-    @Override
-    public SequencedSet<Map.Entry<String, V>> reversed() {
-      return new ReadOnlyEntries<>(entries.reversed());
     }
   }
 

@@ -190,14 +190,17 @@ public class ArcadeGraphMLWriter implements GraphWriter {
 
   /** The GraphML type of a value, string for every value GraphML has no type for. */
   private static String graphMLType(final Object value) {
-    return switch (value) {
-      case Boolean b -> GraphMLConstants.BOOLEAN;
-      case Integer i -> GraphMLConstants.INT;
-      case Long l -> GraphMLConstants.LONG;
-      case Float f -> GraphMLConstants.FLOAT;
-      case Double d -> GraphMLConstants.DOUBLE;
-      case null, default -> GraphMLConstants.STRING;
-    };
+    if (value instanceof Boolean)
+      return GraphMLConstants.BOOLEAN;
+    if (value instanceof Integer)
+      return GraphMLConstants.INT;
+    if (value instanceof Long)
+      return GraphMLConstants.LONG;
+    if (value instanceof Float)
+      return GraphMLConstants.FLOAT;
+    if (value instanceof Double)
+      return GraphMLConstants.DOUBLE;
+    return GraphMLConstants.STRING;
   }
 
   private static void writeKey(final XMLStreamWriter writer, final String id, final String forElement, final String name,
@@ -238,14 +241,14 @@ public class ArcadeGraphMLWriter implements GraphWriter {
   private static String typeAttribute(final Object value, final Object hint) {
     if (hint != null)
       return hint.toString();
-    return switch (value) {
-      case Collection<?> c -> ValueTypeHints.JSON;
-      case Map<?, ?> m -> ValueTypeHints.JSON;
-      case Object[] a -> ValueTypeHints.JSON;
-      case Boolean b -> "BOOLEAN";
-      case Integer i -> "INTEGER";
-      case Double d -> "DOUBLE";
-      default -> null;
-    };
+    if (value instanceof Collection || value instanceof Map || value instanceof Object[])
+      return ValueTypeHints.JSON;
+    if (value instanceof Boolean)
+      return "BOOLEAN";
+    if (value instanceof Integer)
+      return "INTEGER";
+    if (value instanceof Double)
+      return "DOUBLE";
+    return null;
   }
 }

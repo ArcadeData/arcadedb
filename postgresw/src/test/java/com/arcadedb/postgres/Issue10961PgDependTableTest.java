@@ -72,13 +72,13 @@ class Issue10961PgDependTableTest {
 
   @Test
   void aTableDependsOnItsSchema() {
-    final int schemaOid = number(resolve("select oid from pg_namespace where nspname = '" + database.getName() + "'").rows.getFirst(), "oid");
+    final int schemaOid = number(resolve("select oid from pg_namespace where nspname = '" + database.getName() + "'").rows.get(0), "oid");
     for (final String table : List.of("Account", "Plain")) {
       final List<Map<String, Object>> rows = resolve(
           "select classid, objsubid, refclassid, refobjid, refobjsubid, deptype from pg_depend where classid = " + PG_CLASS
               + " and refclassid = " + PG_NAMESPACE + " and objid = " + oidOfClass(table)).rows;
       assertThat(rows).as(table).hasSize(1);
-      assertThat(rows.getFirst()).containsEntry("objsubid", 0).containsEntry("refobjid", schemaOid).containsEntry("refobjsubid", 0)
+      assertThat(rows.get(0)).containsEntry("objsubid", 0).containsEntry("refobjid", schemaOid).containsEntry("refobjsubid", 0)
           .containsEntry("deptype", "n");
     }
   }
@@ -86,11 +86,11 @@ class Issue10961PgDependTableTest {
   @Test
   void theRowTypeOfATableDependsOnTheTable() {
     for (final String table : List.of("Account", "Plain")) {
-      final int rowType = number(resolve("select reltype from pg_class where relname = '" + table + "'").rows.getFirst(), "reltype");
+      final int rowType = number(resolve("select reltype from pg_class where relname = '" + table + "'").rows.get(0), "reltype");
       final List<Map<String, Object>> rows = resolve(
           "select classid, objsubid, refclassid, refobjid, refobjsubid, deptype from pg_depend where objid = " + rowType).rows;
       assertThat(rows).as(table).hasSize(1);
-      assertThat(rows.getFirst()).containsEntry("classid", PG_TYPE).containsEntry("objsubid", 0).containsEntry("refclassid", PG_CLASS)
+      assertThat(rows.get(0)).containsEntry("classid", PG_TYPE).containsEntry("objsubid", 0).containsEntry("refclassid", PG_CLASS)
           .containsEntry("refobjid", oidOfClass(table)).containsEntry("refobjsubid", 0).containsEntry("deptype", "i");
     }
   }
@@ -115,7 +115,7 @@ class Issue10961PgDependTableTest {
   void theCatalogsOfTheNewDependenciesAreRegclassNames() {
     final Map<String, Object> row = resolve("""
         select 'pg_namespace'::regclass as n, 'pg_catalog.pg_type'::regclass as t, 2615::regclass as nn, 1247::regclass as tn
-        from pg_namespace limit 1""").rows.getFirst();
+        from pg_namespace limit 1""").rows.get(0);
     assertThat(row).containsEntry("n", PG_NAMESPACE).containsEntry("t", PG_TYPE).containsEntry("nn", "pg_namespace")
         .containsEntry("tn", "pg_type");
   }
@@ -123,7 +123,7 @@ class Issue10961PgDependTableTest {
   private int oidOfClass(final String name) {
     final List<Map<String, Object>> rows = resolve("select oid from pg_class where relname = '" + name + "'").rows;
     assertThat(rows).as(name).hasSize(1);
-    return number(rows.getFirst(), "oid");
+    return number(rows.get(0), "oid");
   }
 
   private static int number(final Map<String, Object> row, final String column) {

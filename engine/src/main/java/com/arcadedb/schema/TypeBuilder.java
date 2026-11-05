@@ -295,7 +295,8 @@ public class TypeBuilder<T> {
         } catch (final RuntimeException e) {
           // Each link is undone by addSuperType itself when it refuses, the ones before it are not: they are given back here, so the
           // type is not left under some of the super types it asked for (issue #10394)
-          for (final LocalDocumentType sup : linked.reversed())
+          for (int i = linked.size() - 1; i >= 0; i--) {
+            final LocalDocumentType sup = linked.get(i);
             try {
               t.removeSuperType(sup);
             } catch (final RuntimeException unlinkFailure) {
@@ -304,6 +305,7 @@ public class TypeBuilder<T> {
               LogManager.instance().log(this, Level.WARNING, "Cannot unlink the super type '%s' from the type '%s' after its growth was refused: %s",
                   unlinkFailure, sup.getName(), typeName, unlinkFailure.getMessage());
             }
+          }
           throw e;
         }
 

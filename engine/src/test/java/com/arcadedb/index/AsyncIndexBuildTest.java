@@ -227,7 +227,7 @@ class AsyncIndexBuildTest {
     @Test
     void aBucketIndexBuiltDirectlyOverAnIdleAsyncExecutorStillCoversItsUncommittedBatch() throws Exception {
       database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
-      final String bucketName = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+      final String bucketName = database.getSchema().getType("V").getBuckets(false).get(0).getName();
 
       database.async().setParallelLevel(2);
 

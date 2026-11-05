@@ -127,7 +127,7 @@ class Issue10607ResultUnwrappedForEveryLabelTest extends TestHelper {
 
     final List<?> values = sink[0].asDocument().getList("values");
     assertThat(values).hasSize(1);
-    assertReadsBack(kind, values.getFirst());
+    assertReadsBack(kind, values.get(0));
   }
 
   @ParameterizedTest
@@ -157,9 +157,9 @@ class Issue10607ResultUnwrappedForEveryLabelTest extends TestHelper {
         final List<?> sub = rs.next().getProperty("sub");
         assertThat(sub).hasSize(expectedEntries);
         if (kind == Kind.ROW)
-          assertThat(((Map<?, ?>) sub.getFirst()).get("c")).isEqualTo(1L);
+          assertThat(((Map<?, ?>) sub.get(0)).get("c")).isEqualTo(1L);
         else if (kind == Kind.RECORD)
-          assertThat(((Identifiable) sub.getFirst()).getIdentity()).isEqualTo(savedRid);
+          assertThat(((Identifiable) sub.get(0)).getIdentity()).isEqualTo(savedRid);
         else
           assertThat(sub).allSatisfy(e -> assertThat(e).isInstanceOf(Document.class));
         ++rows;

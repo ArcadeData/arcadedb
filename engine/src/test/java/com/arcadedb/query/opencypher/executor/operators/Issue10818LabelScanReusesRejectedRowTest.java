@@ -202,7 +202,7 @@ class Issue10818LabelScanReusesRejectedRowTest extends TestHelper {
     assumeTrue(ManagementFactory.getThreadMXBean() instanceof ThreadMXBean bean && bean.isThreadAllocatedMemorySupported()
         && bean.isThreadAllocatedMemoryEnabled(), "per-thread allocation accounting is not available on this JVM");
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
+    final long threadId = Thread.currentThread().getId();
     // the rows built are kept, so the JIT cannot drop the allocations it is asked to measure
     final Result[] kept = new Result[64];
     int matched = 0;

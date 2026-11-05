@@ -281,7 +281,7 @@ class Issue10207PolymorphicTriggerTest extends TestHelper {
 
     // The rows went where the statement said, with what the select projected
     assertThat(count("SELECT count(*) AS c FROM P WHERE x IS NOT NULL")).isEqualTo(3);
-    final String bucket = database.getSchema().getType("S").getBuckets(false).getLast().getName();
+    final String bucket = database.getSchema().getType("S").getBuckets(false).get(database.getSchema().getType("S").getBuckets(false).size() - 1).getName();
     database.transaction(() -> database.command("sql", "INSERT INTO bucket:" + bucket + " FROM SELECT x FROM Src"));
     assertThat(count("SELECT count() AS c FROM S")).isEqualTo(3);
     assertThat(count("SELECT count() AS c FROM bucket:" + bucket)).isEqualTo(3);

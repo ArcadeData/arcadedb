@@ -81,7 +81,7 @@ class EdgeCreationEntryPointsContractTest extends TestHelper {
       @Override
       Edge create(final Database database, final RID from, final RID to, final String type) {
         return inTransaction(database, () -> engine(database).newEdges((VertexInternal) from.asVertex(),
-            List.of(new GraphEngine.CreateEdgeOperation(type, to, new Object[0])), true).getFirst());
+            List.of(new GraphEngine.CreateEdgeOperation(type, to, new Object[0])), true).get(0));
       }
     },
     ASYNC_NEW_EDGE {

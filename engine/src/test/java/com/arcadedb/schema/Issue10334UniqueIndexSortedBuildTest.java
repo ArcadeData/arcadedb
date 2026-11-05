@@ -84,7 +84,7 @@ class Issue10334UniqueIndexSortedBuildTest extends TestHelper {
         .isLessThan(records / 4);
 
     assertThat(sortedBuilds).hasSize(1);
-    assertThat(sortedBuilds.getFirst().unique()).isTrue();
+    assertThat(sortedBuilds.get(0).unique()).isTrue();
 
     final TypeIndex index = database.getSchema().getType("Work").getIndexByProperties("id");
     assertThat(index.isUnique()).isTrue();

@@ -1,6 +1,6 @@
 {
   "name": "arcadedb-studio",
-  "version": "26.11.1",
+  "version": "26.11.1-SNAPSHOT",
   "description": "ArcadeDB Studio Frontend - Multi-Model Database Administration Interface",
   "main": "src/main/resources/static/index.html",
   "scripts": {
@@ -21,7 +21,7 @@
     "version": "npm run security-check && npm run build && git add src/main/resources/static/dist package.json package-lock.json"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.3.1",
+    "@fortawesome/fontawesome-free": "^7.2.0",
     "@popperjs/core": "^2.11.8",
     "bootstrap": "^5.3.8",
     "codemirror": "^5.65.21",
@@ -45,9 +45,9 @@
   },
   "devDependencies": {
     "copy-webpack-plugin": "^14.0.0",
-    "css-loader": "^7.1.5",
+    "css-loader": "^7.1.4",
     "file-loader": "^6.2.0",
-    "html-webpack-plugin": "^5.6.8",
+    "html-webpack-plugin": "^5.6.7",
     "style-loader": "^4.0.0",
     "url-loader": "^4.1.1",
     "webpack": "^5.112.2",

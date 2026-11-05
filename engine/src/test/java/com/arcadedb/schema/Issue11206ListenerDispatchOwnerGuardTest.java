@@ -99,7 +99,7 @@ class Issue11206ListenerDispatchOwnerGuardTest extends TestHelper {
 
   @Test
   void aRecordCannotBeCreatedInABucketAnotherTypeOwns() {
-    final String subBucket = database.getSchema().getType("Sub").getBuckets(false).getFirst().getName();
+    final String subBucket = database.getSchema().getType("Sub").getBuckets(false).get(0).getName();
 
     assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Base").set("n", "x").save(subBucket)))
         .isInstanceOf(IllegalArgumentException.class)

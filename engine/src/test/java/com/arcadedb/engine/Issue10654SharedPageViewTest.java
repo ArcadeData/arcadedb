@@ -94,7 +94,7 @@ class Issue10654SharedPageViewTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("email", key(i)).save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     assertThat(((IndexInternal) typeIndex).scheduleCompaction()).isTrue();
     assertThat(((IndexInternal) typeIndex).compact()).isTrue();
 
@@ -262,7 +262,7 @@ class Issue10654SharedPageViewTest extends TestHelper {
     // the unique checks of the build already looked keys up: start from pages nothing has read yet
     database.async().waitCompletion();
     reopenDatabase();
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     final LSMTreeIndexMutable mutable = mutableOf(typeIndex);
     final int compactedFileId = mutable.getSubIndex().getFileId();
 
@@ -296,7 +296,7 @@ class Issue10654SharedPageViewTest extends TestHelper {
     // the results are kept, so the JIT cannot drop the allocations it is asked to measure
     final BasePage[] kept = new BasePage[64];
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
+    final long threadId = Thread.currentThread().getId();
     final int calls = 20_000;
 
     for (int round = 0; round < 3; round++) {

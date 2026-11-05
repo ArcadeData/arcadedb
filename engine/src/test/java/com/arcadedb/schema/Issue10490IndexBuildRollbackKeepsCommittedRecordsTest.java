@@ -256,7 +256,7 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
   void aFailureWhileQueueingTheCallersRecordsDropsTheBucketIndexAndAllowsARetry() {
     final DocumentType type = database.getSchema().createDocumentType("FailBucket", 1);
     type.createProperty("k", Type.INTEGER);
-    final String bucket = type.getBuckets(false).getFirst().getName();
+    final String bucket = type.getBuckets(false).get(0).getName();
     database.transaction(() -> {
       for (int i = 1; i <= 3; i++)
         database.newDocument("FailBucket").set("k", i).save();
@@ -510,7 +510,7 @@ class Issue10490IndexBuildRollbackKeepsCommittedRecordsTest extends TestHelper {
   void aBucketIndexBuiltAfterAWriteToItsBucketKeepsTheCommittedRecordsOnRollback() {
     final DocumentType type = database.getSchema().createDocumentType("BucketIdx", 1);
     type.createProperty("k", Type.INTEGER);
-    final String bucket = type.getBuckets(false).getFirst().getName();
+    final String bucket = type.getBuckets(false).get(0).getName();
     database.transaction(() -> {
       for (int i = 1; i <= 3; i++)
         database.newDocument("BucketIdx").set("k", i).save();

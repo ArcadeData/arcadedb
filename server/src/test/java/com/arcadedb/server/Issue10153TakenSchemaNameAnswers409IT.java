@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
@@ -109,8 +110,11 @@ class Issue10153TakenSchemaNameAnswers409IT extends BaseGraphServerTest {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("language", language).put("command", command).toString()))
         .build();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString());
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

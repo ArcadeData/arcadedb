@@ -217,7 +217,7 @@ class Issue10317RenamedTypeInheritedIndexTest extends TestHelper {
   }
 
   private IndexInternal subIndexOn(final String typeName) {
-    final int bucketId = database.getSchema().getType(typeName).getBuckets(false).getFirst().getFileId();
+    final int bucketId = database.getSchema().getType(typeName).getBuckets(false).get(0).getFileId();
     for (final TypeIndex index : database.getSchema().getType("T5").getAllIndexes(false))
       for (final IndexInternal subIndex : index.getIndexesOnBuckets())
         if (subIndex.getAssociatedBucketId() == bucketId)

@@ -238,7 +238,7 @@ class Issue10751TypeRenameRekeysIndexMapTest extends TestHelper {
     for (final String kind : kinds) {
       final List<TypeIndex> indexes = new ArrayList<>(database.getSchema().getType("R_" + kind).getAllIndexes(false));
       assertThat(indexes).as("kind %s keeps its index", kind).hasSize(1);
-      assertThat(indexes.getFirst().getName()).as("kind %s", kind).startsWith("R_" + kind + "[");
+      assertThat(indexes.get(0).getName()).as("kind %s", kind).startsWith("R_" + kind + "[");
     }
     for (final String oldName : oldNames)
       assertThat(database.getSchema().existsIndex(oldName)).as("the retired name %s", oldName).isFalse();

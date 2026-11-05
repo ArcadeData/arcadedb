@@ -266,7 +266,7 @@ class RebuildVectorIndexInPlaceTest extends TestHelper {
     final LSMVectorIndex onBucket = (LSMVectorIndex) bucketIndexOf((TypeIndex) database.getSchema().getIndexByName(INDEX),
         rid.getBucketId());
     final List<Pair<RID, Float>> found = onBucket.findNeighborsFromVector(vector, 1);
-    return found.isEmpty() ? null : found.getFirst().getFirst();
+    return found.isEmpty() ? null : found.get(0).getFirst();
   }
 
   private static IndexInternal bucketIndexOf(final TypeIndex index, final int bucketId) {

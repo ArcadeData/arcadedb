@@ -243,7 +243,7 @@ class CompactionChunksAcrossFollowerRestartTest {
 
     final List<List<Object>> published = broker.calls("replicateSchema");
     assertThat(published).as("the compaction published one schema change").hasSize(1);
-    final List<Object> call = published.getFirst();
+    final List<Object> call = published.get(0);
     final String dbName = (String) call.get(0);
     final String schemaJson = (String) call.get(1);
     final Map<Integer, String> filesToAdd = (Map<Integer, String>) call.get(2);
@@ -267,8 +267,8 @@ class CompactionChunksAcrossFollowerRestartTest {
         walEntries, bucketDeltas, Collections.emptyList(), cap, Integer.MAX_VALUE))
       chunks.add(RaftLogEntryCodec.decode(chunk));
     assertThat(chunks.size()).as("entries the compaction was split into").isGreaterThanOrEqualTo(3);
-    assertThat(chunks.getFirst().moreChunksFollow()).isTrue();
-    assertThat(chunks.getLast().moreChunksFollow()).isFalse();
+    assertThat(chunks.get(0).moreChunksFollow()).isTrue();
+    assertThat(chunks.get(chunks.size() - 1).moreChunksFollow()).isFalse();
     return new Compaction(filesToAdd, chunks);
   }
 

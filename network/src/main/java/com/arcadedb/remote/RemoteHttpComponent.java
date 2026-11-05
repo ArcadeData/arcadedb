@@ -18,6 +18,8 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.network.HttpClientLifecycle;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
@@ -196,7 +198,8 @@ public class RemoteHttpComponent extends RWLockContext {
     // httpClient is final and always assigned in the constructor, so no null check is needed. close()
     // performs an orderly shutdown that lets in-flight requests drain (each is already bounded by the
     // per-request watchdog timeout); shutdownNow() is intentionally not used so requests are not interrupted.
-    httpClient.close();
+    // JDK17: HttpClient.close() is Java 21+, so on a Java 17 runtime this is a no-op and the client is GC-managed.
+    HttpClientLifecycle.close(httpClient);
   }
 
   /**
@@ -1303,7 +1306,8 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName())
-          && DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey) {
+          // widened to Object: Java 17 rejects a type pattern that matches its expression's own static type
+          && (Object) DuplicatedKeyException.fromExceptionArgs(exceptionArgs) instanceof final DuplicatedKeyException duplicatedKey) {
         // Missing or malformed exceptionArgs (fewer than three parts, a last part that is not a RID) fall through to the
         // generic mapping below: the caller still gets the server's failure, just untyped, instead of an
         // ArrayIndexOutOfBoundsException out of this method (issue #9473)

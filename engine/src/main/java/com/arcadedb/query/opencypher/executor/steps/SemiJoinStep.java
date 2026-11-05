@@ -211,7 +211,7 @@ public class SemiJoinStep extends AbstractExecutionStep {
     }
     final List<AbstractExecutionStep> chain = new ArrayList<>();
     for (AbstractExecutionStep step = chainEnd; step != null && step != chainInput; step = (AbstractExecutionStep) step.getPrev())
-      chain.addFirst(step);
+      chain.add(0, step);
     for (final AbstractExecutionStep step : chain)
       builder.append("\n").append(step.prettyPrint(depth + 1, indent));
     return builder.toString();

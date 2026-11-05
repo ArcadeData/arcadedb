@@ -90,7 +90,7 @@ class Issue10423SpatialContextNativeMetadataTest {
       final List<Constructor<?>> noArgs = Arrays.stream(clazz.getConstructors()).filter(c -> c.getParameterCount() == 0).toList();
       final List<Constructor<?>> candidates = twoArgs.isEmpty() ? noArgs : twoArgs;
       assertThat(candidates).as("the constructor spatial4j calls on " + clazz.getName()).hasSize(1);
-      required.add(clazz.getName() + "(" + String.join(",", Arrays.stream(candidates.getFirst().getParameterTypes()).map(Class::getName).toList()) + ")");
+      required.add(clazz.getName() + "(" + String.join(",", Arrays.stream(candidates.get(0).getParameterTypes()).map(Class::getName).toList()) + ")");
     }
     return required;
   }

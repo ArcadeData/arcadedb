@@ -59,7 +59,7 @@ class Issue10921SelectiveWalkTest extends TestHelper {
     final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(7), K, -1, predicate);
 
     assertThat(predicate.listingCaps).as("the walk was given up for the listing").hasSize(1);
-    assertThat(predicate.listingCaps.getFirst()).isGreaterThanOrEqualTo(members.size());
+    assertThat(predicate.listingCaps.get(0)).isGreaterThanOrEqualTo(members.size());
     assertThat(index.getStats().get("preFilterSearches")).isEqualTo(plansBefore + 1);
     assertThat(predicate.tested).as("a few dozen candidates walked, not the graph").isLessThan(VERTICES / 4);
     assertThat(ridsIn(results)).containsExactlyElementsOf(ridsIn(index.findNeighborsFromVector(embedding(7), K, -1, members)));

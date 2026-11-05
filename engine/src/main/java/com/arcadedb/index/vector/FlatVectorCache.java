@@ -339,7 +339,7 @@ final class FlatVectorCache {
 
   /** Adds one to the calling thread's stripe of {@code counter}, without atomics: see {@link VectorCache}'s count. */
   private void count(final int counter) {
-    final int i = (((int) Thread.currentThread().threadId()) & STRIPE_MASK) * STRIPE_LONGS + counter;
+    final int i = (((int) Thread.currentThread().getId()) & STRIPE_MASK) * STRIPE_LONGS + counter;
     COUNTERS.setOpaque(counters, i, (long) COUNTERS.getOpaque(counters, i) + 1L);
   }
 

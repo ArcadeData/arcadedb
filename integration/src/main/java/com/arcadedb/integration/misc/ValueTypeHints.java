@@ -234,92 +234,111 @@ public final class ValueTypeHints {
    *                    the target database holds at the source RID
    */
   public static Encoded encode(final Object value, final boolean linksAsText) {
-    return switch (value) {
-      case null -> new Encoded(null, null);
-      case String s -> new Encoded(s, null);
-      case Boolean b -> new Encoded(b, null);
-      case Integer i -> new Encoded(i, null);
-      case Double d -> Double.isFinite(d) ? new Encoded(d, null) : new Encoded(NonFiniteNumbers.encode(d), DOUBLE);
-      case Float f -> new Encoded(NonFiniteNumbers.encode(f), FLOAT);
-      case Long l -> new Encoded(l, LONG);
-      case Short s -> new Encoded(s, SHORT);
-      case Byte b -> new Encoded(b, BYTE);
-      // AS TEXT: A JSON NUMBER IS READ BACK THROUGH A DOUBLE, WHICH DROPS THE SCALE AND EVERY DIGIT PAST THE 17TH
-      case BigDecimal d -> new Encoded(d.toString(), DECIMAL);
-      case LocalDateTime t -> new Encoded(t.toString(), DATETIME);
-      case LocalDate t -> new Encoded(t.toString(), DATE);
-      case ZonedDateTime t -> new Encoded(t.toString(), ZONED_DATETIME);
-      case OffsetDateTime t -> new Encoded(t.toString(), OFFSET_DATETIME);
-      case Instant t -> new Encoded(t.toString(), INSTANT);
-      case Date d -> new Encoded(d.getTime(), JAVA_DATE);
-      case Calendar c -> new Encoded(c.getTimeInMillis(), CALENDAR);
-      case OffsetTime t -> new Encoded(t.toString(), OFFSET_TIME);
-      case LocalTime t -> new Encoded(t.toString(), LOCAL_TIME);
-      case CypherDuration d -> new Encoded(d.toString(), DURATION);
-      case UUID u -> new Encoded(u.toString(), UUID_TOKEN);
-      case byte[] b -> new Encoded(Base64.getEncoder().encodeToString(b), BINARY);
-      case short[] a -> {
-        final JSONArray json = new JSONArray();
-        for (final short s : a)
-          json.put(s);
-        yield new Encoded(json, ARRAY_OF_SHORTS);
-      }
-      case int[] a -> {
-        final JSONArray json = new JSONArray();
-        for (final int i : a)
-          json.put(i);
-        yield new Encoded(json, ARRAY_OF_INTEGERS);
-      }
-      case long[] a -> {
-        final JSONArray json = new JSONArray();
-        for (final long l : a)
-          json.put(l);
-        yield new Encoded(json, ARRAY_OF_LONGS);
-      }
-      case float[] a -> {
-        final JSONArray json = new JSONArray();
-        for (final float f : a)
-          json.put(NonFiniteNumbers.encode(f));
-        yield new Encoded(json, ARRAY_OF_FLOATS);
-      }
-      case double[] a -> {
-        final JSONArray json = new JSONArray();
-        for (final double d : a)
-          json.put(NonFiniteNumbers.encode(d));
-        yield new Encoded(json, ARRAY_OF_DOUBLES);
-      }
-      case EmbeddedDocument embedded -> {
-        final Document document = (Document) embedded;
-        final JSONObject properties = new JSONObject();
-        final JSONObject json = new JSONObject().put("t", document.getTypeName()).put("p", properties);
-        final JSONObject hints = hintsOf(document, properties, false, linksAsText);
-        if (hints != null)
-          json.put(KEY, hints);
-        yield new Encoded(json, EMBEDDED);
-      }
-      case Identifiable identifiable -> new Encoded(identifiable.getIdentity().toString(), linksAsText ? null : LINK);
-      case Map<?, ?> map -> {
-        final JSONObject json = new JSONObject();
-        JSONObject hints = null;
-        for (final Map.Entry<?, ?> entry : map.entrySet()) {
-          final String key = String.valueOf(entry.getKey());
-          final Encoded encoded = encode(entry.getValue(), linksAsText);
-          json.put(key, encoded.json());
-          if (encoded.hint() != null) {
-            if (hints == null)
-              hints = new JSONObject();
-            hints.put(key, encoded.hint());
-          }
+    if (value == null)
+      return new Encoded(null, null);
+    if (value instanceof String || value instanceof Boolean || value instanceof Integer)
+      return new Encoded(value, null);
+    if (value instanceof Double d)
+      return Double.isFinite(d) ? new Encoded(d, null) : new Encoded(NonFiniteNumbers.encode(d), DOUBLE);
+    if (value instanceof Float f)
+      return new Encoded(NonFiniteNumbers.encode(f), FLOAT);
+    if (value instanceof Long)
+      return new Encoded(value, LONG);
+    if (value instanceof Short)
+      return new Encoded(value, SHORT);
+    if (value instanceof Byte)
+      return new Encoded(value, BYTE);
+    // AS TEXT: A JSON NUMBER IS READ BACK THROUGH A DOUBLE, WHICH DROPS THE SCALE AND EVERY DIGIT PAST THE 17TH
+    if (value instanceof BigDecimal)
+      return new Encoded(value.toString(), DECIMAL);
+    if (value instanceof LocalDateTime)
+      return new Encoded(value.toString(), DATETIME);
+    if (value instanceof LocalDate)
+      return new Encoded(value.toString(), DATE);
+    if (value instanceof ZonedDateTime)
+      return new Encoded(value.toString(), ZONED_DATETIME);
+    if (value instanceof OffsetDateTime)
+      return new Encoded(value.toString(), OFFSET_DATETIME);
+    if (value instanceof Instant)
+      return new Encoded(value.toString(), INSTANT);
+    if (value instanceof Date d)
+      return new Encoded(d.getTime(), JAVA_DATE);
+    if (value instanceof Calendar c)
+      return new Encoded(c.getTimeInMillis(), CALENDAR);
+    if (value instanceof OffsetTime)
+      return new Encoded(value.toString(), OFFSET_TIME);
+    if (value instanceof LocalTime)
+      return new Encoded(value.toString(), LOCAL_TIME);
+    if (value instanceof CypherDuration)
+      return new Encoded(value.toString(), DURATION);
+    if (value instanceof UUID)
+      return new Encoded(value.toString(), UUID_TOKEN);
+    if (value instanceof byte[] b)
+      return new Encoded(Base64.getEncoder().encodeToString(b), BINARY);
+    if (value instanceof short[] a) {
+      final JSONArray json = new JSONArray();
+      for (final short s : a)
+        json.put(s);
+      return new Encoded(json, ARRAY_OF_SHORTS);
+    }
+    if (value instanceof int[] a) {
+      final JSONArray json = new JSONArray();
+      for (final int i : a)
+        json.put(i);
+      return new Encoded(json, ARRAY_OF_INTEGERS);
+    }
+    if (value instanceof long[] a) {
+      final JSONArray json = new JSONArray();
+      for (final long l : a)
+        json.put(l);
+      return new Encoded(json, ARRAY_OF_LONGS);
+    }
+    if (value instanceof float[] a) {
+      final JSONArray json = new JSONArray();
+      for (final float f : a)
+        json.put(NonFiniteNumbers.encode(f));
+      return new Encoded(json, ARRAY_OF_FLOATS);
+    }
+    if (value instanceof double[] a) {
+      final JSONArray json = new JSONArray();
+      for (final double d : a)
+        json.put(NonFiniteNumbers.encode(d));
+      return new Encoded(json, ARRAY_OF_DOUBLES);
+    }
+    if (value instanceof EmbeddedDocument) {
+      final Document document = (Document) value;
+      final JSONObject properties = new JSONObject();
+      final JSONObject json = new JSONObject().put("t", document.getTypeName()).put("p", properties);
+      final JSONObject hints = hintsOf(document, properties, false, linksAsText);
+      if (hints != null)
+        json.put(KEY, hints);
+      return new Encoded(json, EMBEDDED);
+    }
+    if (value instanceof Identifiable identifiable)
+      return new Encoded(identifiable.getIdentity().toString(), linksAsText ? null : LINK);
+    if (value instanceof Map<?, ?> map) {
+      final JSONObject json = new JSONObject();
+      JSONObject hints = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final String key = String.valueOf(entry.getKey());
+        final Encoded encoded = encode(entry.getValue(), linksAsText);
+        json.put(key, encoded.json());
+        if (encoded.hint() != null) {
+          if (hints == null)
+            hints = new JSONObject();
+          hints.put(key, encoded.hint());
         }
-        // WITHOUT A TREE, A MAP WITH A "t" KEY IS READ AS AN EMBEDDED DOCUMENT OF THE TYPE THE KEY NAMES
-        if (hints == null && json.has("t"))
-          hints = new JSONObject();
-        yield new Encoded(json, hints);
       }
-      case Collection<?> collection -> encodeElements(collection, linksAsText);
-      case Object[] array -> encodeElements(Arrays.asList(array), linksAsText);
-      default -> new Encoded(value, null);
-    };
+      // WITHOUT A TREE, A MAP WITH A "t" KEY IS READ AS AN EMBEDDED DOCUMENT OF THE TYPE THE KEY NAMES
+      if (hints == null && json.has("t"))
+        hints = new JSONObject();
+      return new Encoded(json, hints);
+    }
+    if (value instanceof Collection<?> collection)
+      return encodeElements(collection, linksAsText);
+    if (value instanceof Object[] array)
+      return encodeElements(Arrays.asList(array), linksAsText);
+    return new Encoded(value, null);
   }
 
   private static Encoded encodeElements(final Collection<?> elements, final boolean linksAsText) {

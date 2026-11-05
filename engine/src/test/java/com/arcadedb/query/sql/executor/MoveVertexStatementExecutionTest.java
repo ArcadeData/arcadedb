@@ -303,7 +303,7 @@ class MoveVertexStatementExecutionTest extends TestHelper {
     final String typeB = "testMoveOtherBucketB";
     database.getSchema().createVertexType(typeA).createProperty("name", String.class).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
     database.getSchema().createVertexType(typeB).createProperty("name", String.class).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
-    final String bucketOfB = database.getSchema().getType(typeB).getBuckets(false).getLast().getName();
+    final String bucketOfB = database.getSchema().getType(typeB).getBuckets(false).get(database.getSchema().getType(typeB).getBuckets(false).size() - 1).getName();
     database.setAutoTransaction(true);
 
     final String rid = database.command("sql", "create vertex " + typeA + " set name = 'moved'").next().getIdentity().get().toString();

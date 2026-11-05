@@ -68,7 +68,7 @@ class Issue11012EdgeListScannerTest extends TestHelper {
     final List<RID> vertices = createGraph();
 
     database.transaction(() -> {
-      final Vertex first = vertices.getFirst().asVertex();
+      final Vertex first = vertices.get(0).asVertex();
       for (int i = 0; i < 30; i++)
         first.newEdge("KNOWS", vertices.get(1 + i).asVertex());
       // The edge appended last is not committed: only the transaction's copy of the segment holds it
@@ -103,7 +103,7 @@ class Issue11012EdgeListScannerTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 8);
     final List<RID> vertices = createGraph();
 
-    final VertexInternal hub = (VertexInternal) vertices.getFirst().asVertex();
+    final VertexInternal hub = (VertexInternal) vertices.get(0).asVertex();
     assertThat(database.lookupByRID(hub.getOutEdgesHeadChunk(), true)).isInstanceOf(StripeDirectory.class);
 
     final EdgeListScanner scanner = new EdgeListScanner((DatabaseInternal) database);
@@ -241,7 +241,7 @@ class Issue11012EdgeListScannerTest extends TestHelper {
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
     // THE THREAD'S ALLOCATION COUNTER IS A HOTSPOT FEATURE: A JVM WITHOUT IT HAS NOTHING TO MEASURE
     assumeTrue(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled());
-    final long thread = Thread.currentThread().threadId();
+    final long thread = Thread.currentThread().getId();
 
     database.transaction(() -> {
       final List<VertexInternal> loaded = new ArrayList<>();
@@ -306,7 +306,7 @@ class Issue11012EdgeListScannerTest extends TestHelper {
         from.newEdge("KNOWS", from);
       }
       // One hub with many more edges than the others
-      final Vertex hub = vertices.getFirst().asVertex();
+      final Vertex hub = vertices.get(0).asVertex();
       for (int k = 0; k < 300; k++)
         hub.newEdge("KNOWS", vertices.get(random.nextInt(VERTICES)).asVertex());
     });

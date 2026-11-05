@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.GlobalConfiguration;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 
 /**
@@ -39,6 +40,15 @@ public final class VectorApiSupport {
    */
   static final        String NATIVE_IMAGE_PROPERTY     = "org.graalvm.nativeimage.imagecode";
   static final        String JVECTOR_SCALAR_PROVIDER   = "default";
+  /**
+   * The system property with which jvector 4.0.2 and later switch its native (Highway, FFM) provider on or off. Unset, jvector
+   * defaults to on.
+   */
+  static final        String JVECTOR_NATIVE_PROPERTY       = "jvector.enable_native_vectorization";
+  /**
+   * The deprecated name of {@link #JVECTOR_NATIVE_PROPERTY}, which jvector still honours when the new one is unset.
+   */
+  static final        String JVECTOR_NATIVE_ALIAS_PROPERTY = "jvector.experimental.enable_native_vectorization";
 
   private VectorApiSupport() {
   }
@@ -65,7 +75,10 @@ public final class VectorApiSupport {
   }
 
   /**
-   * Points jvector at its scalar provider when the Vector API is not compiled and the user has not chosen a provider.
+   * Sets the system properties jvector reads, once, to choose its vectorization provider: its scalar provider in a native
+   * image (#10072), and its native (Highway, FFM) provider on or off according to
+   * {@link GlobalConfiguration#VECTOR_INDEX_NATIVE_VECTORIZATION}, which is off unless configured. A property the user set
+   * is never overwritten, in either direction.
    * jvector resolves its provider once per process, on first use, so this must run before any jvector class is touched:
    * {@link #jvectorProvider()} calls it, and so does {@code LocalDatabase}'s class initialization, which covers jvector
    * classes reached from inside jvector itself. Calling it again is harmless.
@@ -74,6 +87,12 @@ public final class VectorApiSupport {
     final String provider = jvectorProviderFor(isNativeImage(), System.getProperty(JVECTOR_PROVIDER_PROPERTY));
     if (provider != null)
       System.setProperty(JVECTOR_PROVIDER_PROPERTY, provider);
+
+    final String nativeVectorization = jvectorNativeVectorizationFor(
+        GlobalConfiguration.VECTOR_INDEX_NATIVE_VECTORIZATION.getValueAsBoolean(),
+        System.getProperty(JVECTOR_NATIVE_PROPERTY), System.getProperty(JVECTOR_NATIVE_ALIAS_PROPERTY));
+    if (nativeVectorization != null)
+      System.setProperty(JVECTOR_NATIVE_PROPERTY, nativeVectorization);
   }
 
   /**
@@ -86,6 +105,20 @@ public final class VectorApiSupport {
     if (!nativeImage || (configured != null && !configured.isBlank()))
       return null;
     return JVECTOR_SCALAR_PROVIDER;
+  }
+
+  /**
+   * Returns the value to set on {@link #JVECTOR_NATIVE_PROPERTY}, or null to leave jvector's own choice alone because the
+   * user already set that property or its deprecated alias.
+   *
+   * @param enabled the {@code arcadedb.vectorIndex.nativeVectorization} setting
+   * @param current the value of {@link #JVECTOR_NATIVE_PROPERTY}, or null
+   * @param alias   the value of {@link #JVECTOR_NATIVE_ALIAS_PROPERTY}, or null
+   */
+  static String jvectorNativeVectorizationFor(final boolean enabled, final String current, final String alias) {
+    if (current != null || alias != null)
+      return null;
+    return Boolean.toString(enabled);
   }
 
   private static final class JVectorProviderHolder {

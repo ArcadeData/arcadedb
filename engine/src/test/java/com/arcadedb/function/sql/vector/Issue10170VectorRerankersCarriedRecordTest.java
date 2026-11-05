@@ -161,7 +161,7 @@ class Issue10170VectorRerankersCarriedRecordTest extends TestHelper {
         new Object[] { rows, Map.of("boosts", List.of(Map.of("field", "popularity", "weight", 1.0))) }, newContext());
     assertThat(boosted).hasSize(rids.size());
 
-    final Map<?, ?> top = (Map<?, ?>) boosted.getFirst();
+    final Map<?, ?> top = (Map<?, ?>) boosted.get(0);
     assertThat(top).isInstanceOf(ScoreOverrideRow.class);
     assertThat(top.get("score")).isEqualTo(20.0f);
     assertThat(top.get("name")).isEqualTo("p19");
@@ -270,6 +270,6 @@ class Issue10170VectorRerankersCarriedRecordTest extends TestHelper {
       // the upstream distance is still there, as it was in the copy
       assertThat(map.containsKey("distance")).isTrue();
     }
-    assertThat(((Map<?, ?>) out.getFirst()).get("name")).isEqualTo("B");
+    assertThat(((Map<?, ?>) out.get(0)).get("name")).isEqualTo("B");
   }
 }

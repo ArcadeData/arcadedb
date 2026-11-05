@@ -298,7 +298,7 @@ abstract class InPlaceRebuildStrategy {
     @Override
     String refusal(final IndexInternal index) {
       final List<String> problems = index.checkIntegrity();
-      return problems.isEmpty() ? null : "the file of the hash index '" + index.getName() + "' is damaged: " + problems.getFirst();
+      return problems.isEmpty() ? null : "the file of the hash index '" + index.getName() + "' is damaged: " + problems.get(0);
     }
 
     @Override

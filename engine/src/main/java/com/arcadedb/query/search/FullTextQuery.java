@@ -97,7 +97,7 @@ public final class FullTextQuery {
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
 
     final List<TypeIndex> typeIndexes = resolveIndexes(database, args);
-    final TypeIndex typeIndex = typeIndexes.getFirst();
+    final TypeIndex typeIndex = typeIndexes.get(0);
     // the name the caller addressed: that of the logical index when it named one (issue #11137)
     final String indexName = typeIndexes.size() == 1 ? typeIndex.getName() : args.getString("indexName", typeIndex.getName());
 

@@ -19,6 +19,7 @@
 package com.arcadedb.metrics.prometheus;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -82,7 +83,8 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
    */
   @Test
   void prometheusEndpointAnswersHead() throws Exception {
-    try (final HttpClient client = HttpClient.newBuilder().build()) {
+    final HttpClient client = HttpClient.newBuilder().build();
+    try {
       final HttpResponse<String> response = client.send(HttpRequest.newBuilder()
           .uri(URI.create(getServerHttpUrl("/prometheus")))
           .method("HEAD", HttpRequest.BodyPublishers.noBody())
@@ -91,6 +93,8 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
       assertThat(response.statusCode()).isEqualTo(200);
       assertThat(response.headers().firstValue("Content-Type")).hasValue("text/plain");
       assertThat(response.body()).isEmpty();
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

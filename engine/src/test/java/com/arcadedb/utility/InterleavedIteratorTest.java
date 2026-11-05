@@ -71,7 +71,7 @@ class InterleavedIteratorTest {
       public String next() {
         if (shrinking.isEmpty())
           throw new NoSuchElementException();
-        return shrinking.removeFirst();
+        return shrinking.remove(0);
       }
     };
     final InterleavedIterator<String> it = new InterleavedIterator<>(sources(withdrawing, of("b1")));

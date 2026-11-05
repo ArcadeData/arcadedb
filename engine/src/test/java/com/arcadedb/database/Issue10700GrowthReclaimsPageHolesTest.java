@@ -57,7 +57,7 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
     database.transaction(() -> {
       for (final RID filler : fillers)
         emptied(filler);
-      empties.getFirst().asDocument(true).modify().set("v", BIG).save();
+      empties.get(0).asDocument(true).modify().set("v", BIG).save();
     });
 
     assertThat((Long) bucketStats("Holes10700").get("totalPlaceholderRecords"))
@@ -69,7 +69,7 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
     checkDatabase();
 
     database.transaction(() -> {
-      assertThat(empties.getFirst().asDocument(true).getString("v")).isEqualTo(BIG);
+      assertThat(empties.get(0).asDocument(true).getString("v")).isEqualTo(BIG);
       for (int i = 1; i < empties.size(); i++)
         assertThat(empties.get(i).asDocument(true).has("v")).isFalse();
       for (final RID filler : fillers)
@@ -79,7 +79,7 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
 
     reopenDatabase();
     database.transaction(
-        () -> assertThat(database.lookupByRID(empties.getFirst(), true).asDocument().getString("v")).isEqualTo(BIG));
+        () -> assertThat(database.lookupByRID(empties.get(0), true).asDocument().getString("v")).isEqualTo(BIG));
     checkDatabase();
   }
 
@@ -97,8 +97,8 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
     final long countBefore = countRecordsFromCounter("Spill10700");
 
     database.transaction(() -> {
-      emptied(fillers.getFirst());
-      empties.getFirst().asDocument(true).modify().set("v", BIG).save();
+      emptied(fillers.get(0));
+      empties.get(0).asDocument(true).modify().set("v", BIG).save();
     });
 
     assertThat((Long) bucketStats("Spill10700").get("totalPlaceholderRecords"))
@@ -110,8 +110,8 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
     checkDatabase();
 
     database.transaction(() -> {
-      assertThat(empties.getFirst().asDocument(true).getString("v")).isEqualTo(BIG);
-      assertThat(fillers.getFirst().asDocument(true).has("v")).isFalse();
+      assertThat(empties.get(0).asDocument(true).getString("v")).isEqualTo(BIG);
+      assertThat(fillers.get(0).asDocument(true).has("v")).isFalse();
       for (int i = 1; i < fillers.size(); i++)
         assertThat(fillers.get(i).asDocument(true).getString("v")).isEqualTo(FILLER);
       assertThat(sealer.asDocument(true).getString("v")).isEqualTo(SEAL);
@@ -135,14 +135,14 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
       for (final RID filler : fillers)
         database.deleteRecord(filler.asDocument(true));
       // Grows past every hole: it has to spill, and the chunks it creates go through the allocator
-      empties.getFirst().asDocument(true).modify().set("v", "x".repeat(200 * 1024)).save();
+      empties.get(0).asDocument(true).modify().set("v", "x".repeat(200 * 1024)).save();
     });
 
     assertThat(countRecordsFromCounter("Deleted10700")).isEqualTo(countBefore - fillers.size());
     assertThat(countRecords("Deleted10700")).isEqualTo(countBefore - fillers.size());
     checkDatabase();
     database.transaction(() -> {
-      assertThat(empties.getFirst().asDocument(true).getString("v")).isEqualTo("x".repeat(200 * 1024));
+      assertThat(empties.get(0).asDocument(true).getString("v")).isEqualTo("x".repeat(200 * 1024));
       for (final RID filler : fillers)
         assertThat(database.existsRecord(filler)).as("deleted " + filler).isFalse();
       assertThat(sealer.asDocument(true).getString("v")).isEqualTo(SEAL);
@@ -161,7 +161,7 @@ class Issue10700GrowthReclaimsPageHolesTest extends BucketPageLayoutTestSupport 
         empties.add(database.newDocument(typeName).save().getIdentity());
     });
     final RID sealer = sealFirstPage(typeName);
-    return new Layout(empties, sealer, fillersOfPageZero(empties.getLast(), sealer));
+    return new Layout(empties, sealer, fillersOfPageZero(empties.get(empties.size() - 1), sealer));
   }
 
   /** Shrinks {@code rid} to an empty document in the caller's transaction, leaving a hole where its content was. */

@@ -181,7 +181,7 @@ class Issue10856FixedWidthFloatArrayTest extends TestHelper {
         database.newDocument("Doc").set("id", i).set("embedding", unitVector(random, DIM)).save();
     });
 
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     assertThat(bucket.getPageSize()).isEqualTo(65536);
     assertThat(bucket.getTotalPages()).as("%d rows at 9 per page", rows).isLessThanOrEqualTo(rows / 9 + 1);
   }

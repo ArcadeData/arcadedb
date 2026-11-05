@@ -70,7 +70,7 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
       assertThat(isUnread(row)).as("@rid, @type and the distance read no record").isTrue();
     }
 
-    final ScoredRecordRow first = rows.getFirst();
+    final ScoredRecordRow first = rows.get(0);
     assertThat(first.get("pid")).isInstanceOf(Integer.class);
     assertThat(isUnread(first)).as("a property reads the record").isFalse();
   }
@@ -115,7 +115,7 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
     indexOf().buildVectorGraphNow();
     final float[] q = new float[DIMENSIONS];
 
-    final RID nearest = rows(RID_ONLY, q).getFirst().getProperty("r");
+    final RID nearest = rows(RID_ONLY, q).get(0).getProperty("r");
     database.transaction(() -> ((LocalBucket) database.getSchema().getBucketById(nearest.getBucketId())).deleteRecord(nearest));
 
     // The index still answers it: only reading the record could tell, and nothing reads it
@@ -142,11 +142,11 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
 
     final List<RID> before = new ArrayList<>();
     rows(withPid, q).forEach(r -> before.add(r.getProperty("r")));
-    final RID nearest = before.getFirst();
+    final RID nearest = before.get(0);
     // the neighbour that has the 11th place while every record is there
     final List<RID> eleven = new ArrayList<>();
     rows("SELECT @rid AS r FROM (SELECT expand(vectorNeighbors('Doc[vector]', ?, 11)))", q).forEach(r -> eleven.add(r.getProperty("r")));
-    final RID eleventh = eleven.getLast();
+    final RID eleventh = eleven.get(eleven.size() - 1);
     assertThat(before).doesNotContain(eleventh);
 
     database.transaction(() -> ((LocalBucket) database.getSchema().getBucketById(nearest.getBucketId())).deleteRecord(nearest));
@@ -175,7 +175,7 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
     createDocs(30, "", 0);
     indexOf().buildVectorGraphNow();
     final List<ScoredRecordRow> rows = neighbours(new float[DIMENSIONS]);
-    final ScoredRecordRow first = rows.getFirst();
+    final ScoredRecordRow first = rows.get(0);
     assertThat(isUnread(first)).isTrue();
 
     database.transaction(() -> first.getRecord().getIdentity().asDocument().delete());
@@ -196,7 +196,7 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
 
     database.begin();
     final List<ScoredRecordRow> rows = neighbours(new float[DIMENSIONS]);
-    final ScoredRecordRow first = rows.getFirst();
+    final ScoredRecordRow first = rows.get(0);
     assertThat(isUnread(first)).isTrue();
     first.getRecord().getIdentity().asDocument().delete();
 
@@ -217,13 +217,13 @@ class Issue10973VectorNeighborsDeferredRecordReadTest extends TestHelper {
     final List<RID> before = new ArrayList<>();
     rows(RID_ONLY, q).forEach(r -> before.add(r.getProperty("r")));
 
-    database.transaction(() -> before.getFirst().asDocument().delete());
+    database.transaction(() -> before.get(0).asDocument().delete());
 
-    assertThat(indexOf().hasLiveVector(before.getFirst())).isFalse();
+    assertThat(indexOf().hasLiveVector(before.get(0))).isFalse();
     assertThat(indexOf().hasLiveVector(before.get(1))).isTrue();
     final List<RID> after = new ArrayList<>();
     rows(RID_ONLY, q).forEach(r -> after.add(r.getProperty("r")));
-    assertThat(after).hasSize(10).doesNotContain(before.getFirst()).containsAll(before.subList(1, 10));
+    assertThat(after).hasSize(10).doesNotContain(before.get(0)).containsAll(before.subList(1, 10));
   }
 
   /** A read listener sees, and can veto, every record the search hands out: its records are read as before. */

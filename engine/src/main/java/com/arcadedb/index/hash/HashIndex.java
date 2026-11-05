@@ -718,9 +718,9 @@ public class HashIndex implements IndexInternal {
       if (isUnique() && !nullKey) {
         final List<RID> holders = shadow.get(convertedKeys, 1);
         if (!holders.isEmpty()) {
-          if (holders.getFirst().equals(rid))
+          if (holders.get(0).equals(rid))
             return;
-          throw new DuplicatedKeyException(name, Arrays.toString(keys), holders.getFirst());
+          throw new DuplicatedKeyException(name, Arrays.toString(keys), holders.get(0));
         }
       }
       shadow.put(convertedKeys, rid);

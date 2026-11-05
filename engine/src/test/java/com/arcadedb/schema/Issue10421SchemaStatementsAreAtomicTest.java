@@ -192,7 +192,7 @@ class Issue10421SchemaStatementsAreAtomicTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY T5.p STRING");
     database.command("sql", "CREATE INDEX ON T5 (p) NOTUNIQUE");
     final DocumentType type = database.getSchema().getType("T5");
-    final Bucket removed = type.getBuckets(false).getLast();
+    final Bucket removed = type.getBuckets(false).get(type.getBuckets(false).size() - 1);
     final List<Integer> bucketIdsBefore = type.getBucketIds(false);
     final IndexInternal subIndex = subIndexOn(type, removed);
     final Fault fault = injectFault(subIndex);
@@ -257,7 +257,7 @@ class Issue10421SchemaStatementsAreAtomicTest extends TestHelper {
   void aRefusedRenameLeavesTheBucketMapsAsTheyWere() throws IOException {
     createSuperAndSubType();
     insert("T10", "x");
-    final Bucket bucket = database.getSchema().getType("T10").getBuckets(false).getFirst();
+    final Bucket bucket = database.getSchema().getType("T10").getBuckets(false).get(0);
     final String bucketName = bucket.getName();
     final IndexInternal inherited = subIndexOn("T10");
     final Path blocked = Path.of(((DatabaseInternal) database).getFileManager().getFile(inherited.getFileId()).getFilePath());
@@ -296,7 +296,7 @@ class Issue10421SchemaStatementsAreAtomicTest extends TestHelper {
     assertThat(t10.getAllIndexes(true)).containsExactly(index);
     for (final IndexInternal subIndex : index.getIndexesOnBuckets())
       assertThat(database.getSchema().existsIndex(subIndex.getName())).isTrue();
-    assertThat(database.getSchema().getTypeByBucketId(t10.getBuckets(false).getFirst().getFileId())).isSameAs(t10);
+    assertThat(database.getSchema().getTypeByBucketId(t10.getBuckets(false).get(0).getFileId())).isSameAs(t10);
     assertThat(t5.getBucketIds(true)).hasSize(2);
     assertThat(t10.getBucketIds(true)).hasSize(1);
     assertThat(t10.getPolymorphicPropertyNames()).contains("p");
@@ -320,7 +320,7 @@ class Issue10421SchemaStatementsAreAtomicTest extends TestHelper {
 
   private IndexInternal subIndexOn(final String typeName) {
     final DocumentType type = database.getSchema().getType(typeName);
-    return subIndexOn(type, type.getBuckets(false).getFirst());
+    return subIndexOn(type, type.getBuckets(false).get(0));
   }
 
   private IndexInternal subIndexOn(final DocumentType type, final Bucket bucket) {

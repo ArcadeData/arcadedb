@@ -69,7 +69,7 @@ class Issue10747CancelledParallelScanNotLoggedTest extends TestHelper {
     // EVERY OTHER UNIT STARTS PAST THEM. NOT A POSITION HALF WAY THROUGH THE BUCKET: A UNIT OF TWO FULL PAGES IS EXACTLY WHAT
     // ITS CHANNEL HOLDS, SO EACH PRODUCER PARKS ON THE FIRST UNIT IT TAKES, AND ON A POOL OF 4 THREADS (A 4-CORE BOX) NONE
     // EVER REACHED THE MIDDLE UNIT: THE STALL WAS LEFT TO THE LEFTOVER PRODUCERS OF A SCAN THAT FOUND THAT POSITION FIRST
-    final long firstPagesEnd = 2L * ((LocalBucket) database.getSchema().getType(TYPE_NAME).getBuckets(false).getFirst()).getMaxRecordsInPage();
+    final long firstPagesEnd = 2L * ((LocalBucket) database.getSchema().getType(TYPE_NAME).getBuckets(false).get(0)).getMaxRecordsInPage();
 
     final CountDownLatch stalled = new CountDownLatch(1);
     final CountDownLatch thrown = new CountDownLatch(1);

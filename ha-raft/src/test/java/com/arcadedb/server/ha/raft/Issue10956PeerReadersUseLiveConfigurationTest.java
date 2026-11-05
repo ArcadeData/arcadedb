@@ -211,8 +211,8 @@ class Issue10956PeerReadersUseLiveConfigurationTest {
       server.addPeer("F", "peer-e.invalid:2434");
 
       assertThat(sent).hasSize(1);
-      assertThat(sent.getFirst().getServersInCurrentConf()).extracting(p -> p.getId().toString()).containsExactly("A", "B", "C");
-      assertThat(sent.getFirst().getServersInNewConf()).extracting(p -> p.getId().toString())
+      assertThat(sent.get(0).getServersInCurrentConf()).extracting(p -> p.getId().toString()).containsExactly("A", "B", "C");
+      assertThat(sent.get(0).getServersInNewConf()).extracting(p -> p.getId().toString())
           .containsExactly("A", "B", "C", "F");
     }
 

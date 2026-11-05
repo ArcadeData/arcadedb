@@ -119,9 +119,9 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     for (final String statement : List.of("TRUNCATE TYPE mv", "TRUNCATE TYPE mv UNSAFE", "INSERT INTO mv SET region = 'NEVER IN THE QUERY'",
         "UPDATE mv SET total = 0", "UPDATE mv SET total = 1 UPSERT WHERE region = 'NOWHERE'",
         "UPDATE mv SET total = 1 UPSERT WHERE region = 'EU'", "DELETE FROM mv", "DELETE FROM mv WHERE region = 'EU'",
-        "INSERT INTO BUCKET:" + database.getSchema().getBucketById(buckets.getFirst()).getName() + " SET region = 'X'",
-        "TRUNCATE BUCKET " + database.getSchema().getBucketById(buckets.getFirst()).getName(),
-        "ALTER TYPE mv BUCKET -" + database.getSchema().getBucketById(buckets.getFirst()).getName()))
+        "INSERT INTO BUCKET:" + database.getSchema().getBucketById(buckets.get(0)).getName() + " SET region = 'X'",
+        "TRUNCATE BUCKET " + database.getSchema().getBucketById(buckets.get(0)).getName(),
+        "ALTER TYPE mv BUCKET -" + database.getSchema().getBucketById(buckets.get(0)).getName()))
       assertThatThrownBy(() -> database.command("sql", statement)).as(statement).isInstanceOf(SchemaException.class)
           .hasMessageContaining("backing type for materialized view 'mv'").hasMessageContaining("REFRESH MATERIALIZED VIEW mv");
 
@@ -226,15 +226,6 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
     schema.materializedViews.merge("mv", view, (a, b) -> b);
     assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
 
-    // and the SequencedMap mutators and views of LinkedHashMap
-    final LinkedHashMap<String, MaterializedViewImpl> sequenced = (LinkedHashMap<String, MaterializedViewImpl>) schema.materializedViews;
-    assertThat(sequenced.pollFirstEntry().getValue()).isSameAs(view);
-    schema.checkBackingTypeWrite("mv", "insert into");
-    sequenced.putLast("mv", view);
-    assertThatThrownBy(() -> schema.checkBackingTypeWrite("mv", "insert into")).isInstanceOf(SchemaException.class);
-    assertThatThrownBy(() -> sequenced.sequencedKeySet().removeFirst()).isInstanceOf(UnsupportedOperationException.class);
-    assertThatThrownBy(() -> sequenced.reversed().pollFirstEntry()).isInstanceOf(UnsupportedOperationException.class);
-
     // issue #11203: so are the entries the views hand out, whose setValue replaced an owner behind the guard
     final MaterializedViewImpl other = new MaterializedViewImpl(database, "other", "SELECT FROM Sale", "other", List.of("Sale"),
         MaterializedViewRefreshMode.MANUAL, true, 0);
@@ -242,12 +233,7 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
         () -> schema.materializedViews.entrySet().iterator().next().setValue(other),
         () -> schema.materializedViews.entrySet().forEach(entry -> entry.setValue(other)),
         () -> schema.materializedViews.entrySet().stream().findFirst().orElseThrow().setValue(other),
-        () -> schema.materializedViews.entrySet().removeIf(entry -> true),
-        () -> sequenced.sequencedEntrySet().getFirst().setValue(other),
-        () -> sequenced.sequencedEntrySet().reversed().iterator().next().setValue(other),
-        () -> sequenced.sequencedEntrySet().removeFirst(),
-        () -> sequenced.reversed().entrySet().iterator().next().setValue(other),
-        () -> sequenced.firstEntry().setValue(other));
+        () -> schema.materializedViews.entrySet().removeIf(entry -> true));
     for (final Runnable write : entryWrites)
       assertThatThrownBy(write::run).isInstanceOf(UnsupportedOperationException.class);
     assertThat(schema.materializedViews.entrySet()).extracting(Map.Entry::getKey).containsExactly("mv");
@@ -259,7 +245,7 @@ class Issue11020BackingTypeWritesTest extends TestHelper {
   @Test
   void aDocumentOfAnotherTypeIsNotWrittenIntoABackingBucket() {
     createView("");
-    final String bucket = database.getSchema().getBucketById(database.getSchema().getType("mv").getBucketIds(false).getFirst())
+    final String bucket = database.getSchema().getBucketById(database.getSchema().getType("mv").getBucketIds(false).get(0))
         .getName();
 
     assertThatThrownBy(() -> database.transaction(() -> {

@@ -177,7 +177,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       return List.of();
 
     // Get the query vector
-    final float[] queryVector = extractQueryVector(vectorArg, vectorIndexes.getFirst(), context);
+    final float[] queryVector = extractQueryVector(vectorArg, vectorIndexes.get(0), context);
 
     // The filter as the indexes' allow-list (issue #10782), the plan the where option of vector.neighbors takes (#10169).
     // Skipping a rejected candidate here and widening the search instead stopped at MAX_FETCH_CANDIDATES, so a filter that
@@ -239,7 +239,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
 
     // Take top k results, converting distance to score (similarity).
     // EUCLIDEAN distance is L2² in [0, ∞); map it back to a (0, 1] similarity so callers receive a comparable score.
-    final VectorSimilarityFunction similarityFunction = vectorIndexes.getFirst().getSimilarityFunction();
+    final VectorSimilarityFunction similarityFunction = vectorIndexes.get(0).getSimilarityFunction();
     final int resultCount = Math.min(limit, allNeighbors.size());
     final List<Result> results = new ArrayList<>(resultCount);
 
@@ -431,7 +431,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Key is a vertex identifier - fetch the vertex and get its vector
     final String keyStr = key.toString();
     final String typeName = lsmIndex.getTypeName();
-    final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
+    final String vectorProperty = lsmIndex.getPropertyNames().get(0);
     final String idProperty = lsmIndex.getIdPropertyName();
 
     // Shared with vector.neighbors, the SQL entry point onto this same lookup (issue #8097).

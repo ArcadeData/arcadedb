@@ -196,7 +196,7 @@ class RebuildIndexCrashTest {
       final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(INDEX);
       assertThat(index.isValid()).isFalse();
       assertThat(index.getBucketsWithoutIndex()).hasSize(1);
-      final Bucket missing = index.getBucketsWithoutIndex().getFirst();
+      final Bucket missing = index.getBucketsWithoutIndex().get(0);
       assertThat(database.getSchema().getType(SUB_TYPE).getBuckets(false)).contains(missing);
       assertNoUnreferencedBucketIndex(database);
 

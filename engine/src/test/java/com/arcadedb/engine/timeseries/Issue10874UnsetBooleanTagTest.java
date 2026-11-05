@@ -183,11 +183,12 @@ class Issue10874UnsetBooleanTagTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", query)) {
       while (rs.hasNext()) {
         final Object ts = rs.next().getProperty("ts");
-        result.add(switch (ts) {
-          case Date date -> date.getTime();
-          case LocalDateTime local -> local.toInstant(ZoneOffset.UTC).toEpochMilli();
-          default -> ((Number) ts).longValue();
-        });
+        if (ts instanceof Date)
+          result.add(((Date) ts).getTime());
+        else if (ts instanceof LocalDateTime)
+          result.add(((LocalDateTime) ts).toInstant(ZoneOffset.UTC).toEpochMilli());
+        else
+          result.add(((Number) ts).longValue());
       }
     }
     result.sort(null);

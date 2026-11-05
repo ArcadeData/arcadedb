@@ -66,7 +66,7 @@ class Issue10786PqCodesBoundToTheirOrdinalMapTest extends TestHelper {
         .isSameAs(previous.codes());
 
     // The rebuild that keeps the count: the first vector goes, one comes, and every ordinal now names the next vector
-    database.transaction(() -> rids.getFirst().asDocument().delete());
+    database.transaction(() -> rids.get(0).asDocument().delete());
     insert(1);
     index.buildVectorGraphNow();
     final int[] rebuiltMap = index.getOrdinalToVectorIdForTest();
@@ -125,7 +125,7 @@ class Issue10786PqCodesBoundToTheirOrdinalMapTest extends TestHelper {
   private RID nearest(final LSMVectorIndex index, final float[] query) {
     final List<Pair<RID, Float>> rows = index.findNeighborsFromVectorApproximate(query, 10, -1, 0);
     assertThat(rows).isNotEmpty();
-    return rows.getFirst().getFirst();
+    return rows.get(0).getFirst();
   }
 
   private LSMVectorIndex createIndex() {

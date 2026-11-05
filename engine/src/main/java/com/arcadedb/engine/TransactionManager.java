@@ -765,7 +765,7 @@ public class TransactionManager {
       // A record whose flush is shared goes to the first file, not to its thread's: a shared flush has to flush every file
       // holding a pending write, and spreading the writes over the pool made each one flush up to a file per core (on macOS
       // each a full flush of the drive's cache, ~3.5ms). One pass writes them all, so nothing contends for the file
-      final int slot = deferSync ? 0 : (int) (Thread.currentThread().threadId() % pool.length);
+      final int slot = deferSync ? 0 : (int) (Thread.currentThread().getId() % pool.length);
 
       // #10234: A SLOT HOLDS NO FILE UNTIL A COMMIT NEEDS ONE, OR AFTER THE HOUSEKEEPING RELEASED AN IDLE ONE. READ WITHOUT
       // walSlotLock: A FILE SEEN HERE IS SAFELY PUBLISHED, ITS PATH BEING FINAL AND ITS CHANNEL, LOCK AND STATE VOLATILE, AND
@@ -2051,7 +2051,7 @@ public class TransactionManager {
 
     // OK: ALL LOCKED
     LogManager.instance()
-        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().threadId());
+        .log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
     // RETURN ONLY THE LOCKED FILES
     return lockedFiles;
   }
@@ -2088,7 +2088,7 @@ public class TransactionManager {
     // OK: ALL LOCKED
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, Arrays.toString(fileIds),
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
     return lockedFiles;
   }
 
@@ -2118,7 +2118,7 @@ public class TransactionManager {
         unlockFile(fileId, requester);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().threadId());
+          .log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().getId());
     }
   }
 

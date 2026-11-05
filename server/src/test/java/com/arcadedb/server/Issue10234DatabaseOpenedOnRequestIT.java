@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.database.QueryTracer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -275,8 +276,11 @@ class Issue10234DatabaseOpenedOnRequestIT extends BaseGraphServerTest {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .build();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString());
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

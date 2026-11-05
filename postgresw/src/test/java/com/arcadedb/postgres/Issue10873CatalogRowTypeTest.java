@@ -249,7 +249,7 @@ class Issue10873CatalogRowTypeTest {
     assertThat(column(resolve("SELECT typname FROM pg_type WHERE typtype = 'c' ORDER BY typname"), "typname"))
         .containsExactly("Employee", "Person", "PersonView");
 
-    final int rowType = number(resolve("SELECT reltype FROM pg_class WHERE relname = 'Person'").rows.getFirst(), "reltype");
+    final int rowType = number(resolve("SELECT reltype FROM pg_class WHERE relname = 'Person'").rows.get(0), "reltype");
     final List<Map<String, Object>> recognised = PostgresTypeCatalog.resolve("SELECT oid, typname, typtype, typrelid FROM pg_type",
         () -> PostgresCatalog.rowTypes(database));
     assertThat(recognised).filteredOn(row -> "c".equals(row.get("typtype"))).extracting(row -> row.get("typname"))
@@ -273,7 +273,7 @@ class Issue10873CatalogRowTypeTest {
         .containsExactly("\"Person\"");
     assertThat(column(resolve("SELECT c.reltype::regtype AS t FROM pg_class c WHERE c.relname = 'Person'"), "t"))
         .containsExactly("\"Person\"");
-    final Object rowType = resolve("SELECT reltype FROM pg_class WHERE relname = 'Person'").rows.getFirst().get("reltype");
+    final Object rowType = resolve("SELECT reltype FROM pg_class WHERE relname = 'Person'").rows.get(0).get("reltype");
     assertThat(column(resolve("SELECT oid FROM pg_type WHERE oid = 'Person'::regtype"), "oid")).containsExactly(rowType);
   }
 

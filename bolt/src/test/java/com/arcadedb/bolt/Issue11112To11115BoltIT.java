@@ -149,7 +149,7 @@ public class Issue11112To11115BoltIT extends BaseBoltServerTest {
   private static Record single(final Session session, final String query, final Map<String, Object> parameters) {
     final List<Record> rows = session.run(query, parameters).list();
     assertThat(rows).as(query).hasSize(1);
-    return rows.getFirst();
+    return rows.get(0);
   }
 
   private Driver driver() {

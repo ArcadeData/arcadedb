@@ -1620,7 +1620,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     } catch (final ArithmeticException e) {
       throw new IndexException(
           "Sparse vector index '" + getName() + "' cannot index record " + (rids.length == 1 ? rids[0] : Arrays.toString(rids))
-              + ": property '" + getPropertyNames().getFirst() + "' holds " + e.getMessage()
+              + ": property '" + getPropertyNames().get(0) + "' holds " + e.getMessage()
               + ", but a dimension must be a whole number in the int range");
     }
   }

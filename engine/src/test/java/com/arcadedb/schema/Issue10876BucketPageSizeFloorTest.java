@@ -83,8 +83,8 @@ class Issue10876BucketPageSizeFloorTest extends TestHelper {
       assertThat(rs.next().<Object>getProperty("newValue")).isEqualTo(minimum);
     }
     database.command("sql", "CREATE DOCUMENT TYPE Smallest").close();
-    assertThat(database.getSchema().getType("Smallest").getBuckets(false).getFirst()).isInstanceOf(LocalBucket.class);
-    assertThat(((LocalBucket) database.getSchema().getType("Smallest").getBuckets(false).getFirst()).getPageSize()).isEqualTo(minimum);
+    assertThat(database.getSchema().getType("Smallest").getBuckets(false).get(0)).isInstanceOf(LocalBucket.class);
+    assertThat(((LocalBucket) database.getSchema().getType("Smallest").getBuckets(false).get(0)).getPageSize()).isEqualTo(minimum);
 
     final RID[] rids = new RID[2];
     database.transaction(() -> {

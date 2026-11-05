@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -237,8 +238,11 @@ class Issue10388RequestsDoNotReopenADatabaseBeingTakenAwayTest extends BaseGraph
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("language", "sql").put("command", query).toString()))
         .build();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

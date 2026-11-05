@@ -61,7 +61,7 @@ class Issue10590DropViewRefusalChangesNothingTest extends TestHelper {
 
   private Fault injectFault(final String backingTypeName) throws IOException {
     assumeFalse(System.getProperty("os.name", "").toLowerCase().contains("win"), "an open file cannot be moved on Windows");
-    final Bucket bucket = database.getSchema().getType(backingTypeName).getBuckets(false).getLast();
+    final Bucket bucket = database.getSchema().getType(backingTypeName).getBuckets(false).get(database.getSchema().getType(backingTypeName).getBuckets(false).size() - 1);
     final Path file = Path.of(((DatabaseInternal) database).getFileManager().getFile(bucket.getFileId()).getFilePath());
     final Path aside = file.resolveSibling(file.getFileName() + ".aside");
     Files.move(file, aside);

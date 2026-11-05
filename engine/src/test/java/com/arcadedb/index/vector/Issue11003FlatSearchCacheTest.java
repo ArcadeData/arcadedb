@@ -154,7 +154,7 @@ class Issue11003FlatSearchCacheTest {
 
         // Querying with a stored vector finds that row first, and leaves its vector resident
         final List<Pair<RID, Float>> before = index.findNeighborsFromVector(vectors[42], K, EF_SEARCH);
-        assertThat(before.getFirst().getFirst()).isEqualTo(rids[42]);
+        assertThat(before.get(0).getFirst()).isEqualTo(rids[42]);
         final FlatVectorCache cache = index.getSearchVectorCache();
         final int residentBefore = cache.size();
         assertThat(residentBefore).isPositive();

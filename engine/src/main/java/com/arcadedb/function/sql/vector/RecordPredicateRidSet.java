@@ -500,7 +500,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     boolean whole = true;
     // the values are read in the caller's context, which is not meant to be shared between threads
     synchronized (this) {
-      for (final BooleanExpression conjunct : blocks.getFirst().getSubBlocks()) {
+      for (final BooleanExpression conjunct : blocks.get(0).getSubBlocks()) {
         if (!(conjunct instanceof BinaryCondition binary) || !(binary.getOperator() instanceof EqualsCompareOperator)) {
           whole = false;
           continue;

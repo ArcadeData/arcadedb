@@ -154,7 +154,7 @@ class Issue11068GremlinIdleCloseIT extends AbstractGremlinServerIT {
     try {
       final Client client = cluster.connect();
       return client.submit("g.V().hasLabel('IdleGremlin').count()", RequestOptions.build().language("gremlin-lang").create())
-          .all().get().getFirst().getLong();
+          .all().get().get(0).getLong();
     } finally {
       cluster.close();
     }

@@ -56,7 +56,7 @@ class Issue11238FullPageImageBridgesVersionGapTest extends TestHelper {
   @Test
   void aFullPageImageOverAVersionGapIsApplied() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType("GapType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("GapType").getBuckets(false).get(0).getFileId();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
     final ImmutablePage before = loadFromDisk(db, pageId, pageSize);
@@ -78,7 +78,7 @@ class Issue11238FullPageImageBridgesVersionGapTest extends TestHelper {
   @Test
   void aStaleFullPageImageDoesNotOverwriteANewerPage() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType("GapType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("GapType").getBuckets(false).get(0).getFileId();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
     final ImmutablePage before = loadFromDisk(db, pageId, pageSize);
@@ -101,7 +101,7 @@ class Issue11238FullPageImageBridgesVersionGapTest extends TestHelper {
   @Test
   void aPartialDeltaOverAVersionGapIsStillRefused() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
-    final int fileId = db.getSchema().getType("GapType").getBuckets(false).getFirst().getFileId();
+    final int fileId = db.getSchema().getType("GapType").getBuckets(false).get(0).getFileId();
     final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
     final PageId pageId = new PageId(db, fileId, 0);
     final ImmutablePage before = loadFromDisk(db, pageId, pageSize);

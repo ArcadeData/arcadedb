@@ -109,7 +109,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
 
     final int rounds = 100_000;
     long checksum = readAll(page, end, 20_000); // WARM UP: LET THE JIT COMPILE THE LOOP BEFORE MEASURING
-    final long threadId = Thread.currentThread().threadId();
+    final long threadId = Thread.currentThread().getId();
     final long before = threads.getThreadAllocatedBytes(threadId);
     checksum += readAll(page, end, rounds);
     final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
@@ -128,7 +128,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
   void bucketReadPathsStillAnswerEveryRecordShape() {
     final DocumentType type = database.getSchema().createDocumentType("VarIntRead", 1);
     final List<RID> rids = new ArrayList<>();
-    final int pageSize = ((LocalBucket) type.getBuckets(false).getFirst()).getPageSize();
+    final int pageSize = ((LocalBucket) type.getBuckets(false).get(0)).getPageSize();
 
     database.transaction(() -> {
       for (int i = 0; i < 50; i++) {
@@ -152,7 +152,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
     database.transaction(() -> {
       assertThat(database.countType("VarIntRead", false)).isEqualTo(50);
 
-      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+      final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
       assertThat(bucket.count()).isEqualTo(50);
 
       final boolean[] seenByIterator = new boolean[50];
@@ -186,7 +186,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
   void writePathsStillMeasureEveryRecordShape() {
     final DocumentType type = database.getSchema().createDocumentType("VarIntWrite", 1);
     final List<RID> rids = new ArrayList<>();
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     final int pageSize = bucket.getPageSize();
 
     database.transaction(() -> {
@@ -206,7 +206,7 @@ class Issue10656PageVarIntReadAllocationTest extends TestHelper {
         assertThat(bucket.isRecordStoredInSinglePage(rids.get(i))).as("record %d in one page", i).isEqualTo(i % 10 != 0);
       }
       // A SLOT NEVER WRITTEN, ON A PAGE THAT DOES NOT EXIST
-      final RID missing = new RID(rids.getFirst().getBucketId(), 1_000_000_000L);
+      final RID missing = new RID(rids.get(0).getBucketId(), 1_000_000_000L);
       assertThat(bucket.isRecordPresent(missing)).isFalse();
       assertThat(bucket.isRecordStoredInSinglePage(missing)).isFalse();
     });

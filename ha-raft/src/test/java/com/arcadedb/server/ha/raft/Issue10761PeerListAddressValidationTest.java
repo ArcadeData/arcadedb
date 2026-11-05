@@ -109,7 +109,7 @@ class Issue10761PeerListAddressValidationTest {
         final String entry = shape.formatted(host);
         final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(entry, 2424);
         assertThat(parsed.peers()).as(entry).hasSize(1);
-        final RaftPeer peer = parsed.peers().getFirst();
+        final RaftPeer peer = parsed.peers().get(0);
 
         final String raftHost = RaftHAServer.extractHost(peer.getAddress());
         assertThat(raftHost).as("the host of the Raft address of '%s'", entry).isEqualTo(host);
@@ -130,7 +130,7 @@ class Issue10761PeerListAddressValidationTest {
   @Test
   void aPositionalIpv6EntryKeepsItsHostWhole() {
     final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList("[::1]:2434:2480", 2424);
-    final RaftPeer peer = parsed.peers().getFirst();
+    final RaftPeer peer = parsed.peers().get(0);
 
     assertThat(peer.getAddress()).isEqualTo("[::1]:2434");
     assertThat(peer.getPriority()).isZero();
@@ -139,13 +139,13 @@ class Issue10761PeerListAddressValidationTest {
     // The id still follows the one rule every node applies to the Raft address
     assertThat(peer.getId()).isEqualTo(RaftPeerId.valueOf(RaftPeerAddressResolver.peerIdForAddress("[::1]:2434")));
 
-    final RaftPeer second = RaftPeerAddressResolver.parsePeerList("[2001:db8::1]:2434", 2424).peers().getFirst();
+    final RaftPeer second = RaftPeerAddressResolver.parsePeerList("[2001:db8::1]:2434", 2424).peers().get(0);
     assertThat(second.getAddress()).as("no longer 'Invalid priority value 1]'").isEqualTo("[2001:db8::1]:2434");
   }
 
   @Test
   void aValidPositionalPortIsKeptAsWrittenSoTheDerivedPeerIdDoesNotChange() {
-    final RaftPeer peer = RaftPeerAddressResolver.parsePeerList("host:02434:2480", 2424).peers().getFirst();
+    final RaftPeer peer = RaftPeerAddressResolver.parsePeerList("host:02434:2480", 2424).peers().get(0);
 
     assertThat(peer.getAddress()).isEqualTo("host:02434");
     assertThat(peer.getId().toString()).isEqualTo("host_02434");
@@ -180,7 +180,7 @@ class Issue10761PeerListAddressValidationTest {
   @Test
   void aDnsSuffixIsNotAppliedToABracketedHost() {
     final RaftPeer peer = RaftPeerAddressResolver.parsePeerList("[fd00::5]:2434:2480", 2424, ".svc.cluster.local").peers()
-        .getFirst();
+        .get(0);
 
     assertThat(peer.getAddress()).isEqualTo("[fd00::5]:2434");
   }

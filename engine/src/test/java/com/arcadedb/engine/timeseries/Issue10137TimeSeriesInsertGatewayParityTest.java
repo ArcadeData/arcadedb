@@ -225,8 +225,11 @@ class Issue10137TimeSeriesInsertGatewayParityTest extends TestHelper {
    * statement and the contract the bare reason.
    */
   private static boolean sameOutcome(final Object sql, final Object gateway) {
-    if (sql instanceof Refused(final String sqlReason) && gateway instanceof Refused(final String gatewayReason))
+    if (sql instanceof Refused sqlRefused && gateway instanceof Refused gatewayRefused) {
+      final String sqlReason = sqlRefused.reason();
+      final String gatewayReason = gatewayRefused.reason();
       return gatewayReason.equals(sqlReason) || gatewayReason.endsWith(": " + sqlReason);
+    }
     if (sql instanceof Refused || gateway instanceof Refused)
       return false;
     if (sql instanceof Number x && gateway instanceof Number y)

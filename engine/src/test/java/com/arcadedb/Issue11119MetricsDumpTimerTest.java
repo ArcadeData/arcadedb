@@ -122,13 +122,13 @@ class Issue11119MetricsDumpTimerTest {
       assertThat(dumpMetricsThreads()).hasSize(1);
 
       // A SECOND WRITE REPLACES THE SCHEDULE: THE OLD TIMER IS CANCELLED, NOT KEPT RUNNING NEXT TO THE NEW ONE
-      final Thread first = dumpMetricsThreads().getFirst();
+      final Thread first = dumpMetricsThreads().get(0);
       GlobalConfiguration.DUMP_METRICS_EVERY.setValue(1800L);
       first.join(TimeUnit.SECONDS.toMillis(30));
       assertThat(first.isAlive()).isFalse();
       assertThat(dumpMetricsThreads()).hasSize(1);
 
-      final Thread second = dumpMetricsThreads().getFirst();
+      final Thread second = dumpMetricsThreads().get(0);
       GlobalConfiguration.DUMP_METRICS_EVERY.setValue(0L);
       second.join(TimeUnit.SECONDS.toMillis(30));
       assertThat(second.isAlive()).isFalse();
@@ -144,7 +144,7 @@ class Issue11119MetricsDumpTimerTest {
     System.setOut(new PrintStream(OutputStream.nullOutputStream()));
     try {
       GlobalConfiguration.DUMP_METRICS_EVERY.setValue(3600L);
-      final Thread thread = dumpMetricsThreads().getFirst();
+      final Thread thread = dumpMetricsThreads().get(0);
 
       GlobalConfiguration.DUMP_METRICS_EVERY.reset();
       thread.join(TimeUnit.SECONDS.toMillis(30));

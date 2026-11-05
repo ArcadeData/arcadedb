@@ -408,10 +408,10 @@ public final class CypherSchemaCommands {
     }
     for (final MultiTypeIndexes.Entry entry : logicalEntries) {
       final List<TypeIndex> members = MultiTypeIndexes.resolve(database.getSchema(), entry.name());
-      final String neoType = indexType(members.getFirst().getType());
+      final String neoType = indexType(members.get(0).getType());
       if (statement.getIndexType() != null && !statement.getIndexType().equals(neoType))
         continue;
-      found.add(new Object[] { members.getFirst(), neoType, entry.relationship(), entry.labels(), null, entry.name() });
+      found.add(new Object[] { members.get(0), neoType, entry.relationship(), entry.labels(), null, entry.name() });
     }
     found.sort(Comparator.comparing(o -> (String) o[5]));
 

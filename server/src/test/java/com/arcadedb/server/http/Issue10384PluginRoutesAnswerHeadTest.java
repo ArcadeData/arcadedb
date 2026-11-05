@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import io.undertow.Undertow;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
@@ -85,7 +86,7 @@ class Issue10384PluginRoutesAnswerHeadTest {
     if (undertow != null)
       undertow.stop();
     if (client != null)
-      client.close();
+      HttpClientLifecycle.close(client);
   }
 
   @Test

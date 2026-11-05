@@ -197,7 +197,7 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
   void aFailedSchemaChangeLeavesTheBucketMapsRight() {
     final LocalSchema schema = localSchema();
     schema.createDocumentType("Owner");
-    final String ownerBucket = schema.getType("Owner").getBuckets(false).getFirst().getName();
+    final String ownerBucket = schema.getType("Owner").getBuckets(false).get(0).getName();
 
     assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE Thief BUCKET " + ownerBucket))//
         .hasMessageContaining("already associated");
@@ -216,7 +216,7 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
   void aSchemaChangeThatFailsAfterAttachingABucketLeavesTheBucketMapsRight() {
     final LocalSchema schema = localSchema();
     schema.createDocumentType("Owner");
-    final String ownerBucket = schema.getType("Owner").getBuckets(false).getFirst().getName();
+    final String ownerBucket = schema.getType("Owner").getBuckets(false).get(0).getName();
     database.command("sql", "CREATE BUCKET Free");
 
     assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE Partial BUCKET Free," + ownerBucket))//
@@ -238,7 +238,7 @@ class Issue10247SchemaChangeScalingTest extends TestHelper {
     final LocalSchema schema = localSchema();
     schema.createDocumentType("First");
     schema.createDocumentType("Second");
-    final String firstBucket = schema.getType("First").getBuckets(false).getFirst().getName();
+    final String firstBucket = schema.getType("First").getBuckets(false).get(0).getName();
     final File file = schema.getConfigurationFile();
     database.close();
 

@@ -205,7 +205,7 @@ public class Issue10373RemoteNewEdgeVetoIT extends BaseGrpcClientServerTest {
     final RID movedBack = db.lookupByRID(movedToType, true).asVertex().modify().moveToType(VERTEX);
     assertThat(db.lookupByRID(movedBack, true).asVertex().getTypeName()).isEqualTo(VERTEX);
 
-    final String bucketName = getServerDatabase(0, getDatabaseName()).getSchema().getType(TARGET).getBuckets(false).getLast().getName();
+    final String bucketName = getServerDatabase(0, getDatabaseName()).getSchema().getType(TARGET).getBuckets(false).get(getServerDatabase(0, getDatabaseName()).getSchema().getType(TARGET).getBuckets(false).size() - 1).getName();
     final RID movedToBucket = db.lookupByRID(movedBack, true).asVertex().moveToBucket(bucketName);
     assertThat(db.lookupByRID(movedToBucket, true).asVertex().getTypeName()).isEqualTo(TARGET);
     assertThat(getServerDatabase(0, getDatabaseName()).getSchema().getBucketById(movedToBucket.getBucketId()).getName())

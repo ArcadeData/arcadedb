@@ -69,7 +69,7 @@ class Issue10601ClusterTokenRefusalTest extends BaseGraphServerTest {
     assertThat(response.body()).contains("the caller's cluster token does not match this node's");
     assertThat(response.body()).doesNotContain(CLUSTER_TOKEN);
     assertThat(ha.refusedCallers).hasSize(1);
-    assertThat(ha.refusedCallers.getFirst()).isNotBlank();
+    assertThat(ha.refusedCallers.get(0)).isNotBlank();
   }
 
   @Test

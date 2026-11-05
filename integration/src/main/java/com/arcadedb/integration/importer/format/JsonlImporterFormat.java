@@ -1280,7 +1280,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       for (int i = 0; i < items.size(); i++) {
         path.add(i);
         items.set(i, remapRids(items.get(i), property, path, unresolved));
-        path.removeLast();
+        path.remove(path.size() - 1);
       }
     } else if (value instanceof Map<?, ?> map) {
       @SuppressWarnings("unchecked")
@@ -1288,13 +1288,13 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       for (final Map.Entry<Object, Object> entry : entries.entrySet()) {
         path.add(entry.getKey());
         entry.setValue(remapRids(entry.getValue(), property, path, unresolved));
-        path.removeLast();
+        path.remove(path.size() - 1);
       }
     } else if (value instanceof MutableDocument document && document.getIdentity() == null) {
       for (final String name : new ArrayList<>(document.getPropertyNames())) {
         path.add(name);
         document.set(name, remapRids(document.get(name), property, path, unresolved));
-        path.removeLast();
+        path.remove(path.size() - 1);
       }
     }
     return value;

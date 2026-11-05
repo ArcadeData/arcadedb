@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.network.HttpClientLifecycle;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -54,7 +55,8 @@ class Issue10531CoreRoutesHeadAndAllowCensusTest extends BaseGraphServerTest {
 
     final List<String> failures = new ArrayList<>();
     int heads = 0;
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       for (final Map.Entry<String, TreeSet<String>> route : methodsByPath.entrySet()) {
         final String url = getServerHttpUrl(0, route.getKey().replaceAll("\\{[^}]*}", "probe"));
         final TreeSet<String> methods = route.getValue();
@@ -76,6 +78,8 @@ class Issue10531CoreRoutesHeadAndAllowCensusTest extends BaseGraphServerTest {
           failures.add("PATCH " + route.getKey() + " answered " + patch.statusCode() + " with Allow '" + allow + "', expected 405 with '"
               + String.join(", ", answered) + "'");
       }
+    } finally {
+      HttpClientLifecycle.close(client);
     }
 
     assertThat(heads).as("the sweep sent a HEAD for the GET routes").isGreaterThan(25);

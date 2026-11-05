@@ -54,7 +54,7 @@ final class FullTextIndexes {
   static Map<RID, Float> search(final List<TypeIndex> typeIndexes, final String queryText, final int limit, final WorkGuard guard,
       final RIDFilter filter) {
     if (typeIndexes.size() == 1)
-      return FullTextSearch.search(typeIndexes.getFirst(), queryText, limit, guard, null, filter);
+      return FullTextSearch.search(typeIndexes.get(0), queryText, limit, guard, null, filter);
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex typeIndex : typeIndexes)
       merged.putAll(FullTextSearch.search(typeIndex, queryText, limit, guard, null, filter));

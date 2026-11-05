@@ -300,7 +300,7 @@ class DeltaCollector
         onAbandoned();
         throw t;
       }
-      final long threadId = Thread.currentThread().threadId();
+      final long threadId = Thread.currentThread().getId();
       perThreadDeltas.remove(threadId);
       try {
         final CommitOrderGate.Place taken = place;
@@ -331,7 +331,7 @@ class DeltaCollector
   }
 
   private TxDelta getOrCreateDelta() {
-    final long tid = Thread.currentThread().threadId();
+    final long tid = Thread.currentThread().getId();
     final TxDelta existing = perThreadDeltas.get(tid);
     if (existing != null) {
       // If there's an existing delta but the commit callback is no longer registered
@@ -355,7 +355,7 @@ class DeltaCollector
    * opposite one by {@link #registerInFlightEdgeSources}, so a build opening its watch concurrently misses neither.
    */
   private void watchEdgeSource(final RID source) {
-    inFlightEdgeSources.computeIfAbsent(Thread.currentThread().threadId(), k -> ConcurrentHashMap.newKeySet()).add(source);
+    inFlightEdgeSources.computeIfAbsent(Thread.currentThread().getId(), k -> ConcurrentHashMap.newKeySet()).add(source);
     view.watchEdgeSource(source);
   }
 

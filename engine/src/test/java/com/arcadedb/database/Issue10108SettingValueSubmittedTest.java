@@ -113,7 +113,7 @@ class Issue10108SettingValueSubmittedTest {
 
     database.saveConfiguration(a);
 
-    final JSONObject entry = new JSONObject(database.submitted.getFirst());
+    final JSONObject entry = new JSONObject(database.submitted.get(0));
     assertThat(entry.getJSONObject("configuration").keySet()).containsExactly("typeDefaultBuckets");
     assertThat(entry.getJSONArray("removed").length()).isZero();
   }
@@ -128,7 +128,7 @@ class Issue10108SettingValueSubmittedTest {
 
     database.saveConfiguration(removal);
 
-    final JSONObject entry = new JSONObject(database.submitted.getFirst());
+    final JSONObject entry = new JSONObject(database.submitted.get(0));
     assertThat(entry.getJSONObject("configuration").keySet()).isEmpty();
     assertThat(entry.getJSONArray("removed").toList()).containsExactly("typeDefaultBuckets");
   }
@@ -140,7 +140,7 @@ class Issue10108SettingValueSubmittedTest {
 
     database.saveConfiguration(a);
 
-    assertThat(database.submitted.getFirst()).as("the value set was already the stored one").isNull();
+    assertThat(database.submitted.get(0)).as("the value set was already the stored one").isNull();
   }
 
   /** The value is compared with what the file holds by its text, so a type that renders differently once stored would resubmit. */
@@ -175,7 +175,7 @@ class Issue10108SettingValueSubmittedTest {
 
     database.saveConfiguration(new LocalDatabase.SettingChange(KEY, null, 5));
 
-    assertThat(new JSONObject(database.submitted.getFirst()).getJSONObject("configuration").getInt("typeDefaultBuckets"))
+    assertThat(new JSONObject(database.submitted.get(0)).getJSONObject("configuration").getInt("typeDefaultBuckets"))
         .isEqualTo(5);
   }
 
@@ -185,7 +185,7 @@ class Issue10108SettingValueSubmittedTest {
     database.command("sql", "ALTER DATABASE `arcadedb.typeDefaultBuckets` 4");
 
     assertThat(database.submitted).hasSize(1);
-    assertThat(new JSONObject(database.submitted.getFirst()).getJSONObject("configuration").getInt("typeDefaultBuckets"))
+    assertThat(new JSONObject(database.submitted.get(0)).getJSONObject("configuration").getInt("typeDefaultBuckets"))
         .isEqualTo(4);
   }
 }

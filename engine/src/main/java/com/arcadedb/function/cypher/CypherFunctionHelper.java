@@ -699,26 +699,18 @@ public final class CypherFunctionHelper {
    * read as; -1 for any other value.
    */
   public static int temporalTypeRank(final Object value) {
-    switch (value) {
-    case CypherDateTime ignored:
+    if (value instanceof CypherDateTime)
       return 0;
-    case CypherLocalDateTime ignored:
+    if (value instanceof CypherLocalDateTime)
       return 1;
-    case CypherDate ignored:
+    if (value instanceof CypherDate)
       return 2;
-    case CypherTime ignored:
+    if (value instanceof CypherTime)
       return 3;
-    case CypherLocalTime ignored:
+    if (value instanceof CypherLocalTime)
       return 4;
-    case CypherDuration ignored:
+    if (value instanceof CypherDuration || value instanceof Duration || value instanceof Period)
       return 5;
-    case Duration ignored:
-      return 5;
-    case Period ignored:
-      return 5;
-    case null, default:
-      break;
-    }
     if (!TemporalUtil.isNativeTemporal(value))
       return -1;
     // A native java.time / java.util.Date value ranks as the Cypher type it is wrapped in

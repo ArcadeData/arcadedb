@@ -76,7 +76,7 @@ class OpenCypherIssues10886To10892Test {
 
   private long countNodes(final String label) {
     final List<Result> rows = command("MATCH (n:" + label + ") RETURN count(n) AS nodes");
-    return ((Number) rows.getFirst().getProperty("nodes")).longValue();
+    return ((Number) rows.get(0).getProperty("nodes")).longValue();
   }
 
   // #10892
@@ -108,7 +108,7 @@ class OpenCypherIssues10886To10892Test {
 
     final List<Result> star = command("UNWIND [1] AS a CALL { WITH * MATCH (n:Item) WHERE n.value = a RETURN 1 AS y } RETURN 1 AS x");
     assertThat(star).hasSize(1);
-    assertThat(((Number) star.getFirst().getProperty("x")).intValue()).isEqualTo(1);
+    assertThat(((Number) star.get(0).getProperty("x")).intValue()).isEqualTo(1);
 
     final List<Result> explicit = command("UNWIND [1] AS a CALL { WITH a MATCH (n:Item) WHERE n.value = a RETURN 1 AS y } RETURN 1 AS x");
     assertThat(explicit).hasSize(1);
@@ -126,7 +126,7 @@ class OpenCypherIssues10886To10892Test {
     command("CREATE (:Item {value: 1})");
     final List<Result> rows = command("UNWIND [1, 2] AS a CALL { WITH * MATCH (n:Item {value: a}) RETURN n.value AS v } RETURN a, v");
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("a")).intValue()).isEqualTo(1);
+    assertThat(((Number) rows.get(0).getProperty("a")).intValue()).isEqualTo(1);
   }
 
   // #10890
@@ -137,10 +137,10 @@ class OpenCypherIssues10886To10892Test {
     final List<Result> rows = command(
         "MATCH p = (n:Item {id: 1}) FOREACH (item IN nodes(p) | SET item.value = 20) RETURN [item IN nodes(p) | item.value] AS values");
     assertThat(rows).hasSize(1);
-    assertThat((List<Object>) rows.getFirst().getProperty("values")).containsExactly(20L);
+    assertThat((List<Object>) rows.get(0).getProperty("values")).containsExactly(20L);
 
     final List<Result> after = command("MATCH (n:Item {id: 1}) RETURN n.value AS value");
-    assertThat(((Number) after.getFirst().getProperty("value")).intValue()).isEqualTo(20);
+    assertThat(((Number) after.get(0).getProperty("value")).intValue()).isEqualTo(20);
   }
 
   // #10890
@@ -152,8 +152,8 @@ class OpenCypherIssues10886To10892Test {
         "MATCH p = (a:Item {id: 1})-[r:REL]->(b:Item) SET a.value = 30, b.value = 40, r.w = 5 "
             + "RETURN [x IN nodes(p) | x.value] AS values, [x IN relationships(p) | x.w] AS ws");
     assertThat(rows).hasSize(1);
-    assertThat((List<Object>) rows.getFirst().getProperty("values")).containsExactly(30L, 40L);
-    assertThat((List<Object>) rows.getFirst().getProperty("ws")).containsExactly(5L);
+    assertThat((List<Object>) rows.get(0).getProperty("values")).containsExactly(30L, 40L);
+    assertThat((List<Object>) rows.get(0).getProperty("ws")).containsExactly(5L);
   }
 
   // #10889: Cypher clause-at-a-time semantics (Neo4j inserts an Eager barrier between a MERGE and a following SET that
@@ -228,7 +228,7 @@ class OpenCypherIssues10886To10892Test {
     assertThat(command("UNWIND [1, 2, 3] AS x WITH collect(x) AS q SKIP 1 RETURN q")).isEmpty();
     final List<Result> ordered = command("UNWIND [1, 2, 3] AS x WITH x, count(*) AS c ORDER BY x SKIP 1 LIMIT 1 RETURN x");
     assertThat(ordered).hasSize(1);
-    assertThat(((Number) ordered.getFirst().getProperty("x")).intValue()).isEqualTo(2);
+    assertThat(((Number) ordered.get(0).getProperty("x")).intValue()).isEqualTo(2);
     final List<Result> limited = command("UNWIND [1, 2, 3] AS x WITH collect(x) AS q LIMIT 1 RETURN q");
     assertThat(limited).hasSize(1);
   }
@@ -239,7 +239,7 @@ class OpenCypherIssues10886To10892Test {
     final List<Result> filtered = command(
         "UNWIND [1, 1, 2, 3, 3, 4] AS x WITH x, count(*) AS c WHERE c > 1 ORDER BY x SKIP 1 LIMIT 1 RETURN x");
     assertThat(filtered).hasSize(1);
-    assertThat(((Number) filtered.getFirst().getProperty("x")).intValue()).isEqualTo(3);
+    assertThat(((Number) filtered.get(0).getProperty("x")).intValue()).isEqualTo(3);
 
     final List<Result> unordered = command("UNWIND [1, 1, 2, 3, 3, 4] AS x WITH x, count(*) AS c WHERE c > 1 SKIP 1 RETURN x");
     assertThat(unordered).hasSize(1);
@@ -258,7 +258,7 @@ class OpenCypherIssues10886To10892Test {
       }
     });
     assertThat(withParams).hasSize(2);
-    assertThat(((Number) withParams.getFirst().getProperty("x")).intValue()).isEqualTo(2);
+    assertThat(((Number) withParams.get(0).getProperty("x")).intValue()).isEqualTo(2);
     assertThat(((Number) withParams.get(1).getProperty("x")).intValue()).isEqualTo(3);
   }
 
@@ -275,7 +275,7 @@ class OpenCypherIssues10886To10892Test {
         "UNWIND range(1, 20) AS i CALL (i) { WITH i WHERE i > 10 CREATE (:TxProbe {i: i}) RETURN i AS output } "
             + "IN TRANSACTIONS OF 10 ROWS RETURN count(output) AS outputRows");
     assertThat(rows).hasSize(1);
-    assertThat(((Number) rows.getFirst().getProperty("outputRows")).longValue()).isEqualTo(10L);
+    assertThat(((Number) rows.get(0).getProperty("outputRows")).longValue()).isEqualTo(10L);
     assertThat(countNodes("TxProbe")).isEqualTo(10L);
   }
 

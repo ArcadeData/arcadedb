@@ -1850,12 +1850,12 @@ public class BoltProtocolIT extends BaseBoltServerTest {
             "CALL db.index.vector.queryNodes('bolt_v10678', 1, $v) YIELD node RETURN node.id AS id",
             Map.of("v", List.of(0.0, 1.0, 0.0))).list();
         assertThat(nearest).hasSize(1);
-        assertThat(nearest.getFirst().get("id").asString()).isEqualTo("b");
+        assertThat(nearest.get(0).get("id").asString()).isEqualTo("b");
 
         final List<Record> matching = session.run(
             "CALL db.index.fulltext.queryNodes('bolt_f10678', 'fox') YIELD node RETURN node.id AS id").list();
         assertThat(matching).hasSize(1);
-        assertThat(matching.getFirst().get("id").asString()).isEqualTo("a");
+        assertThat(matching.get(0).get("id").asString()).isEqualTo("a");
 
         session.run("DROP INDEX bolt_v10678 IF EXISTS").consume();
         session.run("DROP INDEX bolt_f10678 IF EXISTS").consume();

@@ -1435,7 +1435,7 @@ public class CypherExecutionPlan {
       for (final ClauseEntry entry : clausesInOrder) {
         // The physical plan runs every MATCH ahead of the clauses below: only one that starts the statement binds a row each.
         // An identity check on purpose: the loop walks the statement's own list, not a copy
-        final boolean startsStatement = entry == clausesInOrder.getFirst();
+        final boolean startsStatement = entry == clausesInOrder.get(0);
         switch (entry.getType()) {
         case MATCH: {
           // MATCH pattern AND its WHERE are handled by the optimizer above: the physical plan applies every MATCH-level
@@ -4997,10 +4997,10 @@ public class CypherExecutionPlan {
         || statement.getWhereClause() != null || statement.getClausesInOrder() == null
         || statement.getClausesInOrder().size() != 2)
       return null;
-    final Expression expression = items.getFirst().getExpression();
+    final Expression expression = items.get(0).getExpression();
     if (!(expression instanceof FunctionCallExpression count) || !"count".equalsIgnoreCase(count.getFunctionName())
         || !count.isDistinct() || count.getArguments().size() != 1
-        || !(count.getArguments().getFirst() instanceof VariableExpression counted))
+        || !(count.getArguments().get(0) instanceof VariableExpression counted))
       return null;
 
     PhysicalOperator root = physicalPlan.getRootOperator();
@@ -5020,7 +5020,7 @@ public class CypherExecutionPlan {
     final boolean countSources = expand.getSourceVariable().equals(counted.getVariableName());
     if (!countSources && !expand.getTargetVariable().equals(counted.getVariableName()))
       return null;
-    return new DistinctEndpointCountStep(expand, excludeSource, countSources, items.getFirst().getOutputName(), context);
+    return new DistinctEndpointCountStep(expand, excludeSource, countSources, items.get(0).getOutputName(), context);
   }
 
   private static boolean isPairOfEnds(final VarLengthExpand expand, final String left, final String right) {
@@ -8221,13 +8221,13 @@ public class CypherExecutionPlan {
   private CountOp tryDetectSingleTriangleCountStar() {
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
-    final MatchClause matchClause = statement.getMatchClauses().getFirst();
+    final MatchClause matchClause = statement.getMatchClauses().get(0);
     if (matchClause.isOptional() || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
     // the parser writes a MATCH's WHERE on the clause: a statement carrying one as well would have one of them ignored
     if (matchClause.hasWhereClause() && statement.getWhereClause() != null)
       return null;
-    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    final PathPattern pathPattern = matchClause.getPathPatterns().get(0);
     if (pathPattern.getRelationshipCount() != 3 || pathPattern.hasPathVariable())
       return null;
 
@@ -8251,8 +8251,8 @@ public class CypherExecutionPlan {
           || rel.getTypes().size() != 1 || rel.hasProperties() || rel.hasWhereExpression() || rel.getDirection() != Direction.BOTH)
         return null;
       if (edgeType == null)
-        edgeType = rel.getTypes().getFirst();
-      else if (!edgeType.equals(rel.getTypes().getFirst()))
+        edgeType = rel.getTypes().get(0);
+      else if (!edgeType.equals(rel.getTypes().get(0)))
         return null;
     }
 
@@ -8265,9 +8265,9 @@ public class CypherExecutionPlan {
         return null;
       if (!node.hasLabels())
         continue;
-      if (labelled && !label.equals(node.getLabels().getFirst()))
+      if (labelled && !label.equals(node.getLabels().get(0)))
         return null;
-      label = node.getLabels().getFirst();
+      label = node.getLabels().get(0);
       labelled = true;
     }
     // the closing node repeats the first, so its label counts for that variable: every other position must carry it too

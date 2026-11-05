@@ -92,7 +92,7 @@ class Issue10190AutoCommitStatementAtomicityTest extends TestHelper {
     setup("CREATE (:A {k: 0})");
     final List<Result> rows = drain("MATCH (n:A) REMOVE n:A SET n:A RETURN labels(n) AS l");
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<List<String>>getProperty("l")).containsExactly("A");
+    assertThat(rows.get(0).<List<String>>getProperty("l")).containsExactly("A");
     assertThat(graph()).containsExactly("[A]{k=0}");
   }
 

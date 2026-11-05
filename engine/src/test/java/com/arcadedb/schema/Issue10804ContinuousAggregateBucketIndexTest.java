@@ -219,7 +219,7 @@ class Issue10804ContinuousAggregateBucketIndexTest extends TestHelper {
     assertThat(buckets()).isEqualTo(expected);
     assertThat(aggregate().getBackingType().getPolymorphicIndexByProperties("hr")).isNotNull();
     insert(H0 + 4 * HOUR + 4_000, "b", 1);
-    assertThat(buckets().getLast()).isEqualTo(new Bucket(H0 + 4 * HOUR, "b", 101));
+    assertThat(buckets().get(buckets().size() - 1)).isEqualTo(new Bucket(H0 + 4 * HOUR, "b", 101));
   }
 
   /**

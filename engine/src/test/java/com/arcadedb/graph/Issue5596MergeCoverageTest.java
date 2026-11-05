@@ -245,7 +245,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     bumper.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError("competitor failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("competitor failed: " + errors.get(0), errors.get(0));
 
     assertThat(committed).as("the transaction must eventually commit").isTrue();
 
@@ -286,7 +286,8 @@ class Issue5596MergeCoverageTest extends TestHelper {
     final long declinedBefore = declinedByCoverage();
 
     final int rounds = 40;
-    try (final ExecutorService competitor = Executors.newSingleThreadExecutor()) {
+    final ExecutorService competitor = Executors.newSingleThreadExecutor();
+    try {
       for (int i = 0; i < rounds; i++) {
         boolean committed = false;
         for (int attempt = 0; attempt < 50 && !committed; attempt++) {
@@ -312,6 +313,8 @@ class Issue5596MergeCoverageTest extends TestHelper {
         }
         assertThat(committed).as("round " + i + " must eventually commit").isTrue();
       }
+    } finally {
+      competitor.shutdownNow();
     }
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().edgeAppendMerges - mergesBefore;
@@ -387,7 +390,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
       thread.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError(errors.size() + " thread(s) failed, first: " + errors.get(0), errors.get(0));
 
     final long merges = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges - mergesBefore;
     assertThat(merges).as("growth and delete slot merges must still fire on fully covered pages").isGreaterThan(0);
@@ -473,7 +476,7 @@ class Issue5596MergeCoverageTest extends TestHelper {
     bumper.join();
 
     if (!errors.isEmpty())
-      throw new AssertionError("competitor failed: " + errors.getFirst(), errors.getFirst());
+      throw new AssertionError("competitor failed: " + errors.get(0), errors.get(0));
 
     assertThat(committed).as("the transaction must eventually commit").isTrue();
 

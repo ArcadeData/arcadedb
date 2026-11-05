@@ -588,7 +588,7 @@ public final class HybridSearch {
     // Before the search, not after it: whether this index can seed a graph expansion is decided by the type it
     // is declared on. Checking it once the hits are in made the same invalid configuration pass or fail
     // depending on whether the corpus happened to contain a match (issue #7394).
-    final TypeIndex typeIndex = typeIndexes.getFirst();
+    final TypeIndex typeIndex = typeIndexes.get(0);
     if (expanding)
       for (final TypeIndex member : typeIndexes)
         requireVertexType(database, member.getTypeName());

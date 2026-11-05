@@ -75,14 +75,14 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
     final boolean result;
 
     final Object condition = params[0];
-    switch (condition) {
-    case Boolean boolean1 -> result = boolean1;
-    case String s -> result = Boolean.parseBoolean(s);
-    case Number number -> result = isPositive(number);
-    case null, default -> {
+    if (condition instanceof Boolean boolean1)
+      result = boolean1;
+    else if (condition instanceof String s)
+      result = Boolean.parseBoolean(s);
+    else if (condition instanceof Number number)
+      result = isPositive(number);
+    else
       return null;
-    }
-    }
 
     // AN OMITTED FALSE BRANCH IS A null, WHICH IS WHAT THE DOCUMENTED TWO-ARGUMENT FORM MEANS. THE BODY USED TO READ
     // params[2] UNCONDITIONALLY AND HAND THE RESULTING ArrayIndexOutOfBoundsException TO A catch (Exception) THAT
@@ -97,15 +97,19 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
    * {@code 3000000000} as a negative int, so both took the false branch (issue #10699). NaN is not positive.
    */
   private static boolean isPositive(final Number number) {
-    return switch (number) {
-      case BigDecimal bigDecimal -> bigDecimal.signum() > 0;
-      case BigInteger bigInteger -> bigInteger.signum() > 0;
-      case Integer i -> i > 0;
-      case Long l -> l > 0;
-      case Short s -> s > 0;
-      case Byte b -> b > 0;
-      default -> number.doubleValue() > 0;
-    };
+    if (number instanceof BigDecimal bigDecimal)
+      return bigDecimal.signum() > 0;
+    if (number instanceof BigInteger bigInteger)
+      return bigInteger.signum() > 0;
+    if (number instanceof Integer i)
+      return i > 0;
+    if (number instanceof Long l)
+      return l > 0;
+    if (number instanceof Short s)
+      return s > 0;
+    if (number instanceof Byte b)
+      return b > 0;
+    return number.doubleValue() > 0;
   }
 
   @Override

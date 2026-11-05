@@ -46,7 +46,7 @@ class Issue10712RepeatableReadRecountTest extends TestHelper {
       for (int i = 0; i < 100; i++)
         database.newDocument(TYPE).set("id", i).save();
     });
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
     final TransactionManager txManager = ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getTransactionManager();
 
     database.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 100L);

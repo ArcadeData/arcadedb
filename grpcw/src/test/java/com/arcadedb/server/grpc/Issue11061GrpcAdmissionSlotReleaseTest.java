@@ -73,7 +73,7 @@ class Issue11061GrpcAdmissionSlotReleaseTest {
       final RecordingCall call = new RecordingCall();
       CompletableFuture.runAsync(() -> {
         final ServerCall.Listener<ExecuteQueryRequest> listener = new GrpcAdmissionInterceptor(null).interceptCall(call,
-            new Metadata(), (c, h) -> new ServerCall.Listener<>() {
+            new Metadata(), (c, h) -> new ServerCall.Listener<ExecuteQueryRequest>() {
               @Override
               public void onHalfClose() {
                 c.sendMessage(ExecuteQueryResponse.getDefaultInstance());
@@ -104,7 +104,7 @@ class Issue11061GrpcAdmissionSlotReleaseTest {
       final boolean[] served = { false };
       final CompletableFuture<Void> attempt = CompletableFuture.runAsync(() -> {
         final ServerCall.Listener<ExecuteQueryRequest> listener = new GrpcAdmissionInterceptor(null).interceptCall(call,
-            new Metadata(), (c, h) -> new ServerCall.Listener<>() {
+            new Metadata(), (c, h) -> new ServerCall.Listener<ExecuteQueryRequest>() {
               @Override
               public void onHalfClose() {
                 served[0] = true;
@@ -126,7 +126,7 @@ class Issue11061GrpcAdmissionSlotReleaseTest {
     final RecordingCall next = new RecordingCall(false);
     CompletableFuture.runAsync(() -> {
       final ServerCall.Listener<ExecuteQueryRequest> listener = new GrpcAdmissionInterceptor(null).interceptCall(next,
-          new Metadata(), (c, h) -> new ServerCall.Listener<>() {
+          new Metadata(), (c, h) -> new ServerCall.Listener<ExecuteQueryRequest>() {
             @Override
             public void onHalfClose() {
               c.close(Status.OK, new Metadata());

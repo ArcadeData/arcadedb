@@ -140,7 +140,7 @@ class Issue10438VectorIndexCreatedInWritingScriptTest extends TestHelper {
 
     final List<Result> rows = neighbors("Acc7[behavior]");
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<String>getProperty("id")).isEqualTo("keep");
+    assertThat(rows.get(0).<String>getProperty("id")).isEqualTo("keep");
     assertThat(database.getSchema().getIndexByName("Acc7[behavior]").countEntries()).isEqualTo(1L);
   }
 
@@ -222,7 +222,7 @@ class Issue10438VectorIndexCreatedInWritingScriptTest extends TestHelper {
   void bucketIndexCreatedAfterInsertsInSameTransactionIsSearchable() {
     final DocumentType type = database.getSchema().createDocumentType("BucketDoc", 1);
     type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
-    final String bucketName = type.getBuckets(false).getFirst().getName();
+    final String bucketName = type.getBuckets(false).get(0).getName();
 
     final LSMVectorIndex[] index = new LSMVectorIndex[1];
     database.transaction(() -> {

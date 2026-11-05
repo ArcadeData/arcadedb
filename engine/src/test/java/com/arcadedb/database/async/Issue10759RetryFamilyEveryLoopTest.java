@@ -209,7 +209,7 @@ class Issue10759RetryFamilyEveryLoopTest extends TestHelper {
   void asyncTransactionRetriesARealCommitLockTimeout() throws Exception {
     database.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
     try {
-      final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getType(TYPE).getBuckets(false).get(0);
       final Object holder = new Object();
       final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
       assertThat(local.getTransactionManager().tryLockFile(bucket.getFileId(), 0, holder)).isEqualTo(LockManager.LOCK_STATUS.YES);

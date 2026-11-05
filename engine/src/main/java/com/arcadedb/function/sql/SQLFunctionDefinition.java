@@ -79,7 +79,7 @@ public class SQLFunctionDefinition implements FunctionDefinition {
     if (rows.isEmpty())
       return null;
     if (rows.size() == 1)
-      return extractResult(rows.getFirst());
+      return extractResult(rows.get(0));
 
     // The list is ours and nothing else holds it: the rows are replaced by what they stand for in place, instead of copying them
     // into a second list for every call of a function that is often called per row

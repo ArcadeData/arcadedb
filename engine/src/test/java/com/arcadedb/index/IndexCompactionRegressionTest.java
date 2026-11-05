@@ -110,7 +110,7 @@ class IndexCompactionRegressionTest extends TestHelper {
     }
 
     private LSMTreeIndexMutable bucketMutableIndex() {
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").get(0);
       for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
         if (bucketIndex instanceof LSMTreeIndex lsmIndex)
           return lsmIndex.getMutableIndex();
@@ -142,7 +142,7 @@ class IndexCompactionRegressionTest extends TestHelper {
       final TypeIndex typeIndex = database.getSchema().getType("Issue5067Doc").getAllIndexes(false).iterator().next();
       final LSMTreeIndex lsmIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
       final LSMTreeIndexMutable mutable = lsmIndex.getMutableIndex();
-      final int bucketFileId = database.getSchema().getType("Issue5067Doc").getBuckets(false).getFirst().getFileId();
+      final int bucketFileId = database.getSchema().getType("Issue5067Doc").getBuckets(false).get(0).getFileId();
 
       // Create index pages inside a transaction that rolls back: put directly on the mutable index (the
       // regular record path defers index writes to commit) so createNewPage runs, then discard everything.
@@ -544,7 +544,7 @@ class IndexCompactionRegressionTest extends TestHelper {
           database.newDocument(TYPE_NAME).set("text", "word" + i + " other" + (i * 7) + " shared").save();
       });
 
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").get(0);
       final IndexInternal bucketIndex = typeIndex.getIndexesOnBuckets()[0];
       final String nameBefore = bucketIndex.getName();
       final LSMTreeIndex lsm = (LSMTreeIndex) ((LSMTreeIndexMutable) bucketIndex.getComponent()).getMainIndex();
@@ -554,7 +554,7 @@ class IndexCompactionRegressionTest extends TestHelper {
 
       reopenDatabase();
 
-      final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").getFirst();
+      final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("text").get(0);
       assertThat(reloaded.getIndexesOnBuckets()[0].getName()).isEqualTo(nameBefore);
       assertThat(database.getSchema().getIndexByName(nameBefore).getType()).isEqualTo(Schema.INDEX_TYPE.FULL_TEXT);
       assertThat(reloaded.get(new Object[] { "word42" }).hasNext()).isTrue();
@@ -574,7 +574,7 @@ class IndexCompactionRegressionTest extends TestHelper {
           database.newDocument(TYPE_NAME).set("location", "POINT (" + (i % 170) + "." + i + " " + (i % 80) + ".5)").save();
       });
 
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").get(0);
       final IndexInternal bucketIndex = typeIndex.getIndexesOnBuckets()[0];
       final String nameBefore = bucketIndex.getName();
       final LSMTreeIndex lsm = (LSMTreeIndex) ((LSMTreeIndexMutable) bucketIndex.getComponent()).getMainIndex();
@@ -587,7 +587,7 @@ class IndexCompactionRegressionTest extends TestHelper {
 
       reopenDatabase();
 
-      final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").getFirst();
+      final TypeIndex reloaded = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("location").get(0);
       assertThat(reloaded.getIndexesOnBuckets()[0].getName()).isEqualTo(nameBefore);
       assertThat(database.getSchema().getIndexByName(nameBefore).getType()).isEqualTo(Schema.INDEX_TYPE.GEOSPATIAL);
     }
@@ -648,14 +648,14 @@ class IndexCompactionRegressionTest extends TestHelper {
     }
 
     private void assertIndexServes(final List<String> keys) {
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").get(0);
       assertThat(typeIndex.countEntries()).isEqualTo(keys.size());
       for (int i = 0; i < keys.size(); i += 97)
         assertThat(typeIndex.get(new Object[] { keys.get(i) }).hasNext()).as("key %s", keys.get(i)).isTrue();
     }
 
     private LSMTreeIndex bucketIndex() {
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("key").get(0);
       return (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
     }
   }

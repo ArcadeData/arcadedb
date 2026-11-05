@@ -139,7 +139,7 @@ class LSMTreeIndexCursorTest extends TestHelper {
   }
 
   private LSMTreeIndexMutable bucketMutableIndex() {
-    final com.arcadedb.index.TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").getFirst();
+    final com.arcadedb.index.TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("id").get(0);
     for (final com.arcadedb.index.Index bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof LSMTreeIndex lsmIndex)
         return lsmIndex.getMutableIndex();
@@ -176,7 +176,7 @@ class LSMTreeIndexCursorTest extends TestHelper {
       db.commit();
       db.begin();
 
-      final TypeIndex typeIndex = db.getSchema().getType("V").getIndexesByProperties("n").getFirst();
+      final TypeIndex typeIndex = db.getSchema().getType("V").getIndexesByProperties("n").get(0);
 
       for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets()) {
         final LSMTreeIndexMutable mutable = ((LSMTreeIndex) bucketIndex).getMutableIndex();
@@ -524,7 +524,7 @@ class LSMTreeIndexCursorTest extends TestHelper {
 
     database.transaction(() -> {
       try {
-        final var typeIndex = database.getSchema().getType("Doc6944d").getIndexesByProperties("a").getFirst();
+        final var typeIndex = database.getSchema().getType("Doc6944d").getIndexesByProperties("a").get(0);
         LSMTreeIndexMutable mutable = null;
         for (final var bucketIndex : typeIndex.getIndexesOnBuckets())
           if (bucketIndex instanceof LSMTreeIndex lsmIndex)

@@ -293,7 +293,7 @@ class ChaosRunnerTest {
     harness.control().reformatOnUnpause = true;
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
-    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.violations().get(0).invariant()).isEqualTo("REFORMAT");
     assertThat(result.message()).contains("pause");
   }
 
@@ -305,7 +305,7 @@ class ChaosRunnerTest {
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
     assertThat(result.steps()).isEqualTo(1);
-    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.violations().get(0).invariant()).isEqualTo("REFORMAT");
     assertThat(result.message()).contains("reformat").contains("stop");
   }
 
@@ -315,7 +315,7 @@ class ChaosRunnerTest {
     harness.control().reformatOnStartOfNode = 1;
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.SAFETY);
-    assertThat(result.violations().getFirst().invariant()).isEqualTo("REFORMAT");
+    assertThat(result.violations().get(0).invariant()).isEqualTo("REFORMAT");
     assertThat(result.message()).contains("rolling").contains("node 1 x1");
   }
 

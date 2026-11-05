@@ -58,8 +58,10 @@ public final class IntegralKeyBound {
    * {@code Double} or {@code Float} below 2^53 in magnitude.
    */
   public static boolean isInexact(final byte keyType, final Object bound) {
-    if (keyType == BinaryTypes.TYPE_DATE)
-      return dateTimeOf(bound) instanceof LocalDateTime dateTime && !dateTime.toLocalTime().equals(LocalTime.MIDNIGHT);
+    if (keyType == BinaryTypes.TYPE_DATE) {
+      final LocalDateTime dateTime = dateTimeOf(bound);
+      return dateTime != null && !dateTime.toLocalTime().equals(LocalTime.MIDNIGHT);
+    }
     if (!(bound instanceof Number number))
       return false;
     final long min, max;

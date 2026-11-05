@@ -244,7 +244,7 @@ class Issue10514RerankIndexDefaultTest extends TestHelper {
             LSMVectorIndex.DEFAULT_APPROXIMATE_RERANK_OVERSAMPLE, allowed, WorkGuard.forCommandDeadline(null));
         final String which = allowed == null ? "no allow-list" : allowed == narrow ? "a narrow allow-list" : "a wide allow-list";
         assertThat(answer).as(which).hasSize(K);
-        assertThat(vid(answer.getFirst().getFirst())).as("the delta vector is its own nearest neighbour, " + which)
+        assertThat(vid(answer.get(0).getFirst())).as("the delta vector is its own nearest neighbour, " + which)
             .isEqualTo(base.length);
         for (final Pair<RID, Float> neighbour : answer) {
           if (allowed != null)

@@ -151,7 +151,7 @@ class FileIdNotReusedAfterRestartTest {
 
   private int createTypeWithOneBucket(final String name) {
     final DocumentType type = db.getSchema().buildDocumentType().withName(name).withTotalBuckets(1).create();
-    final int fileId = type.getBuckets(false).getFirst().getFileId();
+    final int fileId = type.getBuckets(false).get(0).getFileId();
     int highest = -1;
     for (final var file : db.getFileManager().getFiles())
       if (file != null)

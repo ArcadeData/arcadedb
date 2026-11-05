@@ -199,7 +199,7 @@ final class FullTextFunctionSearch {
 
   Object explainScoring() {
     if (indexes.size() == 1)
-      return FullTextSearch.explainScoring(indexes.getFirst(), query, restrictedFields);
+      return FullTextSearch.explainScoring(indexes.get(0), query, restrictedFields);
     // a logical index: one explanation per member, under its name
     final JSONObject explain = new JSONObject();
     for (final TypeIndex index : indexes)
@@ -210,7 +210,7 @@ final class FullTextFunctionSearch {
   /** The matches of every index, each searched with the limit and the filter; a limit of -1 is unbounded. */
   private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter) {
     if (indexes.size() == 1)
-      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter);
+      return FullTextSearch.search(indexes.get(0), query, limit, guard, restrictedFields, ridFilter);
     // a record belongs to one type, so no two indexes match the same RID and putAll never overwrites; each index brings up to `limit`
     // matches, so the plan's own limit trims the union (the best `limit` of it contain the global best)
     final Map<RID, Float> merged = new HashMap<>();

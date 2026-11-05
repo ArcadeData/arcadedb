@@ -195,7 +195,7 @@ class Issue10100LightEdgeCensusFailureCountedTest extends TestHelper {
   }
 
   private static RID missingOwner(final Database db, final long position) {
-    return db.newRID(db.getSchema().getType("P").getBuckets(false).getFirst().getFileId(), 1_000_000L + position);
+    return db.newRID(db.getSchema().getType("P").getBuckets(false).get(0).getFileId(), 1_000_000L + position);
   }
 
   private static long fallbacks(final Database db) {

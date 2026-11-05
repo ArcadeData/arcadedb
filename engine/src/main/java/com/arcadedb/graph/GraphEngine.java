@@ -667,8 +667,8 @@ public class GraphEngine {
    */
   private void lightEdgeEntryAppended(final RID vertex, final Vertex.DIRECTION direction, final int edgeTypeBucketId,
       final RID neighbour) {
-    if (database.getTransactionIfExists() instanceof TransactionContext tx && !tx.isCreatedInTransaction(vertex)
-        && !tx.isCreatedInTransaction(neighbour))
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && !tx.isCreatedInTransaction(vertex) && !tx.isCreatedInTransaction(neighbour))
       tx.lightEdgeEntryAppended(new TransactionContext.LightEdgeEntry(vertex, direction == Vertex.DIRECTION.OUT, edgeTypeBucketId,
           neighbour));
   }
@@ -1455,7 +1455,8 @@ public class GraphEngine {
       return;
     }
 
-    if (database.getTransactionIfExists() instanceof TransactionContext tx && tx.isDeletedInTransaction(edge.getIdentity()))
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.isDeletedInTransaction(edge.getIdentity()))
       // THIS TRANSACTION HAS ALREADY DELETED THE EDGE, AND REMOVED THE ENTRY WITH IT: THE COMMITTED LIST STILL HOLDS IT
       return;
 
@@ -1497,7 +1498,8 @@ public class GraphEngine {
    * of a lightweight edge that is not there at all walks the whole chain, as the regular-edge check does.
    */
   private void checkLightEdgeListNotStale(final VertexInternal endpoint, final Vertex.DIRECTION direction, final Edge edge) {
-    if (!(database.getTransactionIfExists() instanceof TransactionContext tx))
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null)
       return;
     final RID neighbour = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
     if (neighbour == null)
@@ -1514,7 +1516,8 @@ public class GraphEngine {
   }
 
   private void lightEdgeEntriesRemoved(final RID vertex, final Vertex.DIRECTION direction, final Edge edge, final int removed) {
-    if (database.getTransactionIfExists() instanceof TransactionContext tx)
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null)
       tx.lightEdgeEntriesRemoved(lightEdgeEntry(vertex, direction, edge), removed);
   }
 
@@ -1584,7 +1587,8 @@ public class GraphEngine {
     if (edge instanceof LightEdge)
       return;
     final RID edgeRID = edge.getIdentity();
-    if (edgeRID == null || edgeRID.getPosition() < 0 || !(database.getTransactionIfExists() instanceof TransactionContext tx))
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (edgeRID == null || edgeRID.getPosition() < 0 || tx == null)
       return;
     try {
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(edgeRID.getBucketId());
@@ -1656,7 +1660,8 @@ public class GraphEngine {
    * proves that: a lazy handle or a RID held past a delete names an edge that may have been gone all along.
    */
   private boolean wasDeletedConcurrently(final Edge edge) {
-    return edge instanceof ImmutableDocument document && database.getTransactionIfExists() instanceof TransactionContext tx
+    final TransactionContext tx = database.getTransactionIfExists();
+    return edge instanceof ImmutableDocument document && tx != null
         && !tx.isDeletedInTransaction(edge.getIdentity()) && document.wasLoadedInTransaction(tx.getBeginSequence());
   }
 

@@ -187,7 +187,7 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
     assertThatThrownBy(() -> collection.insertMany(batch)).isInstanceOf(MongoBulkWriteException.class).satisfies(e -> {
       final MongoBulkWriteException bulk = (MongoBulkWriteException) e;
       assertThat(bulk.getWriteErrors()).hasSize(1);
-      assertThat(bulk.getWriteErrors().getFirst().getIndex()).isEqualTo(1);
+      assertThat(bulk.getWriteErrors().get(0).getIndex()).isEqualTo(1);
       assertThat(bulk.getWriteResult().getInsertedCount()).isEqualTo(1);
     });
 
@@ -205,7 +205,7 @@ public class MongoDBTimeSeriesInsertIssue10476Test extends BaseMongoServerTest {
         MongoBulkWriteException.class).satisfies(e -> {
       final MongoBulkWriteException bulk = (MongoBulkWriteException) e;
       assertThat(bulk.getWriteErrors()).hasSize(1);
-      assertThat(bulk.getWriteErrors().getFirst().getIndex()).isEqualTo(1);
+      assertThat(bulk.getWriteErrors().get(0).getIndex()).isEqualTo(1);
       assertThat(bulk.getWriteResult().getInsertedCount()).isEqualTo(2);
     });
 

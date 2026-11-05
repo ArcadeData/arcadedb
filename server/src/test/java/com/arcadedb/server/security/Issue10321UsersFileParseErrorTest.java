@@ -101,7 +101,7 @@ class Issue10321UsersFileParseErrorTest {
 
       final List<String> severe = lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList();
       assertThat(severe).as("one SEVERE for the users file, naming it and where it was preserved").hasSize(1);
-      assertThat(severe.getFirst()).contains(SecurityUserFileRepository.FILE_NAME).contains("server-users-error.jsonl")
+      assertThat(severe.get(0)).contains(SecurityUserFileRepository.FILE_NAME).contains("server-users-error.jsonl")
           .doesNotContain(SecurityGroupFileRepository.FILE_NAME);
 
       final Path errorFile = Path.of(CONFIG_PATH, "server-users-error.jsonl");
@@ -155,7 +155,7 @@ class Issue10321UsersFileParseErrorTest {
 
       final List<String> severe = lines.stream().filter(Issue10321UsersFileParseErrorTest::isLoadFailure).toList();
       assertThat(severe).hasSize(1);
-      assertThat(severe.getFirst()).contains(SecurityGroupFileRepository.FILE_NAME).contains("server-groups-error.json");
+      assertThat(severe.get(0)).contains(SecurityGroupFileRepository.FILE_NAME).contains("server-groups-error.json");
 
       final Path errorFile = Path.of(CONFIG_PATH, "server-groups-error.json");
       assertThat(errorFile).as("the corrupt groups file is preserved").exists();

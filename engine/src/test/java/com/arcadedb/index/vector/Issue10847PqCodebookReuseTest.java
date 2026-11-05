@@ -272,7 +272,7 @@ class Issue10847PqCodebookReuseTest extends TestHelper {
     final RID probe = rids.get(rids.size() / 2);
     final List<Pair<RID, Float>> rows = index.findNeighborsFromVectorApproximate(vectors.get(probe), 10, -1, 0);
     assertThat(rows).isNotEmpty();
-    assertThat(rows.getFirst().getFirst()).isEqualTo(probe);
+    assertThat(rows.get(0).getFirst()).isEqualTo(probe);
   }
 
   private LSMVectorIndex createIndex() {
@@ -305,7 +305,7 @@ class Issue10847PqCodebookReuseTest extends TestHelper {
   private void delete(final int count) {
     database.transaction(() -> {
       for (int i = 0; i < count; i++) {
-        final RID rid = rids.removeFirst();
+        final RID rid = rids.remove(0);
         vectors.remove(rid);
         rid.asDocument().delete();
       }

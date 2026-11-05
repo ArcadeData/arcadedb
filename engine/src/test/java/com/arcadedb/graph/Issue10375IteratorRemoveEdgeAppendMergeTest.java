@@ -314,12 +314,15 @@ class Issue10375IteratorRemoveEdgeAppendMergeTest extends TestHelper {
   private static void advanceTo(final Iterator<?> it, final RID target) {
     while (it.hasNext()) {
       final Object item = it.next();
-      final RID farEnd = switch (item) {
-        case Edge edge -> edge.getIn();
-        case Vertex vertex -> vertex.getIdentity();
-        case Pair<?, ?> pair -> (RID) pair.getSecond();
-        default -> throw new IllegalStateException("Unexpected item " + item);
-      };
+      final RID farEnd;
+      if (item instanceof Edge)
+        farEnd = ((Edge) item).getIn();
+      else if (item instanceof Vertex)
+        farEnd = ((Vertex) item).getIdentity();
+      else if (item instanceof Pair)
+        farEnd = (RID) ((Pair<?, ?>) item).getSecond();
+      else
+        throw new IllegalStateException("Unexpected item " + item);
       if (farEnd.equals(target))
         return;
     }

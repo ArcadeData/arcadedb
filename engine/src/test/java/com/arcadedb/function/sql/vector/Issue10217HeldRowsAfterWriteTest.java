@@ -113,7 +113,7 @@ class Issue10217HeldRowsAfterWriteTest extends TestHelper {
     try (final ResultSet rs = database.command("sqlscript", script)) {
       rs.stream().forEach(r -> names.add(r.<String>getProperty("name")));
     }
-    assertThat(names.getLast()).isEqualTo("a");
+    assertThat(names.get(names.size() - 1)).isEqualTo("a");
   }
 
   /** A transaction that wrote nothing still reuses every carried record: the check is two hash probes, not a load. */

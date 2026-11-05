@@ -53,8 +53,11 @@ public class DeleteStep extends AbstractExecutionStep {
           // A PROJECTION THAT CARRIES THE @rid OF A RECORD DELETES THAT RECORD, AS UPDATE WRITES TO IT (ConvertToUpdatableResultStep).
           // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
           // (issue #10336)
-          if (result.getProperty("@rid") instanceof Identifiable identifiable && identifiable.getRecord() instanceof Record record)
-            return database.deleteRecordReportingVeto(record) ? result : null;
+          if (result.getProperty("@rid") instanceof Identifiable identifiable) {
+            final Record record = identifiable.getRecord();
+            if (record != null)
+              return database.deleteRecordReportingVeto(record) ? result : null;
+          }
           throw new CommandExecutionException(ConvertToUpdatableResultStep.NOT_A_RECORD);
         } finally {
           if (context.isProfiling())

@@ -127,7 +127,7 @@ class Issue11008RelationshipReadOnlyByCallTest {
         RETURN collect(w) AS kept""");
 
     assertThat(row.<List<Object>>getProperty("kept")).hasSize(1);
-    assertThat(((Number) row.<List<Object>>getProperty("kept").getFirst()).intValue()).isEqualTo(7);
+    assertThat(((Number) row.<List<Object>>getProperty("kept").get(0)).intValue()).isEqualTo(7);
   }
 
   @Test
@@ -160,7 +160,7 @@ class Issue11008RelationshipReadOnlyByCallTest {
     try (final ResultSet rs = database.command("opencypher", query)) {
       final List<Result> rows = rs.stream().toList();
       assertThat(rows).hasSize(1);
-      return rows.getFirst();
+      return rows.get(0);
     }
   }
 }

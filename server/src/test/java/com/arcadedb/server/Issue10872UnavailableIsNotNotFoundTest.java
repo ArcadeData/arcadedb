@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -186,8 +187,11 @@ class Issue10872UnavailableIsNotNotFoundTest extends BaseGraphServerTest {
     final HttpRequest request = builder.header("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
         .header("Content-Type", "application/json").build();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

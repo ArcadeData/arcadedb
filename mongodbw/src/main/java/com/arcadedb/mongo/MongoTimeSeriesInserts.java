@@ -105,7 +105,7 @@ final class MongoTimeSeriesInserts {
    * The document without its {@code _id}: a sample is identified by its time and its series, not by a key.
    */
   private static Map<String, Object> sampleOf(final TimeSeriesType type, final Document document) {
-    final Map<String, Object> sample = LinkedHashMap.newLinkedHashMap(document.size());
+    final Map<String, Object> sample = new LinkedHashMap<>((int) Math.ceil(document.size() / 0.75));
     for (final Map.Entry<String, Object> entry : document.entrySet()) {
       if ("_id".equals(entry.getKey())) {
         // the driver puts an ObjectId in a document that has no _id; one the client chose would be lost, so it is refused

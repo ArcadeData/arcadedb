@@ -217,7 +217,7 @@ class Issue10506RefusedIndexBuildTest {
     // ONE schema entry publishes the net state: the replaced files removed, the restored ones added
     final List<List<Object>> published = broker.calls("replicateSchema");
     assertThat(published).hasSize(1);
-    final List<Object> entry = published.getFirst();
+    final List<Object> entry = published.get(0);
     assertThat(((Map<Integer, String>) entry.get(3)).keySet()).as("filesToRemove").isEqualTo(replacedFiles);
     assertThat(((Map<Integer, String>) entry.get(2)).keySet()).as("filesToAdd").isEqualTo(restoredFiles);
 

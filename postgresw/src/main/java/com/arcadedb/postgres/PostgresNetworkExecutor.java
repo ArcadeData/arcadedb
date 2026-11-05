@@ -567,7 +567,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void syncCommand() {
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().threadId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().getId());
 
     if (skipUntilSync || errorInTransaction) {
       // DISCARDED PREVIOUS MESSAGES TILL THIS POINT. The block the discarded messages belonged to goes with
@@ -614,7 +614,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void flushCommand() throws IOException {
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: flush (thread=%s)", Thread.currentThread().threadId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: flush (thread=%s)", Thread.currentThread().getId());
     // Flush message does NOT generate any response according to PostgreSQL protocol.
     // It just forces the backend to deliver any data pending in its output buffers.
     // See: https://www.postgresql.org/docs/current/protocol-message-formats.html
@@ -641,7 +641,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType,
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
 
     writeMessage("close complete", null, '3', 4);
   }
@@ -653,7 +653,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance()
           .log(this, Level.INFO, "PSQL: describe '%s' type=%s (skipUntilSync=%s errorInTransaction=%s thread=%s)",
-              portalName, (char) type, skipUntilSync, errorInTransaction, Thread.currentThread().threadId());
+              portalName, (char) type, skipUntilSync, errorInTransaction, Thread.currentThread().getId());
 
     if (skipUntilSync)
       return;
@@ -1026,7 +1026,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
-                Thread.currentThread().threadId());
+                Thread.currentThread().getId());
 
       // Not "apply, then decide": applyTransactionControl() clears the marker it acted on, so a guard inside
       // beginImplicitTransactionBlock() reading portal.transactionControl afterwards would never see one.
@@ -1168,7 +1168,7 @@ public class PostgresNetworkExecutor extends Thread {
                 portal.columns != null ? portal.columns.keySet() : "null",
                 dataRowColumns.keySet(),
                 portal.cachedResultSet.size(),
-                Thread.currentThread().threadId());
+                Thread.currentThread().getId());
 
           // A portal materialized before this Execute (a SHOW/system/catalog answer fixed at Parse, or one a
           // Describe('P') ran) already carries its columns; a RowDescription is never sent from here (issue #8244).
@@ -1182,7 +1182,7 @@ public class PostgresNetworkExecutor extends Thread {
             if (DEBUG)
               LogManager.instance().log(this, Level.WARNING,
                   "PSQL: Column count mismatch - RowDesc=%d, DataRow=%d (thread=%s)",
-                  portal.columns.size(), dataRowColumns.size(), Thread.currentThread().threadId());
+                  portal.columns.size(), dataRowColumns.size(), Thread.currentThread().getId());
           }
 
           // Use the columns that were sent in RowDescription for consistency
@@ -1267,7 +1267,7 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static int affectedRecords(final Statement statement, final List<Result> rows) {
     if ((statement instanceof UpdateStatement || statement instanceof DeleteStatement) && rows.size() == 1
-        && rows.getFirst().getProperty("count") instanceof Number count)
+        && rows.get(0).getProperty("count") instanceof Number count)
       return count.intValue();
     return rows.size();
   }
@@ -1278,15 +1278,18 @@ public class PostgresNetworkExecutor extends Thread {
    * a client that prepared them expects only as a CommandComplete tag.
    */
   static boolean isRowlessWrite(final Statement statement) {
-    return switch (statement) {
-      case InsertStatement insert -> insert.getReturnStatement() == null;
-      case CreateVertexStatement createVertex -> createVertex.getReturnStatement() == null;
-      // CREATE EDGE has no RETURN clause in the grammar: if it ever gains one, check it here like CREATE VERTEX
-      case CreateEdgeStatement ignored -> true;
-      case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
-      case DeleteStatement delete -> !delete.isReturnBefore();
-      case null, default -> false;
-    };
+    if (statement instanceof InsertStatement insert)
+      return insert.getReturnStatement() == null;
+    if (statement instanceof CreateVertexStatement createVertex)
+      return createVertex.getReturnStatement() == null;
+    // CREATE EDGE has no RETURN clause in the grammar: if it ever gains one, check it here like CREATE VERTEX
+    if (statement instanceof CreateEdgeStatement)
+      return true;
+    if (statement instanceof UpdateStatement update)
+      return !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
+    if (statement instanceof DeleteStatement delete)
+      return !delete.isReturnBefore();
+    return false;
   }
 
   private CommandContext createCommandContext() {
@@ -1666,7 +1669,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: handling catalog query: %s (thread=%s)", query,
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
 
     // A set operation naming no catalog relation (issue #10228) is never a pg_type lookup.
     // The columns come from the recogniser, not from the rows: a lookup of a type that does not exist still announces the columns
@@ -2142,10 +2145,9 @@ public class PostgresNetworkExecutor extends Thread {
    * before the statement runs (issue #8562).
    */
   private Map<String, PostgresType> getColumnsFromWriteReturn(final Statement statement) {
-    switch (statement) {
-    case InsertStatement insert:
+    if (statement instanceof InsertStatement insert)
       return getColumnsFromReturn(insert.getTargetType(), insert.getReturnStatement());
-    case UpdateStatement update: {
+    if (statement instanceof UpdateStatement update) {
       if (update.getReturnProjection() != null) {
         final FromItem item = update.getTarget() != null ? update.getTarget().getItem() : null;
         return getColumnsFromReturn(item != null ? item.getIdentifier() : null, update.getReturnProjection());
@@ -2154,11 +2156,9 @@ public class PostgresNetworkExecutor extends Thread {
         return getColumnsFromTarget(update.getTarget());
       return null;
     }
-    case DeleteStatement delete:
+    if (statement instanceof DeleteStatement delete)
       return delete.isReturnBefore() ? getColumnsFromTarget(delete.getFromClause()) : null;
-    default:
-      return null;
-    }
+    return null;
   }
 
   /**
@@ -2351,7 +2351,7 @@ public class PostgresNetworkExecutor extends Thread {
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO,
               "PSQL: getColumnsFromType('%s') -> sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
-              typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().threadId());
+              typeName, sampleQuery, sampleRows.size(), cols.keySet(), Thread.currentThread().getId());
         return cols;
       }
 
@@ -2851,7 +2851,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> RowDescription: %d columns: %s (thread=%s)",
-          columns.size(), columns.keySet(), Thread.currentThread().threadId());
+          columns.size(), columns.keySet(), Thread.currentThread().getId());
 
 //    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
     final Binary bufferDescription = new Binary();
@@ -2922,7 +2922,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) data written (thread=%s)", resultSet.size(),
-          Thread.currentThread().threadId());
+          Thread.currentThread().getId());
   }
 
   /**
@@ -2955,7 +2955,7 @@ public class PostgresNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.INFO,
           "PSQL:-> DataRow: cols=%d, bufferValues=%d, dataRowLength=%d, bufferData=%d (thread=%s)",
           columns.size(), bufferValues.getByteBuffer().limit(), dataRowLength,
-          bufferData.position(), Thread.currentThread().threadId());
+          bufferData.position(), Thread.currentThread().getId());
 
     bufferData.flip();
     channel.writeBuffer(bufferData.getByteBuffer());
@@ -3113,7 +3113,7 @@ public class PostgresNetworkExecutor extends Thread {
     final boolean binary = copy.getFormat() == PostgresCopyStatement.Format.BINARY;
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> CopyOutResponse: %s, %d columns: %s (thread=%s)", copy.getFormat(),
-          names.length, columns.keySet(), Thread.currentThread().threadId());
+          names.length, columns.keySet(), Thread.currentThread().getId());
 
     writeMessage("copy out response", () -> {
       channel.writeByte((byte) (binary ? 1 : 0));
@@ -3180,7 +3180,7 @@ public class PostgresNetworkExecutor extends Thread {
     profile.addSerializationNanos(System.nanoTime() - serStart);
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", count, Thread.currentThread().threadId());
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", count, Thread.currentThread().getId());
     return count;
   }
 
@@ -3317,12 +3317,12 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,
-                Thread.currentThread().threadId());
+                Thread.currentThread().getId());
 
       final int paramFormatCount = channel.readUnsignedShort();
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
-            paramFormatCount, Thread.currentThread().threadId());
+            paramFormatCount, Thread.currentThread().getId());
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
         for (int i = 0; i < paramFormatCount; i++) {
@@ -3335,7 +3335,7 @@ public class PostgresNetworkExecutor extends Thread {
       totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
-            paramValuesCount, Thread.currentThread().threadId());
+            paramValuesCount, Thread.currentThread().getId());
 
       // PostgreSQL's exec_bind_message() refuses both mismatches with 08P01 before anything runs (issue #11018). A Bind short of
       // a value left its $N to the engine, which reads a $N with nothing bound at its position as the variable of that name:
@@ -3353,10 +3353,10 @@ public class PostgresNetworkExecutor extends Thread {
         portal.parameterValues = new ArrayList<>(paramValuesCount);
         for (int i = 0; i < paramValuesCount; i++) {
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().threadId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().getId());
           final long paramSize = channel.readUnsignedInt();
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().getId());
 
           if (paramSize == NULL_PARAM_LENGTH) {
             // Postgres protocol NULL sentinel: a declared length of -1 (0xFFFFFFFF unsigned), with no
@@ -3387,7 +3387,7 @@ public class PostgresNetworkExecutor extends Thread {
           // the correct wire offset if deserialize() throws.
           paramsConsumed = i + 1;
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().threadId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d value read (thread=%s)", i, Thread.currentThread().getId());
 
           if (bindViolation != null)
             // Refused once the message is consumed: converting a value that will never be bound could only fail differently
@@ -3413,15 +3413,15 @@ public class PostgresNetworkExecutor extends Thread {
 
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind deserializing param %d typeCode=%d formatCode=%d (thread=%s)",
-                i, typeCode, formatCode, Thread.currentThread().threadId());
+                i, typeCode, formatCode, Thread.currentThread().getId());
           portal.parameterValues.add(PostgresType.deserialize(typeCode, formatCode, paramValue));
           if (DEBUG)
-            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().threadId());
+            LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().getId());
         }
       }
 
       if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().threadId());
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().getId());
       final int resultFormatCount = channel.readShort();
       if (resultFormatCount > 0) {
         portal.resultFormats = new ArrayList<>(resultFormatCount);
@@ -3431,7 +3431,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO, "PSQL: bind resultFormats=%s (0=text, 1=binary) (thread=%s)",
-              portal.resultFormats, Thread.currentThread().threadId());
+              portal.resultFormats, Thread.currentThread().getId());
       }
       resultFormatSectionRead = true;
 
@@ -3485,7 +3485,7 @@ public class PostgresNetworkExecutor extends Thread {
       portals.put(portalName, portal);
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-            portalName, Thread.currentThread().threadId());
+            portalName, Thread.currentThread().getId());
 
       writeMessage("bind complete", null, '2', 4);
 
@@ -3570,7 +3570,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d, detected=%d) (errorInTransaction=%s thread=%s)",
-                portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().threadId());
+                portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().getId());
 
       if (errorInTransaction) {
         // Mirror queryCommand()'s aborted-transaction dispatch (issue #6457/#6542): a client recovering
@@ -4662,7 +4662,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL:-> %s (%s - %s) (thread=%s)", null, messageName, messageCode,
-            FileUtils.getSizeAsString(length), Thread.currentThread().threadId());
+            FileUtils.getSizeAsString(length), Thread.currentThread().getId());
 
     } catch (final IOException e) {
       setErrorInTx();

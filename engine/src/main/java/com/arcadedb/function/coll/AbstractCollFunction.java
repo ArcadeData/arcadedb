@@ -98,4 +98,13 @@ public abstract class AbstractCollFunction implements StatelessFunction {
     addDistinct(new HashSet<>(), result, source);
     return result;
   }
+
+  /** Clamps a whole number to the int range (Math.clamp(long, int, int) is Java 21). */
+  protected static int clampToInt(final long value) {
+    if (value > Integer.MAX_VALUE)
+      return Integer.MAX_VALUE;
+    if (value < Integer.MIN_VALUE)
+      return Integer.MIN_VALUE;
+    return Math.toIntExact(value);
+  }
 }

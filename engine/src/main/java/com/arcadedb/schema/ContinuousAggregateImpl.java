@@ -137,7 +137,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
       return null;
     for (final TypeIndex index : schema.getType(backingTypeName).getAllIndexes(true)) {
       final List<String> properties = index.getPropertyNames();
-      if (index.getType() == Schema.INDEX_TYPE.LSM_TREE && !properties.isEmpty() && bucketColumn.equals(properties.getFirst()))
+      if (index.getType() == Schema.INDEX_TYPE.LSM_TREE && !properties.isEmpty() && bucketColumn.equals(properties.get(0)))
         return null;
     }
     final String type = "`" + backingTypeName + "`";

@@ -163,7 +163,7 @@ class Issue10853NegativeNextChunkLinkTest extends BucketPageLayoutTestSupport {
 
     // The second head now links, in the new form, to the first record's first continuation chunk
     database.transaction(() -> onSlot(rids[1], page -> {
-      page.writeLong(linkOffset(page, rids[1]), LocalBucket.nextChunkLinkOf(ownerChunks.getFirst()));
+      page.writeLong(linkOffset(page, rids[1]), LocalBucket.nextChunkLinkOf(ownerChunks.get(0)));
       return 0L;
     }));
     final String first = readPayload(rids[0]);
@@ -246,7 +246,7 @@ class Issue10853NegativeNextChunkLinkTest extends BucketPageLayoutTestSupport {
         page.writeByteArray(offset + Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE, tail);
         return 0L;
       });
-      final RID last = new RID(record[0].getBucketId(), chunks.getLast());
+      final RID last = new RID(record[0].getBucketId(), chunks.get(chunks.size() - 1));
       onSlot(last, page -> {
         page.writeLong(linkOffset(page, last), LocalBucket.nextChunkLinkOf(0L));
         return 0L;

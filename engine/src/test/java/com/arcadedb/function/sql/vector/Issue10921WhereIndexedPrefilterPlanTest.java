@@ -200,8 +200,8 @@ class Issue10921WhereIndexedPrefilterPlanTest extends TestHelper {
 
     database.transaction(() -> {
       // The nearest record of tenant 0 joins tenant 1, the nearest of tenant 1 leaves it
-      final RID joining = rids(neighbors("{ where: { tenant: 0 } }", Map.of())).getFirst();
-      final RID leaving = rids(neighbors("{ where: { tenant: 1 } }", Map.of())).getFirst();
+      final RID joining = rids(neighbors("{ where: { tenant: 0 } }", Map.of())).get(0);
+      final RID leaving = rids(neighbors("{ where: { tenant: 1 } }", Map.of())).get(0);
       final MutableDocument joined = joining.asDocument().modify();
       joined.set("tenant", 1).save();
       final MutableDocument left = leaving.asDocument().modify();

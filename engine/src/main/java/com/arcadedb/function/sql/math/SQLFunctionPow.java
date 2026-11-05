@@ -81,18 +81,21 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
       return doublePow(number, power);
     }
 
-    return switch (number) {
-      case Integer i -> integralPow(i, whole, false);
-      case Long l -> integralPow(l, whole, true);
-      case Short s -> integralPow(s, whole, false);
-      case Byte b -> integralPow(b, whole, false);
-      case BigInteger integer -> {
-        final BigDecimal decimal = decimalPow(new BigDecimal(integer), whole);
-        yield decimal.scale() == 0 && whole >= 0 ? decimal.toBigInteger() : decimal;
-      }
-      case BigDecimal decimal -> decimalPow(decimal, whole);
-      default -> doublePow(number, power);
-    };
+    if (number instanceof Integer i)
+      return integralPow(i, whole, false);
+    if (number instanceof Long l)
+      return integralPow(l, whole, true);
+    if (number instanceof Short s)
+      return integralPow(s, whole, false);
+    if (number instanceof Byte b)
+      return integralPow(b, whole, false);
+    if (number instanceof BigInteger integer) {
+      final BigDecimal decimal = decimalPow(new BigDecimal(integer), whole);
+      return decimal.scale() == 0 && whole >= 0 ? decimal.toBigInteger() : decimal;
+    }
+    if (number instanceof BigDecimal decimal)
+      return decimalPow(decimal, whole);
+    return doublePow(number, power);
   }
 
   /**
@@ -172,18 +175,20 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
 
   /** The exact value of a finite exponent, or null for NaN and the infinities, which have none. */
   private static BigDecimal exactValue(final Number exponent) {
-    return switch (exponent) {
-      case BigDecimal decimal -> decimal;
-      case BigInteger integer -> new BigDecimal(integer);
-      case Integer i -> BigDecimal.valueOf(i);
-      case Long l -> BigDecimal.valueOf(l);
-      case Short s -> BigDecimal.valueOf(s);
-      case Byte b -> BigDecimal.valueOf(b);
-      default -> {
-        final double d = exponent.doubleValue();
-        yield Double.isNaN(d) || Double.isInfinite(d) ? null : new BigDecimal(d);
-      }
-    };
+    if (exponent instanceof BigDecimal decimal)
+      return decimal;
+    if (exponent instanceof BigInteger integer)
+      return new BigDecimal(integer);
+    if (exponent instanceof Integer i)
+      return BigDecimal.valueOf(i);
+    if (exponent instanceof Long l)
+      return BigDecimal.valueOf(l);
+    if (exponent instanceof Short s)
+      return BigDecimal.valueOf(s);
+    if (exponent instanceof Byte b)
+      return BigDecimal.valueOf(b);
+    final double d = exponent.doubleValue();
+    return Double.isNaN(d) || Double.isInfinite(d) ? null : new BigDecimal(d);
   }
 
   private static Number exponentOf(final Object exponent) {

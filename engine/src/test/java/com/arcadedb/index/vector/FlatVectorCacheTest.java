@@ -66,7 +66,8 @@ class FlatVectorCacheTest {
         final VectorFloat<?> query = randomVector(random, dimensions);
         for (int id = 0; id < stored.size(); id++)
           assertThat(cache.similarity(id, query, function)).as("%s, id %d", function, id)
-              .isCloseTo(function.compare(query, stored.get(id)), within(1e-6f));
+              // 1e-5f: the JDK 17 build has no Vector API, so jvector sums in a different order than the cache and floats differ in the last bits
+              .isCloseTo(function.compare(query, stored.get(id)), within(1e-5f));
       }
   }
 

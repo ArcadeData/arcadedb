@@ -360,7 +360,7 @@ class Issue10842CatalogRelationPolicyTest {
     final List<Map<String, Object>> rows = resolve(
         "select classid, objsubid, refclassid, refobjid, refobjsubid, deptype from pg_depend where objid = " + index).rows;
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()).containsEntry("classid", PG_CLASS).containsEntry("objsubid", 0).containsEntry("refclassid", PG_CLASS)
+    assertThat(rows.get(0)).containsEntry("classid", PG_CLASS).containsEntry("objsubid", 0).containsEntry("refclassid", PG_CLASS)
         .containsEntry("refobjid", table).containsEntry("refobjsubid", note).containsEntry("deptype", "a");
   }
 
@@ -369,12 +369,12 @@ class Issue10842CatalogRelationPolicyTest {
   void aConstraintIndexDependsOnItsConstraintAndTheConstraintOnTheColumns() {
     final int table = oidOfClass("Account");
     final int index = oidOfClass("Account[code,region]");
-    final int constraint = number(resolve("select oid from pg_constraint where conindid = " + index).rows.getFirst(), "oid");
+    final int constraint = number(resolve("select oid from pg_constraint where conindid = " + index).rows.get(0), "oid");
 
     final List<Map<String, Object>> ofIndex = resolve(
         "select classid, refclassid, refobjid, refobjsubid, deptype from pg_depend where objid = " + index).rows;
     assertThat(ofIndex).hasSize(1);
-    assertThat(ofIndex.getFirst()).containsEntry("classid", PG_CLASS).containsEntry("refclassid", PG_CONSTRAINT)
+    assertThat(ofIndex.get(0)).containsEntry("classid", PG_CLASS).containsEntry("refclassid", PG_CONSTRAINT)
         .containsEntry("refobjid", constraint).containsEntry("refobjsubid", 0).containsEntry("deptype", "i");
 
     final List<Map<String, Object>> ofConstraint = resolve(
@@ -392,7 +392,7 @@ class Issue10842CatalogRelationPolicyTest {
     final List<Map<String, Object>> rows = resolve(
         "select refobjid, refobjsubid, deptype from pg_depend where objid = " + oidOfClass("Account[secret]")).rows;
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()).containsEntry("refobjid", oidOfClass("Account")).containsEntry("refobjsubid", 0)
+    assertThat(rows.get(0)).containsEntry("refobjid", oidOfClass("Account")).containsEntry("refobjsubid", 0)
         .containsEntry("deptype", "a");
   }
 
@@ -435,7 +435,7 @@ class Issue10842CatalogRelationPolicyTest {
          AND d.objid='%d'
          AND d.deptype IN ('a', 'i')""".formatted(oidOfClass("Account[note]"))).rows;
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst()).containsEntry("relname", "Account").containsEntry("attname", "note").containsEntry("deptype", "a");
+    assertThat(rows.get(0)).containsEntry("relname", "Account").containsEntry("attname", "note").containsEntry("deptype", "a");
   }
 
   /** The catalogs pg_depend points into are named by a regclass cast in both directions, as PostgreSQL names them. */
@@ -444,7 +444,7 @@ class Issue10842CatalogRelationPolicyTest {
     final Map<String, Object> row = resolve("""
         select 'pg_class'::regclass as c, 'pg_catalog.pg_constraint'::pg_catalog.regclass as k, 'other.pg_class'::regclass as o,
         1259::regclass as cn, 2606::regclass as kn
-        from pg_namespace limit 1""").rows.getFirst();
+        from pg_namespace limit 1""").rows.get(0);
     assertThat(row).containsEntry("c", PG_CLASS).containsEntry("k", PG_CONSTRAINT).containsEntry("cn", "pg_class")
         .containsEntry("kn", "pg_constraint");
     // a schema other than pg_catalog is not the catalog's
@@ -469,7 +469,7 @@ class Issue10842CatalogRelationPolicyTest {
           .contains(number(row, "refobjid"));
     }
     // and the count agrees with the rows
-    assertThat(number(resolve("select count(*) as n from pg_depend").rows.getFirst(), "n")).isEqualTo(9);
+    assertThat(number(resolve("select count(*) as n from pg_depend").rows.get(0), "n")).isEqualTo(9);
   }
 
   /** The columns of pg_depend are announced with PostgreSQL's types: oid and int4, and deptype as text. */
@@ -509,14 +509,14 @@ class Issue10842CatalogRelationPolicyTest {
   private int oidOfClass(final String name) {
     final List<Map<String, Object>> rows = resolve("select oid from pg_class where relname = '" + name + "'").rows;
     assertThat(rows).as(name).hasSize(1);
-    return number(rows.getFirst(), "oid");
+    return number(rows.get(0), "oid");
   }
 
   private int attnum(final int table, final String column) {
     final List<Map<String, Object>> rows = resolve(
         "select attnum from pg_attribute where attrelid = " + table + " and attname = '" + column + "'").rows;
     assertThat(rows).as(column).hasSize(1);
-    return number(rows.getFirst(), "attnum");
+    return number(rows.get(0), "attnum");
   }
 
   private static int number(final Map<String, Object> row, final String column) {

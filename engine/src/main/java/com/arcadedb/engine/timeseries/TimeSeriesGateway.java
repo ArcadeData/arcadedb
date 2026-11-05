@@ -302,7 +302,7 @@ public final class TimeSeriesGateway {
         // storage layer would otherwise cast it in the middle of the append and fail the whole request (issue #9809). The
         // conversion is the one the Prometheus remote write shares (issue #10030), and so is the check of the column constraints
         // (issue #10238)
-        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.getFirst().getMeasurement(), batch.type(),
+        final TimeSeriesStorableRows rows = TimeSeriesStorableRows.convert(database, group.get(0).getMeasurement(), batch.type(),
             timestamps, count, false, (row, valueColumn, col) -> col.getRole() == ColumnDefinition.ColumnRole.TAG ?
                 group.get(row).getTags().get(col.getName()) :
                 group.get(row).getFields().get(col.getName()), unreadableValues);
@@ -380,7 +380,7 @@ public final class TimeSeriesGateway {
   public static Object[] latest(final TimeSeriesEngine engine, final TagFilter tagFilter,
       final AggregationMetrics metrics) throws IOException {
     final List<Object[]> newest = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter, 1, metrics);
-    return newest.isEmpty() ? null : newest.getFirst();
+    return newest.isEmpty() ? null : newest.get(0);
   }
 
   /**
@@ -711,7 +711,7 @@ public final class TimeSeriesGateway {
     // The common declaration - and every one written before issue #7702 - already spells the row order, so it
     // is handed back without copying it.
     if (columnIndices == null && !columns.isEmpty()
-        && columns.getFirst().getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        && columns.get(0).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
       return columns;
 
     final List<ColumnDefinition> selected =

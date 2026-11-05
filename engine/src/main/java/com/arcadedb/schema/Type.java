@@ -1544,14 +1544,18 @@ public enum Type {
 
     // A BIG NUMBER BEYOND THE 64-BIT RANGE IS OUT OF EVERY INTEGRAL RANGE, LONG'S INCLUDED: CLAMPING IT TO Long.MAX_VALUE
     // PASSED THE LONG CHECK BELOW AND STORED EVERY SUCH ELEMENT AS THE SAME NUMBER (issue #10756)
-    final boolean beyondLong = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
-      case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
-      // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
-      case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
-      case Float floatValue -> floatValue >= 0x1p63f || floatValue < -0x1p63f;
-      default -> false;
-    };
+    final boolean beyondLong;
+    if (value instanceof BigDecimal bigDecimal)
+      beyondLong = bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+    else if (value instanceof BigInteger bigInteger)
+      beyondLong = bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
+    // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
+    else if (value instanceof Double doubleValue)
+      beyondLong = doubleValue >= 0x1p63 || doubleValue < -0x1p63;
+    else if (value instanceof Float floatValue)
+      beyondLong = floatValue >= 0x1p63f || floatValue < -0x1p63f;
+    else
+      beyondLong = false;
     final long longValue = value.longValue();
 
     if (beyondLong || longValue < min || longValue > max)

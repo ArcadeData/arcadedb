@@ -88,7 +88,7 @@ public class CypherDDLStatement implements CypherStatement {
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final List<String> labelNames, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
       final boolean forRelationship, final CypherTypeName typedName, final IndexKind indexKind, final Expression options) {
-    final String labelName = labelNames == null ? null : labelNames.getFirst();
+    final String labelName = labelNames == null ? null : labelNames.get(0);
     this.labelNames = labelNames;
     this.kind = kind;
     this.constraintKind = constraintKind;

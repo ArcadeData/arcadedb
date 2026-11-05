@@ -339,15 +339,19 @@ class Issue10380ArrayValuesAsKeysTest extends TestHelper {
   }
 
   private static Object copy(final Object array) {
-    return switch (array) {
-      case byte[] a -> a.clone();
-      case short[] a -> a.clone();
-      case int[] a -> a.clone();
-      case long[] a -> a.clone();
-      case float[] a -> a.clone();
-      case double[] a -> a.clone();
-      default -> throw new IllegalArgumentException("Not an array: " + array);
-    };
+    if (array instanceof byte[] a)
+      return a.clone();
+    if (array instanceof short[] a)
+      return a.clone();
+    if (array instanceof int[] a)
+      return a.clone();
+    if (array instanceof long[] a)
+      return a.clone();
+    if (array instanceof float[] a)
+      return a.clone();
+    if (array instanceof double[] a)
+      return a.clone();
+    throw new IllegalArgumentException("Not an array: " + array);
   }
 
   private void createType(final String name, final Type type) {

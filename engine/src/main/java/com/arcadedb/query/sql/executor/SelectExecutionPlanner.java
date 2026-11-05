@@ -520,14 +520,14 @@ public class SelectExecutionPlanner {
    */
   protected static Projection translateDistinct(Projection projection) {
     if (projection != null && projection.getItems().size() == 1) {
-      if (isDistinct(projection.getItems().getFirst())) {
+      if (isDistinct(projection.getItems().get(0))) {
         projection = projection.copy();
-        final ProjectionItem item = projection.getItems().getFirst();
+        final ProjectionItem item = projection.getItems().get(0);
         final FunctionCall function = ((BaseExpression) item.getExpression().getMathExpression()).getIdentifier().getLevelZero()
             .getFunctionCall();
         if (function.getParams() == null || function.getParams().isEmpty())
           throw new CommandSQLParsingException("distinct() requires one argument: distinct(<expression>)");
-        final Expression exp = function.getParams().getFirst();
+        final Expression exp = function.getParams().get(0);
         final ProjectionItem resultItem = new ProjectionItem();
         resultItem.setAlias(item.getAlias());
         resultItem.setExpression(exp.copy());
@@ -604,7 +604,7 @@ public class SelectExecutionPlanner {
 
     // The type name, not the rendered target: FromItem.toString() appends " AS <alias>" when the statement declared
     // one, and CountFromTypeStep looks its argument up in the schema (issue #7153).
-    result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().getFirst(), context));
+    result.chain(new CountFromTypeStep(targetClass.getStringValue(), info.projection.getAllAliases().get(0), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -643,7 +643,7 @@ public class SelectExecutionPlanner {
     if (!isMinimalQuery(info)) {
       return false;
     }
-    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().getFirst(), context));
+    result.chain(new CountFromIndexStep(targetIndex, info.projection.getAllAliases().get(0), context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -665,10 +665,10 @@ public class SelectExecutionPlanner {
       return false;
     }
     // THE PROJECTION MUST BE THE AGGREGATE ITSELF: count(*) + 1 SPLITS INTO count(*) PLUS A "+ 1" PROJECTED AFTER IT (ISSUE #8976)
-    final MathExpression projectionMath = info.projection.getItems().getFirst().getExpression().getMathExpression();
+    final MathExpression projectionMath = info.projection.getItems().get(0).getExpression().getMathExpression();
     if (!(projectionMath instanceof BaseExpression projectionBase) || projectionBase.getModifier() != null)
       return false;
-    final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
+    final ProjectionItem item = info.aggregateProjection.getItems().get(0);
     return "count(*)".equalsIgnoreCase(item.getExpression().toString());
   }
 
@@ -694,7 +694,7 @@ public class SelectExecutionPlanner {
         || projection.getItems().size() != 1) {
       return false;
     }
-    final ProjectionItem item = aggregateProjection.getItems().getFirst();
+    final ProjectionItem item = aggregateProjection.getItems().get(0);
     return item.getExpression().isCount();
   }
 
@@ -757,7 +757,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Create the optimized execution step
-    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, targetBuckets, context));
+    result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().get(0), maxMinInfo.isMax, targetBuckets, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
   }
@@ -792,7 +792,7 @@ public class SelectExecutionPlanner {
 
     if (info.projection.getItems() == null || info.projection.getItems().size() != 1)
       return;
-    final ProjectionItem item = info.projection.getItems().getFirst();
+    final ProjectionItem item = info.projection.getItems().get(0);
     if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null
         || !(item.getExpression().getMathExpression() instanceof BaseExpression base) || base.getModifier() != null
         || base.getIdentifier() == null || base.getIdentifier().getLevelZero() == null)
@@ -810,7 +810,7 @@ public class SelectExecutionPlanner {
     else
       return;
 
-    final Expression argument = functionCall.getParams().getFirst();
+    final Expression argument = functionCall.getParams().get(0);
     if (!argument.isBaseIdentifier())
       return;
     final String propertyName = argument.toString().trim();
@@ -824,7 +824,7 @@ public class SelectExecutionPlanner {
     final List<AndBlock> flattened = info.whereClause.flatten();
     if (flattened == null || flattened.size() != 1)
       return;
-    for (final BooleanExpression condition : flattened.getFirst().getSubBlocks())
+    for (final BooleanExpression condition : flattened.get(0).getSubBlocks())
       if (!isRangeConditionOn(condition, propertyName, context))
         return;
 
@@ -897,12 +897,12 @@ public class SelectExecutionPlanner {
     // Ensure the projection expression is purely a function call (e.g., max(id)), not a compound
     // expression like max(id)+1. If the projection has additional arithmetic, the index-optimized
     // path would skip those operations and return wrong results.
-    final ProjectionItem projItem = info.projection.getItems().getFirst();
+    final ProjectionItem projItem = info.projection.getItems().get(0);
     final Expression projExp = projItem.getExpression();
     if (projExp.getMathExpression() == null || !(projExp.getMathExpression() instanceof BaseExpression))
       return null;
 
-    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().getFirst();
+    final ProjectionItem aggregateItem = info.aggregateProjection.getItems().get(0);
     final Expression exp = aggregateItem.getExpression();
 
     if (exp.getMathExpression() == null || !(exp.getMathExpression() instanceof BaseExpression base))
@@ -928,7 +928,7 @@ public class SelectExecutionPlanner {
       return null;
 
     // Get the property name from the pre-aggregate projection
-    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().getFirst();
+    final ProjectionItem preAggItem = info.preAggregateProjection.getItems().get(0);
     final Expression preAggExp = preAggItem.getExpression();
 
     if (preAggExp.getMathExpression() == null || !(preAggExp.getMathExpression() instanceof BaseExpression preAggBase))
@@ -969,7 +969,7 @@ public class SelectExecutionPlanner {
       try {
         // Must be a single-property index on the exact property
         final List<String> propNames = index.getPropertyNames();
-        if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
+        if (propNames.size() == 1 && propNames.get(0).equals(propertyName)) {
           // Must support ordered iterations (RangeIndex like LSM_TREE). A case-insensitive index holds its keys folded, so
           // its ends are not the ends of the values and its key is not a value any record holds (issue #8698)
           if (index.supportsOrderedIterations() && !holdsFoldedKeys(index))
@@ -1043,7 +1043,7 @@ public class SelectExecutionPlanner {
     extractSubQueries(info);
     if (info.projection != null && info.projection.isExpand()) {
       info.expand = true;
-      final ProjectionItem expandItem = info.projection.getItems().getFirst();
+      final ProjectionItem expandItem = info.projection.getItems().get(0);
       if (expandItem.getAlias() != null)
         info.expandAlias = expandItem.getAlias().getStringValue();
       info.projection = info.projection.getExpandContent();
@@ -1147,7 +1147,7 @@ public class SelectExecutionPlanner {
   private static boolean canAddOrderByProjections(final QueryPlanningInfo info) {
     return !(info.orderApplied || info.expand || info.unwind != null || info.orderBy == null || info.orderBy.getItems().size() == 0
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().getFirst().isAll()));
+        && info.projection.getItems().get(0).isAll()));
   }
 
   /**
@@ -1206,7 +1206,7 @@ public class SelectExecutionPlanner {
   private static void addUnwindProjections(final QueryPlanningInfo info) {
     if (info.unwind == null || info.unwind.getItems() == null || info.unwind.getItems().isEmpty()
         || info.projection == null || info.projection.getItems() == null || (info.projection.getItems().size() == 1
-        && info.projection.getItems().getFirst().isAll())) {
+        && info.projection.getItems().get(0).isAll())) {
       return;
     }
 
@@ -1751,7 +1751,7 @@ public class SelectExecutionPlanner {
       return result;
 
     //TODO optimization: merge multiple conditions
-    for (final BooleanExpression booleanExpression : flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
       if (isRidRange(booleanExpression, context)) {
         result.getSubBlocks().add(booleanExpression.copy());
       }
@@ -1904,7 +1904,7 @@ public class SelectExecutionPlanner {
       } else if (info.flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
       } else {
-        final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+        final AndBlock andBlock = info.flattenedWhereClause.get(0);
         if (andBlock.getSubBlocks().size() == 1) {
 
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -2382,7 +2382,7 @@ public class SelectExecutionPlanner {
     if (info.perRecordLetClause != null && info.whereClause != null && !variableNamesIn(info.whereClause.toString()).isEmpty())
       return false;
 
-    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+    final AndBlock andBlock = info.flattenedWhereClause.get(0);
     final String edgeTypeName = docType.getName();
 
     // Look for @out = <RID> or @in = <RID> in the WHERE conditions
@@ -2469,7 +2469,7 @@ public class SelectExecutionPlanner {
         info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null && !info.perRecordLetClause.getItems()
             .isEmpty();
 
-    final AndBlock andBlock = info.flattenedWhereClause.getFirst();
+    final AndBlock andBlock = info.flattenedWhereClause.get(0);
 
     for (int i = 0; i < andBlock.getSubBlocks().size(); i++) {
       final BooleanExpression expr = andBlock.getSubBlocks().get(i);
@@ -3458,7 +3458,7 @@ public class SelectExecutionPlanner {
     if (flattenedWhere == null || flattenedWhere.size() != 1)
       return null;
     FieldFilter filter = null;
-    for (final BooleanExpression expr : flattenedWhere.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : flattenedWhere.get(0).getSubBlocks()) {
       final FieldFilter one = fieldFilterOf(expr, columns, context);
       if (one != null)
         filter = filter == null ? one : filter.and(one);
@@ -3685,7 +3685,7 @@ public class SelectExecutionPlanner {
     if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.projectionAfterOrderBy != null)
       return false;
 
-    final OrderByItem item = info.orderBy.getItems().getFirst();
+    final OrderByItem item = info.orderBy.getItems().get(0);
     // A modifier, a computed expression or a parameterised direction all mean the fetch order alone cannot
     // satisfy the clause.
     if (item.modifier != null || item.expression != null || item.getDirectionParameter() != null)
@@ -3716,7 +3716,7 @@ public class SelectExecutionPlanner {
     if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.projectionAfterOrderBy != null)
       return false;
 
-    final OrderByItem item = info.orderBy.getItems().getFirst();
+    final OrderByItem item = info.orderBy.getItems().get(0);
     // A modifier, a computed expression or a parameterised direction all mean the fetch order alone
     // cannot satisfy the clause.
     if (item.modifier != null || item.expression != null || item.getDirectionParameter() != null)
@@ -3815,7 +3815,7 @@ public class SelectExecutionPlanner {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final Set<String> constrainedTags = new HashSet<>();
 
-    for (final BooleanExpression expr : flattenedWhereClause.getFirst().getSubBlocks()) {
+    for (final BooleanExpression expr : flattenedWhereClause.get(0).getSubBlocks()) {
       if (extractTimeRange(expr, timestampColumn, context) != null)
         continue;
 
@@ -4506,7 +4506,7 @@ public class SelectExecutionPlanner {
           info.target, context);
       if (functions == null || functions.size() != 1)
         return false;
-      final BinaryCondition function = functions.getFirst();
+      final BinaryCondition function = functions.get(0);
       if (!function.indexedFunctionAnswersByScore(context) || !function.executeIndexedFunctionAfterIndexSearch(info.target, context))
         return false;
       // By identity, as the residual of indexedFunctionRowLimit: the function's condition is the very instance the block holds
@@ -4728,7 +4728,7 @@ public class SelectExecutionPlanner {
   private static boolean isOrderByScoreDescending(final QueryPlanningInfo info) {
     if (info.orderBy.getItems() == null || info.orderBy.getItems().size() != 1)
       return false;
-    final OrderByItem item = info.orderBy.getItems().getFirst();
+    final OrderByItem item = info.orderBy.getItems().get(0);
     if (item.modifier != null || item.recordAttr != null || item.getDirectionParameter() != null
         || !OrderByItem.DESC.equalsIgnoreCase(item.getType()))
       return false;
@@ -4940,7 +4940,7 @@ public class SelectExecutionPlanner {
 
         // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index. The same goes when no record
         // can hold a null for the first indexed property: it is NOTNULL, or the WHERE clause filters nulls out (#8664)
-        if (nullStrategy == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || cannotHoldNull(typez, indexFields.getFirst(), info)) {
+        if (nullStrategy == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || cannotHoldNull(typez, indexFields.get(0), info)) {
           // NULLs are indexed or there are none, just use the index directly
           plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, isAsc, context));
           plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
@@ -5120,7 +5120,7 @@ public class SelectExecutionPlanner {
     final List<DocumentType> stack = new ArrayList<>();
     stack.add(typez);
     while (!stack.isEmpty()) {
-      final DocumentType current = stack.removeFirst();
+      final DocumentType current = stack.remove(0);
       traversed.add(current);
       for (final DocumentType sub : current.getSubTypes()) {
         if (traversed.contains(sub))
@@ -5210,7 +5210,7 @@ public class SelectExecutionPlanner {
       final boolean allowDeferredLetFilter) {
     List<ExecutionStepInternal> result;
     if (optimumIndexSearchDescriptors.size() == 1) {
-      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.getFirst();
+      final IndexSearchDescriptor desc = optimumIndexSearchDescriptors.get(0);
       result = new ArrayList<>();
 
       final Boolean orderAsc = getOrderDirection(info);
@@ -5341,8 +5341,8 @@ public class SelectExecutionPlanner {
       if (orderItems.isEmpty()) {
         return true;//nothing to sort, the conditions completely overlap the ORDER BY
       }
-      if (s.equals(orderItems.getFirst())) {
-        orderItems.removeFirst();
+      if (s.equals(orderItems.get(0))) {
+        orderItems.remove(0);
         overlapping = true; //start overlapping
       } else if (overlapping) {
         return false; //overlapping, but next order item does not match...
@@ -5581,7 +5581,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.getFirst().getFirst()))
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst()))
           .map(Pair::getSecond).collect(Collectors.toList());
     }
 
@@ -5589,7 +5589,7 @@ public class SelectExecutionPlanner {
     descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.blockCount())).collect(Collectors.toList());
 
     // get the one that has more indexed fields
-    return descriptors.isEmpty() ? null : descriptors.getLast();
+    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
   }
 
   /**
@@ -5764,7 +5764,7 @@ public class SelectExecutionPlanner {
           .toList();
 
       // get only the descriptors with the lowest cost
-      final int lowestCost = sortedDescriptors.getFirst().getFirst();
+      final int lowestCost = sortedDescriptors.get(0).getFirst();
       descriptors = sortedDescriptors.stream()
           .filter(x -> x.getFirst().equals(lowestCost))
           .map(x -> x.getSecond())
@@ -5772,7 +5772,7 @@ public class SelectExecutionPlanner {
     }
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
-    return descriptors.getFirst();
+    return descriptors.get(0);
   }
 
   /**
@@ -6218,12 +6218,15 @@ public class SelectExecutionPlanner {
    * the plain property.
    */
   private static boolean isLowerCaseRewrite(final BooleanExpression expression, final IndexSearchInfo info) {
-    final Expression subject = switch (expression) {
-      case BinaryCondition condition -> condition.getLeft();
-      case InCondition condition -> condition.getLeft();
-      case BetweenCondition condition -> condition.getFirst();
-      default -> null;
-    };
+    final Expression subject;
+    if (expression instanceof BinaryCondition condition)
+      subject = condition.getLeft();
+    else if (expression instanceof InCondition condition)
+      subject = condition.getLeft();
+    else if (expression instanceof BetweenCondition condition)
+      subject = condition.getFirst();
+    else
+      subject = null;
     return BinaryCondition.isFieldWithLowerCaseMethod(subject, info.getField());
   }
 
@@ -6460,7 +6463,7 @@ public class SelectExecutionPlanner {
       info.orderApplied = true;
 
     if (buckets.size() == 1) {
-      final Bucket parserBucket = buckets.getFirst();
+      final Bucket parserBucket = buckets.get(0);
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
@@ -6574,7 +6577,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      OrderByItem item = info.orderBy.getItems().getFirst();
+      OrderByItem item = info.orderBy.getItems().get(0);
       String recordAttr = item.getRecordAttr();
       return RID_PROPERTY.equalsIgnoreCase(recordAttr) && OrderByItem.DESC.equals(item.getType());
     }
@@ -6589,7 +6592,7 @@ public class SelectExecutionPlanner {
       return false;
 
     if (info.orderBy.getItems().size() == 1) {
-      final OrderByItem item = info.orderBy.getItems().getFirst();
+      final OrderByItem item = info.orderBy.getItems().get(0);
       final String recordAttr = item.getRecordAttr();
       return RID_PROPERTY.equalsIgnoreCase(recordAttr) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));

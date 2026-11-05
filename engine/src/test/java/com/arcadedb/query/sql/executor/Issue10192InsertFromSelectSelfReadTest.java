@@ -207,7 +207,7 @@ class Issue10192InsertFromSelectSelfReadTest extends TestHelper {
   void bucketTargetIsGuardedToo() {
     createType("T", "");
     database.transaction(() -> database.command("sql", "INSERT INTO T SET id = 1, a = 3, b = 4").close());
-    final String bucket = database.getSchema().getType("T").getBuckets(false).getFirst().getName();
+    final String bucket = database.getSchema().getType("T").getBuckets(false).get(0).getName();
 
     assertThat(insert("INSERT INTO bucket:" + bucket + " FROM SELECT id + 100 AS id, a, b FROM T WHERE a = 3 OR b = 4")).isEqualTo(1);
     assertThat(ids("T")).containsExactly(1L, 101L);

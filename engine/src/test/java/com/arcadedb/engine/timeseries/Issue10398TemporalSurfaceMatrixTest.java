@@ -121,7 +121,7 @@ class Issue10398TemporalSurfaceMatrixTest extends TestHelper {
     final WriteReport report = TimeSeriesGateway.write((DatabaseInternal) database,
         new ArrayList<>(List.of(new Sample("TagT", Map.of("k", "" + MILLIS), Map.of("v", 1L), 2))));
     assertThat(report.written()).isEqualTo(1);
-    assertThat(((Number) rows("TagT").getFirst()[1]).longValue()).isEqualTo(MILLIS);
+    assertThat(((Number) rows("TagT").get(0)[1]).longValue()).isEqualTo(MILLIS);
   }
 
   /**

@@ -115,7 +115,7 @@ class RebuildVectorIndexInPlaceCrashTest {
       assertThat(holder).isNotNull();
       final List<Pair<RID, Float>> found = holder.findNeighborsFromVector((float[]) doc.get("embedding"), 1);
       assertThat(found).as("record %s is found by its own vector", doc.getIdentity()).isNotEmpty();
-      assertThat(found.getFirst().getFirst()).isEqualTo(doc.getIdentity());
+      assertThat(found.get(0).getFirst()).isEqualTo(doc.getIdentity());
     }
   }
 

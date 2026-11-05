@@ -114,7 +114,7 @@ public class Issue10766BoltShowCurrentUserIT extends BaseBoltServerTest {
         final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
       final List<Record> rows = session.run(query).list();
       assertThat(rows).hasSize(1);
-      return rows.getFirst();
+      return rows.get(0);
     }
   }
 

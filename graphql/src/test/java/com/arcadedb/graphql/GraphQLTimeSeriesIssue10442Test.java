@@ -88,8 +88,8 @@ class GraphQLTimeSeriesIssue10442Test {
   void filteredQueryOverTimeSeriesTypeReturnsTheMatchingSample() {
     final List<Result> rows = drain(database.query("graphql", "{ eventsByK(k: \"b\") { k v } }"));
     assertThat(rows).hasSize(1);
-    assertThat(rows.getFirst().<String>getProperty("k")).isEqualTo("b");
-    assertThat(rows.getFirst().<Number>getProperty("v").doubleValue()).isEqualTo(2.0);
+    assertThat(rows.get(0).<String>getProperty("k")).isEqualTo("b");
+    assertThat(rows.get(0).<Number>getProperty("v").doubleValue()).isEqualTo(2.0);
   }
 
   @Test

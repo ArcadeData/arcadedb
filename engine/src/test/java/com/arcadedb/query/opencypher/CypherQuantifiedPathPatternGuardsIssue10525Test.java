@@ -167,9 +167,9 @@ class CypherQuantifiedPathPatternGuardsIssue10525Test {
 
     // the enclosing pattern and the pattern the group repeats
     assertThat(patterns).hasSize(2);
-    final PathPattern outer = patterns.getFirst();
+    final PathPattern outer = patterns.get(0);
     assertThat(outer.getRelationships()).hasSize(1).first().isInstanceOf(QuantifiedPathPattern.class);
-    assertThat(patterns.get(1)).isSameAs(((QuantifiedPathPattern) outer.getRelationships().getFirst()).getInnerPattern());
+    assertThat(patterns.get(1)).isSameAs(((QuantifiedPathPattern) outer.getRelationships().get(0)).getInnerPattern());
     // the inner WHERE is walked: b.name is reached as an expression, and nothing else of the statement mentions it
     assertThat(expressions).anyMatch(expression -> expression instanceof PropertyAccessExpression property && "b".equals(property.getVariableName()));
   }

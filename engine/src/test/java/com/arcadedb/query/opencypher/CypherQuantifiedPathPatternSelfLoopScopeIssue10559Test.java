@@ -246,7 +246,7 @@ class CypherQuantifiedPathPatternSelfLoopScopeIssue10559Test {
   }
 
   private long count(final String query) {
-    return ((Number) rows(query).getFirst().getProperty("n")).longValue();
+    return ((Number) rows(query).get(0).getProperty("n")).longValue();
   }
 
   private List<Long> ids(final String query) {

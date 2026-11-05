@@ -355,14 +355,11 @@ public class JSONImporterFormat implements FormatImporter {
    * already imported one (issue #10756).
    */
   static Type idTypeOf(final Object idValue) {
-    return switch (idValue) {
-      case Integer i -> Type.LONG;
-      case Long l -> Type.LONG;
-      case Short s -> Type.LONG;
-      case Byte b -> Type.LONG;
-      case Number n -> Type.DECIMAL;
-      default -> Type.getTypeByValue(idValue);
-    };
+    if (idValue instanceof Integer || idValue instanceof Long || idValue instanceof Short || idValue instanceof Byte)
+      return Type.LONG;
+    if (idValue instanceof Number)
+      return Type.DECIMAL;
+    return Type.getTypeByValue(idValue);
   }
 
   private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,

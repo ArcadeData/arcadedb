@@ -22,17 +22,13 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.Map;
 import java.util.PriorityQueue;
 
 /**
@@ -116,20 +112,11 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
       if (rid == null)
         continue;
       // A row that already carries its loaded record (the output of `vector.fuse`, `vector.neighbors`, a plain
-      // SELECT) is scored on that record: loading it again is the second load issue #10129 is about.
-      Document rec = carriedRecord(row, rid);
-      if (rec == null) {
-        final Record loaded;
-        try {
-          loaded = db.lookupByRID(rid, true);
-        } catch (final RecordNotFoundException e) {
-          continue;
-        }
-        // a RID of an internal record (an edge segment, ...) has no properties to score: skip it like a missing one
-        if (!(loaded instanceof Document document))
-          continue;
-        rec = document;
-      }
+      // SELECT) is scored on that record: loading it again is the second load issue #10129 is about. A RID of an
+      // internal record (an edge segment, ...) has no properties to score: skipped like a missing one
+      final Document rec = candidateRecord(db, row, rid);
+      if (rec == null)
+        continue;
       final Object raw = rec.get(embeddingProperty);
       if (raw == null)
         continue;
@@ -159,25 +146,6 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     for (final Scored s : ranked)
       out.add(new ScoredRecordRow(s.record(), "score", s.score()));
     return out;
-  }
-
-  /**
-   * The record {@code row} already holds for {@code rid}, or null when it holds none and the record has to be loaded.
-   * The identity check keeps a user property that happens to be called {@code record} from being taken for it.
-   */
-  private static Document carriedRecord(final Object row, final RID rid) {
-    final Object carried;
-    if (row instanceof ScoredRecordRow scored)
-      carried = scored.getRecord();
-    else if (row instanceof Document document)
-      carried = document;
-    else if (row instanceof Map<?, ?> map)
-      carried = map.get("record");
-    else if (row instanceof Result result)
-      carried = result.isElement() ? result.getElement().get() : result.getProperty("record");
-    else
-      carried = null;
-    return carried instanceof Document document && rid.equals(document.getIdentity()) ? document : null;
   }
 
   public String getSyntax() {

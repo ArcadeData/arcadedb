@@ -337,14 +337,16 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected String[] stringArray(final Object fromObject) {
-    return switch (fromObject) {
-      case null -> new String[] {};
-      case String s -> toStrings(s.replace("},{", " ,").split(","));
-      case Collection<?> c -> toStrings(c.toArray());
-      case Object[] a -> toStrings(a);
-      default -> throw new CommandSQLParsingException(
-          "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
-    };
+    if (fromObject == null)
+      return new String[] {};
+    if (fromObject instanceof String s)
+      return toStrings(s.replace("},{", " ,").split(","));
+    if (fromObject instanceof Collection<?> c)
+      return toStrings(c.toArray());
+    if (fromObject instanceof Object[] a)
+      return toStrings(a);
+    throw new CommandSQLParsingException(
+        "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
   }
 
   /** Trims every value and drops null and blank ones, so an empty name never reaches an edge-type or property lookup. */
@@ -366,20 +368,14 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
    * through here but through {@code FunctionOptions}, which refuses a value of the wrong kind (#10788).
    */
   protected Double doubleOrDefault(final Object fromObject, final double defaultValue) {
-    switch (fromObject) {
-      case null -> {
-        return defaultValue;
-      }
-      case Number number -> {
-        return number.doubleValue();
-      }
-      case String s -> {
-        try {
-          return Double.parseDouble(fromObject.toString());
-        } catch (final NumberFormatException ignore) {
-        }
-      }
-      default -> {
+    if (fromObject == null)
+      return defaultValue;
+    if (fromObject instanceof Number number)
+      return number.doubleValue();
+    if (fromObject instanceof String) {
+      try {
+        return Double.parseDouble(fromObject.toString());
+      } catch (final NumberFormatException ignore) {
       }
     }
     return defaultValue;

@@ -1941,7 +1941,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
       if (parts.isEmpty())
         return new NeighborView(n, new int[n + 1], EMPTY_INT);
-      return parts.size() == 1 ? parts.getFirst() : mergeNeighborViews(parts, n);
+      return parts.size() == 1 ? parts.get(0) : mergeNeighborViews(parts, n);
     });
   }
 

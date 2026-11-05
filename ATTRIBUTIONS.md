@@ -128,7 +128,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| io.github.jbellis | jvector | 4.0.0-rc.7 | Apache 2.0 | https://github.com/jbellis/jvector |
+| io.github.jbellis | jvector | 4.0.2 | Apache 2.0 | https://github.com/jbellis/jvector |
 | org.apache.commons | commons-math3 | 3.6.1 | Apache 2.0 | https://commons.apache.org/proper/commons-math/ |
 | org.agrona | agrona | 1.20.0 | Apache 2.0 | https://github.com/real-logic/agrona |
 

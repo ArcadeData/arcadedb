@@ -88,7 +88,7 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
     transactionManager.runWALHousekeeping();
     assertThat(transactionManager.getOpenWALFileCountForTesting()).isZero();
     assertThat(walFiles()).isEmpty();
-    assertThat(before.getFirst()).doesNotExist();
+    assertThat(before.get(0)).doesNotExist();
 
     database.transaction(() -> database.newDocument("Doc").set("name", "second").save());
     assertThat(transactionManager.getOpenWALFileCountForTesting()).isEqualTo(1);
@@ -199,7 +199,7 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
       transactionManager.cancelHousekeepingForTesting();
 
       // THE SLOT OF THIS THREAD HOLDS A FILE THAT REFUSES WRITES, THE OTHER SLOT IS EMPTY
-      final int ownSlot = (int) (Thread.currentThread().threadId() % 2);
+      final int ownSlot = (int) (Thread.currentThread().getId() % 2);
       final WALFile retired = new WALFile(db.getDatabasePath() + File.separator + "txlog_10234_retired.wal");
       retired.setActive(false);
       final WALFile displaced = transactionManager.replaceActiveWALFileForTesting(ownSlot, retired);
@@ -305,7 +305,7 @@ class Issue10234WALFilesOnDemandTest extends TestHelper {
       transactionManager.cancelHousekeepingForTesting();
 
       // ONE OTHER SLOT HOLDS A FILE, THE THIRD IS EMPTY, AND THE SLOT OF THIS THREAD REFUSES WRITES
-      final int ownSlot = (int) (Thread.currentThread().threadId() % 3);
+      final int ownSlot = (int) (Thread.currentThread().getId() % 3);
       final int openSlot = (ownSlot + 1) % 3;
       transactionManager.openWALFileForTesting(openSlot);
       final WALFile retired = new WALFile(db.getDatabasePath() + File.separator + "txlog_10234_refuses.wal");

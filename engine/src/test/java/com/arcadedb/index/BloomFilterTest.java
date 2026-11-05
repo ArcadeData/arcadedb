@@ -395,7 +395,7 @@ class BloomFilterTest extends TestHelper {
         database.newDocument("Mixed").set("amount", new BigDecimal(i + ".0")).set("label", "label-" + i).save();
     });
 
-    final TypeIndex index = database.getSchema().getType("Mixed").getIndexesByProperties("amount", "label").getFirst();
+    final TypeIndex index = database.getSchema().getType("Mixed").getIndexesByProperties("amount", "label").get(0);
     assertThat(((IndexInternal) index).scheduleCompaction()).isTrue();
     assertThat(((IndexInternal) index).compact()).isTrue();
 
@@ -423,7 +423,7 @@ class BloomFilterTest extends TestHelper {
         database.newDocument("D").set("k", keys.of(i)).save();
     });
 
-    final TypeIndex index = database.getSchema().getType("D").getIndexesByProperties("k").getFirst();
+    final TypeIndex index = database.getSchema().getType("D").getIndexesByProperties("k").get(0);
     assertThat(((IndexInternal) index).scheduleCompaction()).isTrue();
     assertThat(((IndexInternal) index).compact()).isTrue();
     assertThat(compactedOf(index).getBloomFilter()).as("the compaction must have written filters").isNotNull();

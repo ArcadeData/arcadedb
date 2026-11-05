@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.StaticBaseServerTest;
@@ -87,7 +88,8 @@ class Issue10385ServerRefusesCollidingPluginsTest extends StaticBaseServerTest {
 
     // PluginRoutesTestPlugin declared POST, CollidingRoutesTestPlugin declared GET on the same path: both answer
     final String url = getServerHttpUrl(server, PluginRoutesTestPlugin.PATH);
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       final HttpResponse<String> get = client.send(HttpRequest.newBuilder(URI.create(url))
           .GET().build(), HttpResponse.BodyHandlers.ofString());
       assertThat(get.statusCode()).isEqualTo(200);
@@ -98,6 +100,8 @@ class Issue10385ServerRefusesCollidingPluginsTest extends StaticBaseServerTest {
       assertThat(put.statusCode()).isEqualTo(405);
       // in the order the plugins registered, whichever it was
       assertThat(put.headers().firstValue("Allow").orElseThrow().split(", ")).containsExactlyInAnyOrder("POST", "GET", "HEAD");
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 

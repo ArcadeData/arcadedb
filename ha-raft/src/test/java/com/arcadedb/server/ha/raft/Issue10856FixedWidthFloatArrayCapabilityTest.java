@@ -72,7 +72,7 @@ class Issue10856FixedWidthFloatArrayCapabilityTest {
     raft.returns("peersMissingCapability", List.of("old-peer"));
 
     assertThat(serializedSize()).as("5 bytes per float: the form every build reads").isGreaterThanOrEqualTo(5 * DIM);
-    assertThat(raft.calls("peersMissingCapability")).extracting(call -> call.getFirst())
+    assertThat(raft.calls("peersMissingCapability")).extracting(call -> call.get(0))
         .contains(PeerCapabilities.FIXED_WIDTH_FLOAT_ARRAYS);
   }
 

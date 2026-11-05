@@ -194,12 +194,12 @@ class Issue10870ArrayTextLiteralTest {
   private static List<Object> normalize(final Object list) {
     final List<Object> normalized = new ArrayList<>();
     for (final Object element : (List<?>) list)
-      normalized.add(switch (element) {
-        case byte[] bytes -> Arrays.toString(bytes);
-        case Date date -> date.getTime();
-        case null -> null;
-        default -> element;
-      });
+      if (element instanceof byte[])
+        normalized.add(Arrays.toString((byte[]) element));
+      else if (element instanceof Date)
+        normalized.add(((Date) element).getTime());
+      else
+        normalized.add(element);
     return normalized;
   }
 }

@@ -563,7 +563,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       if (whereFilterHasEqualityPredicateOnOwnVariable(whereFilter))
         return false;
-      if (seeksIndexPerRow(labels.getFirst()))
+      if (seeksIndexPerRow(labels.get(0)))
         return false;
     }
     return true;
@@ -1119,7 +1119,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private TypeIndex singlePropertyIndex(final DocumentType type, final String propertyName) {
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
       final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
-      if (indexProperties != null && indexProperties.size() == 1 && indexProperties.getFirst().equals(propertyName))
+      if (indexProperties != null && indexProperties.size() == 1 && indexProperties.get(0).equals(propertyName))
         return index;
     }
     return null;
@@ -1135,7 +1135,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final List<Object> elements = new ArrayList<>();
     try {
       if (list.size() == 1) {
-        final Object listValue = evaluator.evaluate(list.getFirst(), currentInputResult, context);
+        final Object listValue = evaluator.evaluate(list.get(0), currentInputResult, context);
         if (listValue instanceof Collection<?> collection)
           elements.addAll(collection);
         else if (MultiValue.isSequenceArray(listValue))
@@ -1177,7 +1177,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final int nextKey;
     try {
       final IndexCursor consistent = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, keys);
-      first = consistent != null ? consistent : index.get(keys.getFirst());
+      first = consistent != null ? consistent : index.get(keys.get(0));
       nextKey = consistent != null ? keys.size() : 1;
       if (!index.isUnchangedSince(subIndexes)) {
         first.close();

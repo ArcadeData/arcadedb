@@ -131,7 +131,7 @@ public class FullTextSearch {
    */
   public static Map<RID, Float> search(final List<TypeIndex> typeIndexes, final String queryText, final int limit) {
     if (typeIndexes.size() == 1)
-      return search(typeIndexes.getFirst(), queryText, limit);
+      return search(typeIndexes.get(0), queryText, limit);
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex member : typeIndexes)
       merged.putAll(search(member, queryText, limit));
@@ -394,7 +394,7 @@ public class FullTextSearch {
         scanDocumentFrequencies(bucketIndexes, shownTokens, WorkGuard.forCommandDeadline(null)));
     final FullTextIndexMetadata metadata = bucketIndexes.get(0).getFullTextMetadata();
 
-    final boolean wholeCorpus = bucketIndexes.getFirst().isCorpusReadable();
+    final boolean wholeCorpus = bucketIndexes.get(0).isCorpusReadable();
     final JSONObject explain = new JSONObject()
         .put("similarity", FullTextIndexMetadata.SIMILARITY_BM25)
         .put("k1", metadata.getBm25K1())

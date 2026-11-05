@@ -120,7 +120,7 @@ class Issue10877DatabaseInfoCountsHonestlyTest extends BaseGraphServerTest {
     assertThat(observer.error).as("the call failed").isNull();
     assertThat(observer.completed).isTrue();
     assertThat(observer.values).hasSize(1);
-    return observer.values.getFirst();
+    return observer.values.get(0);
   }
 
   private static long countEveryType(final Database database) {

@@ -25,16 +25,16 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.11.1</version>
+        <version>26.11.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <properties>
         <postgresql.version>42.7.14</postgresql.version>
-        <logback-classic.version>1.6.5</logback-classic.version>
+        <logback-classic.version>1.6.6</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>
         <assertj-db.version>3.0.2</assertj-db.version>
-        <jedis.version>8.0.2</jedis.version>
+        <jedis.version>8.0.1</jedis.version>
         <mongo-java-driver.version>3.12.14</mongo-java-driver.version>
     </properties>
 
@@ -124,7 +124,7 @@
         <profile>
             <id>bolt-driver-legacy</id>
             <properties>
-                <neo4j-driver.version>6.3.0</neo4j-driver.version>
+                <neo4j-driver.version>4.4.20</neo4j-driver.version>
             </properties>
             <build>
                 <plugins>

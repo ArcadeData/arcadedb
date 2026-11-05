@@ -83,14 +83,14 @@ class Issue11038BindCountAndNameLifecycleIT extends PostgresWireProtocolTestBase
       sendSync(out);
       final List<WireMessage> tooFew = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(tooFew)).as("refused, and the Execute behind it discarded").containsExactly('E', 'Z');
-      assertError(tooFew.getFirst(), "08P01", "bind message supplies 0 parameters, but prepared statement \"s1\" requires 1");
+      assertError(tooFew.get(0), "08P01", "bind message supplies 0 parameters, but prepared statement \"s1\" requires 1");
 
       sendBind(out, "", "s1", "1", "2", "3");
       sendExecute(out, "");
       sendSync(out);
       final List<WireMessage> tooMany = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(tooMany)).containsExactly('E', 'Z');
-      assertError(tooMany.getFirst(), "08P01", "bind message supplies 3 parameters, but prepared statement \"s1\" requires 1");
+      assertError(tooMany.get(0), "08P01", "bind message supplies 3 parameters, but prepared statement \"s1\" requires 1");
 
       // The exact count still answers
       sendBind(out, "", "s1", "1");
@@ -137,7 +137,7 @@ class Issue11038BindCountAndNameLifecycleIT extends PostgresWireProtocolTestBase
       sendBind(out, "", "s2", "1");
       sendSync(out);
       final List<WireMessage> refused = readUntilReadyForQuery(in);
-      assertError(refused.getFirst(), "08P01", "bind message supplies 1 parameters, but prepared statement \"s2\" requires 2");
+      assertError(refused.get(0), "08P01", "bind message supplies 1 parameters, but prepared statement \"s2\" requires 2");
 
       sendBind(out, "", "s2", "1", "2");
       sendExecute(out, "");
@@ -244,7 +244,7 @@ class Issue11038BindCountAndNameLifecycleIT extends PostgresWireProtocolTestBase
       sendSync(out);
       final List<WireMessage> refused = readUntilReadyForQuery(in);
       assertThat(messageTypesOf(refused)).containsExactly('E', 'Z');
-      assertError(refused.getFirst(), "42P05", "prepared statement \"rp1\" already exists");
+      assertError(refused.get(0), "42P05", "prepared statement \"rp1\" already exists");
 
       sendBind(out, "", "rp1");
       sendExecute(out, "");

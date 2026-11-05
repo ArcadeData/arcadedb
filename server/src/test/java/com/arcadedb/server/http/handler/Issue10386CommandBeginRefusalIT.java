@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
 
@@ -65,8 +66,11 @@ class Issue10386CommandBeginRefusalIT extends BaseGraphServerTest {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("language", language).put("command", command).toString()))
         .build();
-    try (final HttpClient client = HttpClient.newHttpClient()) {
+    final HttpClient client = HttpClient.newHttpClient();
+    try {
       return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    } finally {
+      HttpClientLifecycle.close(client);
     }
   }
 }

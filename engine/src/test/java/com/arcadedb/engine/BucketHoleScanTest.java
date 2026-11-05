@@ -56,7 +56,7 @@ class BucketHoleScanTest extends TestHelper {
   private       int                  nextId = 0;
 
   private LocalBucket bucket() {
-    return (LocalBucket) database.getSchema().getType("T").getBuckets(false).getFirst();
+    return (LocalBucket) database.getSchema().getType("T").getBuckets(false).get(0);
   }
 
   /** Tiny records, one bucket: the first page holds them all, so every insert lands on it. */
@@ -152,7 +152,7 @@ class BucketHoleScanTest extends TestHelper {
 
     // the next transaction sees slot 5 as a committed hole
     final List<RID> next = fill(1);
-    assertThat(next.getFirst()).isEqualTo(all.get(5));
+    assertThat(next.get(0)).isEqualTo(all.get(5));
     verifyModel();
   }
 
@@ -184,7 +184,7 @@ class BucketHoleScanTest extends TestHelper {
     });
 
     verifyModel();
-    assertThat(fill(1).getFirst()).as("the hole of the transaction is a committed one for the next").isEqualTo(all.get(20));
+    assertThat(fill(1).get(0)).as("the hole of the transaction is a committed one for the next").isEqualTo(all.get(20));
     verifyModel();
   }
 

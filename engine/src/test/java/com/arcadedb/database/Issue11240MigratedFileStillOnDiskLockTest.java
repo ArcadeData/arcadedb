@@ -42,8 +42,8 @@ class Issue11240MigratedFileStillOnDiskLockTest extends TestHelper {
   void aLockOnAMigratedFileStillOnDiskLocksItsReplacement() throws InterruptedException {
     database.getSchema().createDocumentType("Retired", 1);
     database.getSchema().createDocumentType("Replacement", 1);
-    final int retired = database.getSchema().getType("Retired").getBuckets(false).getFirst().getFileId();
-    final int replacement = database.getSchema().getType("Replacement").getBuckets(false).getFirst().getFileId();
+    final int retired = database.getSchema().getType("Retired").getBuckets(false).get(0).getFileId();
+    final int replacement = database.getSchema().getType("Replacement").getBuckets(false).get(0).getFileId();
 
     // what a deferred compaction leaves for a while: both files on disk, the old one mapped to the new one
     ((LocalSchema) database.getSchema()).setMigratedFileId(retired, replacement, false);
@@ -51,7 +51,7 @@ class Issue11240MigratedFileStillOnDiskLockTest extends TestHelper {
 
     database.begin();
     try {
-      database.acquireLock().bucket(database.getSchema().getType("Retired").getBuckets(false).getFirst().getName()).lock();
+      database.acquireLock().bucket(database.getSchema().getType("Retired").getBuckets(false).get(0).getName()).lock();
 
       assertThat(lockableByAnotherThread(replacement)).as("the replacement is locked").isFalse();
       assertThat(lockableByAnotherThread(retired)).as("the retired file is not held").isTrue();

@@ -635,29 +635,43 @@ public final class TemporalUtil {
    * @return the key, or {@code null} when {@code value} is no temporal this class keys
    */
   public static Object distinctKey(final Object value) {
-    return switch (value) {
-      case CypherDateTime dateTime ->
-          dateTime.isZoneless() ? dateTime.getValue().withZoneSameInstant(ZoneOffset.UTC) : dateTime.getValue();
-      case CypherLocalDateTime local -> local.isStored() ? local.getValue().atZone(ZoneOffset.UTC) : local.getValue();
-      case CypherDate date -> date.getValue();
-      case CypherLocalTime time -> time.getValue();
-      case CypherTime time -> time.getValue();
-      // the one wrapper left, the duration: its equals / hashCode compare its months, days, seconds and nanoseconds, as = does
-      case CypherTemporalValue other -> other;
-      case ZonedDateTime zoned -> zoned;
-      case OffsetDateTime offset -> offset.toZonedDateTime();
-      case LocalDateTime local -> local.atZone(ZoneOffset.UTC);
-      case Instant instant -> instant.atZone(ZoneOffset.UTC);
-      // getTime(), not toInstant(): java.sql.Date refuses the latter
-      case Date date -> Instant.ofEpochMilli(date.getTime()).atZone(ZoneOffset.UTC);
-      case Calendar calendar -> Instant.ofEpochMilli(calendar.getTimeInMillis()).atZone(ZoneOffset.UTC);
-      case LocalDate date -> date;
-      case LocalTime time -> time;
-      case OffsetTime time -> time;
-      case Duration duration -> fromCoreJavaType(duration);
-      case Period period -> fromCoreJavaType(period);
-      case null, default -> null;
-    };
+    if (value instanceof CypherDateTime dateTime)
+      return dateTime.isZoneless() ? dateTime.getValue().withZoneSameInstant(ZoneOffset.UTC) : dateTime.getValue();
+    if (value instanceof CypherLocalDateTime local)
+      return local.isStored() ? local.getValue().atZone(ZoneOffset.UTC) : local.getValue();
+    if (value instanceof CypherDate date)
+      return date.getValue();
+    if (value instanceof CypherLocalTime time)
+      return time.getValue();
+    if (value instanceof CypherTime time)
+      return time.getValue();
+    // the one wrapper left, the duration: its equals / hashCode compare its months, days, seconds and nanoseconds, as = does
+    if (value instanceof CypherTemporalValue other)
+      return other;
+    if (value instanceof ZonedDateTime zoned)
+      return zoned;
+    if (value instanceof OffsetDateTime offset)
+      return offset.toZonedDateTime();
+    if (value instanceof LocalDateTime local)
+      return local.atZone(ZoneOffset.UTC);
+    if (value instanceof Instant instant)
+      return instant.atZone(ZoneOffset.UTC);
+    // getTime(), not toInstant(): java.sql.Date refuses the latter
+    if (value instanceof Date date)
+      return Instant.ofEpochMilli(date.getTime()).atZone(ZoneOffset.UTC);
+    if (value instanceof Calendar calendar)
+      return Instant.ofEpochMilli(calendar.getTimeInMillis()).atZone(ZoneOffset.UTC);
+    if (value instanceof LocalDate date)
+      return date;
+    if (value instanceof LocalTime time)
+      return time;
+    if (value instanceof OffsetTime time)
+      return time;
+    if (value instanceof Duration duration)
+      return fromCoreJavaType(duration);
+    if (value instanceof Period period)
+      return fromCoreJavaType(period);
+    return null;
   }
 
   // The classes a non-default arcadedb.dateImplementation reads a DATE into: only these need the schema lookup, so the

@@ -150,7 +150,7 @@ class TypeIndexSchemaTest {
     }
 
     private LSMTreeIndex bucketIndex() {
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("uid").get(0);
       for (final Index index : typeIndex.getIndexesOnBuckets())
         if (index instanceof LSMTreeIndex lsmIndex)
           return lsmIndex;
@@ -311,7 +311,7 @@ class TypeIndexSchemaTest {
         database.getSchema().createDocumentType("Sub", 1);
       });
 
-      final int subBucketId = database.getSchema().getType("Sub").getBuckets(false).getFirst().getFileId();
+      final int subBucketId = database.getSchema().getType("Sub").getBuckets(false).get(0).getFileId();
 
       assertThatThrownBy(() -> database.transaction(() -> {
         for (int i = 0; i < 2; i++) {
@@ -379,7 +379,7 @@ class TypeIndexSchemaTest {
         database.getSchema().createDocumentType("Sub", 1);
       });
 
-      final int subBucketId = database.getSchema().getType("Sub").getBuckets(false).getFirst().getFileId();
+      final int subBucketId = database.getSchema().getType("Sub").getBuckets(false).get(0).getFileId();
 
       assertThatThrownBy(() -> database.transaction(() -> {
         for (int i = 0; i < 2; i++) {
@@ -514,7 +514,7 @@ class TypeIndexSchemaTest {
       });
 
       // The name Sub's paired external bucket WOULD take, claimed first as a primary bucket of an unrelated type.
-      final String contended = database.getSchema().getType("Sub").getBuckets(false).getFirst().getName() + "_ext";
+      final String contended = database.getSchema().getType("Sub").getBuckets(false).get(0).getName() + "_ext";
       database.transaction(() -> database.command("sql", "ALTER TYPE Squatter BUCKET +`" + contended + "`").close());
 
       assertThatThrownBy(() -> database.transaction(() -> database.getSchema().getType("Sub").addSuperType("Super")))
@@ -539,7 +539,7 @@ class TypeIndexSchemaTest {
 
       assertThat(database.getSchema().getType("Sub").getSuperTypes()).hasSize(1);
       final LocalDocumentType sub = (LocalDocumentType) database.getSchema().getType("Sub");
-      assertThat(sub.getExternalBucketIdFor(sub.getBuckets(false).getFirst().getFileId()))
+      assertThat(sub.getExternalBucketIdFor(sub.getBuckets(false).get(0).getFileId()))
           .as("the inherited EXTERNAL property now has a bucket of its own to write into").isNotNull();
 
       // And it is a working one, not merely a registered one.

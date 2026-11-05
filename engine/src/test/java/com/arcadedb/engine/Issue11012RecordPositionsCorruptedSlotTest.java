@@ -53,7 +53,7 @@ class Issue11012RecordPositionsCorruptedSlotTest extends TestHelper {
         rids.add(database.newDocument("Positions").set("id", i).save().getIdentity());
     });
 
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     database.transaction(() -> {
       try {
         final MutablePage page = ((DatabaseInternal) database).getTransaction()

@@ -105,7 +105,7 @@ class Issue10326UsersFileReloadParseErrorTest {
 
       final List<String> severe = lines.stream().filter(Issue10326UsersFileReloadParseErrorTest::isLoadFailure).toList();
       assertThat(severe).hasSize(1);
-      assertThat(severe.getFirst()).contains(SecurityUserFileRepository.FILE_NAME).contains("keeping the 2 users already in force")
+      assertThat(severe.get(0)).contains(SecurityUserFileRepository.FILE_NAME).contains("keeping the 2 users already in force")
           .doesNotContain("default configuration");
     } finally {
       security.stopService();

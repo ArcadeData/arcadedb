@@ -87,7 +87,7 @@ class Issue11115UnknownNamespacedFunctionTest extends TestHelper {
   void anUnknownFunctionInAWriteIsRefusedBeforeAnythingIsWritten() {
     database.getSchema().getOrCreateVertexType("W");
     assertUnknownFunction("CREATE (:W {v: 1}) WITH 1 AS one RETURN apoc.nope.j(one) AS s", "apoc.nope.j");
-    assertThat(rows("MATCH (w:W) RETURN count(w) AS c").getFirst().<Number>getProperty("c").longValue()).isZero();
+    assertThat(rows("MATCH (w:W) RETURN count(w) AS c").get(0).<Number>getProperty("c").longValue()).isZero();
   }
 
   @Test
@@ -95,7 +95,7 @@ class Issue11115UnknownNamespacedFunctionTest extends TestHelper {
     final Result row = rows("""
         RETURN apoc.text.capitalize('abc') AS a, text.capitalize('abc') AS b, apoc.util.validatePredicate(false, 'x', []) AS c,
                sql.abs(-1) AS d, date.truncate('month', date('2026-11-15')) AS e, point.distance(point({x: 0, y: 0}),
-               point({x: 3, y: 4})) AS f, vector.similarity.cosine([1.0, 0.0], [1.0, 0.0]) AS g""").getFirst();
+               point({x: 3, y: 4})) AS f, vector.similarity.cosine([1.0, 0.0], [1.0, 0.0]) AS g""").get(0);
     assertThat(row.<String>getProperty("a")).isEqualTo("Abc");
     assertThat(row.<String>getProperty("b")).isEqualTo("Abc");
     assertThat(row.<Boolean>getProperty("c")).isTrue();
@@ -112,8 +112,8 @@ class Issue11115UnknownNamespacedFunctionTest extends TestHelper {
     // defined with upper-case letters, which Cypher's lower-cased lookup used to miss
     database.getSchema().registerFunctionLibrary(new TestLibrary("MyLib", new TestFunction("Twice")));
     try {
-      assertThat(rows("RETURN mylib.twice(2) AS s").getFirst().<Number>getProperty("s").intValue()).isEqualTo(4);
-      assertThat(rows("RETURN MyLib.Twice(3) AS s").getFirst().<Number>getProperty("s").intValue()).isEqualTo(6);
+      assertThat(rows("RETURN mylib.twice(2) AS s").get(0).<Number>getProperty("s").intValue()).isEqualTo(4);
+      assertThat(rows("RETURN MyLib.Twice(3) AS s").get(0).<Number>getProperty("s").intValue()).isEqualTo(6);
       // a library that exists does not make every name in it a function
       assertUnknownFunction("RETURN mylib.thrice(2) AS s", "mylib.thrice");
     } finally {

@@ -281,7 +281,7 @@ class LSMTreeIndexBloomFilterTest extends TestHelper {
     final long[] probes = hashes(2_000, "q-");
     final Object[] kept = new Object[64];
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
+    final long threadId = Thread.currentThread().getId();
 
     long old = 0, now = 0;
     for (int round = 0; round < 10; round++) {

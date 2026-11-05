@@ -76,7 +76,7 @@ class ArcadeGremlinAnalyzeTest {
     final List<Traversal.Admin<?, ?>> traversals = GremlinStatementAnalyzer.traversalsOf(graph.traversal(), query, null);
     assertThat(traversals).hasSize(1);
     final List<String> names = new ArrayList<>();
-    for (final Object step : traversals.getFirst().getSteps())
+    for (final Object step : traversals.get(0).getSteps())
       names.add(step.getClass().getSimpleName());
     return names;
   }

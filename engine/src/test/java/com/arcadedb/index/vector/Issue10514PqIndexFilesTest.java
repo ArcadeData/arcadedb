@@ -252,7 +252,7 @@ class Issue10514PqIndexFilesTest extends TestHelper {
     }
 
     assertThat(warnings).hasSize(1);
-    assertThat(warnings.getFirst()).contains("DocWarn").contains("fusedPQ").contains("pqClusters is 32");
+    assertThat(warnings.get(0)).contains("DocWarn").contains("fusedPQ").contains("pqClusters is 32");
     assertThat(indexOf("DocWarn").getMetadata().fusedPQ).isTrue();
   }
 

@@ -7760,7 +7760,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "Packed %d holes of page %s to make room for a growth (threadId=%d)",
-              holes.size(), page.pageId, Thread.currentThread().threadId());
+              holes.size(), page.pageId, Thread.currentThread().getId());
     return true;
   }
 
@@ -8006,7 +8006,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE,
               "Moved the record at offset %d of page %s behind a placeholder pointer to release %d bytes (threadId=%d)",
-              donorPositionInPage, page, released, Thread.currentThread().threadId());
+              donorPositionInPage, page, released, Thread.currentThread().getId());
     return released;
   }
 
@@ -8108,7 +8108,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE,
               "Moved the last %d bytes of the chunk at offset %d of page %s into a new continuation chunk (threadId=%d)",
-              released, chunkPositionInPage, page, Thread.currentThread().threadId());
+              released, chunkPositionInPage, page, Thread.currentThread().getId());
     return released;
   }
 
@@ -8191,7 +8191,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE,
               "Turned the placeholder content at offset %d of page %s into a chunk chain to release %d bytes (threadId=%d)",
-              donorPositionInPage, page, released, Thread.currentThread().threadId());
+              donorPositionInPage, page, released, Thread.currentThread().getId());
     return released;
   }
 

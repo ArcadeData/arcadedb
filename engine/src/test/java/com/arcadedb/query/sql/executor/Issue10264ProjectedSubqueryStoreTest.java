@@ -61,7 +61,7 @@ class Issue10264ProjectedSubqueryStoreTest extends TestHelper {
         assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(rows++);
         final List<Object> oc = row.getProperty("oc");
         assertThat(oc).hasSize(1);
-        assertThat(((Map<String, Object>) oc.getFirst()).get("count(*)")).isEqualTo(2L);
+        assertThat(((Map<String, Object>) oc.get(0)).get("count(*)")).isEqualTo(2L);
       }
     }
     assertThat(rows).isEqualTo(3);

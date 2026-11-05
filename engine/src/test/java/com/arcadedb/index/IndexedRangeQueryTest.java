@@ -740,7 +740,7 @@ class IndexedRangeQueryTest {
         final List<RID> sharing = collectRange("age", 20, 20, true);
         assertThat(sharing).hasSize(2);
 
-        final RID victim = sharing.getFirst();
+        final RID victim = sharing.get(0);
         final RID survivor = sharing.get(1);
         database.lookupByRID(victim, true).asDocument().delete();
 
@@ -1044,7 +1044,7 @@ class IndexedRangeQueryTest {
       try {
         for (int i = 0; i < 10; i++)
           database.newVertex("V").set("a", 500L + i).save();
-        final TypeIndex index = database.getSchema().getType("V").getIndexesByProperties("a").getFirst();
+        final TypeIndex index = database.getSchema().getType("V").getIndexesByProperties("a").get(0);
         int n = 0;
         try (final IndexCursor c = index.range(true, new Object[] { 500L }, true, new Object[] { 1009L }, true)) {
           while (c.hasNext()) {
@@ -1115,7 +1115,7 @@ class IndexedRangeQueryTest {
           database.newDocument(TYPE_NAME).set("email", key(i)).save();
       });
 
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
       final LSMTreeIndex bucketIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
 
       assertThat(((IndexInternal) typeIndex).scheduleCompaction()).as("compaction scheduled").isTrue();
@@ -1234,8 +1234,8 @@ class IndexedRangeQueryTest {
         }
       }
       assertThat(keys).hasSize(HI + 1);
-      assertThat(keys.getFirst()).isEqualTo(key(HI));
-      assertThat(keys.getLast()).isEqualTo(key(0));
+      assertThat(keys.get(0)).isEqualTo(key(HI));
+      assertThat(keys.get(keys.size() - 1)).isEqualTo(key(0));
     }
   }
 
@@ -1285,7 +1285,7 @@ class IndexedRangeQueryTest {
           database.newDocument(TYPE_NAME).set("path", key(i)).save();
       });
 
-      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("path").getFirst();
+      final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("path").get(0);
       final LSMTreeIndex bucketIndex = (LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0];
 
       assertThat(((IndexInternal) typeIndex).scheduleCompaction()).as("compaction scheduled").isTrue();

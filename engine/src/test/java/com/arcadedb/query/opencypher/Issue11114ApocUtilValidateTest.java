@@ -129,7 +129,7 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
         MATCH (a:Account {id: $id})
         CALL apoc.util.validate(a.balance < $amount, 'insufficient balance on %s', [$id])
         SET a.balance = a.balance - $amount""", Map.of("id", 1, "amount", 4)));
-    assertThat(rows("MATCH (a:Account {id: 1}) RETURN a.balance AS b").getFirst().<Number>getProperty("b").intValue())
+    assertThat(rows("MATCH (a:Account {id: 1}) RETURN a.balance AS b").get(0).<Number>getProperty("b").intValue())
         .isEqualTo(6);
 
     final Throwable error = catchThrowable(() -> database.transaction(() -> database.command("opencypher", """
@@ -137,13 +137,13 @@ class Issue11114ApocUtilValidateTest extends TestHelper {
         CALL apoc.util.validate(a.balance < $amount, 'insufficient balance on %s', [$id])
         SET a.balance = a.balance - $amount""", Map.of("id", 1, "amount", 100))));
     assertThat(rootMessage(error)).isEqualTo("insufficient balance on 1");
-    assertThat(rows("MATCH (a:Account {id: 1}) RETURN a.balance AS b").getFirst().<Number>getProperty("b").intValue())
+    assertThat(rows("MATCH (a:Account {id: 1}) RETURN a.balance AS b").get(0).<Number>getProperty("b").intValue())
         .isEqualTo(6);
   }
 
   @Test
   void validatePredicateIsTheFunctionForm() {
-    assertThat(rows("RETURN apoc.util.validatePredicate(false, 'bad %s', ['x']) AS ok").getFirst().<Boolean>getProperty("ok"))
+    assertThat(rows("RETURN apoc.util.validatePredicate(false, 'bad %s', ['x']) AS ok").get(0).<Boolean>getProperty("ok"))
         .isTrue();
     assertThat(rootMessage(catchThrowable(() -> rows("RETURN apoc.util.validatePredicate(true, 'bad %s', ['x']) AS ok"))))
         .isEqualTo("bad x");

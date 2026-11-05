@@ -102,6 +102,8 @@ class Issue10850NoNarrowingReadsInFunctionsTest {
    * and method: the reviewed occurrences, and why none of them is a narrowing read of an argument.
    */
   private static final Map<String, Integer> REVIEWED = new TreeMap<>(Map.ofEntries(//
+      // the JDK 17 stand-in for Math.clamp(long, int, int) (Java 21): the whole number is range-checked before the exact narrowing
+      Map.entry("function/coll/AbstractCollFunction#clampToInt: java/lang/Math.toIntExact", 1),
       // the strict helper itself: parses a TEXT argument, and Integer.parseInt refuses what does not fit
       Map.entry("function/sql/SQLFunctionAbstract#requireWholeIntArgument: java/lang/Integer.parseInt", 1),
       // the vector family's strict helpers: parseInteger (#10611, same shape) and toInt8Code, a (byte) after a range check

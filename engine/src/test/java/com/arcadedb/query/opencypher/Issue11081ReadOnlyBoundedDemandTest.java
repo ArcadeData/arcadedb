@@ -376,7 +376,7 @@ class Issue11081ReadOnlyBoundedDemandTest {
   private Object single(final String query, final String column) {
     final List<Object> values = column(query, column);
     assertThat(values).hasSize(1);
-    return values.getFirst();
+    return values.get(0);
   }
 
   private List<Object> column(final String query, final String column) {

@@ -192,38 +192,31 @@ public final class DistinctNumericKey {
    */
   private static List<Object> canonicalizeSequence(final Object array) {
     final List<Object> key;
-    switch (array) {
-    case long[] longs -> {
+    if (array instanceof long[] longs) {
       key = new ArrayList<>(longs.length);
       for (final long element : longs)
         key.add(element);
-    }
-    case int[] ints -> {
+    } else if (array instanceof int[] ints) {
       key = new ArrayList<>(ints.length);
       for (final int element : ints)
         key.add((long) element);
-    }
-    case short[] shorts -> {
+    } else if (array instanceof short[] shorts) {
       key = new ArrayList<>(shorts.length);
       for (final short element : shorts)
         key.add((long) element);
-    }
-    case double[] doubles -> {
+    } else if (array instanceof double[] doubles) {
       key = new ArrayList<>(doubles.length);
       for (final double element : doubles)
         key.add(canonicalDouble(element));
-    }
-    case float[] floats -> {
+    } else if (array instanceof float[] floats) {
       key = new ArrayList<>(floats.length);
       for (final float element : floats)
         key.add(canonicalDouble(Type.widenFloat(element)));
-    }
-    default -> {
+    } else {
       final int length = Array.getLength(array);
       key = new ArrayList<>(length);
       for (int i = 0; i < length; i++)
         key.add(canonicalize(Array.get(array, i)));
-    }
     }
     return key;
   }

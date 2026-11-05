@@ -153,7 +153,7 @@ class Issue10196DroppedElementUseTest {
 
     final List<?> result = g.V().has("uid", 1).sideEffect(__.drop()).valueMap("uid").toList();
     assertThat(result).hasSize(1);
-    assertThat((Map<?, ?>) result.getFirst()).isEmpty();
+    assertThat((Map<?, ?>) result.get(0)).isEmpty();
     assertThat(g.V().has("uid", 2).sideEffect(__.drop()).values("uid").toList()).isEmpty();
     graph.tx().commit();
     assertThat(state()).isEqualTo("vertices [], edges []");

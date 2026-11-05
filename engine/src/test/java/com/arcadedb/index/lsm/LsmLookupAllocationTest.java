@@ -102,7 +102,7 @@ class LsmLookupAllocationTest extends TestHelper {
   /** Bytes the calling thread allocates per lookup of {@code key}, warmed up and averaged over {@link #GET_LOOKUPS}. */
   private static long lookupAllocatedBytes(final LSMTreeIndexMutable mutable, final int key) throws IOException {
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
+    final long threadId = Thread.currentThread().getId();
     final Object[] keys = new Object[] { key };
 
     for (int i = 0; i < GET_LOOKUPS; i++)
@@ -159,7 +159,7 @@ class LsmLookupAllocationTest extends TestHelper {
         database.newDocument(TYPE_NAME).set("email", key(i)).save();
     });
 
-    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").getFirst();
+    final TypeIndex typeIndex = database.getSchema().getType(TYPE_NAME).getIndexesByProperties("email").get(0);
     assertThat(((IndexInternal) typeIndex).scheduleCompaction()).isTrue();
     assertThat(((IndexInternal) typeIndex).compact()).isTrue();
 
@@ -220,7 +220,7 @@ class LsmLookupAllocationTest extends TestHelper {
     // the results are kept, so the JIT cannot drop the allocations it is asked to measure
     final ByteBuffer[] kept = new ByteBuffer[64];
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
+    final long threadId = Thread.currentThread().getId();
     final int calls = 20_000;
 
     for (int round = 0; round < 3; round++) {

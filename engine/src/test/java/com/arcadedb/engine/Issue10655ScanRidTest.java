@@ -58,7 +58,7 @@ class Issue10655ScanRidTest extends TestHelper {
 
     final DatabaseInternal bound = ((DatabaseInternal) database).getWrappedDatabaseInstance();
     final Set<RID> scanned = new HashSet<>();
-    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket bucket = (LocalBucket) type.getBuckets(false).get(0);
     final Iterator<Record> iterator = bucket.iterator();
     while (iterator.hasNext()) {
       final Record record = iterator.next();

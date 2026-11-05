@@ -56,7 +56,7 @@ class Issue10317CreateTypeTakenBucketTest extends TestHelper {
   void typeBuilderWithAnotherTypesBucketLeavesNoTypeBehind() {
     final DocumentType a = database.getSchema().createDocumentType("A");
 
-    assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("B").withBuckets(List.of(a.getBuckets(false).getFirst()))
+    assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("B").withBuckets(List.of(a.getBuckets(false).get(0)))
         .create())
         .isInstanceOf(SchemaException.class);
 

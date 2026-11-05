@@ -136,8 +136,8 @@ class Issue10251SetIndexedRangeHalloweenTest extends TestHelper {
   void indexOrderedDescendingReturnRaisesEveryKeyOnceInOrder() {
     final List<Result> rows = drain("MATCH (n:A) WHERE n.k > 0 SET n.k = n.k + 1000 RETURN n.k AS k ORDER BY k DESC");
     assertThat(rows).hasSize(N);
-    assertThat(rows.getFirst().<Number>getProperty("k").intValue()).isEqualTo(N + 1000);
-    assertThat(rows.getLast().<Number>getProperty("k").intValue()).isEqualTo(1001);
+    assertThat(rows.get(0).<Number>getProperty("k").intValue()).isEqualTo(N + 1000);
+    assertThat(rows.get(rows.size() - 1).<Number>getProperty("k").intValue()).isEqualTo(1001);
     assertRaisedOnce(1000);
   }
 

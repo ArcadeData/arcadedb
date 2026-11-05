@@ -77,7 +77,7 @@ public class CollRemove extends AbstractCollFunction {
       return null;
     // a count past the int range removes the rest of the list, which the int range covers: clamping keeps that answer
     final int count = args.length > 2 ?
-        Math.clamp(CypherFunctionHelper.requireWholeNumberArgument(args[2], getName(), "count"), Integer.MIN_VALUE, Integer.MAX_VALUE) :
+        clampToInt(CypherFunctionHelper.requireWholeNumberArgument(args[2], getName(), "count")) :
         1;
     final LongRangeList range = asRange(list);
     if (range != null) {

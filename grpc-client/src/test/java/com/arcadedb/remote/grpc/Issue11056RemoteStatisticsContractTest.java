@@ -97,7 +97,7 @@ class Issue11056RemoteStatisticsContractTest extends BaseGrpcClientServerTest {
     try (final ResultSet rs = http.command("sql", "CREATE EDGE " + EDGE_TYPE + " FROM " + fromRid + " TO " + toRid)) {
       edgeRid = rs.next().getIdentity().get();
     }
-    bucketName = embedded().getSchema().getType(VERTEX_TYPE).getBuckets(false).getFirst().getName();
+    bucketName = embedded().getSchema().getType(VERTEX_TYPE).getBuckets(false).get(0).getName();
   }
 
   @AfterEach

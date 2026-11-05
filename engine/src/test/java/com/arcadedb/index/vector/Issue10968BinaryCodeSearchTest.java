@@ -217,8 +217,8 @@ class Issue10968BinaryCodeSearchTest extends TestHelper {
 
     for (int q = 0; q < 20; q++) {
       final List<Pair<RID, Float>> hits = index.findNeighborsFromVector(corpus.vectors.get(q * 50), 10, 100);
-      assertThat(hits.getFirst().getFirst()).isEqualTo(corpus.rids.get(q * 50));
-      assertThat(hits.getFirst().getSecond()).isCloseTo(0f, within(1e-5f));
+      assertThat(hits.get(0).getFirst()).isEqualTo(corpus.rids.get(q * 50));
+      assertThat(hits.get(0).getSecond()).isCloseTo(0f, within(1e-5f));
     }
 
     assertThat(index.getSearchBinaryCodes().size()).isGreaterThan(0);
@@ -267,8 +267,8 @@ class Issue10968BinaryCodeSearchTest extends TestHelper {
 
     assertThat(twenty).isGreaterThan(one + 0.1);
     final List<Pair<RID, Float>> self = sqlNeighbors(corpus.vectors.get(5), 20);
-    assertThat(self.getFirst().getFirst()).isEqualTo(corpus.rids.get(5));
-    assertThat(self.getFirst().getSecond()).isCloseTo(0f, within(1e-5f));
+    assertThat(self.get(0).getFirst()).isEqualTo(corpus.rids.get(5));
+    assertThat(self.get(0).getSecond()).isCloseTo(0f, within(1e-5f));
   }
 
   private List<Pair<RID, Float>> sqlNeighbors(final float[] query, final int rerank) {
@@ -291,7 +291,7 @@ class Issue10968BinaryCodeSearchTest extends TestHelper {
   void deltaRowsAreFoundAtTheirExactDistance() {
     final Corpus corpus = createCorpus("Delta", 64, 1500, 19);
     final LSMVectorIndex index = index("Delta");
-    index.findNeighborsFromVector(corpus.vectors.getFirst(), 10, 50); // builds the graph
+    index.findNeighborsFromVector(corpus.vectors.get(0), 10, 50); // builds the graph
 
     final Random random = new Random(23);
     final float[] committed = randomVector(random, 64, -1.0f);
@@ -299,16 +299,16 @@ class Issue10968BinaryCodeSearchTest extends TestHelper {
     database.transaction(() -> committedRid[0] = database.newDocument("Delta").set("vector", committed).save().getIdentity());
 
     List<Pair<RID, Float>> hits = index.findNeighborsFromVector(committed, 5, 50);
-    assertThat(hits.getFirst().getFirst()).isEqualTo(committedRid[0]);
-    assertThat(hits.getFirst().getSecond()).isCloseTo(0f, within(1e-5f));
+    assertThat(hits.get(0).getFirst()).isEqualTo(committedRid[0]);
+    assertThat(hits.get(0).getSecond()).isCloseTo(0f, within(1e-5f));
 
     final float[] pending = randomVector(random, 64, -1.0f);
     database.begin();
     try {
       final RID pendingRid = database.newDocument("Delta").set("vector", pending).save().getIdentity();
       hits = index.findNeighborsFromVector(pending, 5, 50);
-      assertThat(hits.getFirst().getFirst()).isEqualTo(pendingRid);
-      assertThat(hits.getFirst().getSecond()).isCloseTo(0f, within(1e-5f));
+      assertThat(hits.get(0).getFirst()).isEqualTo(pendingRid);
+      assertThat(hits.get(0).getSecond()).isCloseTo(0f, within(1e-5f));
     } finally {
       database.rollback();
     }
@@ -320,7 +320,7 @@ class Issue10968BinaryCodeSearchTest extends TestHelper {
     final Corpus corpus = createCorpus("Deleted", 64, 1500, 29);
     final LSMVectorIndex index = index("Deleted");
     final float[] query = corpus.vectors.get(100);
-    assertThat(index.findNeighborsFromVector(query, 5, 50).getFirst().getFirst()).isEqualTo(corpus.rids.get(100));
+    assertThat(index.findNeighborsFromVector(query, 5, 50).get(0).getFirst()).isEqualTo(corpus.rids.get(100));
 
     database.transaction(() -> corpus.rids.get(100).asDocument().delete());
 

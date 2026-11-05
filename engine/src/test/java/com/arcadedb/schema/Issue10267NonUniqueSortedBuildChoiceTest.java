@@ -66,8 +66,8 @@ class Issue10267NonUniqueSortedBuildChoiceTest extends TestHelper {
 
     database.command("sql", "CREATE INDEX ON Sorted (k) NOTUNIQUE").close();
     assertThat(sortedBuilds).hasSize(1);
-    assertThat(sortedBuilds.getFirst().unique()).isFalse();
-    assertThat(sortedBuilds.getFirst().logicalEntries()).isEqualTo(ROWS);
+    assertThat(sortedBuilds.get(0).unique()).isFalse();
+    assertThat(sortedBuilds.get(0).logicalEntries()).isEqualTo(ROWS);
 
     // The same data, the same statement, the record-at-a-time build: the threshold is what tells them apart
     database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_NON_UNIQUE_MIN_RECORDS, 0L);

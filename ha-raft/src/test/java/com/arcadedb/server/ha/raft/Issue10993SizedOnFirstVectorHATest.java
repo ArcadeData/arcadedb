@@ -141,7 +141,7 @@ class Issue10993SizedOnFirstVectorHATest extends BaseRaftHATest {
     for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets()) {
       final List<Pair<RID, Float>> answer = ((LSMVectorIndex) bucketIndex).findNeighborsFromVector(query, 1);
       if (!answer.isEmpty())
-        return answer.getFirst().getFirst();
+        return answer.get(0).getFirst();
     }
     return null;
   }

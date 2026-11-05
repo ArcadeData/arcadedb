@@ -261,7 +261,7 @@ class LSMTreeIndexKeyOrderCheckTest extends TestHelper {
     compactAll();
     reopenDatabase();
 
-    assertThat(bucketIndexes().getFirst().getUpgradeWarning()).isNull();
+    assertThat(bucketIndexes().get(0).getUpgradeWarning()).isNull();
     assertThat(typeIndex().getUpgradeWarning()).isNull();
     assertThat(schemaIndexesWithUpgradeWarning()).isEmpty();
   }
@@ -271,11 +271,11 @@ class LSMTreeIndexKeyOrderCheckTest extends TestHelper {
   void aDisorderedCompactedIndexIsReportedAsAnUpgradeWarning() throws Exception {
     createAndPopulatePapers(1);
     compactAll();
-    disorderPages(bucketIndexes().getFirst().getMutableIndex().getSubIndex());
+    disorderPages(bucketIndexes().get(0).getMutableIndex().getSubIndex());
 
     reopenDatabase();
 
-    final String warning = bucketIndexes().getFirst().getUpgradeWarning();
+    final String warning = bucketIndexes().get(0).getUpgradeWarning();
     assertThat(warning).as("the load-time key-order check is exposed as an upgrade warning").isNotNull();
     assertThat(warning).containsIgnoringCase("key order");
   }
@@ -289,7 +289,7 @@ class LSMTreeIndexKeyOrderCheckTest extends TestHelper {
   void theAffectedIndexesAreDiscoverableFromSchemaIndexes() throws Exception {
     createAndPopulatePapers(1);
     compactAll();
-    disorderPages(bucketIndexes().getFirst().getMutableIndex().getSubIndex());
+    disorderPages(bucketIndexes().get(0).getMutableIndex().getSubIndex());
 
     reopenDatabase();
 
@@ -299,7 +299,7 @@ class LSMTreeIndexKeyOrderCheckTest extends TestHelper {
     assertThat(flagged).isNotEmpty();
     assertThat(flagged).allMatch(row -> typeIndex().getName().equals(row.getProperty("typeIndexName")));
     assertThat(flagged.stream().map(row -> (String) row.getProperty("name")))
-        .contains(typeIndex().getName(), bucketIndexes().getFirst().getName());
+        .contains(typeIndex().getName(), bucketIndexes().get(0).getName());
 
     final ResultSet detail = database.query("sql", "SELECT FROM schema:index:`" + typeIndex().getName() + "`");
     assertThat(detail.hasNext()).isTrue();
@@ -317,12 +317,12 @@ class LSMTreeIndexKeyOrderCheckTest extends TestHelper {
 
     final List<LSMTreeIndex> compacted = compactAll();
     assertThat(compacted).as("more than one bucket sub-index was compacted").hasSizeGreaterThan(1);
-    assertThat(compacted.getLast()).isNotSameAs(bucketIndexes().getFirst());
-    disorderPages(compacted.getLast().getMutableIndex().getSubIndex());
+    assertThat(compacted.get(compacted.size() - 1)).isNotSameAs(bucketIndexes().get(0));
+    disorderPages(compacted.get(compacted.size() - 1).getMutableIndex().getSubIndex());
 
     reopenDatabase();
 
-    assertThat(bucketIndexes().getFirst().getUpgradeWarning()).as("the first bucket is healthy").isNull();
+    assertThat(bucketIndexes().get(0).getUpgradeWarning()).as("the first bucket is healthy").isNull();
     assertThat(typeIndex().getUpgradeWarning()).as("the type index answers for every bucket").isNotNull();
   }
 
@@ -384,7 +384,7 @@ class LSMTreeIndexKeyOrderCheckTest extends TestHelper {
   void rebuildingTheIndexClearsTheWarning() throws Exception {
     createAndPopulatePapers(1);
     compactAll();
-    disorderPages(bucketIndexes().getFirst().getMutableIndex().getSubIndex());
+    disorderPages(bucketIndexes().get(0).getMutableIndex().getSubIndex());
 
     reopenDatabase();
     assertThat(typeIndex().getUpgradeWarning()).isNotNull();

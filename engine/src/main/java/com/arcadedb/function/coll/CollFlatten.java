@@ -72,8 +72,7 @@ public class CollFlatten extends AbstractCollFunction {
         // of raising, so coll.flatten([[1]], 'x') answered as though depth had been omitted (code review).
         // Issue #10850: a whole number - intValue() read 1.9 as 1 and wrapped 4294967297 to 1. A depth past the int
         // range is deeper than any list nests, so clamping keeps the answer
-        maxDepth = Math.clamp(CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "depth"), Integer.MIN_VALUE,
-            Integer.MAX_VALUE);
+        maxDepth = clampToInt(CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "depth"));
     }
 
     if (asRange(list) != null)

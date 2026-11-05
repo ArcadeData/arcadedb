@@ -172,7 +172,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     raft.probeSelfDial(MEMBER);
 
     assertThat(sent).hasSize(2);
-    final RequestVoteRequestProto probe = sent.getFirst();
+    final RequestVoteRequestProto probe = sent.get(0);
     assertThat(probe.getPreVote()).isTrue();
     assertThat(probe.getCandidateTerm()).isZero();
     assertThat(RaftPeerId.valueOf(probe.getServerRequest().getRequestorId())).isEqualTo(raft.getLocalPeerId());
@@ -203,7 +203,7 @@ class Issue10299SelfDialIsConfirmedByAProbeTest {
     assertThat(raft.getMisdirectedSelfClaims()).as("the nonce addressed to another member was taken for a claim").isEqualTo(1L);
 
     // Replayed after its probe returned
-    raft.onMisdirectedRaftRequest("requestVote", MEMBER, raft.getLocalPeerId(), null, nonces.getFirst());
+    raft.onMisdirectedRaftRequest("requestVote", MEMBER, raft.getLocalPeerId(), null, nonces.get(0));
     assertThat(raft.getMisdirectedSelfClaims()).as("a spent nonce is a claim like any other").isEqualTo(2L);
   }
 

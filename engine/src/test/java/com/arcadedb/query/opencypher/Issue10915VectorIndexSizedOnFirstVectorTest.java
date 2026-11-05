@@ -212,7 +212,7 @@ class Issue10915VectorIndexSizedOnFirstVectorTest extends TestHelper {
 
     assertThat(saved.get()).isPositive();
     assertThat(lengths.stream().distinct().count()).isEqualTo(1L);
-    final int decided = lengths.getFirst();
+    final int decided = lengths.get(0);
     for (final IndexInternal bucketIndex : ((TypeIndex) database.getSchema().getType("Doc").getPolymorphicIndexByProperties("embedding"))
         .getIndexesOnBuckets())
       assertThat(((LSMVectorIndex) bucketIndex).getDimensions()).isEqualTo(decided);

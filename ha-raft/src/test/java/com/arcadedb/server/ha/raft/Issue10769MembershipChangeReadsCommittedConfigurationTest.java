@@ -95,9 +95,9 @@ class Issue10769MembershipChangeReadsCommittedConfigurationTest {
     new RaftClusterManager(server).removePeer("C");
 
     assertThat(sent).hasSize(1);
-    assertThat(sent.getFirst().getServersInCurrentConf()).extracting(p -> p.getId().toString())
+    assertThat(sent.get(0).getServersInCurrentConf()).extracting(p -> p.getId().toString())
         .as("the precondition the leader compares against").containsExactly("A", "B", "C");
-    assertThat(sent.getFirst().getServersInNewConf()).extracting(p -> p.getId().toString()).containsExactly("A", "B");
+    assertThat(sent.get(0).getServersInNewConf()).extracting(p -> p.getId().toString()).containsExactly("A", "B");
   }
 
   @Test

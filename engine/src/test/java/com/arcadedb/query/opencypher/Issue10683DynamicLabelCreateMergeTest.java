@@ -80,7 +80,7 @@ class Issue10683DynamicLabelCreateMergeTest extends TestHelper {
     final List<Object> labels = firstColumn(
         "CREATE (n:Base:$($labels) {uuid: 'l'}) RETURN labels(n) AS l", Map.of("labels", List.of("Finding", "Person")));
     assertThat(labels).hasSize(1);
-    @SuppressWarnings("unchecked") final List<String> carried = (List<String>) labels.getFirst();
+    @SuppressWarnings("unchecked") final List<String> carried = (List<String>) labels.get(0);
     assertThat(carried).containsExactlyInAnyOrder("Base", "Finding", "Person");
 
     assertThat(uuids("MATCH (n:Base:Finding:Person) RETURN n.uuid AS uuid")).containsExactly("l");

@@ -346,7 +346,7 @@ class Issue10198DurationArithmeticTest extends TestHelper {
       while (rs.hasNext())
         values.add(rs.next().getProperty("v"));
       assertThat(values).hasSize(1);
-      return values.getFirst();
+      return values.get(0);
     }
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.network.HttpClientLifecycle;
 import com.arcadedb.serializer.json.JSONObject;
 import io.undertow.Undertow;
 import io.undertow.server.HttpHandler;
@@ -77,7 +78,7 @@ class Issue10157PluginRoutesMethodEnforcementTest {
     if (undertow != null)
       undertow.stop();
     if (client != null)
-      client.close();
+      HttpClientLifecycle.close(client);
   }
 
   @Test
