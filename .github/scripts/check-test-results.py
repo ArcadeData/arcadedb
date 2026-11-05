@@ -212,7 +212,8 @@ def main(arguments):
             print("  %s: none of its %d test(s) ran (%d aborted, %d disabled), so the class asserted nothing (%s)"
                   % (path.relative_to(root), cases, suite_aborted, suite_disabled, reason), file=sys.stderr)
         else:
-            print("  %s: every one of its %d test(s) aborted, so the class asserted nothing (%s)" % (path.relative_to(root), cases, reason), file=sys.stderr)
+            print("  %s: every one of its %d test(s) aborted, so the class asserted nothing (%s)"
+                  % (path.relative_to(root), cases, reason), file=sys.stderr)
     if len(all_aborted) > MAX_LISTED:
         print("  ... and %d more" % (len(all_aborted) - MAX_LISTED), file=sys.stderr)
     print(
