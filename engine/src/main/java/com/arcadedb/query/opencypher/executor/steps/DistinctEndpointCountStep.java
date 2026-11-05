@@ -41,6 +41,12 @@ import java.util.List;
  * {@code WHERE b <> a} and the aggregation as separate steps: this replaces all three.
  */
 public final class DistinctEndpointCountStep extends AbstractExecutionStep {
+  private final Walk            expand;
+  private final boolean         excludeSource;
+  private final boolean         countSources;
+  private final String          countAlias;
+  private       boolean         executed;
+
   /** A distinct-endpoint expansion that counts its end vertices, or the starts that reach one, while its walks run. */
   public interface Walk {
     /**
@@ -58,12 +64,6 @@ public final class DistinctEndpointCountStep extends AbstractExecutionStep {
     /** The name of the expansion, for the plan. */
     String getWalkName();
   }
-
-  private final Walk            expand;
-  private final boolean         excludeSource;
-  private final boolean         countSources;
-  private final String          countAlias;
-  private       boolean         executed;
 
   /**
    * @param excludeSource the rows a {@code WHERE b <> a} keeps
