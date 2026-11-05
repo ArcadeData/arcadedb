@@ -2005,6 +2005,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       throw new SchemaException(
           "Index '" + indexName + "' belongs to constraint '" + owner + "': use DROP CONSTRAINT " + owner + " to drop it");
     MultiTypeIndexes.requireNotMember(schema, indexName);
+    // the bucket index of a type index goes with the type index, never alone (#11303)
+    TypeIndex.requireNotABucketIndex(schema, indexName);
     schema.dropIndex(indexName);
     stats.incIndexesRemoved();
   }

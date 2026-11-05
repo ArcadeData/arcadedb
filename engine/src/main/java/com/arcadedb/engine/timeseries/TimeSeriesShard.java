@@ -229,6 +229,18 @@ public class TimeSeriesShard implements AutoCloseable {
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
                          final TimeSeriesTagDictionary tagDictionary, final int mutableFormatVersion) throws IOException {
+    this(database, baseName, shardIndex, columns, compactionBucketIntervalMs, tagDictionary, mutableFormatVersion,
+        TimeSeriesSealedStore.NO_OWNER);
+  }
+
+  /**
+   * @param typeOwner the owner id of the type ({@code LocalTimeSeriesType#getSealedOwner()}), from which the shard's sealed store
+   *                  derives its own (issue #11274), or {@link TimeSeriesSealedStore#NO_OWNER} for a type that has none
+   */
+  public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
+                         final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
+                         final TimeSeriesTagDictionary tagDictionary, final int mutableFormatVersion, final long typeOwner)
+      throws IOException {
     this.shardIndex = shardIndex;
     this.typeName = baseName;
     this.database = database;
@@ -284,7 +296,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // a type reporting isEngineAvailable() == true whose every read threw FileNotFoundException (issue #6839).
     // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
     this.sealedStore = new TimeSeriesSealedStore(shardPath, columns,
-        GlobalConfiguration.decodedBlockCacheBytes(database.getConfiguration()));
+        GlobalConfiguration.decodedBlockCacheBytes(database.getConfiguration()), TimeSeriesSealedStore.shardOwner(typeOwner, shardIndex));
     mutableBucket.setSealedStore(sealedStore);
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks.

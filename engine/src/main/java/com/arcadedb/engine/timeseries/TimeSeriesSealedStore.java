@@ -71,14 +71,17 @@ import java.util.zip.CRC32;
  * Immutable columnar storage for compacted TimeSeries data.
  * Uses FileChannel positioned reads for zero-overhead access.
  * <p>
- * Index file (.ts.sealed) layout — 27-byte header:
+ * Index file (.ts.sealed) layout — 35-byte header:
  * - [0..3]   magic "TSIX" (4 bytes)
- * - [4]      format version byte (always {@value #CURRENT_VERSION})
+ * - [4]      format version byte ({@value #CURRENT_VERSION} for every file this build writes whole)
  * - [5..6]   column count (short)
  * - [7..10]  block count (int)
  * - [11..18] global min timestamp (long)
  * - [19..26] global max timestamp (long)
- * - [27..]   block entries (inline metadata + compressed column data)
+ * - [27..34] owner (long): the shard of the type that wrote the file, {@link #NO_OWNER} when it was not told (version 4)
+ * - [35..]   block entries (inline metadata + compressed column data)
+ * <p>
+ * A file of version 3 or older has the first 27 bytes only, and its blocks start at offset 27.
  * <p>
  * Block entry layout:
  * - magic "TSB3" (4), minTs (8), maxTs (8), sampleCount (4), blockId (8), colSizes (4*colCount)
@@ -119,6 +122,15 @@ import java.util.zip.CRC32;
  * refused by an older one loudly, at the header, instead of read as holding nothing. Version 3 (issues #9720, #9721) says a
  * block may be TSB4, for the same reason.
  * <p>
+ * Version 4 (issue #11274) adds the owner to the header. Nothing else identified the type a file was written for, so whatever sat at
+ * the path a type opens (a file restored by hand, copied in from another database, left there by another type) was adopted as its
+ * samples by every route that reached the engine without the creation statement's check, the schema load above all. A store told its
+ * owner ({@code LocalTimeSeriesType}'s id, plus the shard index) refuses at open a file written for another one, and a file older than
+ * owners, which a type created with one never wrote. The refusal is the {@link IOException} a sealed file that cannot be read already
+ * raises: the type stays registered with its engine unavailable and says why, nothing is adopted and nothing is overwritten. A store
+ * told no owner (a type of a database written before version 4, a direct test of this class) reads any file as before. The header of
+ * an older file is rewritten in place in its own 27-byte layout, stamped 3, and a rewrite of the whole file writes version 4.
+ * <p>
  * <b>High-Availability / Replication note:</b>
  * Sealed store files ({@code .ts.sealed}) are written via {@link RandomAccessFile} and
  * {@link FileChannel} directly to the local filesystem, <em>bypassing</em> ArcadeDB's
@@ -139,7 +151,12 @@ import java.util.zip.CRC32;
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  public static final  int CURRENT_VERSION  = 3;
+  public static final  int CURRENT_VERSION  = 4;
+  // The first version whose header carries the owner (issue #11274); an older file is rewritten in place stamped the one before it
+  private static final int OWNED_HEADER_VERSION   = 4;
+  private static final int LAST_UNOWNED_VERSION   = OWNED_HEADER_VERSION - 1;
+  /** The owner of a file, or of a store, that was not told one: a store told none reads any file, as before issue #11274. */
+  public static final  long NO_OWNER               = 0L;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   // "TSBL": the layout every block had before issue #7089, whose statistics section is a [min, max, sum] triplet.
   private static final int BLOCK_MAGIC_VALUE    = 0x5453424C;
@@ -158,7 +175,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private static final int INTEGRAL_STATS_BYTES = 8 + 8 + 8 + 8 + 8;
   // The largest magnitude up to which a double holds every integer.
   private static final double EXACT_INTEGRAL_DOUBLE = 0x1p53;
-  private static final int HEADER_SIZE       = 27;
+  // The header of a file of version 3 or older, and the bytes of it every version shares
+  private static final int LEGACY_HEADER_SIZE = 27;
+  private static final int OWNER_BYTES        = 8;
+  private static final int HEADER_SIZE        = LEGACY_HEADER_SIZE + OWNER_BYTES;
   // Shared with DeltaOfDeltaCodec and GorillaXORCodec: all three validate/use the same limit
   private static final int MAX_BLOCK_SIZE    = DeltaOfDeltaCodec.MAX_BLOCK_SIZE;
   /**
@@ -190,6 +210,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   // rewrite, which the shard keeps off a rename with its compaction mutex
   private volatile String            basePath;
   private final List<ColumnDefinition> columns;
+  // The shard this store belongs to (issue #11274): written into the header of every file it writes whole, checked against the header
+  // of every file it opens or installs. NO_OWNER for a store that was not told one
+  private final long                 owner;
   /**
    * The file and its channel, held for the life of the store and replaced only by the file-swap paths (under the
    * directory WRITE lock) and by {@link #reopenChannel()}. An interrupt landing on ANY thread blocked in an I/O on the
@@ -517,9 +540,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns,
       final long decodedColumnCacheBytes) throws IOException {
+    this(basePath, columns, decodedColumnCacheBytes, NO_OWNER);
+  }
+
+  /**
+   * @param owner the shard of the type this store belongs to, written into every file it writes whole and checked against every file
+   *              it opens (issue #11274), or {@link #NO_OWNER} for a store that reads any file
+   */
+  public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns,
+      final long decodedColumnCacheBytes, final long owner) throws IOException {
     this.decodedColumnCache = new TimeSeriesDecodedColumnCache(decodedColumnCacheBytes);
     this.basePath = basePath;
     this.columns = columns;
+    this.owner = owner;
 
     // Clean up stale .tmp files left by interrupted shutdown or maintenance
     final File tmpFile = new File(basePath + ".ts.sealed.tmp");
@@ -546,7 +579,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // write recover a closed channel on the shared one (see retryAfterReopen)
     directoryLock.writeLock().lock();
     try {
-      if (exists && fileLength() >= HEADER_SIZE)
+      if (exists && fileLength() >= LEGACY_HEADER_SIZE)
         loadDirectory();
       else
         writeEmptyHeader();
@@ -4147,7 +4180,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     try (final RandomAccessFile tempFile = openTempFile(tempPath)) {
       // Read the current header to get existing block count and global min/max timestamps
-      final ByteBuffer hdrBuf = ByteBuffer.allocate(HEADER_SIZE);
+      final ByteBuffer hdrBuf = ByteBuffer.allocate(LEGACY_HEADER_SIZE);
       readExactly(channelOf(tempFile), hdrBuf, 0, "the temp file header");
       hdrBuf.flip();
       hdrBuf.position(7); // skip magic(4) + version(1) + colCount(2)
@@ -4228,15 +4261,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final RandomAccessFile tempFile = openTempFile(tempPath);
     try {
       tempFile.setLength(0);
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      headerBuf.putInt(MAGIC_VALUE);
-      headerBuf.put((byte) CURRENT_VERSION);
-      headerBuf.putShort((short) colCount);
-      headerBuf.putInt(0);
-      headerBuf.putLong(Long.MAX_VALUE);
-      headerBuf.putLong(Long.MIN_VALUE);
-      headerBuf.flip();
-      FileUtils.writeFully(channelOf(tempFile), headerBuf, 0);
+      FileUtils.writeFully(channelOf(tempFile), ownedHeader(colCount, 0, Long.MAX_VALUE, Long.MIN_VALUE), 0);
       return tempFile;
     } catch (final IOException | RuntimeException e) {
       try {
@@ -4466,8 +4491,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     lock.lock();
     try {
       final long fileLength = fileLength();
-      if (fileLength < HEADER_SIZE) {
-        problems.add("the file is " + fileLength + " bytes, shorter than its " + HEADER_SIZE + "-byte header");
+      if (fileLength < LEGACY_HEADER_SIZE) {
+        problems.add("the file is " + fileLength + " bytes, shorter than its " + LEGACY_HEADER_SIZE + "-byte header");
         return new TimeSeriesIntegrity.Outcome(problems, repairs);
       }
 
@@ -4476,7 +4501,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // zeros. Anywhere else that costs a retry; HERE it would turn "the read came up short" into a header or a
       // CRC that does not match, which is a false accusation of corruption made by the very code whose job is to
       // tell corruption from health. readBytes() loops and throws at a real end of file.
-      final ByteBuffer headerBuf = ByteBuffer.wrap(readBytes(0, HEADER_SIZE));
+      final ByteBuffer headerBuf = ByteBuffer.wrap(readBytes(0, LEGACY_HEADER_SIZE));
 
       final int magic = headerBuf.getInt();
       if (magic != MAGIC_VALUE) {
@@ -4498,6 +4523,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final long storedMinTs = headerBuf.getLong();
       final long storedMaxTs = headerBuf.getLong();
 
+      // a file whose header ends before its owner: the store could not have opened it, there is no block to walk
+      if (fileLength < headerSizeOf(version)) {
+        problems.add("the file is " + fileLength + " bytes, shorter than the " + headerSizeOf(version) + "-byte header of version " + version);
+        return new TimeSeriesIntegrity.Outcome(problems, repairs);
+      }
+      // the store refuses such a file at open (issue #11274): reported here for a file that took its place since
+      final String ownerMismatch = ownerMismatch(version >= OWNED_HEADER_VERSION ?
+          ByteBuffer.wrap(readBytes(LEGACY_HEADER_SIZE, OWNER_BYTES)).getLong() : NO_OWNER, version);
+      if (ownerMismatch != null)
+        problems.add(ownerMismatch);
+
       boolean headerDisagrees = false;
       if (!headerDirty && storedBlockCount != blockDirectory.size()) {
         problems.add("the header declares " + storedBlockCount + " block(s) but scanning the file found "
@@ -4512,7 +4548,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Where the next block's metadata must start. Blocks are written back to back from the header onwards, so
       // this is derived from the file rather than taken from the directory - which is also what makes the entry's
       // own blockStartOffset checkable against it just below.
-      long blockStart = HEADER_SIZE;
+      long blockStart = headerSizeOf(version);
       // Whether the walk reached the end of the directory. The two totals below and the trailing-bytes check are
       // both statements about ALL the blocks, so a walk that stopped at block N cannot make either of them: what
       // it accumulated is a prefix, and reporting a prefix as the whole would turn one finding into three.
@@ -5244,6 +5280,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (closed)
         throw new IOException("Sealed store '" + basePath + FILE_EXTENSION
             + "' was closed on purpose (its type was dropped or its engine replaced): the image is not installed");
+      // an image written for another shard is refused before it replaces anything (issue #11274): the file in place stays readable
+      checkIncomingOwner(incoming);
 
       // Close current handles before replacing the file (required on Windows).
       try {
@@ -5274,7 +5312,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
       headerDirty = false;
-      if (fileLength() >= HEADER_SIZE)
+      if (fileLength() >= LEGACY_HEADER_SIZE)
         loadDirectory();
       else
         writeEmptyHeader();
@@ -5716,15 +5754,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private void writeEmptyHeader() throws IOException {
+    writeHeader(ownedHeader(columns.size(), 0, Long.MAX_VALUE, Long.MIN_VALUE), true);
+  }
+
+  /** The header of a file this store writes whole: the current version, and its owner (issue #11274). */
+  private ByteBuffer ownedHeader(final int colCount, final int blockCount, final long minTs, final long maxTs) {
     final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
-    buf.putInt(MAGIC_VALUE);
-    buf.put((byte) CURRENT_VERSION);
-    buf.putShort((short) columns.size());
-    buf.putInt(0); // block count
-    buf.putLong(Long.MAX_VALUE); // min ts
-    buf.putLong(Long.MIN_VALUE); // max ts
+    putSharedHeader(buf, CURRENT_VERSION, colCount, blockCount, minTs, maxTs);
+    buf.putLong(owner);
     buf.flip();
-    writeHeader(buf, true);
+    return buf;
+  }
+
+  /** The first {@value #LEGACY_HEADER_SIZE} bytes, the ones every version of the header shares. */
+  private static void putSharedHeader(final ByteBuffer buf, final int version, final int colCount, final int blockCount,
+      final long minTs, final long maxTs) {
+    buf.putInt(MAGIC_VALUE);
+    buf.put((byte) version);
+    buf.putShort((short) colCount);
+    buf.putInt(blockCount);
+    buf.putLong(minTs);
+    buf.putLong(maxTs);
   }
 
   private void writeHeader(final ByteBuffer buf, final boolean metaData) throws IOException {
@@ -5749,15 +5799,95 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private void rewriteHeader() throws IOException {
-    final ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
-    buf.putInt(MAGIC_VALUE);
-    buf.put((byte) CURRENT_VERSION);
-    buf.putShort((short) columns.size());
-    buf.putInt(blockDirectory.size());
-    buf.putLong(globalMinTs);
-    buf.putLong(globalMaxTs);
+    try {
+      rewriteHeaderOnce();
+    } catch (final ClosedChannelException e) {
+      retryAfterReopen("header write", this::rewriteHeaderOnce);
+    }
+  }
+
+  /**
+   * Rewrites the shared part of the header in the layout of the file on disk, whichever path put it there (issue #11274): a rewrite of
+   * the whole file swaps in a version-4 file, whose owner is left as written, and the header of an older file, whose blocks start
+   * right after its 27 bytes, can only be stamped with the last version of that layout.
+   */
+  private void rewriteHeaderOnce() throws IOException {
+    final ByteBuffer versionBuf = ByteBuffer.allocate(1);
+    readExactly(indexChannel, versionBuf, 4, "the header version");
+    final int onDisk = versionBuf.get(0) & 0xFF;
+    final ByteBuffer buf = ByteBuffer.allocate(LEGACY_HEADER_SIZE);
+    putSharedHeader(buf, onDisk >= OWNED_HEADER_VERSION ? CURRENT_VERSION : LAST_UNOWNED_VERSION, columns.size(), blockDirectory.size(),
+        globalMinTs, globalMaxTs);
     buf.flip();
-    writeHeader(buf, false);
+    writeHeaderOnce(buf, false);
+  }
+
+  /**
+   * A new owner id for a TIMESERIES type (issue #11274): random, so that it tells apart the types of two databases as well as two
+   * types of one, and far enough from both ends of the range that no shard's id derived from it ({@link #shardOwner}) is
+   * {@link #NO_OWNER}. Kept by the type for its life, a rename included, and recorded in the schema.
+   */
+  public static long newOwner() {
+    return ThreadLocalRandom.current().nextLong(1L << 16, Long.MAX_VALUE - (1L << 16));
+  }
+
+  /** The owner of the sealed file of shard {@code shardIndex} of a type whose owner id is {@code typeOwner}. */
+  public static long shardOwner(final long typeOwner, final int shardIndex) {
+    return typeOwner == NO_OWNER ? NO_OWNER : typeOwner + shardIndex;
+  }
+
+  /** {@link #checkOwner} for an image about to be installed: one too short to hold a header is the empty store it always was. */
+  private void checkIncomingOwner(final File incoming) throws IOException {
+    if (owner == NO_OWNER || incoming.length() < LEGACY_HEADER_SIZE)
+      return;
+    try (final RandomAccessFile file = new RandomAccessFile(incoming, "r")) {
+      final FileChannel channel = file.getChannel();
+      final ByteBuffer versionBuf = ByteBuffer.allocate(1);
+      readExactly(channel, versionBuf, 4, "the header version of the incoming image");
+      final int version = versionBuf.get(0) & 0xFF;
+      checkOwner(readOwner(channel, version), version, incoming.getName());
+    }
+  }
+
+  /** Where the blocks of a file of {@code version} start: after the owner from version 4 on, after 27 bytes before it. */
+  private static long headerSizeOf(final int version) {
+    return version >= OWNED_HEADER_VERSION ? HEADER_SIZE : LEGACY_HEADER_SIZE;
+  }
+
+  /** The owner a file of {@code version} declares, {@link #NO_OWNER} for a file older than owners. */
+  private long readOwner(final FileChannel channel, final int version) throws IOException {
+    if (version < OWNED_HEADER_VERSION)
+      return NO_OWNER;
+    final ByteBuffer ownerBuf = ByteBuffer.allocate(OWNER_BYTES);
+    readExactly(channel, ownerBuf, LEGACY_HEADER_SIZE, "the header owner");
+    return ownerBuf.getLong(0);
+  }
+
+  /**
+   * Why a file declaring {@code fileOwner} was not written for this store's shard (issue #11274), {@code null} when it was. A store
+   * told no owner reads any file. One told an owner was created by a build that writes it into every file of the shard from the first
+   * one on, so a file older than owners at its path was not written for it either.
+   */
+  private String ownerMismatch(final long fileOwner, final int version) {
+    if (owner == NO_OWNER || fileOwner == owner)
+      return null;
+    if (version < OWNED_HEADER_VERSION)
+      return "the file is of format version " + version + ", which records no owner, so it was not written for this shard: every file "
+          + "of it records the owner " + Long.toHexString(owner);
+    return "the file was written for the owner " + Long.toHexString(fileOwner) + ", not for this shard, whose owner is "
+        + Long.toHexString(owner) + ": it belongs to another TIMESERIES type, another shard or another database";
+  }
+
+  /**
+   * Refuses a file that was not written for this store's shard the way a column count that does not match is refused: by an
+   * {@link IOException}, which leaves the type registered without an engine and says why (issue #6356). Nothing is read from the file
+   * and nothing is written to it.
+   */
+  private void checkOwner(final long fileOwner, final int version, final String fileName) throws IOException {
+    final String mismatch = ownerMismatch(fileOwner, version);
+    if (mismatch != null)
+      throw new IOException("Sealed store '" + fileName + "' is not read: " + mismatch
+          + ". Nothing was read from it or written to it; move it away to open the type without it");
   }
 
   /**
@@ -5782,7 +5912,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // drops cannot be pinned by a pool.
     final Map<String, String> canonicalValues = new HashMap<>();
     final Map<List<String>, String[]> canonicalArrays = new HashMap<>();
-    final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+    final ByteBuffer headerBuf = ByteBuffer.allocate(LEGACY_HEADER_SIZE);
     // Checked: a short read used to be decoded as a whole header, the rest of it whatever the buffer held (#9640)
     readExactly(indexChannel, headerBuf, 0, "the header");
     headerBuf.flip();
@@ -5806,15 +5936,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throw new IOException("Column count mismatch in sealed store header of '" + basePath + ".ts.sealed': file has "
           + colCount + " columns, schema has " + columns.size());
     final int blockCount = headerBuf.getInt();
-    globalMinTs = headerBuf.getLong();
-    globalMaxTs = headerBuf.getLong();
+    final long fileMinTs = headerBuf.getLong();
+    final long fileMaxTs = headerBuf.getLong();
+    // before anything of this store changes: a file written for another shard is not read at all (issue #11274)
+    checkOwner(readOwner(indexChannel, version), version, basePath + FILE_EXTENSION);
+    globalMinTs = fileMinTs;
+    globalMaxTs = fileMaxTs;
 
     // Rebuild block directory by scanning block metadata records
     blockDirectory.clear();
     ++directoryVersion;
     decodedColumnCache.clear();
     final long fileLength = fileLength();
-    long pos = HEADER_SIZE;
+    long pos = headerSizeOf(version);
 
     // magic + minTs + maxTs + sampleCount + colSizes: what every generation of the record carries. A TSB3 block
     // (issue #8043) carries BLOCK_ID_BYTES more, between the sample count and the column sizes, and the magic is

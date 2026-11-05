@@ -52,29 +52,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * exception's own message on the wire in production. No behavioural test can see that, because the test server is
  * not in production mode.
  * <p>
- * So this is a source-level guard rather than a behavioural one, in the spirit of
+ * So this is a static guard rather than a behavioural one, in the spirit of
  * {@code RestoreSettingsTest.restoreThreadBoundMatchesTheGlobalConfiguration}: a comment asking the next editor to
- * use {@code mapError(...)} is not enforcement, and this is. It fails the moment a production call site in this
- * module maps a failure without stating a concealment decision.
+ * use {@code mapError(...)} is not enforcement, and this is.
+ * <p>
+ * The first of the four scans - a mapper call that states no concealment decision - is a call-site question, and
+ * {@code GrpcFailureConcealmentDecisionCensusTest} in the census module answers it from the compiled classes of every
+ * module (#11288). The three below stay source-text scans of this module, and that is a recorded decision, not an
+ * oversight: {@code CONCEALED_DESCRIPTION} is a {@code static final String}, which javac inlines as a constant at every
+ * use, so the bytecode no longer says which method used it; and "a throwable's message reaches the description" is a
+ * data-flow question that a call-site scan cannot answer. The range is this module's own sources, which is where the
+ * gRPC service and its mapper live.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7472EveryGrpcFailureIsConcealableTest {
 
   private static final Path   MAIN_SOURCES = Path.of(System.getProperty("basedir", "."), "src", "main", "java", "com", "arcadedb", "server", "grpc");
-  /**
-   * Both mapper entry points a production call site can answer a failure through. {@code toStatusException} was
-   * added on main while this branch was open and needs the same guard: it delegates to
-   * {@code toStatusRuntimeException}, so a call that omits the decision leaks exactly the same way.
-   */
-  private static final List<String> MAPPER_CALLS = List.of("GrpcErrorMapper.toStatusRuntimeException(",
-      "GrpcErrorMapper.toStatusException(",
-      // concealableDescription takes the decision as its last argument and RETURNS THE THROWABLE'S MESSAGE when it
-      // is false, so a direct call passing a literal false leaks exactly what #7472 is about - and it slipped
-      // through both other scans, because SAFE_DESCRIPTIONS strips this call whole before looking for a raw
-      // message (PR #7942 review). Listing it here makes it state a decision like any other mapper entry point:
-      // concealErrors() and a threaded `conceal` parameter pass, a literal false does not.
-      "GrpcErrorMapper.concealableDescription(");
   /**
    * ANY receiver's {@code .getMessage()}.
    * <p>
@@ -132,43 +126,8 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
   private static final List<String> CATCH_ALL_SHAPES = List.of("GrpcErrorMapper.statusCodeFor(", "Status.INTERNAL");
 
   /**
-   * What a concealment-aware call site passes as its last argument.
-   * <p>
-   * Two spellings, both honest. {@code concealErrors()} is what a service's own {@code mapError(...)} passes, and
-   * {@code conceal} is what a STATIC helper takes as a parameter because it has no instance to ask - {@code
-   * graphBatchLoadError} is the current example, and its caller resolves the flag from {@code concealErrors()}
-   * once, up front, because the error paths run on the stream's own threads.
-   * <p>
-   * What neither spelling permits is a call that simply omits the argument, which is the whole failure mode: it
-   * compiles, it answers the right status with the right trailers, and it leaks only in production.
-   */
-  private static final List<String> DECISIONS = List.of("concealErrors()", "conceal)", "conceal,");
-
-  @Test
-  void noProductionCallSiteMapsAFailureWithoutAConcealmentDecision() throws IOException {
-    final List<String> offenders = new ArrayList<>();
-
-    try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
-      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
-        // The mapper itself is where the overloads are DEFINED and where one delegates to another; it is the one
-        // file whose calls are not call sites in this sense.
-        if (source.getFileName().toString().equals("GrpcErrorMapper.java"))
-          continue;
-
-        offenders.addAll(mapperCallsWithoutADecision(source.getFileName().toString(),
-            Files.readString(source, StandardCharsets.UTF_8)));
-      }
-    }
-
-    assertThat(offenders)
-        .as("every gRPC failure must be mapped through a call that states whether to conceal - use this service's "
-            + "mapError(...) helper, which passes concealErrors(), or thread a 'conceal' parameter from it")
-        .isEmpty();
-  }
-
-  /**
    * The OTHER way a description reaches a client: a status built DIRECTLY, keeping a code this service chose rather
-   * than one the mapper would classify. Those never touch {@code GrpcErrorMapper}, so the scan above cannot see
+   * than one the mapper would classify. Those never touch {@code GrpcErrorMapper}, so the mapper-call census cannot see
    * them - and three of them were putting {@code e.getMessage()} on the wire in production while every mapped
    * failure was concealed (PR #7755 review).
    * <p>
@@ -282,8 +241,6 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
         final String text = Files.readString(source, StandardCharsets.UTF_8);
         final boolean mapper = source.getFileName().toString().equals("GrpcErrorMapper.java");
 
-        if (!mapper)
-          found.merge("mapper calls", statementsCalling(text).size(), Integer::sum);
         found.merge("directly-built statuses", statementsMatching(text, ".withDescription(").size(), Integer::sum);
         found.merge("InsertError rows", statementsMatching(text, "InsertError.newBuilder(").size(), Integer::sum);
         found.merge("concealed descriptions",
@@ -306,11 +263,6 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
    */
   @Test
   void everyScanFlagsAKnownBadStatement() {
-    assertThat(mapperCallsWithoutADecision("Fixture.java",
-        "    throw GrpcErrorMapper.toStatusRuntimeException(dup, \"insert\");"))
-        .as("the mapper-call scan no longer flags a call that states no concealment decision")
-        .hasSize(1);
-
     assertThat(directStatusesCarryingARawMessage("Fixture.java",
         "    return GrpcErrorMapper.statusCodeFor(retryEx).toStatus().withDescription(retryEx.getMessage()).asException();"))
         .as("the direct-status scan no longer flags a catch-all status built from a throwable's own message")
@@ -328,17 +280,8 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
         .as("the InsertError scan no longer flags a raw exception message on the protobuf channel")
         .hasSize(1);
 
-    assertThat(mapperCallsWithoutADecision("Fixture.java",
-        "    return GrpcErrorMapper.concealableDescription(this, op, e, false);"))
-        .as("a concealment decision hard-coded to false is a decision to LEAK, and the scan must say so")
-        .hasSize(1);
-
     // ...and each of them accepts the SAFE spelling of the same statement, or the rule is simply "refuse
     // everything", which fails the build on correct code and gets deleted rather than obeyed.
-    assertThat(mapperCallsWithoutADecision("Fixture.java",
-        "    throw GrpcErrorMapper.toStatusRuntimeException(dup, \"insert\", concealErrors());")).isEmpty();
-    assertThat(mapperCallsWithoutADecision("Fixture.java",
-        "    return GrpcErrorMapper.concealableDescription(this, op, e, concealErrors());")).isEmpty();
     assertThat(directStatusesCarryingARawMessage("Fixture.java",
         "    return GrpcErrorMapper.statusCodeFor(retryEx).toStatus().withDescription(concealable(op, retryEx)).asException();"))
         .isEmpty();
@@ -359,15 +302,6 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
     // included - would fall outside the text the rule is applied to
     assertThat(insertErrorsCarryingARawMessage("Fixture.java",
         "        c.err(0, \"a; b\", retryEx.getMessage(), \"\");")).hasSize(1);
-  }
-
-  /** A mapper call that does not state whether to conceal. */
-  private static List<String> mapperCallsWithoutADecision(final String fileName, final String text) {
-    final List<String> offenders = new ArrayList<>();
-    for (final String statement : statementsCalling(text))
-      if (DECISIONS.stream().noneMatch(statement::contains))
-        offenders.add(fileName + ": " + statement.strip());
-    return offenders;
   }
 
   /**
@@ -559,17 +493,6 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
       }
     }
     return isCode;
-  }
-
-  /**
-   * Every statement in {@code source} that calls the mapper, from the call to the {@code ;} that ends it - so a call
-   * whose arguments are wrapped across lines is judged whole rather than on its first line.
-   */
-  private static List<String> statementsCalling(final String source) {
-    final List<String> statements = new ArrayList<>();
-    for (final String call : MAPPER_CALLS)
-      statements.addAll(statementsMatching(source, call));
-    return statements;
   }
 
   /**

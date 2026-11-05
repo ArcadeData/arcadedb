@@ -26,12 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,7 +34,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #10765: a RID that names no record is "not there" for every command that takes one, on both Redis surfaces. HGET and
  * HEXISTS on the RESP wire answered {@code ERR Record ... not found} and HGET on the {@code redis} query language threw, while
- * HMGET answered nil and the query language's HEXISTS answered 0.
+ * HMGET answered nil and the query language's HEXISTS answered 0. That every lookup goes through {@link RedisRecords#lookupByRid} is
+ * held by {@code RedisRidLookupCensusTest} (census module).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -101,28 +97,6 @@ public class Issue10765RedisMissingRidParityTest extends BaseRedisServerTest {
     for (final String command : new String[] { "HGET #bad", "HEXISTS #bad", "HMGET #bad", "HDEL #bad" })
       assertThatThrownBy(() -> database.command("redis", command).close()).as(command)
           .isInstanceOf(CommandParsingException.class);
-  }
-
-  /**
-   * The structural guarantee: a RID is resolved in ONE place, {@link RedisRecords#lookupByRid}, so a command added later cannot
-   * call {@code lookupByRID} directly and answer a missing record with an error where its siblings answer nil - which is how HGET
-   * and HEXISTS drifted from HMGET after #9055 fixed only HMGET.
-   */
-  @Test
-  void everyRidLookupGoesThroughTheSharedHelper() throws IOException {
-    final Path sources = Path.of(System.getProperty("basedir", "."), "src/main/java/com/arcadedb/redis");
-    assertThat(sources).isDirectory();
-
-    final List<String> offenders = new ArrayList<>();
-    try (final Stream<Path> files = Files.walk(sources)) {
-      for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
-        if (file.getFileName().toString().equals("RedisRecords.java"))
-          continue;
-        if (Files.readString(file).contains(".lookupByRID("))
-          offenders.add(file.toString());
-      }
-    }
-    assertThat(offenders).as("RID lookups outside RedisRecords.lookupByRid").isEmpty();
   }
 
   private String[] createItem() {

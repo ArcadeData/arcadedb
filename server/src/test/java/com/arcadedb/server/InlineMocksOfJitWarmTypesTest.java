@@ -50,6 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * it is a subclass mock, whatever type it names, and stays one only while that import does. {@code Mockito.mock(...)}
  * is flagged regardless. The scan is a regular-expression approximation, not a parser: a mock or spy built through a
  * helper that receives the class as a variable, or a {@code spy(instance)} of a variable, is out of its reach.
+ * <p>
+ * Source text is a recorded decision (#11288, {@code SourceTextTestsAreRecordedTest}), not the census rule ignored: the
+ * population is the TEST sources of every module, and no module's classpath carries the test classes of the others, so
+ * the compiled-class census module cannot read them. The cost is the reach stated above.
  */
 class InlineMocksOfJitWarmTypesTest {
 

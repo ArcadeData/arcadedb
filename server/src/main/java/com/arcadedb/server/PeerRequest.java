@@ -59,9 +59,9 @@ import java.util.logging.Level;
  * <b>Why one builder rather than two helpers.</b> Issue #7837 was one dial spelling the credential by hand and spelling it wrong.
  * The two helpers extracted after it - one for the headers, one for the notice - were adopted by a minority of the dials each, and
  * the sites left alone drifted (a dial with the token and no principal, one with the principal spelled as a literal, most of them
- * silent on the fallback). Every dial now builds its request here, and {@code Issue9999PeerDialsGoThroughOneBuilderTest} (the
- * {@code ha-raft} sources) and {@code Issue10068ServerPeerDialsGoThroughOneBuilderTest} (the {@code server} sources) fail the
- * build when a request is built or either header is spelled anywhere else.
+ * silent on the fallback). Every dial now builds its request here, and {@code PeerDialsGoThroughOneBuilderCensusTest} (census
+ * module, over the compiled classes of {@code server} and {@code ha-raft}) fails the build when a request is started, or either
+ * header is attached, anywhere else.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

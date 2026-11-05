@@ -30,12 +30,7 @@ import org.junit.jupiter.api.function.Executable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -47,8 +42,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * conflict arm anywhere. They raise {@link AlreadyExistsException} now, through SQL, Cypher and the Java API alike, and
  * {@link ErrorCategory} has a category for it every wire maps to its own conflict code.
  * <p>
- * The guarantee is {@link #noSourceRefusesATakenNameWithAnotherType}: the per-statement tests below pin today's sites, the scan
- * pins the next one, which is how three fixes (#10073, #10074, #10075) each landed one name and left these behind.
+ * The per-statement tests below pin today's sites, and {@code TakenNameRefusalCensusTest} (census module) pins the next one, over
+ * the compiled classes, which is how three fixes (#10073, #10074, #10075) each landed one name and left these behind.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -209,74 +204,6 @@ class Issue10153AlreadyExistsTest extends TestHelper {
     assertThat(new AlreadyExistsException(null, "x").getLabel()).isEqualTo("Schema object already exists");
     assertThat(AlreadyExistsException.Kind.fromName("NOT_A_KIND")).isNull();
     assertThat(AlreadyExistsException.Kind.fromName("MATERIALIZED_VIEW")).isEqualTo(AlreadyExistsException.Kind.MATERIALIZED_VIEW);
-  }
-
-  /**
-   * Pattern of a {@code throw new X(...)} statement whose arguments word a taken name, up to the {@code ;} that ends it. The
-   * arguments may span lines.
-   */
-  private static final Pattern TAKEN_NAME_THROW = Pattern.compile(
-      "throw\\s+new\\s+([A-Za-z0-9_.]+)\\s*\\(([^;]*?(?:already exists|already registered|already defined)[^;]*?)\\)\\s*;",
-      Pattern.DOTALL);
-
-  /**
-   * The refusals that word a taken name but are not a schema object's, each for the reason given: a test that allow-lists a new
-   * site has to say why it is not a conflict on a schema object name.
-   */
-  private static final Set<String> NOT_A_SCHEMA_OBJECT_NAME = Set.of(
-      // the embedded DatabaseFactory.create() on a path that holds a database: the server turns it into its own
-      // DatabaseAlreadyExistsException (#10074) before any wire sees it
-      "database/LocalDatabase.java:DatabaseOperationException:Database '",
-      // internal invariants on the file registry, never a name a caller chose
-      "schema/LocalSchema.java:SchemaException:File with id '",
-      "engine/FileManager.java:SchemaException:File id ",
-      // a bucket index named after the bucket and System.nanoTime(): an internal invariant, not a caller's name
-      "schema/LocalSchema.java:DatabaseMetadataException:Cannot create index '",
-      // IF NOT EXISTS answered by an index of another definition: a 400 by design (#6921, #7228), not a taken name
-      "query/sql/parser/CreateIndexStatement.java:IllegalArgumentException:Cannot create the index '",
-      // a Cypher variable bound twice, or with two types, in one statement: a parse error, not a schema object name
-      "query/opencypher/parser/CypherSemanticValidator.java:CommandParsingException:Variable",
-      // SEARCH ... SCORE AS naming a variable an earlier clause bound: a semantic error of the statement, not a schema object name
-      "query/opencypher/procedures/db/VectorSearchClauseProcedure.java:CommandSemanticException:SEARCH: the score variable '",
-      // the rename of a TIMESERIES type onto a sealed file left in the database directory: a file no schema object holds (#10796).
-      // The component it collides with is a bucket or an index, refused as a taken name
-      "schema/LocalTimeSeriesType.java:SchemaException:Cannot rename the TIMESERIES type '\" + oldName + \"' to '\" + newName + \"': the sealed file '",
-      // the creation of a TIMESERIES type at the name of such a file (#10925): the same file, met by CREATE instead of the rename
-      "schema/LocalTimeSeriesType.java:SchemaException:Cannot create the TIMESERIES type '\" + name + \"': the sealed file '",
-      // the same file met by the move itself, the guard behind the check above that ATOMIC_MOVE does not replace it (#10796)
-      "engine/timeseries/TimeSeriesSealedStore.java:IOException:Cannot move the sealed store '");
-
-  @Test
-  void noSourceRefusesATakenNameWithAnotherType() throws IOException {
-    final Path root = Path.of("src/main/java/com/arcadedb");
-    assertThat(root).isDirectory();
-
-    final List<String> offenders = new ArrayList<>();
-    int checked = 0;
-    try (final Stream<Path> files = Files.walk(root)) {
-      for (final Path file : (Iterable<Path>) files.filter(p -> p.toString().endsWith(".java"))::iterator) {
-        final String source = Files.readString(file);
-        final Matcher matcher = TAKEN_NAME_THROW.matcher(source);
-        while (matcher.find()) {
-          ++checked;
-          final String exception = matcher.group(1);
-          if (exception.endsWith("AlreadyExistsException"))
-            continue;
-          final String arguments = matcher.group(2).strip();
-          final String firstLiteral = arguments.contains("\"") ? arguments.substring(arguments.indexOf('"') + 1) : arguments;
-          final String key = root.relativize(file).toString().replace('\\', '/') + ":" + exception + ":";
-          if (NOT_A_SCHEMA_OBJECT_NAME.stream().anyMatch(allowed -> allowed.startsWith(key) && firstLiteral.startsWith(
-              allowed.substring(key.length()))))
-            continue;
-          offenders.add(key + " " + arguments.replaceAll("\\s+", " "));
-        }
-      }
-    }
-
-    // not vacuous: the scan has to see the sites this issue moved to the new type
-    assertThat(checked).as("taken-name refusals found by the scan").isGreaterThan(25);
-    assertThat(offenders).as("a taken schema object name must raise AlreadyExistsException, which every wire answers as a conflict")
-        .isEmpty();
   }
 
   private static void assertTaken(final Executable executable, final AlreadyExistsException.Kind kind) {

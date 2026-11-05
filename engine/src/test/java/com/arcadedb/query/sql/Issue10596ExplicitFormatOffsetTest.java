@@ -25,21 +25,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -52,9 +45,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * one-line {@code LocalDateTime.parse}, which takes the LOCAL fields of the parse and discards the offset it just read - and the
  * {@code timezone} argument of {@code date(value, format, timezone)} was inert there for the same reason.
  * <p>
- * {@code asDate(format)} keeps the wall clock: its target has no zone to keep, and the day written is the day meant. The census at
- * the end makes a text-to-datetime parse with a pattern unreachable outside {@code DateUtils}, so that every conversion has to answer
- * what becomes of the offset.
+ * {@code asDate(format)} keeps the wall clock: its target has no zone to keep, and the day written is the day meant. The census
+ * {@code DatetimeParseWithAPatternCensusTest} (census module) makes a text-to-datetime parse with a pattern unreachable outside
+ * {@code DateUtils}, so that every conversion has to answer what becomes of the offset.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -216,67 +209,5 @@ class Issue10596ExplicitFormatOffsetTest extends TestHelper {
         new Object[] { "2020-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss", "Asia/Tokyo" }, null);
     assertThat(zoneLess.get("hour")).as("a text with no zone is read in the zone asked for").isEqualTo(3L);
     assertThat(zoneLess.get("timezone")).isEqualTo("Asia/Tokyo");
-  }
-
-  // ---- the guard: no text-to-datetime conversion with a pattern outside DateUtils
-
-  /**
-   * {@code LocalDateTime.parse(text, formatter)} takes the LOCAL fields of the parse and discards an offset the pattern read, so a
-   * second parse written next to {@code DateUtils}' own answers a different instant for the same text - which is how three of them
-   * got there. Every text-to-datetime conversion with a pattern goes through {@code DateUtils}, whose methods name what becomes of the
-   * offset. The parses listed here read a value no user writes.
-   */
-  @Test
-  void noSourceParsesADatetimeWithAPatternOutsideDateUtils() throws IOException {
-    // file name -> why it is not a user's text
-    final Map<String, String> readsNoUserText = Map.of("BackupCoordinator.java",
-        "reads the timestamp the engine itself put in the name of an archive, no zone in it");
-
-    final List<String> offenders = new ArrayList<>();
-    final Pattern call = Pattern.compile("(?<![\\w.])LocalDateTime\\.parse\\(");
-    try (final Stream<Path> modules = Files.list(Path.of(".."))) {
-      for (final Path module : (Iterable<Path>) modules.sorted()::iterator) {
-        final Path sources = module.resolve("src/main/java");
-        if (!Files.isDirectory(sources))
-          continue;
-        try (final Stream<Path> files = Files.walk(sources)) {
-          for (final Path file : (Iterable<Path>) files.filter(f -> f.toString().endsWith(".java"))::iterator) {
-            final String name = file.getFileName().toString();
-            if (name.equals("DateUtils.java") || readsNoUserText.containsKey(name))
-              continue;
-            final String source = Files.readString(file);
-            final Matcher matcher = call.matcher(source);
-            while (matcher.find())
-              if (hasTopLevelComma(source, matcher.end()))
-                offenders.add(file + ":" + lineOf(source, matcher.start()));
-          }
-        }
-      }
-    }
-    assertThat(offenders).as("LocalDateTime.parse(text, pattern) outside DateUtils: use DateUtils.parseDateTimeWithFormat, or "
-        + "parseDateTimeKeepingWallClockWithFormat when the target keeps no zone").isEmpty();
-  }
-
-  /** True when the arguments that start at {@code from} (just after the opening parenthesis) have more than one. */
-  private static boolean hasTopLevelComma(final String source, final int from) {
-    int depth = 1;
-    for (int i = from; i < source.length() && depth > 0; i++) {
-      final char c = source.charAt(i);
-      if (c == '(')
-        depth++;
-      else if (c == ')')
-        depth--;
-      else if (c == ',' && depth == 1)
-        return true;
-    }
-    return false;
-  }
-
-  private static int lineOf(final String source, final int offset) {
-    int line = 1;
-    for (int i = 0; i < offset; i++)
-      if (source.charAt(i) == '\n')
-        line++;
-    return line;
   }
 }
