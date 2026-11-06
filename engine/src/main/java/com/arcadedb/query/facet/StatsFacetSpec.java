@@ -20,6 +20,6 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.query.sql.parser.WhereClause;
 
-/** A facet computing count, min, max, sum and average of a property. Reserved for the STATS clause. */
+/** A facet computing count, min, max, sum and average of a property. */
 public record StatsFacetSpec(String alias, String property, WhereClause filter) implements FacetSpec {
 }

@@ -27,15 +27,19 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
 import java.time.Instant;
@@ -45,6 +49,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
@@ -83,6 +88,23 @@ public final class FacetOracle {
   private static final int  MAX_DIFFS_REPORTED   = 20;
 
   private FacetOracle() {
+  }
+
+  /** Turns GROUP BY acceleration back to what it was before {@link #normalPlan}; closes without a checked exception. */
+  public interface NormalPlan extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  /**
+   * Turns {@code arcadedb.columnar.groupByAcceleration} off on the database until the result is closed, so a GROUP BY that checks the
+   * projection reads the records, never the projection it checks. Open it before the statement and close it once the rows are read:
+   * the switch is read when the statement runs. Not for concurrent statements on the same database.
+   */
+  public static NormalPlan normalPlan(final Database db) {
+    final boolean previous = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION);
+    db.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, false);
+    return () -> db.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, previous);
   }
 
   /**
@@ -130,7 +152,8 @@ public final class FacetOracle {
     final Type propertyType = column.kind() == ColumnKind.LONG ? propertyType(db, type, column) : null;
     final String terms = "SELECT " + quote(property) + " AS v, count(*) AS c FROM " + quote(type) + where(where) + " GROUP BY " + quote(
         property);
-    try (final ResultSet rs = db.query("sql", terms)) {
+    try (final NormalPlan normal = normalPlan(db);
+        final ResultSet rs = db.query("sql", terms)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         add(counts, scalarKey(column, propertyType, extractor, row.getProperty("v")), row.<Number>getProperty("c").longValue());
@@ -172,6 +195,111 @@ public final class FacetOracle {
       }
     }
     return counts;
+  }
+
+  /**
+   * Reference of a HIERARCHY facet: per record of {@code SELECT <property> FROM <type> WHERE <where>} (polymorphic), the set of its
+   * values (normalized, deduplicated) plus every ancestor reached from the vertices of {@code vertexType} keyed by each value
+   * ({@link Database#lookupByKey}) through {@code getVertices(IN, parentEdge)}, walked with a visited set of its own; a value no vertex
+   * has counts only itself. Each value of the set counts the record once, and a record with no value counts once under
+   * {@link #MISSING}. Shares no code with the production path: no view, no expander, no projection.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static Map<Object, Long> hierarchicalCounts(final Database db, final String type, final String property, final String where,
+      final String vertexType, final String key, final String parentEdge) {
+    final Map<Object, Long> counts = new HashMap<>();
+    final Set<Object> values = new HashSet<>();
+    final Set<Object> closure = new HashSet<>();
+    final Set<RID> visited = new HashSet<>();
+    final ArrayDeque<Vertex> pending = new ArrayDeque<>();
+    try (final ResultSet rs = db.query("sql", "SELECT " + quote(property) + " AS v FROM " + quote(type) + where(where))) {
+      while (rs.hasNext()) {
+        values.clear();
+        closure.clear();
+        visited.clear();
+        collectItemKeys(rs.next().getProperty("v"), values);
+        if (values.isEmpty()) {
+          add(counts, MISSING, 1L);
+          continue;
+        }
+        for (final Object value : values) {
+          closure.add(value);
+          final IndexCursor tags = db.lookupByKey(vertexType, key, value);
+          while (tags.hasNext())
+            pending.add(tags.next().asVertex());
+        }
+        while (!pending.isEmpty()) {
+          final Vertex tag = pending.poll();
+          if (!visited.add(tag.getIdentity()))
+            continue;
+          final Object tagKey = ordinalKey(tag.get(key));
+          // a vertex without a key is no node of the hierarchy: nothing is reached through it
+          if (tagKey == MISSING)
+            continue;
+          closure.add(tagKey);
+          for (final Vertex parent : tag.getVertices(Vertex.DIRECTION.IN, parentEdge))
+            pending.add(parent);
+        }
+        for (final Object node : closure)
+          add(counts, node, 1L);
+      }
+    }
+    return counts;
+  }
+
+  /**
+   * The answer of a DISTINCT facet by SQL alone: {@code SELECT count(DISTINCT p)} for a single-valued property, and for a LIST property
+   * the number of non-null groups of {@code GROUP BY p} over its items ({@code UNWIND p}). Shares no code with the collector.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static long distinctCount(final Database db, final String type, final String property, final String where) {
+    final Property declared = db.getSchema().getType(type).getPolymorphicPropertyIfExists(property);
+    if (declared != null && declared.getType() == Type.LIST) {
+      long groups = 0;
+      try (final ResultSet rs = db.query("sql",
+          "SELECT " + quote(property) + " AS v, count(*) AS c FROM (SELECT " + quote(property) + " FROM " + quote(type) + where(where)
+              + " UNWIND " + quote(property) + ") GROUP BY " + quote(property))) {
+        while (rs.hasNext())
+          if (rs.next().getProperty("v") != null)
+            groups++;
+      }
+      return groups;
+    }
+    try (final ResultSet rs = db.query("sql",
+        "SELECT count(DISTINCT " + quote(property) + ") AS c FROM " + quote(type) + where(where))) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  /**
+   * The answer of a STATS facet by SQL alone: {@code count(p)}, {@code min(p)}, {@code max(p)}, {@code sum(p)} and {@code avg(p)} as
+   * SQL returns them (value and Java type), missing = {@code count(@rid) - count(p)}. Over dates (or when no record has a value) sum and
+   * average are null, which SQL refuses to compute. Shares no code with the collector.
+   *
+   * @param where a SQL condition, null for every record
+   */
+  public static FacetStats stats(final Database db, final String type, final String property, final String where) {
+    final String p = quote(property);
+    final long count;
+    final long total;
+    final Object min;
+    final Object max;
+    try (final ResultSet rs = db.query("sql",
+        "SELECT count(" + p + ") AS c, min(" + p + ") AS mn, max(" + p + ") AS mx, count(@rid) AS t FROM " + quote(type) + where(where))) {
+      final Result row = rs.next();
+      count = row.<Number>getProperty("c").longValue();
+      total = row.<Number>getProperty("t").longValue();
+      min = row.getProperty("mn");
+      max = row.getProperty("mx");
+    }
+    if (min == null || DateUtils.isDate(min))
+      return new FacetStats(count, total - count, min, max, null, null);
+    try (final ResultSet rs = db.query("sql", "SELECT sum(" + p + ") AS s, avg(" + p + ") AS a FROM " + quote(type) + where(where))) {
+      final Result row = rs.next();
+      return new FacetStats(count, total - count, min, max, row.getProperty("s"), row.getProperty("a"));
+    }
   }
 
   /** {@link ColumnarIndexManager#awaitCaughtUp} of the database's embedded instance, 30 s. */

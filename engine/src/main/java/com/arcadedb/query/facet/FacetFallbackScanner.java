@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.columnar.ColumnDefinition;
@@ -35,8 +36,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.Array;
 import java.time.temporal.ChronoUnit;
@@ -54,13 +57,18 @@ import java.util.List;
  *   {@link PatchedValue#unknown}, a list item once per distinct value), merged with the projection's counts by the collectors'
  *   converted merge;</li>
  *   <li>any other property is its raw value ({@link DocumentIndexer#getPropertyValue}), an expression facet the value of its expression
- *   on the record. For a terms facet ({@link Read#TERMS}) a list (or array) counts each distinct item once per document, nulls left out.
- *   For a range or histogram facet the property's schema type decides: a date or datetime is read as epoch milliseconds
+ *   on the record, and so is the property of a HIERARCHY facet (and of a DISTINCT facet over a dictionary column, or over a property
+ *   that is no number and no date). For a terms, hierarchy or distinct facet ({@link Read#TERMS}) a list (or array) counts each
+ *   distinct item once per document, nulls left out. A distinct facet over a date property reads the epoch counts of its declared
+ *   type and precision ({@link Read#EPOCH}: days for a DATE, down to nanoseconds for a DATETIME_NANOS). For a range or histogram facet
+ *   (and a distinct one over a number) the property's schema type decides: a date or datetime is read as epoch milliseconds
  *   ({@link Read#EPOCH_MS}), an integral type as a long ({@link Read#INTEGER}), anything else (a floating type, an undeclared property,
  *   an expression) as a double ({@link Read#NUMBER}); a value that does not convert counts as missing. A type that does not declare the
  *   property reads it as dates when another type of the facet holds it as a date ({@link #asDates}). Dates are read at millisecond
  *   precision whatever the declared precision: a DATETIME_MICROS or DATETIME_NANOS property bucketed by an interval or bounded by a
  *   literal finer than 1 ms can differ from its indexed answer.</li>
+ *   <li>a STATS facet reads the property by its declared type ({@link #statsSource}): a date at its declared precision, a number as a
+ *   long or a double of its declared type; a DECIMAL or a property the type does not declare as the raw value ({@link Read#RAW}).</li>
  * </ul>
  * A position whose record is gone is skipped. Not thread safe: driven by the query thread.
  */
@@ -69,7 +77,7 @@ public final class FacetFallbackScanner {
   private static final int LINEAR_DEDUP_ITEMS = 16;
 
   /** How a scanned facet reads the value of a record. */
-  enum Read {COLUMN, TERMS, NUMBER, INTEGER, EPOCH_MS}
+  enum Read {COLUMN, TERMS, NUMBER, INTEGER, EPOCH_MS, EPOCH, RAW}
 
   /**
    * How one facet is scanned in one bucket.
@@ -92,11 +100,18 @@ public final class FacetFallbackScanner {
 
   /**
    * Decides how the facet is scanned in a bucket of {@code type}: the property's column when it is one of the type's (and its
-   * extractor knows it), else its raw value, read by the property's schema type.
+   * extractor knows it), else its raw value, read by the property's schema type. A HIERARCHY facet, and a DISTINCT facet over a
+   * dictionary column, read the raw values ({@link Read#TERMS}): they compare values, never ordinals, so the extraction against a
+   * dictionary buys them nothing. Without a column, a DISTINCT facet reads a date property as the epoch counts of its declared type and
+   * precision ({@link Read#EPOCH}), an integral or a floating property by its declared type as a range facet does, and any other (a
+   * string, a list, a DECIMAL, an undeclared property) by its raw values. A STATS facet without a column reads by {@link #statsSource}.
    */
   static Source sourceOf(final DatabaseInternal db, final DocumentType type, final FacetSpec spec) {
     final String property = spec.property();
     final ColumnDefinition column = column(type, property);
+    if (spec instanceof HierarchyFacetSpec || spec instanceof DistinctFacetSpec && column != null && (column.kind() == ColumnKind.ORDINAL
+        || column.kind() == ColumnKind.ORDINAL_LIST))
+      return new Source(spec, Read.TERMS, null, null, null);
     if (column != null) {
       final ColumnarValueExtractor extractor = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName());
       if (extractor != null && extractor.hasColumn(property))
@@ -107,12 +122,46 @@ public final class FacetFallbackScanner {
     final String name = property != null ? property : spec.alias();
     final Property declared = type == null || property == null ? null : type.getPolymorphicPropertyIfExists(property);
     final Type propertyType = declared == null ? null : declared.getType();
-    if (propertyType != null && propertyType.isDateOrDateTime())
+    if (spec instanceof StatsFacetSpec)
+      return statsSource(db, spec, name, propertyType);
+    if (propertyType != null && propertyType.isDateOrDateTime()) {
+      if (spec instanceof DistinctFacetSpec)
+        // the declared type and precision: a DATE is no instant, two instants a millisecond apart or less are two values
+        return new Source(spec, Read.EPOCH, new ColumnDefinition(-1, name, propertyType, ColumnKind.LONG, false,
+            propertyType == Type.DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(propertyType)), null,
+            ColumnConversion.declaredDates(db, propertyType));
       return dates(db, spec, name);
+    }
     if (propertyType == Type.BYTE || propertyType == Type.SHORT || propertyType == Type.INTEGER || propertyType == Type.LONG)
       return new Source(spec, Read.INTEGER, new ColumnDefinition(-1, name, Type.LONG, ColumnKind.LONG, false, null), null,
           ColumnConversion.integers());
+    if (spec instanceof DistinctFacetSpec && propertyType != Type.FLOAT && propertyType != Type.DOUBLE)
+      // a string, a list, a DECIMAL, an undeclared property: distinct raw values (a number canonicalized by the collector)
+      return new Source(spec, Read.TERMS, null, null, null);
     return new Source(spec, Read.NUMBER, new ColumnDefinition(-1, name, Type.DOUBLE, ColumnKind.DOUBLE, false, null), null, null);
+  }
+
+  /**
+   * How a STATS facet reads a property that is no column of the bucket's type: by its declared type, the synthetic column carrying that
+   * type (its min and max are values of it) - a date as the epoch counts of its declared precision ({@link Read#EPOCH}, so a
+   * DATETIME_MICROS or DATETIME_NANOS extreme is exact), an integral type as a long, a FLOAT or DOUBLE as a double; any other or no
+   * declaration (a DECIMAL summed exactly, an undeclared property) by the raw value ({@link Read#RAW}), which the collector folds as
+   * {@code sum()}, {@code min()} and {@code max()} do.
+   */
+  private static Source statsSource(final DatabaseInternal db, final FacetSpec spec, final String name, final Type propertyType) {
+    if (propertyType == null)
+      return new Source(spec, Read.RAW, null, null, null);
+    return switch (propertyType) {
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> new Source(spec, Read.EPOCH,
+          new ColumnDefinition(-1, name, propertyType, ColumnKind.LONG, false,
+              propertyType == Type.DATE ? ChronoUnit.DAYS : DateUtils.getPrecisionFromType(propertyType)), null,
+          ColumnConversion.declaredDates(db, propertyType));
+      case BYTE, SHORT, INTEGER, LONG -> new Source(spec, Read.INTEGER, new ColumnDefinition(-1, name, propertyType, ColumnKind.LONG, false,
+          null), null, ColumnConversion.integers());
+      case FLOAT, DOUBLE -> new Source(spec, Read.NUMBER, new ColumnDefinition(-1, name, propertyType, ColumnKind.DOUBLE, false, null), null,
+          null);
+      default -> new Source(spec, Read.RAW, null, null, null);
+    };
   }
 
   /**
@@ -209,6 +258,7 @@ public final class FacetFallbackScanner {
           switch (source.read()) {
           case TERMS -> termsOf(raw, value, seen);
           case NUMBER -> numberOf(raw, value);
+          case RAW -> rawOf(raw, value);
           default -> longOf(raw, source.conversion(), value);
           }
         }
@@ -216,6 +266,24 @@ public final class FacetFallbackScanner {
       }
     });
     return read[0];
+  }
+
+  /**
+   * Whether reading a record of {@code type} fires a read event: a BEFORE or AFTER READ listener of the database, or of the type and the
+   * triggers of its lineage (a super type's included), exactly what a record read dispatches to ({@code LocalBucket.fireBeforeReadEvents},
+   * {@code LocalDatabase.invokeAfterReadEvents}). A bucket of such a type is never answered from the projection (final review B-I1): a
+   * BEFORE READ trigger may hide a record and an AFTER READ listener filter or rewrite it, which only a read of the record applies, so its
+   * records are read ({@link #scan}, {@link FacetPatcher#recordAt}) and GROUP BY runs the normal plan. Asked at each execution, so a
+   * cached plan follows a trigger created or dropped since; with no read listener anywhere it costs two list checks and a volatile read.
+   */
+  public static boolean firesReadEvents(final DatabaseInternal db, final DocumentType type) {
+    final RecordEventsRegistry events = (RecordEventsRegistry) db.getEmbedded().getEvents();
+    if (events.hasBeforeReadListeners() || events.hasAfterReadListeners())
+      return true;
+    if (!(type instanceof LocalDocumentType local))
+      return false;
+    // the database's count of the BEFORE READ listeners of all its types: zero, a read asks no type (as fireBeforeReadEvents)
+    return events.hasBeforeReadListenersInDatabase() && local.hasBeforeReadListeners() || local.hasAfterReadListeners();
   }
 
   /**
@@ -242,6 +310,14 @@ public final class FacetFallbackScanner {
     final double d = raw instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
     // -0.0 and 0.0 are one value, as for a DOUBLE column
     value.doubleValue(d == 0d ? 0d : d);
+  }
+
+  /** A raw value as it is, for a STATS facet to fold as SQL does: null is missing. */
+  private static void rawOf(final Object raw, final PatchedValue value) {
+    if (raw == null)
+      value.missing();
+    else
+      value.unknownValue(raw);
   }
 
   /** A raw value read as a long by the synthetic column's conversion (an integral number, a date as epoch ms), else missing. */

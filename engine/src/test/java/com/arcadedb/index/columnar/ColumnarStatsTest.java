@@ -50,6 +50,21 @@ class ColumnarStatsTest {
     assertThat(stats.conversionFailures("Other", "fileSize")).isZero();
   }
 
+  /** Final review A-M6: a rebuild adds a column's counts at once, one add per column, not one increment per value. */
+  @Test
+  void conversionCountsAreAddedInOneCall() {
+    final ColumnarStats stats = new ColumnarStats();
+    stats.addConversionFailures("Asset", "fileSize", 5);
+    stats.addConversionFailures("Asset", "fileSize", 0);
+    stats.addCoercedValues("Asset", "brand", 7);
+    stats.addCoercedValues("Asset", "brand", 2);
+
+    assertThat(stats.conversionFailures("Asset", "fileSize")).isEqualTo(5);
+    assertThat(stats.coercedValues("Asset", "brand")).isEqualTo(9);
+    assertThat(stats.coercedValues("Asset", "fileSize")).isZero();
+    assertThat(stats.conversionFailures("Asset", "brand")).isZero();
+  }
+
   @Test
   void openFilesAreTheSumOfTheDeltasOfTheBucketProjections() {
     final ColumnarStats stats = new ColumnarStats();
@@ -141,12 +156,17 @@ class ColumnarStatsTest {
     for (int i = 0; i < 20_000; i++)
       writeHotCells(stats);
 
-    final long before = threads.getThreadAllocatedBytes(threadId);
-    for (int i = 0; i < 10_000; i++)
-      writeHotCells(stats);
-    final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
+    // the least of 3 windows: a one-off allocation of the runtime on this thread (a LongAdder base CAS that failed and inflated its
+    // cells, a deoptimization in a shared JVM) lands in one window, while a write path that allocates shows in all of them
+    long allocated = Long.MAX_VALUE;
+    for (int window = 0; window < 3; window++) {
+      final long before = threads.getThreadAllocatedBytes(threadId);
+      for (int i = 0; i < 10_000; i++)
+        writeHotCells(stats);
+      allocated = Math.min(allocated, threads.getThreadAllocatedBytes(threadId) - before);
+    }
 
-    assertThat(allocated).as("bytes allocated by 10_000 writes to existing cells").isZero();
+    assertThat(allocated).as("bytes allocated by 10_000 writes to existing cells, least of 3 windows").isZero();
   }
 
   private static void writeHotCells(final ColumnarStats stats) {

@@ -20,6 +20,6 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.query.sql.parser.WhereClause;
 
-/** A facet counting the distinct values of a property. Reserved for the DISTINCT clause. */
+/** A facet counting the distinct values of a property. */
 public record DistinctFacetSpec(String alias, String property, WhereClause filter, long precisionThreshold) implements FacetSpec {
 }

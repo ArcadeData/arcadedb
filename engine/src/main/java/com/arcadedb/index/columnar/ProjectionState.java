@@ -44,6 +44,8 @@ final class ProjectionState {
   private final Map<String, GlobalDictionary> dictionaries;
   private final Set<String>                   files;
   private final ColumnDefinition[]            publishedColumns;
+  /** The projection's conversion counts when the state was published, by column index file id; never written. */
+  private final Map<Integer, long[]>          conversions;
   private final boolean                       usable;
   private final Consumer<ProjectionState>     onLastRelease;
   private final AtomicInteger                 references = new AtomicInteger(1);
@@ -64,15 +66,17 @@ final class ProjectionState {
   ProjectionState(final long generation, final SegmentReader[] segments, final ColumnarSegmentView[] overlays,
       final Map<String, GlobalDictionary> dictionaries, final Set<String> files, final boolean usable,
       final Consumer<ProjectionState> onLastRelease) {
-    this(generation, segments, overlays, dictionaries, files, NO_COLUMNS, usable, onLastRelease);
+    this(generation, segments, overlays, dictionaries, files, NO_COLUMNS, Map.of(), usable, onLastRelease);
   }
 
   /**
    * @param publishedColumns the column definitions of the manifest the state was built from (empty for none); shared, never written
+   * @param conversions      the conversion counts the state's values were extracted with, by column index file id (none: unknown);
+   *                         owned by the state, never written
    */
   ProjectionState(final long generation, final SegmentReader[] segments, final ColumnarSegmentView[] overlays,
       final Map<String, GlobalDictionary> dictionaries, final Set<String> files, final ColumnDefinition[] publishedColumns,
-      final boolean usable, final Consumer<ProjectionState> onLastRelease) {
+      final Map<Integer, long[]> conversions, final boolean usable, final Consumer<ProjectionState> onLastRelease) {
     for (int i = 0; i < segments.length; i++) {
       try {
         segments[i].file().retain();
@@ -88,6 +92,7 @@ final class ProjectionState {
     this.dictionaries = dictionaries;
     this.files = files;
     this.publishedColumns = publishedColumns;
+    this.conversions = conversions;
     this.usable = usable;
     this.onLastRelease = onLastRelease;
   }
@@ -156,6 +161,12 @@ final class ProjectionState {
   /** The constructor's file names (V-B7). */
   Set<String> files() {
     return files;
+  }
+
+  /** The conversion counts {@code {failures, coerced}} of the column when the state was published, null when unknown. A copy. */
+  long[] conversionCounts(final int indexFileId) {
+    final long[] counts = conversions.get(indexFileId);
+    return counts == null ? null : counts.clone();
   }
 
   boolean isUsable() {

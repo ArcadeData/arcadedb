@@ -23,10 +23,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -64,10 +66,13 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
   private static final String PASSWORD   = "facetsuser17";
   private static final int    ASSETS     = 400;
   private static final int    IMAGES     = 300;
-  /** Every facet shape that counts: terms with MISSING, a short TOP (otherCount), INCLUDE probes, ranges, a histogram, a scanned property. */
+  /**
+   * Every facet shape that counts: terms with MISSING, a short TOP (otherCount), INCLUDE probes, ranges, a histogram, a scanned property,
+   * DISTINCT and STATS.
+   */
   private static final String FACETS     = "brand TERMS TOP 1000 MISSING, top2: brand TERMS TOP 2, "
       + "inc: brand TERMS INCLUDE ['brand-5', 'brand-0'], sc: score RANGES ([0, 50), [50, *)), h: score HISTOGRAM FIXED 25, "
-      + "w: weight TERMS TOP 100 MISSING";
+      + "w: weight TERMS TOP 100 MISSING, d: brand DISTINCT, dw: weight DISTINCT, st: score STATS, sw: weight STATS";
   private static final String RED        = "search_fields(['title'], 'red')";
   private static final Pattern MATCHES   = Pattern.compile("matches=(\\d+)");
   private static final Pattern RIDS      = Pattern.compile("\\[INDEX rids=(\\d+)]");
@@ -146,6 +151,41 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
     // INCLUDE of a value only Image holds: present, count 0
     assertThat(includeCount(restricted.get("inc"), "brand-5")).isEqualTo(0);
     assertThat(includeCount(root(sql).get("inc"), "brand-5")).isGreaterThan(0);
+  }
+
+  /**
+   * DISTINCT and STATS count no record of a bucket the user may not read: over the projection (brand, score) and over the fallback scan
+   * of the unindexed weight. Image alone holds brand-5 and brand-6, scores 100 to 149 and weights 10 to 14.
+   */
+  @Test
+  void distinctAndStatsDoNotLeakSubtype() {
+    final String facets = " FACETS db: brand DISTINCT, ds: score DISTINCT, dw: weight DISTINCT, ss: score STATS, sw: weight STATS LIMIT 0";
+    final FacetResults restricted = restricted("SELECT FROM " + SUPER + facets);
+    final FacetResults polymorphic = root("SELECT FROM " + SUPER + facets);
+
+    assertThat(restricted.get("db").distinct().value()).isEqualTo(5L);
+    assertThat(restricted.get("ds").distinct().value()).isEqualTo(100L);
+    assertThat(restricted.get("dw").distinct().value()).isEqualTo(7L);
+    assertThat(restricted.get("db").distinct().exact()).isTrue();
+    // the oracle tells the two answers apart
+    assertThat(polymorphic.get("db").distinct().value()).isEqualTo(7L);
+    assertThat(polymorphic.get("ds").distinct().value()).isEqualTo(150L);
+    assertThat(polymorphic.get("dw").distinct().value()).isEqualTo(12L);
+
+    final FacetStats score = restricted.get("ss").stats();
+    assertThat(score.count()).isEqualTo((long) ASSETS);
+    assertThat(score.sum().longValue()).isEqualTo(19_800L);
+    assertThat(((Number) score.max()).longValue()).isEqualTo(99L);
+    final FacetStats weight = restricted.get("sw").stats();
+    assertThat(weight.count()).isEqualTo(363L);
+    assertThat(weight.missing()).isEqualTo(37L);
+    assertThat(weight.sum().longValue()).isEqualTo(1_088L);
+    assertThat(((Number) weight.max()).longValue()).isEqualTo(6L);
+    assertThat(polymorphic.get("ss").stats().count()).isEqualTo((long) (ASSETS + IMAGES));
+    assertThat(((Number) polymorphic.get("ss").stats().max()).longValue()).isEqualTo(149L);
+
+    // every member equals root's answer over Asset's own buckets
+    assertThat(restricted.toJSON().toString()).isEqualTo(root("SELECT FROM " + ownBuckets() + facets).toJSON().toString());
   }
 
   /**
@@ -332,6 +372,74 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
     assertThat(faceted.getMessage()).isEqualTo(plain.getMessage());
   }
 
+  /**
+   * Plan 5 Task 13: a GROUP BY the projection could answer, run by a user who may not read Image's buckets, is answered by the normal
+   * chain, which fails exactly as with the acceleration off: never a count of the readable buckets only. Root's is answered from the
+   * projection.
+   */
+  @Test
+  void groupByOverAnUnreadableSubtypeFailsLikeTheNormalPlan() {
+    final String sql = "SELECT brand, count(*) FROM " + SUPER + " GROUP BY brand";
+    final Database server = getServerDatabase(0, getDatabaseName());
+    final ColumnarStats stats = ((LocalDatabase) ((DatabaseInternal) server).getEmbedded()).getColumnarIndexManager().getStats();
+    assertThat(rootProfile(sql)).contains("path: columnar");
+
+    final long accelerated = stats.groupByAcceleratedCount();
+    final Throwable withStep = catchThrowable(() -> {
+      try (final RemoteDatabase remote = remote(); final ResultSet rs = remote.query("sql", sql)) {
+        rs.stream().count();
+      }
+    });
+    // never counted from the projection: on a server the refusal comes before the step runs (its fallback counter does not move), and
+    // where it would not, the step's own READ check sends the user to the normal chain
+    assertThat(stats.groupByAcceleratedCount()).isEqualTo(accelerated);
+
+    final Throwable normal;
+    try (final FacetOracle.NormalPlan off = FacetOracle.normalPlan(server)) {
+      normal = catchThrowable(() -> {
+        try (final RemoteDatabase remote = remote(); final ResultSet rs = remote.query("sql", sql)) {
+          rs.stream().count();
+        }
+      });
+    }
+    assertThat(normal).as("the normal plan refuses the user").isNotNull();
+    assertThat(withStep).isNotNull();
+    assertThat(withStep.getClass()).isEqualTo(normal.getClass());
+    assertThat(withStep.getMessage()).isEqualTo(normal.getMessage());
+  }
+
+  /**
+   * Final review B-M4: {@code facet.searchValues} over a type the user may read no bucket of fails as the plain query over the type does,
+   * rather than answering an empty list where every other call on the type fails. Over the super type the readable buckets answer.
+   */
+  @Test
+  void searchValuesOverAnUnreadableTypeFailsLikeThePlainQuery() {
+    final Throwable plain = catchThrowable(() -> {
+      try (final RemoteDatabase remote = remote(); final ResultSet rs = remote.query("sql", "SELECT FROM " + SUB)) {
+        rs.stream().count();
+      }
+    });
+    final Throwable search = catchThrowable(() -> {
+      try (final RemoteDatabase remote = remote();
+          final ResultSet rs = remote.query("sql", "SELECT expand(facet.searchValues('" + SUB + "', 'brand', 'brand-', 10))")) {
+        rs.stream().count();
+      }
+    });
+    assertThat(plain).as("the plain query refuses the user").isNotNull();
+    assertThat(search).as("facet.searchValues refuses the user").isNotNull();
+    assertThat(search.getClass()).isEqualTo(plain.getClass());
+    assertThat(search.getMessage()).isEqualTo(plain.getMessage());
+
+    final List<Object> values = new ArrayList<>();
+    try (final RemoteDatabase remote = remote();
+        final ResultSet rs = remote.query("sql", "SELECT expand(facet.searchValues('" + SUPER + "', 'brand', 'brand-', 10))")) {
+      while (rs.hasNext())
+        values.add(rs.next().getProperty("value"));
+    }
+    // brand-5 and brand-6 exist only in Image
+    assertThat(values).containsExactly("brand-0", "brand-1", "brand-2", "brand-3", "brand-4");
+  }
+
   @Test
   void rootSeesEverything() {
     final String sql = "SELECT FROM " + SUPER + " FACETS " + FACETS + " LIMIT 0";
@@ -437,7 +545,8 @@ class FacetsSubtypeAclIT extends BaseGraphServerTest {
 
   private Map<Object, Long> groupBy(final String sql) {
     final Map<Object, Long> counts = new HashMap<>();
-    try (final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", sql)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(getServerDatabase(0, getDatabaseName()));
+        final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", sql)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         final Object value = row.getProperty("v");

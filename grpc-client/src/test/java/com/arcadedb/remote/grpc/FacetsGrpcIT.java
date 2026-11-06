@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.facet.AdvancedFacetsFixture;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
@@ -86,11 +87,8 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
   @Override
   protected void populateDatabase() {
     super.populateDatabase();
-    final Database db = getDatabase(0);
-    final ColumnarTestData data = new ColumnarTestData(11);
-    data.createSchema(db);
-    data.insertAssets(db, 100);
-    FacetOracle.awaitCaughtUp(db);
+    // assets tagged from a tag tree (plan 5 HIERARCHY) and the measures of the plan 5 STATS types
+    AdvancedFacetsFixture.load(getDatabase(0), 11L, 100);
   }
 
   @BeforeEach
@@ -146,6 +144,93 @@ class FacetsGrpcIT extends BaseGrpcClientServerTest {
     }
     assertThat(rows.get("p").iterator().next()).isInstanceOf(BigDecimal.class);
     assertThat(rows.get("s")).contains(Double.NaN);
+  }
+
+  /**
+   * Plan 5 Task 14: HIERARCHY attributes, DISTINCT, STATS over LONG and DATETIME and the typed cursor reach the gRPC client with the
+   * values and Java types the embedded API gives, on the unary, command and both streamed paths.
+   */
+  @Test
+  void plan5KindsDecodeAsTheEmbeddedApi() {
+    final String query = AdvancedFacetsFixture.ASSET_QUERY;
+    final FacetResults embedded = AdvancedFacetsFixture.facets(getServerDatabase(0, getDatabaseName()), query);
+    try (final ResultSet rs = database.query("sql", query)) {
+      AdvancedFacetsFixture.assertSameValues("unary", rs.getFacets(), embedded);
+    }
+    try (final ResultSet rs = database.command("sql", query)) {
+      AdvancedFacetsFixture.assertSameValues("command", rs.getFacets(), embedded);
+    }
+    try (final ResultSet rs = database.queryStream("sql", query, BATCH)) {
+      while (rs.hasNext())
+        rs.next();
+      AdvancedFacetsFixture.assertSameValues("cursor", rs.getFacets(), embedded);
+    }
+    try (final ResultSet rs = database.queryStream("sql", query, getDefaultConfig(), BATCH, StreamQueryRequest.RetrievalMode.MATERIALIZE_ALL)) {
+      rs.stream().count();
+      AdvancedFacetsFixture.assertSameValues("materialized", rs.getFacets(), embedded);
+    }
+  }
+
+  /**
+   * Task 9 M1/M2 over gRPC: a STATS facet's min, max, sum and average (FLOAT, SHORT, INTEGER properties) equal, value and class, the
+   * {@code min()}, {@code max()}, {@code sum()} and {@code avg()} this client reads from rows (a FLOAT's sum a Float, not a Double), on
+   * the unary and the streamed path; the DISTINCT next to them as embedded.
+   */
+  @Test
+  void statsEqualTheRowsOfThisTransport() {
+    final Map<String, Object[]> rows = AdvancedFacetsFixture.measureAggregates(database);
+    final FacetResults unary = AdvancedFacetsFixture.facets(database, AdvancedFacetsFixture.MEASURE_QUERY);
+    AdvancedFacetsFixture.assertStatsEqualRows("unary", unary, rows);
+    try (final ResultSet rs = database.queryStream("sql", AdvancedFacetsFixture.MEASURE_QUERY, BATCH)) {
+      while (rs.hasNext())
+        rs.next();
+      AdvancedFacetsFixture.assertStatsEqualRows("streamed", rs.getFacets(), rows);
+    }
+    assertThat(unary.get("r").stats().sum()).isInstanceOf(Float.class);
+    final FacetResults embedded = AdvancedFacetsFixture.facets(getServerDatabase(0, getDatabaseName()), AdvancedFacetsFixture.MEASURE_QUERY);
+    assertThat(unary.get("rd").distinct()).isEqualTo(embedded.get("rd").distinct());
+    assertThat(unary.toJSON().toString()).isEqualTo(embedded.toJSON().toString());
+  }
+
+  /** The typed cursor a gRPC page returns, sent back as AFTER, starts the next page where the embedded paging starts it. */
+  @Test
+  void typedCursorPagesAsEmbedded() {
+    final Database server = getServerDatabase(0, getDatabaseName());
+    final String first = "SELECT FROM " + TYPE + " FACETS pd: publishDate TERMS TOP 4 ORDER BY VALUE LIMIT 1";
+    final String next = "SELECT FROM " + TYPE + " FACETS pd: publishDate TERMS TOP 4 AFTER :c LIMIT 1";
+    FacetResult remotePage = AdvancedFacetsFixture.facets(database, first).get("pd");
+    FacetResult embeddedPage = AdvancedFacetsFixture.facets(server, first).get("pd");
+    for (int page = 0; page < 3; page++) {
+      assertThat(remotePage.after()).as("page %d", page).isNotNull();
+      assertThat(remotePage.after()).isEqualTo(embeddedPage.after());
+      assertThat(remotePage.after().getClass()).isEqualTo(embeddedPage.after().getClass());
+      try (final ResultSet rs = database.query("sql", next, Map.of("c", remotePage.after()))) {
+        remotePage = rs.getFacets().get("pd");
+      }
+      try (final ResultSet rs = server.query("sql", next, Map.of("c", embeddedPage.after()))) {
+        embeddedPage = rs.getFacets().get("pd");
+      }
+      assertThat(remotePage.toJSON().toString()).as("page %d", page + 1).isEqualTo(embeddedPage.toJSON().toString());
+    }
+  }
+
+  /** {@code facet.searchValues} rows over gRPC: value and count of the embedded rows, the count a Long. */
+  @Test
+  void searchValuesRowsAsEmbedded() {
+    final String sql = "SELECT expand(facet.searchValues('Asset', 'tags', 't/2', 6))";
+    final List<Map<String, Object>> remoteRows = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext())
+        remoteRows.add(rs.next().toMap());
+    }
+    final List<Map<String, Object>> embeddedRows = new ArrayList<>();
+    try (final ResultSet rs = getServerDatabase(0, getDatabaseName()).query("sql", sql)) {
+      while (rs.hasNext())
+        embeddedRows.add(rs.next().toMap());
+    }
+    assertThat(remoteRows).hasSize(6);
+    assertThat(remoteRows).isEqualTo(embeddedRows);
+    assertThat(remoteRows.getFirst().get("count")).isInstanceOf(Long.class);
   }
 
   private static Set<Object> termValues(final FacetResult result) {

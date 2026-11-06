@@ -54,6 +54,43 @@ final class FacetBounds {
   }
 
   /**
+   * Whether a value is a number on a numeric property: an AFTER cursor that is compared with the terms exactly, as a number, instead of
+   * being converted (and so truncated: {@code -1.5} to {@code -1} for a LONG) to the property's type.
+   */
+  static boolean isNumberOnNumericType(final Object value, final Type propertyType) {
+    return value instanceof Number && propertyType != null && switch (propertyType) {
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> true;
+      default -> false;
+    };
+  }
+
+  /**
+   * The AFTER cursor of a terms facet converted to the property's type as a WHERE comparing the property with it converts it
+   * ({@link Type#convertOrNull}), except a number on a numeric property, kept exact. The one conversion of a cursor: every collector
+   * then compares it with values of that type, those of buckets read from their records included.
+   *
+   * @param propertyType the property's schema type, null when unknown (the cursor is then taken as it is)
+   *
+   * @throws CommandExecutionException when the cursor is not a value of the type: it would sort before or after every value and return
+   *                                   the first page again, or none, depending on the path that counts the facet
+   */
+  static Object cursorConverted(final String alias, final String property, final DatabaseInternal database, final Type propertyType,
+      final Object value) {
+    if (value == null || propertyType == null || database == null || isNumberOnNumericType(value, propertyType))
+      return value;
+    final Object converted = Type.convertOrNull(database, value, propertyType.getJavaImplementation(database));
+    if (converted == null)
+      throw cursorNotAValue(alias, property, propertyType, value);
+    return converted;
+  }
+
+  static CommandExecutionException cursorNotAValue(final String alias, final String property, final Type propertyType,
+      final Object cursor) {
+    return new CommandExecutionException(
+        "FACETS " + alias + ": the AFTER cursor '" + cursor + "' is not a value of '" + property + "' (" + propertyType + ")");
+  }
+
+  /**
    * A literal as the lower bound {@code v >= bound} of a LONG column: a number of a column that is not a date is rounded up (for an
    * integral value {@code v >= 1.5} is {@code v >= 2}, and {@code v < 1.5} is {@code v < 2}, so the ceiling serves both ends of a
    * half-open range), saturating at the long limits; anything else (a date, a date string) is converted as a stored value is

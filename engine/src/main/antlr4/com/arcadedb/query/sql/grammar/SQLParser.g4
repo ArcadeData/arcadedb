@@ -1391,7 +1391,7 @@ limit
 
 /**
  * FACETS clause (columnar faceting), on the outermost SELECT only:
- * FACETS [alias:] expression TERMS|RANGES|HISTOGRAM options [, ...]
+ * FACETS [alias:] expression TERMS|RANGES|HISTOGRAM|HIERARCHY|DISTINCT|STATS options [, ...]
  * facetBody is a labeled-alternative rule so that further facet kinds can be appended as new alternatives.
  */
 facetsClause
@@ -1406,6 +1406,9 @@ facetBody
     : TERMS facetTermsOption*                                                                     # termsFacet
     | RANGES LPAREN facetRange (COMMA facetRange)* RPAREN (DEFAULT STRING_LITERAL)? facetFilter?    # rangesFacet
     | HISTOGRAM (CALENDAR | FIXED) facetInterval facetHistogramOption*                            # histogramFacet
+    | HIERARCHY facetHierarchyOption*                                                             # hierarchyFacet
+    | DISTINCT (PRECISION INTEGER_LITERAL)? facetFilter?                                          # distinctFacet
+    | STATS facetFilter?                                                                          # statsFacet
     ;
 
 facetTermsOption
@@ -1414,6 +1417,13 @@ facetTermsOption
     | ORDER_BY (COUNT | VALUE) (ASC | DESC)?
     | INCLUDE arrayLiteral
     | MISSING
+    | AFTER expression
+    | facetFilter
+    ;
+
+facetHierarchyOption
+    : TOP pInteger
+    | MIN_COUNT pInteger
     | facetFilter
     ;
 
@@ -1660,7 +1670,7 @@ mapKeyword
     | AND | OR | NOT | IS | NULL | TRUE | FALSE | DEFINED | DEFINE | BY | COLLATE | ASC | DESC | TIMEOUT
     | FOR | FOREACH | BREAK | RETURN | CASE | WHEN | THEN | END | BUCKET | PAGESIZE | SCHEMA | POLYMORPHIC
     | NULL_STRATEGY | LET | UNWIND | DEFAULTS | APPLY | UNIQUE | NOTUNIQUE | FULL_TEXT | STRATEGY | DEPTH_FIRST
-    | BREADTH_FIRST | BACKUP | WAIT | RETRY | UNSAFE | BEFORE | AFTER | PARALLEL | COMPRESS | GLOBAL | TRIGGER
+    | BREADTH_FIRST | BACKUP | WAIT | RETRY | UNSAFE | BEFORE | PARALLEL | COMPRESS | GLOBAL | TRIGGER
     | FIX | BATCH | LIKE | ILIKE | BETWEEN | CONTAINSALL | CONTAINSANY | CONTAINSKEY | CONTAINSVALUE | CONTAINSTEXT
     | MATCHES | INSTANCEOF
     ;
@@ -1926,6 +1936,9 @@ identifier
     | MISSING
     | RANGES
     | HISTOGRAM
+    | HIERARCHY
+    | STATS
+    | AFTER
     | CALENDAR
     | FIXED
     | TIMEZONE

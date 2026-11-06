@@ -57,7 +57,9 @@ import java.util.function.LongPredicate;
  * <p>
  * Fallback scan (spec 7.8, D14): a bucket the projection cannot answer for a facet (no projection, a projection closed or dropped
  * meanwhile, an unusable snapshot, a column the snapshot does not publish with the schema's current encoding, a segment view without
- * the column holding a match, no COLUMNAR index on the property, an expression facet) is counted from its matched records by
+ * the column holding a match, no COLUMNAR index on the property, an expression facet, a type whose records fire read events, see
+ * {@link FacetFallbackScanner#firesReadEvents}: the scan reads them as any read does, so a record a trigger hides counts nowhere and a
+ * record a listener rewrites counts as rewritten) is counted from its matched records by
  * {@link FacetFallbackScanner}, by collectors of their own (one per declaring type of the column, one for raw values) merged with the
  * others by value. The answer stays exact and the facet's source is {@code scan}. A query that scans takes one permit of
  * {@link ColumnarIndexManager#fallbackScans()} without waiting; refused, every facet that needed a scan is {@code unavailable} with the
@@ -133,15 +135,20 @@ public final class FacetExecutor {
           acquired[i] = snapshots[i] != null;
         }
         if (snapshots[i] != null && snapshots[i].oldestPendingEpochStartMs() > 0)
-          lagMs = Math.max(lagMs, now - snapshots[i].oldestPendingEpochStartMs());
+          lagMs = Math.max(lagMs, lagOf(now, snapshots[i].oldestPendingEpochStartMs()));
       }
+
+      // a bucket whose records fire read events answers no facet from the projection (final review B-I1), decided for this execution
+      final boolean[] readEvents = new boolean[bucketIds.length];
+      for (int i = 0; i < bucketIds.length; i++)
+        readEvents[i] = FacetFallbackScanner.firesReadEvents(db, db.getSchema().getTypeByBucketId(bucketIds[i]));
 
       // by facet, the buckets the projection answers; by bucket, whether it answers any facet (only those are patched)
       final boolean[][] answers = new boolean[facets.size()][bucketIds.length];
       final boolean[] answered = new boolean[bucketIds.length];
       for (int f = 0; f < answers.length; f++)
         for (int i = 0; i < bucketIds.length; i++) {
-          answers[f][i] = projectionAnswers(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
+          answers[f][i] = !readEvents[i] && projectionAnswers(db, matches, f, facets.get(f), bucketIds[i], snapshots[i]);
           answered[i] |= answers[f][i];
         }
 
@@ -190,6 +197,11 @@ public final class FacetExecutor {
    *
    * @return false when a bucket that needed patching is counted from the projection alone (the answer is not exact)
    */
+  /** Age of a pending epoch, in ms: at least 1, an epoch that is pending is never 0 ms old in meaning, even read in its own millisecond (spec 8.3). */
+  static long lagOf(final long nowMs, final long oldestPendingEpochStartMs) {
+    return Math.max(1L, nowMs - oldestPendingEpochStartMs);
+  }
+
   private static boolean planPatches(final DatabaseInternal db, final ColumnarIndexManager manager, final MatchSet matches,
       final int[] bucketIds, final ColumnarSnapshot[] snapshots, final boolean[][] answers, final boolean[] answered,
       final PositionBitmap[] patches, final boolean[] scanned, final CollectorReservations charges) {
@@ -292,7 +304,8 @@ public final class FacetExecutor {
     try {
       boolean wantsScan = false;
       for (int f = 0; f < plans.length; f++) {
-        plans[f] = plan(db, manager, matches, f, facets.get(f), bucketIds, snapshots, scans[f]);
+        plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots, scans[f]);
+        plans[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
       }
       if (wantsScan) {
@@ -346,7 +359,9 @@ public final class FacetExecutor {
 
       for (final FacetPlan plan : plans) {
         final FacetResult result = plan.finish(db, manager, target);
-        final Type valueType = plan.spec instanceof TermsFacetSpec ? declaredType(db, target, bucketIds, plan.spec.property()) : null;
+        // a STATS result carries the type too: its min and max are encoded as a row's value of the property
+        final Type valueType = plan.spec instanceof TermsFacetSpec || plan.spec instanceof HierarchyFacetSpec || plan.spec instanceof StatsFacetSpec ?
+            declaredType(db, target, bucketIds, plan.spec.property()) : null;
         results.put(plan.spec.alias(), valueType != null ? asRowValues(result, valueType) : result);
         stats.put(plan.spec.alias(), plan.stats);
       }
@@ -442,13 +457,13 @@ public final class FacetExecutor {
    * @param projection the projection of one bucket of the type; no collector of this plan reads it, those of plan 5 do
    * @param matchCount the records the facet counts in the type, to size the counter
    *
-   * @throws CommandExecutionException for a kind of facet no collector computes yet, and for a range or histogram over a column it cannot
-   *                                   bucket (a string column, a bound that is not a value of the column)
+   * @throws CommandExecutionException for a range or histogram over a column it cannot bucket (a string column, a bound that is not a
+   *                                   value of the column)
    */
   public static FacetCollector collectorFor(final FacetSpec spec, final DocumentType type, final ColumnarProjection projection,
       final long matchCount) {
     if (type == null)
-      return collectorFor(spec, null, matchCount, null, null);
+      return collectorFor(spec, null, matchCount, null, null, null);
     return columnCollector(spec, type, column(type, spec.property()), matchCount);
   }
 
@@ -457,21 +472,25 @@ public final class FacetExecutor {
       final long matchCount) {
     final DatabaseInternal db = (DatabaseInternal) type.getSchema().getEmbedded().getDatabase();
     return collectorFor(spec, column, matchCount, db,
-        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column));
+        ColumnConversion.of(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().extractor(type.getName()), column), type.getName());
   }
 
   /**
-   * @param column    the column counted (a real one, or the synthetic column of the raw values a fallback scan reads), null for none
-   * @param extractor converts literals (and raw scanned values) into the column's LONG encoding
+   * @param column        the column counted (a real one, or the synthetic column of the raw values a fallback scan reads), null for none
+   * @param extractor     converts literals (and raw scanned values) into the column's LONG encoding
+   * @param declaringType the type of the COLUMNAR index of the property in the counted buckets (whose METADATA holds a HIERARCHY
+   *                      facet's hierarchy), null when unknown or when they have none
    */
   private static FacetCollector collectorFor(final FacetSpec spec, final ColumnDefinition column, final long matchCount,
-      final DatabaseInternal db, final ColumnConversion extractor) {
+      final DatabaseInternal db, final ColumnConversion extractor, final String declaringType) {
     final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
     return switch (spec) {
       case TermsFacetSpec terms -> new TermsCollector(terms, column, matchCount, budgetWaitMs, db, extractor);
       case RangeFacetSpec range -> new RangeCollector(range, column, budgetWaitMs, db, extractor);
       case HistogramFacetSpec histogram -> new HistogramCollector(histogram, column, budgetWaitMs, db, extractor);
-      default -> throw new CommandExecutionException("FACETS " + spec.alias() + ": " + kindKeyword(spec) + " facets are not supported");
+      case HierarchyFacetSpec hierarchy -> new HierarchyFacetCollector(hierarchy, column, matchCount, db, declaringType, budgetWaitMs);
+      case DistinctFacetSpec distinct -> new DistinctFacetCollector(distinct, column, matchCount, db, declaringType, budgetWaitMs);
+      case StatsFacetSpec stats -> new StatsFacetCollector(stats, column, matchCount, db, budgetWaitMs);
     };
   }
 
@@ -523,7 +542,14 @@ public final class FacetExecutor {
         continue;
       if (dates && FacetFallbackScanner.isUndeclared(db.getSchema().getTypeByBucketId(bucketIds[i]), source))
         plan.scanSourceOf[i] = source = FacetFallbackScanner.asDates(db, source);
-      final String key = source.read() == FacetFallbackScanner.Read.COLUMN ? "column " + source.column().indexFileId() : source.read().name();
+      String key = source.read() == FacetFallbackScanner.Read.COLUMN ? "column " + source.column().indexFileId() : source.read().name();
+      if (source.read() == FacetFallbackScanner.Read.EPOCH || spec instanceof StatsFacetSpec && source.column() != null)
+        // one collector per declared type: date epoch counts are of different units, and STATS returns values of the declared type
+        key += " " + source.column().propertyType();
+      if (spec instanceof HierarchyFacetSpec)
+        // one hierarchy per declaring type: the scanned buckets of each are counted over its own view; the buckets of a type without
+        // the index have none, and their collector reports which type that is
+        key += " of " + hierarchyGroupOf(db.getSchema().getTypeByBucketId(bucketIds[i]), property);
       scanGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
     }
 
@@ -587,7 +613,11 @@ public final class FacetExecutor {
           matchCount += facetMatches.cardinality();
       }
       final FacetFallbackScanner.Source source = scanSourceOf[members.getFirst()];
-      final FacetCollector collector = collectorFor(spec, source.column(), matchCount, db, source.conversion());
+      final DocumentType bucketType = db.getSchema().getTypeByBucketId(bucketIds[members.getFirst()]);
+      final FacetCollector collector = spec instanceof HierarchyFacetSpec hierarchy ?
+          new HierarchyFacetCollector(hierarchy, source.column(), matchCount, db, declaringTypeName(bucketType, spec.property()),
+              bucketType != null ? bucketType.getName() : null, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong()) :
+          collectorFor(spec, source.column(), matchCount, db, source.conversion(), null);
       collectors.add(collector);
       for (final int i : members)
         scanCollectorOf[i] = collector;
@@ -642,6 +672,13 @@ public final class FacetExecutor {
         columnOf[i] = column;
       }
       return true;
+    }
+
+    /** The deadline of the statement: a HIERARCHY collector waits for its view, and builds it, until then at most (final review A-M4). */
+    private void deadline(final long deadlineMs) {
+      for (final FacetCollector collector : collectors)
+        if (collector instanceof HierarchyFacetCollector hierarchy)
+          hierarchy.deadline(deadlineMs);
     }
 
     /** Whether the facet counts the bucket from its snapshot (it is available and the bucket is of one of its declaring types). */
@@ -720,6 +757,18 @@ public final class FacetExecutor {
     }
   }
 
+  /** The scan group of a HIERARCHY facet's bucket of {@code type}: its declaring type, else the type itself (it has no hierarchy). */
+  private static String hierarchyGroupOf(final DocumentType type, final String property) {
+    final String declaring = declaringTypeName(type, property);
+    return declaring != null ? declaring : "unindexed " + (type != null ? type.getName() : null);
+  }
+
+  /** The name of the type declaring the property's COLUMNAR index that {@code type} answers through, null when it has none. */
+  private static String declaringTypeName(final DocumentType type, final String property) {
+    final TypeIndex index = type == null || property == null ? null : type.getPolymorphicColumnarIndex(property);
+    return index == null ? null : index.getTypeName();
+  }
+
   /**
    * The declaring type of the property's COLUMNAR index in {@code target} (the type a match of {@code target} would be counted with),
    * null when there is no target, no plain property or no such index.
@@ -729,6 +778,23 @@ public final class FacetExecutor {
       return null;
     final TypeIndex index = target.getPolymorphicColumnarIndex(property);
     return index == null ? null : db.getSchema().getType(index.getTypeName());
+  }
+
+  /**
+   * A terms facet with its AFTER cursor converted once with the property's schema type in the queried type ({@link #declaredType}, the
+   * type its buckets are returned as), so every collector, those of buckets read from their records included (they know no column),
+   * compares it with values of that type: {@code AFTER '2021-01-01 00:00:00'} on a DATETIME, or a cursor a client echoes back as the
+   * formatted string of a returned one. A number on a numeric property stays exact. A cursor that is not a value of the type is refused
+   * here, once, whatever path counts the facet ({@link FacetBounds#cursorConverted}). Any other facet as it is.
+   */
+  private static FacetSpec withConvertedCursor(final DatabaseInternal db, final DocumentType target, final int[] bucketIds,
+      final FacetSpec spec) {
+    if (!(spec instanceof TermsFacetSpec terms) || terms.after() == null)
+      return spec;
+    final Object converted = FacetBounds.cursorConverted(terms.alias(), terms.property(), db,
+        declaredType(db, target, bucketIds, terms.property()), terms.after());
+    return converted == terms.after() ? spec : new TermsFacetSpec(terms.alias(), terms.property(), terms.expression(), terms.filter(),
+        terms.top(), terms.minCount(), terms.order(), terms.include(), terms.missingBucket(), converted);
   }
 
   /**
@@ -846,18 +912,6 @@ public final class FacetExecutor {
       case HierarchyFacetSpec h -> "hierarchy";
       case DistinctFacetSpec d -> "distinct";
       case StatsFacetSpec s -> "stats";
-    };
-  }
-
-  /** The keyword of the facet's kind, as the FACETS clause writes it. */
-  private static String kindKeyword(final FacetSpec spec) {
-    return switch (spec) {
-      case TermsFacetSpec t -> "TERMS";
-      case RangeFacetSpec r -> "RANGES";
-      case HistogramFacetSpec h -> "HISTOGRAM";
-      case HierarchyFacetSpec h -> "HIERARCHY";
-      case DistinctFacetSpec d -> "DISTINCT";
-      case StatsFacetSpec s -> "STATS";
     };
   }
 }

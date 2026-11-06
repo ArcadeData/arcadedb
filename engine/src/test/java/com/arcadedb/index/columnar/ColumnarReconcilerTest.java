@@ -699,7 +699,8 @@ class ColumnarReconcilerTest extends TestHelper {
 
   private Map<Double, Long> groupByAsDouble(final String property) {
     final Map<Double, Long> expected = new HashMap<>();
-    try (final ResultSet result = database.query("sql", "SELECT " + property + " AS v, count(*) AS n FROM Asset GROUP BY " + property)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet result = database.query("sql", "SELECT " + property + " AS v, count(*) AS n FROM Asset GROUP BY " + property)) {
       while (result.hasNext()) {
         final Result row = result.next();
         final Object value = row.getProperty("v");
@@ -787,7 +788,8 @@ class ColumnarReconcilerTest extends TestHelper {
   /** The GROUP BY of the type's property equals what the projections answer for the column named {@code column}. */
   private void assertMatchesGroupBy(final String type, final String property, final String column) {
     final Map<Object, Long> expected = new HashMap<>();
-    try (final ResultSet result = database.query("sql", "SELECT " + property + " AS v, count(*) AS n FROM " + type + " GROUP BY " + property)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet result = database.query("sql", "SELECT " + property + " AS v, count(*) AS n FROM " + type + " GROUP BY " + property)) {
       while (result.hasNext()) {
         final Result row = result.next();
         final Object value = row.getProperty("v");

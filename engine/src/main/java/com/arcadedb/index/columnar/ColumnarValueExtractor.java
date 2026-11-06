@@ -175,9 +175,12 @@ public final class ColumnarValueExtractor {
     extract(record, column, dictionary, false, sink);
   }
 
-  /** Apply thread only: adds the values the dictionary does not hold yet and counts the failing values. */
+  /** Apply thread only: adds the values the dictionary does not hold yet and counts the failing and the coerced values. */
   void extractForApply(final Document record, final ColumnDefinition column, final GlobalDictionary dictionary, final ValueSink sink) {
-    countFailures(column, extract(record, column, dictionary, true, sink));
+    final Object raw = DocumentIndexer.getPropertyValue(record, column.property());
+    if (raw != null && isCoerced(column, raw))
+      countCoerced(column, 1);
+    countFailures(column, extractRaw(raw, column, dictionary, true, sink));
   }
 
   /**
@@ -199,10 +202,14 @@ public final class ColumnarValueExtractor {
     return extractRaw(raw, column, dictionary, true, sink);
   }
 
+  /** Counts {@code coerced} values of the column converted from another stored type ({@link #isCoerced}). */
+  void countCoerced(final ColumnDefinition column, final long coerced) {
+    stats.addCoercedValues(typeName, column.property(), coerced);
+  }
+
   /** Counts {@code failures} conversion failures of the column. */
   void countFailures(final ColumnDefinition column, final int failures) {
-    for (int i = 0; i < failures; i++)
-      stats.conversionFailure(typeName, column.property());
+    stats.addConversionFailures(typeName, column.property(), failures);
   }
 
   /**
@@ -301,6 +308,20 @@ public final class ColumnarValueExtractor {
     }
     default -> throw new IllegalStateException("Unknown column kind " + column.kind());
     }
+  }
+
+  /**
+   * Whether a scalar value is not of the Java type its declared property type holds: the column then stores its conversion, where the
+   * record (and the normal plan) holds it as it is. Only the string and number types are told: a date, a link or a list may be held as
+   * several Java types legitimately.
+   */
+  static boolean isCoerced(final ColumnDefinition column, final Object raw) {
+    if (column.byItem())
+      return false;
+    return switch (column.propertyType()) {
+      case STRING, BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE -> raw.getClass() != column.propertyType().getDefaultJavaType();
+      default -> false;
+    };
   }
 
   private int extractList(final Object raw, final GlobalDictionary dictionary, final boolean grow, final ValueSink sink) {

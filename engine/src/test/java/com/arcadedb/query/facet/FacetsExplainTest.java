@@ -93,6 +93,43 @@ class FacetsExplainTest extends TestHelper {
 
   @Test
   @Timeout(120)
+  void profileShowsHierarchyExecution() {
+    final ColumnarTestData data = new ColumnarTestData(42);
+    data.tagHierarchy = new JSONObject().put("vertexType", ColumnarTestData.TAG_TYPE).put("key", "path")
+        .put("parentEdge", ColumnarTestData.PARENT_EDGE);
+    data.createSchema(database);
+    data.tagValues = ColumnarTestData.createTagTree(database, 42, 3, 3);
+    data.insertAssets(database, 500);
+    FacetOracle.awaitCaughtUp(database);
+
+    final String text = plan("PROFILE", "SELECT FROM " + TYPE + " WHERE " + WHERE + " FACETS t: tags HIERARCHY TOP 5")
+        .getProperty("executionPlanAsString");
+    assertThat(text).contains("+ COLLECT FACET MATCHES", "HIERARCHY", "source=index", "budget=", "nodeVisits=");
+    assertThat(text).containsPattern("counting=(DENSE|HASH)");
+  }
+
+  @Test
+  @Timeout(120)
+  void profileShowsDistinctExecution() {
+    load();
+    final String text = plan("PROFILE", "SELECT FROM " + TYPE + " WHERE " + WHERE + " FACETS d: brand DISTINCT, n: fileSize DISTINCT")
+        .getProperty("executionPlanAsString");
+    assertThat(text).contains("+ COLLECT FACET MATCHES", "d: brand DISTINCT", "n: fileSize DISTINCT", "source=index", "segments=");
+    assertThat(text).containsPattern("budget=[1-9]");
+  }
+
+  @Test
+  @Timeout(120)
+  void profileShowsStatsExecution() {
+    load();
+    final String text = plan("PROFILE", "SELECT FROM " + TYPE + " WHERE " + WHERE + " FACETS s: fileSize STATS, p: publishDate STATS")
+        .getProperty("executionPlanAsString");
+    assertThat(text).contains("+ COLLECT FACET MATCHES", "s: fileSize STATS", "p: publishDate STATS", "source=index", "segments=1");
+    assertThat(text).containsPattern("budget=[1-9]");
+  }
+
+  @Test
+  @Timeout(120)
   void profileWithLimitStillComputesFacets() {
     load();
     final Result plan = plan("PROFILE", QUERY + " LIMIT 2");
