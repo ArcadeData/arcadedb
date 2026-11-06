@@ -457,6 +457,10 @@ public final class ColumnarIndexManager {
    * waited for, so no job of the dropped projection touches the bucket directory a projection recreated on the same bucket owns next,
    * and no pass reads the readers and dictionaries the drop closes. Called with no registry lock held. The wait is bounded by the drain
    * timeout: a job still running then is logged and the projection dropped anyway.
+   * <p>
+   * The wait is only ever on a job's own work because NO COLUMNAR JOB STEP TAKES THE DATABASE LOCK (pages are read raw). The one route to it
+   * was an external value read through {@code LocalBucket.getRecord}, which fires the user's BEFORE READ listeners and a listener may read
+   * the database; {@link ColumnarApplier#inDatabaseContext} therefore runs every job with read events suppressed (#11351).
    */
   private void fenceAndDrop(final Slot slot) {
     final ColumnarProjection projection = slot.projection;
