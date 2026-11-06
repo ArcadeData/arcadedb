@@ -35,7 +35,9 @@ import com.arcadedb.index.columnar.HierarchyManager;
 import com.arcadedb.index.columnar.HierarchyView;
 import com.arcadedb.index.columnar.OrdinalConsumer;
 import com.arcadedb.index.columnar.PositionBitmap;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -49,6 +51,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The HIERARCHY collector: each matched document counts once in every node of the closure of its values over the parents (two values
@@ -311,6 +314,32 @@ class HierarchyFacetCollectorTest extends TestHelper {
     assertThat(root.has("parent")).isTrue();
     assertThat(root.isNull("parent")).isTrue();
     assertThat(root.getInt("depth")).isZero();
+  }
+
+  /**
+   * #11357: the projected segment loop checks the statement's guard while it expands the matched documents, so a deep closure times a
+   * large match set cannot run past the TIMEOUT. The same rows are counted unguarded as a control.
+   */
+  @Test
+  void expandingTheProjectedDocumentsChecksTheStatementGuard() {
+    final GlobalDictionary dictionary = dictionary("a/b/c", "a/b/d");
+    final Rows rows = new Rows();
+    final long[] positions = new long[MAX_RECORDS];
+    for (int i = 0; i < MAX_RECORDS; i++) {
+      rows.row(i, 0, 1);
+      positions[i] = i;
+    }
+
+    final HierarchyFacetCollector control = collector(tree(), 10, 1);
+    control.beginBucket(0, new Snapshot(0, dictionary), new Merged(dictionary));
+    control.collect(rows, matches(positions));
+    assertThat(counts(control.finish()).get("a")).as("control: every document counted").isEqualTo((long) MAX_RECORDS);
+
+    final HierarchyFacetCollector guarded = collector(tree(), 10, 1);
+    guarded.guard(WorkGuard.forDeadline("the facet", System.currentTimeMillis() - 1));
+    guarded.beginBucket(0, new Snapshot(0, dictionary), new Merged(dictionary));
+    assertThatThrownBy(() -> guarded.collect(rows, matches(positions))).isInstanceOf(TimeoutException.class);
+    guarded.release();
   }
 
   @Test

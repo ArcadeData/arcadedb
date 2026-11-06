@@ -29,6 +29,7 @@ import com.arcadedb.index.columnar.HierarchyManager;
 import com.arcadedb.index.columnar.HierarchyView;
 import com.arcadedb.index.columnar.OrdinalConsumer;
 import com.arcadedb.index.columnar.PositionBitmap;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
@@ -100,6 +101,9 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
 
   /** The deadline of the query's statement (epoch ms): the wait for the view and its build stop there ({@link #deadline}). */
   private long          deadlineMs = Long.MAX_VALUE;
+  /** Checked while documents are expanded; the shared guard that checks nothing until a statement gives it one. */
+  private WorkGuard     guard      = WorkGuard.forDeadline("the hierarchy facet", Long.MAX_VALUE);
+  private int           expanded;
   private boolean       viewTaken;
   private HierarchyView view;
   /** Why the facet is unavailable, null while it is not. */
@@ -191,6 +195,14 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
    */
   void deadline(final long deadlineMs) {
     this.deadlineMs = deadlineMs;
+  }
+
+  /**
+   * Bounds the expansion of the matched documents by the statement's deadline and termination (issue #11357): the closure of a deep
+   * tag chain is O(depth) per document, so the guard is checked every {@link WorkGuard} interval of documents. Call before the first bucket.
+   */
+  void guard(final WorkGuard guard) {
+    this.guard = guard;
   }
 
   @Override
@@ -530,6 +542,7 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
   private void expandDocument() {
     if (startCount == 0 || unavailable != null)
       return;
+    guard.checkPeriodically(expanded++);
     final int size = expander.expand(view.parentOffsets(), view.parents(), view.nodeCount(), starts, startCount);
     startCount = 0;
     final int[] closure = expander.nodes();

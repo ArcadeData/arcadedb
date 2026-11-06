@@ -387,7 +387,7 @@ public final class FacetExecutor {
       for (int f = 0; f < plans.length; f++) {
         plans[f] = plan(db, manager, matches, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds, snapshots,
             reasons[f], views, null);
-        plans[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
+        plans[f].deadline(ctx);
         if (rowsScanned)
           rowScan.handOver(f, plans[f]);
         wantsScan |= plans[f].scanned && !plans[f].unavailable;
@@ -860,6 +860,15 @@ public final class FacetExecutor {
           hierarchy.deadline(deadlineMs);
     }
 
+    /** The statement's deadline and termination also bound the expansion of the documents a HIERARCHY collector counts (issue #11357). */
+    private void deadline(final CommandContext ctx) {
+      deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
+      final WorkGuard guard = WorkGuard.forCommandDeadline(ctx);
+      for (final FacetCollector collector : collectors)
+        if (collector instanceof HierarchyFacetCollector hierarchy)
+          hierarchy.guard(guard);
+    }
+
     /** Whether the facet counts the bucket from its snapshot (it is available and the bucket is of one of its declaring types). */
     private boolean counts(final int i) {
       return !unavailable && !capped && collectorOf[i] != null;
@@ -1259,7 +1268,7 @@ public final class FacetExecutor {
           Arrays.fill(reasons[f], scanReason(ColumnarStats.FALLBACK_READ_EVENTS));
           planned[f] = FacetExecutor.plan(db, manager, null, f, withConvertedCursor(db, target, bucketIds, facets.get(f)), bucketIds,
               snapshots, reasons[f], views, records);
-          planned[f].deadline(ctx != null ? ctx.getCommandDeadline() : Long.MAX_VALUE);
+          planned[f].deadline(ctx);
         }
       } catch (final RuntimeException | Error e) {
         for (final FacetPlan plan : planned)
