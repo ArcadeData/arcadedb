@@ -24,10 +24,6 @@
   <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml">
     <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg">
   </a>
-  &nbsp;
-  <a href="https://github.com/ArcadeData/arcadedb-jepsen/actions/workflows/jepsen.yml">
-    <img src="https://github.com/ArcadeData/arcadedb-jepsen/actions/workflows/jepsen.yml/badge.svg" alt="Jepsen">
-  </a>
 
   <a href="https://codecov.io/github/ArcadeData/arcadedb">
    <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>
@@ -57,6 +53,7 @@
   <tr><td>HA integration (Raft, embedded)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-integration-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-integration-tests.yml/badge.svg?branch=main" alt="HA integration (Raft, embedded)"></a></td></tr>
   <tr><td>HA resilience (Docker, fault injection)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml/badge.svg?branch=main" alt="HA resilience (Docker, fault injection)"></a></td></tr>
   <tr><td>HA chaos (randomized faults, 60 min)</td><td>weekly</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-chaos-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-chaos-tests.yml/badge.svg?branch=main" alt="HA chaos (randomized faults, 60 min)"></a></td></tr>
+  <tr><td>Jepsen (consistency, fault injection)</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb-jepsen/actions/workflows/jepsen.yml"><img src="https://github.com/ArcadeData/arcadedb-jepsen/actions/workflows/jepsen.yml/badge.svg" alt="Jepsen (consistency, fault injection)"></a></td></tr>
   <tr><td>Load tests</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml/badge.svg?branch=main" alt="Load tests"></a></td></tr>
   <tr><td>Bolt driver-version matrix</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/bolt-nightly.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/bolt-nightly.yml/badge.svg?branch=main" alt="Bolt driver-version matrix"></a></td></tr>
   <tr><td>Native image build</td><td>daily</td><td><a href="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml"><img src="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml/badge.svg?branch=main" alt="Native image build"></a></td></tr>
