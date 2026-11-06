@@ -45,7 +45,7 @@ class Word2VecImporterIT {
       try {
         final Result report;
         try (final ResultSet rs = db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
-            + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+            + "with distanceFunction = cosine, m = 16, beamWidth = 128, " //
             + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
         )) {
           report = rs.next();

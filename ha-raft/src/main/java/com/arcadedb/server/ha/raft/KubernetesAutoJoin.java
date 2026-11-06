@@ -86,14 +86,10 @@ import java.util.logging.Level;
  */
 public class KubernetesAutoJoin {
 
-  // Jitter before probing (to spread traffic when multiple pods start simultaneously).
-  // The minimum is derived from the pod ordinal (last dash-separated segment of HOSTNAME):
-  // pod-0 waits [0, MAX), pod-1 waits [SLOT, MAX), pod-2 waits [2*SLOT, MAX), etc.
-  // This guarantees non-overlapping base windows for StatefulSet scale-up events.
-  // Falls back to AUTO_JOIN_JITTER_FALLBACK_MIN_MS when ordinal cannot be parsed.
+  // Jitter before probing (to spread traffic when multiple pods start simultaneously): see computeJitterWindow.
   private static final long AUTO_JOIN_JITTER_MAX_MS          = 3_000L;
   private static final long AUTO_JOIN_JITTER_ORDINAL_SLOT_MS = 500L;
-  private static final long AUTO_JOIN_JITTER_FALLBACK_MIN_MS = 500L;
+  private static final long AUTO_JOIN_JITTER_SLOTS           = AUTO_JOIN_JITTER_MAX_MS / AUTO_JOIN_JITTER_ORDINAL_SLOT_MS;
   // Short timeouts for the probe client to avoid blocking for the full default gRPC timeout
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MIN_SECS   = 3;
   private static final int  AUTO_JOIN_RPC_TIMEOUT_MAX_SECS   = 5;
@@ -194,10 +190,10 @@ public class KubernetesAutoJoin {
    *         transiently-lost race (issue #5268) is retried instead of stranding the node
    */
   public Outcome tryAutoJoin() {
-    final long jitterMin = computeJitterMinMs();
-    final long jitterMax = Math.max(jitterMin + 100, AUTO_JOIN_JITTER_MAX_MS);
-    final long jitterMs = jitterMin < jitterMax ? ThreadLocalRandom.current().nextLong(jitterMin, jitterMax) : jitterMin;
-    HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing (min=%d, max=%d)...", jitterMs, jitterMin, jitterMax);
+    final JitterWindow window = computeJitterWindow(System.getenv("HOSTNAME"));
+    final long jitterMs = ThreadLocalRandom.current().nextLong(window.minMs(), window.maxMs());
+    HALog.log(this, HALog.BASIC, "K8s auto-join: waiting %dms jitter before probing (min=%d, max=%d)...", jitterMs, window.minMs(),
+        window.maxMs());
     try {
       sleeper.sleep(jitterMs);
     } catch (final InterruptedException e) {
@@ -423,37 +419,40 @@ public class KubernetesAutoJoin {
     }
   }
 
-  /**
-   * Derives the jitter minimum from the pod ordinal embedded in the HOSTNAME environment variable.
-   * StatefulSet pods are named {@code <name>-<ordinal>} (e.g. {@code arcadedb-2}), so the ordinal
-   * is the integer after the last hyphen. Each ordinal is assigned its own time slot
-   * ({@code ordinal * AUTO_JOIN_JITTER_ORDINAL_SLOT_MS}), guaranteeing non-overlapping base windows
-   * when a StatefulSet scales up several pods simultaneously.
-   * Falls back to {@code AUTO_JOIN_JITTER_FALLBACK_MIN_MS} when the hostname is absent or
-   * does not end with a parseable integer.
-   */
-  private static long computeJitterMinMs() {
-    return computeJitterMinMs(System.getenv("HOSTNAME"));
+  /** The half-open interval {@code [minMs, maxMs)} a pod draws its jitter from. */
+  record JitterWindow(long minMs, long maxMs) {
   }
 
   /**
-   * Package-private for unit testing. The public no-arg form reads HOSTNAME from the process
-   * environment, which cannot be mutated from Java; tests drive the logic directly through this
-   * variant.
+   * The window this pod draws its jitter from, derived from the ordinal embedded in the HOSTNAME environment variable.
+   * StatefulSet pods are named {@code <name>-<ordinal>} (e.g. {@code arcadedb-2}), so the ordinal is the integer after
+   * the last hyphen.
+   * <p>
+   * Both ends move with the ordinal: the window is the slot {@code ordinal % AUTO_JOIN_JITTER_SLOTS}, one
+   * {@code AUTO_JOIN_JITTER_ORDINAL_SLOT_MS} wide. Two pods whose ordinals differ by less than the number of slots
+   * therefore never draw the same instant, and a StatefulSet of any size keeps full-width windows: ordinals one lap apart
+   * share a slot and still spread across it (issue #11317).
+   * <p>
+   * With no ordinal to read (a hostname that is absent or does not end with an integer) no slot can be told apart from
+   * another, so the pod draws from the whole range, which spreads such pods the most.
+   * <p>
+   * Takes the hostname as an argument because the process environment cannot be mutated from a test.
    */
-  static long computeJitterMinMs(final String hostname) {
+  static JitterWindow computeJitterWindow(final String hostname) {
     if (hostname != null) {
       final int dash = hostname.lastIndexOf('-');
       if (dash >= 0 && dash < hostname.length() - 1) {
         try {
           final int ordinal = Integer.parseInt(hostname.substring(dash + 1));
-          if (ordinal >= 0)
-            return Math.min((long) ordinal * AUTO_JOIN_JITTER_ORDINAL_SLOT_MS, AUTO_JOIN_JITTER_MAX_MS - 100L);
+          if (ordinal >= 0) {
+            final long slotStart = ordinal % AUTO_JOIN_JITTER_SLOTS * AUTO_JOIN_JITTER_ORDINAL_SLOT_MS;
+            return new JitterWindow(slotStart, slotStart + AUTO_JOIN_JITTER_ORDINAL_SLOT_MS);
+          }
         } catch (final NumberFormatException ignored) {
         }
       }
     }
-    return AUTO_JOIN_JITTER_FALLBACK_MIN_MS;
+    return new JitterWindow(0, AUTO_JOIN_JITTER_MAX_MS);
   }
 
   // Package-private for unit testing of the TLS / flow-control inheritance contract.

@@ -61,6 +61,8 @@ public class SourceDiscovery {
   private static final String IMPORT_CONTEXT      = "IMPORT DATABASE";
   private static final String FILE_PREFIX        = "file://";
   private static final String CLASSPATH_PREFIX   = "classpath://";
+  /** What {@link #isHtmlPage} needs to read: {@code <!doctype html} and one more character. */
+  private static final int    HTML_PAGE_HEAD_LENGTH = 15;
   private              String  url;
   private final        Boolean allowLocalUrls;
   /**
@@ -289,6 +291,12 @@ public class SourceDiscovery {
       final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
 
+    // ONE RULE FOR EVERY FORMAT, BEFORE ANY OF THEM IS PICKED. A SOURCE OF NO BYTES IS NOT A VALID DOCUMENT OF ANY FORMAT, AND
+    // HOLDS NO STRUCTURE THAT WOULD MAKE IT AN EMPTY ONE: IT WAS REFUSED OR ANSWERED OK DEPENDING ON THE FILE TYPE (ISSUE #11311).
+    // Importer DECIDES WHAT THAT MEANS FOR THE IMPORT. PEEKED, NOT READ: isAvailable() KEEPS THE CHARACTER FOR THE nextChar() BELOW
+    if (!parser.isAvailable())
+      throw new EmptySourceException(url);
+
     String knownFileType = null;
     String knownDelimiter = null;
     final String sourceUrl;
@@ -341,34 +349,138 @@ public class SourceDiscovery {
     final String userDelimiter = knownDelimiter != null ? knownDelimiter : settings.getValue("delimiter", null);
 
     if (knownFileType != null) {
-      if ("csv".equalsIgnoreCase(knownFileType)) {
-        return new CSVImporterFormat(userDelimiter);
-      } else if ("json".equalsIgnoreCase(knownFileType)) {
-        return new JSONImporterFormat();
-      } else if ("jsonl".equalsIgnoreCase(knownFileType)) {
-        return new JsonlImporterFormat();
-      } else if ("xml".equalsIgnoreCase(knownFileType)) {
-        return new XMLImporterFormat();
-      } else if ("graphml".equalsIgnoreCase(knownFileType)) {
-        return gremlinFormatImporter(knownFileType, "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
-      } else if ("graphson".equalsIgnoreCase(knownFileType)) {
-        return gremlinFormatImporter(knownFileType, "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
-      } else {
-        LogManager.instance()
-            .log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
+      final FormatImporter knownFormat = formatOfFileType(knownFileType, userDelimiter);
+      if (knownFormat != null) {
+        // XML IS THE ONE FORMAT AN HTML PAGE CAN BE, AS XHTML
+        if (!(knownFormat instanceof XMLImporterFormat))
+          refuseAnHtmlPage(parser);
+        return knownFormat;
       }
+      LogManager.instance()
+          .log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
     }
 
-    // GUARDED: AN EMPTY SOURCE WOULD OTHERWISE MAKE Parser.END_OF_STREAM THE CURRENT CHARACTER AND CARRY IT INTO
-    // THE LINE THE SNIFFER BUILDS OUT OF IT (ISSUE #7494)
-    if (parser.isAvailable())
-      parser.nextChar();
+    // THE SOURCE IS KNOWN NOT TO BE EMPTY: A CHARACTER IS THERE TO READ
+    parser.nextChar();
 
     FormatImporter format = analyzeChar(parser, settings, userDelimiter);
     if (format != null)
       return format;
 
     return analyzeText(parser, settings, logger, userDelimiter, sourceUrl);
+  }
+
+  /** The importer of a file type the user named or the extension gave, or null for one that is not supported. */
+  private static FormatImporter formatOfFileType(final String fileType, final String userDelimiter) {
+    return switch (fileType.toLowerCase(Locale.ENGLISH)) {
+      case "csv" -> new CSVImporterFormat(userDelimiter);
+      case "json" -> new JSONImporterFormat();
+      case "jsonl" -> new JsonlImporterFormat();
+      case "xml" -> new XMLImporterFormat();
+      case "graphml" -> gremlinFormatImporter(fileType, "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
+      case "graphson" -> gremlinFormatImporter(fileType, "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
+      default -> null;
+    };
+  }
+
+  /**
+   * Refuses a source that opens as an HTML page, reading from the start of a parser that has read nothing. Its file type comes
+   * from the extension or the settings, which say what the source was meant to be and nothing about what answered: an error or
+   * a login page served with a 200 for a {@code .csv} URL imported as one header row, or as records made of its lines (issue
+   * #11311). The caller resets the parser before a format reads it, so what this reads costs no fetch.
+   */
+  private void refuseAnHtmlPage(final Parser parser) throws IOException {
+    parser.nextChar();
+    if (!skipJsonWhitespace(parser))
+      return;
+
+    final StringBuilder head = new StringBuilder(HTML_PAGE_HEAD_LENGTH).append(parser.getCurrentChar());
+    while (head.length() < HTML_PAGE_HEAD_LENGTH && parser.isAvailable())
+      head.append(parser.nextChar());
+
+    if (isHtmlPage(head))
+      throw htmlPageRefusal();
+  }
+
+  private ImportException htmlPageRefusal() {
+    return new ImportException("Cannot import the source '" + url + "': it is an HTML page, not data. A remote server may have "
+        + "answered with an error or a login page");
+  }
+
+  /** Whether {@code text} opens as an HTML page: a doctype naming it, or its root element. */
+  static boolean isHtmlPage(final CharSequence text) {
+    final String head = text.subSequence(0, Math.min(text.length(), HTML_PAGE_HEAD_LENGTH)).toString();
+    if (head.regionMatches(true, 0, "<!doctype html", 0, 14))
+      return true;
+    if (!head.regionMatches(true, 0, "<html", 0, 5))
+      return false;
+    return head.length() == 5 || head.charAt(5) == '>' || Character.isWhitespace(head.charAt(5));
+  }
+
+  /**
+   * Whether a first line that carries text between its tags reads as the start of one XML document: a declaration, or one root
+   * element holding everything on the line with at least one element closed. It is what tells a minified document from
+   * delimited text that merely holds markup: {@code <a>,<b>,<c>} closes nothing, and in {@code <b>x</b>,<i>y</i>} text follows
+   * the root, which no XML document does (issue #11311). Tag names are not paired up, so a document this lets through and that
+   * turns out to be malformed is refused by the XML load rather than misread as text.
+   */
+  static boolean isXmlFirstLine(final CharSequence line) {
+    final int end = endOfContent(line);
+    if (end >= 5 && "<?xml".contentEquals(line.subSequence(0, 5)))
+      return true;
+
+    int depth = 0;
+    boolean closed = false;
+    int pos = 0;
+    while (pos < end) {
+      if (line.charAt(pos) != '<') {
+        if (depth == 0 && !Character.isWhitespace(line.charAt(pos)))
+          return false;
+        ++pos;
+        continue;
+      }
+
+      final int tagEnd = endOfTag(line, pos, end);
+      if (tagEnd < 0 || pos + 1 >= tagEnd - 1)
+        // THE LINE ENDS INSIDE A TAG, OR THE TAG IS EMPTY
+        return closed && tagEnd < 0;
+
+      final char first = line.charAt(pos + 1);
+      if (first == '/') {
+        if (depth == 0)
+          return false;
+        --depth;
+        closed = true;
+      } else if (first != '?' && first != '!') {
+        if (!Character.isLetter(first) && first != '_' && first != ':')
+          return false;
+        if (closed && depth == 0)
+          // A SECOND ROOT
+          return false;
+        if (line.charAt(tagEnd - 2) == '/')
+          closed = true;
+        else
+          ++depth;
+      }
+      pos = tagEnd;
+    }
+    return closed;
+  }
+
+  /** The index just past the tag opening at {@code from}, or {@code -1}. A {@code >} inside an attribute value does not end it. */
+  private static int endOfTag(final CharSequence line, final int from, final int end) {
+    char quote = 0;
+    for (int i = from + 1; i < end; ++i) {
+      final char c = line.charAt(i);
+      if (quote != 0) {
+        if (c == quote)
+          quote = 0;
+      } else if (c == '"' || c == '\'')
+        quote = c;
+      else if (c == '>')
+        return i + 1;
+    }
+    return -1;
   }
 
   /**
@@ -489,12 +601,14 @@ public class SourceDiscovery {
       }
     }
 
-    // A JSON DOCUMENT THAT OPENS WITH WHITESPACE - A BLANK LINE, AN INDENTATION, A BYTE ORDER MARK - AFTER ITS COMMENTS
-    // IF IT HAS ANY. THE FIRST-CHARACTER DISPATCH NEVER RECOGNISED IT (ISSUE #10754). analyzeChar() LEAVES A PARSER IT
+    // A JSON OR XML DOCUMENT THAT OPENS WITH WHITESPACE - A BLANK LINE, AN INDENTATION, A BYTE ORDER MARK - AFTER ITS COMMENTS
+    // IF IT HAS ANY. THE FIRST-CHARACTER DISPATCH NEVER RECOGNISED IT (ISSUES #10754, #11311). analyzeChar() LEAVES A PARSER IT
     // RETURNED NULL FOR ON THE SAME CHARACTER WHEN THAT CHARACTER IS WHITESPACE, SO THIS READS ON FROM THERE WITHOUT A
-    // REWIND. ONLY THE JSON ARMS ARE TRIED: JSON ALLOWS THE WHITESPACE, WHILE AN XML DECLARATION MUST COME FIRST
+    // REWIND. A BYTE ORDER MARK MAY PRECEDE AN XML DECLARATION AND WHITESPACE ANY ROOT ELEMENT; WHITESPACE BEFORE A DECLARATION
+    // IS MALFORMED, AND THE XML LOAD SAYS SO RATHER THAN READING THE LINES AS DELIMITED TEXT
     if (!parser.isBeforeFirstChar() && !parser.isEndOfStream() && isJsonWhitespace(parser.getCurrentChar())
-        && skipJsonWhitespace(parser) && (parser.getCurrentChar() == '{' || parser.getCurrentChar() == '[')) {
+        && skipJsonWhitespace(parser) && (parser.getCurrentChar() == '{' || parser.getCurrentChar() == '['
+        || parser.getCurrentChar() == '<')) {
       format = analyzeChar(parser, settings, userDelimiter);
       if (format != null) {
         logger.logLine(1, "Recognized format %s", format.getFormat());
@@ -896,7 +1010,7 @@ public class SourceDiscovery {
       // `beginTag == endTag` - AND THE SHAPE TEST THAT REPLACED IT DOES NOT NEED THEM: A LINE WITH UNBALANCED
       // BRACKETS FAILS `endOfIri` ANYWAY, AND STRICTLY, SINCE THE COUNTS BALANCE FOR AN XML ELEMENT TOO
       boolean insideTag = currentChar == '<';
-      final List<Character> delimiters = new ArrayList<>();
+      long outsideTags = 0;
       final StringBuilder line = new StringBuilder(128).append(currentChar);
       while (parser.isAvailable() && parser.nextChar() != '\n') {
         final char c = parser.getCurrentChar();
@@ -909,7 +1023,7 @@ public class SourceDiscovery {
           if (c == '<')
             insideTag = true;
           else
-            delimiters.add(c);
+            ++outsideTags;
         }
       }
 
@@ -942,8 +1056,15 @@ public class SourceDiscovery {
                 + "malformed object or terminator, or set the field delimiter explicitly with -delimiter: %s",
             line.length() > 200 ? line.substring(0, 200) + "..." : line.toString());
 
-      if (currentChar == '<' && delimiters.size() <= 1)
-        return new XMLImporterFormat();
+      if (currentChar == '<') {
+        // AN .xml EXTENSION ASKS FOR THE DOCUMENT AS XML, WHICH AN XHTML PAGE IS
+        if (isHtmlPage(line) && !"xml".equalsIgnoreCase(getFormatFromExtension(url)))
+          throw htmlPageRefusal();
+
+        // THE COUNT ALONE SENT A MINIFIED DOCUMENT TO THE CSV SNIFFING, WHICH IMPORTED IT AS ONE HEADER ROW (ISSUE #11311)
+        if (outsideTags <= 1 || isXmlFirstLine(line))
+          return new XMLImporterFormat();
+      }
 
     } else if (currentChar == '{') {
 

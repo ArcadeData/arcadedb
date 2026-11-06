@@ -51,6 +51,7 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -219,7 +220,7 @@ public class OrientDBImporter {
     new OrientDBImporter(args).run();
   }
 
-  public GZIPInputStream openInputStream() throws IOException {
+  public InputStream openInputStream() throws IOException {
     return new GZIPInputStream(new FileInputStream(file));
   }
 

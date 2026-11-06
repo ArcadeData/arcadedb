@@ -63,7 +63,7 @@ class XMLImporterFormatTest extends TestHelper {
     try {
       // Import XML as vertices
       database.command("sql",
-          "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1, entityType='VERTEX'");
+          "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1");
 
       // Verify all users were imported
       assertThat(database.countType("v_user", true)).isEqualTo(4);
@@ -132,7 +132,7 @@ class XMLImporterFormatTest extends TestHelper {
     try {
       try {
         database.command("sql",
-            "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1, entityType='VERTEX'");
+            "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1");
       } catch (final Exception e) {
         // ACCEPTABLE: THE PARSER REJECTS THE DTD. THE GUARANTEE WE ASSERT IS THAT NO ENTITY EXPANSION HAPPENED.
       }

@@ -34,6 +34,10 @@ public interface FormatImporter {
   void load(SourceSchema sourceSchema, AnalyzedEntity.EntityType entityType, Parser parser, DatabaseInternal database, ImporterContext context,
       ImporterSettings settings) throws IOException;
 
+  /**
+   * Analyzes the source and answers its schema, never {@code null}: a source that cannot be analyzed is an exception, which is
+   * what reaches the caller of the import (issue #11309).
+   */
   SourceSchema analyze(AnalyzedEntity.EntityType entityType, Parser parser, ImporterSettings settings, AnalyzedSchema analyzedSchema) throws IOException;
 
   String getFormat();

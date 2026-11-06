@@ -29,10 +29,9 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #5410: a phase-2 hold that never clears pins Raft log compaction until the node restarts,
- * and before these gauges the only signal was a WARNING emitted at most once per compaction
- * interval. Verifies {@link HAReplicationMetrics} publishes the hold state as
- * {@code arcadedb.ha.phase2.*} and degrades to "nothing held" when HA is disabled.
+ * Issue #5410, as #6965 and #11318 left it: {@link HAReplicationMetrics} publishes the transactions the Raft apply thread has
+ * not reached yet as {@code arcadedb.ha.phase2.*} and degrades to "nothing pending" when HA is disabled. The replay floor gauge
+ * stays for dashboards and is always -1, since nothing holds a snapshot checkpoint back any more.
  */
 class HAPendingPhase2MetricsTest {
 
@@ -62,7 +61,7 @@ class HAPendingPhase2MetricsTest {
   @Test
   void gaugesExposeAnOutstandingPhase2Hold() {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    server.plugins(new FakeHAPlugin(new PendingPhase2Stats(2, 620_000L, 4711L)));
+    server.plugins(new FakeHAPlugin(new PendingPhase2Stats(2, 620_000L)));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -71,15 +70,15 @@ class HAPendingPhase2MetricsTest {
       assertThat(registry.find("arcadedb.ha.phase2.pending").gauge().value()).isEqualTo(2.0);
       assertThat(registry.find("arcadedb.ha.phase2.oldest_held_ms").gauge().value()).isEqualTo(620_000.0);
       assertThat(registry.find("arcadedb.ha.phase2.lowest_replay_floor").gauge().value())
-          .as("the pinned index is what an operator needs to correlate with Raft-storage disk usage")
-          .isEqualTo(4711.0);
+          .as("since #6965 no checkpoint is held back, whatever is pending: the gauge stays for dashboards only")
+          .isEqualTo(-1.0);
     }
   }
 
   @Test
   void gaugesReportNothingHeldOnAnIdleNode() {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create();
-    server.plugins(new FakeHAPlugin(new PendingPhase2Stats(0, 0, -1)));
+    server.plugins(new FakeHAPlugin(new PendingPhase2Stats(0, 0)));
 
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
@@ -88,7 +87,7 @@ class HAPendingPhase2MetricsTest {
       assertThat(registry.find("arcadedb.ha.phase2.pending").gauge().value()).isZero();
       assertThat(registry.find("arcadedb.ha.phase2.oldest_held_ms").gauge().value()).isZero();
       assertThat(registry.find("arcadedb.ha.phase2.lowest_replay_floor").gauge().value())
-          .as("-1 marks 'no floor pinned' so dashboards can filter it out")
+          .as("the value a dashboard filters out")
           .isEqualTo(-1.0);
     }
   }

@@ -867,7 +867,7 @@ class ConsoleTest {
         + "verticesSkipEntries = 0,"//
         + "vertexType = 'Page',"//
         + "typeIdProperty = 'id',"//
-        + "typeIdPropertyIsUnique = true,"//
+        + "typeIdUnique = true,"//
         + "typeIdType = 'long',"//
         + "edges = `file://src/test/resources/edges.csv`,"//
         + "edgesHeader = 'from,to',"//

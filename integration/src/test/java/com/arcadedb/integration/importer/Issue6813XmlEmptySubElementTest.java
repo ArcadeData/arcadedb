@@ -66,7 +66,7 @@ class Issue6813XmlEmptySubElementTest {
 
     final Database db = databaseFactory.create();
     try {
-      db.command("sql", "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1, entityType='VERTEX'");
+      db.command("sql", "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1");
 
       assertThat(db.countType("v_row", true)).isEqualTo(2);
 
@@ -108,7 +108,7 @@ class Issue6813XmlEmptySubElementTest {
 
     final Database db = databaseFactory.create();
     try {
-      db.command("sql", "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1, entityType='VERTEX'");
+      db.command("sql", "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1");
 
       assertThat(db.countType("v_row", true)).isEqualTo(1);
 
