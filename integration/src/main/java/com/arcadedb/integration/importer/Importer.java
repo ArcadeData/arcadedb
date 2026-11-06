@@ -38,6 +38,8 @@ public class Importer extends AbstractImporter {
    * already make; concurrent {@code load()} calls on ONE instance would race on all five alike.
    */
   private String loadingUrl;
+  /** The sources of this import found empty so far. The same plain state as {@link #loadingUrl}, reset at the top of {@link #load()}. */
+  private int    emptySources;
 
   public Importer(final String[] args) {
     super(args);
@@ -96,6 +98,13 @@ public class Importer extends AbstractImporter {
   public Map<String, Object> load() {
     source = null;
     loadingUrl = null;
+    emptySources = 0;
+
+    // BEFORE THE TRY: THIS IS A REFUSAL OF THE SETTINGS, NOT A FAILURE OF A SOURCE, AND NO DATABASE MAY BE CREATED FOR IT.
+    // THE FOUR loadFromSource() CALLS BELOW EACH RETURN QUIETLY FOR A SOURCE THAT IS NOT SET, SO WITH NONE SET THE IMPORT
+    // ANSWERED OK HAVING READ NOTHING (ISSUE #11311)
+    if (namedSources() == 0)
+      throw new IllegalArgumentException("Nothing to import: none of url, documents, vertices, edges is set");
 
     try {
       final int cfgValue = settings.getIntValue("maxValueSampling", 100);
@@ -209,11 +218,22 @@ public class Importer extends AbstractImporter {
       }
     }
 
-    final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema, logger);
-    if (sourceSchema == null) {
-      //LogManager.instance().log(this, Level.WARNING, "XML importing aborted because unable to determine the schema");
+    final SourceSchema sourceSchema;
+    try {
+      sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema, logger);
+    } catch (final EmptySourceException e) {
+      // WHEN EVERY SOURCE IS EMPTY THE IMPORT CANNOT READ ANYTHING. BESIDE ONE THAT IS NOT IT IS SKIPPED: THE url OF IMPORT DATABASE
+      // WAS ONCE MANDATORY, SO SCRIPTS NAME AN EMPTY FILE THERE AND THE REAL ONES IN vertices AND edges (ISSUE #2267)
+      if (++emptySources == namedSources())
+        throw e;
+      context.addWarning(e.getMessage());
       return;
     }
+
+    // REFUSED HERE AND NOT ONLY IN THE FORMAT THAT USED TO ANSWER IT, SO THAT NO ANALYZER CAN TURN A FAILURE INTO A QUIET
+    // "NOTHING TO DO" AGAIN: THE IMPORT ANSWERED OK WITH NOTHING READ (ISSUE #11309)
+    if (sourceSchema == null)
+      throw new ImportException("Unable to determine the schema of the source '" + url + "'");
 
     updateDatabaseSchema(sourceSchema.getSchema());
 
@@ -234,8 +254,22 @@ public class Importer extends AbstractImporter {
       // ADDED LATER NOW INHERITS THE RESET INSTEAD OF HAVING TO REMEMBER IT (ISSUE #7342)
       context.beginPhase();
 
+      final long createdBefore = context.getCreatedTotal();
+
       format.load(sourceSchema, entityType, parser, database, context, settings);
+
+      // A SOURCE WITH NO RECORDS IS A LEGITIMATE ANSWER (A HEADER-ONLY CSV, AN EMPTY ARRAY, A ROOT-ONLY XML DOCUMENT), SO IT
+      // IS NOT REFUSED, BUT IT IS SAID: THE FORMAT THE SOURCE WAS READ AS IS WHAT TELLS AN EMPTY SOURCE FROM A MISREAD ONE
+      // (ISSUE #11311)
+      if (context.getCreatedTotal() == createdBefore)
+        context.addWarning("No record was created from the source '" + url + "', read as " + format.getFormat());
     }
+  }
+
+  /** How many of the four sources of an import are set. */
+  private int namedSources() {
+    return (settings.url != null ? 1 : 0) + (settings.documents != null ? 1 : 0) + (settings.vertices != null ? 1 : 0)
+        + (settings.edges != null ? 1 : 0);
   }
 
   /**

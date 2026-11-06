@@ -172,7 +172,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
     // existing from/to references, not also create the vertex type.
     final Importer verticesImporter = new Importer(
         ("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
-            + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));
+            + " -typeIdProperty Id -typeIdType Long -typeIdUnique true -forceDatabaseCreate true").split(" "));
     verticesImporter.load();
 
     final Database db = databaseFactory.open();
@@ -221,7 +221,7 @@ class Issue5968ImporterSkipOnRowErrorTest {
 
     final Importer verticesImporter = new Importer(
         ("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
-            + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));
+            + " -typeIdProperty Id -typeIdType Long -typeIdUnique true -forceDatabaseCreate true").split(" "));
     verticesImporter.load();
 
     try {

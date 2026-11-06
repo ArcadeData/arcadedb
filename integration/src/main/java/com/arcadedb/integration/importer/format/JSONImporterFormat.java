@@ -118,7 +118,7 @@ public class JSONImporterFormat implements FormatImporter {
           if (recordFailed.get())
             throw new ImportException("A value of the single top-level JSON object failed to import, aborting the import", null);
           if (record instanceof Map)
-            saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
+            saveTopLevelRecord(database, settings, context, (Map<String, Object>) record);
           return;
         }
 
@@ -350,6 +350,31 @@ public class JSONImporterFormat implements FormatImporter {
       case Number n -> Type.DECIMAL;
       default -> Type.getTypeByValue(idValue);
     };
+  }
+
+  /**
+   * Saves a single top-level object in a transaction of its own, unless the caller holds one. Nothing on this path opened one, so
+   * only the command line, whose import keeps a transaction open throughout, could save it: {@code IMPORT DATABASE} of a source
+   * holding one object was refused with "Transaction not begun", naming no problem with the source (issue #11311).
+   */
+  private static void saveTopLevelRecord(final Database database, final ImporterSettings settings, final ImporterContext context,
+      final Map<String, Object> map) {
+    final boolean[] txOpen = { false };
+    final TransactionContext[] ownTx = { null };
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
+    final long createdDocumentsBefore = context.createdDocuments.get();
+
+    if (ownsTransaction)
+      ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+    try {
+      saveAnonymousRecord(database, settings, context, map);
+      if (ownsTransaction)
+        ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+    } catch (final RuntimeException e) {
+      ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
+      context.createdDocuments.set(createdDocumentsBefore);
+      throw e;
+    }
   }
 
   private static MutableDocument saveAnonymousRecord(final Database database, final ImporterSettings settings,

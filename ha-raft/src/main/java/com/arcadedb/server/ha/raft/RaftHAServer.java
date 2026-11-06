@@ -7084,14 +7084,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Transactions this node originated whose pages the Raft apply thread has not published yet (issue #6965): the
    * leader-side phase 2 in flight. Since the apply thread publishes them at the entry's log position, before the
-   * applied index moves past it, no snapshot checkpoint is ever held back by them any more: the replay floor is
-   * always {@code -1} (kept in the record for the gauge's stability).
+   * applied index moves past it, no snapshot checkpoint is ever held back by them any more.
    */
   public HAReplicationStatsProvider.PendingPhase2Stats getPendingPhase2Stats() {
     final ArcadeStateMachine sm = stateMachine;
     if (sm == null)
-      return new HAReplicationStatsProvider.PendingPhase2Stats(0, 0, -1);
-    return new HAReplicationStatsProvider.PendingPhase2Stats(sm.pendingLocalCommits(), sm.oldestPendingLocalCommitMs(), -1);
+      return new HAReplicationStatsProvider.PendingPhase2Stats(0, 0);
+    return new HAReplicationStatsProvider.PendingPhase2Stats(sm.pendingLocalCommits(), sm.oldestPendingLocalCommitMs());
   }
 
   /**

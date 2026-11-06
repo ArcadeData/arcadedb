@@ -19,10 +19,14 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class ImporterContext {
   /**
@@ -83,6 +87,8 @@ public class ImporterContext {
   public final AtomicLong danglingLinks              = new AtomicLong();
   public final AtomicLong errors                     = new AtomicLong();
   public final AtomicLong warnings                   = new AtomicLong();
+  /** See {@link #addWarning}. Written by the thread running the import, read by {@link #toMap()} once it ended. */
+  private final List<String> warningMessages         = new ArrayList<>();
   /**
    * Set by {@link AbstractImporter#openDatabase()}, before anything else in the import (including schema
    * auto-creation, which can itself open and leave active a transaction of its own) touches the database's
@@ -167,12 +173,31 @@ public class ImporterContext {
     return parsedInPreviousPhases.get() + parsed.get();
   }
 
+  /** The records of every kind this import created: what tells an import that created nothing from one that created something. */
+  public long getCreatedTotal() {
+    return createdDocuments.get() + createdVertices.get() + createdEdges.get() + createdTimeSeriesSamples.get();
+  }
+
+  /**
+   * Records a warning the caller of the import has to see, which a line in the log is not: counted in {@link #warnings},
+   * logged, and carried by {@link #toMap()} as {@code warningMessages}.
+   */
+  public void addWarning(final String message) {
+    warnings.incrementAndGet();
+    warningMessages.add(message);
+    LogManager.instance().log(this, Level.WARNING, "%s", message);
+  }
+
+  /**
+   * What an import reports. {@code parsedRecords} and {@code createdRecords} are always present, zero included: every other
+   * counter is omitted when it is zero, and with these two omitted as well a caller could not tell an import that had nothing to
+   * do from one that did not do it (issue #11311).
+   */
   public Map<String, Object> toMap() {
     final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
 
-    final long parsedTotal = getParsedTotal();
-    if (parsedTotal > 0)
-      map.put("parsedRecords", parsedTotal);
+    map.put("parsedRecords", getParsedTotal());
+    map.put("createdRecords", getCreatedTotal());
     if (skippedRecords.get() > 0)
       map.put("skippedRecords", skippedRecords.get());
     if (skippedEdges.get() > 0)
@@ -181,6 +206,8 @@ public class ImporterContext {
       map.put("errors", errors.get());
     if (warnings.get() > 0)
       map.put("warnings", warnings.get());
+    if (!warningMessages.isEmpty())
+      map.put("warningMessages", List.copyOf(warningMessages));
     if (createdDocuments.get() > 0)
       map.put("createdDocuments", createdDocuments.get());
     if (createdVertices.get() > 0)

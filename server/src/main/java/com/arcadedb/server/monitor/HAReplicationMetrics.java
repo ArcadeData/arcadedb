@@ -65,6 +65,9 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class HAReplicationMetrics implements MeterBinder, Closeable {
+  /** What {@code arcadedb.ha.phase2.lowest_replay_floor} publishes: since #6965 nothing holds a checkpoint back. */
+  private static final int NO_REPLAY_FLOOR = -1;
+
   private final ArcadeDBServer server;
 
   private volatile ScheduledExecutorService followerMetricsScheduler;
@@ -305,7 +308,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
         .baseUnit("milliseconds")
         .register(registry);
 
-    Gauge.builder("arcadedb.ha.phase2.lowest_replay_floor", () -> pendingPhase2().lowestReplayFloor())
+    Gauge.builder("arcadedb.ha.phase2.lowest_replay_floor", () -> NO_REPLAY_FLOOR)
         .description("Kept for dashboard stability: since #6965 the pages of a local transaction are published "
             + "before the applied index moves past its entry, so no snapshot checkpoint is ever held back; always -1.")
         .register(registry);
@@ -516,7 +519,7 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     for (final ServerPlugin plugin : server.getPlugins())
       if (plugin instanceof HAReplicationStatsProvider provider)
         return provider.getPendingPhase2Stats();
-    return new PendingPhase2Stats(0, 0, -1);
+    return new PendingPhase2Stats(0, 0);
   }
 
   /** Per-follower samples from the started HA plugin, or empty when HA is disabled / not the leader. */

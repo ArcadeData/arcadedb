@@ -98,7 +98,7 @@ class Issue7488SkippedRecordsReportTest {
           "-vertices", vertices.getAbsolutePath(), //
           "-edges", edges.getAbsolutePath(), //
           "-database", databasePath, "-forceDatabaseCreate", "true", //
-          "-typeIdProperty", "Id", "-typeIdType", "Long", "-typeIdPropertyIsUnique", "true", //
+          "-typeIdProperty", "Id", "-typeIdType", "Long", "-typeIdUnique", "true", //
           "-edgeFromField", "From", "-edgeToField", "To" }).load();
 
       assertThat(report).as("one edge created, one declined").containsEntry("createdEdges", 1L);

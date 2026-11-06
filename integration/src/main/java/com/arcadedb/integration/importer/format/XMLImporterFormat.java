@@ -369,11 +369,12 @@ public class XMLImporterFormat implements FormatImporter {
       }
 
     } catch (final XMLStreamException e) {
-      // IGNORE IT
+      // IGNORE IT: THE LOAD PASS READS THE SAME DOCUMENT AND REFUSES IT WHEN IT IS MALFORMED
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on parsing XML", e);
-      return null;
+      // A SOURCE THAT COULD NOT BE READ, AS CSVImporterFormat.analyze() ANSWERS IT: THIS USED TO RETURN null, WHICH ENDED THE
+      // IMPORT WITH result OK AND NOTHING LOADED (ISSUE #11309)
+      throw new ImportException("Error on importing XML", e);
     }
 
     // END OF PARSING. THIS DETERMINES THE TYPE

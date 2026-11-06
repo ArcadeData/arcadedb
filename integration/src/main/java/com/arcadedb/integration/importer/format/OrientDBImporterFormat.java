@@ -29,7 +29,7 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 
 import java.io.IOException;
-import java.util.zip.GZIPInputStream;
+import java.io.InputStream;
 
 public class OrientDBImporterFormat extends AbstractImporterFormat {
   @Override
@@ -39,11 +39,11 @@ public class OrientDBImporterFormat extends AbstractImporterFormat {
     try {
       new OrientDBImporter(database, settings) {
         @Override
-        public GZIPInputStream openInputStream() throws IOException {
+        public InputStream openInputStream() throws IOException {
           // THE SOURCE OF THE LOAD, WHICH THE IMPORTER CLOSES WHEN THE LOAD ENDS, AND NOT THE ONE OF THE ANALYSIS, WHICH IS CLOSED
           // ALREADY: RE-OPENING THAT ONE LEFT A STREAM NOTHING WOULD CLOSE (ISSUE #10772)
           parser.getSource().reset();
-          return (GZIPInputStream) parser.getSource().inputStream;
+          return parser.getSource().inputStream;
         }
       }.setContext(context).run();
 

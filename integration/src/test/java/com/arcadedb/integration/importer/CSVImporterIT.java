@@ -95,7 +95,7 @@ class CSVImporterIT {
       databaseFactory.open().drop();
 
     Importer importer = new Importer(("-vertices src/test/resources/importer-vertices.csv -database " + databasePath
-        + " -typeIdProperty Id -typeIdType Long -typeIdPropertyIsUnique true -forceDatabaseCreate true").split(" "));
+        + " -typeIdProperty Id -typeIdType Long -typeIdUnique true -forceDatabaseCreate true").split(" "));
     importer.load();
 
     try (final Database db = databaseFactory.open()) {
@@ -307,14 +307,14 @@ class CSVImporterIT {
 
       // Import Tenants in first command
       db.command("sql", String.format("""
-          IMPORT DATABASE file://%s WITH vertices="file://%s", vertexType=Tenant, verticesFileType=csv, typeIdProperty=id, typeIdType=Long, typeIdPropertyIsUnique=true
+          IMPORT DATABASE file://%s WITH vertices="file://%s", vertexType=Tenant, verticesFileType=csv, typeIdProperty=id, typeIdType=Long, typeIdUnique=true
           """, emptyFile.getAbsolutePath(), tenantsFile.getAbsolutePath()));
 
       assertThat(db.countType("Tenant", true)).isEqualTo(6);
 
       // Import Supervisors in second command (separate GraphImporter instance)
       db.command("sql", String.format("""
-          IMPORT DATABASE file://%s WITH vertices="file://%s", vertexType=Supervisor, verticesFileType=csv, typeIdProperty=id, typeIdType=Long, typeIdPropertyIsUnique=true
+          IMPORT DATABASE file://%s WITH vertices="file://%s", vertexType=Supervisor, verticesFileType=csv, typeIdProperty=id, typeIdType=Long, typeIdUnique=true
           """, emptyFile.getAbsolutePath(), supervisorsFile.getAbsolutePath()));
 
       assertThat(db.countType("Supervisor", true)).isEqualTo(6);
@@ -447,7 +447,7 @@ class CSVImporterIT {
         "-database", databasePath,
         "-typeIdProperty", "Id",
         "-typeIdType", "Long",
-        "-typeIdPropertyIsUnique", "true",
+        "-typeIdUnique", "true",
         "-forceDatabaseCreate", "true"
     });
     importer.load();
