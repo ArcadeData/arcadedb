@@ -934,6 +934,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     void onSlot(long position, int kind, Binary content, int[] offPagePages, int offPageCount);
 
     /**
+     * A {@link #RECORD} whose bytes could not be read because the publications of the page manager stayed open through every attempt of
+     * the read (#11364): nothing is known to be wrong with it, unlike a null-content {@link #onSlot}, and it reads on a later pass.
+     * Reported as an unreadable record by default.
+     */
+    default void onRecordInMotion(final long position) {
+      onSlot(position, RECORD, null, NO_PAGES, 0);
+    }
+
+    /**
      * Called by {@link #visitCommittedPage} once the page is read, before its first slot, with the version of that committed image;
      * nothing by default.
      */
@@ -1114,6 +1123,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     int kind = CommittedSlotVisitor.RECORD;
     Binary content = null;
     int offPageCount = 0;
+    boolean inMotion = false;
 
     try {
       final int recordPositionInPage = getRecordPositionInPage(page, slot);
@@ -1146,6 +1156,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       } else
         // NEXT_CHUNK, FIRST_CHUNK_PLACEHOLDER_CONTENT, a negated size: somebody else's bytes
         kind = CommittedSlotVisitor.CONTENT;
+    } catch (final CommittedReadInMotionException e) {
+      LogManager.instance().log(this, Level.FINE, "Slot %d of committed page %d of bucket '%s' stayed in motion", e, slot, pageNumber,
+              componentName);
+      content = null;
+      offPageCount = 0;
+      inMotion = true;
     } catch (final PageCorruptionException | ConcurrentModificationException | IllegalArgumentException
                    | IndexOutOfBoundsException | BufferUnderflowException e) {
       // A slot that cannot be decoded, or a record in motion: reported as an unreadable RECORD, never as a failure of the page
@@ -1158,7 +1174,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (content == null)
       // the resolution may have collected pages before it failed validation
       offPageCount = 0;
-    visitor.onSlot(position, kind, content, offPages != null ? offPages.pages : NO_PAGES, offPageCount);
+    if (inMotion)
+      visitor.onRecordInMotion(position);
+    else
+      visitor.onSlot(position, kind, content, offPages != null ? offPages.pages : NO_PAGES, offPageCount);
     return offPages;
   }
 
@@ -3881,9 +3900,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // #11283: the lock excludes a local commit but not the replicated apply of a replica, so the lock alone proves nothing
         final long locked = pageManager.getPublicationSequence();
         final Binary content = (locked & 1) == 0 ? readCommittedPlaceholderContent(rid, offPages) : null;
-        if ((locked & 1) != 0 || pageManager.getPublicationSequence() != locked)
-          throw new ConcurrentModificationException(
-                  "Record " + rid + " was being replicated while it was read: the pointer and its content may belong to different commits");
+        if ((locked & 1) != 0 || pageManager.getPublicationSequence() != locked) {
+          final String message = "Record " + rid
+                  + " was being replicated while it was read: the pointer and its content may belong to different commits";
+          if (offPages != null)
+            // see committedMultiPageRecord (#11364)
+            throw new CommittedReadInMotionException(message);
+          throw new ConcurrentModificationException(message);
+        }
         return content;
       });
     } catch (final RuntimeException e) {
@@ -3962,9 +3986,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private Binary committedMultiPageRecord(final RID rid, final PageId headPageId, final int headSlot, final long headMarker,
                                           final OffPagePages offPages) throws IOException {
-    final Binary content = assembleFromNewestCommitted(headPageId, headSlot, headMarker,
+    final Binary content = assembleCommitted(headPageId, headSlot, headMarker,
             database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES), offPages);
-    if (content != null)
+    if (content != null && content != GAVE_UP_IN_MOTION)
       return content;
 
     final BasePage head = database.getPageManager().getImmutablePage(headPageId, pageSize, false, false);
@@ -3975,8 +3999,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // DELETED MEANWHILE
       return null;
 
-    throw new ConcurrentModificationException(
-            "Multi-page record " + rid + " could not be read as one committed state. Please retry the operation");
+    final String message = "Multi-page record " + rid + " could not be read as one committed state. Please retry the operation";
+    if (content == GAVE_UP_IN_MOTION && offPages != null)
+      // only the visit of a committed page passes a collector, and it catches this: the conflict never leaves the bucket (#11364)
+      throw new CommittedReadInMotionException(message);
+    throw new ConcurrentModificationException(message);
+  }
+
+  /**
+   * A committed read given up because publications stayed open through every attempt (#11364), as opposed to a record that is broken.
+   * Thrown only to {@link #visitCommittedSlot}, which reports it through {@link CommittedSlotVisitor#onRecordInMotion}.
+   */
+  private static final class CommittedReadInMotionException extends ConcurrentModificationException {
+    CommittedReadInMotionException(final String message) {
+      super(message);
+    }
   }
 
   /**
@@ -6726,6 +6763,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private Binary assembleFromNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker,
                                              final int maxRetries, final OffPagePages offPages) throws IOException {
+    final Binary content = assembleCommitted(headPageId, headSlot, headMarker, maxRetries, offPages);
+    return content == GAVE_UP_IN_MOTION ? null : content;
+  }
+
+  /** {@link #assembleCommitted}: the walk gave up with publications still open, not because the record is broken (#11364). */
+  private static final Binary GAVE_UP_IN_MOTION = new Binary(0);
+
+  /**
+   * {@link #assembleFromNewestCommitted} that tells apart a give-up on a publication that never closed from a record no attempt could
+   * assemble: the former is {@link #GAVE_UP_IN_MOTION}, which a caller must not return.
+   */
+  private Binary assembleCommitted(final PageId headPageId, final int headSlot, final long headMarker, final int maxRetries,
+                                   final OffPagePages offPages) throws IOException {
     final PageManager pageManager = database.getPageManager();
     final CommittedWalk walk = new CommittedWalk();
     boolean inMotion = false;
@@ -6749,9 +6799,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         committedWalkRedos.incrementAndGet();
     }
 
-    if (!inMotion || !database.getWrappedDatabaseInstance().isLeader())
-      // A broken chain, or a replica: its replicated apply does not take the lock, so a redo under it would not exclude it
+    if (!inMotion)
+      // A broken chain
       return null;
+    if (!database.getWrappedDatabaseInstance().isLeader())
+      // A replica: its replicated apply does not take the lock, so a redo under it would not exclude it
+      return GAVE_UP_IN_MOTION;
 
     committedWalkLockRedos.incrementAndGet();
     try {
@@ -6765,7 +6818,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 && validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false) != CHAIN_READ_CHANGED
                 && pageManager.getPublicationSequence() == sequence)
           return walk.served(offPages);
-        return null;
+        return GAVE_UP_IN_MOTION;
       });
     } catch (final RuntimeException e) {
       if (e.getCause() instanceof IOException ioException)

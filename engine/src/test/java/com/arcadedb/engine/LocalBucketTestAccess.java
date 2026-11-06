@@ -18,6 +18,8 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.database.DatabaseInternal;
+
 /**
  * Test-scope access to the package-private test seams of {@link LocalBucket} for tests of other packages (Task 14 of #10662), so the
  * seams themselves need not be public.
@@ -29,5 +31,15 @@ public final class LocalBucketTestAccess {
   /** Sets {@link LocalBucket#committedWalkHookForTesting}: run by every committed-chain walk once it read the head chunk; null clears. */
   public static void setCommittedWalkHook(final Runnable hook) {
     LocalBucket.committedWalkHookForTesting = hook;
+  }
+
+  /** Opens a publication on the page manager of the database, as an entry half applied would: every committed read meets it open. */
+  public static void beginPublication(final DatabaseInternal database) {
+    database.getPageManager().beginPublication();
+  }
+
+  /** Closes a publication opened by {@link #beginPublication}. */
+  public static void endPublication(final DatabaseInternal database) {
+    database.getPageManager().endPublication();
   }
 }

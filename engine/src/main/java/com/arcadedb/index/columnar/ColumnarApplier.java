@@ -210,21 +210,7 @@ final class ColumnarApplier {
     int failed(final int page, final long nowMs) {
       final int i = indexOf(page);
       if (i < 0) {
-        if (size == pages.length) {
-          final int capacity = Math.max(4, size * 2);
-          pages = Arrays.copyOf(pages, capacity);
-          attempts = Arrays.copyOf(attempts, capacity);
-          dueMs = Arrays.copyOf(dueMs, capacity);
-          remarked = Arrays.copyOf(remarked, capacity);
-          loggedMs = Arrays.copyOf(loggedMs, capacity);
-        }
-        pages[size] = page;
-        attempts[size] = 1;
-        dueMs[size] = nowMs + backoffMs(1);
-        remarked[size] = false;
-        loggedMs[size] = NEVER;
-        size++;
-        refreshNextDue();
+        add(page, 1, nowMs);
         return 1;
       }
       if (remarked[i]) {
@@ -234,6 +220,42 @@ final class ColumnarApplier {
         refreshNextDue();
       }
       return attempts[i];
+    }
+
+    /**
+     * A visit gave up reading a record of the page because publications stayed open through every attempt (#11364): nothing is wrong
+     * with the record. The page is retried at the first backoff, whatever its failed attempts so far, and the visit is not a failed
+     * attempt: it never brings the page closer to a {@value ColumnarApplier#UNREADABLE_ATTEMPTS_BEFORE_REBUILD}-attempt rebuild.
+     */
+    void inMotion(final int page, final long nowMs) {
+      final int i = indexOf(page);
+      if (i < 0) {
+        add(page, 0, nowMs);
+        return;
+      }
+      if (remarked[i]) {
+        dueMs[i] = nowMs + backoffMs(1);
+        remarked[i] = false;
+        refreshNextDue();
+      }
+    }
+
+    private void add(final int page, final int failedAttempts, final long nowMs) {
+      if (size == pages.length) {
+        final int capacity = Math.max(4, size * 2);
+        pages = Arrays.copyOf(pages, capacity);
+        attempts = Arrays.copyOf(attempts, capacity);
+        dueMs = Arrays.copyOf(dueMs, capacity);
+        remarked = Arrays.copyOf(remarked, capacity);
+        loggedMs = Arrays.copyOf(loggedMs, capacity);
+      }
+      pages[size] = page;
+      attempts[size] = failedAttempts;
+      dueMs[size] = nowMs + backoffMs(1);
+      remarked[size] = false;
+      loggedMs[size] = NEVER;
+      size++;
+      refreshNextDue();
     }
 
     /**
@@ -604,6 +626,8 @@ final class ColumnarApplier {
     private boolean           unreadableHere;
     /** The page was past the committed page count: retried, but neither counted, logged nor rebuilt as unreadable. */
     private boolean           pastCount;
+    /** A record of the page was unreadable, or the page itself: a failed attempt. */
+    private boolean           failedHere;
     private boolean           recordReported;
     private RuntimeException  unreadableCause;
     /** Failing values of the staged records by column, counted after the publish so a failed pass counts nothing. */
@@ -659,7 +683,7 @@ final class ColumnarApplier {
           } else if (pastCount)
             retries.notVisible(page, nowMs);
           else
-            corrupt |= failed(retries, page, nowMs);
+            corrupt |= retry(retries, page, nowMs);
         }
         for (int i = 0; i < ownerCount; ) {
           final int page = (int) (owners[i] / maxRecordsInPage);
@@ -668,7 +692,7 @@ final class ColumnarApplier {
             end++;
           applyOwners(page, i, end);
           if (unreadableHere)
-            corrupt |= failed(retries, page, nowMs);
+            corrupt |= retry(retries, page, nowMs);
           i = end;
         }
 
@@ -728,6 +752,19 @@ final class ColumnarApplier {
         database = null;
         externalValues = null;
       }
+    }
+
+    /**
+     * Schedules the retry of a page with a record that could not be read: a failed attempt, unless every record that failed was only
+     * given up on open publications (#11364). True when the page is due for a rebuild.
+     */
+    private boolean retry(final UnreadablePages retries, final int page, final long nowMs) {
+      if (failedHere)
+        return failed(retries, page, nowMs);
+      retries.inMotion(page, nowMs);
+      LogManager.instance().log(this, Level.FINE, "Records of page %d of bucket '%s' were given up on open publications: the page is "
+          + "retried without counting as unreadable", null, page, projection.bucketName());
+      return false;
     }
 
     /**
@@ -902,6 +939,7 @@ final class ColumnarApplier {
       changed = false;
       unreadableHere = false;
       pastCount = false;
+      failedHere = false;
       unreadableCause = null;
       final OverlayPageBlock current = projection.overlay().page(page);
       if (current != null)
@@ -974,6 +1012,14 @@ final class ColumnarApplier {
 
     private void unreadable() {
       unreadable++;
+      unreadableHere = true;
+      failedHere = true;
+    }
+
+    /** A record given up on open publications (#11364): kept as it was and retried, but neither counted nor a failed attempt. */
+    @Override
+    public void onRecordInMotion(final long position) {
+      markRecord((int) (position % maxRecordsInPage));
       unreadableHere = true;
     }
 
