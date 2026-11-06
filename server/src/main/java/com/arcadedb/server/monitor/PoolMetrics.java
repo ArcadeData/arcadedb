@@ -23,6 +23,8 @@ import com.arcadedb.database.async.AsyncCommandPool;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
+import com.arcadedb.index.columnar.ColumnarApplyPool;
+import com.arcadedb.index.columnar.ColumnarMaintenancePool;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
@@ -107,6 +109,14 @@ public final class PoolMetrics implements MeterBinder {
     final AsyncCommandPool acp = AsyncCommandPool.getInstance();
     bindPool(registry, "async_command", "AsyncCommandPool asynchronously dispatched command/query pool",
         acp::getPoolStats);
+
+    // The COLUMNAR index pools (apply passes, and flush/merge/rebuild maintenance). Both have an UNBOUNDED queue and no
+    // caller-runs policy by design, so caller_run_fallbacks stays 0 and queue_capacity_remaining is -1; queue_depth is
+    // the saturation signal.
+    bindPool(registry, "columnar_apply", "ColumnarApplyPool columnar projection apply pool",
+        ColumnarApplyPool.getInstance()::getPoolStats);
+    bindPool(registry, "columnar_maintenance", "ColumnarMaintenancePool columnar flush/merge/rebuild pool",
+        ColumnarMaintenancePool.getInstance()::getPoolStats);
 
     bindQueryAdmissionGate(registry, QueryAdmissionGate.getInstance());
 
