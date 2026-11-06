@@ -48,11 +48,11 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -730,8 +730,10 @@ public class TransactionManager {
 
   /**
    * A commit whose WAL record is queued by the group commit ({@link #queueTransactionToWAL}) reached its first columnar mark: no WAL
-   * file holds the record yet, so none is dropped until {@link #queuedColumnarMarksEnded()} (spec 6.2, the queued twin of
+   * file holds the record yet, so none is dropped until {@link #queuedColumnarMarksEnded(long)} (spec 6.2, the queued twin of
    * {@link WALFile#columnarMarksStarted()}). Called before the pages are published.
+   *
+   * @return the retire epoch the commit is counted under: the caller passes it to the matching {@code queuedColumnarMarksEnded}
    */
   public long queuedColumnarMarksStarted() {
     while (true) {
@@ -768,6 +770,7 @@ public class TransactionManager {
    */
   private boolean heldByQueuedColumnarMarks(final WALFile file) {
     final long current = walRetireEpoch.get();
+    // the clamp is only a safety net: a file of the inactive pool always carries its stamp
     for (final Map.Entry<Long, AtomicInteger> entry : queuedColumnarMarks.headMap(Math.min(file.getRetireEpoch(), current + 1)).entrySet()) {
       final AtomicInteger counter = entry.getValue();
       if (counter.get() > 0)
