@@ -129,6 +129,8 @@ public class RemoteHttpComponent extends RWLockContext {
   private         int                         apiVersion                = 1;
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private volatile Pair<String, Integer>       leaderServer;
+  // The server that answered the last successful reload: the one address a failover has just proven to be reachable
+  private volatile Pair<String, Integer>       lastConfigurationSource;
   private volatile int                         currentReplicaServerIndex = -1;
   // Learned from any response of the server: it answers a request that carries the same X-Request-Id from its replay cache. The value
   // names the server process, kept per server (host:port) and sent back by a retry to that same server only, so a server that restarted
@@ -522,6 +524,8 @@ public class RemoteHttpComponent extends RWLockContext {
     boolean mayHaveBeenSent = false;
     // The process each server was known to be when the call started: another thread's answer in between must not change what this retry expects
     final Map<String, String> instancesAtStart = requestId != null ? new HashMap<>(serverReplayInstances) : Map.of();
+    // Once a reload found no server able to answer, asking them all again on every retry only multiplies the timeouts of a dead cluster
+    boolean reloadFailed = false;
 
     for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
@@ -663,15 +667,21 @@ public class RemoteHttpComponent extends RWLockContext {
           // Failing over hands the same write to the next server, which runs it again if the first one applied it.
           refuseToReplayAPossiblyAppliedRequest(e, replayable, messageLabel, connectToServer);
 
-          if (!reloadClusterConfiguration())
-            throw new RemoteException("Error on executing remote operation " + messageLabel + ", no server available", e);
+          // A failed reload is not the end of the call: the servers that could not name a leader during an election can still answer,
+          // and the retries left walk the list the client kept
+          if (!reloadFailed)
+            reloadFailed = !reloadClusterConfiguration();
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
           final Pair<String, Integer> snapshotLeader = leaderServer;
+          final Pair<String, Integer> answeringServer = lastConfigurationSource;
 
           if (leaderIsPreferable && snapshotLeader != null && !currentConnectToServer.equals(snapshotLeader)) {
             connectToServer = snapshotLeader;
-          } else
+          } else if (answeringServer != null && !answeringServer.equals(currentConnectToServer))
+            // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304)
+            connectToServer = answeringServer;
+          else
             connectToServer = getNextReplicaAddress();
 
           if (connectToServer != null)
@@ -916,110 +926,134 @@ public class RemoteHttpComponent extends RWLockContext {
     return builder;
   }
 
+  /**
+   * Reads the topology when the client connects. There is no earlier topology to protect here, so a server that cannot give one is
+   * used directly: the client works against any reachable node, whose topology may also name internal addresses it cannot reach.
+   * A failover goes through {@link #reloadClusterConfiguration()} instead, where a failure must be reported, not absorbed.
+   */
   void requestClusterConfiguration() {
-    requestClusterConfiguration(true);
-  }
-
-  private void requestClusterConfiguration(final boolean fallbackToOriginalServer) {
     final JSONObject response;
     try {
-      HttpRequest request = createRequestBuilder("GET", getUrl("server?mode=cluster"))
-          .GET()
-          .build();
-
-      HttpResponse<String> httpResponse = sendWithWatchdog(request);
-
-      if (httpResponse.statusCode() != 200) {
-        final Exception detail = manageException(httpResponse, "cluster configuration");
-        if (detail instanceof SecurityException)
-          throw detail;
-        throw new RemoteException("Error on requesting cluster configuration", detail);
-      }
-
-      response = new JSONObject(httpResponse.body());
-
-      LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
-
+      response = fetchClusterConfiguration(new Pair<>(currentServer, currentPort));
       publishAdvertisedPorts(response);
-
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
-      if (!fallbackToOriginalServer)
-        throw new RemoteException("Error on requesting cluster configuration", e);
-
-      // Fall back to the original server when the cluster configuration is unavailable.
-      // This allows the client to work against any reachable node without requiring
-      // the full cluster topology (which may contain internal addresses unreachable from the client).
+      if (e instanceof InterruptedException)
+        Thread.currentThread().interrupt();
       LogManager.instance()
           .log(this, Level.WARNING, "Unable to fetch cluster configuration from %s:%d, using direct connection (%s)",
-              null, currentServer, currentPort, e.getMessage());
-      leaderServer = new Pair<>(originalServer, originalPort);
-      publishReplicaServerList(new ArrayList<>());
+              null, currentServer, currentPort, describeFailure(e));
+      publishDirectConnection();
       // A REFRESH THAT FAILED MUST NOT LEAVE THE PORTS OF THE PREVIOUS ANSWER BEHIND
       advertisedPorts = Map.of();
       return;
     }
 
     try {
-      if (!response.has("ha")) {
-        leaderServer = new Pair<>(originalServer, originalPort);
-        publishReplicaServerList(new ArrayList<>());
-        return;
-      }
-
-      final JSONObject ha = response.getJSONObject("ha");
-
-      final String cfgLeaderServer = (String) ha.get("leaderAddress");
-
-      final String[] leaderServerParts = HostUtil.parseHostAddress(cfgLeaderServer, HostUtil.HA_DEFAULT_PORT);
-
-      final Pair<String, Integer> newLeaderServer =
-          new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
-
-      final String cfgReplicaServers = (String) ha.get("replicaAddresses");
-
-      // PARSE SERVER LISTS INTO A FRESH LIST, THEN PUBLISH IT ATOMICALLY (SEE publishReplicaServerList).
-      // Never mutate the live list in place: a concurrent getNextReplicaAddress() could observe a
-      // non-empty size and then read past the end after a clear() (issue #4579).
-      final List<Pair<String, Integer>> newReplicaServerList = new ArrayList<>();
-
-      if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
-        final String[] serverEntries = cfgReplicaServers.split(",");
-        for (final String serverEntry : serverEntries) {
-          try {
-            final String[] serverParts = HostUtil.parseHostAddress(serverEntry, HostUtil.CLIENT_DEFAULT_PORT);
-            final String sHost = serverParts[0];
-            final int sPort = Integer.parseInt(serverParts[1]);
-
-            newReplicaServerList.add(new Pair(sHost, sPort));
-          } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
-          }
-        }
-      }
-
-      leaderServer = newLeaderServer;
-      publishReplicaServerList(newReplicaServerList);
-
-      LogManager.instance()
-          .log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s strategy=%s",
-              leaderServer, replicaServerList, connectionStrategy);
-
-    } catch (final SecurityException e) {
-      throw e;
+      if (response.has("ha"))
+        publishTopology(parseTopology(response.getJSONObject("ha")));
+      else
+        publishDirectConnection();
     } catch (final Exception e) {
-      if (!fallbackToOriginalServer)
-        throw new RemoteException("Error on parsing cluster configuration", e);
-
       // Cluster configuration response was malformed or contained unresolvable addresses.
       // Fall back to direct connection.
       LogManager.instance()
           .log(this, Level.WARNING, "Unable to parse cluster configuration, using direct connection (%s)",
-              null, e.getMessage());
-      leaderServer = new Pair<>(originalServer, originalPort);
-      publishReplicaServerList(new ArrayList<>());
+              null, describeFailure(e));
+      publishDirectConnection();
     }
+  }
+
+  /**
+   * Refreshes the topology from one server and fails if it cannot give one. Nothing is published until the whole answer has been
+   * read, so whatever goes wrong leaves the client with what it knew (issue #11304).
+   */
+  private void refreshClusterConfiguration(final Pair<String, Integer> server) throws Exception {
+    final JSONObject response = fetchClusterConfiguration(server);
+
+    if (response.has("ha")) {
+      final ClusterTopology topology = parseTopology(response.getJSONObject("ha"));
+      publishAdvertisedPorts(response);
+      publishTopology(topology);
+    } else if (server.equals(new Pair<>(originalServer, originalPort))) {
+      publishAdvertisedPorts(response);
+      publishDirectConnection();
+    } else
+      // A node that is not in the cluster, or not yet, cannot speak for it: this is not a standalone server the client was given
+      throw new RemoteException("Server " + server.getFirst() + ":" + server.getSecond() + " answered without a cluster configuration");
+  }
+
+  private JSONObject fetchClusterConfiguration(final Pair<String, Integer> server) throws Exception {
+    final HttpRequest request = createRequestBuilder("GET", buildUrl(server.getFirst(), server.getSecond(), "server?mode=cluster"))
+        .GET()
+        .build();
+
+    final HttpResponse<String> httpResponse = sendWithWatchdog(request);
+
+    if (httpResponse.statusCode() != 200) {
+      final Exception detail = manageException(httpResponse, "cluster configuration");
+      if (detail instanceof SecurityException)
+        throw detail;
+      throw new RemoteException("Error on requesting cluster configuration", detail);
+    }
+
+    final JSONObject response = new JSONObject(httpResponse.body());
+
+    LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
+
+    return response;
+  }
+
+  private ClusterTopology parseTopology(final JSONObject ha) {
+    final String cfgLeaderServer = (String) ha.get("leaderAddress");
+
+    final String[] leaderServerParts = HostUtil.parseHostAddress(cfgLeaderServer, HostUtil.HA_DEFAULT_PORT);
+
+    final Pair<String, Integer> leader = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+
+    final String cfgReplicaServers = (String) ha.get("replicaAddresses");
+
+    // PARSE SERVER LISTS INTO A FRESH LIST, THEN PUBLISH IT ATOMICALLY (SEE publishReplicaServerList).
+    // Never mutate the live list in place: a concurrent getNextReplicaAddress() could observe a
+    // non-empty size and then read past the end after a clear() (issue #4579).
+    final List<Pair<String, Integer>> newReplicaServerList = new ArrayList<>();
+
+    if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
+      final String[] serverEntries = cfgReplicaServers.split(",");
+      for (final String serverEntry : serverEntries) {
+        try {
+          final String[] serverParts = HostUtil.parseHostAddress(serverEntry, HostUtil.CLIENT_DEFAULT_PORT);
+          final String sHost = serverParts[0];
+          final int sPort = Integer.parseInt(serverParts[1]);
+
+          newReplicaServerList.add(new Pair(sHost, sPort));
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
+        }
+      }
+    }
+
+    return new ClusterTopology(leader, newReplicaServerList);
+  }
+
+  private void publishTopology(final ClusterTopology topology) {
+    leaderServer = topology.leader();
+    publishReplicaServerList(topology.replicas());
+
+    LogManager.instance()
+        .log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s strategy=%s",
+            leaderServer, replicaServerList, connectionStrategy);
+  }
+
+  private void publishDirectConnection() {
+    leaderServer = new Pair<>(originalServer, originalPort);
+    publishReplicaServerList(new ArrayList<>());
+  }
+
+  /** What to say about a failure in a log line: a refused connection, for one, carries no message of its own. */
+  static String describeFailure(final Exception e) {
+    return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
   }
 
   /**
@@ -1079,42 +1113,49 @@ public class RemoteHttpComponent extends RWLockContext {
     return snapshot.get(index);
   }
 
+  /**
+   * Finds a server able to give the topology, asking the known replicas first, then the old leader, then the address the client was
+   * given, which is the way back in when the topology names addresses this client cannot reach. A failed refresh changes nothing the
+   * client routes by: a candidate is only probed, and {@link #currentServer} moves once one has answered, so that calls running
+   * meanwhile are not sent to a server that may take a whole timeout to prove dead.
+   *
+   * @return {@code false} if no known server could answer, in which case the leader and the replica list are the ones it started with
+   */
   boolean reloadClusterConfiguration() {
+    // ASK REPLICA FIRST, FROM A COPY: a refresh below swaps the live list, and a concurrent reload may too (issue #4579)
+    final List<Pair<String, Integer>> candidates = new ArrayList<>(replicaServerList);
+
     final Pair<String, Integer> oldLeader = leaderServer;
+    if (oldLeader != null && !candidates.contains(oldLeader))
+      candidates.add(oldLeader);
 
-    // ASK REPLICA FIRST. Snapshot the reference: requestClusterConfiguration() below may swap the
-    // live list mid-loop, so iterate over the stable snapshot taken here (issue #4579).
-    final List<Pair<String, Integer>> snapshot = replicaServerList;
-    for (final Pair<String, Integer> connectToServer : snapshot) {
-      currentServer = connectToServer.getFirst();
-      currentPort = connectToServer.getSecond();
+    final Pair<String, Integer> original = new Pair<>(originalServer, originalPort);
+    if (!candidates.contains(original))
+      candidates.add(original);
 
+    for (final Pair<String, Integer> candidate : candidates) {
       try {
-        requestClusterConfiguration(false);
+        refreshClusterConfiguration(candidate);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RemoteException("Request interrupted", e);
       } catch (final Exception e) {
-        // IGNORE: TRY NEXT
+        LogManager.instance()
+            .log(this, Level.WARNING, "Unable to fetch cluster configuration from %s:%d, trying the next known server (%s)", null,
+                candidate.getFirst(), candidate.getSecond(), describeFailure(e));
         continue;
       }
 
-      if (leaderServer != null)
-        return true;
+      currentServer = candidate.getFirst();
+      currentPort = candidate.getSecond();
+      lastConfigurationSource = candidate;
+      return true;
     }
 
-    if (oldLeader != null) {
-      // RESET LEADER SERVER TO AVOID LOOP
-      leaderServer = null;
-
-      // ASK TO THE OLD LEADER
-      currentServer = oldLeader.getFirst();
-      currentPort = oldLeader.getSecond();
-      try {
-        requestClusterConfiguration(false);
-      } catch (final Exception e) {
-        return false;
-      }
-    }
-
-    return leaderServer != null;
+    lastConfigurationSource = null;
+    // A REFRESH THAT FAILED MUST NOT LEAVE THE PORTS OF THE PREVIOUS ANSWER BEHIND
+    advertisedPorts = Map.of();
+    return false;
   }
 
   // Routing for raw httpClient.send() callers (RemoteDatabase.begin/commit/rollback).
@@ -1124,6 +1165,10 @@ public class RemoteHttpComponent extends RWLockContext {
     final Pair<String, Integer> pin = getStickyPin();
     final String host = pin != null ? pin.getFirst() : currentServer;
     final int port = pin != null ? pin.getSecond() : currentPort;
+    return buildUrl(host, port, command);
+  }
+
+  private String buildUrl(final String host, final int port, final String command) {
     return protocol + "://" + host + ":" + port + "/api/v" + apiVersion + "/" + command;
   }
 
@@ -1450,5 +1495,9 @@ public class RemoteHttpComponent extends RWLockContext {
 
     return new RemoteException(
         "Error on executing remote command '" + operation + "'" + (promoted ? ": " + explanation : "") + envelope);
+  }
+
+  /** A cluster configuration read in full: only this, never a part of it, is published. */
+  private record ClusterTopology(Pair<String, Integer> leader, List<Pair<String, Integer>> replicas) {
   }
 }
