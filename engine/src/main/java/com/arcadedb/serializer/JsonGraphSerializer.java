@@ -81,7 +81,8 @@ public class JsonGraphSerializer extends JsonSerializer {
     final RID rid = document.getIdentity();
     if (rid != null)
       object.put("r", rid.toString());
-    object.put("t", document.getTypeName());
+    if (document.getTypeName() != null)
+      object.put("t", document.getTypeName());
 
     final DocumentType type = precisionAwareTemporals ? document.getType() : null;
 

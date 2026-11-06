@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JavaBinarySerializer;
 import com.arcadedb.serializer.JsonSerializer;
@@ -125,21 +126,24 @@ public abstract class BaseDocument extends BaseRecord implements Document, Docum
   }
 
   public LocalDate getLocalDate(final String propertyName) {
-    return (LocalDate) Type.convertOrNull(database, get(propertyName), LocalDate.class, type.getPropertyIfExists(propertyName));
+    return (LocalDate) Type.convertOrNull(database, get(propertyName), LocalDate.class, declaredProperty(propertyName));
   }
 
   public LocalDateTime getLocalDateTime(final String propertyName) {
-    return (LocalDateTime) Type.convertOrNull(database, get(propertyName), LocalDateTime.class,
-        type.getPropertyIfExists(propertyName));
+    return (LocalDateTime) Type.convertOrNull(database, get(propertyName), LocalDateTime.class, declaredProperty(propertyName));
   }
 
   public ZonedDateTime getZonedDateTime(final String propertyName) {
-    return (ZonedDateTime) Type.convertOrNull(database, get(propertyName), ZonedDateTime.class,
-        type.getPropertyIfExists(propertyName));
+    return (ZonedDateTime) Type.convertOrNull(database, get(propertyName), ZonedDateTime.class, declaredProperty(propertyName));
   }
 
   public Instant getInstant(final String propertyName) {
-    return (Instant) Type.convertOrNull(database, get(propertyName), Instant.class, type.getPropertyIfExists(propertyName));
+    return (Instant) Type.convertOrNull(database, get(propertyName), Instant.class, declaredProperty(propertyName));
+  }
+
+  /** The schema property behind {@code propertyName}, or null when it declares none or this record has no type (issue #11335). */
+  private Property declaredProperty(final String propertyName) {
+    return type != null ? type.getPropertyIfExists(propertyName) : null;
   }
 
   @Override
@@ -171,8 +175,12 @@ public abstract class BaseDocument extends BaseRecord implements Document, Docum
     return propertiesStartingPosition;
   }
 
+  /**
+   * The name of this record's type, or {@code null} for a record read from a bucket no type owns any more
+   * ({@code ALTER TYPE ... BUCKET -x} leaves the records in place, issue #11335).
+   */
   public String getTypeName() {
-    return type.getName();
+    return type != null ? type.getName() : null;
   }
 
   @Override

@@ -62,6 +62,36 @@ class ExportBackupAuthorizationIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #11334: a user whose group grants full CRUD on every type (the shipped {@code crud} group) stays refused, because these
+   * statements also write to the server filesystem and bypass any narrower per-type grant, but the refusal has to name the statement
+   * and the permission. It said "is not allowed to update security", which reads like an unrelated bug.
+   */
+  @Test
+  void crudTokenIsToldWhichStatementIsRefusedAndWhichPermissionItTakes() throws Exception {
+    testEachServer(serverIndex -> {
+      final String token = "Bearer " + createToken(serverIndex, "crud-token",
+          new JSONArray().put("createRecord").put("readRecord").put("updateRecord").put("deleteRecord"));
+      try {
+        for (final String[] statement : new String[][] { { "BACKUP DATABASE", "BACKUP DATABASE" },
+            { "EXPORT DATABASE file://probe-export.jsonl.tgz WITH `overwrite` = true", "EXPORT DATABASE" },
+            { "IMPORT DATABASE file://nowhere.csv", "IMPORT DATABASE" } }) {
+          final HttpURLConnection connection = post(serverIndex, token, statement[0]);
+          try {
+            assertThat(connection.getResponseCode()).as(statement[0]).isEqualTo(403);
+            assertThat(readError(connection)).as(statement[0])//
+                .contains("not allowed to run " + statement[1]).contains("'updateSecurity' database permission")
+                .doesNotContain("not allowed to update security");
+          } finally {
+            connection.disconnect();
+          }
+        }
+      } finally {
+        deleteToken(serverIndex, "crud-token");
+      }
+    });
+  }
+
   @Test
   void adminCanStillExportAndBackup() throws Exception {
     testEachServer(serverIndex -> {
@@ -79,12 +109,7 @@ class ExportBackupAuthorizationIT extends BaseGraphServerTest {
   }
 
   private int command(final int serverIndex, final String auth, final String sql) throws Exception {
-    final HttpURLConnection connection = open(serverIndex, "/api/v1/command/" + getDatabaseName(), "POST", auth);
-    connection.setDoOutput(true);
-    connection.setRequestProperty("Content-Type", "application/json");
-    final JSONObject payload = new JSONObject().put("language", "sql").put("command", sql);
-    connection.getOutputStream().write(payload.toString().getBytes());
-    connection.connect();
+    final HttpURLConnection connection = post(serverIndex, auth, sql);
     try {
       return connection.getResponseCode();
     } finally {
@@ -92,14 +117,28 @@ class ExportBackupAuthorizationIT extends BaseGraphServerTest {
     }
   }
 
+  private HttpURLConnection post(final int serverIndex, final String auth, final String sql) throws Exception {
+    final HttpURLConnection connection = open(serverIndex, "/api/v1/command/" + getDatabaseName(), "POST", auth);
+    connection.setDoOutput(true);
+    connection.setRequestProperty("Content-Type", "application/json");
+    final JSONObject payload = new JSONObject().put("language", "sql").put("command", sql);
+    connection.getOutputStream().write(payload.toString().getBytes());
+    connection.connect();
+    return connection;
+  }
+
   private String createReadOnlyToken(final int serverIndex, final String name) throws Exception {
+    return createToken(serverIndex, name, new JSONArray().put("readRecord"));
+  }
+
+  private String createToken(final int serverIndex, final String name, final JSONArray typeAccess) throws Exception {
     final ApiTokenConfiguration tokenConfig = getServer(serverIndex).getSecurity().getApiTokenConfiguration();
     tokenConfig.listTokens().stream()
         .filter(t -> name.equals(t.getString("name", "")))
         .forEach(t -> tokenConfig.deleteToken(t.getString("tokenHash")));
 
     final JSONObject permissions = new JSONObject()
-        .put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))))
+        .put("types", new JSONObject().put("*", new JSONObject().put("access", typeAccess)))
         .put("database", new JSONArray()); // no updateSecurity
 
     final HttpURLConnection connection = open(serverIndex, "/api/v1/server/api-tokens", "POST", basicAuth());

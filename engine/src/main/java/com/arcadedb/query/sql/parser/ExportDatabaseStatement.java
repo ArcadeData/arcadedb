@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.DateUtils;
 
 import java.io.File;
@@ -61,7 +60,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     // identity actually holds, and writes the dump to the server filesystem (data exfiltration). Like its sibling
     // whole-database operation IMPORT DATABASE (which requires UPDATE_SECURITY), it is restricted to administrative
     // users (GHSA / arcadedb-operations#654). In embedded mode (no security configured) this check is a no-op.
-    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+    checkWholeDatabaseStatementAllowed(context, "EXPORT DATABASE");
 
     // THE DEFAULT NAME IS RESOLVED INTO A LOCAL, NEVER BACK INTO this.url. THE PARSED STATEMENT IS HELD IN
     // StatementCache AND THE SAME INSTANCE IS HANDED TO EVERY LATER EXECUTION OF THE SAME TEXT, SO ASSIGNING IT

@@ -22,6 +22,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.JsonSerializer;
@@ -202,6 +203,14 @@ public class ImmutableDocument extends BaseDocument {
     if (rid == null)
       return null;
 
+    // THE RECORD'S BUCKET BELONGS TO NO TYPE ANY MORE (ALTER TYPE ... BUCKET -x LEAVES ITS RECORDS IN PLACE). THERE IS NO SCHEMA
+    // TO CONVERT, VALIDATE OR INDEX A WRITE AGAINST, AND EVERY ONE OF THOSE STEPS READ THE TYPE WITHOUT A CHECK: SET, CONTENT,
+    // MERGE, REMOVE AND A BARE save() EACH ENDED ON A NullPointerException. REFUSED HERE, THE ONE PLACE A PERSISTENT RECORD
+    // BECOMES WRITABLE, SO NO WRITE PATH CAN REACH THEM (ISSUE #11335)
+    if (type == null)
+      throw new SchemaException("Cannot modify " + kind + " " + rid + ": bucket '" + database.getSchema().getBucketById(rid.getBucketId())
+          .getName() + "' belongs to no type. Attach it to a type with ALTER TYPE ... BUCKET + to update the record, or delete it");
+
     final TransactionContext transaction = database.getTransaction();
     final Record recordInCache = transaction.getRecordFromCache(rid);
     if (recordInCache instanceof MutableDocument)
@@ -372,7 +381,8 @@ public class ImmutableDocument extends BaseDocument {
     final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
-      result.put(TYPE_PROPERTY, type.getName());
+      if (type != null)
+        result.put(TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }
@@ -442,7 +452,8 @@ public class ImmutableDocument extends BaseDocument {
         .deserializeProperties(database, content, new EmbeddedModifierObject(this), rid);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
-      result.put(TYPE_PROPERTY, type.getName());
+      if (type != null)
+        result.put(TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
     }

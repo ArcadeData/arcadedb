@@ -119,7 +119,8 @@ public class JsonSerializer {
 
     if (document.getIdentity() != null)
       object.put(RID_PROPERTY, document.getIdentity().toString());
-    object.put(TYPE_PROPERTY, document.getTypeName());
+    if (document.getTypeName() != null)
+      object.put(TYPE_PROPERTY, document.getTypeName());
 
     final DocumentType type = document.getType();
     final Map<String, Object> documentAsMap = document.toMap();
@@ -161,7 +162,8 @@ public class JsonSerializer {
       final Document document = result.toElement();
       if (document.getIdentity() != null)
         object.put(RID_PROPERTY, document.getIdentity().toString());
-      object.put(TYPE_PROPERTY, document.getTypeName());
+      if (document.getTypeName() != null)
+        object.put(TYPE_PROPERTY, document.getTypeName());
 
       setMetadata(document, object);
 

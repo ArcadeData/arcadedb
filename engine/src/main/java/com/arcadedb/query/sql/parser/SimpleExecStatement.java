@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SingleOpExecutionPlan;
+import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 
 import java.util.Map;
 
@@ -39,6 +40,23 @@ public abstract class SimpleExecStatement extends Statement {
   }
 
   public abstract ResultSet executeSimple(CommandContext context);
+
+  /**
+   * Refuses a whole-database statement ({@code BACKUP}, {@code EXPORT}, {@code IMPORT DATABASE}) to a user that does not hold
+   * {@link DATABASE_ACCESS#UPDATE_SECURITY}. That grant is the privilege these statements ask for, not what they do, so the
+   * refusal says which statement was refused and which permission it takes: the plain check answered "is not allowed to update
+   * security" to a user who had asked for a backup (issue #11334).
+   */
+  protected static void checkWholeDatabaseStatementAllowed(final CommandContext context, final String statement) {
+    try {
+      context.getDatabase().checkPermissionsOnDatabase(DATABASE_ACCESS.UPDATE_SECURITY);
+    } catch (final SecurityException ignored) {
+      // NOT CHAINED: THE HTTP LAYER APPENDS THE CAUSE'S MESSAGE TO THE DETAIL IT SENDS, WHICH WOULD PUT THE WORDING BACK
+      throw new SecurityException("User '" + context.getDatabase().getCurrentUserName() + "' is not allowed to run " + statement
+          + ": it reaches the whole database whatever the user's per-type grants, so it requires the '"
+          + DATABASE_ACCESS.UPDATE_SECURITY.name + "' database permission");
+    }
+  }
 
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
     final BasicCommandContext context = new BasicCommandContext();
