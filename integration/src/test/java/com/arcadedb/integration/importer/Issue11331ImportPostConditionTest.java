@@ -129,6 +129,14 @@ class Issue11331ImportPostConditionTest {
   }
 
   @Test
+  void aSettingThatReadsLikeNoOtherIsRefusedListingTheSupportedOnes() {
+    final Result result = importDatabase("import database with foo = 'bar'");
+
+    assertThat(result.<String>getProperty("result")).isEqualTo("FAIL");
+    assertThat(result.<String>getProperty("reason")).contains("'foo'", "Supported settings", "commitEvery", "vertices");
+  }
+
+  @Test
   void theCommandLineRefusesASettingNobodyReadsToo() {
     assertThatThrownBy(() -> new Importer(new String[] { "-url", "file://x.csv", "-vertex", "x.csv" }))
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("'vertex'");
@@ -254,6 +262,23 @@ class Issue11331ImportPostConditionTest {
     final Result result = importFile("columns.dat", "<id>,<name>,<age>,<city>\n1,Ann,30,Rome\n2,Bob,40,Oslo\n");
 
     assertThat(result.<Long>getProperty("createdDocuments")).isEqualTo(2L);
+  }
+
+  /** The boundary of the first-line test, on the shapes either side of it. */
+  @Test
+  void theFirstLineTestTellsADocumentFromMarkupInCells() {
+    assertThat(SourceDiscovery.isXmlFirstLine("<a>x</a>")).isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<a><b>x</b><b>y</b></a>")).isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<a><b>x</b><b>y</b>")).as("a document that goes on past the line").isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<a v=\"1>2\"><b/>x, y</a>")).as("a > inside an attribute value").isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<?xml version=\"1.0\"?><a>x, y")).isTrue();
+
+    assertThat(SourceDiscovery.isXmlFirstLine("<a>x</a>,<b>y</b>")).as("text after the root").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("<a/><b/>")).as("two roots").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("<a>,<b>,<c>")).as("nothing closes").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("</a>x")).as("closes what never opened").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("<5>x</5>")).as("not an element name").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("<>x</>")).as("an empty tag").isFalse();
   }
 
   // ROUTE 4: AN EMPTY SOURCE IS ONE RULE
@@ -393,6 +418,8 @@ class Issue11331ImportPostConditionTest {
     assertThat(result.<Long>getProperty("createdRecords")).isEqualTo(2L);
     assertThat(result.<Long>getProperty("createdDocuments")).isEqualTo(2L);
     assertThat(result.hasProperty("warningMessages")).isFalse();
+    assertThat(database.iterateType("Document", true).next().asDocument().getPropertyNames())
+        .as("the characters the HTML check read are back for the format: the header is whole").contains("id", "name");
   }
 
   private void assertNothingCreated(final Result result, final String source, final String format) {

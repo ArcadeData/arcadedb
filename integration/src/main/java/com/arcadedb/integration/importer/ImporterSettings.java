@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 public class ImporterSettings {
   /**
@@ -256,7 +257,9 @@ public class ImporterSettings {
         closestDistance = distance;
       }
     }
-    return "Unknown importer setting '" + name + "'" + (closestDistance <= name.length() / 2 ? ". Did you mean '" + closest + "'?" : "");
+    if (closestDistance <= name.length() / 2)
+      return "Unknown importer setting '" + name + "'. Did you mean '" + closest + "'?";
+    return "Unknown importer setting '" + name + "'. Supported settings: " + new TreeSet<>(SETTINGS);
   }
 
   /** The Levenshtein distance between {@code a} and {@code b}. */
