@@ -1,10 +1,12 @@
 # Columnar Faceting - Roadmap (plan 0 of 7)
 
-> **For agentic workers:** this file is not executed task by task. It fixes the order, the gates and the cross-plan contract that plans 1-6 implement. Every plan reads it first.
+> **For agentic workers:** this file is not executed task by task. It fixes the order, the gates and the cross-plan contract that plans 1-7 implement. Every plan reads it first.
 
 **Goal:** deliver facets (terms, multi-valued, disjunctive, range, date histogram, hierarchical, distinct, stats) computed from an async, node-local, on-disk columnar projection, exact by default, in one round trip.
 
 **Spec:** `docs/superpowers/specs/2026-10-18-columnar-faceting-design.md` (section numbers below refer to it).
+
+**Status:** plans 1-7 are done and merged into `main` on 2026-11-06 as nine PRs, #11338 to #11346. What is still owed before the release that ships FACETS is listed in "Owed before the release"; open items are listed in "Plan 6 outcome" and "Tuning outcome".
 
 ## Plans and order
 
@@ -317,10 +319,12 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 
 ## Owed before the release
 
-- **Python bindings live in their own repository** (`ArcadeData/arcadedb-python`, user note 2026-10-23; tracked as sub-issue #10666). No plan in this branch touches Python, so every Python-side piece of this feature is done there, not here, and lands before the release that ships FACETS: the `FACETS` clause usable from the Python client, the `facets` member of query responses (HTTP JSON at top level, ndjson in the `stats` trailer as `stats.facets`, the shape `FacetResults.toJSON()` defines, values written as rows write them, with, under `typeHints`, a `@props` hint in the form of a row's hint: comma-separated `name:<type id>` entries, `value` for the values of the property and, since plan 5 Task 14, `sum`/`avg` for a STATS facet) parsed into client objects, and tests against a server built from this branch. The Python change follows the same API surface rule as Java: whatever plan 4 exposes over HTTP and gRPC is reachable from Python with the same shape.
+The feature is merged (#11338 to #11346). Both items below are still owed: the Python client and the user documentation.
+
+- **Python bindings live in their own repository** (`ArcadeData/arcadedb-python`, user note 2026-10-23; tracked in ArcadeData/arcadedb-python#289, sub-issues #290 to #293). No plan in this branch touches Python, so every Python-side piece of this feature is done there, not here, and lands before the release that ships FACETS: the `FACETS` clause usable from the Python client, the `facets` member of query responses (HTTP JSON at top level, ndjson in the `stats` trailer as `stats.facets`, the shape `FacetResults.toJSON()` defines, values written as rows write them, with, under `typeHints`, a `@props` hint in the form of a row's hint: comma-separated `name:<type id>` entries, `value` for the values of the property and, since plan 5 Task 14, `sum`/`avg` for a STATS facet) parsed into client objects, and tests against a server built from this branch. The Python change follows the same API surface rule as Java: whatever plan 4 exposes over HTTP and gRPC is reachable from Python with the same shape.
 - Measured by plan 4 Task 19 (200k records): with 5000 pending mutations a broad facet query's patch set is ~120k records (60% of its matches), because pending marks are page-granular; the absolute `arcadedb.columnar.patchBudget` (10000) alone answers `exact=false`. Since the plan 4 final fix the budget is relative: an answer stays exact while it patches at most `max(patchBudget, arcadedb.columnar.patchBudgetRatio x matches)` positions, the matches being those of the buckets patched; the ratio defaults to 1 (validated to [0, 1], 0 = absolute budget only), and the memory budget still bounds the patch sets. Re-measured at 200k / one bucket / 5000 mutations with the defaults: broad 120,152 patched, exact, 105 ms vs 329 ms GROUP BY (0.32x); no WHERE 120,723 patched, exact, 97 ms vs 320 ms (0.30x); selective 296 patched, exact. With ratio 0 the broad and no-WHERE cases answer `exact=false` at 27-30 ms. Remaining levers for tuning #10662: record-granular pending marks, patching per page read, a budget expressed in pages read.
 
-- **Python client (#10666), wire members of the plan 5 kinds** (plan 5 Task 14). The client must read, on every transport it speaks:
+- **Python client (ArcadeData/arcadedb-python#289), wire members of the plan 5 kinds** (plan 5 Task 14). The client must read, on every transport it speaks:
   - HTTP JSON and ndjson (`facets` at top level, `stats.facets` in the ndjson trailer, one object per alias, the shape `FacetResults.toJSON()` defines):
     - `type` takes `hierarchy`, `distinct` and `stats` besides `terms`, `range` and `histogram`.
     - HIERARCHY buckets: `value`, `count`, and the attributes `parent` (key of the first parent, `null` for a root and an orphan), `depth` (0 for a root and an orphan, -1 for a node no root reaches) and `orphan` (present, `true`, only on a value with no vertex in the hierarchy); the result has `otherCount` and `missing`. A bucket is an open object: ignore unknown members.
@@ -331,9 +335,9 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
   - gRPC carriers (plan 4): `GrpcFacets` (`exact` 1, `patched` 2, `lag_ms` 3, `aliases` 4 in declaration order, `results` 5 keyed by alias) on `QueryResult.facets` (5, the terminal batch of a CURSOR or MATERIALIZE_ALL stream only, an empty terminal batch when no row matched), `ExecuteCommandResponse.facets` (7) and `ExecuteQueryResponse.facets` (4); `GrpcFacetBucket` `value` (1), `key` (2, with presence), `from` (3), `to` (4), `count` (5), `missing` (6), `is_default` (7), `attributes_json` (8); `GrpcFacetResult` `type` (1), `source` (2), `reason` (3), `buckets` (4), `other_count` (5), `missing` (6), `has_counts` (7). A value kind no facet takes makes only that facet unavailable.
   - gRPC `GrpcFacetResult`: `after` (9), `min` (10), `max` (11), `has_after` (12), `sum` (13) and `avg` (14) as typed `GrpcValue`s decoded as the row decoder decodes them (`after` unset with `has_after` true means no value follows); `extensions_json` (8) now carries only `count` (STATS) and `value`/`exact` (DISTINCT); `GrpcFacetBucket.attributes_json` carries `parent`/`depth`/`orphan`.
   - `facet.searchValues(type, property, prefix, limit)`: ordinary result rows `{value, count}` plus `exact: false` on the rows of an inexact batch (absent when exact).
-- **User docs owed for HIERARCHY/DISTINCT/STATS/AFTER** (plan 5 Task 14, carried from plans 4 and 5): a facet alias spelled `unwind` or `timeout` needs back-ticks; FACETS inside a REPEATABLE_READ transaction count the latest committed data plus patching, not the transaction's snapshot; GROUP BY acceleration applies only to a GROUP BY without WHERE and declines inside a REPEATABLE_READ transaction; without ORDER BY the order of the groups may differ from the non-accelerated plan; `facet.searchValues` suggests only values of the applied dictionaries of indexed buckets (a value held only by an unindexed type, or only by the caller's uncommitted writes, is not suggested) and marks the rows of an inexact batch `exact: false`; clients echo `after` exactly as received (a reformatted date string can lose its sub-seconds). Read events (final fix round 2, N2/N3): a type with READ triggers or listeners (or a database with a read listener of its own) is never answered from the projection: its facets are counted by the fallback scan, so `arcadedb.columnar.maxFallbackScans` (default 2 per database) caps the concurrent FACETS queries on it (beyond it: `unavailable / fallback scans capped`); the read events fire for that scan as well as for the rows (twice per matched record with a WHERE); a database-level read listener also turns off the full-text match source of FACETS; GROUP BY acceleration runs the normal plan on such a type.
-- **Python client (#10666), plan 6**: nothing new on the wire. The client must retry a FACETS query (and an accelerated GROUP BY) that fails with HTTP 503 / `NeedRetryException`, as the Java HTTP client does: on a replica the query can meet a record chain a replicated apply is still writing (#10941) and is answered with a retryable `ConcurrentModificationException`. #10941 and #11283 are fixed; the retryable answer stays as a safety net until #11359.
-- **User docs owed from plan 6**:
+- **User docs owed for HIERARCHY/DISTINCT/STATS/AFTER** (plan 5 Task 14, carried from plans 4 and 5; tracked in ArcadeData/arcadedb-docs#526): a facet alias spelled `unwind` or `timeout` needs back-ticks; FACETS inside a REPEATABLE_READ transaction count the latest committed data plus patching, not the transaction's snapshot; GROUP BY acceleration applies only to a GROUP BY without WHERE and declines inside a REPEATABLE_READ transaction; without ORDER BY the order of the groups may differ from the non-accelerated plan; `facet.searchValues` suggests only values of the applied dictionaries of indexed buckets (a value held only by an unindexed type, or only by the caller's uncommitted writes, is not suggested) and marks the rows of an inexact batch `exact: false`; clients echo `after` exactly as received (a reformatted date string can lose its sub-seconds). Read events (final fix round 2, N2/N3): a type with READ triggers or listeners (or a database with a read listener of its own) is never answered from the projection: its facets are counted by the fallback scan, so `arcadedb.columnar.maxFallbackScans` (default 2 per database) caps the concurrent FACETS queries on it (beyond it: `unavailable / fallback scans capped`); the read events fire for that scan as well as for the rows (twice per matched record with a WHERE); a database-level read listener also turns off the full-text match source of FACETS; GROUP BY acceleration runs the normal plan on such a type.
+- **Python client (ArcadeData/arcadedb-python#289), plan 6**: nothing new on the wire. The client must retry a FACETS query (and an accelerated GROUP BY) that fails with HTTP 503 / `NeedRetryException`, as the Java HTTP client does: on a replica the query can meet a record chain a replicated apply is still writing (#10941) and is answered with a retryable `ConcurrentModificationException`. #10941 and #11283 are fixed; the retryable answer stays as a safety net until #11359.
+- **User docs owed from plan 6** (ArcadeData/arcadedb-docs#526):
   - A FACETS query or an accelerated GROUP BY on a replica can fail with a retryable `ConcurrentModificationException` (HTTP 503) when it reads a record a replicated apply is still writing. The message carries the CHECK DATABASE FIX hint, since the engine cannot tell this race from a real broken chunk chain. An atomic single-request command is retried automatically; an explicit client-managed transaction gets the exception at once. Retries are bounded, so a chain that stays broken surfaces.
   - After an unclean restart, facets read `scan` until the unclean-open page check ends.
   - A new replica, or a node that installs a snapshot, rebuilds its projection in the background (`snapshot_install` rebuild); facets read `scan` or `unavailable` meanwhile.
@@ -342,7 +346,7 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 ## Plan 5 additions
 
 - `HierarchyBuilder.build(DatabaseInternal, HierarchyDefinition, long generation, String indexName)`: the index name labels the cycle WARNING. `HierarchyView.nullKeys()` (records of the vertex type whose key is null) is part of the view contract (plan 5 Task 4).
-- gRPC `GrpcFacetResult` gains typed `after` (9), `min` (10), `max` (11) and `has_after` (12); a server no longer puts after/min/max in `extensions_json`. The Python client (#10666) must read these fields (plan 5 Task 9).
+- gRPC `GrpcFacetResult` gains typed `after` (9), `min` (10), `max` (11) and `has_after` (12); a server no longer puts after/min/max in `extensions_json`. The Python client (ArcadeData/arcadedb-python#289) must read these fields (plan 5 Task 9).
 - gRPC `GrpcFacetResult` gains typed `sum` (13) and `avg` (14); a server no longer puts sum/avg in `extensions_json`, a client still reads them there from an older server. HTTP STATS `sum`/`avg` go through the row encoder (a non-finite one by name) and get their own `@props` entries (`sum:<id>`, `avg:<id>`); `FacetResult.withStats` keeps every other member (plan 5 Task 14).
 - STATS of a property stored as -0.0 reads 0.0 (the projection normalizes it); documented, accepted (plan 5 Task 9).
 
@@ -361,7 +365,7 @@ Open follow-ups:
 - O6: external-bucket pages are not covered by the unclean-open page check.
 - O17: no HA coverage of HIERARCHY, DISTINCT and STATS facets (spec 10 does not require it).
 - The `FacetPatcher.recordAt` mapping above, removal tracked in #11359.
-- Coverage limit: no plan 6 HA test observes a `scan` or `unavailable` phase. `LeaderFailoverIT`'s new replica records the source sequence `[index, index, index]`, since its rebuild ends inside the first open, so "rebuilds in the background, answers correct meanwhile" is proven by the engine tests only. A larger ingest there (for example 50k) would make the rebuild outlast the first answers.
+- Coverage limit: no plan 6 HA test observes a `scan` or `unavailable` phase. `LeaderFailoverIT`'s new replica records the source sequence `[index, index, index]`, since its rebuild ends inside the first open, so "rebuilds in the background, answers correct meanwhile" is proven by the engine tests only. A larger ingest there (for example 50k) would make the rebuild outlast the first answers. Tracked in #11360.
 - Harness: `FacetDatabaseWrapper` counts a duplicate key on the first attempt of an INSERT as a failure, although an HTTP client-internal retry (uncounted) can cause it; the first failure of each operation is logged at WARN.
 
 Related issues (filed during plan 6):
@@ -416,7 +420,7 @@ Summary of what shipped:
 - **Always on**: a flush is due once a projection's unflushed pages reach 512 (`REAPPLY_FLOOR / 2`). This bounds the pages a steady
   ingest leaves unflushed. It is checked on the manager tick and the flush runs on the maintenance pool, so a single apply pass that
   applies more than 1,024 pages (a bulk commit rewriting thousands of pages) followed by a crash before the flush publishes can still
-  lead to an `unclean_pages` rebuild.
+  lead to an `unclean_pages` rebuild. The bound has no spacing, so scattered updates can flush on every apply tick: #11361.
 
 Reverted or not built, by measurement:
 - Reverted: pooled counters, cached AFTER plans, one-pass hierarchy build (LOSS), single publish fsync.
@@ -506,7 +510,7 @@ Follow-ups (open items):
    - Insert commits allocate 4.2% more bytes on every type.
    - Candidates: the record read path (Task 14 hardening) and the commit path (Task 15 marks, Task 15b stamping) touch only COLUMNAR
      databases and chunked records, so neither explains variant A (no COLUMNAR) or the insert allocation on a non-COLUMNAR type;
-     profile A and a plain scan before the merge.
+     profile A and a plain scan (not done before the merge, still owed).
 10. Update re-reads +15%: 500-record commits exceed the 16-records-per-page cap, so updates stay page-granular. Measure a larger cap or
     a stripe-only mark for heavy update batches.
 11. Unfiled side findings, pre-existing, outside facets, pending the user:
@@ -518,6 +522,12 @@ Follow-ups (open items):
     record read then raises a `ConcurrentModificationException`, which the apply pass counts as an unreadable attempt, and five in a
     row (`UNREADABLE_ATTEMPTS_BEFORE_REBUILD`) request a `corrupt` rebuild with no data at fault. Not observed: G3 saw 0 rebuilds.
     Suggested fix: count a publication-overlap conflict under a distinct cause that does not escalate, or reset the count when the
-    sequence moved.
+    sequence moved. Still open, tracked in #11364.
 13. Re-run the three-node load A/B with several runs per image on a quiet host. The single run per image of Task 17 points to higher
     query p95 (56.7-72.7 vs 51.2-58.1 ms) and lower throughput, but cannot separate the trees.
+14. Filed at merge time, still open:
+    - #11351: the apply pass and the rebuild read EXTERNAL values through `getRecord`, which fires user before-read listeners on a
+      background thread; needs an event-free external read.
+    - #11352: the database-wide `queuedColumnarMarks` gate can keep inactive WAL files undropped under sustained group-commit ingest.
+    - #11353: cap the number of facets per clause and the total buckets of one response.
+    - #11357: HIERARCHY ancestor expansion is unbounded in CPU and not deadline-checked on the projected path.
