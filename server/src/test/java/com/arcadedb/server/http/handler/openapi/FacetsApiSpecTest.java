@@ -120,10 +120,59 @@ class FacetsApiSpecTest {
     final List<String> problems = new ArrayList<>();
     final JSONObject facets = FacetResultsSamples.allKinds().toJSON();
     facets.getJSONObject("brand").put("surprise", 1);
-    facets.getJSONObject("brand").getJSONArray("buckets").getJSONObject(0).put("other", 1);
     facets.getJSONObject("size").remove("source");
     validateFacets("mutated", facets, problems);
-    assertThat(problems).hasSize(3);
+    assertThat(problems).hasSize(2);
+  }
+
+  /**
+   * Plan 4 open item, plan 5 Task 14: a bucket is open (the attributes a facet kind adds are merged into it), its hierarchy attributes
+   * are described as plan 5 delivers them, and an extra bucket member validates.
+   */
+  @Test
+  void facetBucketIsOpenAndDescribesTheHierarchyAttributes() {
+    final Schema<?> bucket = schema("FacetBucket");
+    assertThat(bucket.getAdditionalProperties()).isEqualTo(Boolean.TRUE);
+    assertThat(description(bucket, "parent")).contains("first parent").contains("null for a root");
+    assertThat(description(bucket, "depth")).contains("-1").contains("cycle");
+    assertThat(description(bucket, "orphan")).contains("no vertex");
+    final List<String> problems = new ArrayList<>();
+    final JSONObject facets = FacetResultsSamples.plan5Members().toJSON();
+    facets.getJSONObject("tree").getJSONArray("buckets").getJSONObject(0).put("other", 1);
+    validateFacets("open bucket", facets, problems);
+    assertThat(problems).isEmpty();
+  }
+
+  /** Plan 5 Task 14: the cursor, the STATS members and the type hints are described as the transports deliver them. */
+  @Test
+  void plan5MembersAreDescribedAsDelivered() {
+    final Schema<?> result = schema("FacetResult");
+    assertThat(description(result, "after")).contains("VALUE").contains("INCLUDE").contains("exactly as received").contains("sub-second");
+    for (final String extreme : List.of("min", "max"))
+      assertThat(description(result, extreme)).contains("type of the property").doesNotContain("a number");
+    assertThat(description(result, "sum")).contains("sum()").contains("non-finite");
+    assertThat(description(result, "avg")).contains("avg()").contains("non-finite");
+    assertThat(description(result, "@props")).contains("value:<type id>").contains("sum:<type id>").contains("avg:<type id>");
+    assertThat(schema("Facets").getDescription()).contains("REPEATABLE_READ").contains("latest committed");
+  }
+
+  /** Plan 5 Task 11 carries: what facet.searchValues suggests, and how an inexact count is marked. */
+  @Test
+  void facetSearchValuesRowsAreDocumented() {
+    final Schema<?> row = schema("FacetValueSuggestion");
+    assertThat(row).isNotNull();
+    assertThat(row.getProperties()).containsOnlyKeys("value", "count", "exact");
+    assertThat(row.getRequired()).containsExactlyInAnyOrder("value", "count");
+    assertThat(row.getDescription()).contains("facet.searchValues").contains("applied dictionaries").contains("indexed buckets")
+        .contains("uncommitted");
+    assertThat(description(row, "exact")).contains("false");
+    // discoverable from the response whose rows it describes
+    assertThat(((Schema<?>) schema("QueryResponse").getProperties().get("result")).getDescription()).contains("facet.searchValues")
+        .contains("#/components/schemas/FacetValueSuggestion");
+  }
+
+  private static String description(final Schema<?> schema, final String member) {
+    return ((Schema<?>) schema.getProperties().get(member)).getDescription();
   }
 
   private void validateFacets(final String label, final JSONObject facets, final List<String> problems) {
@@ -149,8 +198,9 @@ class FacetsApiSpecTest {
   }
 
   private static void validateObject(final String path, final JSONObject json, final Schema<?> schema, final List<String> problems) {
+    final boolean open = Boolean.TRUE.equals(schema.getAdditionalProperties());
     for (final String member : json.keySet())
-      if (!schema.getProperties().containsKey(member))
+      if (!open && !schema.getProperties().containsKey(member))
         problems.add(path + ": member '" + member + "' is not declared");
     if (schema.getRequired() != null)
       for (final String required : schema.getRequired())

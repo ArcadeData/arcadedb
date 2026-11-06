@@ -62,6 +62,14 @@ public interface ColumnarSnapshot extends AutoCloseable {
    */
   ColumnDefinition publishedColumn(String property);
 
+  /**
+   * The conversion counts {@code {failures, coerced}} of the column with that index file id, as the state the snapshot holds was
+   * published with them (see {@code ColumnarManifest}): what its values were extracted with. Null when unknown. A copy.
+   */
+  default long[] conversionCounts(final int indexFileId) {
+    return null;
+  }
+
   /** Releases the snapshot; calling it again does nothing. */
   @Override
   void close();

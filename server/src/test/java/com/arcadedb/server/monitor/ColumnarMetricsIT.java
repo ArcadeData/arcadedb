@@ -169,9 +169,11 @@ class ColumnarMetricsIT extends BaseGraphServerTest {
           "segments.dead.ratio", "files.open"))
         assertThat(meter("arcadedb.columnar." + name, "type", "Asset")).as(name).isNotNull();
       for (final String name : List.of("dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
-          "dictionary.size", "cardinality.exceeded"))
+          "conversion.coerced", "dictionary.size", "cardinality.exceeded"))
         assertThat(meter("arcadedb.columnar." + name, "type", "Asset", "property", "brand")).as(name).isNotNull();
       assertThat(meter("arcadedb.columnar.recovery.pages")).isNotNull();
+      for (final String name : List.of("groupby.accelerated", "groupby.fallbacks"))
+        assertThat(meter("arcadedb.columnar." + name)).as(name).isNotNull();
       assertThat(meter("arcadedb.columnar.cache.hits", "database", "*")).isNotNull();
       assertThat(meter("arcadedb.columnar.cache.misses", "database", "*")).isNotNull();
 

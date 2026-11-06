@@ -32,6 +32,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.facet.FacetBucket;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
@@ -535,8 +536,10 @@ public class JsonSerializer {
    * The {@code facets} member of a query response: {@link FacetResults#toJSON} with every value of the data (a term, a bound, a
    * cursor) written exactly as {@link #serializeResult} writes a row's value of the same property (final review C-I8): a date in the
    * schema's date format, a date-time in its date-time format at the column's precision, a non-finite number by its name (the engine
-   * already gives every value the Java type a row of its property holds). With type hints a terms facet over a property whose type JSON does not round-trip carries the
-   * {@code @props} hint a row of that property would ({@code value:<type id>}), so the client decodes its values as it decodes rows.
+   * already gives every value the Java type a row of its property holds); a STATS facet's sum and average likewise, as values of their
+   * own type. With type hints a facet carries the {@code @props} hint a row would, one entry per member whose type JSON does not
+   * round-trip: {@code value:<type id>} for the values of the property, {@code sum:<type id>} and {@code avg:<type id>} for a STATS
+   * facet's, so the client decodes them as it decodes rows.
    */
   public JSONObject serializeFacets(final Database database, final FacetResults facets) {
     // the engine hands the values over as a row of the property holds them: encoded here exactly as such a row's
@@ -544,25 +547,31 @@ public class JsonSerializer {
     if (includeTypeHints)
       for (final String alias : facets.aliases()) {
         final FacetResult result = facets.get(alias);
-        final Type valueType = result.valueType();
+        final StringBuilder hint = new StringBuilder();
         // Issue #10899, as a row's: a non-finite DOUBLE goes out as its marker string, which only the hint turns back into the number
-        if (valueType != null && (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(valueType) || (valueType == Type.DOUBLE
-            && carriesNonFiniteTerm(result))))
-          json.getJSONObject(alias).put(FacetResult.VALUE_TYPE_HINT, "value:" + valueType.getId());
+        appendFacetHint(hint, "value", result.valueType(), result.valueType() == Type.DOUBLE && carriesNonFiniteValue(result));
+        final FacetStats stats = result.stats();
+        if (stats != null && !FacetResult.UNAVAILABLE.equals(result.source())) {
+          // the sum and the average have the type SELECT sum() and avg() give them (a FLOAT's sum is a Float, an INTEGER's may widen)
+          appendFacetHint(hint, "sum", stats.sum() != null ? Type.getTypeByClass(stats.sum().getClass()) : null, false);
+          appendFacetHint(hint, "avg", stats.avg() != null ? Type.getTypeByClass(stats.avg().getClass()) : null, false);
+        }
+        if (!hint.isEmpty())
+          json.getJSONObject(alias).put(FacetResult.VALUE_TYPE_HINT, hint.toString());
       }
     return json;
   }
 
-  /** True when a term the facet writes with its {@code value} hint is a non-finite {@code Double}; range and histogram bounds are not. */
-  private static boolean carriesNonFiniteTerm(final FacetResult result) {
-    final List<FacetBucket> buckets = result.buckets();
-    if (buckets != null)
-      for (int i = 0; i < buckets.size(); i++) {
-        final FacetBucket bucket = buckets.get(i);
-        if (bucket.key() == null && !bucket.isMissing() && isNonFiniteDouble(bucket.value()))
-          return true;
-      }
-    return false;
+  /**
+   * Adds {@code member:<type id>} to a facet's hint, as a row's hint names a column, for a type JSON does not round-trip, or for any type
+   * when {@code force} (a value JSON cannot hold, such as a non-finite DOUBLE).
+   */
+  private static void appendFacetHint(final StringBuilder hint, final String member, final Type type, final boolean force) {
+    if (type == null || (!force && JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(type)))
+      return;
+    if (!hint.isEmpty())
+      hint.append(',');
+    hint.append(member).append(':').append(type.getId());
   }
 
   /**
@@ -762,6 +771,26 @@ public class JsonSerializer {
 
   private static String nonFiniteName(final double value) {
     return Double.isNaN(value) ? NonFiniteNumbers.NAN : value > 0 ? NonFiniteNumbers.POSITIVE_INFINITY : NonFiniteNumbers.NEGATIVE_INFINITY;
+  }
+
+  /**
+   * True when a value of the property the facet writes with its {@code value} hint (a term, a STATS facet's min or max, the cursor) is a
+   * non-finite {@code Double}. Range and histogram bounds are written and read back without that hint, so they do not count.
+   */
+  private static boolean carriesNonFiniteValue(final FacetResult result) {
+    if (result.hasAfter() && isNonFiniteDouble(result.after()))
+      return true;
+    final FacetStats stats = result.stats();
+    if (stats != null)
+      return isNonFiniteDouble(stats.min()) || isNonFiniteDouble(stats.max());
+    final List<FacetBucket> buckets = result.buckets();
+    if (buckets != null)
+      for (int i = 0; i < buckets.size(); i++) {
+        final FacetBucket bucket = buckets.get(i);
+        if (bucket.key() == null && !bucket.isMissing() && isNonFiniteDouble(bucket.value()))
+          return true;
+      }
+    return false;
   }
 
   private static boolean isNonFiniteDouble(final Object value) {

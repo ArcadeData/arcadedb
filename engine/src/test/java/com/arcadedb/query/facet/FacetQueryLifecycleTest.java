@@ -80,7 +80,8 @@ class FacetQueryLifecycleTest extends TestHelper {
 
   private Map<Object, Long> groupBy(final String property) {
     final Map<Object, Long> counts = new HashMap<>();
-    try (final ResultSet rs = database.query("sql", "SELECT " + property + " AS v, count(*) AS c FROM " + TYPE + " GROUP BY " + property)) {
+    try (final FacetOracle.NormalPlan normal = FacetOracle.normalPlan(database);
+        final ResultSet rs = database.query("sql", "SELECT " + property + " AS v, count(*) AS c FROM " + TYPE + " GROUP BY " + property)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
         final Object value = row.getProperty("v");

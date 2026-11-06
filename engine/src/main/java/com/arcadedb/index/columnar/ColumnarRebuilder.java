@@ -303,6 +303,9 @@ final class ColumnarRebuilder {
     private final ColumnarApplier.Sink         sink;
     private final ColumnarValueExtractor.RecordReader reader;
     private final int[]                        rowFailures;
+    /** By column: whether the record being extracted holds a value converted from another stored type; then the totals of the run. */
+    private final boolean[]                    rowCoerced;
+    private final long[]                       coerced;
     private final long[]                       failures;
 
     // set by execute
@@ -321,6 +324,10 @@ final class ColumnarRebuilder {
     private long                                 writerRows;
     private long                                 unreadable;
     private long                                 reusedPages;
+    /** Rows copied from the previous state's segments rather than extracted: their conversions were counted by that state. */
+    private long                                 copiedRows;
+    /** By column: whether the current state does not publish it yet, so every one of its values is extracted by this run. */
+    private boolean[]                            firstPublish;
     // per page
     private long                                 pageVersion;
     private boolean                              reusePage;
@@ -344,6 +351,8 @@ final class ColumnarRebuilder {
       this.reader = new ColumnarValueExtractor.RecordReader(columns);
       this.rowFailures = new int[columns.length];
       this.failures = new long[columns.length];
+      this.rowCoerced = new boolean[columns.length];
+      this.coerced = new long[columns.length];
     }
 
     /** @return true when the rebuilt state was published */
@@ -365,6 +374,7 @@ final class ColumnarRebuilder {
       final boolean[] countFailures = new boolean[columns.length];
       for (int k = 0; k < columns.length; k++)
         countFailures[k] = !p.isPublishedWith(columns[k].indexFileId());
+      firstPublish = countFailures;
       previous = retainReusableState();
 
       p.beginRebuildTracking();
@@ -402,6 +412,9 @@ final class ColumnarRebuilder {
         for (int k = 0; k < columns.length; k++)
           if (countFailures[k] && failures[k] > 0)
               extractor.countFailures(columns[k], (int) Math.min(failures[k], Integer.MAX_VALUE));
+        for (int k = 0; k < columns.length; k++)
+          if (countFailures[k] && coerced[k] > 0)
+            extractor.countCoerced(columns[k], coerced[k]);
       }
       return published;
     }
@@ -519,6 +532,7 @@ final class ColumnarRebuilder {
       }
       if (reusePage && offPageCount == 0 && copyFromPrevious(position)) {
         pageCopied++;
+        copiedRows++;
         addRow(position);
         return;
       }
@@ -534,7 +548,9 @@ final class ColumnarRebuilder {
           for (int k = 0; k < columns.length; k++) {
             fresh.present[k] = false;
             sink.k = k;
-            rowFailures[k] = extractor.extractValueForApplyUncounted(reader.raw(k), columns[k], dictionaries[k], sink);
+            final Object raw = reader.raw(k);
+            rowCoerced[k] = raw != null && ColumnarValueExtractor.isCoerced(columns[k], raw);
+            rowFailures[k] = extractor.extractValueForApplyUncounted(raw, columns[k], dictionaries[k], sink);
           }
         } finally {
           reader.end();
@@ -552,8 +568,11 @@ final class ColumnarRebuilder {
         owners.setOwnerPages(position, offPagePages, offPageCount);
       if (externalCount > 0)
         externalOwners.setOwnerPages(position, external.pages(), externalCount);
-      for (int k = 0; k < columns.length; k++)
+      for (int k = 0; k < columns.length; k++) {
         failures[k] += rowFailures[k];
+        if (rowCoerced[k])
+          coerced[k]++;
+      }
       addRow(position);
     }
 
@@ -666,16 +685,47 @@ final class ColumnarRebuilder {
           segmentEntries.add(new ColumnarManifest.SegmentEntry(reader.segmentId(), SegmentFormat.segmentFileName(reader.segmentId()),
               reader.rowCount(), 0, 0, reader.minPage(), reader.maxPage()));
         final ColumnarManifest manifest = new ColumnarManifest(generation, p.bucketId(), p.bucketName(), maxRecordsInPage, columns,
-            segmentEntries, dictionaryEntries, ownerMapFile, externalOwnerMapFile, lastTransactionId);
+            segmentEntries, dictionaryEntries, ownerMapFile, externalOwnerMapFile, lastTransactionId, conversionEntries());
         final Map<String, GlobalDictionary> published = Map.copyOf(dictionaryMap);
         // final review B-I3: the scan read committed pages that a no-WAL commit may not have put on disk yet
         manager.protectRebuildFromNoWalCommits(p);
         ColumnarFlusher.publishManifest(p, manifest, attempt,
-            () -> p.rebuildPublished(manifest, readers, published, owners, externalOwners));
+            () -> {
+              // under the apply lock, no pass counts meanwhile; first, so the state the swap publishes carries them
+              p.restoreConversions(manifest);
+              return p.rebuildPublished(manifest, readers, published, owners, externalOwners);
+            });
         return attempt.published;
       } finally {
         p.applyLock().unlock();
       }
+    }
+
+    /**
+     * The conversion counts of the rebuilt state: exactly this run's when it copied no row (every value was extracted by it); otherwise
+     * the previous counts plus this run's, which over-counts at worst. A column whose previous counts are unknown stays unknown, and so
+     * does one this run publishes for the first time: its copied rows were extracted by apply passes into segments while the column was
+     * not published, and those passes keep no count for a column without one (review N1).
+     */
+    private List<ColumnarManifest.ConversionEntry> conversionEntries() {
+      final List<ColumnarManifest.ConversionEntry> entries = new ArrayList<>(columns.length);
+      for (int k = 0; k < columns.length; k++) {
+        final int indexFileId = columns[k].indexFileId();
+        if (copiedRows == 0)
+          entries.add(new ColumnarManifest.ConversionEntry(indexFileId, failures[k], coerced[k]));
+        else if (!firstPublish[k]) {
+          final long[] previousCounts = p.conversionCounts(indexFileId);
+          if (previousCounts != null)
+            entries.add(new ColumnarManifest.ConversionEntry(indexFileId, saturatedAdd(previousCounts[0], failures[k]),
+                saturatedAdd(previousCounts[1], coerced[k])));
+        }
+      }
+      return entries;
+    }
+
+    private static long saturatedAdd(final long a, final long b) {
+      final long sum = a + b;
+      return sum < 0 ? Long.MAX_VALUE : sum;
     }
 
     /** A run that did not publish: its writer, readers and dictionaries closed, its files deleted unless a rename was attempted. */

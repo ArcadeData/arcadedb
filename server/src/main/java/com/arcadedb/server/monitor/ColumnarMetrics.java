@@ -79,12 +79,12 @@ public final class ColumnarMetrics implements AutoCloseable {
       "apply.records.reread", "apply.unreadable", "rebuild.pages.reused", "flush.duration", "merge.duration", "apply.lag.ms",
       "overlay.rows", "segments", "segments.dead.ratio", "files.open" };
 
-  /** The FACETS query counters, database-wide: no type, property or reason. */
+  /** The FACETS and GROUP BY query counters, database-wide: no type, property or reason. */
   private static final String[] QUERY_KINDS = { "query.patched", "query.budget.waits", "query.patch.overflows", "query.fallback.scans",
-      "query.filter.fallbacks" };
+      "query.filter.fallbacks", "groupby.accelerated", "groupby.fallbacks" };
 
   private static final String[] PROPERTY_KINDS = { "dictionary.compactions", "dictionary.ordinals.reclaimed", "conversion.failures",
-      "dictionary.size", "cardinality.exceeded" };
+      "conversion.coerced", "dictionary.size", "cardinality.exceeded" };
 
   /** The meters of one database and the stats object they read. */
   private static final class Bound {
@@ -239,6 +239,9 @@ public final class ColumnarMetrics implements AutoCloseable {
         counter(b, name, tags, "Projection rebuilds by reason; a normal open and crash recovery never count", s -> s.rebuilds(type, reason));
     case "conversion.failures" ->
         counter(b, name, tags, "Values the column kind cannot hold, counted as missing", s -> s.conversionFailures(type, property));
+    case "conversion.coerced" -> counter(b, name, tags,
+        "Values stored as another type than the property declares, held in the column as the declared type", s -> s.coercedValues(type,
+            property));
     case "apply.pages" -> counter(b, name, tags, "Pages applied to the projection", s -> s.applyPagesCount(type));
     case "apply.placeholders.resolved" ->
         counter(b, name, tags, "Placeholder records resolved by apply passes", s -> s.placeholdersResolvedCount(type));
@@ -260,6 +263,12 @@ public final class ColumnarMetrics implements AutoCloseable {
     case "query.filter.fallbacks" ->
         counter(b, name, tags, "INDEX facet FILTER evaluators that answered from the rows instead of their RID set",
             ColumnarStats::queryFilterFallbacksCount);
+    case "groupby.accelerated" ->
+        counter(b, name, tags, "Executions of eligible GROUP BY queries answered from the projection",
+            ColumnarStats::groupByAcceleratedCount);
+    case "groupby.fallbacks" ->
+        counter(b, name, tags, "Executions of eligible GROUP BY queries that ran the normal aggregation instead",
+            ColumnarStats::groupByFallbacksCount);
     case "apply.records.reread" ->
         counter(b, name, tags, "Slots re-read by apply passes; over apply.pages it is the re-read amplification",
             s -> s.recordsRereadCount(type));

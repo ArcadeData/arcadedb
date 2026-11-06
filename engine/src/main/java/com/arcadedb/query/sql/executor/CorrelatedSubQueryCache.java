@@ -84,7 +84,10 @@ public final class CorrelatedSubQueryCache {
    * creates schema types and answers whether this call created them, so a second call answers differently.
    */
   static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql",
-      "ensurelabeltypes");
+      "ensurelabeltypes",
+      // runs a FACETS query of its own over the COLUMNAR projection, which the apply catches up asynchronously: with the database
+      // unchanged, a count it reports inexact ("exact": false) can still differ from one call to the next
+      "facet.searchvalues");
   /**
    * Built-in methods not trusted: {@code remove}/{@code removeAll} change a collection (today on a defensive copy, not
    * relied upon here), and {@code transform} resolves the methods it applies from its string arguments at run time,

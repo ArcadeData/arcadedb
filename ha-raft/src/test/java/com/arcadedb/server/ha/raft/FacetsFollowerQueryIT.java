@@ -23,8 +23,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.facet.AdvancedFacetsFixture;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -147,6 +149,41 @@ class FacetsFollowerQueryIT extends ColumnarHATestSupport {
       assertThat(facets).as("a forwarded SELECT ... FACETS keeps the leader's facets").isNotNull();
       assertThat(facets.executionStats()).as("the facets were parsed from the leader's answer, not computed here").isEmpty();
       assertThat(withoutMeta(facets)).isEqualTo(leaderFacets);
+    }
+  }
+
+  /**
+   * Plan 5 Task 14: the plan 5 kinds (HIERARCHY, DISTINCT, STATS over LONG, DATETIME, FLOAT, SHORT and INTEGER properties, VALUE-ordered
+   * terms with their cursor) answered by each follower from its own projection and hierarchy equal the leader's, and the answer a
+   * follower forwards to the leader comes back through the leader-answer parser with the same members.
+   */
+  @Test
+  @Timeout(300)
+  void plan5KindsOnFollowersAndThroughTheLeaderAnswer() throws Exception {
+    final int leader = requireLeaderIndex();
+    AdvancedFacetsFixture.load(database(leader), 1805L, 500);
+    assertClusterConsistency();
+    for (int i = 0; i < getServerCount(); i++)
+      FacetOracle.awaitCaughtUp(database(i));
+
+    for (final String query : List.of(AdvancedFacetsFixture.ASSET_QUERY, AdvancedFacetsFixture.MEASURE_QUERY)) {
+      final FacetResults leaderFacets = AdvancedFacetsFixture.facets(database(leader), query);
+      assertThat(leaderFacets.get(query.contains("Measure") ? "r" : "t").source()).isEqualTo("index");
+      for (int i = 0; i < getServerCount(); i++)
+        AdvancedFacetsFixture.assertSameValues("server " + i, AdvancedFacetsFixture.facets(database(i), query), leaderFacets);
+
+      final int follower = firstFollowerOf(leader);
+      try (final ResultSet rs = database(follower).command("sqlscript", query + ";")) {
+        final FacetResults forwarded = rs.getFacets();
+        assertThat(forwarded).as("a forwarded %s keeps the leader's facets", query).isNotNull();
+        assertThat(forwarded.executionStats()).as("parsed from the leader's answer").isEmpty();
+        // the leader-answer parser keeps the values as the JSON parse gives them, as it keeps a row's: the leader's HTTP encoding (a
+        // date-time in the database's format), member for member
+        final JSONObject leaderAnswer = new JSONObject(
+            JsonSerializer.createJsonSerializer().serializeFacets(database(leader), leaderFacets).toString());
+        leaderAnswer.remove("meta");
+        assertThat(withoutMeta(forwarded)).isEqualTo(leaderAnswer.toString());
+      }
     }
   }
 

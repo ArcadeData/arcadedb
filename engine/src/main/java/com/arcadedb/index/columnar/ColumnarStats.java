@@ -90,6 +90,7 @@ public final class ColumnarStats {
 
   private final Table<LongAdder> rebuilds                = counter("rebuilds", true);
   private final Table<LongAdder> conversionFailures      = counter("conversion.failures", false);
+  private final Table<LongAdder> coercedValues           = counter("conversion.coerced", false);
   private final Table<LongAdder> applyPages              = counter("apply.pages", false);
   private final Table<LongAdder> placeholdersResolved    = counter("apply.placeholders.resolved", false);
   private final Table<LongAdder> flushes                 = counter("flush.count", false);
@@ -104,7 +105,7 @@ public final class ColumnarStats {
   private final Table<AtomicLong> overlayRows            = gauge("overlay.rows");
   private final Table<AtomicLong> segments               = gauge("segments");
   private final Table<AtomicLong> openFiles              = gauge("files.open");
-  private final Table<?>[]       tables                 = { rebuilds, conversionFailures, applyPages, placeholdersResolved, flushes,
+  private final Table<?>[]       tables                 = { rebuilds, conversionFailures, coercedValues, applyPages, placeholdersResolved, flushes,
       merges, recordsReread, unreadable, rebuildPagesReused, dictionaryCompactions, ordinalsReclaimed, flushDurations, mergeDurations,
       overlayRows, segments, openFiles };
 
@@ -117,6 +118,9 @@ public final class ColumnarStats {
   private final LongAdder queryPatchOverflows = new LongAdder();
   private final LongAdder queryFallbackScans  = new LongAdder();
   private final LongAdder queryFilterFallbacks = new LongAdder();
+  // GROUP BY queries answered by a ColumnarGroupByStep (plan 5): database-wide, not keyed by type
+  private final LongAdder groupByAccelerated = new LongAdder();
+  private final LongAdder groupByFallbacks   = new LongAdder();
 
   // ---- writers
 
@@ -128,6 +132,23 @@ public final class ColumnarStats {
   /** One value of a projected record the column kind cannot hold. Counted by the apply path only, never by read-only extraction. */
   public void conversionFailure(final String type, final String property) {
     conversionFailures.cell(type, property).increment();
+  }
+
+  /** {@code n} {@link #conversionFailure}s at once: a rebuild or an apply pass counts a column's values with one add (final review A-M6). */
+  public void addConversionFailures(final String type, final String property, final long n) {
+    if (n > 0)
+      conversionFailures.cell(type, property).add(n);
+  }
+
+  /**
+   * {@code n} values of projected records held in the column as the declared type although the records store another one (written
+   * before the property was typed: a {@code 5} in a STRING property). Counted by the apply and rebuild paths only, each time they extract
+   * them, so it only grows: a GROUP BY answered from the column would return the declared type where the normal plan returns the raw
+   * value. One add per call, as {@link #addConversionFailures}.
+   */
+  public void addCoercedValues(final String type, final String property, final long n) {
+    if (n > 0)
+      coercedValues.cell(type, property).add(n);
   }
 
   /** One per apply pass that ran (any projection). */
@@ -181,6 +202,16 @@ public final class ColumnarStats {
   /** One INDEX facet FILTER evaluator that answered from the rows instead of its RID set (index not ready, collation, key type, budget). */
   public void queryFilterFallback() {
     queryFilterFallbacks.increment();
+  }
+
+  /** One execution of an eligible GROUP BY answered from the projection. */
+  public void groupByAccelerated() {
+    groupByAccelerated.increment();
+  }
+
+  /** One execution of an eligible GROUP BY that ran its normal aggregation chain instead (switched off, or the projection declined). */
+  public void groupByFallbacks() {
+    groupByFallbacks.increment();
   }
 
   /** Every slot re-read by an apply pass: the numerator of the re-read amplification. */
@@ -261,6 +292,10 @@ public final class ColumnarStats {
     return sum(conversionFailures.existing(type, property));
   }
 
+  public long coercedValues(final String type, final String property) {
+    return sum(coercedValues.existing(type, property));
+  }
+
   public long applyPasses() {
     return applyPasses.sum();
   }
@@ -303,6 +338,14 @@ public final class ColumnarStats {
 
   public long queryFilterFallbacksCount() {
     return queryFilterFallbacks.sum();
+  }
+
+  public long groupByAcceleratedCount() {
+    return groupByAccelerated.sum();
+  }
+
+  public long groupByFallbacksCount() {
+    return groupByFallbacks.sum();
   }
 
   public long recordsRereadCount(final String type) {
@@ -372,6 +415,7 @@ public final class ColumnarStats {
   public void forEachKey(final StatsKeyConsumer consumer) {
     rebuilds.forEachKey(consumer);
     conversionFailures.forEachKey(consumer);
+    coercedValues.forEachKey(consumer);
     applyPages.forEachKey(consumer);
     placeholdersResolved.forEachKey(consumer);
     flushes.forEachKey(consumer);

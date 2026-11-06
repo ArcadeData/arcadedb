@@ -23,7 +23,8 @@ import com.arcadedb.utility.DedicatedThreadPool;
 
 /**
  * JVM-wide dedicated executor for the long-running maintenance of the COLUMNAR indexes: flush, merge, dictionary
- * compaction, rank-view rebuild and background rebuild. Kept apart from {@link ColumnarApplyPool} so a long merge never
+ * compaction, rank-view rebuild, background rebuild, and the background rebuild of a hierarchy view ({@link HierarchyManager},
+ * queued by its coalesced file watcher, at most one queued per hierarchy). Kept apart from {@link ColumnarApplyPool} so a long merge never
  * delays an apply pass. Lazy singleton; daemon threads, sized by {@code arcadedb.columnar.maintenanceThreads}.
  * <p>
  * <b>Why the queue is UNBOUNDED with no caller-runs policy</b> (a deliberate deviation from the "bounded queue +
@@ -31,7 +32,8 @@ import com.arcadedb.utility.DedicatedThreadPool;
  * or an open or reconcile thread asking for a rebuild (bounded by the coalescing of rebuild requests, one per
  * projection), never a commit thread, and caller-runs would run a merge on a commit or Raft apply thread. Back-pressure is
  * structural: at most one of flush, merge or dictionary compaction per projection (a maintenance flag in the
- * projection), so the queue cannot grow past the number of open projections. {@code queueDepth} is the saturation
+ * projection) and at most one hierarchy rebuild per hierarchy, so the queue cannot grow past the number of open
+ * projections and hierarchies. {@code queueDepth} is the saturation
  * signal ({@code pool=columnar_maintenance}); {@code queueCapacityRemaining} reports -1 and the caller-runs count stays
  * at zero.
  *
