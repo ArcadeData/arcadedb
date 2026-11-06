@@ -63,7 +63,7 @@ class SubPlanDrainedByHandCensusTest {
    */
   private static final Map<String, String> BOUNDED = new TreeMap<>(Map.of(//
       "query/sql/parser/InCondition#evaluateExpressionThreeValued", "tests membership row by row and keeps none",//
-      "query/sql/parser/ProfileStatement#execute", "runs the profiled statement to completion and keeps no row",//
+      "query/sql/parser/ProfileStatement#profile", "runs the profiled statement to completion and keeps no row",//
       "query/sql/parser/TraverseProjectionItem#handleStar", "reads the elements of a value a record already holds",//
       "query/sql/parser/FindReferencesStatement#collectTargetRids",
       "keeps the RID of each row of an administrative statement, not the row",//

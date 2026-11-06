@@ -19,13 +19,20 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -291,21 +298,34 @@ class Issue8756DatabaseTypeNonScalarIntrospectionTest extends AbstractGraphQLTes
   }
 
   @Test
-  void embeddedOfADroppedTypeFallsBackToTheJsonScalar() {
-    // The schema refuses an EMBEDDED ofType naming no type, but the type can be dropped afterwards: the descriptor must not
-    // name an OBJECT __type can no longer resolve
-    executeTest(database -> {
-      database.getSchema().createDocumentType("Gone");
-      database.getSchema().createDocumentType("Holder").createProperty("ghost", Type.EMBEDDED, "Gone");
-      database.getSchema().dropType("Gone");
-      assertThat(database.getSchema().getType("Holder").getProperty("ghost").getOfType()).isEqualTo("Gone");
+  void embeddedOfADroppedTypeFallsBackToTheJsonScalar() throws IOException {
+    // Neither the schema nor DROP TYPE (issue #11305) leaves an EMBEDDED ofType naming no type any more, but a database written
+    // before that holds one: the descriptor must not name an OBJECT __type can no longer resolve. The schema file is edited the
+    // way such a database looks.
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database created = factory.create();
+      created.getSchema().createDocumentType("Gone");
+      created.getSchema().createDocumentType("Holder").createProperty("ghost", Type.EMBEDDED, "Gone");
+      assertThatThrownBy(() -> created.getSchema().dropType("Gone")).isInstanceOf(SchemaException.class);
+      created.close();
 
-      try (final ResultSet resultSet = database.query("graphql",
-          "{ __type(name: \"Holder\") { fields { name type { kind name } } } }")) {
-        assertNamed(fieldType(resultSet.next(), "ghost"), "SCALAR", "JSON");
+      final Path schemaFile = Path.of(DB_PATH, LocalSchema.SCHEMA_FILE_NAME);
+      final JSONObject schema = new JSONObject(Files.readString(schemaFile));
+      schema.getJSONObject("types").remove("Gone");
+      Files.writeString(schemaFile, schema.toString());
+
+      final Database database = factory.open();
+      try {
+        assertThat(database.getSchema().getType("Holder").getProperty("ghost").getOfType()).isEqualTo("Gone");
+
+        try (final ResultSet resultSet = database.query("graphql",
+            "{ __type(name: \"Holder\") { fields { name type { kind name } } } }")) {
+          assertNamed(fieldType(resultSet.next(), "ghost"), "SCALAR", "JSON");
+        }
+      } finally {
+        database.drop();
       }
-      return null;
-    });
+    }
   }
 
   private static void assertNamed(final Result type, final String kind, final String name) {
