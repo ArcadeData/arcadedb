@@ -74,18 +74,28 @@ public final class BitPackedCodec {
   }
 
   static void encodeInto(final long[] values, final int offset, final int length, final byte[] out, final int base) {
-    final int w = analyze(values, offset, length, 0L, 0.0, out, base);
+    encodeResidualsInto(values, offset, length, 0L, 0.0, out, base);
+  }
+
+  /**
+   * Packs the residuals {@code values[offset + i] - LinearCodec.predict(intercept, slope, i)} without materializing them,
+   * with the same scan as {@link #encodedSizeOfResiduals}.
+   */
+  static void encodeResidualsInto(final long[] values, final int offset, final int length, final long intercept,
+      final double slope, final byte[] out, final int base) {
+    final int w = analyze(values, offset, length, intercept, slope, out, base);
     if (w == 0)
       return;
 
     final long min = (long) LONG_LE.get(out, base + 8);
     final long gcd = (long) LONG_LE.get(out, base + 16);
+    final boolean plain = intercept == 0L && slope == 0.0;
     int pos = base + HEADER_BYTES;
     long cur = 0;
     int used = 0;
-    final int end = offset + length;
-    for (int i = offset; i < end; i++) {
-      final long q = gcd == 1 ? values[i] - min : Long.divideUnsigned(values[i] - min, gcd);
+    for (int i = 0; i < length; i++) {
+      final long v = plain ? values[offset + i] : values[offset + i] - LinearCodec.predict(intercept, slope, i);
+      final long q = gcd == 1 ? v - min : Long.divideUnsigned(v - min, gcd);
       cur |= q << used;
       final int total = used + w;
       if (total >= 64) {

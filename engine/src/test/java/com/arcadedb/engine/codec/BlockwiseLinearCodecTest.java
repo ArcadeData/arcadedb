@@ -198,6 +198,17 @@ class BlockwiseLinearCodecTest {
     assertThatThrownBy(() -> BlockwiseLinearCodec.decode(backwards, new long[1100])).isInstanceOf(IllegalArgumentException.class);
 
     assertThatThrownBy(() -> BlockwiseLinearCodec.decode(good, new long[10])).isInstanceOf(IllegalArgumentException.class);
+
+    final int base0 = (int) INT_LE.get(good, 8);
+    final byte[] shortBlock = good.clone();
+    INT_LE.set(shortBlock, base0 + LinearCodec.HEADER_BYTES + 4, 511);
+    assertThatThrownBy(() -> BlockwiseLinearCodec.decode(shortBlock, new long[1100])).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("unexpected number");
+
+    final int base2 = (int) INT_LE.get(good, 16);
+    final byte[] cutWords = Arrays.copyOf(good, base2 + LinearCodec.HEADER_BYTES + BitPackedCodec.HEADER_BYTES);
+    assertThatThrownBy(() -> BlockwiseLinearCodec.decode(cutWords, new long[1100])).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("ends outside");
   }
 
   @Test

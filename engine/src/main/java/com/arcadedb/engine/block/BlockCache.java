@@ -35,8 +35,9 @@ import java.util.function.ToLongFunction;
  * The design follows {@code TimeSeriesDecodedColumnCache}: the byte budget is the cache's one safety property, so
  * the charge, the map and the eviction move together under one monitor. This cache is shared by every query in the
  * JVM instead of one shard, so it is split into lock-striped, access-ordered {@link LinkedHashMap}s, each with an
- * exact budget of {@code maxBytes / stripes}. Per-stripe budgets keep {@link #usedBytes()} {@code <= maxBytes} true
- * at every instant without any cross-stripe locking. An entry larger than one stripe's share is returned uncached.
+ * exact budget of {@code maxBytes / stripes}. Per-stripe budgets keep {@link #usedBytes()} {@code <= maxBytes} for a
+ * fixed budget without any cross-stripe locking; after the budget is lowered each stripe is trimmed at its next touch
+ * (see below). An entry larger than one stripe's share is returned uncached.
  * <p>
  * The loader and the sizer run OUTSIDE the stripe monitor, so no I/O or decode ever blocks other queries. Two
  * queries missing on the same key at once may both load; the first to come back admits its value, the second finds

@@ -78,10 +78,7 @@ public final class LinearCodec {
     LONG_LE.set(out, base + 8, intercept);
     LONG_LE.set(out, base + 16, Double.doubleToRawLongBits(slope));
 
-    final long[] residuals = new long[length];
-    for (int i = 0; i < length; i++)
-      residuals[i] = values[offset + i] - predict(intercept, slope, i);
-    BitPackedCodec.encodeInto(residuals, 0, length, out, base + HEADER_BYTES);
+    BitPackedCodec.encodeResidualsInto(values, offset, length, intercept, slope, out, base + HEADER_BYTES);
   }
 
   static long get(final byte[] encoded, final int base, final int index) {

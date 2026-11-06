@@ -208,4 +208,18 @@ class BitPackedCodecTest {
     assertThatThrownBy(() -> BitPackedCodec.get(e, -1)).isInstanceOf(IndexOutOfBoundsException.class);
     assertThatThrownBy(() -> BitPackedCodec.get(e, 3)).isInstanceOf(IndexOutOfBoundsException.class);
   }
+
+  @Test
+  void decodeRefusesAnInvalidWidthAndCountRefusesANegativeCount() {
+    final byte[] e = BitPackedCodec.encode(new long[] { 1, 5, 9 }, 0, 3);
+    final byte[] wide = e.clone();
+    wide[1] = 65;
+    assertThatThrownBy(() -> BitPackedCodec.decode(wide, new long[3])).isInstanceOf(IllegalArgumentException.class);
+    final byte[] negativeWidth = e.clone();
+    negativeWidth[1] = -1;
+    assertThatThrownBy(() -> BitPackedCodec.decode(negativeWidth, new long[3])).isInstanceOf(IllegalArgumentException.class);
+    final byte[] negativeCount = e.clone();
+    negativeCount[7] = (byte) 0x80;
+    assertThatThrownBy(() -> BitPackedCodec.count(negativeCount)).isInstanceOf(IllegalArgumentException.class);
+  }
 }

@@ -185,4 +185,33 @@ class LinearCodecTest {
     final byte[] zero = LinearCodec.encode(new long[0], 0, 0);
     LinearCodec.decode(zero, new long[0]);
   }
+
+  @Test
+  void residualsArePackedExactlyAsAMaterializedResidualArray() {
+    final long[] v = new long[1000];
+    final Random r = new Random(7);
+    for (int i = 0; i < v.length; i++)
+      v[i] = 1_000L * i + r.nextInt(50) - 25;
+    final byte[] e = LinearCodec.encode(v, 0, v.length);
+    final double slope = ((double) v[v.length - 1] - (double) v[0]) / (v.length - 1);
+    final long[] residuals = new long[v.length];
+    for (int i = 0; i < v.length; i++)
+      residuals[i] = v[i] - LinearCodec.predict(v[0], slope, i);
+    assertThat(Arrays.copyOfRange(e, LinearCodec.HEADER_BYTES, e.length)).isEqualTo(BitPackedCodec.encode(residuals, 0, v.length));
+  }
+
+  @Test
+  void encodedLengthRefusesAnInvalidWidthOrAHugeCount() {
+    final byte[] e = LinearCodec.encode(new long[] { 3, 10, 18, 22 }, 0, 4);
+    final byte[] wide = e.clone();
+    wide[LinearCodec.HEADER_BYTES + 1] = 65;
+    assertThatThrownBy(() -> LinearCodec.encodedLength(wide, 0)).isInstanceOf(IllegalArgumentException.class);
+    final byte[] huge = e.clone();
+    huge[LinearCodec.HEADER_BYTES + 1] = 64;
+    huge[LinearCodec.HEADER_BYTES + 4] = (byte) 0xFF;
+    huge[LinearCodec.HEADER_BYTES + 5] = (byte) 0xFF;
+    huge[LinearCodec.HEADER_BYTES + 6] = (byte) 0xFF;
+    huge[LinearCodec.HEADER_BYTES + 7] = 0x7F;
+    assertThatThrownBy(() -> LinearCodec.encodedLength(huge, 0)).isInstanceOf(IllegalArgumentException.class);
+  }
 }
