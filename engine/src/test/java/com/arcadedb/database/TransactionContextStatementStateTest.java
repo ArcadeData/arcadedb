@@ -120,6 +120,10 @@ class TransactionContextStatementStateTest {
     // writes them
     CLASSIFICATION.put("columnarMarkKeys", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("columnarMarkPages", NOT_STATEMENT_STATE);
+    // The record marks of the commit (Task 15 of #10662): the same kind of scratch arrays, filled from the slot merge's tracking by
+    // the 2nd phase; a statement taken back poisons its pages for the merge, which marks them whole
+    CLASSIFICATION.put("columnarRecordKeys", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("columnarRecordBuffer", NOT_STATEMENT_STATE);
   }
 
   @Test

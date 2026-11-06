@@ -51,6 +51,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.function.BiFunction;
@@ -158,6 +159,15 @@ public class PageManager extends LockContext {
   // volatile cache reads, which is the ordering a seqlock needs without an explicit fence.
   private volatile long                               publicationSequence;
   private final    Object                             publicationGate = new Object();
+  /**
+   * Test-only seam run inside {@link #publishPages}, with the publication open and under the page-manager lock, once the first half of
+   * the pages is in the read cache and before the second half (Task 14 of #10662): a test holds a commit half visible there. Null in
+   * production.
+   */
+  static volatile  Runnable                           publishPagesHookForTesting;
+  // awaitPublicationEnd: spins before it parks, and the length of each park
+  private static final int                            PUBLICATION_WAIT_SPINS      = 64;
+  private static final long                           PUBLICATION_WAIT_PARK_NANOS = 10_000L;
   // Publications in flight, guarded by publicationGate: the sequence is odd exactly while this is above zero
   private          int                                publicationsInFlight;
   private volatile int                                freePageRAM;
@@ -1979,7 +1989,7 @@ public class PageManager extends LockContext {
       try {
         if (onPublicationStart != null)
           onPublicationStart.run();
-        writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved);
+        writePagesNoBackpressure(pagesToWrite, asyncFlush, flushSlotReserved, publishPagesHookForTesting);
 
         if (newPages != null)
           for (final MutablePage p : newPages.values()) {
@@ -2402,6 +2412,32 @@ public class PageManager extends LockContext {
     return publicationSequence;
   }
 
+  /**
+   * {@link #getPublicationSequence()} once no publication is open, waiting up to {@code maxWaitNanos} for an open one to end: a reader
+   * that needs one committed state for a short read (Task 14 of #10662) waits out the publication instead of reading into it. Spins
+   * briefly, then parks in short steps; takes no lock. An interrupted thread gives up after the spins and keeps its interrupt.
+   *
+   * @return the sequence, even unless the wait ran out first
+   */
+  public long awaitPublicationEnd(final long maxWaitNanos) {
+    long sequence = publicationSequence;
+    if ((sequence & 1) == 0)
+      return sequence;
+    final long deadline = System.nanoTime() + maxWaitNanos;
+    for (int spins = 0; ; spins++) {
+      if (spins < PUBLICATION_WAIT_SPINS)
+        Thread.onSpinWait();
+      else if (Thread.currentThread().isInterrupted())
+        // parkNanos returns at once while interrupted: the odd sequence reads as moved, a retryable outcome, instead of a hot spin
+        return publicationSequence;
+      else
+        LockSupport.parkNanos(PUBLICATION_WAIT_PARK_NANOS);
+      sequence = publicationSequence;
+      if ((sequence & 1) == 0 || System.nanoTime() - deadline >= 0)
+        return sequence;
+    }
+  }
+
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
     // Entry point of the asynchronous writers that do NOT go through publishPages (LSM index compaction): they hold
     // no page-manager lock, so the deferred-backlog cap of #4728 (issue #6200) and the flush-queue admission control
@@ -2411,7 +2447,7 @@ public class PageManager extends LockContext {
       awaitDeferredBacklogUnderCap(updatedPages);
       flushSlotReserved = reserveFlushQueueSlot(updatedPages);
     }
-    writePagesNoBackpressure(updatedPages, asyncFlush, flushSlotReserved);
+    writePagesNoBackpressure(updatedPages, asyncFlush, flushSlotReserved, null);
   }
 
   /**
@@ -2423,12 +2459,18 @@ public class PageManager extends LockContext {
    *                          back on any path that does not reach one - so the caller must not release it again.
    */
   private void writePagesNoBackpressure(final List<MutablePage> updatedPages, final boolean asyncFlush,
-      final boolean flushSlotReserved) throws IOException, InterruptedException {
+      final boolean flushSlotReserved, final Runnable midway) throws IOException, InterruptedException {
     boolean handedOver = false;
+    // the page after which midway runs: the first half of the pages is in the read cache then, the second half is not
+    final int half = midway == null ? -1 : (updatedPages.size() + 1) / 2 - 1;
     try {
       if (asyncFlush) {
-        for (final MutablePage page : updatedPages)
+        int i = 0;
+        for (final MutablePage page : updatedPages) {
           putPageInReadCache(new CachedPage(page, true));
+          if (i++ == half)
+            midway.run();
+        }
         handedOver = true;
         // Read once, without a null check: the caller writes pages of an OPEN database, whose lifecycle reference
         // keeps the flush thread alive for the whole call (#9927 - only a dereference AFTER that reference can be
@@ -2437,10 +2479,13 @@ public class PageManager extends LockContext {
             flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
       } else {
         // SYNCHRONOUS FLUSH
+        int i = 0;
         for (final MutablePage page : updatedPages) {
           flushPage(page);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
           putPageInReadCache(new CachedPage(page, false));
+          if (i++ == half)
+            midway.run();
         }
       }
     } finally {

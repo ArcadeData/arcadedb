@@ -59,6 +59,23 @@ public interface FacetCollector {
   default void release() {
   }
 
+  /** Whether the collector counts nothing more: the memory budget refused it (or, for a hierarchy, its view is not available). */
+  default boolean isUnavailable() {
+    return false;
+  }
+
+  /**
+   * Adds the counts of {@code partial}, a collector of the same facet, column and ordinal map that counted other segments of the same
+   * buckets on another thread (parallel counting, {@code arcadedb.columnar.parallelCountTasks}), so the facet is ranked as if this
+   * collector had counted them. The caller releases {@code partial} afterwards.
+   *
+   * @return false when this kind does not add counts that way: the caller then {@link #merge merges} {@code partial} with the facet's
+   * other collectors instead
+   */
+  default boolean absorb(final FacetCollector partial) {
+    return false;
+  }
+
   /**
    * How the facet was computed (the merged collectors included), for EXPLAIN and PROFILE; complete once {@link #finish} returned.
    * Null for a collector that keeps none.

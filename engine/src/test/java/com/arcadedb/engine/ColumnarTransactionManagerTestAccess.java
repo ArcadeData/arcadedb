@@ -25,9 +25,20 @@ public final class ColumnarTransactionManagerTestAccess {
   private ColumnarTransactionManagerTestAccess() {
   }
 
-  /** One runtime WAL rotation pass: every active WAL file retired, then the inactive ones dropped after a data fsync. */
+  /**
+   * One runtime WAL rotation pass: every active WAL file retired, then the inactive ones dropped after a data fsync, forced (the
+   * no-argument hook of main no longer forces the drop).
+   */
   public static void rotateAndDropWAL(final TransactionManager transactionManager) throws IOException {
-    transactionManager.rotateAndDropWALForTesting();
+    transactionManager.rotateAndDropWALForTesting(true);
+  }
+
+  /**
+   * {@link #rotateAndDropWAL}, dropping only what the background housekeeping would: a file with pages not flushed yet, or with a
+   * commit between its two columnar marks, is kept.
+   */
+  public static void rotateAndDropWALAsHousekeeping(final TransactionManager transactionManager) throws IOException {
+    transactionManager.rotateAndDropWALForTesting(false);
   }
 
   /** Stops the periodic WAL housekeeping of the open database, so only the test rotates and drops WAL files. */

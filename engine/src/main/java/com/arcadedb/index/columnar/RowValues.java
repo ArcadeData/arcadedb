@@ -40,6 +40,13 @@ final class RowValues {
     present = new boolean[columns];
   }
 
+  /** The list array of slot {@code k}, grown (contents dropped) to at least {@code length} entries. */
+  int[] listOf(final int k, final int length) {
+    if (list[k] == null || list[k].length < length)
+      list[k] = new int[Math.max(length, 8)];
+    return list[k];
+  }
+
   /**
    * Validates the slot of column {@code k} for the column's kind: an ORDINAL is non-negative, an ORDINAL_LIST has a count within its
    * array and strictly ascending non-negative ordinals. A missing slot is always valid.

@@ -157,6 +157,27 @@ public final class RangeCollector implements FacetCollector {
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable;
+  }
+
+  /**
+   * Adds the interval counts and missing rows of a collector of the same facet that counted other pages (parallel counting); the
+   * bucketer is fixed in size, so nothing is reserved.
+   */
+  @Override
+  public boolean absorb(final FacetCollector other) {
+    if (!(other instanceof RangeCollector partial) || partial.doubles != doubles)
+      return false;
+    if (unavailable)
+      return true;
+    missing += partial.missing;
+    if (partial.bucketer != null)
+      bucketer.addAll(partial.bucketer);
+    return true;
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof RangeCollector collector))
       throw new IllegalArgumentException("FACETS " + spec.alias() + ": cannot merge a " + other.getClass().getSimpleName() + " into ranges");

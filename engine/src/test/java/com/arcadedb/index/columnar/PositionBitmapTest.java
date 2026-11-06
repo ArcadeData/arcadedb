@@ -262,6 +262,36 @@ class PositionBitmapTest {
     assertThat(got).containsExactlyElementsOf(expected);
   }
 
+  /** Parallel counting (plan 7 Task 8): slices of contiguous pages partition the bits, share the stripes and never write the source. */
+  @Test
+  void slicesPartitionThePagesAndStayIsolated() {
+    final PositionBitmap b = new PositionBitmap(PAGE);
+    for (int page = 0; page < 10; page++) {
+      b.set((long) page * PAGE);
+      b.set((long) page * PAGE + PAGE - 1);
+    }
+    final PositionBitmap first = b.slice(0, 3);
+    final PositionBitmap middle = b.slice(3, 7);
+    final PositionBitmap last = b.slice(7, 10);
+    assertThat(first.pages()).containsExactly(0, 1, 2);
+    assertThat(middle.pages()).containsExactly(3, 4, 5, 6);
+    assertThat(last.pages()).containsExactly(7, 8, 9);
+    assertThat(first.cardinality() + middle.cardinality() + last.cardinality()).isEqualTo(b.cardinality());
+    assertThat(middle.get(3L * PAGE + PAGE - 1)).isTrue();
+    assertThat(middle.get(2L * PAGE)).isFalse();
+    assertThat(b.slice(4, 4).isEmpty()).isTrue();
+
+    // a write to a slice clones its stripe: the source keeps its bits
+    middle.clear(3L * PAGE);
+    middle.set(4L * PAGE + 1);
+    assertThat(b.get(3L * PAGE)).isTrue();
+    assertThat(b.get(4L * PAGE + 1)).isFalse();
+    assertThat(b.cardinality()).isEqualTo(20);
+
+    assertThatThrownBy(() -> b.slice(5, 11)).isInstanceOf(IndexOutOfBoundsException.class);
+    assertThatThrownBy(() -> b.slice(6, 5)).isInstanceOf(IndexOutOfBoundsException.class);
+  }
+
   @Test
   void snapshotIsIsolatedFromLaterWrites() {
     final PositionBitmap b = new PositionBitmap(PAGE);

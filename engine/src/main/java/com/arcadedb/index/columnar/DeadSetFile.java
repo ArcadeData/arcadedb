@@ -84,6 +84,7 @@ final class DeadSetFile {
     try (channel) {
       FileUtils.writeFully(channel, buffer, 0);
       channel.force(true);
+      ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_DEAD_SET);
     } catch (final IOException | RuntimeException e) {
       Files.deleteIfExists(file);
       throw e;

@@ -121,6 +121,8 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
   private String  unavailable;
   private boolean finished;
   private long    missing;
+  /** The budget refused this collector's key set and it went to a sketch: a slice like that is recounted on the caller, exact. */
+  private boolean sketchedOnRefusal;
 
   // by merged ordinal
   private CrossBucketOrdinalMap map;
@@ -262,6 +264,27 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable != null;
+  }
+
+  /**
+   * Adds the values of a collector of the same column and ordinal map that counted other pages (parallel counting), as the merge at
+   * {@link #finish} folds them, reserving any growth first; refused, the facet is unavailable. Not a collector the budget sent to a
+   * sketch under PRECISION: folded in, it would sketch the facet where the query thread alone, which waits for the budget, stays exact.
+   */
+  @Override
+  public boolean absorb(final FacetCollector other) {
+    if (!(other instanceof DistinctFacetCollector partial) || partial.kind != kind || partial.map != map || partial.sketchedOnRefusal)
+      return false;
+    if (unavailable != null)
+      return true;
+    missing += partial.missing;
+    fold(partial);
+    return true;
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof DistinctFacetCollector collector))
       throw new IllegalArgumentException("FACETS " + spec.alias() + ": cannot merge a " + other.getClass().getSimpleName() + " into distinct");
@@ -285,7 +308,7 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
         // instants meet in the finest unit any collector counts in, whatever their order: a finer one rescales those folded before
         for (final DistinctFacetCollector collector : others)
           if (unavailable == null)
-            absorb(collector);
+            fold(collector);
         if (map != null && unavailable == null && (exactSize() > 0 || sketch != null || values != null))
           moveKeyedOrdinals();
         reason = unavailable;
@@ -583,6 +606,7 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
         refuse();
         return;
       }
+      sketchedOnRefusal = true;
       switchToSketch();
       if (sketch != null)
         sketch.addLong(hash(space, key, instantUnit));
@@ -739,7 +763,7 @@ public final class DistinctFacetCollector implements FacetCollector, OrdinalCons
   }
 
   /** Folds the values of another collector of the facet into this one, charged to this one's budget. */
-  private void absorb(final DistinctFacetCollector other) {
+  private void fold(final DistinctFacetCollector other) {
     if (other.bits != null) {
       if (map != null && other.map.version() == map.version())
         orBits(other.bits);

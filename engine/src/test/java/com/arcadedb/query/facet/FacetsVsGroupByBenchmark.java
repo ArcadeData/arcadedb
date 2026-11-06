@@ -22,17 +22,19 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.columnar.BenchmarkReport;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
+import com.arcadedb.index.columnar.ColumnarTestAccess;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.util.ArrayList;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -46,6 +48,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * fileSize), a broad one and none, with one bucket and with three, at lag 0 and while the projection lags (apply suspended, 5,000
  * pending mutations). Timings are logged, never asserted; correctness (facets equal GROUP BY) is asserted on the last round only.
  * <p>
+ * Each query runs {@value #WARMUP} warm-up rounds then {@code -Dcolumnar.bench.rounds} (default 5) measured ones, each round twice, as
+ * the variants "on" and "off" of the same code in rotating order ({@link BenchmarkReport#pairs}: the noise of the run). Every round is a sample of a {@link BenchmarkReport} per bucket count (metric
+ * {@code <lag>.<where>.facets}, {@code .groupBy} for the three GROUP BY queries together, and {@code .groupBy.brand}, {@code .tags},
+ * {@code .size} for each one alone); the logged median and min are those of the "on" rounds.
+ * <p>
  * Run: {@code mvn -o -pl engine -am test -Dtest=FacetsVsGroupByBenchmark -DexcludedGroups=none -DfacetBench.records=200000
  * -Dsurefire.failIfNoSpecifiedTests=false}
  */
@@ -53,7 +60,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FacetsVsGroupByBenchmark extends TestHelper {
   private static final String TYPE         = ColumnarTestData.TYPE;
   private static final int    WARMUP       = 2;
-  private static final int    ROUNDS       = 5;
   private static final int    LAG_UPDATES  = 5_000;
   private static final int    TOP          = 1_000;
   private static final long   MIB          = 1_048_576L;
@@ -65,6 +71,9 @@ class FacetsVsGroupByBenchmark extends TestHelper {
 
   private record Timing(double median, long min) {
   }
+
+  private final int       rounds = BenchmarkReport.rounds();
+  private BenchmarkReport report;
 
   private ColumnarIndexManager manager() {
     return ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getColumnarIndexManager();
@@ -84,6 +93,11 @@ class FacetsVsGroupByBenchmark extends TestHelper {
 
   private void run(final int buckets) throws Exception {
     final int records = Integer.getInteger("facetBench.records", 1_000_000);
+    // a whole-run setting (Task 8): TestHelper resets every setting after a test, so the -D value reaches only the first method
+    final Integer parallelCountTasks = Integer.getInteger(GlobalConfiguration.COLUMNAR_PARALLEL_COUNT_TASKS.getKey());
+    if (parallelCountTasks != null)
+      GlobalConfiguration.COLUMNAR_PARALLEL_COUNT_TASKS.setValue(parallelCountTasks);
+    report = new BenchmarkReport("FacetsVsGroupByBenchmark.buckets" + buckets);
     final ColumnarTestData data = new ColumnarTestData(42);
     data.buckets = buckets;
     data.tagVocabulary = 800;
@@ -91,6 +105,11 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     database.command("sql", "CREATE INDEX ON " + TYPE + " (fileSize) NOTUNIQUE");
     data.insertAssets(database, records);
     FacetOracle.awaitCaughtUp(database);
+    // the segments the facets count (parallel counting splits the matches into page slices counted over every segment, Task 8): one sample per run
+    int segments = 0;
+    for (final Bucket bucket : database.getSchema().getType(TYPE).getBuckets(false))
+      segments += ColumnarTestAccess.publishedSegments(manager(), bucket.getFileId());
+    report.add("segments", "count", BenchmarkReport.ON, segments);
 
     final List<Case> cases = List.of(new Case("selective", "fileSize < 10000"), new Case("broad", "brand <> 'brand-1'"),
         new Case("none", null));
@@ -119,6 +138,9 @@ class FacetsVsGroupByBenchmark extends TestHelper {
       }
     }
     FacetOracle.awaitCaughtUp(database);
+    final Path written = report.write();
+    if (written != null)
+      log("INFO report written to " + written);
   }
 
   private void measure(final int buckets, final String lag, final Case c) {
@@ -130,7 +152,7 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     final String filter = c.where == null ? "" : " WHERE " + c.where;
     final String facetSql = "SELECT @rid FROM " + TYPE + filter + " " + FACETS_CLAUSE + " LIMIT 20";
     final FacetResults[] last = new FacetResults[1];
-    final Timing facets = time(() -> {
+    final Timing facets = time(lag + "." + c.name + ".facets", () -> {
       try (final ResultSet rs = database.query("sql", facetSql)) {
         while (rs.hasNext())
           rs.next();
@@ -141,20 +163,33 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     final Map<Object, Long>[] brandCounts = new Map[1];
     final Map<Object, Long>[] tagCounts = new Map[1];
     final Map<Long, Long>[] sizeCounts = new Map[1];
-    final Timing groupBy = time(() -> {
-      brandCounts[0] = groupBy("SELECT brand AS v, count(*) AS c FROM " + TYPE + filter + " GROUP BY brand");
+    // each query is a metric of its own (brand alone is the shape the GROUP BY acceleration answers), and the sum is the baseline
+    final String groupByMetric = lag + "." + c.name + ".groupBy";
+    report.pairs(WARMUP, rounds, recorder -> {
+      final long brand = BenchmarkReport.effectiveNanos(
+          () -> brandCounts[0] = groupBy("SELECT brand AS v, count(*) AS c FROM " + TYPE + filter + " GROUP BY brand"));
       // each tag once per record, as the facet counts documents
-      tagCounts[0] = groupBy("SELECT t AS v, count(*) AS c FROM (SELECT tags.asSet() AS t FROM " + TYPE + filter + " UNWIND t) GROUP BY t");
-      final Map<Object, Long> sizes = groupBy("SELECT fileSize / " + MIB + " AS v, count(*) AS c FROM " + TYPE + filter + " GROUP BY fileSize / "
-          + MIB);
-      // the division may be exact (a fraction per key): the key is cut to its range, the counts of one range are added
-      sizeCounts[0] = new HashMap<>();
-      sizes.forEach((k, v) -> sizeCounts[0].merge(((Number) k).longValue(), v, Long::sum));
+      final long tags = BenchmarkReport.effectiveNanos(() -> tagCounts[0] = groupBy(
+          "SELECT t AS v, count(*) AS c FROM (SELECT tags.asSet() AS t FROM " + TYPE + filter + " UNWIND t) GROUP BY t"));
+      final long size = BenchmarkReport.effectiveNanos(() -> {
+        final Map<Object, Long> sizes = groupBy(
+            "SELECT fileSize / " + MIB + " AS v, count(*) AS c FROM " + TYPE + filter + " GROUP BY fileSize / " + MIB);
+        // the division may be exact (a fraction per key): the key is cut to its range, the counts of one range are added
+        sizeCounts[0] = new HashMap<>();
+        sizes.forEach((k, v) -> sizeCounts[0].merge(((Number) k).longValue(), v, Long::sum));
+      });
+      recorder.nanos(groupByMetric + ".brand", brand);
+      recorder.nanos(groupByMetric + ".tags", tags);
+      recorder.nanos(groupByMetric + ".size", size);
+      recorder.nanos(groupByMetric, brand + tags + size);
     });
+    final Timing groupBy = timing(groupByMetric);
 
     // correctness, on the last round only
     final FacetResults results = last[0];
     assertThat(results).isNotNull();
+    // the positions the last round read from the records: one sample per run, compared across runs (record-granular marks, Task 15)
+    report.add(lag + "." + c.name + ".facets.patched", "count", BenchmarkReport.ON, results.patched());
     assertThat(results.exact() || !mustBeExact).as("exact " + c.name + " " + lag).isTrue();
     if (!results.exact()) {
       logResult(buckets, lag, c, facets, groupBy, results, "INEXACT (patch budget exceeded, correctness not compared)");
@@ -223,16 +258,19 @@ class FacetsVsGroupByBenchmark extends TestHelper {
     }
   }
 
-  private static Timing time(final Runnable body) {
-    final List<Long> times = new ArrayList<>(ROUNDS);
-    for (int i = 0; i < WARMUP + ROUNDS; i++) {
-      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-      body.run();
-      if (i >= WARMUP)
-        times.add(stopwatch.effectiveMs());
-    }
-    final long[] sorted = times.stream().mapToLong(Long::longValue).sorted().toArray();
-    return new Timing(sorted[sorted.length / 2], sorted[0]);
+  /** Runs the body in on/off pairs of the same code; the median and min of the "on" rounds, in stall-discounted ms. */
+  private Timing time(final String metric, final Runnable body) {
+    report.pairs(WARMUP, rounds, metric, () -> BenchmarkReport.effectiveNanos(body));
+    return timing(metric);
+  }
+
+  /** The median and min of the "on" rounds of the metric, in ms. */
+  private Timing timing(final String metric) {
+    final double[] on = report.samples(metric, BenchmarkReport.ON);
+    long min = Long.MAX_VALUE;
+    for (final double ms : on)
+      min = Math.min(min, (long) ms);
+    return new Timing(BenchmarkReport.median(on), min);
   }
 
   private void log(final String message) {

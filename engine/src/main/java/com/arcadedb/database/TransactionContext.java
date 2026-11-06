@@ -331,6 +331,11 @@ public class TransactionContext implements Transaction {
   private       long[]                               columnarMarkKeys      = new long[0];
   private       int[]                                columnarMarkPages     = new int[0];
   private       int                                  columnarMarkCount;
+  // Task 15 of #10662: the records the commit wrote on the pages it marks by record instead of whole, as
+  // ColumnarIndexManager.packRecord keys, sorted, and the positions of one file at a time; reused like the arrays above
+  private       long[]                               columnarRecordKeys    = new long[0];
+  private       long[]                               columnarRecordBuffer  = new long[0];
+  private       int                                  columnarRecordCount;
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
@@ -3703,7 +3708,7 @@ public class TransactionContext implements Transaction {
 
       // Spec 6.2: one volatile read for a database with no COLUMNAR index and no watched file, which then skips every step below
       final ColumnarIndexManager columnar = columnarMarkTarget();
-      final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish);
+      final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish, changes.result != null);
 
       if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
@@ -3814,23 +3819,81 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Fills {@link #columnarMarkKeys} with the pages of the commit grouped by file, reusing the arrays.
+   * Fills {@link #columnarMarkKeys} with the pages of the commit grouped by file, and {@link #columnarRecordKeys} with the records of
+   * the pages it marks by record instead (Task 15 of #10662, {@link #addColumnarRecordMarks}), reusing the arrays. Records are marked
+   * only for a commit with WAL: one without marks through {@link ColumnarIndexManager#markPagesWithoutWAL}, page granular.
    *
    * @return true when one of the pages is on a projected file
    */
-  private boolean groupColumnarMarks(final ColumnarIndexManager columnar, final List<MutablePage> pages) {
+  private boolean groupColumnarMarks(final ColumnarIndexManager columnar, final List<MutablePage> pages, final boolean withWAL) {
     final int count = pages.size();
     if (columnarMarkKeys.length < count) {
       columnarMarkKeys = new long[count];
       columnarMarkPages = new int[count];
     }
+    final boolean byRecord = withWAL && slotMerge && slotRebaseByPage != null && !slotRebaseByPage.isEmpty();
+    int pageCount = 0;
+    columnarRecordCount = 0;
     for (int i = 0; i < count; i++) {
-      final PageId pageId = pages.get(i).getPageId();
-      columnarMarkKeys[i] = ColumnarIndexManager.packPage(pageId.getFileId(), pageId.getPageNumber());
+      final MutablePage page = pages.get(i);
+      final PageId pageId = page.getPageId();
+      if (!byRecord || !addColumnarRecordMarks(columnar, page, pageId))
+        columnarMarkKeys[pageCount++] = ColumnarIndexManager.packPage(pageId.getFileId(), pageId.getPageNumber());
     }
-    Arrays.sort(columnarMarkKeys, 0, count);
-    columnarMarkCount = count;
-    return columnar.projectsAnyPackedPage(columnarMarkKeys, count);
+    Arrays.sort(columnarMarkKeys, 0, pageCount);
+    columnarMarkCount = pageCount;
+    if (columnarRecordCount > 0) {
+      Arrays.sort(columnarRecordKeys, 0, columnarRecordCount);
+      if (columnarRecordBuffer.length < columnarRecordCount)
+        columnarRecordBuffer = new long[columnarRecordKeys.length];
+      // only primary projected buckets take record marks
+      return true;
+    }
+    return columnar.projectsAnyPackedPage(columnarMarkKeys, pageCount);
+  }
+
+  /**
+   * Adds to {@link #columnarRecordKeys} the records the commit wrote on the page, when they are all it changed there: the page is a
+   * primary projected bucket page that existed before the transaction, not poisoned for the slot merge, every byte the transaction
+   * wrote on it was declared replayable by the slot merge (the coverage proof of #5596), so the slots the merge tracks (inserts,
+   * updates in place and plain-record deletes) are every record that changed, all of them plain records, and at most
+   * {@link ColumnarIndexManager#MAX_SLOT_MARKS_PER_PAGE} of them. A write to a record the transaction did not write (a neighbour moved
+   * off the page, a chunk tail moved, a placeholder content chunked, the page's holes packed) poisons the page, and so does any shape
+   * other than a plain record: those pages are marked whole. Allocates nothing per record: one boxed page key per page looked up.
+   *
+   * @return false when the page is to be marked whole
+   */
+  private boolean addColumnarRecordMarks(final ColumnarIndexManager columnar, final MutablePage page, final PageId pageId) {
+    final int fileId = pageId.getFileId();
+    if (!columnar.acceptsRecordMarks(fileId) || newPages != null && newPages.containsKey(pageId)
+        || !page.isFullyCoveredBy(MutablePage.COVERAGE_SLOT_MERGE))
+      return false;
+    final long key = packPageKey(fileId, pageId.getPageNumber());
+    if (slotRebasePoisonedPages != null && slotRebasePoisonedPages.contains(key))
+      return false;
+    final SlotRebaseBuffer buffer = slotRebaseByPage.get(key);
+    if (buffer == null)
+      return false;
+    final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(fileId, false);
+    if (bucket == null)
+      return false;
+    final long base = (long) pageId.getPageNumber() * bucket.getMaxRecordsInPage();
+    if (ColumnarIndexManager.packRecord(fileId, base + bucket.getMaxRecordsInPage() - 1) < 0)
+      return false;
+    final int limit = ColumnarIndexManager.MAX_SLOT_MARKS_PER_PAGE;
+    if (columnarRecordKeys.length < columnarRecordCount + limit)
+      columnarRecordKeys = Arrays.copyOf(columnarRecordKeys, Math.max(columnarRecordKeys.length * 2, columnarRecordCount + limit));
+    // one pass: the keys written for a page that turns out to be marked whole are taken back
+    final int start = columnarRecordCount;
+    for (int slot = 0; slot < buffer.state.length; slot++)
+      if (buffer.isTracked(slot)) {
+        if (buffer.kindOf(slot) != SLOT_KIND_RECORD || columnarRecordCount - start == limit) {
+          columnarRecordCount = start;
+          return false;
+        }
+        columnarRecordKeys[columnarRecordCount++] = ColumnarIndexManager.packRecord(fileId, base + slot);
+      }
+    return columnarRecordCount > start;
   }
 
   /**
@@ -3855,7 +3918,8 @@ public class TransactionContext implements Transaction {
       marksQueue.queuedColumnarMarksStarted();
     try {
       // a failure to write the NOWAL marker refuses the no-WAL commit here, before anything is visible
-      columnar.markPackedPages(columnarMarkKeys, columnarMarkCount, columnarMarkPages, withoutWAL);
+      columnar.markPackedPages(columnarMarkKeys, columnarMarkCount, columnarMarkPages, columnarRecordKeys, columnarRecordCount,
+          columnarRecordBuffer, withoutWAL);
       final Runnable firstMarkSeam = afterFirstColumnarMarkForTesting;
       if (firstMarkSeam != null)
         firstMarkSeam.run();
@@ -3866,7 +3930,8 @@ public class TransactionContext implements Transaction {
       if (seam != null)
         seam.run();
       try {
-        columnar.markPackedPages(columnarMarkKeys, columnarMarkCount, columnarMarkPages, withoutWAL);
+        columnar.markPackedPages(columnarMarkKeys, columnarMarkCount, columnarMarkPages, columnarRecordKeys, columnarRecordCount,
+            columnarRecordBuffer, withoutWAL);
       } catch (final UncheckedIOException e) {
         // the pages are visible, the commit cannot be refused any more: the projection whose marker failed was marked unusable and is
         // rebuilt, the other files were marked

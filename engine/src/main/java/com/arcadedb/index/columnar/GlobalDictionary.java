@@ -31,6 +31,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
@@ -63,6 +64,8 @@ public final class GlobalDictionary {
   private static final int  CHUNK_MASK   = CHUNK_SIZE - 1;
   private static final int  INITIAL_TABLE = 1024;
   private static final int  MAX_VARINT_BYTES = 10;
+  /** {@link #utf16Hash}: the bytes are not well-formed UTF-8. */
+  private static final long MALFORMED        = Long.MIN_VALUE;
 
   /** Immutable rank view: {@code rankOfOrdinal[o]} is the position of ordinal o in {@code sortedOrdinals}. */
   private record RankView(int[] rankOfOrdinal, int[] sortedOrdinals) {
@@ -252,6 +255,43 @@ public final class GlobalDictionary {
     return value == null ? -1 : lookup(value, size);
   }
 
+  /**
+   * {@link #getOrAdd} of the String whose UTF-8 bytes are {@code length} bytes at {@code offset} of the buffer's content (Task 2 of
+   * #10662): the same ordinal, found without building the String. The hash of the String is computed from the bytes and a hit is
+   * verified against the stored String; only a miss builds the String it appends. Bytes that are not well-formed UTF-8 are looked up
+   * as the String a record read decodes from them. Writer only.
+   */
+  public int getOrAddUtf8(final Binary buffer, final int offset, final int length) {
+    if (closed)
+      throw new IllegalStateException("Dictionary is closed");
+    final byte[] bytes = buffer.getContent();
+    final int from = buffer.getContentBeginOffset() + offset;
+    final long hash = utf16Hash(bytes, from, length);
+    if (hash != MALFORMED) {
+      final int existing;
+      assert enterWriter();
+      try {
+        existing = lookupUtf8(bytes, from, length, (int) hash, size);
+      } finally {
+        assert exitWriter();
+      }
+      if (existing >= 0)
+        return existing;
+    }
+    // a miss (or bytes that are not well-formed UTF-8): the String goes through getOrAdd, which takes the writer role itself
+    return getOrAdd(new String(bytes, from, length, StandardCharsets.UTF_8));
+  }
+
+  /** {@link #ordinalOf} of the String whose UTF-8 bytes are at {@code offset} of the buffer's content, as {@link #getOrAddUtf8}. */
+  public int ordinalOfUtf8(final Binary buffer, final int offset, final int length) {
+    final byte[] bytes = buffer.getContent();
+    final int from = buffer.getContentBeginOffset() + offset;
+    final long hash = utf16Hash(bytes, from, length);
+    if (hash == MALFORMED)
+      return ordinalOf(new String(bytes, from, length, StandardCharsets.UTF_8));
+    return lookupUtf8(bytes, from, length, (int) hash, size);
+  }
+
   /** @throws IndexOutOfBoundsException when the ordinal is negative or not below {@link #size()} */
   public Object valueOf(final int ordinal) {
     if (ordinal < 0 || ordinal >= size)
@@ -306,8 +346,10 @@ public final class GlobalDictionary {
       if ((sequence & 1) != 0)
         Thread.onSpinWait();
     } while ((sequence & 1) != 0 || sequence != writeSequence);
-    if (channel != null)
+    if (channel != null) {
       channel.force(false);
+      ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_DICTIONARY);
+    }
     return new DurableState(bytes, entries);
   }
 
@@ -399,6 +441,108 @@ public final class GlobalDictionary {
       if (ordinal < visibleSize && value.equals(snapshot[ordinal >>> CHUNK_SHIFT][ordinal & CHUNK_MASK]))
         return ordinal;
       slot = (slot + 1) & mask;
+    }
+    return -1;
+  }
+
+  private int lookupUtf8(final byte[] bytes, final int from, final int length, final int hash, final int visibleSize) {
+    final int[] t = table;
+    final int mask = t.length - 1;
+    final Object[][] snapshot = chunks;
+    int slot = slotOf(hash) & mask;
+    int entry;
+    while ((entry = t[slot]) != 0) {
+      final int ordinal = entry - 1;
+      if (ordinal < visibleSize && snapshot[ordinal >>> CHUNK_SHIFT][ordinal & CHUNK_MASK] instanceof String stored && stored.hashCode() == hash
+          && utf8Equals(stored, bytes, from, length))
+        return ordinal;
+      slot = (slot + 1) & mask;
+    }
+    return -1;
+  }
+
+  /**
+   * {@code String.hashCode()} of the String the well-formed UTF-8 bytes decode to, or {@link #MALFORMED} when they are not well formed
+   * (an overlong form, a surrogate, a value past U+10FFFF, a truncated or stray continuation byte): the JDK decoder replaces those, so
+   * such bytes are left to it.
+   */
+  private static long utf16Hash(final byte[] bytes, final int from, final int length) {
+    int hash = 0;
+    final int end = from + length;
+    for (int i = from; i < end; ) {
+      final int b0 = bytes[i] & 0xFF;
+      if (b0 < 0x80) {
+        hash = 31 * hash + b0;
+        i++;
+        continue;
+      }
+      final int codePoint = decode(bytes, i, end, b0);
+      if (codePoint < 0)
+        return MALFORMED;
+      if (codePoint < 0x10000)
+        hash = 31 * hash + codePoint;
+      else {
+        hash = 31 * hash + Character.highSurrogate(codePoint);
+        hash = 31 * hash + Character.lowSurrogate(codePoint);
+      }
+      i += b0 < 0xE0 ? 2 : b0 < 0xF0 ? 3 : 4;
+    }
+    return hash;
+  }
+
+  /** Whether the well-formed UTF-8 bytes decode to exactly the UTF-16 units of the String. */
+  private static boolean utf8Equals(final String stored, final byte[] bytes, final int from, final int length) {
+    final int units = stored.length();
+    if (units > length)
+      return false;
+    int u = 0;
+    final int end = from + length;
+    for (int i = from; i < end; ) {
+      final int b0 = bytes[i] & 0xFF;
+      if (b0 < 0x80) {
+        if (u >= units || stored.charAt(u++) != b0)
+          return false;
+        i++;
+        continue;
+      }
+      final int codePoint = decode(bytes, i, end, b0);
+      if (codePoint < 0x10000) {
+        if (u >= units || stored.charAt(u++) != codePoint)
+          return false;
+      } else if (u + 1 >= units || stored.charAt(u++) != Character.highSurrogate(codePoint)
+          || stored.charAt(u++) != Character.lowSurrogate(codePoint))
+        return false;
+      i += b0 < 0xE0 ? 2 : b0 < 0xF0 ? 3 : 4;
+    }
+    return u == units;
+  }
+
+  /** The code point of the multi-byte sequence starting with {@code b0} at {@code i}, -1 when it is not well formed (RFC 3629). */
+  private static int decode(final byte[] bytes, final int i, final int end, final int b0) {
+    if (b0 >= 0xC2 && b0 <= 0xDF) {
+      if (i + 1 >= end)
+        return -1;
+      final int b1 = bytes[i + 1] & 0xFF;
+      return (b1 & 0xC0) != 0x80 ? -1 : (b0 & 0x1F) << 6 | b1 & 0x3F;
+    }
+    if (b0 >= 0xE0 && b0 <= 0xEF) {
+      if (i + 2 >= end)
+        return -1;
+      final int b1 = bytes[i + 1] & 0xFF;
+      final int b2 = bytes[i + 2] & 0xFF;
+      if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || b0 == 0xE0 && b1 < 0xA0 || b0 == 0xED && b1 > 0x9F)
+        return -1;
+      return (b0 & 0x0F) << 12 | (b1 & 0x3F) << 6 | b2 & 0x3F;
+    }
+    if (b0 >= 0xF0 && b0 <= 0xF4) {
+      if (i + 3 >= end)
+        return -1;
+      final int b1 = bytes[i + 1] & 0xFF;
+      final int b2 = bytes[i + 2] & 0xFF;
+      final int b3 = bytes[i + 3] & 0xFF;
+      if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 || b0 == 0xF0 && b1 < 0x90 || b0 == 0xF4 && b1 > 0x8F)
+        return -1;
+      return (b0 & 0x07) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | b3 & 0x3F;
     }
     return -1;
   }

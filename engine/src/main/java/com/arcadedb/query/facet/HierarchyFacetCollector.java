@@ -48,7 +48,9 @@ import java.util.concurrent.CancellationException;
  * visited for live rows only).
  * <p>
  * <b>View and security.</b> The view is taken once, at the first {@link #beginBucket}, from the type's {@link HierarchyManager} (a
- * private one when the caller's transaction changed the tag graph). The shared view is built with no user, so this is the only gate:
+ * private one when the caller's transaction changed the tag graph); the collectors of one query that count over the same hierarchy
+ * share that one view ({@link ViewSource}), so the projected and the scanned buckets of a declaring type count over one tree. The
+ * shared view is built with no user, so this is the only gate:
  * the current user must be allowed to read the records of every file the hierarchy watches ({@link HierarchyManager#watchedFileIds}),
  * checked before the view is asked for and again with the file set the view was built from; a refusal answers the facet
  * {@code unavailable} with the reason {@value #NOT_READABLE}. A view that cannot be had (a source dropped, the manager closed, even
@@ -86,12 +88,12 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
   private final HierarchyFacetSpec            spec;
   private final ColumnKind                    kind;
   private final long                          matchCount;
-  private final DatabaseInternal              database;
-  private final String                        declaringType;
   /** The type a missing hierarchy is reported on: the declaring type, else the type of the counted buckets. */
   private final String                        countedType;
   /** The view of a hand-driven collector (tests), null to take it from the declaring type's hierarchy. */
   private final HierarchyView                 fixedView;
+  /** Where the view is taken from: the declaring type's hierarchy, shared by the collectors of a query or this one's own; null for none. */
+  private final ViewSource                    source;
   private final CollectorReservations         budget;
   private final FacetExecutionStats           stats  = new FacetExecutionStats();
   private final List<HierarchyFacetCollector> others = new ArrayList<>();
@@ -153,23 +155,32 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
     this(spec, column, matchCount, db, declaringType, countedType, null, budgetWaitMs);
   }
 
+  /**
+   * @param views the views of the query's hierarchies, by declaring type and property (one per query, {@link ViewSource#of}); null to
+   *              take this collector's own view
+   */
+  HierarchyFacetCollector(final HierarchyFacetSpec spec, final ColumnDefinition column, final long matchCount, final DatabaseInternal db,
+      final String declaringType, final String countedType, final Map<ViewSource.Key, ViewSource> views, final long budgetWaitMs) {
+    this(spec, column, matchCount, declaringType != null ? declaringType : countedType, null,
+        db == null || declaringType == null ? null : views != null ? ViewSource.of(views, db, declaringType, spec.property()) :
+            new ViewSource(db, declaringType, spec.property()), budgetWaitMs);
+  }
+
   private HierarchyFacetCollector(final HierarchyFacetSpec spec, final ColumnDefinition column, final long matchCount,
-      final DatabaseInternal db, final String declaringType, final String countedType, final HierarchyView fixedView,
-      final long budgetWaitMs) {
+      final String countedType, final HierarchyView fixedView, final ViewSource source, final long budgetWaitMs) {
     this.spec = spec;
     this.kind = column == null ? null : column.kind();
     this.matchCount = matchCount;
-    this.database = db;
-    this.declaringType = declaringType;
-    this.countedType = declaringType != null ? declaringType : countedType;
+    this.countedType = countedType;
     this.fixedView = fixedView;
+    this.source = source;
     this.budget = new CollectorReservations(budgetWaitMs);
   }
 
   /** A collector counting over a given view, with no hierarchy manager and no access check (tests drive it by hand). */
   static HierarchyFacetCollector forView(final HierarchyFacetSpec spec, final ColumnDefinition column, final long matchCount,
       final HierarchyView view, final long budgetWaitMs) {
-    return new HierarchyFacetCollector(spec, column, matchCount, null, null, null, view, budgetWaitMs);
+    return new HierarchyFacetCollector(spec, column, matchCount, null, view, null, budgetWaitMs);
   }
 
   /**
@@ -267,6 +278,11 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable != null;
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof HierarchyFacetCollector collector))
       throw new IllegalArgumentException("FACETS " + spec.alias() + ": cannot merge a " + other.getClass().getSimpleName() + " into hierarchy");
@@ -336,17 +352,76 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
     if (fixedView != null)
       view = fixedView;
     else {
-      final HierarchyManager manager =
-          declaringType == null ? null : ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().hierarchy(declaringType, spec.property());
-      if (manager == null) {
-        unavailable = "no hierarchy on " + countedType + "." + spec.property();
+      final String reason = source == null ? "no hierarchy on " + countedType + "." + spec.property() : source.take(deadlineMs);
+      if (reason != null) {
+        unavailable = reason;
         return;
       }
+      view = source.view();
+    }
+    allocateNodeCounter();
+  }
+
+  /**
+   * The view of one declaring type's hierarchy for one query (plan 7 Task 12): taken once, by the first collector that opens, and
+   * handed to every collector of the query that counts over that hierarchy, the projected and the scanned buckets of every facet
+   * alike, so they count over one tree even when the tag graph changes during the query. Every collector given it asks again
+   * whether the current user may read the hierarchy's files (one user per query: the same answer, for a few file checks). Driven by
+   * the query thread only.
+   */
+  static final class ViewSource {
+    /** A hierarchy of the query: the declaring type and the property of its COLUMNAR index. */
+    record Key(String declaringType, String property) {
+    }
+
+    private final DatabaseInternal database;
+    private final String           declaringType;
+    private final String           property;
+    private       boolean          taken;
+    private       HierarchyManager manager;
+    private       HierarchyView    view;
+    /** Why there is no view, null when there is one (or it was not taken yet). */
+    private       String           reason;
+
+    ViewSource(final DatabaseInternal database, final String declaringType, final String property) {
+      this.database = database;
+      this.declaringType = declaringType;
+      this.property = property;
+    }
+
+    /** The source of the hierarchy of {@code declaringType.property} in {@code views}, made on the first ask. */
+    static ViewSource of(final Map<Key, ViewSource> views, final DatabaseInternal database, final String declaringType,
+        final String property) {
+      return views.computeIfAbsent(new Key(declaringType, property), k -> new ViewSource(database, declaringType, property));
+    }
+
+    /**
+     * Takes the view at the first call, after the access check; later calls check the access again and keep the view.
+     *
+     * @param deadlineMs the statement's deadline, which bounds the wait for the view and its build (the first call's is used)
+     *
+     * @return null when {@link #view()} may be counted over, else why the facet is unavailable
+     */
+    String take(final long deadlineMs) {
+      if (!taken) {
+        taken = true;
+        reason = open(deadlineMs);
+        return reason;
+      }
+      return reason != null || readable() ? reason : NOT_READABLE;
+    }
+
+    HierarchyView view() {
+      return view;
+    }
+
+    private String open(final long deadlineMs) {
+      manager = ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().hierarchy(declaringType, property);
+      if (manager == null)
+        return "no hierarchy on " + declaringType + "." + property;
       // the shared view is built with no user: this check is what keeps the tag paths from a user who may not read them
-      if (!readable(manager)) {
-        unavailable = NOT_READABLE;
-        return;
-      }
+      if (!readable())
+        return NOT_READABLE;
       HierarchyView taken;
       try {
         taken = manager.view(deadlineMs);
@@ -355,28 +430,25 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
         taken = null;
       }
       if (taken == null) {
-        final String reason = manager.unavailableReason();
+        final String unavailable = manager.unavailableReason();
         // no reason of the manager's: the statement's deadline passed while the view was built (shared or private)
-        unavailable = reason != null ? reason : deadlineMs != Long.MAX_VALUE ? manager.deadlineReason() :
-            "the hierarchy of " + declaringType + "." + spec.property() + " is not available";
-        return;
+        return unavailable != null ? unavailable : deadlineMs != Long.MAX_VALUE ? manager.deadlineReason() :
+            "the hierarchy of " + declaringType + "." + property + " is not available";
       }
       // view() recomputes the watched files when the schema moved: the files the view was built from are checked as well
-      if (!readable(manager)) {
-        unavailable = NOT_READABLE;
-        return;
-      }
+      if (!readable())
+        return NOT_READABLE;
       view = taken;
+      return null;
     }
-    allocateNodeCounter();
-  }
 
-  /** Whether the current user may read the records of every file the hierarchy watches. */
-  private boolean readable(final HierarchyManager manager) {
-    for (final int fileId : manager.watchedFileIds())
-      if (!SecurityHelper.canAccessFile(database, fileId, SecurityDatabaseUser.ACCESS.READ_RECORD))
-        return false;
-    return true;
+    /** Whether the current user may read the records of every file the hierarchy watches. */
+    private boolean readable() {
+      for (final int fileId : manager.watchedFileIds())
+        if (!SecurityHelper.canAccessFile(database, fileId, SecurityDatabaseUser.ACCESS.READ_RECORD))
+          return false;
+      return true;
+    }
   }
 
   // ------------------------------------------------------------------------------------------------------------------- counting

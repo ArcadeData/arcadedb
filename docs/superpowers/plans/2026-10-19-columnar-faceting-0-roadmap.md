@@ -1,4 +1,4 @@
-# Columnar Faceting - Roadmap (plan 0 of 6)
+# Columnar Faceting - Roadmap (plan 0 of 7)
 
 > **For agentic workers:** this file is not executed task by task. It fixes the order, the gates and the cross-plan contract that plans 1-6 implement. Every plan reads it first.
 
@@ -16,6 +16,7 @@
 | 4 | `2026-10-19-columnar-faceting-4-query-api.md` | `FACETS` grammar, executor, patching, disjunctive facets, range/histogram, budget, security, HTTP/ndjson/gRPC/remote clients, `EXPLAIN` | 3 | Server ITs and `ha-raft` follower-query ITs green |
 | 5 | `2026-10-19-columnar-faceting-5-advanced.md` | Hierarchical facets, distinct, stats, facet-value search, `AFTER` cursor, `GROUP BY` acceleration | 4 | Unit + integration green |
 | 6 | `2026-10-19-columnar-faceting-6-resilience-load.md` | Facet invariant in `HaChaosIT` and `e2e-ha` scenarios; facet load tests | 4 (5 optional for hierarchy workload) | Chaos runs and load runs report no facet violation |
+| 7 | `2026-11-02-columnar-faceting-7-tuning.md` | Tuning (#10662): record-granular marks, stamping, parallel counting, apply pacing, flush keys | 4-6 | Exit criterion of the tuning phase (verdict in "Tuning outcome") |
 
 ## Test layers per plan (team requirement)
 
@@ -312,11 +313,11 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
 - GROUP BY acceleration with a WHERE (deferred from plan 5 Task 13): rows filtered by the WHERE must be counted from the version the WHERE saw; design: take a second snapshot after draining the matches, decline if anything was published in between, count rows on pages pending in that snapshot from their records; re-evaluate the WHERE on any replay. Plan 5 accelerates only GROUP BY without a WHERE.
 - Read events on a FACETS query with a WHERE (final fix round 2, N3): a type with READ triggers or listeners is counted by the fallback scan, which reads every match again through `recordAt` after the rows read it, so the events fire twice per matched record; reuse the rows' records for the facet scan (one read, one firing).
 - Hierarchy build cancellation (final fix round 2, N6): `HierarchyBuilder` checks its cancel flag between the scans and every 1024 vertices, not in the sort, the BFS and the Tarjan pass, so a deadline or a close can be overrun by those passes; add checks there.
-- Apply pass vs a commit still publishing a growing chunk chain (plan 6 investigation): the pass retries the page on the next pass (converges); harden LocalBucket.assembleFromNewestCommitted to redo the walk under pageManager.executeInLock when a publication overlapped (needs a PageManager.publishPages hook to test), and report a chunked record deleted meanwhile as an empty slot.
+- Apply pass vs a commit still publishing a growing chunk chain (plan 6 investigation): the pass retries the page on the next pass (converges); harden LocalBucket.assembleFromNewestCommitted to redo the walk under pageManager.executeInLock when a publication overlapped (needs a PageManager.publishPages hook to test), and report a chunked record deleted meanwhile as an empty slot (done, plan 7 Task 14).
 
-## Pre-merge steps (before the feature branch is merged to main)
+## Owed before the release
 
-- **Python bindings live in their own repository** (`ArcadeData/arcadedb-python`, user note 2026-10-23; tracked as sub-issue #10666). No plan in this branch touches Python, so every Python-side piece of this feature is done there, not here, and lands before the merge to main: the `FACETS` clause usable from the Python client, the `facets` member of query responses (HTTP JSON at top level, ndjson in the `stats` trailer as `stats.facets`, the shape `FacetResults.toJSON()` defines, values written as rows write them, with, under `typeHints`, a `@props` hint in the form of a row's hint: comma-separated `name:<type id>` entries, `value` for the values of the property and, since plan 5 Task 14, `sum`/`avg` for a STATS facet) parsed into client objects, and tests against a server built from this branch. The Python change follows the same API surface rule as Java: whatever plan 4 exposes over HTTP and gRPC is reachable from Python with the same shape.
+- **Python bindings live in their own repository** (`ArcadeData/arcadedb-python`, user note 2026-10-23; tracked as sub-issue #10666). No plan in this branch touches Python, so every Python-side piece of this feature is done there, not here, and lands before the release that ships FACETS: the `FACETS` clause usable from the Python client, the `facets` member of query responses (HTTP JSON at top level, ndjson in the `stats` trailer as `stats.facets`, the shape `FacetResults.toJSON()` defines, values written as rows write them, with, under `typeHints`, a `@props` hint in the form of a row's hint: comma-separated `name:<type id>` entries, `value` for the values of the property and, since plan 5 Task 14, `sum`/`avg` for a STATS facet) parsed into client objects, and tests against a server built from this branch. The Python change follows the same API surface rule as Java: whatever plan 4 exposes over HTTP and gRPC is reachable from Python with the same shape.
 - Measured by plan 4 Task 19 (200k records): with 5000 pending mutations a broad facet query's patch set is ~120k records (60% of its matches), because pending marks are page-granular; the absolute `arcadedb.columnar.patchBudget` (10000) alone answers `exact=false`. Since the plan 4 final fix the budget is relative: an answer stays exact while it patches at most `max(patchBudget, arcadedb.columnar.patchBudgetRatio x matches)` positions, the matches being those of the buckets patched; the ratio defaults to 1 (validated to [0, 1], 0 = absolute budget only), and the memory budget still bounds the patch sets. Re-measured at 200k / one bucket / 5000 mutations with the defaults: broad 120,152 patched, exact, 105 ms vs 329 ms GROUP BY (0.32x); no WHERE 120,723 patched, exact, 97 ms vs 320 ms (0.30x); selective 296 patched, exact. With ratio 0 the broad and no-WHERE cases answer `exact=false` at 27-30 ms. Remaining levers for tuning #10662: record-granular pending marks, patching per page read, a budget expressed in pages read.
 
 - **Python client (#10666), wire members of the plan 5 kinds** (plan 5 Task 14). The client must read, on every transport it speaks:
@@ -331,7 +332,7 @@ Exit criterion: inserts and updates within noise of no-COLUMNAR on the ingest be
   - gRPC `GrpcFacetResult`: `after` (9), `min` (10), `max` (11), `has_after` (12), `sum` (13) and `avg` (14) as typed `GrpcValue`s decoded as the row decoder decodes them (`after` unset with `has_after` true means no value follows); `extensions_json` (8) now carries only `count` (STATS) and `value`/`exact` (DISTINCT); `GrpcFacetBucket.attributes_json` carries `parent`/`depth`/`orphan`.
   - `facet.searchValues(type, property, prefix, limit)`: ordinary result rows `{value, count}` plus `exact: false` on the rows of an inexact batch (absent when exact).
 - **User docs owed for HIERARCHY/DISTINCT/STATS/AFTER** (plan 5 Task 14, carried from plans 4 and 5): a facet alias spelled `unwind` or `timeout` needs back-ticks; FACETS inside a REPEATABLE_READ transaction count the latest committed data plus patching, not the transaction's snapshot; GROUP BY acceleration applies only to a GROUP BY without WHERE and declines inside a REPEATABLE_READ transaction; without ORDER BY the order of the groups may differ from the non-accelerated plan; `facet.searchValues` suggests only values of the applied dictionaries of indexed buckets (a value held only by an unindexed type, or only by the caller's uncommitted writes, is not suggested) and marks the rows of an inexact batch `exact: false`; clients echo `after` exactly as received (a reformatted date string can lose its sub-seconds). Read events (final fix round 2, N2/N3): a type with READ triggers or listeners (or a database with a read listener of its own) is never answered from the projection: its facets are counted by the fallback scan, so `arcadedb.columnar.maxFallbackScans` (default 2 per database) caps the concurrent FACETS queries on it (beyond it: `unavailable / fallback scans capped`); the read events fire for that scan as well as for the rows (twice per matched record with a WHERE); a database-level read listener also turns off the full-text match source of FACETS; GROUP BY acceleration runs the normal plan on such a type.
-- **Python client (#10666), plan 6**: nothing new on the wire. The client must retry a FACETS query (and an accelerated GROUP BY) that fails with HTTP 503 / `NeedRetryException`, as the Java HTTP client does: on a replica the query can meet a record chain a replicated apply is still writing (#10941) and is answered with a retryable `ConcurrentModificationException`.
+- **Python client (#10666), plan 6**: nothing new on the wire. The client must retry a FACETS query (and an accelerated GROUP BY) that fails with HTTP 503 / `NeedRetryException`, as the Java HTTP client does: on a replica the query can meet a record chain a replicated apply is still writing (#10941) and is answered with a retryable `ConcurrentModificationException`. #10941 and #11283 are fixed; the retryable answer stays as a safety net until #11359.
 - **User docs owed from plan 6**:
   - A FACETS query or an accelerated GROUP BY on a replica can fail with a retryable `ConcurrentModificationException` (HTTP 503) when it reads a record a replicated apply is still writing. The message carries the CHECK DATABASE FIX hint, since the engine cannot tell this race from a real broken chunk chain. An atomic single-request command is retried automatically; an explicit client-managed transaction gets the exception at once. Retries are bounded, so a chain that stays broken surfaces.
   - After an unclean restart, facets read `scan` until the unclean-open page check ends.
@@ -381,3 +382,142 @@ Baseline for tuning #10662 (container runs on a developer host, logged, not asse
 - Single server, 4 writers x 20000 mixed ops, 2 query threads: 1.0-1.9k ops/s, query p95 69-102 ms, `lagMs` p95 ~500-660, `patched` p95 ~6.6k-8k, 0 budget waits, 0 patch overflows, 0 fallback scans, 0 rebuilds, 0 inexact answers.
 - Three nodes, 3 writers x 15000 ops through node 0, one query thread per node: 72-125 ops/s (writes forwarded to the leader), query p50 9-13 ms and p95 32-45 ms per node, `lagMs` p95 332-464, `patched` p50 202-434, apply-lag max ~500 ms, overlay max 13-28 rows, 0 inexact answers.
 - WAL (O15): at the end of each three-node leg the leader held one WAL file of 28-62 MB and the followers none: no sign of delayed WAL drops at this load.
+
+## Tuning outcome (#10662, plan 7, 2026-11-04)
+
+Plan 7 measured first and then pulled levers in the order the profile ranked them. Each lever was kept only on a WIN of its primary
+metric beyond the measured noise floor, with no LOSS on its guards. Before/after: the branch at `8da84eb9f3` (plan 6 done) against the
+final tree with every A/B switch removed, alternating, 5 runs per side, on one host (Apple M3 Pro, 12 cores, OpenJDK 25). Working notes,
+data and the per-lever ledger: `.superpowers/sdd/2026-11-02-columnar-faceting-7-tuning/` (`tuning-report.md`, `levers.md`,
+`bench/t17/`).
+
+Summary of what shipped:
+- **Record-granular pending marks** (`ColumnarIndexManager.markRecords`, up to 16 records per page, else the whole page). A commit with
+  WAL marks the records it wrote instead of their pages, so the apply pass re-reads and a lagging query patches only those records. A
+  page read by record is stamped with the version it read, so far fewer `unclean_pages` rebuilds follow a crash. The stamp is refused
+  (the page keeps counting as changed) while a replicated apply or WAL replay is between its writes and its mark, when the page was
+  marked again since the drain, or when a record of it was unreadable.
+- **Apply pass**:
+  - Allocation-free old-value lookups (`ColumnarProjection.LiveLookup`, `SegmentReader.PointCursor`).
+  - Direct decode of the projected values from the record bytes, with no record, String or list built.
+- **Parallel counting** of one facet over page slices on `QueryEngineManager`'s pool (`arcadedb.columnar.parallelCountTasks`,
+  default 4), once a bucket holds `arcadedb.columnar.parallelMinMatches` (262,144) matches.
+- **Query side**:
+  - `facet.searchValues` counts through the projection directly, and the SQL path keeps one statement shape per batch size.
+  - One hierarchy view per query.
+  - Read events fire once per matched record: the facets are counted from the rows the WHERE read.
+  - Hierarchy build cancellation inside the sort, depths and cycle passes.
+  - Rank-view rebuild cadence 10 s -> 1 s.
+- **Correctness hardening**: `LocalBucket.assembleFromNewestCommitted` validates a chunk chain once no publication is open; a chunked
+  record deleted meanwhile reads as an empty slot.
+- **New keys**, both with defaults that keep the earlier behavior:
+  - `arcadedb.columnar.flushMinRows` / `flushMaxAge`: flush coalescing, defaults 0 (off).
+  - `arcadedb.columnar.applyMaxLag`: default 500 ms. It replaces the fixed pacing constants.
+- **Always on**: a flush is due once a projection's unflushed pages reach 512 (`REAPPLY_FLOOR / 2`). This bounds the pages a steady
+  ingest leaves unflushed. It is checked on the manager tick and the flush runs on the maintenance pool, so a single apply pass that
+  applies more than 1,024 pages (a bulk commit rewriting thousands of pages) followed by a crash before the flush publishes can still
+  lead to an `unclean_pages` rebuild.
+
+Reverted or not built, by measurement:
+- Reverted: pooled counters, cached AFTER plans, one-pass hierarchy build (LOSS), single publish fsync.
+- Not built, below noise: restricted-user ordinal-map caching, skipping the redundant commit mark.
+- Not built, Step 0 bound: GROUP BY acceleration with a WHERE (no gain without a native match source).
+
+Before -> after (medians; the verdicts use the protocol floors):
+
+| Measure | Before | After |
+|---|---|---|
+| Ingest: apply allocation, inserts / updates / catch-up (MB) | 94.6 / 660 / 323 | 40.5 / 156 / 48.4 (WIN) |
+| Ingest: apply CPU, updates / catch-up (ms) | 672 / 348 | 376 / 131 (WIN) |
+| Ingest: catch-up after 100k updates (ms) | 571 | 328 (WIN) |
+| Facets 200k, lagging (5,000 pending), broad / no WHERE, exact (ms) | 95.9 / 92.2 | 38.3 / 31.7 (WIN) |
+| Facets 200k, lagging broad, records patched | 120,152 (pre-Task 15 run; the baseline harness records no patched count) | 12,779 |
+| Facets 200k, caught up, broad / no WHERE / 3 buckets (ms) | 28.0 / 16.8 / 29.4 | 28.2 / 16.9 / 29.4 (NOISE) |
+| Facets 1M, caught up broad / no WHERE (ms) | 313 / 95 | 243 / 28 (WIN) |
+| Facets 1M, lagging broad / no WHERE (ms) | 411 / 212 | 259 / 52 (WIN) |
+| Load single server: query p95 (ms) / patched p95 | 52.9-58.3 / 7,249-8,047 | 48.8-51.0 / 4,376-5,064 |
+| Load single server: `lagMs` p95, apply-lag max (ms) | 494-498, 479-573 | 487-492, 460-511 |
+| Load three nodes: `lagMs` p95 / patched p95 | 297-339 / 636-784 | 227-312 / 270-669 |
+| Load three nodes: query p95 HTTP / gRPC (ms, per node) | 51.2-58.1 / 52.5-56.8 | 56.7-64.6 / 66.9-72.7 |
+| Load three nodes: throughput HTTP / gRPC (ops/s) | 69.2 / 76.1 | 65.5 / 61.9 |
+
+The three-node rows are one run per image. The final run started at a 5-minute host load of 12.0, and three-node throughput moves by
+up to 40% between two runs of the same image (batch G3 report). These rows cannot separate the two trees; they point toward worse
+three-node query latency and throughput, which is not re-measured.
+
+Exit criterion verdict:
+- **Facet latency: met on the engine benchmarks and the single-server load test; not separable on three nodes** (one run per image,
+  query p95 and throughput pointing worse, see the caveat above; a three-node A/B with several runs per image is open).
+  - Better than the plan 4 numbers in every lagging case: 38 ms vs 105 ms broad and exact at 200k.
+  - Equal when caught up (28 / 17 / 29 ms vs 26 / 17 / 30).
+- **Apply lag: met.** It is no worse than plan 6 (single server `lagMs` p95 about 490 vs 500-660; three nodes 227-312 vs 332-464).
+- **Apply overhead** (CPU, allocation and records re-read at 9 rounds, the judge set by the plan's ruling):
+  - Met for CPU and allocation: down 44-85%, beyond the A-vs-A floors.
+  - Not met for update re-reads: +15%. A faster apply takes more passes per epoch, and 500-record commits put about 25 updates on a
+    page, past the 16-record cap, so updates stay page-granular. The catch-up re-reads half as many.
+- **"Inserts and updates within noise of no-COLUMNAR": not met in wall time.**
+  - Inserts are +6.1% over A, unchanged from before.
+  - Updates are +10.5% (before: +5.6%). About 3 points of the difference sit on the commit path: B' (apply held) went from +1.3% to
+    +4.4% over A, and committer CPU from +0.0% to +2.5%. Attributed to the record-granular marks on the commit (likely, unprofiled: the final tree also slowed variant A, open item 9).
+  - The A-vs-A floors are 4.1% (inserts) and 2.9% (updates).
+- The remaining cost is listed below with its knob.
+
+Remaining costs and their knobs:
+
+| Cost | Size (this host) | Knob |
+|---|---|---|
+| Commit path of inserts (page marks of a COLUMNAR type) | inserts +5.5% of the +6.1% over no-COLUMNAR (B', apply held; before plan 7: +5.3%) | none; pre-existing, unchanged by plan 7 (see also the commit allocation row and open item 9) |
+| Commit path of updates (record-granular marks, likely, unprofiled) | updates +4.4% of the +10.5% (B'; before plan 7: +1.3%), committer CPU +2.5% | none (always on since the switches were removed); would need a page-only mode |
+| Background apply competing with writers | inserts about +0.6%, updates about +6% over no-COLUMNAR | `arcadedb.columnar.applyMaxLag` (500 ms; 1000 cuts update re-reads by a third and apply CPU by 38%, but doubles lag p95 and raises catch-up by 75%), `applyInterval` (100 ms), `applyThreads` (2, shared by databases, one pass per database at a time), fewer COLUMNAR properties |
+| Commit allocation on every type, COLUMNAR or not | +4.2% committer bytes per insert commit (about 12 bytes per record), +0.07% per update commit | none; unprofiled (open item 9) |
+| Patching while lagging | 12.8k records for 5,000 pending writes at 200k (38 ms vs 28 caught up) | `arcadedb.columnar.patchBudget` / `patchBudgetRatio` (ratio 0: inexact answers flagged, no patching) |
+| Maintenance (flush / merge) | update phase maintenance CPU 52 -> 118 ms per run (one more flush from the 512-page bound) | `arcadedb.columnar.flushInterval`, `flushMaxRows`, `flushMinRows`, `flushMaxAge`, `mergeMaxSegments`; the 512-page bound itself is fixed |
+| Parallel counting on the shared query pool | up to 3 extra tasks per facet of a 262,144+ match bucket | `arcadedb.columnar.parallelCountTasks` (4; 1 = serial), `parallelMinMatches` |
+| Query memory | bounded per JVM | `arcadedb.columnar.queryMemoryBudget` (256 MB), `queryBudgetWait` |
+
+Follow-ups (open items):
+1. Task 16 follow-ups:
+   - Evaluate simple predicates on projected columns, so a GROUP BY with a WHERE gets a native match source.
+   - Count inside the parallel scan workers, instead of draining matches to one thread.
+   - Either one would make `groupByAccelerationWhere` pay.
+2. Question for the user: should parallel counting stay on `QueryEngineManager`'s pool, shared with the parallel query steps (ruling
+   T8), or get a dedicated pool? The load ITs (at most 3 query threads) showed no starvation. Many concurrent broad FACETS queries at
+   1M records are unmeasured.
+3. Follower flake: `ThreeNodesFacetLoadTestIT` failed about 1 method in 3 on either tree (batch 5/12 vs base 4/12, Fisher p = 1.0),
+   on one `Possible corrupted record` log line on a follower, from the replica transactional read in `FacetPatcher`
+   (`validateChainReadAgainstOneCommit` / `provenAgainstOneCommit` / `committedPlaceholderContent` relied on `executeInLock`, which
+   does not exclude a replicated apply). Fixed by #11283 (`084f50d010`) on top of #10941 (`490e48c345`); the `FacetPatcher.recordAt`
+   mapping is now a safety net, its removal tracked in #11359. HA coverage of a `scan`/`unavailable` phase during a background rebuild
+   is #11360.
+4. `TermsCollector` pages through unranked ordinals (the rank-view tail) by a scan per page. The 1 s cadence bounds the tail but not the
+   per-page cost.
+5. 44.6 MB allocated per broad facet query at 200k records, unprofiled. Dense counters are 0.9% of it (Task 6).
+6. Temporal values (`DATETIME` / `DATE` to `Instant`, `LocalDateTime`, `LocalDate`) still decode through objects in the apply pass:
+   13% of decode allocation after Task 2's first lever. Converting the stored long directly needs the precision rules of
+   `DateUtils.dateTimeToTimestamp`, so Task 2 left it out to keep exactness simple.
+7. The restricted-user ordinal merge, re-measured at about 100k-value facets (`task7-measure-first.patch`). At 800 values it is 0.33% of
+   a query. Tracked in #11354.
+8. Apply-lag spikes under flush coalescing: 1.7-2.3 s in load-single at 4096 rows / 30 s, against 0.6 s at the defaults. The cause is
+   unprofiled, and coalescing stays off by default until it is explained. Similar isolated spikes (1.8 s) appeared once in a three-node
+   run at `parallelCountTasks` 1.
+9. Engine-wide direction:
+   - Variant A (no COLUMNAR) of the ingest benchmark and nearly every plain GROUP BY row of the facets benchmark run 1-5% slower on the
+     final tree. Each row alone is noise, except one GROUP BY LOSS (1M, 3 buckets, broad, -3.2%).
+   - Insert commits allocate 4.2% more bytes on every type.
+   - Candidates: the record read path (Task 14 hardening) and the commit path (Task 15 marks, Task 15b stamping) touch only COLUMNAR
+     databases and chunked records, so neither explains variant A (no COLUMNAR) or the insert allocation on a non-COLUMNAR type;
+     profile A and a plain scan before the merge.
+10. Update re-reads +15%: 500-record commits exceed the 16-records-per-page cap, so updates stay page-granular. Measure a larger cap or
+    a stripe-only mark for heavy update batches.
+11. Unfiled side findings, pre-existing, outside facets, pending the user:
+    - A subtype's AFTER READ listener does not fire when the query scans the supertype (normal plan too).
+    - An embedded query of a restricted user may return rows of a hidden bucket. Check whether it is a test-setup artifact.
+    - A bucket page size of 8216 makes the first 500-record commit fail with "Transaction buffer bigger than 2.00GB" (#11286, closed).
+12. On a replica, `LocalBucket.assembleFromNewestCommitted` gives up when every attempt (4 x 20 ms) met an open publication. The
+    sequence is JVM-wide, so a follower hosting several databases or applying a run of large entries can keep it open. The chunked
+    record read then raises a `ConcurrentModificationException`, which the apply pass counts as an unreadable attempt, and five in a
+    row (`UNREADABLE_ATTEMPTS_BEFORE_REBUILD`) request a `corrupt` rebuild with no data at fault. Not observed: G3 saw 0 rebuilds.
+    Suggested fix: count a publication-overlap conflict under a distinct cause that does not escalate, or reset the count when the
+    sequence moved.
+13. Re-run the three-node load A/B with several runs per image on a quiet host. The single run per image of Task 17 points to higher
+    query p95 (56.7-72.7 vs 51.2-58.1 ms) and lower throughput, but cannot separate the trees.

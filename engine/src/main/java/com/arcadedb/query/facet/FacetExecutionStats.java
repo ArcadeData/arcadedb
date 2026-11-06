@@ -116,6 +116,18 @@ public final class FacetExecutionStats {
     budgetBytes += bytes;
   }
 
+  /** Forgets the segments counted: a collector of parallel counting visited the segments of a slice the facet already reports. */
+  void clearSegments() {
+    segmentsScanned = 0;
+    segmentsSkipped = 0;
+  }
+
+  /** Adds the segments a collector of parallel counting visited for the query thread's slice (its counter is not this facet's). */
+  void addSegments(final FacetExecutionStats other) {
+    segmentsScanned += other.segmentsScanned;
+    segmentsSkipped += other.segmentsSkipped;
+  }
+
   /** Folds the statistics of the collector of another declaring type of the same facet into these. */
   void add(final FacetExecutionStats other) {
     segmentsScanned += other.segmentsScanned;

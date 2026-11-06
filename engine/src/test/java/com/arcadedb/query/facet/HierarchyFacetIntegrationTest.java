@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.facet;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -390,6 +391,77 @@ class HierarchyFacetIntegrationTest extends TestHelper {
     } finally {
       ColumnarTestHooks.killPoint = null;
       database.rollback();
+    }
+  }
+
+  /**
+   * Plan 7 Task 12 ({@code HIERARCHY_ONE_VIEW}): the projected and the scanned collectors of one declaring type count over ONE view. One
+   * bucket is scanned (the caller's own uncommitted write, over a patch budget of 0), the other is projected. The view is stale at the
+   * query's start, so the first collector to open builds it, and a tag created between that build's scans (after its vertex scan, so the
+   * view does not hold it) is committed by another thread: a second collector that took its own view would build it again and count its
+   * bucket over the new tree. Both trees are oracles of their own; a mix of them is neither.
+   */
+  @Test
+  @Timeout(300)
+  void projectedAndScannedCollectorsShareOneView() throws Exception {
+    load(42L, 2);
+    final List<String> buckets = new ArrayList<>();
+    database.getSchema().getType(TYPE).getBuckets(false).forEach(b -> buckets.add(b.getName()));
+    assertThat(buckets).hasSize(2);
+    final HierarchyManager hierarchy = manager().hierarchy(TYPE, "tags");
+    final Thread query = Thread.currentThread();
+    final AtomicBoolean changed = new AtomicBoolean();
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(0);
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0.0);
+    // held: the coalesced background rebuild cannot run, so every view of this test is built by the query
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      database.transaction(() -> reparent("t0/t1", "t2"));
+      database.begin();
+      try {
+        // the caller's own write, in the second bucket only: it is scanned there, the first bucket is projected
+        for (int i = 0; i < 20; i++)
+          database.newDocument(TYPE).set("fileSize", 5_000L + i).set("tags", List.of(ORPHANS.get(i % 2), "t1/t2")).save(buckets.get(1));
+        final Map<Object, Long> before = expected(WHERE);
+        assertThat(before).containsKey("orphan-0");
+
+        ColumnarTestHooks.killPoint = name -> {
+          if ("hierarchy.betweenScans".equals(name) && Thread.currentThread() == query && changed.compareAndSet(false, true)) {
+            // orphan-0 becomes a child of t1, committed by another thread after the vertex scan of the first build
+            final Thread writer = new Thread(() -> database.transaction(() -> {
+              final Vertex orphan = database.newVertex(ColumnarTestData.TAG_TYPE).set("path", "orphan-0").save();
+              tag("t1").newEdge(ColumnarTestData.PARENT_EDGE, orphan);
+            }));
+            writer.start();
+            try {
+              writer.join(HANG_MS);
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        };
+        final long rebuilds = ColumnarTestAccess.hierarchyRebuildCount(hierarchy);
+        final long ownScans = manager().getStats().queryFallbackScansCount("own_writes");
+        final FacetResults results;
+        try {
+          results = facets(QUERY);
+        } finally {
+          ColumnarTestHooks.killPoint = null;
+        }
+        assertThat(changed.get()).as("the query built the stale view and the tree changed during the build").isTrue();
+        assertThat(manager().getStats().queryFallbackScansCount("own_writes")).as("a bucket scanned for the caller's writes")
+            .isEqualTo(ownScans + 1);
+        assertThat(ColumnarTestAccess.hierarchyRebuildCount(hierarchy) - rebuilds).as("views built by the query").isLessThanOrEqualTo(1L);
+
+        final Map<Object, Long> after = expected(WHERE);
+        assertThat(after).as("the new tree is visible to the caller").isNotEqualTo(before);
+        final FacetResult result = results.get("t");
+        assertThat(result.source()).as(result.reason()).isEqualTo("scan");
+        assertThat(toMap(result)).as("the counts of one tree").isIn(before, after);
+        assertThat(toMap(result)).as("the tree of the view the query took").isEqualTo(before);
+        assertThat(bucket(result, "orphan-0").attributes().getBoolean("orphan")).isTrue();
+      } finally {
+        database.rollback();
+      }
     }
   }
 

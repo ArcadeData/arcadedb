@@ -46,6 +46,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Task 19: the shared fixtures {@link FacetOracle} and {@link ColumnarTestData} check out against themselves and can fail. */
 class FacetOracleSelfTest extends TestHelper {
 
+  /**
+   * A test before this one in the JVM ended with {@link GlobalConfiguration#resetAll()}: an apply lag bound given on the command line
+   * ({@code -Darcadedb.columnar.applyMaxLag}, #10662 Task 4 runs this class with 1000) applies to every test, not only the first.
+   */
+  @Override
+  protected void beginTest() {
+    final String maxLag = System.getProperty(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG.getKey());
+    if (maxLag != null)
+      GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG.setValue(maxLag);
+  }
+
   @Test
   void oracleAgreesWithItselfOnStaticData() {
     final ColumnarTestData data = new ColumnarTestData(42);
