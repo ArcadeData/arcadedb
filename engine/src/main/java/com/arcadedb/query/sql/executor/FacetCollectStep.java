@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -33,6 +34,7 @@ import com.arcadedb.query.facet.FacetExecutionStats;
 import com.arcadedb.query.facet.FacetExecutor;
 import com.arcadedb.query.facet.FacetFallbackScanner;
 import com.arcadedb.query.facet.FacetFilterEvaluator;
+import com.arcadedb.query.facet.FacetPatcher;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.facet.FacetSpec;
 import com.arcadedb.query.facet.FacetSpecCompiler;
@@ -80,7 +82,11 @@ import java.util.logging.Level;
  * when it is built, so its records reach no count, no memory reservation and no PROFILE figure (the executor skips such a bucket too).
  * Neither holds what a read event does to a record (final review B-I1, {@link FacetFallbackScanner#firesReadEvents}): a bucket whose
  * records fire read events is never taken from the projection (it is scanned, or the rows are the source), and the index is not the
- * source when a bucket of the target fires them, so a record a BEFORE READ trigger hides is no match and reaches no figure.
+ * source when a bucket of the target fires them, so a record a BEFORE READ trigger hides is no match and reaches no figure. The
+ * records of such a bucket of the target are counted from the rows themselves ({@link FacetExecutor.RowScan}, plan 7 Task 13), whatever
+ * the source of the other buckets, so each is read once, as the normal plan reads it, and not a second time by a fallback scan or by
+ * the scan of the projection source's uncovered buckets. The rows are then drained when the facets are asked before their end (a LIMIT),
+ * as for the rows source: the records of the other buckets the drain reads fire no read event.
  * <p>
  * A result set dropped before it was read to its end and never closed gives back what the step holds (memory reservations, the
  * snapshots of PROJECTION filters) once it is unreachable: a {@link Cleaner} releases them and logs a warning.
@@ -109,14 +115,16 @@ public class FacetCollectStep extends AbstractExecutionStep {
   private static final class Held implements Runnable {
     private final List<FacetFilterEvaluator> evaluators;
     private       MatchSet.Builder           builder;
+    private       FacetExecutor.RowScan      rowScan;
     private       boolean                    open;
 
     private Held(final List<FacetFilterEvaluator> evaluators) {
       this.evaluators = evaluators;
     }
 
-    private synchronized void opened(final MatchSet.Builder builder) {
+    private synchronized void opened(final MatchSet.Builder builder, final FacetExecutor.RowScan rowScan) {
       this.builder = builder;
+      this.rowScan = rowScan;
       open = true;
     }
 
@@ -124,6 +132,13 @@ public class FacetCollectStep extends AbstractExecutionStep {
     private synchronized MatchSet.Builder takeBuilder() {
       final MatchSet.Builder taken = builder;
       builder = null;
+      return taken;
+    }
+
+    /** The scan of the rows of the buckets with read events (its collectors, its permit), which the caller now owns; null for none. */
+    private synchronized FacetExecutor.RowScan takeRowScan() {
+      final FacetExecutor.RowScan taken = rowScan;
+      rowScan = null;
       return taken;
     }
 
@@ -144,13 +159,20 @@ public class FacetCollectStep extends AbstractExecutionStep {
       return true;
     }
 
-    /** Releases the builder's reservations and every evaluator, each whatever the others do; idempotent. */
+    /** Releases the builder's reservations, the rows' scan and every evaluator, each whatever the others do; idempotent. */
     private synchronized void release() {
       open = false;
       try {
-        if (builder != null) {
-          builder.close();
-          builder = null;
+        try {
+          if (builder != null) {
+            builder.close();
+            builder = null;
+          }
+        } finally {
+          if (rowScan != null) {
+            rowScan.close();
+            rowScan = null;
+          }
         }
       } finally {
         RuntimeException failure = null;
@@ -186,6 +208,8 @@ public class FacetCollectStep extends AbstractExecutionStep {
   private DatabaseInternal database;
   /** The builder {@link #held} holds, read here on every row without its lock; null once the match set is built. */
   private MatchSet.Builder builder;
+  /** The rows of the target's buckets that fire read events are counted by it, not recorded; null for none (or once computed). */
+  private FacetExecutor.RowScan rowScan;
   /** The buckets of {@code projectionBuckets} the user may read, when the projection is the source (taken at facet time); else null. */
   private int[]            projectionReadable;
   private boolean          recordRows;
@@ -306,14 +330,29 @@ public class FacetCollectStep extends AbstractExecutionStep {
 
   /** Records the row when its matches are collected from the rows, and returns its fail mask. */
   private int admit(final Result row, final CommandContext context) {
-    if (!recordRows && evaluators.isEmpty())
+    if (!recordRows && evaluators.isEmpty() && rowScan == null)
       return 0;
     final RID rid = row.getIdentity().orElseThrow(() -> new CommandExecutionException("FACETS needs rows that are records: " + row));
+    if (rowScan != null && rowScan.covers(rid.getBucketId())) {
+      // whatever the source of the other buckets: the record as the read events left it, counted now and never read again
+      final int failMask = failMask(rid, row, context);
+      countRow(row.isElement() ? row.toElement() : null, rid, failMask);
+      return failMask;
+    }
+    if (!recordRows && evaluators.isEmpty())
+      return 0;
     final int failMask = failMask(rid, row, context);
     if (recordRows)
       // refused once over the memory budget: the rows keep flowing, the facets are unavailable
       builder.add(rid, failMask);
     return failMask;
+  }
+
+  /** Counts a row of a bucket with read events by {@link #rowScan}; a row that carries no record has it read (once). */
+  private void countRow(final Document record, final RID rid, final int failMask) {
+    final Document read = record != null ? record : FacetPatcher.recordAt(database, rid);
+    if (read != null)
+      rowScan.accept(read, failMask);
   }
 
   /**
@@ -339,8 +378,9 @@ public class FacetCollectStep extends AbstractExecutionStep {
       specs = FacetSpecCompiler.compile(clause, context);
       final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
       builder = MatchSet.builder(database, evaluators.size(), budgetWaitMs);
+      rowScan = readEventScan(context);
       // held before any evaluator opens: what one acquires is released by close(), or by the cleaner for an abandoned step
-      held.opened(builder);
+      held.opened(builder, rowScan);
       if (cleanable == null)
         cleanable = CLEANER.register(this, held);
       for (final FacetFilterEvaluator evaluator : evaluators)
@@ -469,6 +509,23 @@ public class FacetCollectStep extends AbstractExecutionStep {
     return false;
   }
 
+  /**
+   * The counting from the rows of the target's buckets whose records fire read events and that the current user may read; null when
+   * there is none, or no target type (the rows are then recorded and the executor scans those buckets).
+   */
+  private FacetExecutor.RowScan readEventScan(final CommandContext context) {
+    if (targetType == null || !database.getSchema().existsType(targetType))
+      return null;
+    final DocumentType type = database.getSchema().getType(targetType);
+    final List<Bucket> buckets = type.getBuckets(true);
+    final int[] bucketIds = new int[buckets.size()];
+    int count = 0;
+    for (final Bucket bucket : buckets)
+      if (FacetFallbackScanner.firesReadEvents(database, database.getSchema().getTypeByBucketId(bucket.getFileId())))
+        bucketIds[count++] = bucket.getFileId();
+    return FacetExecutor.rowScan(database, specs, context, type, readable(Arrays.copyOf(bucketIds, count)), filterIndexByFacet);
+  }
+
   /** The buckets of {@code bucketIds} that have a columnar projection and whose records fire no read event. */
   private int[] projectionsOf(final int[] bucketIds) {
     final ColumnarIndexManager manager = ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager();
@@ -520,7 +577,8 @@ public class FacetCollectStep extends AbstractExecutionStep {
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int ticks = 0;
     for (final int bucketId : bucketIds) {
-      if (bucketId < covered.length && covered[bucketId])
+      // a bucket with read events is counted from the rows (drained before this scan): read here too, its events would fire twice
+      if (bucketId < covered.length && covered[bucketId] || rowScan != null && rowScan.covers(bucketId))
         continue;
       final Iterator<Record> records = database.iterateBucket(database.getSchema().getBucketById(bucketId).getName());
       while (records.hasNext()) {
@@ -537,15 +595,17 @@ public class FacetCollectStep extends AbstractExecutionStep {
   }
 
   /**
-   * The facets of the query: computed once, memoized. When the upstream is not exhausted yet and the matches come from the rows, the
-   * remaining rows are read (recorded, not forwarded): the rows end there. A step the rows never reached (LIMIT 0) is opened here.
+   * The facets of the query: computed once, memoized. When the upstream is not exhausted yet and the matches come from the rows (or the
+   * rows count the buckets with read events), the remaining rows are read (recorded, not forwarded): the rows end there. A step the
+   * rows never reached (LIMIT 0) is opened here.
    * Null when the step was closed before the facets were computed.
    */
   public FacetResults facets() {
     if (facets != null || closed)
       return facets;
     open(context);
-    if (recordRows && !upstreamDone) {
+    // the rows are drained when they are the source, and when they count the buckets with read events (whatever the source)
+    if ((recordRows || rowScan != null) && !upstreamDone) {
       final ExecutionStepInternal prevStep = checkForPrevious("FACETS requires a previous step");
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       pull(prevStep, context, DEFAULT_FETCH_RECORDS_PER_PULL, guard, false);
@@ -604,18 +664,26 @@ public class FacetCollectStep extends AbstractExecutionStep {
           projection = null;
         }
       }
-      matchCount = matches.size();
+      matchCount = matches.size() + (rowScan != null ? rowScan.rows() : 0);
       matches.setFacetFilterIndex(filterIndexByFacet);
       final DocumentType type = targetType != null && database.getSchema().existsType(targetType) ? database.getSchema().getType(
           targetType) : null;
-      facets = FacetExecutor.execute(database, matches, specs, context, type);
+      facets = FacetExecutor.execute(database, matches, specs, context, type, rowScan);
     } finally {
       // built or not, the builder is done: closing it releases its reservations unless the match set owns them now
       builder = null;
+      rowScan = null;
       final MatchSet.Builder taken = held.takeBuilder();
+      final FacetExecutor.RowScan rows = held.takeRowScan();
       try {
-        if (taken != null)
-          taken.close();
+        try {
+          if (taken != null)
+            taken.close();
+        } finally {
+          // the collectors the executor did not take over, and the scan permit
+          if (rows != null)
+            rows.close();
+        }
       } finally {
         try {
           if (projection != null)
@@ -658,9 +726,10 @@ public class FacetCollectStep extends AbstractExecutionStep {
     facets = null;
   }
 
-  /** Releases the builder (budget reservations) and every evaluator, each whatever the others do. */
+  /** Releases the builder (budget reservations), the rows' scan and every evaluator, each whatever the others do. */
   private void releaseResources() {
     builder = null;
+    rowScan = null;
     held.release();
   }
 

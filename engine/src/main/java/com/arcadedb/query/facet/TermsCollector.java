@@ -237,6 +237,40 @@ public final class TermsCollector implements FacetCollector, OrdinalConsumer {
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable;
+  }
+
+  /**
+   * Adds the counts of a collector of the same column and ordinal map that counted other segments (parallel counting): its ordinal
+   * counts by merged ordinal, its LONG or DOUBLE terms by term, its missing rows; the ranking then stays the one of a single collector.
+   * The growth of this collector's hash counter is reserved first, as when it counts; refused, the facet is unavailable. A collector of
+   * another column or map, or one that counted values by value, is not absorbed (false).
+   */
+  @Override
+  public boolean absorb(final FacetCollector other) {
+    if (!(other instanceof TermsCollector partial) || partial.kind != kind || partial.map != map || partial.foreign != null)
+      return false;
+    if (unavailable)
+      return true;
+    missing += partial.missing;
+    if (partial.counter != null)
+      partial.counter.forEachNonZero(this::addOrdinal);
+    if (partial.terms != null && !unavailable && reserveDistinct((int) Math.min(matchCount, (long) terms.size() + partial.terms.size())))
+      partial.terms.forEachNonZero(terms::add);
+    return true;
+  }
+
+  /** Adds {@code count} to a merged ordinal, growing a list's hash counter as {@link #countOrdinal} does. */
+  private void addOrdinal(final int merged, final long count) {
+    if (unavailable)
+      return;
+    if (growingHash != null && growingHash.size() >= reservedDistinct && reservedDistinct < cardinality && !growHash())
+      return;
+    counter.add(merged, count);
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof TermsCollector collector))
       throw new IllegalArgumentException("FACETS " + spec.alias() + ": cannot merge a " + other.getClass().getSimpleName() + " into terms");

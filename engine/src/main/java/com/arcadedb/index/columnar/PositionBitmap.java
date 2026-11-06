@@ -284,6 +284,24 @@ public final class PositionBitmap {
   }
 
   /**
+   * The bits of the pages of index {@code [fromIndex, toIndex)} of {@link #pages()}, sharing their stripes: O(pages of the slice), no
+   * word copied, and nothing of this bitmap changes (unlike {@link #snapshot()}), so several threads may slice and read one bitmap that
+   * no one writes. A write to the slice clones the stripe first; a write to this bitmap while the slice is read is not allowed.
+   */
+  public PositionBitmap slice(final int fromIndex, final int toIndex) {
+    if (fromIndex < 0 || toIndex > size || fromIndex > toIndex)
+      throw new IndexOutOfBoundsException("Slice [" + fromIndex + ", " + toIndex + ") of " + size + " pages");
+    final PositionBitmap slice = new PositionBitmap(maxRecordsInPage);
+    slice.pageNumbers = Arrays.copyOfRange(pageNumbers, fromIndex, toIndex);
+    slice.stripes = Arrays.copyOfRange(stripes, fromIndex, toIndex);
+    // generation 0 for every stripe and 1 for the slice: no stripe is owned, the first write clones it
+    slice.stripeGeneration = new long[toIndex - fromIndex];
+    slice.generation = 1;
+    slice.size = toIndex - fromIndex;
+    return slice;
+  }
+
+  /**
    * Deep copy: every stripe is cloned and nothing is shared with this bitmap.
    */
   public PositionBitmap copy() {

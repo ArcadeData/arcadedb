@@ -55,7 +55,7 @@ public final class HierarchyBuilder {
   /** Reached between the two scans of the vertex type (test hook: a write there must leave the view stale). */
   static final String      BETWEEN_SCANS    = "hierarchy.betweenScans";
   private static final int INITIAL_CAPACITY = 64;
-  /** Vertices read between two checks of the cancel flag. */
+  /** Vertices read, or nodes walked by a CPU pass (sort, depths, cycles), between two checks of the cancel flag. */
   private static final int CANCEL_CHECK_MASK = 1023;
 
   private HierarchyBuilder() {
@@ -71,8 +71,8 @@ public final class HierarchyBuilder {
    * @param logCycles false never logs the cycle WARNING (a private view of an uncommitted change)
    * @param previous  the view this build replaces, null for none: the cycle WARNING is logged only when the set of nodes on a cycle
    *                  differs from its own ({@link HierarchyView#sameCycles}), so a standing cycle is not logged on every rebuild
-   * @param cancelled checked between the scans and every 1024 vertices of each, null for never: once true the build stops with a
-   *                  {@link CancellationException}
+   * @param cancelled checked between the scans, every 1024 vertices of each and every 1024 nodes of the sort, the depth pass and the
+   *                  cycle pass, null for never: once true the build stops with a {@link CancellationException}
    */
   static HierarchyView build(final DatabaseInternal db, final HierarchyDefinition def, final long generation, final String indexName,
       final boolean logCycles, final HierarchyView previous, final BooleanSupplier cancelled) {
@@ -111,7 +111,7 @@ public final class HierarchyBuilder {
     final int[] nodeOfRank = new int[nodeCount];
     for (int n = 0; n < nodeCount; n++)
       nodeOfRank[n] = n;
-    sortByValue(nodeOfRank, new int[nodeCount], 0, nodeCount, values);
+    sortByValue(nodeOfRank, new int[nodeCount], 0, nodeCount, values, cancelled);
     final int[] rank = new int[nodeCount];
     for (int r = 0; r < nodeCount; r++)
       rank[nodeOfRank[r]] = r;
@@ -162,9 +162,9 @@ public final class HierarchyBuilder {
     if (parentCount < parents.length)
       parents = Arrays.copyOf(parents, parentCount);
 
-    final int[] depth = depths(nodeCount, parentOffsets, parents);
+    final int[] depth = depths(nodeCount, parentOffsets, parents, cancelled);
     final long[] cycleState = new long[] { -1, 0 };
-    final int cycleNodes = cycleNodes(nodeCount, parentOffsets, parents, values, cycleState);
+    final int cycleNodes = cycleNodes(nodeCount, parentOffsets, parents, values, cycleState, cancelled);
     final long cycleSignature = cycleState[1];
     if (logCycles && cycleNodes > 0 && (previous == null || !previous.sameCycles(cycleNodes, cycleSignature)))
       LogManager.instance().log(HierarchyBuilder.class, Level.WARNING,
@@ -178,7 +178,7 @@ public final class HierarchyBuilder {
   }
 
   /** Breadth-first from the nodes without parents over the child links: the shortest distance from a root, -1 when none reaches. */
-  private static int[] depths(final int nodeCount, final int[] parentOffsets, final int[] parents) {
+  private static int[] depths(final int nodeCount, final int[] parentOffsets, final int[] parents, final BooleanSupplier cancelled) {
     // child CSR, the transpose of the parent CSR
     final int[] childOffsets = new int[nodeCount + 1];
     for (final int parent : parents)
@@ -187,9 +187,12 @@ public final class HierarchyBuilder {
       childOffsets[n + 1] += childOffsets[n];
     final int[] fill = Arrays.copyOf(childOffsets, nodeCount);
     final int[] childList = new int[parents.length];
-    for (int child = 0; child < nodeCount; child++)
+    for (int child = 0; child < nodeCount; child++) {
+      if ((child & CANCEL_CHECK_MASK) == CANCEL_CHECK_MASK)
+        checkCancelled(cancelled);
       for (int p = parentOffsets[child]; p < parentOffsets[child + 1]; p++)
         childList[fill[parents[p]]++] = child;
+    }
 
     final int[] depth = new int[nodeCount];
     Arrays.fill(depth, -1);
@@ -201,6 +204,8 @@ public final class HierarchyBuilder {
         queue[tail++] = n;
       }
     for (int head = 0; head < tail; head++) {
+      if ((head & CANCEL_CHECK_MASK) == CANCEL_CHECK_MASK)
+        checkCancelled(cancelled);
       final int node = queue[head];
       for (int c = childOffsets[node]; c < childOffsets[node + 1]; c++) {
         final int child = childList[c];
@@ -221,7 +226,7 @@ public final class HierarchyBuilder {
    *              order-independent 64-bit signature of the values of the nodes on a cycle (0 for none)
    */
   private static int cycleNodes(final int nodeCount, final int[] parentOffsets, final int[] parents, final Object[] values,
-      final long[] state) {
+      final long[] state, final BooleanSupplier cancelled) {
     final int[] index = new int[nodeCount];
     Arrays.fill(index, -1);
     final int[] low = new int[nodeCount];
@@ -236,6 +241,8 @@ public final class HierarchyBuilder {
     for (int start = 0; start < nodeCount; start++) {
       if (index[start] >= 0)
         continue;
+      if ((nextIndex & CANCEL_CHECK_MASK) == CANCEL_CHECK_MASK)
+        checkCancelled(cancelled);
       index[start] = low[start] = nextIndex++;
       stack[stackSize++] = start;
       onStack[start] = true;
@@ -248,6 +255,8 @@ public final class HierarchyBuilder {
         if (callEdge[calls - 1] < parentOffsets[node + 1]) {
           final int next = parents[callEdge[calls - 1]++];
           if (index[next] < 0) {
+            if ((nextIndex & CANCEL_CHECK_MASK) == CANCEL_CHECK_MASK)
+              checkCancelled(cancelled);
             index[next] = low[next] = nextIndex++;
             stack[stackSize++] = next;
             onStack[next] = true;
@@ -286,13 +295,20 @@ public final class HierarchyBuilder {
     return count;
   }
 
-  /** Merge sort of node ids by their value ({@link FacetValueComparator} over normalized values), stable, no boxing. */
-  private static void sortByValue(final int[] nodes, final int[] temp, final int from, final int to, final Object[] values) {
+  /**
+   * Merge sort of node ids by their value ({@link FacetValueComparator} over normalized values), stable, no boxing. The cancel flag is
+   * checked before every merge of more than {@code CANCEL_CHECK_MASK} nodes, about 2n / 1024 times for n nodes (the merges below that
+   * size, and the single merge of each larger range, run between two checks).
+   */
+  private static void sortByValue(final int[] nodes, final int[] temp, final int from, final int to, final Object[] values,
+      final BooleanSupplier cancelled) {
     if (to - from < 2)
       return;
     final int mid = (from + to) >>> 1;
-    sortByValue(nodes, temp, from, mid, values);
-    sortByValue(nodes, temp, mid, to, values);
+    sortByValue(nodes, temp, from, mid, values, cancelled);
+    sortByValue(nodes, temp, mid, to, values, cancelled);
+    if (to - from > CANCEL_CHECK_MASK)
+      checkCancelled(cancelled);
     int i = from;
     int j = mid;
     int k = from;

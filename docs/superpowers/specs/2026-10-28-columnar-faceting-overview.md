@@ -25,12 +25,13 @@ This document summarizes the design documents and the code delivered so far. It 
 | Spike, 1M records, 5-facet page, broad predicate | 24.8 ms | 868 ms | 35x |
 | Plan 4, 200k records, 3 facets, broad `WHERE`, caught up | 26 ms | 293 ms | 11x |
 | Plan 4, 200k records, 3 facets, broad, 5,000 pending writes, exact | 105 ms | 329 ms | 3.1x |
+| After tuning (plan 7), same lagging case | 38 ms | 314 ms | 8.2x |
 
-**Costs.** Inserts into a type with five `COLUMNAR` indexes are 6-10% slower, updates 4.5%. The commit path itself is clean (2-4% with the background apply paused); the remainder is the background apply competing for CPU. The spec goal is "ingest cost unchanged", so a tuning phase (#10662) is scheduled after plans 4-6. Query-time memory is bounded by a JVM-wide budget (256 MB default).
+**Costs.** After the tuning phase (#10662, plan 7), inserts into a type with five `COLUMNAR` indexes are about 6% slower than without them, updates about 10%. Inserts pay almost all of it on the commit path (+5.5% with the background apply held, as before plan 7), so no apply setting moves it. Updates pay about 4.4% on the commit path, likely the record-granular pending marks (unprofiled), and about 6% from the background apply competing with writers for CPU. The apply pass allocates 57-85% less than before tuning, and uses 44-62% less CPU on updates and the catch-up (no change beyond noise on inserts). The spec goal "ingest cost unchanged" is therefore not met in wall time. The remaining costs and their knobs are listed in the roadmap's "Tuning outcome (#10662)". Query-time memory is bounded by a JVM-wide budget (256 MB default).
 
-**Status.** Storage, change tracking, recovery, HA integration (plan 3) and the query language, exactness, security, budgets and all transports (plan 4) are delivered and green. Hierarchical facets, distinct count, stats, value search, the `AFTER` cursor and `GROUP BY` acceleration (plan 5) are in progress: only their grammar is in. Chaos and load testing (plan 6), the tuning phase and the Python client (separate repository) remain before the merge to main.
+**Status.** Storage, change tracking, recovery, HA integration (plan 3) and the query language, exactness, security, budgets and all transports (plan 4) are delivered and green. Hierarchical facets, distinct count, stats, value search, the `AFTER` cursor and `GROUP BY` acceleration without a `WHERE` (plan 5), chaos and load testing in HA (plan 6) and the tuning phase (plan 7, #10662) are done. The Python client (separate repository, #10666) remains before the merge to main.
 
-**Main risks.** The ingest overhead; patch amplification under heavy write load (pending changes are tracked per page, so a few thousand scattered writes can force a broad query to read a large share of its matches); the projection is a large new subsystem (about 15,000 lines in `index/columnar`, 8,000 in `query/facet`) whose resilience under faults is proven so far by unit, integration and `ha-raft` tests, not yet by the chaos harness.
+**Main risks.** The ingest overhead; patch amplification under heavy write load (since plan 7 pending changes are tracked per record, up to 16 per page; a commit that changes more records of one page marks the whole page); the projection is a large new subsystem (about 15,000 lines in `index/columnar`, 8,000 in `query/facet`) whose resilience under faults is proven so far by unit, integration and `ha-raft` tests, not yet by the chaos harness.
 
 ---
 
@@ -296,7 +297,7 @@ A mark is lock-free: it registers as a writer of the current epoch, sets bits wi
 ### 6.2 The background apply pass
 
 - **Pool:** `ColumnarApplyPool`, JVM-wide, `arcadedb.columnar.applyThreads` = 2 daemon threads; at most one pass per database at a time, so the pool is sized by threads, not tenants. A JVM-wide ticker wakes every 10 ms and honors each database's `applyInterval`.
-- **Pacing:** base interval 100 ms. Under sustained ingest, while every pass leaves marks behind, the interval doubles up to 5x, never past `max(applyInterval, 500 ms)`; it returns to the base as soon as a pass drains everything or the oldest mark is older than 500 ms. At the defaults the lag bound is about 500 ms plus one pass.
+- **Pacing:** base interval `applyInterval` (100 ms). Under sustained ingest, while every pass leaves marks behind, the interval doubles up to `max(1, applyMaxLag / applyInterval)` times, never past `max(applyInterval, applyMaxLag)` (`applyMaxLag` 500 ms by default, plan 7); it returns to the base as soon as a pass drains everything or the oldest mark is older than `applyMaxLag`. A value below twice the interval disables the stretching. At the defaults the lag bound is about 500 ms plus one pass.
 - **Epochs:** a pass swaps in a fresh epoch, waits for writers of the sealed one, then reads its bits. Each epoch records its start time, which gives `lagMs` without per-page timestamps.
 - **Work:** each dirty page is re-read at its newest committed version; every record's projected values are extracted in one header walk and compared with the live value. Equal is a no-op (adding an edge rewrites the vertex record but changes no projected value). Different values are staged in a new overlay block; the old row in a segment is marked dead.
 - **Records that move:** a record that outgrows its page leaves a placeholder pointer; later updates write only the content page. The pass follows placeholders, chunk chains and external-property values, and keeps a **content owner map** (content page to owner positions), so a dirty content page re-reads its owners. No extra write on the commit path.
@@ -427,6 +428,18 @@ Many segments cost +13% to +47% on brand and up to +208% on a 1% tags query (fix
 | Lagging, selective | 1 ms | 1 ms | noise | 296 | yes |
 | Lagging, broad, `patchBudgetRatio = 0` (absolute budget only) | 27-30 ms | about 290 ms | about 0.1 | 0 | no |
 
+After tuning (plan 7, `bench/t17` of the plan 7 workspace; same benchmark, medians of 5 runs; facets before -> after, GROUP BY after):
+
+| Case (1 bucket unless noted) | 200k facets | 200k 3 x `GROUP BY` | 1M facets | 1M 3 x `GROUP BY` | Patched (lagging) |
+|---|---|---|---|---|---|
+| Caught up, broad | 28.0 -> 28.2 ms | 318 ms | 313 -> 243 ms | 1,568 ms | 0 |
+| Caught up, no `WHERE` | 16.8 -> 16.9 ms | 302 ms | 95 -> 28 ms | 1,536 ms | 0 |
+| Caught up, broad, 3 buckets | 29.4 -> 29.4 ms | 315 ms | 311 -> 251 ms | 1,577 ms | 0 |
+| Lagging, broad, exact | 95.9 -> 38.3 ms | 314 ms | 411 -> 259 ms | 1,565 ms | 120,152 -> 12,779 (200k) |
+| Lagging, no `WHERE`, exact | 92.2 -> 31.7 ms | 313 ms | 212 -> 52 ms | 1,534 ms | 12,842 (200k) |
+
+Record-granular pending marks (lagging) and parallel counting over page slices (1M, caught up and lagging) account for the gains. The GROUP BY numbers are unchanged within noise.
+
 Reading: caught up, facets are 10-17x faster than the `GROUP BY`s. While lagging, the default (exact) costs about a third of a `GROUP BY`; an operator who prefers latency to exactness under heavy ingest sets the ratio to 0 and gets inexact answers flagged as such. Bucket count (1 vs 3) changes nothing material.
 
 ### 8.4 Ingest overhead
@@ -438,8 +451,17 @@ Reading: caught up, facets are 10-17x faster than the `GROUP BY`s. While lagging
 | Inserts, before tuning in plan 3 | +13% | +4.5% |
 | Inserts, after adaptive pacing and single header walk | +6.0% / +10.1% (two runs) | +3.9% / +2.4% |
 | Updates, after | +4.5% / +4.6% | -1.0% / +0.1% |
+| Inserts, after the tuning phase (plan 7, 5 runs x 9 rounds) | +6.1% | +5.5% |
+| Updates, after the tuning phase | +10.5% (before plan 7 on the same host: +5.6%) | +4.4% (before: +1.3%) |
 
 Bytes allocated by the committer and GC counts are unchanged. Catch-up after 100,000 updates: about 440 ms on the apply pool. Conclusion: the commit path meets the spec ("no extra page write, lock or retry"); the residual is background CPU. Accepted for now by user decision (2026-10-23), with a tuning phase planned.
+
+After the tuning phase (plan 7):
+- Apply allocation is 40 / 156 / 48 MB for inserts, updates and catch-up (before: 95 / 660 / 323), and apply CPU on updates is 376 ms (before: 672).
+- The catch-up after 100,000 updates takes 328 ms (before: 571 ms on the same host).
+- Insert wall time over A is unchanged.
+- Updates cost more: the record-granular marks likely add (unprofiled) about 2.5% of committer CPU to update commits, and a faster apply re-reads 15% more records during the update phase (500-record commits put about 25 updates on a page, past the 16-record cap, so those pages stay page-granular).
+- Insert commits allocate 4% more bytes on every type, COLUMNAR or not (unprofiled).
 
 ### 8.5 What scales with what
 
@@ -454,7 +476,9 @@ Bytes allocated by the committer and GC counts are unchanged. Catch-up after 100
 | Recovery at open | Recent writes | Never record count, except a rebuild |
 | Heap at rest | Dictionary cardinality, overlay, owner map of moved records | Never record count |
 
-### 8.6 Tuning phase levers (#10662, planned)
+### 8.6 Tuning phase levers (#10662, done in plan 7)
+
+Outcome: kept, reverted and not-built levers, before/after numbers, the exit-criterion verdict and the remaining costs with their knobs are in the roadmap's "Tuning outcome (#10662)" section. The list below is the plan as it was drawn up.
 
 Baseline: the three benchmarks above plus the plan 6 load tests. Candidate levers, to be measured rather than assumed:
 
@@ -518,13 +542,16 @@ Exit criterion: inserts and updates within noise of no-`COLUMNAR` at default set
 
 | Key (`arcadedb.columnar.*` unless noted) | Scope | Default | Purpose |
 |---|---|---|---|
-| `flushInterval` | database | 1000 ms | Overlay flush by age |
+| `flushInterval` | database | 1000 ms | Overlay flush by age (with `flushMinRows` > 0, only an overlay of at least that many rows) |
+| `flushMinRows` | database | 0 | Rows an overlay needs for `flushInterval` to flush it; a smaller one waits for `flushMaxAge` or for its unflushed pages to reach 512. 0 = any overlay at the interval (plan 7; 4096 measured worse on apply lag) |
+| `flushMaxAge` | database | 0 (= `flushInterval`) | Flush whatever the row count after this age; never less than `flushInterval` (plan 7) |
 | `flushMaxRows` | database | 65,536 | Overlay flush by size |
 | `mergeDeadRatio` | database | 0.3 | Rewrite a segment above this dead ratio |
 | `mergeMaxSegments` | database | 10 | Merge above this segment count |
 | `maxCardinality` | database | 1,000,000 | Creation refusal and warning gauge |
 | `segmentBlockRows` | database | 16,384 | Rows per column block |
-| `applyInterval` | database | 100 ms | Apply check period (stretched up to 5x, max 500 ms at default, under ingest) |
+| `applyInterval` | database | 100 ms | Apply check period (stretched under ingest up to `applyMaxLag`) |
+| `applyMaxLag` | database | 500 ms | Upper bound of the pacing stretch and the oldest-mark age that resets it; higher = fewer re-reads, staler projection (plan 7) |
 | `applyThreads` | JVM | 2 | Apply pool size |
 | `maintenanceThreads` | JVM | 2 | Flush, merge, compaction, rebuild pool size |
 | `rebuildConcurrency` | JVM | 1 | Concurrent rebuilds |
@@ -533,10 +560,12 @@ Exit criterion: inserts and updates within noise of no-`COLUMNAR` at default set
 | `patchBudgetRatio` | server | 1.0 (0 to 1) | Relative patch budget; 0 = absolute only |
 | `queryMemoryBudget` | JVM | 268,435,456 | Counting memory for all queries |
 | `queryBudgetWait` | server | 5000 ms | Wait for counting memory, per collector |
+| `parallelCountTasks` | server | 4 | Page slices one facet of one bucket is counted in, in parallel on the query-parallelism pool shared with parallel query steps (at most the core count); 1 = count on the query thread only (plan 7) |
+| `parallelMinMatches` | server | 262,144 | Matches of a facet in one bucket below which counting stays on the query thread (plan 7) |
 | `topMax` | server | 1000 | `TOP` cap |
 | `maxFallbackScans` | database | 2 | Concurrent fallback scans |
 | `arcadedb.blockCache.maxBytes` | JVM | heap/32, at least 16 MB | Decoded block cache |
-| `groupByAcceleration` (plan 5, not yet in code) | database | true | `GROUP BY` acceleration kill switch |
+| `groupByAcceleration` | database | true | `GROUP BY` acceleration kill switch (plan 5) |
 
 ### 12.2 Metrics
 
@@ -604,13 +633,13 @@ Each plan was executed task by task with an independent review per task and a fi
 
 | Item | Impact | Mitigation / plan |
 |---|---|---|
-| Ingest overhead +6-10% inserts, +4.5% updates | Misses the spec goal "ingest cost unchanged" | Tuning phase #10662; commit path already clean |
-| Page-granular pending marks | A lagging broad query can patch a large share of its matches (60% in the benchmark), costing about a third of a `GROUP BY` | Exact by default; ratio 0 for latency; record-granular marks in tuning |
+| Ingest overhead +6% inserts, +10% updates (after tuning) | Misses the spec goal "ingest cost unchanged" | Tuning phase #10662 done: apply CPU and allocation down 44-85%; residual = background apply plus record marks on the commit path; knobs and follow-ups in the roadmap's "Tuning outcome" |
+| Pending marks (record-granular since plan 7, at most 16 records per page) | A lagging broad query patches about 6% of its matches (12.8k of 199k) and costs 38 ms vs 28 caught up; heavier update batches stay page-granular | Exact by default; ratio 0 for latency |
 | Selective queries have fixed per-segment and per-stripe costs | At very low selectivity (0.01%) or very large buckets the floor could approach an index-served `GROUP BY` | Point-read path delivered; to be measured at scale in plan 6 and tuning |
 | Heap target at 50M records not yet measured | Spec target "tens of MB for 50M records, four fields" unverified | Plan 6 load tests |
 | External-property bucket pages are not covered by the unclean-open page-version check | A crash-time change on an external page could be missed until that record is next written | Documented open item |
 | One unexplained divergence seen once (1 of 75 runs) during plan 3 testing, with a rebuild concurrent with vertex, edge and external-body writes | Possible rare miscount in that mix | Two plausible mechanisms found and fixed in the final review; a stress test has not reproduced it since; plan 6 chaos runs exercise the area |
-| Restricted users rebuild the multi-bucket ordinal merge per facet | O(values x buckets) per query for those users | Tuning |
+| Restricted users rebuild the multi-bucket ordinal merge per facet | O(values x buckets) per query for those users | Measured in plan 7: 0.33% of a query at 800 values (not built); re-measure at about 100k-value facets |
 | `DECIMAL` facet values equal `GROUP BY` by `compareTo`, not always by `equals` (scale stripped) | Cosmetic difference for values with trailing zeros | Documented; `STATS` refuses `DECIMAL` |
 | `DATETIME_MICROS`/`NANOS` read at millisecond precision on the fallback scan path | Sub-millisecond bounds can differ between scan and index answers | Plan 5 carried item |
 | No-WAL commits write a small marker synchronously | Deliberate spec deviation for bulk loads only | Accepted |

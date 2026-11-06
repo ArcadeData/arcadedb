@@ -285,11 +285,14 @@ class ColumnarPoolsTest {
   void configurationDefaults() {
     assertThat(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL.getDefValue()).isEqualTo(1000L);
     assertThat(GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS.getDefValue()).isEqualTo(65536);
+    assertThat(GlobalConfiguration.COLUMNAR_FLUSH_MIN_ROWS.getDefValue()).isEqualTo(0);
+    assertThat(GlobalConfiguration.COLUMNAR_FLUSH_MAX_AGE.getDefValue()).isEqualTo(0L);
     assertThat(GlobalConfiguration.COLUMNAR_MERGE_DEAD_RATIO.getDefValue()).isEqualTo(0.3f);
     assertThat(GlobalConfiguration.COLUMNAR_MERGE_MAX_SEGMENTS.getDefValue()).isEqualTo(10);
     assertThat(GlobalConfiguration.COLUMNAR_MAX_CARDINALITY.getDefValue()).isEqualTo(1_000_000);
     assertThat(GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS.getDefValue()).isEqualTo(16384);
     assertThat(GlobalConfiguration.COLUMNAR_APPLY_INTERVAL.getDefValue()).isEqualTo(100L);
+    assertThat(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG.getDefValue()).isEqualTo(500L);
     assertThat(GlobalConfiguration.COLUMNAR_APPLY_THREADS.getDefValue()).isEqualTo(2);
     assertThat(GlobalConfiguration.COLUMNAR_MAINTENANCE_THREADS.getDefValue()).isEqualTo(2);
     assertThat(GlobalConfiguration.COLUMNAR_REBUILD_CONCURRENCY.getDefValue()).isEqualTo(1);
@@ -297,15 +300,17 @@ class ColumnarPoolsTest {
 
     assertThat(GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL.getKey()).isEqualTo("arcadedb.columnar.flushInterval");
     assertThat(GlobalConfiguration.COLUMNAR_APPLY_THREADS.getKey()).isEqualTo("arcadedb.columnar.applyThreads");
+    assertThat(GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG.getKey()).isEqualTo("arcadedb.columnar.applyMaxLag");
     assertThat(GlobalConfiguration.COLUMNAR_DICTIONARY_COMPACT_RATIO.getKey()).isEqualTo("arcadedb.columnar.dictionaryCompactRatio");
 
     for (final GlobalConfiguration jvm : new GlobalConfiguration[] { GlobalConfiguration.COLUMNAR_APPLY_THREADS,
         GlobalConfiguration.COLUMNAR_MAINTENANCE_THREADS, GlobalConfiguration.COLUMNAR_REBUILD_CONCURRENCY })
       assertThat(jvm.getScope()).isEqualTo(GlobalConfiguration.SCOPE.JVM);
     for (final GlobalConfiguration database : new GlobalConfiguration[] { GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL,
-        GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS, GlobalConfiguration.COLUMNAR_MERGE_DEAD_RATIO,
+        GlobalConfiguration.COLUMNAR_FLUSH_MAX_ROWS, GlobalConfiguration.COLUMNAR_FLUSH_MIN_ROWS, GlobalConfiguration.COLUMNAR_FLUSH_MAX_AGE,
+        GlobalConfiguration.COLUMNAR_MERGE_DEAD_RATIO,
         GlobalConfiguration.COLUMNAR_MERGE_MAX_SEGMENTS, GlobalConfiguration.COLUMNAR_MAX_CARDINALITY,
-        GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS, GlobalConfiguration.COLUMNAR_APPLY_INTERVAL,
+        GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS, GlobalConfiguration.COLUMNAR_APPLY_INTERVAL, GlobalConfiguration.COLUMNAR_APPLY_MAX_LAG,
         GlobalConfiguration.COLUMNAR_DICTIONARY_COMPACT_RATIO })
       assertThat(database.getScope()).isEqualTo(GlobalConfiguration.SCOPE.DATABASE);
   }

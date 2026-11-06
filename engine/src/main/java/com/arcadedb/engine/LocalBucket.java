@@ -269,9 +269,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
   /** Test-only seam run by a {@link #count()} recompute after it read its stamp, before its scan (#8640). */
   static volatile        Runnable                  recountScanHookForTesting;
+  /**
+   * Test-only seam run by every walk of {@link #assembleFromNewestCommitted} once it has read the head chunk, before it follows the
+   * chain (Task 14 of #10662): where a test lands a commit, a replicated apply or a delete in the middle of a walk. Null in production.
+   * Package-private; tests of other packages set it through the test-scope {@code LocalBucketTestAccess}.
+   */
+  static volatile        Runnable                  committedWalkHookForTesting;
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
+  // Task 14 of #10662: walks of a newest committed chain redone because a publication overlapped them, and redos under the lock
+  private final          AtomicLong                committedWalkRedos               = new AtomicLong();
+  private final          AtomicLong                committedWalkLockRedos           = new AtomicLong();
   // #8640: bumped under this bucket's monitor by every replicated apply that writes its pages WITHOUT the file lock
   // while the counter is unknown; a count() recompute publishes only if it did not move since its scan started
   private                long                      unlockedApplyStamp;
@@ -916,7 +925,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
      * @param content        the record bytes for a {@link #RECORD} (a view valid only for the committed image it was read from),
      *                       fully resolved through a placeholder or a chunk chain; null for the other kinds, and for a RECORD whose
      *                       bytes cannot be read (a broken pointer or chain, a corrupted slot, a record in motion): the caller
-     *                       keeps what it knew and retries on a later pass
+     *                       keeps what it knew and retries on a later pass. A chunk chain deleted between the read of the page
+     *                       and the walk of its chain is reported {@link #EMPTY}
      * @param offPagePages   the pages holding the placeholder target, or every chunk after the head of a chunk chain; only the
      *                       first {@code offPageCount} entries are valid, and the array is reused across calls of the same visit
      * @param offPageCount   number of valid entries in {@code offPagePages}, 0 when the record is stored in place
@@ -947,6 +957,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @return the version of the page that was read, or -1 when the page is not committed yet (past the committed page count)
    */
   public long visitCommittedPage(final int pageNumber, final CommittedSlotVisitor visitor) {
+    return visitCommitted(pageNumber, null, visitor);
+  }
+
+  /**
+   * {@link #visitCommittedPage} for the slots set in {@code slots} only (bit {@code slot & 63} of word {@code slot >>> 6}), ascending:
+   * the same committed read and the same report, for a caller that knows which records of the page changed (the columnar apply pass
+   * re-reading the records a commit marked, Task 15 of #10662). Slots past the page's record count are not reported.
+   *
+   * @return the version of the page that was read, or -1 when the page is not committed yet (past the committed page count)
+   */
+  public long visitCommittedSlots(final int pageNumber, final long[] slots, final CommittedSlotVisitor visitor) {
+    return visitCommitted(pageNumber, slots, visitor);
+  }
+
+  /**
+   * The committed read of {@link #visitCommittedPage} and {@link #visitCommittedSlots}: every slot of the page when {@code slots} is
+   * null, otherwise the slots set in it, ascending; slots past the page's record count are not reported.
+   */
+  private long visitCommitted(final int pageNumber, final long[] slots, final CommittedSlotVisitor visitor) {
     if (pageNumber < 0 || pageNumber >= pageCount.get())
       return -1L;
 
@@ -961,8 +990,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
       OffPagePages offPages = null;
       visitor.onPageVersion(pageNumber, version);
-      for (int slot = 0; slot < recordCountInPage; ++slot)
-        offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
+      if (slots == null)
+        for (int slot = 0; slot < recordCountInPage; ++slot)
+          offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
+      else
+        for (int word = 0; word < slots.length; word++)
+          for (long bits = slots[word]; bits != 0; bits &= bits - 1) {
+            final int slot = (word << 6) + Long.numberOfTrailingZeros(bits);
+            if (slot >= recordCountInPage)
+              return version;
+            offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
+          }
       return version;
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
@@ -1102,6 +1140,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         content = committedMultiPageRecord(RID.create(database, fileId, position), page.getPageId(), slot, FIRST_CHUNK,
                 offPages);
         offPageCount = offPages.count;
+        if (content == null)
+          // NULL ONLY FOR A HEAD GONE SINCE THE PAGE WAS READ, A DELETE (Task 14 of #10662); A CHAIN IT CANNOT READ IS A CONFLICT
+          kind = CommittedSlotVisitor.EMPTY;
       } else
         // NEXT_CHUNK, FIRST_CHUNK_PLACEHOLDER_CONTENT, a negated size: somebody else's bytes
         kind = CommittedSlotVisitor.CONTENT;
@@ -3819,7 +3860,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * The committed content behind the placeholder POINTER at {@code rid} (#10304). The pointer and the content record
    * live on two pages, which a commit publishes one at a time, so the two are read with no publication in between:
-   * optimistically, and again under the publication lock when one overlapped the read.
+   * optimistically, and again under the publication lock when one overlapped the read, with the sequence checked again inside it
+   * because the lock does not exclude the replicated apply of a replica (#11283).
    */
   private Binary committedPlaceholderContent(final RID rid) throws IOException {
     return committedPlaceholderContent(rid, null);
@@ -4075,6 +4117,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   public void releaseNewPage(final int pageNumber) {
     inFlightNewPages.remove(pageNumber);
+  }
+
+  /**
+   * Walks of {@link #assembleFromNewestCommitted} redone because the chain changed or a publication overlapped their validation, the
+   * lock redo excluded.
+   */
+  long getCommittedWalkRedosForTesting() {
+    return committedWalkRedos.get();
+  }
+
+  /** Walks of {@link #assembleFromNewestCommitted} redone under the page-manager lock once the optimistic ones were spent. */
+  long getCommittedWalkLockRedosForTesting() {
+    return committedWalkLockRedos.get();
   }
 
   /** How many pages of this bucket are owned by a running transaction (issue #9694). Package-private: for tests only. */
@@ -6633,6 +6688,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * or released, so nothing any other read of the transaction relied on moves (#9620). The chain is validated like any
    * read ({@link #validateChainRead}) and walked again when a commit landed under the walk.
    * <p>
+   * The validation is what makes the chain one commit's (Task 14 of #10662). A commit or a replicated apply puts its pages in the read
+   * cache one at a time, so a walk can read the head chunk at one commit and the rest at another, and a validation running while that
+   * publication is still open can find both equal to what the walk read. So the validation runs only once no publication is open,
+   * waiting for an open one to end ({@link PageManager#awaitPublicationEnd}), and counts only when the publication sequence did not
+   * move under it ({@link PageManager#getPublicationSequence()}): every chunk is then compared with the newest committed images of one
+   * state, and a chunk a publication changed since the walk read it fails the comparison. A publication that touched none of the
+   * chain's pages costs nothing but the wait. A walk that failed, or whose validation a publication overlapped, is walked again, up
+   * to {@code maxRetries} times. When the last attempt was still in motion, the walk is redone once under the page-manager lock, on a
+   * leader only: the lock excludes the local commits, not the replicated apply of a replica (#10941), so that redo checks the
+   * sequence too and gives up when an apply overlapped it. A head that is no chain any more is one page, so one commit, and is
+   * answered at once.
+   * <p>
+   * Cost and liveness: a read waits at most {@code (maxRetries + 1)} x 20 ms, about 80 ms with the default {@code txRetries} of 3, and
+   * only while publications stay open that long. The publication sequence is shared by every database of the JVM, so a replica hosting
+   * several databases, or applying one large entry, can keep it odd through all the attempts: the read then fails with a retryable
+   * conflict (the apply pass retries the page), never with wrong data.
+   * <p>
    * The walk mirrors the one in {@link #loadMultiPageRecord(RID, BasePage, int, long, int, boolean)}, chunk layout and trace
    * included, and must change with it. It is kept apart because that one reads through the transaction, which pins every
    * page it fetches, and diagnoses a chain it cannot follow, while this one may pin nothing and only gives up.
@@ -6641,7 +6713,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                   walked as a chain; a head that collapsed back into a plain record (#6178) is that record's content.
    *
    * @return the content, or null when the newest committed state is not one this read can serve: the record was
-   * deleted, its slot now holds something else, or no attempt read the chain whole
+   * deleted, its slot now holds something else, or no attempt read the chain whole as one commit
    */
   private Binary assembleFromNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker,
                                              final int maxRetries) throws IOException {
@@ -6654,98 +6726,196 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private Binary assembleFromNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker,
                                              final int maxRetries, final OffPagePages offPages) throws IOException {
+    final PageManager pageManager = database.getPageManager();
+    final CommittedWalk walk = new CommittedWalk();
+    boolean inMotion = false;
     for (int retry = 0; retry <= maxRetries; retry++) {
-      final BasePage head = database.getPageManager().getImmutablePage(headPageId, pageSize, false, true);
-      if (head == null || headSlot >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      final long walkSequence = pageManager.getPublicationSequence();
+      final int outcome = walkNewestCommitted(headPageId, headSlot, headMarker, walk);
+      if (outcome == WALK_NOT_SERVABLE)
         return null;
-      final int headPosition = getRecordPositionInPage(head, headSlot);
-      if (headPosition == 0)
-        return null;
-      final long[] headSize = head.readNumberAndSize(headPosition);
-
-      if (headSize[0] != headMarker) {
-        // NO LONGER A CHAIN OF THE SAME KIND: SERVED ONLY WHEN IT IS NOW THE PLAIN SHAPE OF THE SAME KIND OF RECORD
-        final long plainSize;
-        if (headMarker == FIRST_CHUNK && headSize[0] > 0)
-          plainSize = headSize[0];
-        else if (headMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT && headSize[0] < RECORD_PLACEHOLDER_CONTENT)
-          plainSize = -headSize[0];
-        else
-          return null;
-        // A single page image is one commit by itself. A size that does not fit the page is not a record to serve
-        final int contentPosition = (int) (headPosition + headSize[1]);
-        if ((long) contentPosition + plainSize > head.getMaxContentSize())
-          return null;
-        final Binary plain = new Binary((int) plainSize);
-        plain.append(head.getImmutableView(contentPosition, (int) plainSize));
-        plain.position(0);
-        return plain;
-      }
-
-      long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
-      int chunks = 0;
-      boolean complete = false;
-      LongHashSet visitedChunks = null;
-      final Binary record = new Binary();
-      try {
-        BasePage page = head;
-        int slot = headSlot;
-        int position = headPosition;
-        long[] size = headSize;
-        while (true) {
-          final int chunkSize = page.readInt((int) (position + size[1]));
-          final long nextChunkPointer = decodeNextChunkLink(page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE)));
-          record.append(page.getImmutableView((int) (position + size[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE), chunkSize));
-
-          if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
-            chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
-          final int trace = chunks * CHAIN_TRACE_STRIDE;
-          chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER] = page.pageId.getPageNumber();
-          chainTrace[trace + CHAIN_TRACE_PAGE_VERSION] = page.getVersion();
-          chainTrace[trace + CHAIN_TRACE_SLOT] = slot;
-          chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
-          ++chunks;
-
-          if (nextChunkPointer == NO_NEXT_CHUNK) {
-            complete = true;
-            break;
-          }
-
-          final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
-          if (chunkPageId >= getTotalPages())
-            break;
-          if (visitedChunks == null)
-            visitedChunks = new LongHashSet();
-          if (!visitedChunks.add(nextChunkPointer))
-            break;
-
-          page = database.getPageManager().getImmutablePage(new PageId(database, file.getFileId(), chunkPageId), pageSize, false, true);
-          slot = (int) (nextChunkPointer % maxRecordsInPage);
-          if (page == null || slot >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
-            break;
-          position = getRecordPositionInPage(page, slot);
-          if (position == 0)
-            break;
-          size = page.readNumberAndSize(position);
-          if (size[0] != NEXT_CHUNK)
-            break;
-        }
-      } catch (final RuntimeException e) {
-        // A chunk read out of bounds: a chain in motion, or a broken one. Either way not one this read can serve as is
-        LogManager.instance().log(this, Level.FINE, "Error assembling the newest committed image of the chain at %s/%d", e,
-                headPageId, headSlot);
-      }
-
-      // A chain that did not walk to its end, or that a commit moved under the walk, is walked again
-      if (complete && validateChainReadAgainstOneCommit(chainTrace, chunks, record, NO_NEXT_CHUNK, headMarker) != CHAIN_READ_CHANGED) {
-        if (offPages != null)
-          for (int chunk = 1; chunk < chunks; ++chunk)
-            offPages.add((int) chainTrace[chunk * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER]);
-        record.position(0);
-        return record;
-      }
+      if (outcome == WALK_PLAIN)
+        return walk.served(null);
+      if (outcome == WALK_CHAIN) {
+        if (validateAgainstOneCommit(pageManager, walk, headMarker) != CHAIN_READ_CHANGED)
+          return walk.served(offPages);
+        // CHANGED SINCE THE WALK, OR NO VALIDATION COULD RUN AGAINST ONE STATE
+        inMotion = true;
+      } else
+        // NOT WALKED WHOLE: IN MOTION WHEN A PUBLICATION MOVED SINCE THE WALK STARTED, OTHERWISE A BROKEN CHAIN, WALKED AGAIN AS IT
+        // ALWAYS WAS
+        inMotion = (walkSequence & 1) != 0 || pageManager.getPublicationSequence() != walkSequence;
+      if (inMotion)
+        committedWalkRedos.incrementAndGet();
     }
-    return null;
+
+    if (!inMotion || !database.getWrappedDatabaseInstance().isLeader())
+      // A broken chain, or a replica: its replicated apply does not take the lock, so a redo under it would not exclude it
+      return null;
+
+    committedWalkLockRedos.incrementAndGet();
+    try {
+      // executeInLock rethrows a RuntimeException as it is and wraps a checked one, the IOException of a page load, as its cause
+      return (Binary) pageManager.executeInLock(() -> {
+        final long sequence = pageManager.getPublicationSequence();
+        final int outcome = walkNewestCommitted(headPageId, headSlot, headMarker, walk);
+        if (outcome == WALK_PLAIN)
+          return walk.served(null);
+        if (outcome == WALK_CHAIN && (sequence & 1) == 0
+                && validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false) != CHAIN_READ_CHANGED
+                && pageManager.getPublicationSequence() == sequence)
+          return walk.served(offPages);
+        return null;
+      });
+    } catch (final RuntimeException e) {
+      if (e.getCause() instanceof IOException ioException)
+        throw ioException;
+      throw e;
+    }
+  }
+
+  /** How long {@link #validateAgainstOneCommit} waits for an open publication to end before it gives the attempt up. */
+  private static final long PUBLICATION_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(20);
+
+  /**
+   * {@link #validateChainRead} of a complete walk against the newest images of ONE committed state: run once no publication is open
+   * (waiting up to {@link #PUBLICATION_WAIT_NANOS} for one to end), and taken only when the publication sequence did not move under it.
+   *
+   * @return the verdict, {@link #CHAIN_READ_CHANGED} also when no validation could run against one state
+   */
+  private int validateAgainstOneCommit(final PageManager pageManager, final CommittedWalk walk, final long headMarker)
+          throws IOException {
+    final long sequence = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
+    if ((sequence & 1) != 0)
+      return CHAIN_READ_CHANGED;
+    final int verdict = validateChainRead(walk.chainTrace, walk.chunks, walk.record, NO_NEXT_CHUNK, headMarker, false);
+    return pageManager.getPublicationSequence() == sequence ? verdict : CHAIN_READ_CHANGED;
+  }
+
+  /** {@link #walkNewestCommitted}: the newest head is no record this read can serve (deleted, or now another kind of slot). */
+  private static final int WALK_NOT_SERVABLE = 0;
+  /** {@link #walkNewestCommitted}: the head collapsed back into a plain record, in {@link CommittedWalk#record}. */
+  private static final int WALK_PLAIN        = 1;
+  /** {@link #walkNewestCommitted}: the chain was walked to its end, in {@link CommittedWalk#record}; the caller validates it. */
+  private static final int WALK_CHAIN        = 2;
+  /** {@link #walkNewestCommitted}: the chain was not walked whole. */
+  private static final int WALK_INCOMPLETE   = 3;
+
+  /** The state of the walks of one {@link #assembleFromNewestCommitted}: the trace is reused by its attempts. */
+  private static final class CommittedWalk {
+    private long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
+    private int    chunks;
+    private Binary record;
+
+    private Binary served(final OffPagePages offPages) {
+      if (offPages != null)
+        for (int chunk = 1; chunk < chunks; ++chunk)
+          offPages.add((int) chainTrace[chunk * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER]);
+      record.position(0);
+      return record;
+    }
+  }
+
+  /**
+   * One walk of {@link #assembleFromNewestCommitted} over the newest committed images, tracing every chunk it read for the validation.
+   *
+   * @return {@link #WALK_NOT_SERVABLE}, {@link #WALK_PLAIN}, {@link #WALK_CHAIN} or {@link #WALK_INCOMPLETE}
+   */
+  private int walkNewestCommitted(final PageId headPageId, final int headSlot, final long headMarker, final CommittedWalk walk)
+          throws IOException {
+    walk.chunks = 0;
+    walk.record = null;
+    final BasePage head = database.getPageManager().getImmutablePage(headPageId, pageSize, false, true);
+    if (head == null || headSlot >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return WALK_NOT_SERVABLE;
+    final int headPosition = getRecordPositionInPage(head, headSlot);
+    if (headPosition == 0)
+      return WALK_NOT_SERVABLE;
+    final long[] headSize = head.readNumberAndSize(headPosition);
+
+    if (headSize[0] != headMarker) {
+      // NO LONGER A CHAIN OF THE SAME KIND: SERVED ONLY WHEN IT IS NOW THE PLAIN SHAPE OF THE SAME KIND OF RECORD
+      final long plainSize;
+      if (headMarker == FIRST_CHUNK && headSize[0] > 0)
+        plainSize = headSize[0];
+      else if (headMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT && headSize[0] < RECORD_PLACEHOLDER_CONTENT)
+        plainSize = -headSize[0];
+      else
+        return WALK_NOT_SERVABLE;
+      // A single page image is one commit by itself. A size that does not fit the page is not a record to serve
+      final int contentPosition = (int) (headPosition + headSize[1]);
+      if ((long) contentPosition + plainSize > head.getMaxContentSize())
+        return WALK_NOT_SERVABLE;
+      final Binary plain = new Binary((int) plainSize);
+      plain.append(head.getImmutableView(contentPosition, (int) plainSize));
+      walk.record = plain;
+      return WALK_PLAIN;
+    }
+
+    long[] chainTrace = walk.chainTrace;
+    int chunks = 0;
+    boolean complete = false;
+    LongHashSet visitedChunks = null;
+    final Binary record = new Binary();
+    try {
+      BasePage page = head;
+      int slot = headSlot;
+      int position = headPosition;
+      long[] size = headSize;
+      while (true) {
+        final int chunkSize = page.readInt((int) (position + size[1]));
+        final long nextChunkPointer = decodeNextChunkLink(page.readLong((int) (position + size[1] + INT_SERIALIZED_SIZE)));
+        record.append(page.getImmutableView((int) (position + size[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE), chunkSize));
+
+        if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
+          walk.chainTrace = chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
+        final int trace = chunks * CHAIN_TRACE_STRIDE;
+        chainTrace[trace + CHAIN_TRACE_PAGE_NUMBER] = page.pageId.getPageNumber();
+        chainTrace[trace + CHAIN_TRACE_PAGE_VERSION] = page.getVersion();
+        chainTrace[trace + CHAIN_TRACE_SLOT] = slot;
+        chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
+        ++chunks;
+        if (chunks == 1) {
+          final Runnable walkHook = committedWalkHookForTesting;
+          if (walkHook != null)
+            walkHook.run();
+        }
+
+        if (nextChunkPointer == NO_NEXT_CHUNK) {
+          complete = true;
+          break;
+        }
+
+        final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
+        if (chunkPageId >= getTotalPages())
+          break;
+        if (visitedChunks == null)
+          visitedChunks = new LongHashSet();
+        if (!visitedChunks.add(nextChunkPointer))
+          break;
+
+        page = database.getPageManager().getImmutablePage(new PageId(database, file.getFileId(), chunkPageId), pageSize, false, true);
+        slot = (int) (nextChunkPointer % maxRecordsInPage);
+        if (page == null || slot >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+          break;
+        position = getRecordPositionInPage(page, slot);
+        if (position == 0)
+          break;
+        size = page.readNumberAndSize(position);
+        if (size[0] != NEXT_CHUNK)
+          break;
+      }
+    } catch (final RuntimeException e) {
+      // A chunk read out of bounds: a chain in motion, or a broken one. Either way not one this read can serve as is
+      LogManager.instance().log(this, Level.FINE, "Error assembling the newest committed image of the chain at %s/%d", e,
+              headPageId, headSlot);
+    }
+
+    if (!complete)
+      return WALK_INCOMPLETE;
+    walk.chunks = chunks;
+    walk.record = record;
+    return WALK_CHAIN;
   }
 
   /**

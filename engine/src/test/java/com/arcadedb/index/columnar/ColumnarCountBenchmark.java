@@ -31,6 +31,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -51,9 +53,12 @@ import java.util.logging.Level;
  * </ul>
  * Each round is timed with {@code System.nanoTime()} minus the JVM stall observed in the same window
  * ({@link StallAwareStopwatch#jvmStallNanos()}, the stopwatch's own discount at nanosecond resolution: a 1% count takes well under a
- * millisecond, below {@link StallAwareStopwatch#effectiveMs()}'s resolution). The medians are logged through {@link LogManager};
- * no time is asserted. One correctness guard: (b), (c) and (d) count the same match set over the same snapshot, so their count totals
- * must be equal; a mismatch fails the run, as its timings would then compare different work.
+ * millisecond, below {@link StallAwareStopwatch#effectiveMs()}'s resolution). Each count runs {@value #WARMUP_ROUNDS} warm-up rounds
+ * then {@code -Dcolumnar.bench.rounds} (default 5) measured ones, each round twice, as the variants "on" and "off" of the same code in
+ * rotating order ({@link BenchmarkReport#pairs}: the noise of the run). Every round is a sample of the {@link BenchmarkReport} (metric
+ * {@code <phase>.<property>.<selectivity>pct}); the median of the "on" rounds is logged through {@link LogManager}; no time is
+ * asserted. One correctness guard: (b), (c) and (d) count the same match set over the same snapshot, so their count totals must be
+ * equal; a mismatch fails the run, as its timings would then compare different work.
  */
 @Tag("benchmark")
 class ColumnarCountBenchmark extends TestHelper {
@@ -67,10 +72,11 @@ class ColumnarCountBenchmark extends TestHelper {
   private static final String[] PROPERTIES       = { "brand", "tags" };
   private static final int      BATCH            = 5_000;
   private static final int      WARMUP_ROUNDS    = 3;
-  private static final int      MEASURED_ROUNDS  = 11;
   private static final long     CATCH_UP_MS      = TimeUnit.MINUTES.toMillis(10);
 
-  private final Random random = new Random(42);
+  private final Random          random = new Random(42);
+  private final BenchmarkReport report = new BenchmarkReport("ColumnarCountBenchmark");
+  private final int             rounds = BenchmarkReport.rounds();
 
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
@@ -101,9 +107,9 @@ class ColumnarCountBenchmark extends TestHelper {
       final PositionBitmap[] matchSets = matchSets(snapshot);
       for (final String property : PROPERTIES)
         for (int s = 0; s < SELECTIVITIES.length; s++) {
-          final long[] warm = measure(snapshot, property, matchSets[s], false, false);
-          final long[] cold = measure(snapshot, property, matchSets[s], true, false);
-          final long[] reopened = measure(snapshot, property, matchSets[s], true, true);
+          final long[] warm = measure("b", snapshot, property, s, matchSets[s], false, false);
+          final long[] cold = measure("c", snapshot, property, s, matchSets[s], true, false);
+          final long[] reopened = measure("d", snapshot, property, s, matchSets[s], true, true);
           report("b 16 segments + overlay", property, s, matchSets[s], warm);
           report("c as b, cold block cache", property, s, matchSets[s], cold);
           report("d as c, fresh SegmentReader.open", property, s, matchSets[s], reopened);
@@ -128,17 +134,23 @@ class ColumnarCountBenchmark extends TestHelper {
       final PositionBitmap[] matchSets = matchSets(snapshot);
       for (final String property : PROPERTIES)
         for (int s = 0; s < SELECTIVITIES.length; s++)
-          report("a one merged segment", property, s, matchSets[s], measure(snapshot, property, matchSets[s], false, false));
+          report("a one merged segment", property, s, matchSets[s], measure("a", snapshot, property, s, matchSets[s], false, false));
     }
+    final Path written = report.write();
+    if (written != null)
+      LogManager.instance().log(this, Level.INFO, "COUNT report written to %s", written);
   }
 
-  /** The median effective nanoseconds of a count, and the count total of the last round (compared across phases b, c, d). */
-  private long[] measure(final ColumnarSnapshot snapshot, final String property, final PositionBitmap matches, final boolean coldCache,
-      final boolean freshReaders) throws IOException {
+  /**
+   * The median effective nanoseconds of the "on" rounds of a count, and the count total of the last round (compared across phases b,
+   * c, d). Every measured round is a sample of the report.
+   */
+  private long[] measure(final String phase, final ColumnarSnapshot snapshot, final String property, final int selectivity,
+      final PositionBitmap matches, final boolean coldCache, final boolean freshReaders) {
     final int[] counts = new int[snapshot.dictionary(property).size() + 1];
-    final long[] effective = new long[MEASURED_ROUNDS];
-    long total = 0;
-    for (int round = 0; round < WARMUP_ROUNDS + MEASURED_ROUNDS; round++) {
+    final String metric = String.format(Locale.ROOT, "%s.%s.%.0fpct", phase, property, SELECTIVITIES[selectivity] * 100);
+    final long[] total = new long[1];
+    report.pairs(WARMUP_ROUNDS, rounds, metric, () -> {
       Arrays.fill(counts, 0);
       if (coldCache)
         BlockCache.instance().clear();
@@ -158,24 +170,26 @@ class ColumnarCountBenchmark extends TestHelper {
               reader.close();
       }
       final long nanos = Math.max(0, System.nanoTime() - start - (StallAwareStopwatch.jvmStallNanos() - startStall));
-      if (round >= WARMUP_ROUNDS)
-        effective[round - WARMUP_ROUNDS] = nanos;
-      total = 0;
+      total[0] = 0;
       for (final int c : counts)
-        total += c;
-    }
-    Arrays.sort(effective);
-    return new long[] { effective[MEASURED_ROUNDS / 2], total };
+        total[0] += c;
+      return nanos;
+    });
+    return new long[] { Math.round(BenchmarkReport.median(report.samples(metric, BenchmarkReport.ON)) * 1_000_000d), total[0] };
   }
 
   /** The views with every segment opened afresh on its file and dead set; the overlay view is kept. */
-  private static List<ColumnarSegmentView> reopen(final List<ColumnarSegmentView> views) throws IOException {
+  private static List<ColumnarSegmentView> reopen(final List<ColumnarSegmentView> views) {
     final List<ColumnarSegmentView> fresh = new ArrayList<>(views.size());
-    for (final ColumnarSegmentView view : views)
-      if (view instanceof SegmentReader reader)
-        fresh.add(SegmentReader.open(reader.file().path(), reader.deadSet() == null ? null : reader.deadSet().copy()));
-      else
-        fresh.add(view);
+    try {
+      for (final ColumnarSegmentView view : views)
+        if (view instanceof SegmentReader reader)
+          fresh.add(SegmentReader.open(reader.file().path(), reader.deadSet() == null ? null : reader.deadSet().copy()));
+        else
+          fresh.add(view);
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
     return fresh;
   }
 

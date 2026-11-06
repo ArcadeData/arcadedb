@@ -135,10 +135,16 @@ class Issue10850NoNarrowingReadsInFunctionsTest {
       Map.entry("function/sql/math/SQLFunctionAbsoluteValue#execute: l2i", 3),
       // the exact power of an integral base answered as an INTEGER once it is known to fit (issue #11047)
       Map.entry("function/sql/math/SQLFunctionPow#integralPow: java/lang/Math.toIntExact", 1),
-      // sum(): an overflow check of the running long, and the INT result narrowed back once it is known to fit
-      Map.entry("function/sql/math/NumericSum#add: java/lang/Number.longValue", 3),
-      Map.entry("function/sql/math/NumericSum#add: l2i", 1),
-      Map.entry("function/sql/math/NumericSum#get: l2i", 1),
+      // sum(): none reads an argument. addToInt: the overflow check of the running long ((int) longSum). get(): the INT total
+      // narrowed back while it is known to fit (not widened), and a one-row total narrowed back to the Short or Byte that row added
+      // (l2i+i2s, l2i+i2b: the total IS that value). addSmall: the short or byte parameter of addShort / addByte, widened to an int to
+      // share the code, boxed back to its own type for Type.increment (i2s, i2b)
+      Map.entry("function/sql/math/NumericSum#addToInt: l2i", 1),
+      Map.entry("function/sql/math/NumericSum#addSmall: i2b", 1),
+      Map.entry("function/sql/math/NumericSum#addSmall: i2s", 1),
+      Map.entry("function/sql/math/NumericSum#get: l2i", 3),
+      Map.entry("function/sql/math/NumericSum#get: i2b", 1),
+      Map.entry("function/sql/math/NumericSum#get: i2s", 1),
       // round(value) IS the rounding the function is asked for
       Map.entry("function/math/RoundFunction#execute: java/lang/Math.round", 1),
       // a list index computed from the size of the collected values, never from an argument

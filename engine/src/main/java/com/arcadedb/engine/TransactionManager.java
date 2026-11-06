@@ -212,6 +212,12 @@ public class TransactionManager {
    * the local commit path - so it is nowhere near a hot path.
    */
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
+  /**
+   * Test-only seam run by {@link #applyChanges}, with the publication open, once the first page of the entry is in the read cache and
+   * before the others (Task 14 of #10662): the twin of {@code PageManager.publishPagesHookForTesting} for the replicated apply, which
+   * does not hold the page-manager lock. Null in production.
+   */
+  static volatile Runnable                   applyChangesHookForTesting;
 
   /** The sequence a delete takes before it scans for the unidirectional edges ending in its vertices (#8986). */
   public long getUnidirectionalEdgeSequence() {
@@ -1730,6 +1736,11 @@ public class TransactionManager {
     final PageManager pageManager = database.getPageManager();
     pageManager.beginPublication();
     try {
+      // Task 15b of #10662: counted from before the first page is written until the mark landed (the decrement is in the finally
+      // below, after the mark), so an apply pass that read a page by record does not stamp it with a version whose writes no mark
+      // names yet
+      if (columnar != null)
+        columnar.unmarkedApplyStarted();
       return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
     } finally {
       pageManager.endPublication();
@@ -1737,6 +1748,8 @@ public class TransactionManager {
         if (reached != null)
           reached.mark(columnar);
       } finally {
+        if (columnar != null)
+          columnar.unmarkedApplyEnded();
         FullTextCorpusDeltas.replicatedApplyFinished(applying);
       }
     }
@@ -1800,6 +1813,7 @@ public class TransactionManager {
     // One page can carry several segments in the same transaction, one per disjoint modified interval (issue #5470).
     // They are written consecutively, so the run is gathered here and applied to a single page image: the version
     // checks below then run once per page and the page reaches the disk once, exactly as with a single segment.
+    Runnable midway = applyChangesHookForTesting;
     for (int s = 0; s < tx.pages.length; ) {
       final WALFile.WALPage txPage = tx.pages[s];
 
@@ -1983,6 +1997,11 @@ public class TransactionManager {
         // entry on the page failed with a false WAL version gap. A copy, because the vector index below still reads
         // modifiedPage.
         database.getPageManager().putPageInReadCache(new CachedPage(modifiedPage, true));
+        if (midway != null) {
+          // the first page of the entry is visible, the others are not yet
+          midway.run();
+          midway = null;
+        }
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(txPage.fileId);
         if (component != null) {
@@ -2711,6 +2730,17 @@ public class TransactionManager {
    * @return true when every inactive WAL file was dropped
    */
   boolean rotateAndDropWALForTesting() throws IOException {
+    return rotateAndDropWALForTesting(false);
+  }
+
+  /**
+   * {@link #rotateAndDropWALForTesting()}, with {@code force} true dropping every inactive WAL file whatever it still protects: a file
+   * with pages not yet flushed, or with a commit between its two columnar marks, included. Only for a test that makes those pages
+   * durable another way, or that wants exactly that loss.
+   *
+   * @return true when every inactive WAL file was dropped
+   */
+  boolean rotateAndDropWALForTesting(final boolean force) throws IOException {
     if (activeWALFilePool != null)
       for (int i = 0; i < activeWALFilePool.length; ++i) {
         final WALFile file = activeWALFilePool[i];
@@ -2721,7 +2751,7 @@ public class TransactionManager {
           inactiveWALFilePool.add(file);
         }
       }
-    return cleanWALFiles(true, false, true);
+    return cleanWALFiles(true, force, true);
   }
 
   @Override

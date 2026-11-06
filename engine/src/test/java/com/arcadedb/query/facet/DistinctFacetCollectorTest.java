@@ -602,6 +602,44 @@ class DistinctFacetCollectorTest extends TestHelper {
   }
 
   /**
+   * Parallel counting: a slice collector the budget refused under PRECISION went to a sketch where the query thread alone, which waits
+   * for the budget, would stay exact. The facet's collector does not absorb it (the slice is counted again on the caller), while a slice
+   * that went past the threshold is absorbed as before.
+   */
+  @Test
+  void aSliceSketchedOnARefusalIsNotAbsorbed() {
+    final Object previous = GlobalConfiguration.COLUMNAR_QUERY_MEMORY_BUDGET.getValue();
+    GlobalConfiguration.COLUMNAR_QUERY_MEMORY_BUDGET.setValue(64 * 1024L);
+    try {
+      final DistinctFacetCollector refused = slice(1_000_000, 1_000_000, 5_000);
+      assertThat(refused.isUnavailable()).as("sketched, not refused").isFalse();
+      final DistinctFacetCollector facet = slice(1_000_000, 1_000_000, 0);
+      assertThat(facet.absorb(refused)).as("a slice sketched on a refusal is recounted").isFalse();
+      refused.release();
+      facet.release();
+    } finally {
+      GlobalConfiguration.COLUMNAR_QUERY_MEMORY_BUDGET.setValue(previous);
+      FacetMemoryBudget.instance();
+    }
+    final DistinctFacetCollector pastThreshold = slice(1_000, 5_000, 5_000);
+    final DistinctFacetCollector facet = slice(1_000, 5_000, 0);
+    assertThat(facet.absorb(pastThreshold)).as("a slice sketched past the threshold is absorbed").isTrue();
+    pastThreshold.release();
+    final DistinctValue value = distinct(facet.finish());
+    assertThat(value.exact()).isFalse();
+    assertThat((double) value.value()).isCloseTo(5_000d, within(150d));
+  }
+
+  /** A slice collector of parallel counting (it never waits for the budget) over the longs 0 to {@code distinct - 1}. */
+  private static DistinctFacetCollector slice(final long precision, final long matchCount, final int distinct) {
+    final DistinctFacetCollector collector = new DistinctFacetCollector(spec(precision), LONG, matchCount, null, null, 0L);
+    collector.beginBucket(0, new Snapshot(0, null), null);
+    if (distinct > 0)
+      collector.collect(new Numbers(ColumnKind.LONG, range(0, distinct)), all(distinct));
+    return collector;
+  }
+
+  /**
    * Counts 5000 distinct longs, sized for a million matches, under a budget of 64 KiB: the set's doubling to 8192 slots (96 KiB with the
    * table it replaces) is refused, the 16 KiB of a HyperLogLog are not.
    */
