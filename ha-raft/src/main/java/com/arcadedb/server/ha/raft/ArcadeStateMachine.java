@@ -3140,6 +3140,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
+    } else if (!newLeaderId.equals(raftHA.getLocalPeerId()) && !(newLeaderId.equals(prevId) && currentTerm <= prevTerm
+        && currentTerm >= 0)) {
+      // Issue #11294: a targeted resync of a quarantined database, or the retry of a read floor, that was refused
+      // because no leader was known (or the leader had no address yet) used to wait for the next HealthMonitor tick,
+      // which is throttled to one attempt per snapshot-watchdog interval. A leader just became known, which is the one
+      // thing that refusal was waiting for, so the attempt runs now. Queued on the single-threaded lifecycleExecutor,
+      // behind any resync still running there, so it never overlaps one; it asks the same questions the tick asks and
+      // does nothing on a node with nothing outstanding. Not on a same-term re-notification of the same leader: nothing a
+      // refusal waits on has changed then, and the throttle is there for exactly such repeats.
+      try {
+        lifecycleExecutor.submit(() -> retryUnfilledSnapshotGap(true));
+      } catch (final RejectedExecutionException ree) {
+        HALog.log(this, HALog.BASIC, "Cannot schedule the resync retry on the leader change: executor is shut down");
+      }
     }
   }
 
@@ -9221,6 +9235,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * quarantined database rather than the full download, which is what the quarantine path itself does.
    */
   public void retryUnfilledSnapshotGap() {
+    retryUnfilledSnapshotGap(false);
+  }
+
+  /**
+   * As {@link #retryUnfilledSnapshotGap()}; with {@code leaderChanged} the throttle interval is not waited out, because
+   * the attempt is driven by {@link #notifyLeaderChanged} rather than by a tick (issue #11294). Every refusal this method
+   * and the resync it starts share - no leader known, no unambiguous address for it, this node leading - can only change
+   * when a leader is elected or learnt, so the attempt that a refusal cost belongs to that moment, not to the next tick a
+   * whole watchdog interval later. The slot is still taken, so the tick that follows does not repeat the attempt.
+   */
+  private void retryUnfilledSnapshotGap(final boolean leaderChanged) {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA == null)
       return;
@@ -9277,10 +9302,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final long now = System.currentTimeMillis();
     final long retryIntervalMs = computeSnapshotWatchdogTimeoutMs();
     final long previous = lastStaleSnapshotRetryMs.get();
-    if (previous != 0 && now - previous < retryIntervalMs)
+    if (!leaderChanged && previous != 0 && now - previous < retryIntervalMs)
       return;
     if (!lastStaleSnapshotRetryMs.compareAndSet(previous, now))
       return; // another tick won the throttle slot
+    final String trigger = leaderChanged ? "a leader is known again, " : "";
 
     if (floor < 0 && staleDatabaseAppliedFloors.isEmpty()) {
       // Only a quarantine is outstanding (issue #7735), so a TARGETED resync of each quarantined database is
@@ -9288,8 +9314,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the answer whenever a read floor is outstanding too, because a floor says the node-wide snapshot marker
       // itself is ahead of what was applied.
       LogManager.instance().log(this, Level.WARNING,
-          "Database(s) %s are still quarantined from the committed Raft log with no download in flight: retrying "
-              + "the targeted resync from the leader (issue #7735)", toResync);
+          "Database(s) %s are still quarantined from the committed Raft log with no download in flight: %sretrying "
+              + "the targeted resync from the leader (issues #7735, #11294)", toResync, trigger);
       if (toResync.size() < quarantined.size())
         LogManager.instance().log(this, Level.WARNING,
             "Not retrying the targeted resync of %s: the leader holds them quarantined too and cannot serve them "
@@ -9301,8 +9327,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     LogManager.instance().log(this, Level.WARNING,
         "Local state is still behind what the snapshot marker claims (read floor=%d, databases short of the "
-            + "snapshot index=%s) with no download in flight: retrying the resync from the leader "
-            + "(issues #6111, #6760)", floor, staleDatabaseAppliedFloors.keySet());
+            + "snapshot index=%s) with no download in flight: %sretrying the resync from the leader "
+            + "(issues #6111, #6760, #11294)", floor, staleDatabaseAppliedFloors.keySet(), trigger);
     try {
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
     } catch (final RejectedExecutionException ree) {

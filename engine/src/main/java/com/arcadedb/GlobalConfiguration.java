@@ -2083,6 +2083,8 @@ public enum GlobalConfiguration {
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
        to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[albert:einstein:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`. \
+       A `:`, `,`, `;`, `[`, `]` or `%` inside a user name, password or group is written percent-encoded (`%3A`, `%2C`, `%3B`, `%5B`, `%5D`, `%25`), as in a URI: \
+       `mydb[myuser:my%3Apass:admin]` is the password `my:pass`. A credential with more than three `:`-separated fields is refused rather than truncated. \
        On a replicated database, `restore` is per-node: it does not force a cluster snapshot install the way the `restore database`/`restore backup` server commands do, so it is meant for every node in the cluster to run for itself \
        with the same startup configuration, not as a way to replace a database cluster-wide from one node. A node that finds an existing copy of the database drops ONLY its own local copy before restoring, and logs a WARNING when \
        that copy was replicated, because the rest of the cluster keeps whatever it already has until it is restored the same way.""",
@@ -5013,10 +5015,13 @@ public enum GlobalConfiguration {
    * The field boundaries mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between
    * credentials, then {@code ':'} between fields - so what is treated as a password here is what the server
    * authenticates with. That parity is the point, and it is positional on both sides: the server uses field 1
-   * and nothing else, so field 1 is the only one replaced. A password written with a {@code ':'} in it is
-   * therefore published from the colon onwards - not a leak of the password the server uses, which is only the
-   * part before it, but a reason not to write one that way. The format cannot express it, the same way it
-   * cannot express a password containing a {@code ','}.
+   * and nothing else, so field 1 is the only one replaced. A field that needs a separator writes it percent-encoded
+   * ({@code %3A} for a {@code ':'}, issue #11269), so the separators stay unambiguous in the raw text and nothing here
+   * needs decoding: the masked field is the encoded password. The shapes the server refuses instead of reading fail
+   * closed: a credential with more than three fields (a raw {@code ':'} in a password) is masked after its user name,
+   * and text after the block that opens no {@code {commands}} segment (a raw {@code ']'} in a password) is masked whole.
+   * A raw {@code ':'} in a password with no group written after it still reads as {@code user:password:group}, to the
+   * server as here, and its tail is published as the group it is to the server.
    */
   private static String redactDefaultDatabaseCredentials(final String databases) {
     final StringBuilder redacted = new StringBuilder(databases.length());
@@ -5090,7 +5095,14 @@ public enum GlobalConfiguration {
       credentialBegin = credentialEnd + 1;
     }
 
-    redacted.append(databases, credentialsEnd, end);
+    // Text after the block that does not open a '{commands}' segment is what a ']' inside a password leaves behind: the
+    // rest of that password. The server refuses such an entry and quotes it through here (issue #11269), so it fails
+    // closed like an unclosed '['. Whitespace alone is copied: the server tolerates it, and it hides nothing
+    final int afterBlock = credentialsEnd + 1;
+    if (afterBlock < end && databases.charAt(afterBlock) != '{' && !databases.substring(afterBlock, end).isBlank())
+      redacted.append(']').append("*****");
+    else
+      redacted.append(databases, credentialsEnd, end);
   }
 
   /** One {@code user:password[:group]} credential, of which only the password is replaced. */
@@ -5108,6 +5120,15 @@ public enum GlobalConfiguration {
       passwordEnd = end;
 
     redacted.append(databases, begin, userEnd + 1);
+
+    final int groupEnd = passwordEnd < end ? databases.indexOf(':', passwordEnd + 1) : -1;
+    if (groupEnd >= 0 && groupEnd < end) {
+      // More than three fields: the server refuses the credential (issue #11269), because a password written with a raw
+      // ':' is the commonest way to get there, and then which field is the password cannot be told. Every field after
+      // the user is masked, the way a malformed block fails closed
+      redacted.append("*****");
+      return;
+    }
 
     if (passwordEnd == userEnd + 1)
       // An EMPTY password is not a secret, and "*****" would report one as configured where none is.

@@ -2793,6 +2793,17 @@ public class ArcadeDBServer {
           break;
         }
 
+        // Text after the block that does not open a '{...}' command list was ignored, so a ']' inside a password closed the
+        // block early and the user was created with the part of the password before it (issue #11269). Refused, as the
+        // other malformed shapes are; whitespace alone is still tolerated, as it always was
+        if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) != '{' && !db.substring(credentialEnd + 1).isBlank()) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Unexpected text after the credentials block in default databases format: entry '%s' (a ']' inside a password is "
+                  + "written %%5D), it and the entries after it are not loaded",
+              GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(db));
+          break;
+        }
+
         final String dbName = db.substring(0, credentialBegin);
 
         // Without this the deferred directory reads as an absent database and the branch below creates one over
@@ -3099,21 +3110,34 @@ public class ArcadeDBServer {
     final String[] credentialPairs = credentials.split(",");
     for (final String credential : credentialPairs) {
 
-      final String[] credentialParts = credential.split(":");
+      // Percent-decoded, and refused when it cannot be read unambiguously (issue #11269): a password written with a raw ':'
+      // used to be cut at it, the text after it becoming the GROUP, so 's3cret:admin' granted 'admin' with the password
+      // 's3cret'. The refusal names the user only - the first field, never a secret - and touches nothing.
+      final DefaultDatabaseCredential parsed;
+      try {
+        parsed = DefaultDatabaseCredential.parse(credential);
+      } catch (final IllegalArgumentException e) {
+        final int userEnd = credential.indexOf(':');
+        LogManager.instance().log(this, Level.WARNING,
+            "Default database '%s': the credential of user '%s' %s. The user is neither created nor granted the database; a "
+                + "':', ',', ';', '[' or ']' inside a user name, password or group is written percent-encoded (%%3A, %%2C, %%3B, "
+                + "%%5B, %%5D)", null, dbName, userEnd < 0 ? credential : credential.substring(0, userEnd), e.getMessage());
+        continue;
+      }
 
-      if (credentialParts.length < 2) {
-        if (!security.existsUser(credential)) {
+      if (parsed.password() == null) {
+        if (!security.existsUser(parsed.user())) {
           LogManager.instance()
               .log(this, Level.WARNING, """
                       Cannot create user '%s' to access database '%s' because the user does not \
                       exist""", null,
-                  credential, dbName);
+                  parsed.user(), dbName);
         }
         //FIXME: else if user exists, should we give him access to the dbName?
       } else {
-        final String userName = credentialParts[0];
-        final String userPassword = credentialParts[1];
-        final String userGroup = credentialParts.length > 2 ? credentialParts[2] : null;
+        final String userName = parsed.user();
+        final String userPassword = parsed.password();
+        final String userGroup = parsed.group();
 
         final String[] groups = new String[] { userGroup };
 
