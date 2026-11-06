@@ -1108,7 +1108,7 @@ public class RemoteHttpComponent extends RWLockContext {
       try {
         requestClusterConfiguration(false);
       } catch (final Exception e) {
-        // IGNORE
+        return false;
       }
     }
 
