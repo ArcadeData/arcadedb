@@ -86,6 +86,16 @@ public interface GraphOlapVectorOps {
   void bitmaskNot(long[] a, long[] out, int length);
 
   /**
+   * Bitwise AND-NOT of two long[] bitmasks: {@code out[i] = a[i] & ~b[i]}. {@code out} may alias {@code a}.
+   */
+  void bitmaskAndNot(long[] a, long[] b, long[] out, int length);
+
+  /**
+   * Counts the set bits of {@code a & b} without materializing the intersection.
+   */
+  int bitmaskAndPopcount(long[] a, long[] b, int length);
+
+  /**
    * Counts total set bits across all words in the bitmask.
    */
   int bitmaskPopcount(long[] bitmask, int length);
