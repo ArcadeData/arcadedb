@@ -202,6 +202,33 @@ public final class PositionBitmap {
   }
 
   /**
+   * Visits every position set in both bitmaps, in ascending order, word by word on the pages both hold: the visiting sibling of
+   * {@link #andCardinality}, with no bitmap allocated.
+   */
+  public void forEachAnd(final PositionBitmap other, final LongConsumer position) {
+    checkCompatible(other);
+    int j = 0;
+    for (int i = 0; i < size && j < other.size; i++) {
+      final int page = pageNumbers[i];
+      while (j < other.size && other.pageNumbers[j] < page)
+        j++;
+      if (j == other.size || other.pageNumbers[j] != page)
+        continue;
+      final long pageBase = (long) page * maxRecordsInPage;
+      final long[] stripe = stripes[i];
+      final long[] otherStripe = other.stripes[j];
+      for (int w = 0; w < wordsPerStripe; w++) {
+        long word = stripe[w] & otherStripe[w];
+        final long wordBase = pageBase + ((long) w << 6);
+        while (word != 0) {
+          position.accept(wordBase + Long.numberOfTrailingZeros(word));
+          word &= word - 1;
+        }
+      }
+    }
+  }
+
+  /**
    * @return the pages holding at least one bit, ascending
    */
   public int[] pages() {

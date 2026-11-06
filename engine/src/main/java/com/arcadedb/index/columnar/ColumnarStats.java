@@ -111,6 +111,12 @@ public final class ColumnarStats {
   private final LongAdder rebuildsTotal = new LongAdder();
   private final LongAdder applyPasses   = new LongAdder();
   private final LongAdder recoveryPages = new LongAdder();
+  // FACETS queries of the database (plan 4): database-wide, not keyed by type
+  private final LongAdder queryPatched        = new LongAdder();
+  private final LongAdder queryBudgetWaits    = new LongAdder();
+  private final LongAdder queryPatchOverflows = new LongAdder();
+  private final LongAdder queryFallbackScans  = new LongAdder();
+  private final LongAdder queryFilterFallbacks = new LongAdder();
 
   // ---- writers
 
@@ -147,6 +153,34 @@ public final class ColumnarStats {
 
   public void recoveryPages(final long n) {
     recoveryPages.add(n);
+  }
+
+  /** Records a FACETS query read from the record itself to correct the projection. */
+  public void queryPatched(final long n) {
+    queryPatched.add(n);
+  }
+
+  /** Memory budget reservations of FACETS queries of this database that had to wait, whether granted late or finally refused. */
+  public void queryBudgetWaits(final long n) {
+    queryBudgetWaits.add(n);
+  }
+
+  /**
+   * One FACETS query whose patch set exceeded the patch budget. It means "patch budget exceeded", not "answer inexact": a bucket the
+   * caller's own open transaction wrote is then scanned instead, and that answer stays exact.
+   */
+  public void queryPatchOverflow() {
+    queryPatchOverflows.increment();
+  }
+
+  /** One FACETS query that scanned records because the projection could not answer a bucket. */
+  public void queryFallbackScan() {
+    queryFallbackScans.increment();
+  }
+
+  /** One INDEX facet FILTER evaluator that answered from the rows instead of its RID set (index not ready, collation, key type, budget). */
+  public void queryFilterFallback() {
+    queryFilterFallbacks.increment();
   }
 
   /** Every slot re-read by an apply pass: the numerator of the re-read amplification. */
@@ -249,6 +283,26 @@ public final class ColumnarStats {
 
   public long recoveryPagesCount() {
     return recoveryPages.sum();
+  }
+
+  public long queryPatchedCount() {
+    return queryPatched.sum();
+  }
+
+  public long queryBudgetWaitsCount() {
+    return queryBudgetWaits.sum();
+  }
+
+  public long queryPatchOverflowsCount() {
+    return queryPatchOverflows.sum();
+  }
+
+  public long queryFallbackScansCount() {
+    return queryFallbackScans.sum();
+  }
+
+  public long queryFilterFallbacksCount() {
+    return queryFilterFallbacks.sum();
   }
 
   public long recordsRereadCount(final String type) {

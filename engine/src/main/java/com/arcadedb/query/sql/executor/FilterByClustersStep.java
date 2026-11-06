@@ -48,6 +48,11 @@ public class FilterByClustersStep extends AbstractExecutionStep {
     }
   }
 
+  /** Whether a record of the bucket passes this step, as a row of it would (a negative id is a record not saved yet). */
+  boolean acceptsBucket(final int bucketId) {
+    return bucketId < 0 || bucketIds.contains(bucketId);
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     init(context.getDatabase());

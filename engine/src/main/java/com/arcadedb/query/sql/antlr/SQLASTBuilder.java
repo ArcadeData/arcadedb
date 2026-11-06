@@ -101,6 +101,9 @@ import com.arcadedb.query.sql.parser.ExplainStatement;
 import com.arcadedb.query.sql.parser.ExportDatabaseStatement;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.ExpressionStatement;
+import com.arcadedb.query.sql.parser.FacetItem;
+import com.arcadedb.query.sql.parser.FacetRangeItem;
+import com.arcadedb.query.sql.parser.FacetsClause;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.FindReferencesStatement;
 import com.arcadedb.query.sql.parser.ForEachBlock;
@@ -330,6 +333,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /** bound on the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
   private static final int MAX_EXACT_DECIMAL_SCALE = 400;
 
+  /** Name of the meta member of the facets JSON, which no facet may take. */
+  private static final String RESERVED_FACET_ALIAS = "meta";
+  /** The facet FILTERs form an int bit mask per row. */
+  private static final int    MAX_FACET_FILTERS    = 31;
+
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
 
@@ -544,6 +552,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.unwind = (Unwind) visit(ctx.unwind());
     }
 
+    // FACETS clause: before SKIP and LIMIT, and only on the outermost SELECT
+    if (ctx.lateFacets != null)
+      throw new CommandSQLParsingException("FACETS must come before SKIP and LIMIT");
+    if (ctx.facets != null) {
+      requireOutermost(ctx);
+      stmt.facets = visitFacetsClause(ctx.facets);
+    }
+
     // SKIP and LIMIT clauses
     if (ctx.skip() != null) {
       stmt.skip = (Skip) visit(ctx.skip());
@@ -556,6 +572,187 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.timeout() != null) {
       stmt.timeout = (Timeout) visit(ctx.timeout());
     }
+  }
+
+  /**
+   * Refuses a FACETS clause on a SELECT that is not the outermost statement: a subquery, a LET, an INSERT ... SELECT or a view
+   * definition. Their facets could reach no result set. The SELECT may sit under EXPLAIN, PROFILE, a script and the blocks of
+   * IF, WHILE and FOREACH, which all run it as a statement of its own.
+   */
+  private static void requireOutermost(final SQLParser.SelectStatementContext ctx) {
+    for (ParserRuleContext node = ctx.getParent(); node != null; node = node.getParent()) {
+      if (node instanceof SQLParser.ParseContext || node instanceof SQLParser.ParseScriptContext)
+        return;
+      if (!(node instanceof SQLParser.StatementContext || node instanceof SQLParser.ScriptStatementContext
+          || node instanceof SQLParser.ExplainStatementContext || node instanceof SQLParser.ProfileStatementContext
+          || node instanceof SQLParser.IfStatementContext || node instanceof SQLParser.WhileStatementContext
+          || node instanceof SQLParser.ForeachStatementContext))
+        throw new CommandSQLParsingException("FACETS is only allowed on the outermost SELECT");
+    }
+  }
+
+  @Override
+  public FacetsClause visitFacetsClause(final SQLParser.FacetsClauseContext ctx) {
+    final FacetsClause clause = new FacetsClause();
+    final Set<String> names = new HashSet<>();
+    int filters = 0;
+    for (final SQLParser.FacetItemContext itemCtx : ctx.facetItem()) {
+      final FacetItem item = visitFacetItem(itemCtx);
+      final String name = item.getName();
+      if (RESERVED_FACET_ALIAS.equals(name))
+        throw new CommandSQLParsingException("facet alias '" + RESERVED_FACET_ALIAS + "' is reserved");
+      if (!names.add(name))
+        throw new CommandSQLParsingException("duplicate facet alias '" + name + "': give each facet its own alias");
+      if (item.filter != null && ++filters > MAX_FACET_FILTERS)
+        throw new CommandSQLParsingException("at most " + MAX_FACET_FILTERS + " facets may carry a FILTER");
+      clause.items.add(item);
+    }
+    return clause;
+  }
+
+  @Override
+  public FacetItem visitFacetItem(final SQLParser.FacetItemContext ctx) {
+    final FacetItem item = new FacetItem();
+    if (ctx.identifier() != null)
+      item.alias = visitIdentifier(ctx.identifier());
+    item.expression = (Expression) visit(ctx.expression());
+
+    switch (ctx.facetBody()) {
+    case SQLParser.TermsFacetContext terms -> {
+      item.kind = FacetItem.Kind.TERMS;
+      for (final SQLParser.FacetTermsOptionContext option : terms.facetTermsOption())
+        buildFacetTermsOption(item, option);
+    }
+    case SQLParser.RangesFacetContext ranges -> {
+      item.kind = FacetItem.Kind.RANGES;
+      item.ranges = new ArrayList<>(ranges.facetRange().size());
+      for (final SQLParser.FacetRangeContext rangeCtx : ranges.facetRange()) {
+        final FacetRangeItem range = new FacetRangeItem();
+        range.from = facetBound(rangeCtx.facetBound(0));
+        range.to = facetBound(rangeCtx.facetBound(1));
+        if (rangeCtx.STRING_LITERAL() != null)
+          range.label = decodeStringLiteral(rangeCtx.STRING_LITERAL().getText());
+        item.ranges.add(range);
+      }
+      if (ranges.STRING_LITERAL() != null)
+        item.defaultLabel = decodeStringLiteral(ranges.STRING_LITERAL().getText());
+      if (ranges.facetFilter() != null)
+        item.filter = (WhereClause) visit(ranges.facetFilter().whereClause());
+    }
+    case SQLParser.HistogramFacetContext histogram -> {
+      item.kind = FacetItem.Kind.HISTOGRAM;
+      item.calendar = histogram.CALENDAR() != null;
+      final SQLParser.FacetIntervalContext interval = histogram.facetInterval();
+      if (interval.STRING_LITERAL() != null)
+        item.interval = decodeStringLiteral(interval.STRING_LITERAL().getText());
+      else if (interval.INTEGER_LITERAL() != null)
+        item.interval = parseIntegerLiteral(interval.INTEGER_LITERAL().getText());
+      else
+        item.interval = parseFloatingPointLiteral(interval.FLOATING_POINT_LITERAL().getText());
+      // BOUNDS [*, *] leaves both bounds null, so a repeated BOUNDS is told by the option, not by the fields
+      boolean bounds = false;
+      for (final SQLParser.FacetHistogramOptionContext option : histogram.facetHistogramOption()) {
+        if (option.BOUNDS() != null) {
+          checkFacetOptionOnce(item, bounds ? Boolean.TRUE : null, "BOUNDS");
+          bounds = true;
+        }
+        buildFacetHistogramOption(item, option);
+      }
+    }
+    default -> throw new CommandSQLParsingException("Unsupported facet: " + ctx.facetBody().getText());
+    }
+    return item;
+  }
+
+  private void buildFacetTermsOption(final FacetItem item, final SQLParser.FacetTermsOptionContext option) {
+    if (option.TOP() != null) {
+      checkFacetOptionOnce(item, item.top, "TOP");
+      item.top = visitPInteger(option.pInteger());
+    } else if (option.MIN_COUNT() != null) {
+      checkFacetOptionOnce(item, item.minCount, "MIN_COUNT");
+      item.minCount = visitPInteger(option.pInteger());
+    } else if (option.ORDER_BY() != null) {
+      checkFacetOptionOnce(item, item.orderByCount, "ORDER BY");
+      item.orderByCount = option.COUNT() != null;
+      if (option.ASC() != null)
+        item.ascending = Boolean.TRUE;
+      else if (option.DESC() != null)
+        item.ascending = Boolean.FALSE;
+    } else if (option.INCLUDE() != null) {
+      checkFacetOptionOnce(item, item.include, "INCLUDE");
+      final List<SQLParser.ExpressionContext> values = option.arrayLiteral().expression();
+      item.include = new ArrayList<>(values.size());
+      for (final SQLParser.ExpressionContext value : values)
+        item.include.add((Expression) visit(value));
+    } else if (option.MISSING() != null) {
+      checkFacetOptionOnce(item, item.missing ? Boolean.TRUE : null, "MISSING");
+      item.missing = true;
+    } else
+      buildFacetFilter(item, option.facetFilter());
+  }
+
+  private void buildFacetHistogramOption(final FacetItem item, final SQLParser.FacetHistogramOptionContext option) {
+    if (option.TIMEZONE() != null) {
+      checkFacetOptionOnce(item, item.timezone, "TIMEZONE");
+      item.timezone = decodeStringLiteral(option.STRING_LITERAL().getText());
+    } else if (option.OFFSET() != null) {
+      checkFacetOptionOnce(item, item.offset, "OFFSET");
+      item.offset = decodeStringLiteral(option.STRING_LITERAL().getText());
+    } else if (option.MIN_COUNT() != null) {
+      checkFacetOptionOnce(item, item.minCount, "MIN_COUNT");
+      item.minCount = visitPInteger(option.pInteger());
+    } else if (option.BOUNDS() != null) {
+      item.boundsFrom = facetBound(option.facetBound(0));
+      item.boundsTo = facetBound(option.facetBound(1));
+    } else
+      buildFacetFilter(item, option.facetFilter());
+  }
+
+  private void buildFacetFilter(final FacetItem item, final SQLParser.FacetFilterContext filter) {
+    checkFacetOptionOnce(item, item.filter, "FILTER");
+    item.filter = (WhereClause) visit(filter.whereClause());
+  }
+
+  private static void checkFacetOptionOnce(final FacetItem item, final Object current, final String option) {
+    if (current != null)
+      throw new CommandSQLParsingException(option + " given twice in facet '" + item.getName() + "'");
+  }
+
+  /**
+   * A range or BOUNDS bound: null for {@code *}, the number or the string as written, or the input parameter.
+   */
+  private Object facetBound(final SQLParser.FacetBoundContext ctx) {
+    if (ctx.STAR() != null)
+      return null;
+    if (ctx.STRING_LITERAL() != null)
+      return decodeStringLiteral(ctx.STRING_LITERAL().getText());
+    if (ctx.inputParameter() != null)
+      return visitInputParameter(ctx.inputParameter());
+
+    final boolean negative = ctx.MINUS() != null;
+    if (ctx.FLOATING_POINT_LITERAL() != null) {
+      final Number magnitude = parseFloatingPointLiteral(ctx.FLOATING_POINT_LITERAL().getText());
+      return negative ? negateLiteral(magnitude) : magnitude;
+    }
+    final String text = ctx.INTEGER_LITERAL().getText();
+    try {
+      final Number magnitude = parseIntegerLiteral(text);
+      return negative ? negateLiteral(magnitude) : magnitude;
+    } catch (final NumberFormatException e) {
+      // -9223372036854775808: only the negated literal fits a long
+      if (negative)
+        try {
+          return Long.parseLong("-" + (text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text));
+        } catch (final NumberFormatException ignored) {
+          // reported below
+        }
+      throw new CommandSQLParsingException("Invalid number in FACETS: " + (negative ? "-" : "") + text);
+    }
+  }
+
+  /** The value of a quoted string literal token, without its quotes and un-escaped. */
+  private static String decodeStringLiteral(final String token) {
+    return BaseExpression.decode(token.substring(1, token.length() - 1));
   }
 
   /**

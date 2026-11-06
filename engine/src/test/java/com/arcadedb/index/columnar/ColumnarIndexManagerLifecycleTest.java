@@ -83,6 +83,20 @@ class ColumnarIndexManagerLifecycleTest extends TestHelper {
   }
 
   @Test
+  void fallbackScanPermitsComeFromTheSettingAtConstruction() {
+    assertThat(manager().fallbackScans().availablePermits()).isEqualTo(2);
+
+    final int original = GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS.getValueAsInteger();
+    GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS.setValue(5);
+    try {
+      reopenDatabase();
+      assertThat(manager().fallbackScans().availablePermits()).isEqualTo(5);
+    } finally {
+      GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS.setValue(original);
+    }
+  }
+
+  @Test
   void aDatabaseWithoutColumnarIndexesRegistersNoTick() {
     // final review C-M1: nothing columnar, no ticker wake-up and no configuration read
     final ColumnarIndexManager manager = manager();

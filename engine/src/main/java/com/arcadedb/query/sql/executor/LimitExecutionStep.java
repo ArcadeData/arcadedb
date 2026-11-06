@@ -99,8 +99,17 @@ public class LimitExecutionStep extends AbstractExecutionStep {
    * chain, so the caller's close later is a no-op.
    */
   private void releaseUpstream() {
-    if (prev != null)
-      prev.close();
+    if (prev == null)
+      return;
+    boolean release = true;
+    try {
+      // a FACETS query computes its facets first: they count the matches past the limit
+      release = !FacetCollectStep.completeBeforeRelease(prev);
+    } finally {
+      // released whatever the facets did: a computation that failed (a timeout during the drain) leaves nothing open
+      if (release)
+        prev.close();
+    }
   }
 
   @Override

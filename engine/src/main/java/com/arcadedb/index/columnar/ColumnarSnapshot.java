@@ -47,6 +47,14 @@ public interface ColumnarSnapshot extends AutoCloseable {
    */
   GlobalDictionary dictionary(String property);
 
+  /**
+   * True when the snapshot is usable and the manifest of its state publishes the property's column with the definition the projection
+   * had for it when the snapshot was acquired ({@code ColumnarReconciler.sameData}, the property name aside). False for a column added or
+   * retyped after the last publish (its {@code create} or {@code schema} rebuild window) and for a property the projection has no
+   * column of: a reader answers such a property from the records instead.
+   */
+  boolean publishes(String property);
+
   /** Releases the snapshot; calling it again does nothing. */
   @Override
   void close();
