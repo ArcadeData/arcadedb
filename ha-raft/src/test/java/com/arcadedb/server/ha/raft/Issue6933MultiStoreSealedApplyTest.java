@@ -75,7 +75,9 @@ class Issue6933MultiStoreSealedApplyTest {
 
     followerPath = serverDir.resolve("db-follower").toString();
     follower = (LocalDatabase) new DatabaseFactory(followerPath).create();
-    build(follower, LOCAL_ROWS, 1_000_000);
+    createType(follower);
+    follower = SealedOwnerFixtures.adoptOwnerOf(leader, follower, TYPE_NAME);
+    load(follower, LOCAL_ROWS, 1_000_000);
   }
 
   @AfterEach
@@ -185,8 +187,16 @@ class Issue6933MultiStoreSealedApplyTest {
   }
 
   private static void build(final LocalDatabase database, final int rows, final int from) throws IOException {
+    createType(database);
+    load(database, rows, from);
+  }
+
+  private static void createType(final LocalDatabase database) {
     database.command("sql", "CREATE TIMESERIES TYPE " + TYPE_NAME
         + " TIMESTAMP ts TAGS (hostname STRING) FIELDS (usage DOUBLE) SHARDS " + SHARDS);
+  }
+
+  private static void load(final LocalDatabase database, final int rows, final int from) throws IOException {
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME)).getEngine();
 
     final long[] timestamps = new long[rows];
