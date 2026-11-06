@@ -427,7 +427,8 @@ public class SourceDiscovery {
   static boolean isXmlFirstLine(final CharSequence firstLine) {
     final String line = firstLine.toString();
     final int end = endOfContent(line);
-    if (line.startsWith("<?xml"))
+    // A DECLARATION, NOT A PROCESSING INSTRUCTION WHOSE TARGET MERELY OPENS THE SAME WAY (<?xml-stylesheet)
+    if (line.startsWith("<?xml") && (line.length() == 5 || Character.isWhitespace(line.charAt(5)) || line.charAt(5) == '?'))
       return true;
 
     int depth = 0;

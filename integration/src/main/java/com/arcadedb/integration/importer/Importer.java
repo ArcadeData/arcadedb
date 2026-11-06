@@ -38,6 +38,8 @@ public class Importer extends AbstractImporter {
    * already make; concurrent {@code load()} calls on ONE instance would race on all five alike.
    */
   private String loadingUrl;
+  /** The sources of this import found empty so far. The same plain state as {@link #loadingUrl}, reset at the top of {@link #load()}. */
+  private int    emptySources;
 
   public Importer(final String[] args) {
     super(args);
@@ -96,6 +98,7 @@ public class Importer extends AbstractImporter {
   public Map<String, Object> load() {
     source = null;
     loadingUrl = null;
+    emptySources = 0;
 
     // BEFORE THE TRY: THIS IS A REFUSAL OF THE SETTINGS, NOT A FAILURE OF A SOURCE, AND NO DATABASE MAY BE CREATED FOR IT.
     // THE FOUR loadFromSource() CALLS BELOW EACH RETURN QUIETLY FOR A SOURCE THAT IS NOT SET, SO WITH NONE SET THE IMPORT
@@ -219,9 +222,9 @@ public class Importer extends AbstractImporter {
     try {
       sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema, logger);
     } catch (final EmptySourceException e) {
-      // ALONE IT IS AN IMPORT THAT CANNOT READ ANYTHING. BESIDE ANOTHER SOURCE IT IS SKIPPED: THE url OF IMPORT DATABASE WAS
-      // ONCE MANDATORY, SO SCRIPTS NAME AN EMPTY FILE THERE AND THE REAL ONES IN vertices AND edges (ISSUE #2267)
-      if (namedSources() == 1)
+      // WHEN EVERY SOURCE IS EMPTY THE IMPORT CANNOT READ ANYTHING. BESIDE ONE THAT IS NOT IT IS SKIPPED: THE url OF IMPORT DATABASE
+      // WAS ONCE MANDATORY, SO SCRIPTS NAME AN EMPTY FILE THERE AND THE REAL ONES IN vertices AND edges (ISSUE #2267)
+      if (++emptySources == namedSources())
         throw e;
       context.addWarning(e.getMessage());
       return;

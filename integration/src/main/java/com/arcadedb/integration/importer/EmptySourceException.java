@@ -20,7 +20,7 @@ package com.arcadedb.integration.importer;
 
 /**
  * A source of zero bytes, whatever its format. Its own type because {@link Importer} answers it by what else the import names:
- * alone it fails the import, beside another source it is skipped with a warning (issue #11311).
+ * beside a source that is not empty it is skipped with a warning, otherwise it fails the import (issue #11311).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

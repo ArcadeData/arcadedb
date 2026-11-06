@@ -278,6 +278,8 @@ class Issue11331ImportPostConditionTest {
     assertThat(SourceDiscovery.isXmlFirstLine("<!-- a > b --><a>x</a>")).as("a > in a comment").isTrue();
 
     assertThat(SourceDiscovery.isXmlFirstLine("<a>x</a>,<b>y</b>")).as("text after the root").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("<?xml-stylesheet?>,a,b")).as("an instruction, not a declaration").isFalse();
+    assertThat(SourceDiscovery.isXmlFirstLine("<?xmlfoo?>,a,b")).as("an instruction, not a declaration").isFalse();
     assertThat(SourceDiscovery.isXmlFirstLine("<a/><b/>")).as("two roots").isFalse();
     assertThat(SourceDiscovery.isXmlFirstLine("<a>,<b>,<c>")).as("nothing closes").isFalse();
     assertThat(SourceDiscovery.isXmlFirstLine("</a>x")).as("closes what never opened").isFalse();
@@ -317,6 +319,28 @@ class Issue11331ImportPostConditionTest {
     assertThat(result.<String>getProperty("result")).isEqualTo("OK");
     assertThat(result.<Long>getProperty("createdRecords")).isEqualTo(1L);
     assertThat(result.<List<String>>getProperty("warningMessages")).hasSize(1).first().asString().contains("empty.csv", "is empty");
+  }
+
+  @Test
+  void anImportWhoseEverySourceIsEmptyIsRefused() throws IOException {
+    final Path url = write("empty.csv", "");
+    final Path vertices = write("vertices.csv", "");
+
+    assertThatThrownBy(() -> database.command("sql",
+        "import database file://" + url + " with vertices = 'file://" + vertices + "', typeIdProperty = 'id'"))
+        .hasStackTraceContaining("is empty");
+  }
+
+  @Test
+  void anEmptySourceAfterARealOneIsSkippedToo() throws IOException {
+    final Path vertices = write("vertices.csv", "id,name\n1,Ann\n");
+    final Path edges = write("edges.csv", "");
+
+    final Result result = importDatabase(
+        "import database with vertices = 'file://" + vertices + "', typeIdProperty = 'id', edges = 'file://" + edges + "'");
+
+    assertThat(result.<Long>getProperty("createdRecords")).isEqualTo(1L);
+    assertThat(result.<List<String>>getProperty("warningMessages")).hasSize(1).first().asString().contains("edges.csv", "is empty");
   }
 
   // ROUTE 5: A SOURCE THAT IS NOT THE FORMAT IT CLAIMS
