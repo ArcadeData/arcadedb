@@ -917,6 +917,10 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   void requestClusterConfiguration() {
+    requestClusterConfiguration(true);
+  }
+
+  private void requestClusterConfiguration(final boolean fallbackToOriginalServer) {
     final JSONObject response;
     try {
       HttpRequest request = createRequestBuilder("GET", getUrl("server?mode=cluster"))
@@ -941,6 +945,9 @@ public class RemoteHttpComponent extends RWLockContext {
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
+      if (!fallbackToOriginalServer)
+        throw new RemoteException("Error on requesting cluster configuration", e);
+
       // Fall back to the original server when the cluster configuration is unavailable.
       // This allows the client to work against any reachable node without requiring
       // the full cluster topology (which may contain internal addresses unreachable from the client).
@@ -1000,6 +1007,9 @@ public class RemoteHttpComponent extends RWLockContext {
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
+      if (!fallbackToOriginalServer)
+        throw new RemoteException("Error on parsing cluster configuration", e);
+
       // Cluster configuration response was malformed or contained unresolvable addresses.
       // Fall back to direct connection.
       LogManager.instance()
@@ -1078,7 +1088,7 @@ public class RemoteHttpComponent extends RWLockContext {
       currentPort = connectToServer.getSecond();
 
       try {
-        requestClusterConfiguration();
+        requestClusterConfiguration(false);
       } catch (final Exception e) {
         // IGNORE: TRY NEXT
         continue;
@@ -1096,7 +1106,7 @@ public class RemoteHttpComponent extends RWLockContext {
       currentServer = oldLeader.getFirst();
       currentPort = oldLeader.getSecond();
       try {
-        requestClusterConfiguration();
+        requestClusterConfiguration(false);
       } catch (final Exception e) {
         // IGNORE
       }
