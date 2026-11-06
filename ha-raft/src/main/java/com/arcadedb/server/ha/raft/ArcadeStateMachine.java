@@ -3136,12 +3136,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // If a snapshot gap was detected during reinitialize(), trigger the download now
     // that we know who the leader is (primary path; the 30s watchdog is the fallback).
+    // A re-notification of the same leader in the same term, or in a term that cannot be read, is not news (issue #11294)
+    final boolean sameLeaderNotifiedAgain = newLeaderId.equals(prevId) && (currentTerm < 0 || currentTerm <= prevTerm);
+    final boolean followingANewLeader = !newLeaderId.equals(raftHA.getLocalPeerId()) && !sameLeaderNotifiedAgain;
+
     if (needsSnapshotDownload.compareAndSet(true, false)) {
       LogManager.instance().log(this, Level.INFO,
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
-    } else if (!newLeaderId.equals(raftHA.getLocalPeerId()) && !(newLeaderId.equals(prevId) && (currentTerm < 0
-        || currentTerm <= prevTerm))) {
+    } else if (followingANewLeader) {
       // Issue #11294: a targeted resync of a quarantined database, or the retry of a read floor, that was refused
       // because no leader was known (or the leader had no address yet) used to wait for the next HealthMonitor tick,
       // which is throttled to one attempt per snapshot-watchdog interval. A leader just became known, which is the one
