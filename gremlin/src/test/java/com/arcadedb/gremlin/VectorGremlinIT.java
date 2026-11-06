@@ -62,7 +62,7 @@ class VectorGremlinIT {
         Files.copy(in, importFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
       }
       db.command("sql", "import database file://" + importFile.getAbsolutePath() + " "//
-          + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
+          + "with distanceFunction = cosine, m = 16, beamWidth = 128, " //
           + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
       );
 

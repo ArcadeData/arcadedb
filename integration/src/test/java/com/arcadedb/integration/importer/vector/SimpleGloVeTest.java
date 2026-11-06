@@ -139,7 +139,7 @@ public class SimpleGloVeTest {
       }
 
       database.command("sql", "import database file://" + file.getAbsolutePath() + " "//
-          + "with distanceFunction = 'cosine', m = 16, ef = 128, efConstruction = 128, " //
+          + "with distanceFunction = 'cosine', m = 16, beamWidth = 128, " //
           + "vertexType = 'Word', vectorProperty = 'vector', vectorType = Float, idProperty = 'name'" //
       );
 
