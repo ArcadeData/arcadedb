@@ -46,7 +46,7 @@ import java.util.*;
  * <p>
  * Before running, download the dataset:
  * <pre>
- *   cd /path/to/humemai/arcadedb-embedded-python/bindings/python/examples
+ *   cd /path/to/arcadedb-python/examples
  *   python download_data.py msmarco-1m
  * </pre>
  * <p>

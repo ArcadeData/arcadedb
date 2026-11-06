@@ -132,7 +132,7 @@ ArcadeDB key capabilities:
 ArcadeDB can be used as:
 
 - Embedded from any language on top of the Java Virtual Machine
-- Embedded from Python via bindings: [arcadedb-python-bindings](https://github.com/ArcadeData/arcadedb-python-bindings)
+- Embedded from Python via bindings: [arcadedb-python](https://github.com/ArcadeData/arcadedb-python) ([documentation](https://docs.arcadedb.com/arcadedb-python/))
 - Remotely by using [HTTP/JSON](https://docs.arcadedb.com#http-json-api)
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#postgres-driver) (ArcadeDB implements Postgres Wire protocol)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are
