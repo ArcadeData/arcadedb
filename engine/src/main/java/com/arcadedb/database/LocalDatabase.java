@@ -78,6 +78,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.hash.HashIndexBucket;
 import com.arcadedb.index.lsm.LSMTreeIndexBloomFilter;
@@ -281,6 +282,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          FileManager                               fileManager;
   protected          LocalSchema                               schema;
   protected          TransactionManager                        transactionManager;
+  // Created in openInternal() before the schema loads, so the load can register the COLUMNAR indexes it finds
+  private            ColumnarIndexManager                      columnarIndexManager;
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
   // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
   // so nothing may ever wait for the async workers while holding it.
@@ -536,6 +539,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // IGNORE IT: THIS IS A CRASH SIMULATION
       }
     }
+
+    // no I/O and no wait: the columnar apply tick and maintenance stop scheduling, as a crash would stop them
+    columnarIndexManager.kill();
 
     try {
       schema.close();
@@ -1350,6 +1356,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public TransactionManager getTransactionManager() {
     return transactionManager;
+  }
+
+  /** The owner of this database's columnar projections, one per database. */
+  public ColumnarIndexManager getColumnarIndexManager() {
+    return columnarIndexManager;
   }
 
   /**
@@ -4129,6 +4140,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LogManager.instance().log(this, Level.WARNING, "Error on stopping the index warm-up of database '%s'", e, name);
     }
 
+    // The columnar projections are flushed while the database is still open, as the indexes below; a drop discards them
+    try {
+      if (drop)
+        columnarIndexManager.closeForDrop();
+      else
+        columnarIndexManager.close();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on closing the columnar indexes of database '%s'", e, name);
+    }
+
     for (final Index idx : schema.getIndexes()) {
       final IndexInternal index = (IndexInternal) idx;
 
@@ -4228,6 +4249,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         dataSafeOnDisk = false;
 
       final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
+
+      if (dataSafeOnDisk && !drop)
+        // every page, those of the no-WAL commits included, is on disk now: a projection that flushed them all is no older than them
+        columnarIndexManager.deleteNoWalMarkersAfterCleanClose();
 
       if (!drop)
         try {
@@ -4530,6 +4555,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
       fileManager.setDroppedFileHandler(file -> PageManager.INSTANCE.deferFileDrop(wrappedDatabaseInstance, file));
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
+      columnarIndexManager = new ColumnarIndexManager(this);
 
       open = true;
 
@@ -4582,6 +4608,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           }
           schema.openDeferredTimeSeriesEngines();
         }
+
+        // AFTER THE WHOLE RECOVERY BLOCK, NOT INSIDE IT: A CLEAN OPEN APPLIES TOO, AND A CRASHED ONE ONLY ONCE THE WAL REPLAY MARKED
+        // THE PAGES IT REWROTE
+        columnarIndexManager.startApplying();
 
         if (security != null)
           security.updateSchema(this);
@@ -4642,6 +4672,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                     the original and skip the steps after it, leaving database.lck locked.
    */
   private void releaseResourcesOnOpenFailure(final Error primaryError) {
+    try {
+      if (columnarIndexManager != null) {
+        // a failed open is no clean close: nothing is flushed, the projections opened by the schema load only release their files
+        columnarIndexManager.kill();
+        columnarIndexManager.close();
+      }
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing the columnar indexes after a failed open of database '%s'", name);
+    }
+
     try {
       if (lockFile != null) {
         if (lockFileLock != null) {

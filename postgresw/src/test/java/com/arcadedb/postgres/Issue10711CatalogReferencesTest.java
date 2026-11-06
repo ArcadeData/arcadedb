@@ -194,8 +194,8 @@ class Issue10711CatalogReferencesTest {
   @Test
   void pgAmIsTheSameRelationOnItsOwnAndInAJoin() {
     final PostgresCatalog.Answer alone = resolve("select oid, amname, amtype from pg_am order by oid");
-    assertThat(column(alone, "amname")).containsExactly("heap", "btree", "hash", "gist", "gin", "hnsw");
-    assertThat(column(alone, "amtype")).containsExactly("t", "i", "i", "i", "i", "i");
+    assertThat(column(alone, "amname")).containsExactly("heap", "btree", "hash", "gist", "gin", "brin", "hnsw");
+    assertThat(column(alone, "amtype")).containsExactly("t", "i", "i", "i", "i", "i", "i");
 
     // \dt joins it on relam, and the table's access method is the heap
     assertThat(column(resolve("select am.amname from pg_class c left join pg_am am on am.oid = c.relam where c.relname = 'Person'"),

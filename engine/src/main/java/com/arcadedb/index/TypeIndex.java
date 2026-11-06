@@ -937,11 +937,32 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         }
       }
 
-      return polymorphicIndexesOnKeys;
+      // The bucket lists are pruned by property names only, and a COLUMNAR index can sit on the same properties as this one
+      return ofThisFamily(polymorphicIndexesOnKeys);
     }
 
     // SEARCH ON ALL THE UNDERLYING INDEXES
     return indexesOnBuckets;
+  }
+
+  /**
+   * {@code indexes} without the sub-indexes of the other index family on the same properties: a COLUMNAR one for a key index and the
+   * other way round. The same list when there is none, which is the common case.
+   */
+  private List<IndexInternal> ofThisFamily(final List<IndexInternal> indexes) {
+    final IndexInternal first = firstOrNull();
+    if (first == null)
+      return indexes;
+    final boolean columnar = first.getType() == Schema.INDEX_TYPE.COLUMNAR;
+    for (int i = 0; i < indexes.size(); i++)
+      if ((indexes.get(i).getType() == Schema.INDEX_TYPE.COLUMNAR) != columnar) {
+        final List<IndexInternal> filtered = new ArrayList<>(indexes.size() - 1);
+        for (final IndexInternal index : indexes)
+          if ((index.getType() == Schema.INDEX_TYPE.COLUMNAR) == columnar)
+            filtered.add(index);
+        return filtered;
+      }
+    return indexes;
   }
 
   /**
@@ -1042,6 +1063,35 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
+   * Whether the index is online for what it is for, the state SHOW INDEXES and the catalogs report. For a plannable index that
+   * is {@link #isReadyForQueries()}; for a COLUMNAR one, which no planner reads, it is valid, not being dropped or populated,
+   * {@link #isComplete() complete} and every sub-index {@link IndexInternal#isUsable() usable}. Never throws.
+   */
+  public boolean isOnline() {
+    if (!valid || dropping)
+      return false;
+    try {
+      final IndexInternal first = firstOrNull();
+      if (first == null || first.getType() == null)
+        return false;
+      if (first.getType().isPlannable())
+        return isReadyForQueries();
+      // cached on the type's copy-on-write bucket list and the sub-index change counter (#11303)
+      if (!isComplete())
+        return false;
+      if (type instanceof LocalDocumentType local && local.isIndexUnderConstruction(first.getPropertyNames(), first.getType()))
+        return false;
+      for (final IndexInternal sub : getIndexesOnBuckets())
+        if (!sub.isUsable())
+          return false;
+      return true;
+    } catch (final IndexException e) {
+      LogManager.instance().log(this, Level.FINE, "Index '%s' is not online: %s", null, getName(), e.getMessage());
+      return false;
+    }
+  }
+
+  /**
    * True when a query can use this index: it was not dropped or rebuilt and its per-bucket sub-indexes exist. DDL runs
    * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
    * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
@@ -1050,20 +1100,22 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * An index still being populated by {@code TypeIndexBuilder} is not ready either (issue #9331), nor is one that lacks the
    * filled bucket index of a bucket it covers ({@link #isComplete()}, issue #11303): it misses every record of that bucket, so a
    * lookup through it would answer short with no error, and the planner reads the type instead. The answer is for the planners and
-   * lookups: writes, uniqueness checks and index maintenance do not consult it.
+   * lookups: writes, uniqueness checks and index maintenance do not consult it. Nor is an index of a type that is not
+   * {@link Schema.INDEX_TYPE#isPlannable() plannable}, whatever its state.
    */
   public boolean isReadyForQueries() {
     if (!valid || dropping)
       return false;
     try {
       final IndexInternal first = firstOrNull();
-      if (first == null || first.getType() == null)
+      // A type no planner or lookup may read (COLUMNAR answers facets only) is never ready for queries
+      if (first == null || first.getType() == null || !first.getType().isPlannable())
         return false;
       // cached on the type's copy-on-write bucket list and the sub-index change counter: a hit on the planner's hot path
       if (!isComplete())
         return false;
       // Complete: while TypeIndexBuilder populates it, the index holds the entries of the buckets built so far only (#9331)
-      return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames());
+      return !(type instanceof LocalDocumentType local) || !local.isIndexUnderConstruction(first.getPropertyNames(), first.getType());
     } catch (final IndexException e) {
       LogManager.instance().log(this, Level.FINE, "Index '%s' is not ready for queries: %s", null, getName(), e.getMessage());
       return false;

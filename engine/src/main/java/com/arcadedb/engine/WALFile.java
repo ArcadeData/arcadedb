@@ -76,6 +76,8 @@ public class WALFile extends LockContext {
   // to the next, never lost between a read and a separate clear
   private final    AtomicBoolean    syncMetaData      = new AtomicBoolean();
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
+  // Commits written here whose second columnar mark has not run yet: the file is not dropped meanwhile (see columnarMarksStarted)
+  private final    AtomicInteger    pendingColumnarMarks = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
   // #10234: WHEN THIS FILE WAS OPENED OR LAST WRITTEN, SO THE HOUSEKEEPING CAN RELEASE A FILE NOBODY WRITES ANY MORE
@@ -454,6 +456,27 @@ public class WALFile extends LockContext {
 
   public int getPendingPagesToFlush() {
     return pagesToFlush.get();
+  }
+
+  /**
+   * A commit written to this file that touches a projected bucket is between its two columnar marks (spec 6.2): the first one, before
+   * its pages are published, may be drained by an apply pass that still reads the previous page images, so until the second one ran
+   * the projection may miss the commit, and this file is its only record. {@code TransactionManager.cleanWALFiles} does not drop the
+   * file meanwhile. Called after the WAL write and before the pages are published: in between the file cannot be dropped anyway,
+   * since the commit's pages count in {@link #getPendingPagesToFlush()} until they are flushed, after their publication.
+   */
+  public void columnarMarksStarted() {
+    pendingColumnarMarks.incrementAndGet();
+  }
+
+  /** The second columnar mark of a commit of {@link #columnarMarksStarted()} ran, or the commit failed: called once, in a finally. */
+  public void columnarMarksEnded() {
+    pendingColumnarMarks.decrementAndGet();
+  }
+
+  /** Commits of {@link #columnarMarksStarted()} whose second mark has not run yet. */
+  public int getPendingColumnarMarks() {
+    return pendingColumnarMarks.get();
   }
 
   /**

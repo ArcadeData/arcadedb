@@ -21,8 +21,10 @@ package com.arcadedb.query.opencypher.query;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
@@ -41,6 +43,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.security.SecurityHelper;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -424,7 +427,7 @@ public final class CypherSchemaCommands {
       @SuppressWarnings("unchecked") final List<String> labels = (List<String>) o[3];
       final String owner = (String) o[4];
       final String name = (String) o[5];
-      final boolean ready = index.isReadyForQueries();
+      final boolean ready = index.isOnline();
       // one missing a bucket's sub-index is not being populated: it stays unusable until REBUILD INDEX (#11303)
       final String state = ready ? "ONLINE" : index.isComplete() ? "POPULATING" : "FAILED";
       final List<Object> row = new ArrayList<>(Arrays.asList(id++, name, state, ready ? 100.0 : 0.0,
@@ -477,6 +480,8 @@ public final class CypherSchemaCommands {
    */
   private static String indexCreateStatement(final TypeIndex index, final String name, final String neoType, final boolean edge,
       final List<String> labels, final Map<String, Object> indexConfig) {
+    if (index.getType() == Schema.INDEX_TYPE.COLUMNAR)
+      return columnarCreateStatement(index, labels.getFirst());
     final String variable = edge ? "r" : "n";
     final StringJoiner props = new StringJoiner(", ");
     for (final String property : index.getPropertyNames())
@@ -497,6 +502,23 @@ public final class CypherSchemaCommands {
     return head + " ON (" + props + ")";
   }
 
+  /** Cypher has no COLUMNAR index: its statement is the SQL one, which is the only one that creates it. */
+  private static String columnarCreateStatement(final TypeIndex index, final String label) {
+    final StringJoiner props = new StringJoiner(", ");
+    for (final String property : index.getPropertyNames())
+      props.add(property.endsWith(ColumnarIndex.BY_ITEM_SUFFIX) ?
+          "`" + Index.basePropertyName(property) + "` BY ITEM" :
+          "`" + property + "`");
+    final StringBuilder statement = new StringBuilder("CREATE INDEX `").append(index.getName()).append("` ON `").append(label)
+        .append("` (").append(props).append(") COLUMNAR");
+    final JSONObject settings = new JSONObject();
+    if (index.getIndexesOnBuckets().length > 0 && index.getIndexesOnBuckets()[0] instanceof ColumnarIndex columnar)
+      columnar.getColumnarMetadata().toJSON(settings);
+    if (!settings.isEmpty())
+      statement.append(" METADATA ").append(settings);
+    return statement.toString();
+  }
+
   private static String indexType(final Schema.INDEX_TYPE type) {
     if (type == null)
       return "RANGE";
@@ -507,6 +529,7 @@ public final class CypherSchemaCommands {
       case LSM_VECTOR -> "VECTOR";
       case LSM_SPARSE_VECTOR -> "SPARSE_VECTOR";
       case GEOSPATIAL -> "POINT";
+      case COLUMNAR -> "COLUMNAR";
     };
   }
 
@@ -520,6 +543,7 @@ public final class CypherSchemaCommands {
       case LSM_VECTOR -> "vector-2.0";
       case LSM_SPARSE_VECTOR -> "sparse-vector-1.0";
       case GEOSPATIAL -> "point-1.0";
+      case COLUMNAR -> "columnar-1.0";
     };
   }
 
