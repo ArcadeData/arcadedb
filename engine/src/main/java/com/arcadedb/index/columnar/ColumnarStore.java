@@ -48,15 +48,20 @@ import java.util.logging.Level;
  *     seg-*.acs, seg-*.dead.*, dict-*.dic, owner maps
  * </pre>
  * Publish order: segment, dead set, dictionary and owner map files are written and fsynced first; then the bucket directory is
- * fsynced, because POSIX does not order a file creation before a later rename without it; then the manifest is written through
+ * fsynced, because POSIX does not order a file creation before a later rename without it; then the WAL of the database is forced, so the
+ * new state is never more durable than the commits it holds (final review B-I4); then the manifest is written through
  * {@link #writeAtomically}; only then are unreferenced files deleted ({@link #deleteUnreferenced}).
  */
 public final class ColumnarStore {
   public static final String ROOT_DIR       = "columnar";
   public static final String REBUILD_MARKER = "REBUILD";
   public static final String NOWAL_MARKER   = "NOWAL";
+  /** Marker of a page-version check that has not ended (final review B-I6, round 2 NI3): the next open checks again. */
+  static final        String CHECK_MARKER   = "CHECK";
   /** Suffix of the temporary file {@link #writeAtomically} writes next to its target. */
   static final        String TMP_SUFFIX     = ".tmp";
+  /** {@code b<id>.dropped.<n>}: the directory of a dropped projection still read by a snapshot (round 2 NI2), swept at open. */
+  static final        String TOMBSTONE_INFIX = ".dropped.";
 
   private static final String SNAPSHOT_INSTALL = "snapshot_install";
 
@@ -110,7 +115,11 @@ public final class ColumnarStore {
    * previous file in place.
    */
   static void writeTmp(final Path target, final byte[] content, final String tmpWrittenPoint) throws IOException {
-    final Path tmp = target.resolveSibling(target.getFileName() + TMP_SUFFIX);
+    writeTmpFile(target.resolveSibling(target.getFileName() + TMP_SUFFIX), content, tmpWrittenPoint);
+  }
+
+  /** {@link #writeTmp} into the given tmp file, for a writer whose tmp name is its own (see {@link ColumnarManifest#writeTmp}). */
+  static void writeTmpFile(final Path tmp, final byte[] content, final String tmpWrittenPoint) throws IOException {
     try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
         StandardOpenOption.WRITE)) {
       FileUtils.writeFully(channel, ByteBuffer.wrap(content), 0);
@@ -122,7 +131,12 @@ public final class ColumnarStore {
 
   /** Second half of {@link #writeAtomically}: the atomic rename of the tmp file {@link #writeTmp} wrote, then the directory fsync. */
   static void renameTmp(final Path target, final String renamedPoint) throws IOException {
-    FileUtils.publishAtomically(target.resolveSibling(target.getFileName() + TMP_SUFFIX), target, false);
+    renameTmpFile(target.resolveSibling(target.getFileName() + TMP_SUFFIX), target, renamedPoint);
+  }
+
+  /** {@link #renameTmp} of the given tmp file, the one {@link #writeTmpFile} wrote. */
+  static void renameTmpFile(final Path tmp, final Path target, final String renamedPoint) throws IOException {
+    FileUtils.publishAtomically(tmp, target, false);
     if (renamedPoint != null)
       ColumnarTestHooks.reach(renamedPoint);
     fsyncDirectory(target.getParent());
@@ -137,8 +151,7 @@ public final class ColumnarStore {
    */
   public static void prepareForSnapshotInstall(final Path databasePath) throws IOException {
     final Path root = databasePath.resolve(ROOT_DIR);
-    FileUtils.createDirectoriesDurably(root);
-    writeAtomically(root.resolve(REBUILD_MARKER), SNAPSHOT_INSTALL.getBytes(StandardCharsets.UTF_8));
+    writeRebuildReason(databasePath, SNAPSHOT_INSTALL);
     try (final DirectoryStream<Path> entries = Files.newDirectoryStream(root)) {
       for (final Path entry : entries) {
         if (entry.getFileName().toString().equals(REBUILD_MARKER))
@@ -163,6 +176,13 @@ public final class ColumnarStore {
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  /** Writes {@code columnar/REBUILD} with the reason: every projection of the database rebuilds at the next open until it is cleared. */
+  static void writeRebuildReason(final Path databasePath, final String reason) throws IOException {
+    final Path root = databasePath.resolve(ROOT_DIR);
+    FileUtils.createDirectoriesDurably(root);
+    writeAtomically(root.resolve(REBUILD_MARKER), reason.getBytes(StandardCharsets.UTF_8));
   }
 
   public static void clearRebuildReason(final Path databasePath) throws IOException {
@@ -220,7 +240,26 @@ public final class ColumnarStore {
     return deleted;
   }
 
+  /**
+   * Deletes every regular {@code *.tmp} file of the bucket directory: the tmp files of {@link #writeAtomically} and of the per-generation
+   * manifest that a crash left between their write and their rename. Only while nothing writes in the directory (a writable open, before
+   * the projection is routed); a file that cannot be deleted is logged and left in place.
+   */
+  static void deleteTmpFiles(final Path bucketDir) throws IOException {
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(bucketDir, "*" + TMP_SUFFIX)) {
+      for (final Path entry : entries)
+        if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS))
+          try {
+            Files.deleteIfExists(entry);
+          } catch (final IOException e) {
+            LogManager.instance().log(ColumnarStore.class, Level.WARNING, "Cannot delete the columnar tmp file '%s'", e, entry);
+          }
+    } catch (final NoSuchFileException e) {
+      // no directory yet
+    }
+  }
+
   private static boolean isNeverDeleted(final String name) {
-    return name.equals(ColumnarManifest.FILE_NAME) || name.equals(NOWAL_MARKER) || name.endsWith(TMP_SUFFIX);
+    return name.equals(ColumnarManifest.FILE_NAME) || name.equals(NOWAL_MARKER) || name.equals(CHECK_MARKER) || name.endsWith(TMP_SUFFIX);
   }
 }
