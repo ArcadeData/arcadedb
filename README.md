@@ -24,6 +24,10 @@
   <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml">
     <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg">
   </a>
+  &nbsp;
+  <a href="https://github.com/ArcadeData/arcadedb-jepsen/actions/workflows/jepsen.yml">
+    <img src="https://github.com/ArcadeData/arcadedb-jepsen/actions/workflows/jepsen.yml/badge.svg" alt="Jepsen">
+  </a>
 
   <a href="https://codecov.io/github/ArcadeData/arcadedb">
    <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>
