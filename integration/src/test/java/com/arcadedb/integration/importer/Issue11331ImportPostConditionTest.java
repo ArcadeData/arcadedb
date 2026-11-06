@@ -272,6 +272,10 @@ class Issue11331ImportPostConditionTest {
     assertThat(SourceDiscovery.isXmlFirstLine("<a><b>x</b><b>y</b>")).as("a document that goes on past the line").isTrue();
     assertThat(SourceDiscovery.isXmlFirstLine("<a v=\"1>2\"><b/>x, y</a>")).as("a > inside an attribute value").isTrue();
     assertThat(SourceDiscovery.isXmlFirstLine("<?xml version=\"1.0\"?><a>x, y")).isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<!-- don't --><a>x, y</a>")).as("an apostrophe in a comment").isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<?pi it's?><a>x, y</a>")).as("an apostrophe in an instruction").isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<a><![CDATA[it's > x]]></a>")).as("free text in a CDATA section").isTrue();
+    assertThat(SourceDiscovery.isXmlFirstLine("<!-- a > b --><a>x</a>")).as("a > in a comment").isTrue();
 
     assertThat(SourceDiscovery.isXmlFirstLine("<a>x</a>,<b>y</b>")).as("text after the root").isFalse();
     assertThat(SourceDiscovery.isXmlFirstLine("<a/><b/>")).as("two roots").isFalse();

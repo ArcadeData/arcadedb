@@ -424,9 +424,10 @@ public class SourceDiscovery {
    * the root, which no XML document does (issue #11311). Tag names are not paired up, so a document this lets through and that
    * turns out to be malformed is refused by the XML load rather than misread as text.
    */
-  static boolean isXmlFirstLine(final CharSequence line) {
+  static boolean isXmlFirstLine(final CharSequence firstLine) {
+    final String line = firstLine.toString();
     final int end = endOfContent(line);
-    if (end >= 5 && "<?xml".contentEquals(line.subSequence(0, 5)))
+    if (line.startsWith("<?xml"))
       return true;
 
     int depth = 0;
@@ -467,8 +468,19 @@ public class SourceDiscovery {
     return closed;
   }
 
-  /** The index just past the tag opening at {@code from}, or {@code -1}. A {@code >} inside an attribute value does not end it. */
-  private static int endOfTag(final CharSequence line, final int from, final int end) {
+  /**
+   * The index just past the markup opening at {@code from}, or {@code -1}. A comment, a processing instruction and a CDATA section
+   * hold free text and run to their own terminator, so an apostrophe in one opens nothing. Anywhere else a {@code >} inside a quoted
+   * value does not end the tag.
+   */
+  private static int endOfTag(final String line, final int from, final int end) {
+    final String terminator = line.startsWith("<!--", from) ? "-->" :
+        line.startsWith("<![CDATA[", from) ? "]]>" : line.startsWith("<?", from) ? "?>" : null;
+    if (terminator != null) {
+      final int found = line.indexOf(terminator, from + 2);
+      return found >= 0 && found + terminator.length() <= end ? found + terminator.length() : -1;
+    }
+
     char quote = 0;
     for (int i = from + 1; i < end; ++i) {
       final char c = line.charAt(i);
