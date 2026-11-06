@@ -71,7 +71,7 @@ class Issue11269DefaultDatabaseCredentialEncodingTest extends StaticBaseServerTe
           if (server.getSecurity().existsUser(USER))
             server.getSecurity().dropUser(USER);
           if (server.existsDatabase(DATABASE))
-            server.getDatabase(DATABASE).getEmbedded().drop();
+            server.getDatabaseForOperator(DATABASE).getEmbedded().drop();
           server.stop();
         }
         server = null;
