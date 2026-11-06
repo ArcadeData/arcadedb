@@ -19,6 +19,7 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
@@ -29,12 +30,24 @@ public final class QueryBatch {
   private final int          totalInBatch;
   private final long         runningTotal;
   private final boolean      lastBatch;
+  private final FacetResults facets;
 
   public QueryBatch(List<Result> results, int totalInBatch, long runningTotal, boolean lastBatch) {
+    this(results, totalInBatch, runningTotal, lastBatch, null);
+  }
+
+  public QueryBatch(final List<Result> results, final int totalInBatch, final long runningTotal, final boolean lastBatch,
+      final FacetResults facets) {
     this.results = results;
     this.totalInBatch = totalInBatch;
     this.runningTotal = runningTotal;
     this.lastBatch = lastBatch;
+    this.facets = facets;
+  }
+
+  /** The facets of a FACETS query: non-null only on the terminal batch of such a query, which may hold no results. */
+  public FacetResults facets() {
+    return facets;
   }
 
   public List<Result> results() {

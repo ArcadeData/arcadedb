@@ -49,9 +49,11 @@ public interface IndexedMatchSource {
    */
   interface Rids {
     /**
-     * Hands every RID of the answer to {@code action} until it returns false: exactly the records its iterator would return, so a RID
-     * whose record is gone (an index entry the caller's transaction deleted the record of) is left out.
+     * Hands every RID of the answer whose bucket {@code bucketFilter} accepts to {@code action} until it returns false: exactly the
+     * records its iterator would return, so a RID whose record is gone (an index entry the caller's transaction deleted the record of)
+     * is left out. A RID of a bucket the filter refuses is skipped before anything else is asked of it: telling whether its record
+     * exists needs read access to the bucket.
      */
-    void forEachRid(Predicate<RID> action);
+    void forEachRid(IntPredicate bucketFilter, Predicate<RID> action);
   }
 }

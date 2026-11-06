@@ -27,6 +27,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
@@ -338,6 +339,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /** The facet FILTERs form an int bit mask per row. */
   private static final int    MAX_FACET_FILTERS    = 31;
 
+  /** The message of a FACETS clause written after SKIP or LIMIT; the HTTP auto-limit recognizes it so it does not append a second LIMIT. */
+  public static final String FACETS_AFTER_LIMIT_MESSAGE = "FACETS must come before SKIP and LIMIT";
+
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
 
@@ -554,7 +558,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // FACETS clause: before SKIP and LIMIT, and only on the outermost SELECT
     if (ctx.lateFacets != null)
-      throw new CommandSQLParsingException("FACETS must come before SKIP and LIMIT");
+      throw new CommandSQLParsingException(FACETS_AFTER_LIMIT_MESSAGE);
     if (ctx.facets != null) {
       requireOutermost(ctx);
       stmt.facets = visitFacetsClause(ctx.facets);
@@ -682,8 +686,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       checkFacetOptionOnce(item, item.include, "INCLUDE");
       final List<SQLParser.ExpressionContext> values = option.arrayLiteral().expression();
       item.include = new ArrayList<>(values.size());
-      for (final SQLParser.ExpressionContext value : values)
-        item.include.add((Expression) visit(value));
+      for (final SQLParser.ExpressionContext value : values) {
+        final Expression include = (Expression) visit(value);
+        // evaluated when the facets are planned (EXPLAIN included) and again per execution: a value, never a statement that runs
+        if (!SqlAstInspector.allNodesMatch(include,
+            node -> !(node instanceof Statement || node instanceof StatementExpression || node instanceof SubqueryExpression)))
+          throw new CommandSQLParsingException(
+              "FACETS INCLUDE accepts literals, input parameters and expressions without a nested statement or subquery, found: "
+                  + value.getText());
+        item.include.add(include);
+      }
     } else if (option.MISSING() != null) {
       checkFacetOptionOnce(item, item.missing ? Boolean.TRUE : null, "MISSING");
       item.missing = true;

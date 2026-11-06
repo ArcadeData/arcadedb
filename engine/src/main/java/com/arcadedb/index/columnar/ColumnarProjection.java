@@ -589,8 +589,11 @@ public final class ColumnarProjection {
       final long oldest = oldestPendingEpochStartMs();
       ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
       final ProjectionState current = retainState();
-      if (sequence == rebuildSequence)
-        return new Snapshot(bucketId, current, pending, oldest, current.publishedProperties(columns));
+      if (sequence == rebuildSequence) {
+        // read once: the published properties and the definitions they are answered with are of the same array
+        final ColumnDefinition[] own = columns;
+        return new Snapshot(bucketId, current, pending, oldest, own, current.publishedProperties(own));
+      }
       current.release();
     }
   }
@@ -2017,15 +2020,18 @@ public final class ColumnarProjection {
     private final PositionBitmap            pending;
     private final long                      oldestPendingEpochStartMs;
     private final List<ColumnarSegmentView> views;
+    /** The projection's column definitions at acquire: replaced copy-on-write by the projection, never written. */
+    private final ColumnDefinition[]        columns;
     private final String[]                  publishedProperties;
     private volatile int                    closed;
 
     private Snapshot(final int bucketId, final ProjectionState state, final PositionBitmap pending, final long oldestPendingEpochStartMs,
-        final String[] publishedProperties) {
+        final ColumnDefinition[] columns, final String[] publishedProperties) {
       this.bucketId = bucketId;
       this.state = state;
       this.pending = pending;
       this.oldestPendingEpochStartMs = oldestPendingEpochStartMs;
+      this.columns = columns;
       this.publishedProperties = publishedProperties;
       final SegmentReader[] segments = state.segments();
       final ColumnarSegmentView[] overlays = state.overlays();
@@ -2070,6 +2076,16 @@ public final class ColumnarProjection {
         if (published.equals(property))
           return true;
       return false;
+    }
+
+    @Override
+    public ColumnDefinition publishedColumn(final String property) {
+      if (!publishes(property))
+        return null;
+      for (final ColumnDefinition column : columns)
+        if (column.property().equals(property))
+          return column;
+      return null;
     }
 
     @Override
