@@ -558,7 +558,13 @@ public interface Schema {
   void setExtension(String name, JSONObject value);
 
   enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, LSM_VECTOR, LSM_SPARSE_VECTOR, GEOSPATIAL, HASH;
+    LSM_TREE, FULL_TEXT, LSM_VECTOR, LSM_SPARSE_VECTOR, GEOSPATIAL, HASH,
+    /**
+     * A node-local columnar projection of one property for faceting, maintained asynchronously after commit by the database's
+     * {@code ColumnarIndexManager} rather than by the transaction: see {@link #isMaintainedInTransaction()} and
+     * {@link #isPlannable()}.
+     */
+    COLUMNAR;
 
     /**
      * Whether a build of this index type may run INSIDE a transaction opened by whoever is writing, which is what
@@ -572,10 +578,29 @@ public interface Schema {
      * over a large bucket that is one heavy entry per record held in memory, which is why a build shares the caller's
      * transaction only when that transaction has written to the buckets the build scans (issue #10450, see
      * {@code IndexBuilder#buildSharesCallerTransaction}): a caller that wrote only elsewhere gets the chunked build of a
-     * transaction of its own. Kept as a predicate so a future family that cannot share has one place to say so.
+     * transaction of its own.
+     * <p>
+     * False for COLUMNAR: its build stages nothing on any transaction (the projection is filled after commit), so there is nothing
+     * a caller's transaction could carry.
      */
     public boolean buildCanShareCallerTransaction() {
-      return true;
+      return this != COLUMNAR;
+    }
+
+    /**
+     * Whether a write stages entries for an index of this type in the writing transaction ({@code DocumentIndexer},
+     * {@code GraphBatch}). False for COLUMNAR, whose projection re-reads the pages a commit touched, after the commit.
+     */
+    public boolean isMaintainedInTransaction() {
+      return this != COLUMNAR;
+    }
+
+    /**
+     * Whether a query planner or a key lookup may read an index of this type. False for COLUMNAR, which answers facets only:
+     * {@link TypeIndex#isReadyForQueries()} is false for it.
+     */
+    public boolean isPlannable() {
+      return this != COLUMNAR;
     }
 
     /**

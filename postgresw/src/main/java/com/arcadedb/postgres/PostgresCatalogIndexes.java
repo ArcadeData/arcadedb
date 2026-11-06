@@ -100,11 +100,13 @@ final class PostgresCatalogIndexes {
   static final AccessMethod HASH  = new AccessMethod(405, "hash", "hashhandler");
   static final AccessMethod GIST  = new AccessMethod(783, "gist", "gisthandler");
   static final AccessMethod GIN   = new AccessMethod(2742, "gin", "ginhandler");
+  /** A COLUMNAR index summarizes a column for facets and answers no lookup, the closest of the built-in methods. */
+  static final AccessMethod BRIN  = new AccessMethod(3580, "brin", "brinhandler");
   /** PostgreSQL has no built-in vector index: the extensions that add one give it an OID of their own, so this one is ours. */
   static final AccessMethod HNSW  = new AccessMethod(9001, "hnsw", "hnswhandler");
 
   /** The index access methods this catalog uses, in the order of their OIDs. */
-  static final List<AccessMethod> ACCESS_METHODS = List.of(BTREE, HASH, GIST, GIN, HNSW);
+  static final List<AccessMethod> ACCESS_METHODS = List.of(BTREE, HASH, GIST, GIN, BRIN, HNSW);
 
   /**
    * One index of a type, with the OIDs the catalog gives it.
@@ -212,7 +214,7 @@ final class PostgresCatalogIndexes {
       // an index being dropped or built by a concurrent statement answers none of these
       name = index.getName();
       unique = index.isUniqueIfPresent();
-      ready = index.isReadyForQueries();
+      ready = index.isOnline();
       method = accessMethodOf(index.getType());
       properties = index.getPropertyNames();
     } catch (final RuntimeException e) {
@@ -287,6 +289,7 @@ final class PostgresCatalogIndexes {
       case FULL_TEXT -> GIN;
       case GEOSPATIAL -> GIST;
       case LSM_VECTOR, LSM_SPARSE_VECTOR -> HNSW;
+      case COLUMNAR -> BRIN;
     };
   }
 

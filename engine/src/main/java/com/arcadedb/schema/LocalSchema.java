@@ -67,6 +67,8 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
+import com.arcadedb.index.columnar.ColumnarIndexFactoryHandler;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.index.hash.HashIndex;
@@ -589,6 +591,7 @@ public class LocalSchema implements Schema {
     indexFactory.register(INDEX_TYPE.LSM_SPARSE_VECTOR.name(), new LSMSparseVectorIndex.LSMSparseVectorIndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.GEOSPATIAL.name(), new LSMTreeGeoIndex.GeoIndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.HASH.name(), new HashIndex.HashIndexFactoryHandler());
+    indexFactory.register(INDEX_TYPE.COLUMNAR.name(), new ColumnarIndexFactoryHandler());
     configurationFile = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
   }
 
@@ -1151,6 +1154,15 @@ public class LocalSchema implements Schema {
     stagedBucketId2InvolvedTypeMap = null;
     supersededTypes = null;
     stagingThread.set(null);
+
+    // Only now can the columnar projections of the indexes this load registered be opened: they look their bucket and type up, which
+    // answered the previous generation until the publication. Never fails the load: the generation is published already
+    if (database.getEmbedded() instanceof LocalDatabase local && local.getColumnarIndexManager() != null)
+      try {
+        local.getColumnarIndexManager().schemaLoadEnded(committed);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Cannot open the columnar projections of the loaded schema", e);
+      }
   }
 
   /**
@@ -4733,6 +4745,15 @@ public class LocalSchema implements Schema {
                     // Same reason as the full-text branch above (issue #5742).
                     sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
                     index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
+                    publishIndexDuringLoad(registeredName, index);
+                  } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.COLUMNAR.toString())) {
+                    final ColumnarIndexMetadata columnarMeta = new ColumnarIndexMetadata(typeName, properties, -1);
+                    columnarMeta.fromJSON(indexJSON);
+                    // Same reason as the full-text branch above (issue #5742).
+                    columnarMeta.inheritCommonSettingsFrom(index.getMetadata());
+                    final ColumnarIndex columnarIndex = new ColumnarIndex((LSMTreeIndex) index, columnarMeta);
+                    ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().register(columnarIndex);
+                    index = columnarIndex;
                     publishIndexDuringLoad(registeredName, index);
                   } else {
                     orphanIndexes.put(indexName, indexJSON);
