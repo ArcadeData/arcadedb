@@ -19,9 +19,11 @@
 package com.arcadedb.index.columnar;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.block.BlockCorruptionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -31,10 +33,12 @@ import com.arcadedb.utility.IntHashSet;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -51,7 +55,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.IntUnaryOperator;
 import java.util.logging.Level;
 
 /**
@@ -88,10 +94,18 @@ public final class ColumnarProjection {
   static final long   LOOKUP_FROZEN   = -3;
   static final String MISSING         = "missing";
   static final String CORRUPT         = "corrupt";
+  /** The unusable reason while the page-version check of an unclean open runs (final review B-I6, round 2 NI3); not a rebuild. */
+  static final String UNCLEAN_CHECK   = "unclean_check";
+  /** Reached by the page-version check before each page it reads. */
+  static final String PAGE_CHECK_PAGE = "projection.pageCheckPage";
   /** Reached by {@link #acquire()} between the read of the pending positions and the read of the state. */
   static final String ACQUIRE_BETWEEN = "acquire.pendingRead";
   /** Reached by {@link #open} before it reads the files of the bucket directory. */
   static final String LOAD_FILES      = "projection.loadFiles";
+  /** Test seam: makes the tombstone rename of {@link #drop()} fail, as Windows does for a directory with open handles. */
+  static volatile boolean failTombstoneRenameForTesting;
+  /** Reached by {@link #rebuildPublished} once the rebuilt state is current, holding the apply and publish locks. */
+  static final String REBUILD_SWAPPED = "rebuild.stateSwapped";
 
   private static final SegmentReader[] NO_SEGMENTS       = new SegmentReader[0];
   private static final String          SEGMENT_PREFIX    = "seg-";
@@ -99,8 +113,9 @@ public final class ColumnarProjection {
   private static final String          DICTIONARY_SUFFIX = ".dic";
 
   private final int              bucketId;
-  private final String           bucketName;
-  private final String           typeName;
+  /** The bucket's and its type's names, replaced by a {@link #rename} (the directory is keyed by the file id, R9). */
+  private volatile String        bucketName;
+  private volatile String        typeName;
   private final Path             bucketDir;
   private final boolean          readOnly;
   private final int              maxRecordsInPage;
@@ -109,6 +124,8 @@ public final class ColumnarProjection {
   private final DirtyPageTracker externalTracker;
   private final int              externalFileId;
   private final int              segmentBlockRows;
+  /** The WAL of the database, forced before every manifest publish (final review B-I4). */
+  private final TransactionManager transactionManager;
 
   private final ReentrantReadWriteLock ownersLock         = new ReentrantReadWriteLock();
   private final ReentrantReadWriteLock externalOwnersLock;
@@ -126,6 +143,8 @@ public final class ColumnarProjection {
   private volatile String                        unusableReason;
   private volatile Consumer<String>              rebuildRequester = reason -> {
   };
+  /** {@link ColumnarRebuilder}'s coalescing state of this projection (R17): null while no rebuild is queued or running. */
+  final AtomicReference<ColumnarRebuilder.Request> rebuildRequest = new AtomicReference<>();
 
   /**
    * No-WAL marker protocol (R8, V-B3), state for Task 13: {@code markPagesWithoutWAL} marks the pages, {@link #bumpNoWalEpoch()}s,
@@ -156,11 +175,19 @@ public final class ColumnarProjection {
   private final ColumnarApplier.UnreadablePages unreadablePages = new ColumnarApplier.UnreadablePages();
   private       ColumnarApplier.Pass            applyScratch;
 
+  /**
+   * Moved by each rebuild publish, written under publishLock between the re-mark of the pages applied during its scan and the swap of its
+   * state, read lock free by {@link #acquire()} (final review A-I1).
+   */
+  private volatile long                  rebuildSequence;
   // guarded by publishLock
   /** Pages the apply pass completed since the last freeze (R14, V-B2): a flush keeps them unflushed. */
   private final IntHashSet               appliedSinceFreeze  = new IntHashSet();
   /** {@link #appliedSinceFreeze} of the external tracker's pages (R7), null when the bucket has no external bucket. */
   private final IntHashSet               externalAppliedSinceFreeze;
+  /** Pages the apply pass completed while a rebuild scans, marked dirty again by its publish; null while no rebuild scans. */
+  private IntHashSet                     appliedDuringRebuild;
+  private IntHashSet                     externalAppliedDuringRebuild;
   private final Set<ProjectionState>     retained            = new HashSet<>();
   private final Set<SegmentReader>       openReaders         = Collections.newSetFromMap(new IdentityHashMap<>());
   private final Map<String, SegmentFile> segmentFiles        = new HashMap<>();
@@ -169,18 +196,24 @@ public final class ColumnarProjection {
   private final Map<Integer, Integer>    nextGeneration      = new HashMap<>();
   private int                            nextSegmentId;
   private int                            reportedSegments;
+  private int                            reportedOpenFiles;
   private boolean                        ownReferenceDropped;
-  private boolean                        directoryDeleted;
+  private volatile boolean               directoryDeleted;
+  /** Where the files are: {@link #bucketDir}, or the tombstone a drop renamed it to (round 2 NI2). Under publishLock. */
+  private Path                           directory;
   private volatile boolean               closed;
   private volatile boolean               dropped;
   private volatile boolean               stopped;
 
   private ColumnarProjection(final Path databasePath, final LocalBucket bucket, final String typeName, final ColumnDefinition[] columns,
-      final ColumnarStats stats, final boolean readOnly, final LocalBucket external, final int segmentBlockRows) {
+      final ColumnarStats stats, final boolean readOnly, final LocalBucket external, final int segmentBlockRows,
+      final TransactionManager transactionManager) {
     this.bucketId = bucket.getFileId();
+    this.transactionManager = transactionManager;
     this.bucketName = bucket.getName();
     this.typeName = typeName;
     this.bucketDir = ColumnarStore.bucketDir(databasePath, bucketId);
+    this.directory = bucketDir;
     this.readOnly = readOnly;
     this.maxRecordsInPage = bucket.getMaxRecordsInPage();
     this.segmentBlockRows = segmentBlockRows;
@@ -210,7 +243,7 @@ public final class ColumnarProjection {
    * projection serves an unusable empty state. Without a manifest, a bucket with records records {@code missing}; an empty bucket is
    * usable at once (V-B1), published as an empty generation-1 manifest with one empty dictionary per ordinal column on a writable
    * database, kept in memory only on a READ_ONLY one. A writable open deletes the files the loaded manifest does not name (crash
-   * orphans, V-M11).
+   * orphans, V-M11) and every {@code *.tmp} file a crash left in the directory.
    */
   static ColumnarProjection open(final DatabaseInternal db, final LocalBucket bucket, final ColumnDefinition[] columns,
       final ColumnarStats stats) {
@@ -219,7 +252,7 @@ public final class ColumnarProjection {
     final LocalBucket external = externalId == null ? null : (LocalBucket) db.getSchema().getBucketById(externalId);
     final ColumnarProjection projection = new ColumnarProjection(Path.of(db.getDatabasePath()), bucket,
         type == null ? bucket.getName() : type.getName(), columns, stats, db.getMode() == ComponentFile.MODE.READ_ONLY, external,
-        db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS));
+        db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_SEGMENT_BLOCK_ROWS), db.getTransactionManager());
     projection.load(db, bucket);
     return projection;
   }
@@ -235,6 +268,10 @@ public final class ColumnarProjection {
         ColumnarTestHooks.reach(LOAD_FILES);
         // first, on its own: a manifest that fails to load must still leave the reservations above every existing file
         seedFromDirectory();
+        if (!readOnly)
+          // a tmp file a crash left between its write and its rename (a per-generation manifest tmp, a marker's): nothing writes in the
+          // directory before the projection is routed, so none is in use (batch 1 N3)
+          ColumnarStore.deleteTmpFiles(bucketDir);
         found = ColumnarManifest.load(bucketDir);
         if (found != null) {
           seedFromManifest(found);
@@ -354,6 +391,12 @@ public final class ColumnarProjection {
       if (reader.segmentId() != entry.segmentId() || reader.rowCount() != entry.rows())
         throw new BlockCorruptionException("Segment " + entry.file() + " holds segment " + reader.segmentId() + " with " + reader.rowCount()
             + " rows, the manifest says " + entry.segmentId() + " with " + entry.rows());
+      // a RENAME the files do not record yet: the segment answers under the schema's names
+      final SegmentReader named = reader.withColumnNames(columns);
+      if (named != reader) {
+        readers.set(readers.size() - 1, named);
+        reader.close();
+      }
     }
 
     if (found.ownerMapFile() != null)
@@ -362,8 +405,69 @@ public final class ColumnarProjection {
       externalOwners = ContentOwnerMap.readFrom(bucketDir.resolve(found.externalOwnerMapFile()));
   }
 
-  private static boolean isEmpty(final LocalBucket bucket) {
-    return bucket.getCommittedPageCount() == 0 || bucket.count() == 0;
+  /**
+   * Whether the bucket has no record, decided from its pages (final review B-M2): the cached record counter can drift (#8640), and a
+   * drifted 0 would publish an empty, usable projection of a bucket with records. A count above 0 is trusted (a drifted one only costs a
+   * rebuild); otherwise the committed pages are read up to the first record.
+   */
+  static boolean isEmpty(final LocalBucket bucket) {
+    final int pages = bucket.getCommittedPageCount();
+    if (pages == 0)
+      return true;
+    if (bucket.count() > 0)
+      return false;
+    final boolean[] found = new boolean[1];
+    final LocalBucket.CommittedSlotVisitor visitor = (position, kind, content, offPagePages, offPageCount) -> {
+      if (kind == LocalBucket.CommittedSlotVisitor.RECORD)
+        found[0] = true;
+    };
+    for (int page = 0; page < pages && !found[0]; page++)
+      bucket.visitCommittedPage(page, visitor);
+    return !found[0];
+  }
+
+  /**
+   * Final review B-I6 (spec 6.5 "page versions validate recovery"), on an unclean open: the pages of the bucket whose committed version
+   * is not the newest one the segments of the current state recorded for them, a page no segment covers included (re-applying a page
+   * that holds no record removes nothing). Re-applying them repairs a mark lost on any path.
+   * Reads the version of every page of the bucket from its header ({@link LocalBucket#getPageVersionWithoutLoading}: no page is loaded or
+   * cached, no record is decoded), on the maintenance pool, never on the open path. Pages of the
+   * external-property bucket are not checked: no segment records their versions, so a mark lost on an external page only is not found
+   * (a plan 3 open item).
+   *
+   * @return the pages, null when a segment covers a page past the bucket's committed page count (rows of pages the bucket does not
+   * have, which no re-apply can remove: the projection is rebuilt)
+   *
+   * @throws ColumnarFlusher.PublishingStoppedException when {@code stop} says so between two pages (a close)
+   */
+  IntHashSet pagesChangedSinceSegments(final LocalBucket bucket, final BooleanSupplier stop) {
+    final ProjectionState retainedState = retainState();
+    try {
+      return pagesChangedSinceSegments(bucket, retainedState.segments(), stop);
+    } finally {
+      retainedState.release();
+    }
+  }
+
+  private IntHashSet pagesChangedSinceSegments(final LocalBucket bucket, final SegmentReader[] segments, final BooleanSupplier stop) {
+    final int pages = bucket.getCommittedPageCount();
+    for (final SegmentReader segment : segments)
+      if (segment.rowCount() > 0 && segment.maxPage() >= pages)
+        return null;
+    final IntHashSet changed = new IntHashSet();
+    final ByteBuffer header = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
+    for (int page = 0; page < pages; page++) {
+      ColumnarTestHooks.reach(PAGE_CHECK_PAGE);
+      if (stop.getAsBoolean())
+        throw new ColumnarFlusher.PublishingStoppedException(bucketName);
+      long recorded = -1;
+      for (final SegmentReader segment : segments)
+        if (page >= segment.minPage() && page <= segment.maxPage())
+          recorded = Math.max(recorded, segment.pageVersion(page));
+      if (recorded < 0 || recorded != bucket.getPageVersionWithoutLoading(page, header))
+        changed.add(page);
+    }
+    return changed;
   }
 
   /**
@@ -469,14 +573,30 @@ public final class ColumnarProjection {
 
   /**
    * A consistent view for a query. The pending positions (both trackers, R7) are read BEFORE the state: a page leaves the pending set
-   * only after the apply pass published its rows, so a page that is not pending any more is in the state read afterwards. Takes no
-   * publish lock; only the owner map read locks.
+   * only after the apply pass published its rows, so a page that is not pending any more is in the state read afterwards. A rebuild is
+   * the one publish whose content can go backwards on a page (final review A-I1): it marks such pages pending before its state becomes
+   * current and moves the rebuild sequence in between, so a view whose pending read may precede that mark while its state is the
+   * rebuilt one (the sequence moved between the two reads) is read again. Takes no publish lock; only the owner map read locks.
    *
    * @throws IllegalStateException when the projection is closed or dropped
    */
   public ColumnarSnapshot acquire() {
     if (closed || dropped)
       throw new IllegalStateException("Columnar projection of bucket '" + bucketName + "' is " + (dropped ? "dropped" : "closed"));
+    while (true) {
+      final long sequence = rebuildSequence;
+      final PositionBitmap pending = pendingPositions();
+      final long oldest = oldestPendingEpochStartMs();
+      ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
+      final ProjectionState current = retainState();
+      if (sequence == rebuildSequence)
+        return new Snapshot(bucketId, current, pending, oldest);
+      current.release();
+    }
+  }
+
+  /** The pending positions of both trackers, read in movement order under the owner map read locks. */
+  private PositionBitmap pendingPositions() {
     final PositionBitmap pending;
     ownersLock.readLock().lock();
     try {
@@ -484,7 +604,6 @@ public final class ColumnarProjection {
     } finally {
       ownersLock.readLock().unlock();
     }
-    long oldest = tracker.oldestPendingEpochStartMs();
     if (externalTracker != null) {
       externalOwnersLock.readLock().lock();
       try {
@@ -492,11 +611,17 @@ public final class ColumnarProjection {
       } finally {
         externalOwnersLock.readLock().unlock();
       }
-      final long external = externalTracker.oldestPendingEpochStartMs();
-      oldest = oldest == 0 ? external : external == 0 ? oldest : Math.min(oldest, external);
     }
-    ColumnarTestHooks.reach(ACQUIRE_BETWEEN);
-    return new Snapshot(bucketId, retainState(), pending, oldest);
+    return pending;
+  }
+
+  /** Start of the oldest pending epoch of both trackers, 0 when nothing is pending. */
+  private long oldestPendingEpochStartMs() {
+    final long oldest = tracker.oldestPendingEpochStartMs();
+    if (externalTracker == null)
+      return oldest;
+    final long external = externalTracker.oldestPendingEpochStartMs();
+    return oldest == 0 ? external : external == 0 ? oldest : Math.min(oldest, external);
   }
 
   /**
@@ -648,6 +773,55 @@ public final class ColumnarProjection {
     return applyLock;
   }
 
+  /**
+   * True when the current state is valid and its manifest has the column of the index file id with the definition the projection has
+   * for it ({@link ColumnarReconciler#sameData}, the property name aside): a column added, or retyped, after the last publish is not
+   * published until a rebuild publishes it.
+   */
+  boolean isPublishedWith(final int indexFileId) {
+    final ColumnarManifest current = manifest;
+    if (current == null || !isUsable())
+      return false;
+    final ColumnDefinition own = column(indexFileId);
+    if (own == null)
+      return false;
+    for (final ColumnDefinition column : current.columns())
+      if (column.indexFileId() == indexFileId)
+        return ColumnarReconciler.sameData(column, own);
+    return false;
+  }
+
+  /** The columns of the projection whose definition the current manifest does not publish, see {@link #isPublishedWith}. */
+  boolean hasUnpublishedColumn() {
+    for (final ColumnDefinition column : columns)
+      if (!isPublishedWith(column.indexFileId()))
+        return true;
+    return false;
+  }
+
+  /**
+   * I2: a column the current manifest publishes with another definition than the projection's (a RETYPE whose {@code schema} rebuild
+   * did not publish before a close); false without a valid manifest.
+   */
+  boolean hasRetypedColumn() {
+    final ColumnarManifest current = manifest;
+    if (current == null || !isUsable())
+      return false;
+    for (final ColumnDefinition published : current.columns()) {
+      final ColumnDefinition own = column(published.indexFileId());
+      if (own != null && !ColumnarReconciler.sameData(published, own))
+        return true;
+    }
+    return false;
+  }
+
+  private ColumnDefinition column(final int indexFileId) {
+    for (final ColumnDefinition column : columns)
+      if (column.indexFileId() == indexFileId)
+        return column;
+    return null;
+  }
+
   /** True when the current state is valid: a manifest was loaded or published and no {@link #markUnusable} came after it. */
   boolean isUsable() {
     return state.get().isUsable();
@@ -700,10 +874,18 @@ public final class ColumnarProjection {
       unusableReason = null;
     stats.addSegments(typeName, segments.length - reportedSegments);
     reportedSegments = segments.length;
+    reportOpenFiles();
     final ProjectionState previous = state.getAndSet(next);
     if (previous != null)
       previous.release();
     return true;
+  }
+
+  /** Under the publish lock: moves the type's open segment file count by what changed since the last report. */
+  private void reportOpenFiles() {
+    final int open = openReaders.size();
+    stats.addOpenFiles(typeName, open - reportedOpenFiles);
+    reportedOpenFiles = open;
   }
 
   private static boolean sameReaders(final SegmentReader[] a, final SegmentReader[] b) {
@@ -988,7 +1170,10 @@ public final class ColumnarProjection {
     }
   }
 
-  /** A new overlay over {@code next} holding the rows of {@code from}; values are carried by index file id, other columns are missing. */
+  /**
+   * A new overlay over {@code next} holding the rows of {@code from}; values are carried by index file id when the column stores the
+   * same data (a rename included, {@link ColumnarReconciler#sameData}), other columns are missing.
+   */
   private ColumnarOverlay rekey(final ColumnarOverlay from, final ColumnDefinition[] previous, final ColumnDefinition[] next) {
     final ColumnarOverlay result = new ColumnarOverlay(maxRecordsInPage, next, System::currentTimeMillis);
     if (from.rows() == 0)
@@ -997,7 +1182,7 @@ public final class ColumnarProjection {
     for (int k = 0; k < next.length; k++) {
       source[k] = -1;
       for (int j = 0; j < previous.length; j++)
-        if (previous[j].indexFileId() == next[k].indexFileId())
+        if (ColumnarReconciler.sameData(previous[j], next[k]))
           source[k] = j;
     }
     final RowBuffer rows = new RowBuffer(maxRecordsInPage, next);
@@ -1027,6 +1212,157 @@ public final class ColumnarProjection {
   }
 
   /**
+   * Dictionary compaction (Task 24), under {@link #applyLock()}, so no apply pass changes the overlay meanwhile: a NEW block for every
+   * page of the live overlay, seeded from its current block ({@link RowBuffer#seed}) with the ordinals of the column of the index file
+   * id re-encoded through {@code remap}. The published blocks are never touched (R13): a snapshot acquired before keeps decoding them
+   * with the generation it holds. {@link #compactionPublished} makes the new blocks the overlay's content. Empty when the projection has
+   * no such column.
+   *
+   * @throws IllegalStateException when the apply lock is not held
+   */
+  OverlayPageBlock[] remapOverlay(final int indexFileId, final IntUnaryOperator remap) {
+    if (!applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Re-encoding the overlay of the columnar projection of bucket '" + bucketName + "' needs its apply lock");
+    final ColumnDefinition[] current = columns;
+    int k = current.length - 1;
+    while (k >= 0 && current[k].indexFileId() != indexFileId)
+      k--;
+    final int[] pages = overlay.pages();
+    if (k < 0 || pages.length == 0)
+      return new OverlayPageBlock[0];
+    final OverlayPageBlock[] result = new OverlayPageBlock[pages.length];
+    final RowBuffer rows = new RowBuffer(maxRecordsInPage, current);
+    for (int i = 0; i < pages.length; i++) {
+      final OverlayPageBlock block = overlay.page(pages[i]);
+      rows.seed(block);
+      rows.remapOrdinals(k, remap);
+      result[i] = OverlayPageBlock.build(pages[i], maxRecordsInPage, current, block.pageVersion(), rows);
+    }
+    return result;
+  }
+
+  /**
+   * Dictionary compaction, inside the publish of its manifest (under {@link #applyLock()} and {@link #publishLock()}, once the manifest
+   * is renamed): makes the blocks of {@link #remapOverlay} the live overlay's content and returns the overlay views of the new state,
+   * the live one only, as a compaction never runs beside a frozen overlay (V-B6). The writer dictionary switches with the state the
+   * caller publishes in the same critical section, so the next apply pass encodes with the new generation. Defensive only, as the
+   * manifest publish already checks it under the same lock: a closed or dropped projection keeps its overlay and its current views.
+   *
+   * @throws IllegalStateException when a lock is not held, or an overlay is frozen
+   */
+  ColumnarSegmentView[] compactionPublished(final OverlayPageBlock[] blocks) {
+    if (!publishLock.isHeldByCurrentThread() || !applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Publishing a dictionary compaction of bucket '" + bucketName + "' needs its apply and publish locks");
+    if (closed || dropped)
+      return state.get().overlays();
+    if (frozenOverlay != null)
+      throw new IllegalStateException("A dictionary compaction of bucket '" + bucketName + "' cannot publish beside a frozen overlay");
+    for (final OverlayPageBlock block : blocks)
+      overlay.replacePage(block);
+    return new ColumnarSegmentView[] { overlay.publish() };
+  }
+
+  /**
+   * The reconciler (spec 6.4): makes {@code next} the columns, keyed by index file id. A column of {@code next} that stores the same
+   * data as a current one ({@link ColumnarReconciler#sameData}) keeps its values and its dictionary under its new property name
+   * (RENAME: the segments of the current state answer under the new names through {@link SegmentReader#withColumnNames}); a current
+   * column {@code next} lacks is dropped with its writer dictionary; a column whose type changed (RETYPE) keeps the dictionary of its
+   * stored values but is not published ({@link #isPublishedWith}) and its new rows read as missing until a rebuild publishes it; a new
+   * column reads as missing until then too. The overlays (live, and frozen by a failed flush) are re-keyed and a state is published with them,
+   * under the apply and publish locks. The manifest names the new columns at the next publish ({@link #manifestColumns}).
+   * <p>
+   * Takes the maintenance slot for the change, so no flush, merge, compaction or rebuild built on the old columns publishes after it.
+   *
+   * @return false, changing nothing, when another job holds the maintenance slot: the caller retries later
+   */
+  boolean redefineColumns(final ColumnDefinition[] next) {
+    if (!tryBeginMaintenance())
+      return false;
+    try {
+      applyLock.lock();
+      try {
+        final ColumnDefinition[] previous = columns;
+        final ColumnarOverlay rekeyed = rekey(overlay, previous, next);
+        final ColumnarOverlay rekeyedFrozen = frozenOverlay == null ? null : rekey(frozenOverlay, previous, next);
+        // by index file id: a renamed column's dictionary under its new name; a retyped one keeps the dictionary its segments are
+        // encoded with until the schema rebuild replaces it (the column is not published meanwhile, see isPublishedWith)
+        final Map<String, GlobalDictionary> carried = new HashMap<>();
+        for (final ColumnDefinition column : next)
+          for (final ColumnDefinition was : previous)
+            if (was.indexFileId() == column.indexFileId() && dictionaries.get(was.property()) != null)
+              carried.put(column.property(), dictionaries.get(was.property()));
+        publishLock.lock();
+        try {
+          overlay = rekeyed;
+          columns = next.clone();
+          final ColumnarSegmentView[] overlays;
+          if (rekeyedFrozen != null) {
+            frozenOverlay = rekeyedFrozen;
+            frozenView = rekeyedFrozen.publish();
+            final ColumnarSegmentView frozen = supersededInFrozen.isEmpty() ? frozenView : new MaskedView(frozenView, supersededInFrozen.snapshot());
+            supersededChanged = false;
+            overlays = new ColumnarSegmentView[] { frozen, rekeyed.publish() };
+          } else
+            overlays = new ColumnarSegmentView[] { rekeyed.publish() };
+          final ProjectionState current = state.get();
+          final SegmentReader[] segments = current.segments();
+          final SegmentReader[] named = segments.clone();
+          for (int i = 0; i < named.length; i++)
+            named[i] = segments[i].withColumnNames(columns);
+          if (!publish(manifest, named, overlays, Map.copyOf(carried), current.isUsable()))
+            for (int i = 0; i < named.length; i++)
+              if (named[i] != segments[i])
+                named[i].close();
+        } finally {
+          publishLock.unlock();
+        }
+      } finally {
+        applyLock.unlock();
+      }
+      return true;
+    } finally {
+      endMaintenance();
+    }
+  }
+
+  /**
+   * The columns a publish built on {@code current} names: those of {@code current} the projection still has, under the projection's
+   * definition when it stores the same data (a RENAME), else as published (a RETYPE is named once its rebuild publishes); a column the
+   * reconciler dropped is left out.
+   */
+  ColumnDefinition[] manifestColumns(final ColumnarManifest current) {
+    final ColumnDefinition[] own = columns;
+    final List<ColumnDefinition> result = new ArrayList<>(own.length);
+    for (final ColumnDefinition published : current.columns())
+      for (final ColumnDefinition column : own)
+        if (column.indexFileId() == published.indexFileId()) {
+          result.add(ColumnarReconciler.sameData(published, column) ? column : published);
+          break;
+        }
+    return result.toArray(new ColumnDefinition[0]);
+  }
+
+  /**
+   * The reconciler, after {@code ALTER TYPE ... NAME} (the bucket files are renamed in place, the directory keyed by the file id stays,
+   * R9): the bucket and type names the next manifest and the stats use. The segment count moves to the new type name.
+   */
+  void rename(final String newBucketName, final String newTypeName) {
+    publishLock.lock();
+    try {
+      if (!newTypeName.equals(typeName)) {
+        stats.addSegments(typeName, -reportedSegments);
+        stats.addSegments(newTypeName, reportedSegments);
+        stats.addOpenFiles(typeName, -reportedOpenFiles);
+        stats.addOpenFiles(newTypeName, reportedOpenFiles);
+        typeName = newTypeName;
+      }
+      bucketName = newBucketName;
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
    * Records the reason ({@code missing} or {@code corrupt}) and stops serving: the current state is republished unusable, so queries
    * take the fallback. On a writable database the rebuild requester is called with the reason, outside the publish lock; on a
    * READ_ONLY one nothing is requested or written (R16).
@@ -1034,6 +1370,24 @@ public final class ColumnarProjection {
   void markUnusable(final String rebuildReason) {
     markUnusableWithoutRequest(rebuildReason);
     requestRebuild(rebuildReason);
+  }
+
+  /** Final review B-I4: makes every commit of the database durable in its WAL; called before a manifest publish. */
+  void forceWAL() throws IOException {
+    transactionManager.forceWALFiles();
+  }
+
+  /** Republishes the current state usable when it is unusable for {@code reason} only (a later reason, a rebuild's, is kept). */
+  void markUsableAfter(final String reason) {
+    publishLock.lock();
+    try {
+      if (!reason.equals(unusableReason))
+        return;
+      final ProjectionState current = state.get();
+      publish(manifest, current.segments(), current.overlays(), dictionaries, true);
+    } finally {
+      publishLock.unlock();
+    }
   }
 
   /** The first half of {@link #markUnusable}: records the reason and republishes the state unusable, requesting nothing. */
@@ -1090,6 +1444,58 @@ public final class ColumnarProjection {
       dropOwnReference();
       if (retained.isEmpty())
         deleteDirectory();
+      else
+        moveToTombstone();
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Under publishLock, a drop whose deletion waits for a snapshot (round 2 NI2): renames {@link #bucketDir} to a unique tombstone at
+   * once, so a projection opened on the same bucket meanwhile owns a directory this one never deletes. The segment readers of the
+   * retained states read by path, so their files are re-pointed at the tombstone. When the rename fails (Windows refuses one with open
+   * handles), or a flush, merge, rebuild or compaction still writes in the directory (a drop that gave up waiting for it), the directory
+   * stays where it is, {@link #holdsBucketDirectory()} says so, and the manager opens no projection on the bucket until it is deleted.
+   * The open sweep deletes a tombstone a crash left.
+   */
+  private void moveToTombstone() {
+    if (readOnly)
+      return;
+    if (!Files.isDirectory(bucketDir)) {
+      // round 3 Minor 3: nothing created, nothing to delete at the last release (a projection opened meanwhile owns bucketDir)
+      directory = null;
+      return;
+    }
+    if (maintenance.get() || !inFlightFiles.isEmpty())
+      return;
+    final Path tombstone = bucketDir.resolveSibling(bucketDir.getFileName() + ColumnarStore.TOMBSTONE_INFIX + System.nanoTime());
+    try {
+      if (failTombstoneRenameForTesting)
+        throw new IOException("Simulated failure of the tombstone rename of " + bucketDir);
+      Files.move(bucketDir, tombstone, StandardCopyOption.ATOMIC_MOVE);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot move the directory of the dropped columnar projection of bucket '%s' aside: "
+          + "no projection opens on the bucket until its last snapshot is released", e, bucketName);
+      return;
+    }
+    directory = tombstone;
+    for (final SegmentFile file : segmentFiles.values())
+      file.relocate(tombstone);
+    for (final SegmentReader reader : openReaders)
+      reader.file().relocate(tombstone);
+    try {
+      ColumnarStore.fsyncDirectory(bucketDir.getParent());
+    } catch (final IOException e) {
+      // never thrown today, see fsyncDirectory
+    }
+  }
+
+  /** A dropped projection whose files are still in {@link #bucketDir} (its tombstone rename failed) and not deleted yet. */
+  boolean holdsBucketDirectory() {
+    publishLock.lock();
+    try {
+      return dropped && !directoryDeleted && bucketDir.equals(directory) && Files.isDirectory(bucketDir);
     } finally {
       publishLock.unlock();
     }
@@ -1124,6 +1530,7 @@ public final class ColumnarProjection {
           it.remove();
         }
       }
+      reportOpenFiles();
 
       if (dropped) {
         if (retained.isEmpty())
@@ -1182,12 +1589,13 @@ public final class ColumnarProjection {
     for (final SegmentReader reader : openReaders)
       reader.close();
     openReaders.clear();
+    reportOpenFiles();
     for (final SegmentFile file : segmentFiles.values())
       file.deleted();
     segmentFiles.clear();
     closeDictionaries();
-    if (!readOnly)
-      FileUtils.deleteRecursively(bucketDir.toFile());
+    if (!readOnly && directory != null)
+      FileUtils.deleteRecursively(directory.toFile());
   }
 
   private void closeDictionaries() {
@@ -1280,24 +1688,140 @@ public final class ColumnarProjection {
    * since the freeze (V-B2).
    */
   void pagesApplied(final int[] pages, final int count) {
-    addApplied(appliedSinceFreeze, pages, count);
+    addApplied(false, pages, count);
   }
 
   /** {@link #pagesApplied} for pages of the external tracker (R7). */
   void externalPagesApplied(final int[] pages, final int count) {
-    addApplied(externalAppliedSinceFreeze, pages, count);
+    addApplied(true, pages, count);
   }
 
-  private void addApplied(final IntHashSet target, final int[] pages, final int count) {
+  private void addApplied(final boolean external, final int[] pages, final int count) {
     if (!applyLock.isHeldByCurrentThread())
       throw new IllegalStateException("Recording applied pages of bucket '" + bucketName + "' needs its apply lock");
     publishLock.lock();
     try {
-      for (int i = 0; i < count; i++)
+      final IntHashSet target = external ? externalAppliedSinceFreeze : appliedSinceFreeze;
+      final IntHashSet duringRebuild = external ? externalAppliedDuringRebuild : appliedDuringRebuild;
+      for (int i = 0; i < count; i++) {
         target.add(pages[i]);
+        if (duringRebuild != null)
+          duringRebuild.add(pages[i]);
+      }
     } finally {
       publishLock.unlock();
     }
+  }
+
+  /**
+   * Rebuild, before its scan: from now on every page an apply pass completes is recorded, so {@link #rebuildPublished} marks it dirty
+   * again and nothing applied to the old state while the scan ran is lost.
+   */
+  void beginRebuildTracking() {
+    publishLock.lock();
+    try {
+      appliedDuringRebuild = new IntHashSet();
+      externalAppliedDuringRebuild = externalTracker == null ? null : new IntHashSet();
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /** Rebuild, at its end whatever the outcome: no page is recorded any more. */
+  void endRebuildTracking() {
+    publishLock.lock();
+    try {
+      appliedDuringRebuild = null;
+      externalAppliedDuringRebuild = null;
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Rebuild of a projection with no valid manifest (missing or corrupt), before it writes anything: deletes every file of the bucket
+   * directory but the held ones, so no orphan of the old files can collide with a name the rebuild publishes. The manifest, its tmp
+   * file and the {@code NOWAL} marker are kept ({@link ColumnarStore#deleteUnreferenced}). Nothing when a manifest is current.
+   */
+  void deleteOrphansForRebuild() {
+    publishLock.lock();
+    try {
+      if (manifest == null && !readOnly && Files.isDirectory(bucketDir))
+        ColumnarStore.deleteUnreferenced(bucketDir, Set.of(), inFlightFiles);
+    } finally {
+      publishLock.unlock();
+    }
+  }
+
+  /**
+   * Rebuild, last step, under {@link #applyLock()} and {@link #publishLock()} once its manifest is renamed: the rebuilt segments,
+   * dictionaries and owner maps replace the current ones in one publish (usable), with a new empty live overlay over the current
+   * columns. The previous state's files go through the last-release path (R1/R2). Every page an apply pass completed during the scan is
+   * marked dirty again BEFORE the swap and the rebuild sequence moves (final review A-I1), so it is re-applied over the rebuilt state and
+   * no reader pairs the rebuilt state with a pending set read before that mark ({@link #acquire()}); the other unflushed pages leave the
+   * trackers after the swap (the rebuilt state holds their committed content). A frozen overlay left by a failed flush is dropped, and the
+   * unreadable page retries are forgotten.
+   *
+   * @return false, publishing nothing, when the projection is closed or dropped
+   */
+  boolean rebuildPublished(final ColumnarManifest rebuilt, final SegmentReader[] segments, final Map<String, GlobalDictionary> rebuiltDictionaries,
+      final ContentOwnerMap rebuiltOwners, final ContentOwnerMap rebuiltExternalOwners) {
+    if (!publishLock.isHeldByCurrentThread() || !applyLock.isHeldByCurrentThread())
+      throw new IllegalStateException("Publishing the rebuild of bucket '" + bucketName + "' needs its apply and publish locks");
+    if (closed || dropped)
+      return false;
+    // final review A-I1: the pages applied during the scan are pending BEFORE the rebuilt state, which lacks their newest rows, becomes
+    // current; then the sequence moves, so a reader that read the pending pages before this mark retries (see acquire)
+    markApplied(tracker, appliedDuringRebuild);
+    if (externalTracker != null)
+      markApplied(externalTracker, externalAppliedDuringRebuild);
+    rebuildSequence++;
+    ownersLock.writeLock().lock();
+    try {
+      owners = rebuiltOwners;
+    } finally {
+      ownersLock.writeLock().unlock();
+    }
+    if (externalOwnersLock != null) {
+      externalOwnersLock.writeLock().lock();
+      try {
+        externalOwners = rebuiltExternalOwners;
+      } finally {
+        externalOwnersLock.writeLock().unlock();
+      }
+    }
+    overlay = new ColumnarOverlay(maxRecordsInPage, columns, System::currentTimeMillis);
+    frozenOverlay = null;
+    frozenView = null;
+    clearFreezeRecords();
+    publish(rebuilt, segments, new ColumnarSegmentView[] { overlay.publish() }, rebuiltDictionaries, true);
+    ownersPublished();
+    ColumnarTestHooks.reach(REBUILD_SWAPPED);
+    unreadablePages.clear();
+    forgetUnflushed(tracker);
+    if (externalTracker != null)
+      forgetUnflushed(externalTracker);
+    appliedDuringRebuild = null;
+    externalAppliedDuringRebuild = null;
+    lastFlushMs = System.currentTimeMillis();
+    return true;
+  }
+
+  /** Marks the pages applied during the scan dirty again, so they are re-applied over the rebuilt state. */
+  private static void markApplied(final DirtyPageTracker target, final IntHashSet applied) {
+    if (applied != null && applied.size() > 0) {
+      final int[] pages = applied.toArray();
+      target.mark(pages, pages.length);
+    }
+  }
+
+  /**
+   * Clears the unflushed pages once the rebuilt state holds their committed content; the ones applied during the scan were marked dirty
+   * first ({@link #markApplied}), so a page is always in one place of the tracker.
+   */
+  private static void forgetUnflushed(final DirtyPageTracker target) {
+    final int[] unflushed = target.unflushedPages();
+    target.flushed(unflushed, unflushed.length, page -> false);
   }
 
   /**

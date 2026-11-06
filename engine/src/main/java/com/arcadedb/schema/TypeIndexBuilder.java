@@ -318,6 +318,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   @Override
   public TypeIndex create() {
+    // withType(COLUMNAR) records the type on this builder too (a caller may ignore the builder it returns): the COLUMNAR checks of
+    // TypeColumnarIndexBuilder (one index per property per hierarchy, the cardinality limit) must run on that route as well
+    if (indexType == Schema.INDEX_TYPE.COLUMNAR && !(this instanceof TypeColumnarIndexBuilder))
+      return new TypeColumnarIndexBuilder(this).create();
+
     built = false;
     builtInCallerTransaction = false;
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -564,6 +569,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             }
             return null;
           }
+        }
+        // Asked before the drop of a replaced index, which it excepts: a refusal here costs the caller nothing to put back
+        try {
+          checkUnderSchemaLock(type, current);
+        } catch (final RuntimeException refusal) {
+          // a refusal, not a failed build: thrown as it is once the build's try is left, as the one over a concurrent index
+          refusedOverConcurrent[0] = refusal;
+          return null;
+        }
+        if (current != null) {
           // Recorded only once dropped: a refused drop takes nothing away, so there is nothing to put back
           final ReplacedIndexDefinition definition = ReplacedIndexDefinition.of(current);
           current.drop();
@@ -731,6 +746,16 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     }
 
     return created;
+  }
+
+  /**
+   * A last refusal of the request, asked under the schema write lock right before the build, once any index on the requested
+   * properties was decided over and before a replaced one is dropped: {@code replacing} is that index (null when none), which the
+   * check must not count. Nothing for a key index; {@link TypeColumnarIndexBuilder} asks again there what it asked before the lock,
+   * so a concurrent creation cannot slip between the two.
+   */
+  protected void checkUnderSchemaLock(final LocalDocumentType type, final TypeIndex replacing) {
+    // nothing to refuse for a key index
   }
 
   /**

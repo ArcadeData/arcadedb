@@ -36,6 +36,7 @@ import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -64,7 +65,9 @@ import java.util.logging.Level;
  * by a commit, so its page is re-marked here with an exponential backoff; after {@value #UNREADABLE_ATTEMPTS_BEFORE_REBUILD} failed
  * retries a {@code corrupt} rebuild is requested, the previous valid state serving meanwhile. Unreadable records are logged once per page
  * per minute (with the exception when deserialization threw), and the rebuild request once. A committed page that cannot be read at
- * all is kept whole and retried the same way; only a page past the bucket's committed page count loses its rows.
+ * all is kept whole and retried the same way. So is a page past the bucket's committed page count (a commit's first mark drained before
+ * its pages are published), never applied as an empty page, but neither counted, logged nor rebuilt: it leaves the retries once visible,
+ * or after the last attempt (see {@link UnreadablePages#notVisible}).
  * <p>
  * Conversion failures are counted once per staged record version and failing value, after the publish: a re-read of an unchanged
  * record with an unconvertible value counts nothing, and a failed pass counts nothing either.
@@ -91,12 +94,7 @@ final class ColumnarApplier {
    */
   static int runPass(final ColumnarIndexManager manager, final ColumnarProjection projection) {
     final LocalDatabase database = manager.getDatabase();
-    final String path = database.getDatabasePath();
-    final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(path) == null;
-    if (contextCreated)
-      DatabaseContext.INSTANCE.init(database);
-    final boolean transactionWasActive = !contextCreated && database.isTransactionActive();
-    try {
+    return inDatabaseContext(database, () -> {
       projection.applyLock().lock();
       try {
         final ColumnDefinition[] columns = projection.columns();
@@ -111,6 +109,22 @@ final class ColumnarApplier {
       } finally {
         projection.applyLock().unlock();
       }
+    });
+  }
+
+  /**
+   * Runs {@code body} on the calling thread with a database context, set up when the thread has none (records and their external
+   * values are read through the database) and removed after. Any implicit transaction the reads opened is ended, whether the context
+   * was created here or not; a transaction the thread had active before is left as it is. Shared by the apply pass and the rebuild.
+   */
+  static <T> T inDatabaseContext(final LocalDatabase database, final Supplier<T> body) {
+    final String path = database.getDatabasePath();
+    final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(path) == null;
+    if (contextCreated)
+      DatabaseContext.INSTANCE.init(database);
+    final boolean transactionWasActive = !contextCreated && database.isTransactionActive();
+    try {
+      return body.get();
     } finally {
       try {
         if (!transactionWasActive && database.isTransactionActive())
@@ -149,6 +163,13 @@ final class ColumnarApplier {
     private long[]        loggedMs = new long[0];
     private int           size;
     private volatile long nextDueMs = Long.MAX_VALUE;
+    /** {@link #size} for readers off the apply lock. */
+    private volatile int  retrying;
+
+    /** Some page awaits a retry (final review A-I2: such a page's records may be missing from the projection); lock free. */
+    boolean hasRetries() {
+      return retrying > 0;
+    }
 
     /** A page is due for its retry at the clock time; lock free. */
     boolean isDue(final long nowMs) {
@@ -205,6 +226,17 @@ final class ColumnarApplier {
       return attempts[i];
     }
 
+    /**
+     * A visit found the page past the bucket's committed page count (final review A-C1): retried as an unreadable page is, with no log,
+     * no count and no rebuild. A commit's second mark re-marks its new pages once they are visible, which ends the retry; a page still
+     * past the count after {@value ColumnarApplier#UNREADABLE_ATTEMPTS_BEFORE_REBUILD} attempts belongs to no commit (a refused one, or a mark of a page
+     * that was never allocated): it holds no record and leaves the retries.
+     */
+    void notVisible(final int page, final long nowMs) {
+      if (failed(page, nowMs) >= UNREADABLE_ATTEMPTS_BEFORE_REBUILD)
+        readable(page);
+    }
+
     /** A visit of the whole page read every record: the page leaves the retries. */
     void readable(final int page) {
       if (size == 0)
@@ -237,6 +269,7 @@ final class ColumnarApplier {
     void clear() {
       size = 0;
       nextDueMs = Long.MAX_VALUE;
+      retrying = 0;
     }
 
     int sizeForTesting() {
@@ -256,6 +289,7 @@ final class ColumnarApplier {
         if (!remarked[i])
           next = Math.min(next, dueMs[i]);
       nextDueMs = next;
+      retrying = size;
     }
 
     private static long backoffMs(final int attempt) {
@@ -264,12 +298,16 @@ final class ColumnarApplier {
     }
   }
 
-  /** The values of one record, as {@link ValueSink} calls fill them, into a slot of a {@link RowValues}. */
-  private static final class Sink implements ValueSink {
+  /**
+   * The values of one record, as {@link ValueSink} calls fill them, into slot {@link #k} of a {@link RowValues}. Shared with the
+   * rebuild scan ({@link ColumnarRebuilder}), which extracts the same way into its own dictionaries.
+   */
+  static final class Sink implements ValueSink {
     private final RowValues target;
-    private int             k;
+    /** The slot the next calls fill; set by the caller before each column. */
+    int                     k;
 
-    private Sink(final RowValues target) {
+    Sink(final RowValues target) {
       this.target = target;
     }
 
@@ -314,6 +352,60 @@ final class ColumnarApplier {
   }
 
   /**
+   * The distinct pages of the paired external-property bucket that hold the projected values of a record, every chunk page of a value
+   * stored as a chunk chain included (R7), so a tail-only rewrite of an external value re-reads its owner. Reused across records:
+   * {@link #pages()} is valid until the next {@link #collect}. Shared by the apply pass and the rebuild scan.
+   */
+  static final class ExternalValuePages {
+    private final int         externalFileId;
+    private final int         maxRecordsInPage;
+    private final LocalBucket bucket;
+    private int[]             pages = new int[4];
+    private int               count;
+    /** Adds the chunk pages of an external value (its off-page pages). */
+    private final LocalBucket.CommittedSlotVisitor chain = (position, kind, content, offPagePages, offPageCount) -> {
+      for (int i = 0; i < offPageCount; i++)
+        add(offPagePages[i]);
+    };
+
+    ExternalValuePages(final LocalBucket externalBucket) {
+      this.bucket = externalBucket;
+      this.externalFileId = externalBucket.getFileId();
+      this.maxRecordsInPage = externalBucket.getMaxRecordsInPage();
+    }
+
+    /** Fills {@link #pages()} with the external pages of the record's values of the columns; returns their count. */
+    int collect(final BinarySerializer serializer, final DatabaseInternal database, final Document document,
+        final ColumnDefinition[] columns) {
+      count = 0;
+      final Map<String, RID> rids = serializer.findExistingExternalRids(database, document);
+      if (rids.isEmpty())
+        return 0;
+      for (final ColumnDefinition column : columns) {
+        final RID rid = rids.get(column.property());
+        if (rid == null || rid.getBucketId() != externalFileId)
+          continue;
+        add((int) (rid.getPosition() / maxRecordsInPage));
+        bucket.visitCommittedRecord(rid.getPosition(), chain);
+      }
+      return count;
+    }
+
+    int[] pages() {
+      return pages;
+    }
+
+    private void add(final int page) {
+      for (int i = 0; i < count; i++)
+        if (pages[i] == page)
+          return;
+      if (count == pages.length)
+        pages = Arrays.copyOf(pages, count * 2);
+      pages[count++] = page;
+    }
+  }
+
+  /**
    * The pass itself, with the buffers it reuses: one instance per projection, column set and type name, kept by the projection and used
    * under its apply lock only. The per-run fields are set by {@link #run}.
    */
@@ -332,9 +424,9 @@ final class ColumnarApplier {
     private final GlobalDictionary[]     dictionaries;
     /** Failing values of each column of the record being read, counted only when the record is staged. */
     private final int[]                  failures;
+    private final ColumnarValueExtractor.RecordReader reader;
     private long[]                       found       = new long[16];
     private long[]                       owners      = new long[16];
-    private int[]                        external    = new int[4];
     private OverlayPageBlock[]           blocks      = new OverlayPageBlock[16];
     // owner map changes of the run, applied after its publish: [owner], whether external, and pages[pageStart[i], pageStart[i + 1])
     private long[]                       changedOwners      = new long[16];
@@ -350,9 +442,7 @@ final class ColumnarApplier {
     private RecordFactory     recordFactory;
     private BinarySerializer  serializer;
     private int               externalFileId;
-    private int               externalMaxRecordsInPage;
-    private LocalBucket       externalBucket;
-    private int               externalCount;
+    private ExternalValuePages externalValues;
     private PositionBitmap    deadNow;
     private PositionBitmap    superseded;
     private int               blockCount;
@@ -361,15 +451,12 @@ final class ColumnarApplier {
     // per page
     private boolean           changed;
     private boolean           unreadableHere;
+    /** The page was past the committed page count: retried, but neither counted, logged nor rebuilt as unreadable. */
+    private boolean           pastCount;
     private boolean           recordReported;
     private RuntimeException  unreadableCause;
     /** Failing values of the staged records by column, counted after the publish so a failed pass counts nothing. */
     private final long[]      stagedFailures;
-    /** Adds the chunk pages of an external value (its off-page pages) to {@link #external}. */
-    private final LocalBucket.CommittedSlotVisitor externalChain = (position, kind, content, offPagePages, offPageCount) -> {
-      for (int i = 0; i < offPageCount; i++)
-        addExternalPage(offPagePages[i]);
-    };
 
     private Pass(final ColumnarProjection projection, final ColumnDefinition[] columns, final String typeName) {
       this.projection = projection;
@@ -389,6 +476,7 @@ final class ColumnarApplier {
       this.dictionaries = new GlobalDictionary[columns.length];
       this.failures = new int[columns.length];
       this.stagedFailures = new long[columns.length];
+      this.reader = new ColumnarValueExtractor.RecordReader(columns);
     }
 
     private int run(final ColumnarIndexManager manager) {
@@ -410,6 +498,8 @@ final class ColumnarApplier {
           applyPage(page);
           if (!unreadableHere)
             retries.readable(page);
+          else if (pastCount)
+            retries.notVisible(page, nowMs);
           else
             corrupt |= failed(retries, page, nowMs);
         }
@@ -467,6 +557,7 @@ final class ColumnarApplier {
         bucket = null;
         type = null;
         database = null;
+        externalValues = null;
       }
     }
 
@@ -487,9 +578,9 @@ final class ColumnarApplier {
       database = db.getWrappedDatabaseInstance();
       recordFactory = db.getRecordFactory();
       serializer = db.getSerializer();
+      reader.prepare(db.getSchema().getDictionary());
       externalFileId = projection.externalFileId();
-      externalBucket = externalFileId < 0 ? null : (LocalBucket) db.getSchema().getBucketById(externalFileId);
-      externalMaxRecordsInPage = externalBucket == null ? 0 : externalBucket.getMaxRecordsInPage();
+      externalValues = externalFileId < 0 ? null : new ExternalValuePages((LocalBucket) db.getSchema().getBucketById(externalFileId));
       for (int k = 0; k < columns.length; k++) {
         final ColumnKind kind = columns[k].kind();
         dictionaries[k] = kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST ? projection.dictionary(columns[k].property()) : null;
@@ -548,9 +639,14 @@ final class ColumnarApplier {
       final OverlayPageBlock current = startPage(page);
       Arrays.fill(records, 0L);
       final long version = bucket.visitCommittedPage(page, this);
-      if (version < 0 && page < bucket.getCommittedPageCount()) {
-        // a committed page that could not be read: nothing is known of it, everything is kept and the page retried
-        unreadable();
+      if (version < 0) {
+        // nothing is known of the page, everything is kept and the page retried: a committed page that could not be read, or one past the
+        // committed page count (final review A-C1: the first mark of a commit drained before its pages are published, which its second
+        // mark re-marks once they are visible; never an empty page)
+        if (page < bucket.getCommittedPageCount())
+          unreadable();
+        else
+          unreadableHere = pastCount = true;
         endPage(page, current, 0);
         return;
       }
@@ -561,7 +657,7 @@ final class ColumnarApplier {
           final int slot = (w << 6) + Long.numberOfTrailingZeros(gone);
           delete(base + slot, slot);
         }
-      endPage(page, current, version >= 0 ? version : current != null ? current.pageVersion() : 0);
+      endPage(page, current, version);
     }
 
     /** The owners {@code owners[from, to)} of one clean page, each re-read alone. */
@@ -574,8 +670,8 @@ final class ColumnarApplier {
         final long read = bucket.visitCommittedRecord(owner, this);
         if (read >= 0)
           version = read;
-        else if (page < bucket.getCommittedPageCount()) {
-          // a committed page that could not be read: the owner is kept and its page retried
+        else {
+          // a page that could not be read (an owner's page is committed): the owner is kept and its page retried
           unreadable();
           continue;
         }
@@ -589,6 +685,7 @@ final class ColumnarApplier {
     private OverlayPageBlock startPage(final int page) {
       changed = false;
       unreadableHere = false;
+      pastCount = false;
       unreadableCause = null;
       final OverlayPageBlock current = projection.overlay().page(page);
       if (current != null)
@@ -626,7 +723,7 @@ final class ColumnarApplier {
         markRecord(slot);
         reread++;
         extract(document);
-        externalCount = externalFileId < 0 ? 0 : externalPages(document);
+        externalCount = externalFileId < 0 ? 0 : externalValues.collect(serializer, database, document, columns);
       } catch (final ColumnarTestHooks.SimulatedCrash | UncheckedIOException e) {
         // a crash test, or a dictionary append that failed: the pass fails, its pages stay in flight
         throw e;
@@ -641,7 +738,7 @@ final class ColumnarApplier {
 
       queueOwner(false, position, offPagePages, offPageCount);
       if (externalFileId >= 0)
-        queueOwner(true, position, external, externalCount);
+        queueOwner(true, position, externalValues.pages(), externalCount);
       stage(position, slot);
     }
 
@@ -657,41 +754,20 @@ final class ColumnarApplier {
 
     /** Fills {@link #fresh} with the record's column values; a column with no writer dictionary yet (V-B4) is missing. */
     private void extract(final Document document) {
-      for (int k = 0; k < columns.length; k++) {
-        fresh.present[k] = false;
-        failures[k] = 0;
-        final ColumnKind kind = columns[k].kind();
-        if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
-          continue;
-        sink.k = k;
-        failures[k] = extractor.extractForApplyUncounted(document, columns[k], dictionaries[k], sink);
+      reader.begin(document);
+      try {
+        for (int k = 0; k < columns.length; k++) {
+          fresh.present[k] = false;
+          failures[k] = 0;
+          final ColumnKind kind = columns[k].kind();
+          if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
+            continue;
+          sink.k = k;
+          failures[k] = extractor.extractValueForApplyUncounted(reader.raw(k), columns[k], dictionaries[k], sink);
+        }
+      } finally {
+        reader.end();
       }
-    }
-
-    /** Fills {@link #external} with the distinct external-bucket pages of the record's projected values; returns their count. */
-    private int externalPages(final Document document) {
-      final Map<String, RID> rids = serializer.findExistingExternalRids(database, document);
-      externalCount = 0;
-      if (rids.isEmpty())
-        return 0;
-      for (final ColumnDefinition column : columns) {
-        final RID rid = rids.get(column.property());
-        if (rid == null || rid.getBucketId() != externalFileId)
-          continue;
-        addExternalPage((int) (rid.getPosition() / externalMaxRecordsInPage));
-        // a value stored as a chunk chain: every chunk page, as for a primary chain, so a tail-only rewrite re-reads the owner
-        externalBucket.visitCommittedRecord(rid.getPosition(), externalChain);
-      }
-      return externalCount;
-    }
-
-    private void addExternalPage(final int page) {
-      for (int i = 0; i < externalCount; i++)
-        if (external[i] == page)
-          return;
-      if (externalCount == external.length)
-        external = Arrays.copyOf(external, externalCount * 2);
-      external[externalCount++] = page;
     }
 
     /** Stages the record's values unless they equal the live ones (spec 6.3); the value they replace stops being live. */

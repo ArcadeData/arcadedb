@@ -433,7 +433,8 @@ class ColumnarProjectionTest extends TestHelper {
     final ColumnarProjection projection = open();
     assertThat(projection.isUsable()).isTrue();
     assertThat(orphan).doesNotExist();
-    assertThat(tmp).exists();
+    // a tmp file a crash left is deleted too (batch 1 N3): nothing writes in the directory before the projection is routed
+    assertThat(tmp).doesNotExist();
     assertThat(bucketDir.resolve(SegmentFormat.segmentFileName(1))).exists();
   }
 
@@ -487,11 +488,14 @@ class ColumnarProjectionTest extends TestHelper {
     assertThat(BlockCache.instance().entriesForTesting(cacheFileId)).isPositive();
 
     projection.drop();
-    assertThat(bucketDir).exists();
+    // round 2 NI2: moved to a tombstone at once, where the retained reader goes on reading
+    assertThat(bucketDir).doesNotExist();
+    assertThat(tombstonesOf(bucketDir)).hasSize(1);
     assertThat(reader.column("brand").ordinal(1)).isEqualTo(1); // still readable
     assertThatThrownBy(projection::acquire).isInstanceOf(IllegalStateException.class);
     snapshot.close();
     assertThat(bucketDir).doesNotExist();
+    assertThat(tombstonesOf(bucketDir)).isEmpty();
     assertThat(BlockCache.instance().entriesForTesting(cacheFileId)).isZero();
 
     // nothing retained: deleted at once
@@ -835,6 +839,14 @@ class ColumnarProjectionTest extends TestHelper {
   private static List<String> listFiles(final Path dir) throws IOException {
     try (final var stream = Files.list(dir)) {
       return stream.map(p -> p.getFileName().toString()).sorted().toList();
+    }
+  }
+
+  /** The tombstones of the directory (round 2 NI2), by name. */
+  private static List<String> tombstonesOf(final Path dir) throws IOException {
+    try (final var entries = Files.list(dir.getParent())) {
+      return entries.map(p -> p.getFileName().toString()).filter(n -> n.startsWith(dir.getFileName() + ColumnarStore.TOMBSTONE_INFIX))
+          .toList();
     }
   }
 }

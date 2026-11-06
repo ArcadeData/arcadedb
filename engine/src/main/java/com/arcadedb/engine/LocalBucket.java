@@ -52,6 +52,7 @@ import com.arcadedb.utility.LongHashSet;
 
 import java.io.IOException;
 import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -921,6 +922,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
      * @param offPageCount   number of valid entries in {@code offPagePages}, 0 when the record is stored in place
      */
     void onSlot(long position, int kind, Binary content, int[] offPagePages, int offPageCount);
+
+    /**
+     * Called by {@link #visitCommittedPage} once the page is read, before its first slot, with the version of that committed image;
+     * nothing by default.
+     */
+    default void onPageVersion(final int pageNumber, final long version) {
+    }
   }
 
   /**
@@ -952,11 +960,38 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // clamped: a corrupted count must not send the loop past the slot table
       final int recordCountInPage = Math.min(page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), maxRecordsInPage);
       OffPagePages offPages = null;
+      visitor.onPageVersion(pageNumber, version);
       for (int slot = 0; slot < recordCountInPage; ++slot)
         offPages = visitCommittedSlot(page, pageNumber, slot, offPages, visitor);
       return version;
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on reading the committed page " + pageNumber + " of bucket '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * The version of a COMMITTED page without loading it, for the columnar projection's page check after an unclean open: the copy the
+   * page manager still has to write to the file when there is one, otherwise the version in the page's header, read from the file
+   * with one positional read of {@code header} (nothing goes through the read cache). A version read from the file can be older than
+   * the committed one only for a page written meanwhile, which re-marks it: the caller may over-mark, never miss.
+   *
+   * @param header a buffer of {@link Binary#INT_SERIALIZED_SIZE} bytes, reused across calls
+   *
+   * @return the version, or -1 when the page is not committed or not in the file yet
+   */
+  public long getPageVersionWithoutLoading(final int pageNumber, final ByteBuffer header) {
+    if (pageNumber < 0 || pageNumber >= pageCount.get())
+      return -1L;
+    final long pending = database.getPageManager().getPendingVersionOfPage(new PageId(database, file.getFileId(), pageNumber));
+    if (pending >= 0)
+      return pending;
+    if (pageNumber >= file.getTotalPages())
+      return -1L;
+    try {
+      file.readPage(pageNumber, header);
+      return header.getInt(BasePage.PAGE_VERSION_OFFSET);
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reading the header of page " + pageNumber + " of bucket '" + componentName + "'", e);
     }
   }
 

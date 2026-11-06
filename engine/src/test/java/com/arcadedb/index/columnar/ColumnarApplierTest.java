@@ -37,6 +37,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.IntHashSet;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -394,8 +395,9 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
 
     final long original = breakChain(rid);
     try {
-      caughtUp();
+      awaitDrained(projection());
       assertThat(stats().unreadableCount("Asset")).isEqualTo(1);
+      assertThat(manager().awaitCaughtUp(50)).as("a page awaiting its retry is not caught up (final review A-I2)").isFalse();
       assertThat(brandCounts()).as("the previous value is still counted").isEqualTo(Map.of("a", 1L));
       assertThat(projection().owners().ownsExactly(rid.getPosition(), chainPages, chainPages.length)).as("owner map untouched").isTrue();
       assertThat(projection().unreadablePages().sizeForTesting()).isEqualTo(1);
@@ -420,12 +422,12 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
 
     final long original = breakChain(rid);
     try {
-      caughtUp();
+      awaitDrained(projection());
       assertThat(stats().unreadableCount("Asset")).isEqualTo(1);
 
       // a commit re-marking the page before the retry is due is a visit, not an attempt
       manager().markPages(bucketId(), new int[] { pageOf(rid) }, 1);
-      caughtUp();
+      awaitDrained(projection());
       assertThat(stats().unreadableCount("Asset")).isEqualTo(2);
 
       // the retry is not due: no pass re-reads the page
@@ -454,19 +456,42 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
   void anUnconvertibleValueIsCountedOncePerStagedRecord() throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
     // planted while the property is not in the schema: a DECIMAL a LONG column cannot hold
-    database.transaction(() -> database.newDocument("Asset").set("fileSize", new BigDecimal("1.5")).save());
+    final RID[] planted = new RID[1];
+    database.transaction(() -> planted[0] = database.newDocument("Asset").set("brand", "a").set("fileSize", new BigDecimal("1.5")).save()
+        .getIdentity());
     // the schema API, as ColumnarValueExtractorTest does: the SQL statement refuses a property its stored values break
     database.getSchema().getType("Asset").createProperty("fileSize", Type.LONG);
     database.command("sql", "CREATE INDEX ON Asset (fileSize) COLUMNAR");
     final ColumnarProjection projection = projection();
+    // the create rebuild projects the record and counts its failing value once
+    caughtUp();
 
     for (int pass = 0; pass < 4; pass++) {
       manager().markPages(bucketId(), new int[] { 0 }, 1);
       awaitDrained(projection);
     }
 
-    assertThat(projection.overlay().rows()).as("the record is projected, its value missing").isEqualTo(1);
+    long rows = 0;
+    try (final ColumnarSnapshot snapshot = projection.acquire()) {
+      for (final ColumnarSegmentView view : snapshot.segments())
+        rows += view.live().cardinality();
+    }
+    assertThat(rows).as("the record is projected, its value missing").isEqualTo(1);
     assertThat(manager().conversionFailures("Asset", "fileSize")).as("re-reads of the unchanged record count nothing").isEqualTo(1);
+
+    // a second projected column, then a change of it: the apply pass stages the record, its failing value counted with it
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR");
+    caughtUp();
+    assertThat(manager().conversionFailures("Asset", "fileSize")).as("the brand rebuild counts no fileSize failure").isEqualTo(1);
+    database.transaction(() -> planted[0].asDocument(true).modify().set("brand", "b").save());
+    caughtUp();
+    assertThat(manager().conversionFailures("Asset", "fileSize")).as("the staged record version counts its failing value").isEqualTo(2);
+    for (int pass = 0; pass < 3; pass++) {
+      manager().markPages(bucketId(), new int[] { 0 }, 1);
+      awaitDrained(projection);
+    }
+    assertThat(manager().conversionFailures("Asset", "fileSize")).as("re-reads of the unchanged record count nothing").isEqualTo(2);
   }
 
   @Test
@@ -598,6 +623,134 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
     assertThat(brandCounts()).isEqualTo(Map.of("a", 1L));
   }
 
+  @Test
+  void applyLagIsReadFromThePendingPagesAndClearedWhenTheyAreApplied() throws Exception {
+    createAsset();
+    caughtUp();
+    assertThat(manager().applyLagMs("Asset")).isZero();
+    // a clock one minute ahead of the tracker's: the page a pass is about to apply is a minute old
+    manager().setClockForTesting(() -> System.currentTimeMillis() + 60_000);
+
+    killPoint = KillPoint.arm(ColumnarApplier.BEFORE_PUBLISH);
+    insert("a");
+    assertThat(killPoint.awaitReached(10_000)).isTrue();
+    assertThat(manager().applyLagMs("Asset")).isGreaterThanOrEqualTo(59_000);
+
+    killPoint.releaseAsCrashed();
+    caughtUp();
+    assertThat(manager().applyLagMs("Asset")).isZero();
+    assertThat(manager().dictionarySize("Asset", "brand")).isEqualTo(1);
+  }
+
+  @Test
+  void aPageWaitingForAPassShowsAsLag() throws Exception {
+    createAsset();
+    caughtUp();
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      manager().setClockForTesting(() -> System.currentTimeMillis() + 60_000);
+      insert("a");
+
+      assertThat(manager().applyLagMs("Asset")).as("nothing applied it yet: the gauge must not wait for a pass").isGreaterThanOrEqualTo(59_000);
+    }
+  }
+
+  @Test
+  void dictionarySizeFollowsThePassAndTheCardinalityWarningTheLimit() throws Exception {
+    createAsset();
+    for (final String brand : new String[] { "a", "b", "c" })
+      insert(brand);
+    caughtUp();
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MAX_CARDINALITY, 3);
+    assertThat(manager().dictionarySize("Asset", "brand")).isEqualTo(3);
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).as("at the limit is not over it").isFalse();
+
+    insert("d");
+    caughtUp();
+    assertThat(manager().dictionarySize("Asset", "brand")).isEqualTo(4);
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).isTrue();
+
+    // the limit is read when the gauge is, so a raise clears the warning without another publish
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MAX_CARDINALITY, 10);
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).isFalse();
+  }
+
+  @Test
+  void aTypeWithSeveralBucketsReportsTheWorstBucketNotTheLastPublisher() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 3");
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR METADATA {\"maxCardinality\": 3}");
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MERGE_DEAD_RATIO, 0.99f);
+    final List<String> buckets = database.getSchema().getType("Asset").getBuckets(false).stream().map(Bucket::getName).toList();
+
+    // bucket 0 holds four distinct brands (one over the limit), bucket 1 two, bucket 2 one
+    final RID[] zero = new RID[4];
+    for (int i = 0; i < 4; i++)
+      zero[i] = insertInto(buckets.get(0), "z" + i);
+    final RID[] one = { insertInto(buckets.get(1), "o0"), insertInto(buckets.get(1), "o1") };
+    insertInto(buckets.get(2), "t0");
+    caughtUp();
+    manager().flushNow();
+
+    assertThat(manager().dictionarySize("Asset", "brand")).as("the largest bucket dictionary, not a sum").isEqualTo(4);
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).isTrue();
+
+    // another bucket publishes after the over-limit one: the warning stays
+    insertInto(buckets.get(2), "t1");
+    caughtUp();
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).isTrue();
+    assertThat(manager().dictionarySize("Asset", "brand")).isEqualTo(4);
+
+    // 8 rows flushed, 4 in bucket 0; killing 1 of bucket 0 and both of bucket 1 is 3 of 8 for the type, 1 of 4 for the first bucket
+    assertThat(manager().deadRatio("Asset")).isZero();
+    database.transaction(() -> {
+      zero[0].asDocument(true).delete();
+      one[0].asDocument(true).delete();
+      one[1].asDocument(true).delete();
+    });
+    caughtUp();
+    manager().flushNow();
+    assertThat(manager().deadRatio("Asset")).isCloseTo(3.0 / 8, Offset.offset(1e-9));
+  }
+
+  @Test
+  void anIndexLimitAboveTheDatabaseLimitIsNotClampedToIt() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MAX_CARDINALITY, 3);
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR METADATA {\"maxCardinality\": 100}");
+    for (final String brand : new String[] { "a", "b", "c", "d", "e" })
+      insert(brand);
+    caughtUp();
+
+    assertThat(manager().dictionarySize("Asset", "brand")).as("between the database limit (3) and the index's own (100)").isEqualTo(5);
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).isFalse();
+  }
+
+  @Test
+  void aSubtypeBucketCountsForTheParentIndex() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE Asset BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Asset.brand STRING");
+    database.command("sql", "CREATE INDEX ON Asset (brand) COLUMNAR METADATA {\"maxCardinality\": 3}");
+    database.command("sql", "CREATE DOCUMENT TYPE Car EXTENDS Asset BUCKETS 1");
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_MERGE_DEAD_RATIO, 0.99f);
+    insert("a");
+    for (int i = 0; i < 4; i++) {
+      final String brand = "c" + i;
+      database.transaction(() -> database.newDocument("Car").set("brand", brand).save());
+    }
+    caughtUp();
+    manager().flushNow();
+
+    // only the subtype's bucket is over the limit: the parent's series must see it
+    assertThat(manager().dictionarySize("Asset", "brand")).isEqualTo(4);
+    assertThat(manager().cardinalityExceeded("Asset", "brand")).isTrue();
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Car WHERE brand = 'c0'"));
+    caughtUp();
+    manager().flushNow();
+    assertThat(manager().deadRatio("Asset")).as("1 dead row of the 5 the parent index covers").isCloseTo(1.0 / 5, Offset.offset(1e-9));
+  }
+
   // ------------------------------------------------------------------------------------------------------------------ helpers
 
   private ColumnarIndexManager manager() {
@@ -673,6 +826,12 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
   private RID insert(final String brand) {
     final RID[] rid = new RID[1];
     database.transaction(() -> rid[0] = database.newDocument("Asset").set("brand", brand).save().getIdentity());
+    return rid[0];
+  }
+
+  private RID insertInto(final String bucketName, final String brand) {
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument("Asset").set("brand", brand).save(bucketName).getIdentity());
     return rid[0];
   }
 

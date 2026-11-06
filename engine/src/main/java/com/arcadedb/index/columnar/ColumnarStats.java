@@ -101,13 +101,12 @@ public final class ColumnarStats {
   private final Table<LongAdder> ordinalsReclaimed       = counter("dictionary.ordinals.reclaimed", false);
   private final Table<Duration>  flushDurations          = new Table<>("flush.duration", false, Duration::new);
   private final Table<Duration>  mergeDurations          = new Table<>("merge.duration", false, Duration::new);
-  private final Table<AtomicLong> applyLagMs             = gauge("apply.lag.ms");
   private final Table<AtomicLong> overlayRows            = gauge("overlay.rows");
   private final Table<AtomicLong> segments               = gauge("segments");
-  private final Table<AtomicLong> deadRatio              = gauge("segments.dead.ratio");
-  private final Table<AtomicLong> openFiles              = gauge("open.files");
-  private final Table<AtomicLong> dictionarySize         = gauge("dictionary.size");
-  private final Table<AtomicLong> cardinalityExceeded    = gauge("cardinality.exceeded");
+  private final Table<AtomicLong> openFiles              = gauge("files.open");
+  private final Table<?>[]       tables                 = { rebuilds, conversionFailures, applyPages, placeholdersResolved, flushes,
+      merges, recordsReread, unreadable, rebuildPagesReused, dictionaryCompactions, ordinalsReclaimed, flushDurations, mergeDurations,
+      overlayRows, segments, openFiles };
 
   private final LongAdder rebuildsTotal = new LongAdder();
   private final LongAdder applyPasses   = new LongAdder();
@@ -183,10 +182,6 @@ public final class ColumnarStats {
 
   // ---- gauge sources, set by the owner of the value
 
-  public void setApplyLagMs(final String type, final long ms) {
-    applyLagMs.cell(type, NONE).set(ms);
-  }
-
   public void setOverlayRows(final String type, final long rows) {
     overlayRows.cell(type, NONE).set(rows);
   }
@@ -201,16 +196,9 @@ public final class ColumnarStats {
     segments.cell(type, NONE).addAndGet(delta);
   }
 
-  public void setDictionarySize(final String type, final String property, final long n) {
-    dictionarySize.cell(type, property).set(n);
-  }
-
-  public void setCardinalityExceeded(final String type, final String property, final boolean exceeded) {
-    cardinalityExceeded.cell(type, property).set(exceeded ? 1 : 0);
-  }
-
-  public void setDeadRatio(final String type, final double ratio) {
-    deadRatio.cell(type, NONE).set(Double.doubleToRawLongBits(ratio));
+  /** Adds {@code delta} to the type's open segment file count: each bucket projection reports its own change, so the gauge is the type's sum. */
+  public void addOpenFiles(final String type, final int delta) {
+    openFiles.cell(type, NONE).addAndGet(delta);
   }
 
   public void setOpenFiles(final String type, final int n) {
@@ -303,10 +291,6 @@ public final class ColumnarStats {
     return sum(ordinalsReclaimed.existing(type, property));
   }
 
-  public long applyLagMs(final String type) {
-    return value(applyLagMs.existing(type, NONE));
-  }
-
   public long overlayRows(final String type) {
     return value(overlayRows.existing(type, NONE));
   }
@@ -315,20 +299,16 @@ public final class ColumnarStats {
     return (int) value(segments.existing(type, NONE));
   }
 
-  public long dictionarySize(final String type, final String property) {
-    return value(dictionarySize.existing(type, property));
-  }
-
-  public boolean cardinalityExceeded(final String type, final String property) {
-    return value(cardinalityExceeded.existing(type, property)) != 0;
-  }
-
-  public double deadRatio(final String type) {
-    return Double.longBitsToDouble(value(deadRatio.existing(type, NONE)));
-  }
-
   public int openFiles(final String type) {
     return (int) value(openFiles.existing(type, NONE));
+  }
+
+  /** Whether any cell was ever written; {@code recovery.pages}, a database-wide counter, is not a cell. */
+  public boolean hasCells() {
+    for (final Table<?> table : tables)
+      if (!table.cells.isEmpty())
+        return true;
+    return false;
   }
 
   /**
@@ -349,13 +329,9 @@ public final class ColumnarStats {
     ordinalsReclaimed.forEachKey(consumer);
     flushDurations.forEachKey(consumer);
     mergeDurations.forEachKey(consumer);
-    applyLagMs.forEachKey(consumer);
     overlayRows.forEachKey(consumer);
     segments.forEachKey(consumer);
-    deadRatio.forEachKey(consumer);
     openFiles.forEachKey(consumer);
-    dictionarySize.forEachKey(consumer);
-    cardinalityExceeded.forEachKey(consumer);
     consumer.accept("recovery.pages", null, null, null);
   }
 }
