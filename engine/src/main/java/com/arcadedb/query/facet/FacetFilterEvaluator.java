@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnReader;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
@@ -56,6 +57,8 @@ import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
 
@@ -192,7 +195,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
    * {@code p = v} or {@code p IN [...]} over an {@code LSM_TREE} index on {@code p} alone: the RIDs of the keys are looked up once per
    * execution into a {@link RidHashSet}, in the caller's transaction (the index answers with its changes). A row of a bucket the index
    * does not cover, and every row when the index is gone, not ready, folds case ({@code COLLATE ci}), or a key is not exactly of the
-   * property's kind (a number for a STRING, a decimal for a LONG, a null), is evaluated on the row instead.
+   * property's kind (a number for a STRING, a decimal for a LONG, a null), is evaluated on the row instead. The RIDs of the buckets the
+   * current user may not read are left out of the set, uncharged: nothing this evaluator does depends on records the user cannot see.
    * <p>
    * The set is charged to {@link FacetMemoryBudget} in 1 MiB steps while the cursor fills it (waiting up to
    * {@code COLUMNAR_QUERY_BUDGET_WAIT} per step). A refused step drops the partial set and releases its reservations: every row is then
@@ -211,6 +215,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     private       boolean[]                           coveredBuckets;
     /** Why this execution answers every row from the row instead of the RID set, null when the set answers. */
     private       String                              fallback;
+    /** The RIDs the set of this execution holds, for PROFILE; kept after {@link #close()}. */
+    private       long                                rids;
 
     private Index(final WhereClause filter, final String typeName, final String property, final Type propertyType) {
       super(filter);
@@ -236,6 +242,7 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     public void open(final CommandContext ctx) {
       close();
       fallback = null;
+      rids = 0;
       final DatabaseInternal db = ctx.getDatabase();
       final ColumnarStats stats = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager().getStats();
       openIndex(ctx, db, stats);
@@ -259,6 +266,21 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
         return;
       }
 
+      final List<IndexInternal> subIndexes = index.getSubIndexes();
+      int maxBucket = -1;
+      for (final IndexInternal sub : subIndexes)
+        maxBucket = Math.max(maxBucket, sub.getAssociatedBucketId());
+      // the buckets the current user may read: the RIDs of the others are neither kept nor charged (final review B-M3), so neither the
+      // budget nor a fallback depends on records the user cannot see, and such a bucket is not covered (its rows, never asked, would be
+      // evaluated on the row)
+      final SecurityDatabaseUser user = SecurityHelper.currentUser(db);
+      final boolean[] covered = new boolean[maxBucket + 1];
+      for (final IndexInternal sub : subIndexes) {
+        final int bucketId = sub.getAssociatedBucketId();
+        if (bucketId >= 0 && (user == null || user.requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD)))
+          covered[bucketId] = true;
+      }
+
       final FacetMemoryBudget budget = FacetMemoryBudget.instance();
       final long budgetWaitMs = GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong();
       final Runnable countWait = () -> stats.queryBudgetWaits(1);
@@ -268,7 +290,11 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
         final IndexCursor cursor = index.get(new Object[] { key });
         while (cursor.hasNext()) {
           final Identifiable next = cursor.next();
-          if (next == null || !found.add(next.getIdentity()))
+          if (next == null)
+            continue;
+          final RID rid = next.getIdentity();
+          final int bucketId = rid.getBucketId();
+          if (bucketId < 0 || bucketId >= covered.length || !covered[bucketId] || !found.add(rid))
             continue;
           // charged as the set grows, at the set's cost per RID (its free slots included), step by step
           while ((long) found.size() * RidHashSet.BYTES_PER_ENTRY > reserved) {
@@ -284,16 +310,9 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
           }
         }
       }
-      final List<IndexInternal> subIndexes = index.getSubIndexes();
-      int maxBucket = -1;
-      for (final IndexInternal sub : subIndexes)
-        maxBucket = Math.max(maxBucket, sub.getAssociatedBucketId());
-      final boolean[] covered = new boolean[maxBucket + 1];
-      for (final IndexInternal sub : subIndexes)
-        if (sub.getAssociatedBucketId() >= 0)
-          covered[sub.getAssociatedBucketId()] = true;
       coveredBuckets = covered;
       matches = found;
+      rids = found.size();
     }
 
     private static boolean foldsCase(final TypeIndex index) {
@@ -355,6 +374,11 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
       return fallback;
     }
 
+    /** The RIDs of the readable buckets the index answered this execution with (0 when the rows answer). */
+    public long rids() {
+      return rids;
+    }
+
     private void releaseReservations() {
       for (final FacetMemoryBudget.Reservation reservation : reservations)
         reservation.close();
@@ -394,8 +418,10 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
    * so the WHERE's own comparison and conversions decide; a dictionary value is decided once per ordinal. The snapshot of a bucket is
    * acquired by the first row of the bucket and held until {@link #close()}. The record (the row) answers instead when the column
    * cannot: a pending position, one no segment covers, no value in the column (missing, or a value it could not hold), a zero double
-   * (the column does not keep the sign), a bucket with no usable projection or one that does not publish the column, and a bucket the
-   * caller's open transaction changed.
+   * (the column does not keep the sign), a bucket with no usable projection or one that does not publish the column with the plan's
+   * property type, and a bucket the caller's open transaction changed. That last test is made once per bucket, at its first row (as the
+   * INDEX evaluator looks its RID set up once): a record the application changes later in the same iteration, in a bucket it had not
+   * changed before, is judged on its committed column value (final review A-M2, accepted under D20).
    * <p>
    * Not charged to {@link FacetMemoryBudget}: the snapshots pin projection state the projection holds anyway, and the per-ordinal
    * verdict memo is one byte per dictionary value up to the highest ordinal a row reached in the bucket, a small fraction of the
@@ -410,6 +436,8 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
     private       ColumnarIndexManager manager;
     private       ResultInternal       scratch;
     private       BucketColumn[]       buckets = new BucketColumn[0];
+    /** The one-bucket set the transaction check takes, reused for every bucket. */
+    private final IntHashSet           singleBucket = new IntHashSet(1);
     private       long                 columnAnswers;
     private       long                 recordAnswers;
 
@@ -536,9 +564,9 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
 
     private BucketColumn acquire(final int bucketId) {
       if (database.isTransactionActive()) {
-        final IntHashSet single = new IntHashSet(1);
-        single.add(bucketId);
-        if (database.getTransaction().hasChangesInFiles(single))
+        singleBucket.clear();
+        singleBucket.add(bucketId);
+        if (database.getTransaction().hasChangesInFiles(singleBucket))
           // the column holds committed values only; the rows are read as the transaction sees them
           return FROM_RECORDS;
       }
@@ -552,7 +580,9 @@ public abstract sealed class FacetFilterEvaluator implements AutoCloseable permi
         return FROM_RECORDS;
       }
       try {
-        if (snapshot.isUsable() && snapshot.publishes(property))
+        // decoded with the property type of the plan: a column the snapshot holds with another type (redefined since) is not read
+        final ColumnDefinition published = snapshot.isUsable() ? snapshot.publishedColumn(property) : null;
+        if (published != null && published.propertyType() == propertyType)
           return new BucketColumn(snapshot, property, snapshot.segments());
       } catch (final RuntimeException | Error e) {
         snapshot.close();

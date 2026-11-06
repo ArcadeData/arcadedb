@@ -20,10 +20,13 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarProjection;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.GlobalDictionary;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -43,18 +46,26 @@ import java.util.concurrent.atomic.AtomicLong;
  *   (append-only) and rebuilt when the bucket's current dictionary is another instance (a compaction), which bumps
  *   {@link #version()}. Arrays are published copy-on-write, so a concurrent query keeps those it read. A snapshot holding a dictionary
  *   that is neither the cached one nor its bucket's current one (a compaction raced the acquire) gets an array of its own, uncached
- *   and charged to {@link FacetMemoryBudget}.</li>
+ *   and charged to {@link FacetMemoryBudget}. A user who may not read every bucket of the declaring type gets an uncached entry of
+ *   the query's own, so the merge holds the values of the buckets it reads only.</li>
  * </ul>
- * A value no bucket references any more keeps its merged ordinal until the entry is dropped: the entries live in the database's
- * {@link ColumnarIndexManager#ordinalMapEntry}, cleared on any columnar schema event (they are rare: a projection or a column
- * created, dropped, renamed or retyped) and when the database closes. So an entry holds
- * at most the distinct values times the buckets, never anything proportional to the records.
+ * A value no bucket references any more keeps its merged ordinal until the entry is dropped or started afresh: the entries live in the
+ * database's {@link ColumnarIndexManager#ordinalMapEntry}, cleared on any columnar schema event (they are rare: a projection or a column
+ * created, dropped, renamed or retyped) and when the database closes, and an entry whose merged values outnumber twice the bucket
+ * ordinals it translates when a compaction rebuilds an array (dead values of older generations) is started afresh with a new
+ * version. So an entry holds at most about twice the values of the dictionaries it translates, never anything proportional to the
+ * records or to the history of the dictionaries.
  * <p>
  * {@link #close()} releases the memory a private array reserved; idempotent.
  */
 public abstract class CrossBucketOrdinalMap implements AutoCloseable {
-  /** Every version of every entry is drawn here, so a version never repeats, not even after an entry was dropped and recreated. */
-  private static final AtomicLong VERSIONS = new AtomicLong();
+  /**
+   * Every version of every entry is drawn here (a new entry, a rebuilt bucket array, an entry started afresh), so a version never repeats,
+   * not even across entries or after an entry was dropped and recreated.
+   */
+  private static final AtomicLong VERSIONS     = new AtomicLong();
+  /** A cached entry whose merged values outnumber the bucket ordinals it translates this many times is started afresh (I5). */
+  private static final int        STALE_FACTOR = 2;
 
   CrossBucketOrdinalMap() {
   }
@@ -71,7 +82,8 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
   public static CrossBucketOrdinalMap of(final DatabaseInternal db, final String typeName, final String property,
       final ColumnarSnapshot[] snapshots) {
     final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
-    final Entry entry = entry(manager, typeName, property);
+    // the cached entry merges every bucket any query read: its size would count the values of buckets this user may not read
+    final Entry entry = readsEveryBucket(db, typeName) ? entry(manager, typeName, property) : new Entry();
     for (final ColumnarSnapshot snapshot : snapshots)
       if (snapshot.dictionary(property) == null)
         throw new IllegalArgumentException("The snapshot of bucket " + snapshot.bucketId() + " has no dictionary of '" + property + "'");
@@ -92,7 +104,11 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
   /** The merged ordinal of a value, -1 when no snapshot's dictionary holds it (a value only a patched record has). */
   public abstract int mergedOf(Object value);
 
-  /** Changes whenever a bucket array is rebuilt; consumers caching per-ordinal state (plan 5) key on it. */
+  /**
+   * Unique to one merged ordinal space: no two entries share it (the cached one, a restricted user's private one, one recreated after
+   * a schema event), and it changes whenever a bucket array is rebuilt or the entry starts afresh. Appending new values keeps it, so
+   * consumers caching per-ordinal state (plan 5) key on {@code (version(), size())}.
+   */
   public abstract long version();
 
   /**
@@ -103,6 +119,21 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
 
   @Override
   public void close() {
+  }
+
+  /**
+   * Whether the current user may read every bucket of the declaring type and its subtypes. When not, the query merges its own snapshots
+   * in an uncached entry: its counter size and PROFILE cardinality then depend on the dictionaries of the buckets it reads only, never
+   * on values only hidden records hold, nor on what another user counted before.
+   */
+  private static boolean readsEveryBucket(final DatabaseInternal db, final String typeName) {
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(db);
+    if (user == null)
+      return true;
+    for (final Bucket bucket : db.getSchema().getType(typeName).getBuckets(true))
+      if (!user.requestAccessOnFile(bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return false;
+    return true;
   }
 
   /** The database's entry of the (declaring type, property), held by its {@link ColumnarIndexManager#ordinalMapEntry}. */
@@ -249,9 +280,12 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
 
   /** The published arrays of an entry, indexed by bucket id; immutable once published. */
   private record State(GlobalDictionary[] dictionaries, int[][] toMerged, Object[] values, int size, long version) {
-    /** A state with an array of its own: the values array is appended to in place, it is never shared between entries. */
+    /**
+     * A state with an array of its own and a new version: the values array is appended to in place, it is never shared between entries,
+     * and no two entries (nor two ordinal spaces of one entry) report the same version.
+     */
     static State empty() {
-      return new State(new GlobalDictionary[0], new int[0][], new Object[16], 0, 0);
+      return new State(new GlobalDictionary[0], new int[0][], new Object[16], 0, VERSIONS.incrementAndGet());
     }
 
     boolean covers(final int bucketId, final GlobalDictionary dictionary, final int dictionarySize) {
@@ -268,6 +302,11 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
     private volatile Identity[]            identities    = new Identity[0];
 
     private record Identity(GlobalDictionary dictionary, long version) {
+    }
+
+    /** The version of the entry's merged ordinal space as last published. */
+    long version() {
+      return state.version;
     }
 
     /** Keyed per bucket, so queries reading one bucket alone, then another, do not bump each other's version. */
@@ -321,6 +360,29 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
     private MergedOrdinalMap extend(final ColumnarIndexManager manager, final String property, final ColumnarSnapshot[] snapshots,
         final int[] sizes, final int maxBucketId) {
       final State previous = state;
+      final MergedOrdinalMap map = extendFrom(previous, manager, property, snapshots, sizes, maxBucketId);
+      final State next = state;
+      if (map == null || next.version == previous.version || next.size <= STALE_FACTOR * translatedOrdinals(next))
+        return map;
+      // a compaction re-translated a dictionary onto a merged space that keeps every value the old generation held: once those values
+      // outnumber the live ones STALE_FACTOR times, the entry starts afresh (a new version), so its size follows the live values
+      map.close();
+      mergedByValue.clear();
+      state = State.empty();
+      return extendFrom(state, manager, property, snapshots, sizes, maxBucketId);
+    }
+
+    /** The bucket ordinals the state translates: the values of the dictionaries it holds, each counted in every bucket holding it. */
+    private static long translatedOrdinals(final State state) {
+      long total = 0;
+      for (final int[] array : state.toMerged)
+        if (array != null)
+          total += array.length;
+      return total;
+    }
+
+    private MergedOrdinalMap extendFrom(final State previous, final ColumnarIndexManager manager, final String property,
+        final ColumnarSnapshot[] snapshots, final int[] sizes, final int maxBucketId) {
       final int length = Math.max(previous.dictionaries.length, maxBucketId + 1);
       final GlobalDictionary[] dictionaries = Arrays.copyOf(previous.dictionaries, length);
       final int[][] toMerged = Arrays.copyOf(previous.toMerged, length);

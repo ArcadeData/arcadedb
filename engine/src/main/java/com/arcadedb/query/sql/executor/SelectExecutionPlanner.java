@@ -311,8 +311,13 @@ public class SelectExecutionPlanner {
       targetBuckets = new int[buckets.size()];
       for (int i = 0; i < targetBuckets.length; i++) {
         final Bucket bucket = buckets.get(i);
-        targetBuckets[i] = bucket.getBucketName() != null ? db.getSchema().getBucketByName(bucket.getBucketName()).getFileId()
-            : bucket.getBucketNumber();
+        // a bucket named by an input parameter (FROM bucket:?) is resolved as the fetch resolves it, and the plan depends on it
+        if (bucket.getInputParam() != null)
+          planDependsOnInputParameters = true;
+        final String bucketName = resolveBucketName(bucket, context);
+        if (bucketName == null && bucket.getBucketNumber() == null)
+          throw new CommandExecutionException("FACETS: the target bucket " + bucket + " cannot be resolved");
+        targetBuckets[i] = bucketName != null ? db.getSchema().getBucketByName(bucketName).getFileId() : bucket.getBucketNumber();
         final DocumentType type = db.getSchema().getTypeByBucketId(targetBuckets[i]);
         final String typeName = type == null ? null : type.getName();
         targetType = i == 0 ? typeName : Objects.equals(targetType, typeName) ? targetType : null;
@@ -326,8 +331,12 @@ public class SelectExecutionPlanner {
     for (final FacetSpec spec : info.facets)
       if (spec.filter() != null)
         evaluators.add(FacetFilterEvaluator.choose(spec.filter(), facetType, db));
-    // no WHERE and no FILTER: every record of the target buckets is a match, which the projection holds without a record read
-    final int[] projectionBuckets = facetsWithoutWhere && evaluators.isEmpty() ? targetBuckets : null;
+    // no WHERE: every record of the target buckets is a match, which the projection holds without a record read; a FILTER the INDEX or
+    // PROJECTION evaluator answers by RID gives each its fail mask without one either, one only the row answers needs the rows
+    boolean byRid = true;
+    for (final FacetFilterEvaluator evaluator : evaluators)
+      byRid &= !(evaluator instanceof FacetFilterEvaluator.Record);
+    final int[] projectionBuckets = facetsWithoutWhere && byRid ? targetBuckets : null;
 
     plan.chain(new FacetCollectStep(facetsClause, FacetCollectStep.filterIndexByFacet(info.facets), evaluators, targetType,
         projectionBuckets, context));

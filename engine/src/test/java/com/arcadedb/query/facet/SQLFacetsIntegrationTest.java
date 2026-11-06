@@ -329,6 +329,49 @@ class SQLFacetsIntegrationTest extends TestHelper {
         .hasMessageContaining("FACETS needs a type, a bucket or a subquery as target");
   }
 
+  /** A script answers the result set of its last statement, and with it the facets of a {@code SELECT ... FACETS} there. */
+  @Test
+  @Timeout(300)
+  void scriptEndingInFacetsKeepsFacets() {
+    load(data(), 2_000);
+    final String sql = "SELECT FROM " + TYPE + " WHERE fileSize < 1048576 FACETS brand TERMS TOP 1000";
+    try (final ResultSet rs = database.command("sqlscript", "LET n = SELECT count(*) FROM " + TYPE + ";\n" + sql + ";")) {
+      assertThat(rids(rs)).hasSize((int) count("fileSize < 1048576"));
+      final FacetResults facets = rs.getFacets();
+      assertThat(facets).as("the facets of the script's last statement").isNotNull();
+      assertThat(counts(facets.get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", "fileSize < 1048576"));
+    }
+    try (final ResultSet rs = database.command("sqlscript", sql + ";\nSELECT count(*) AS c FROM " + TYPE + ";")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(2_000L);
+      assertThat(rs.getFacets()).as("facets of a statement that is not the last one are not the script's").isNull();
+    }
+  }
+
+  /**
+   * Final fix batch 2 (Task 18 minor): an IF answers the rows of the branch that ran, so a {@code SELECT ... FACETS} ending that branch
+   * gives its facets to the script; a WHILE answers no row of its body, and no facets either.
+   */
+  @Test
+  @Timeout(300)
+  void facetsOfAStatementEndingAnIfBranchAreTheScripts() {
+    load(data(), 2_000);
+    final String where = "fileSize < 1048576";
+    final String sql = "SELECT FROM " + TYPE + " WHERE " + where + " FACETS brand TERMS TOP 1000";
+    try (final ResultSet rs = database.command("sqlscript", "IF (1 = 1) {\n" + sql + ";\n}")) {
+      assertThat(rids(rs)).hasSize((int) count(where));
+      assertThat(rs.getFacets()).as("the facets of the branch that ran").isNotNull();
+      assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", where));
+    }
+    try (final ResultSet rs = database.command("sqlscript", "IF (1 = 2) {\n" + sql + ";\n} ELSE {\nSELECT 1 AS one;\n}")) {
+      assertThat(rs.next().<Number>getProperty("one").intValue()).isEqualTo(1);
+      assertThat(rs.getFacets()).as("the branch that ran has no facets").isNull();
+    }
+    try (final ResultSet rs = database.command("sqlscript", "LET i = 0;\nWHILE ($i < 1) {\n" + sql + ";\nLET i = $i + 1;\n}")) {
+      assertThat(rs.hasNext()).as("a WHILE answers no row of its body").isFalse();
+      assertThat(rs.getFacets()).as("nor its facets").isNull();
+    }
+  }
+
   @Test
   @Timeout(300)
   void cachedPlanReusedGivesFreshFacets() {
@@ -502,6 +545,37 @@ class SQLFacetsIntegrationTest extends TestHelper {
     }
   }
 
+  /**
+   * Final review C-I4: no WHERE, and FILTERs the INDEX and PROJECTION evaluators answer by RID. The match set is the projection's and
+   * each match gets its fail mask by RID, so computing the facets reads no record; the rows still come from the scan, masked.
+   */
+  @Test
+  @Timeout(300)
+  void noWhereWithFiltersAnsweredByRidTakesTheProjection() {
+    load(data(), RECORDS);
+    database.command("sql", "CREATE INDEX ON " + TYPE + " (author) NOTUNIQUE");
+    final String author = "author = 'author-3'";
+    final String small = "fileSize < 1048576";
+    final String sql = "SELECT FROM " + TYPE + " FACETS brand TERMS TOP 1000 FILTER " + author + ", author TERMS TOP 1000 FILTER " + small
+        + ", tags TERMS TOP 1000";
+    assertThat(profile(sql)).contains("[INDEX rids=", "[PROJECTION", "matchSource=projection ");
+
+    // LIMIT 0: no row is read, so every record read is one the facets read
+    final long before = readRecords();
+    final FacetResults facets = facets(sql + " LIMIT 0");
+    assertThat(readRecords() - before).as("records read to compute the facets").isZero();
+    assertThat(facets.exact()).isTrue();
+    // a FILTER applies to the other facets: each counts the matches that pass every FILTER but its own
+    assertThat(counts(facets.get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", small));
+    assertThat(counts(facets.get("author"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "author", author));
+    assertThat(counts(facets.get("tags"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "tags", author + " AND " + small));
+
+    // the rows are those that pass every FILTER
+    try (final ResultSet rs = database.query("sql", sql)) {
+      assertThat((long) rids(rs).size()).isEqualTo(count(author + " AND " + small));
+    }
+  }
+
   @Test
   @Timeout(300)
   void noWhereInOwnTransactionRecordsRows() {
@@ -575,6 +649,27 @@ class SQLFacetsIntegrationTest extends TestHelper {
       assertThat(rows).hasSize(4);
       assertThat(rows.getFirst().getPropertyNames()).containsExactly("size");
       assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", "fileSize < 1048576"));
+    }
+  }
+
+  /** Final review B-M1: a bucket named by an input parameter is a target as the same bucket named in the text is (no planning NPE). */
+  @Test
+  @Timeout(300)
+  void aBucketNamedByAnInputParameterIsATarget() {
+    final ColumnarTestData data = data();
+    data.buckets = 2;
+    load(data, 2_000);
+    final String bucket = database.getSchema().getType(TYPE).getBuckets(false).getFirst().getName();
+    final Map<Object, Long> expected;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM bucket:" + bucket + " FACETS brand TERMS TOP 1000")) {
+      expected = counts(rs.getFacets().get("brand"));
+    }
+    assertThat(expected).isNotEmpty();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM bucket::b FACETS brand TERMS TOP 1000", Map.of("b", bucket))) {
+      assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(expected);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT FROM bucket:? FACETS brand TERMS TOP 1000", bucket)) {
+      assertThat(counts(rs.getFacets().get("brand"))).isEqualTo(expected);
     }
   }
 }

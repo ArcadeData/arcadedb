@@ -43,6 +43,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -274,11 +275,12 @@ final class FullTextFunctionSearch {
     }
 
     @Override
-    public void forEachRid(final Predicate<RID> action) {
+    public void forEachRid(final IntPredicate bucketFilter, final Predicate<RID> action) {
       int ticks = 0;
       for (final RID rid : matches.keySet()) {
         guard.checkPeriodically(++ticks);
-        if (filter != null && !filter.accepts(rid))
+        // the bucket filter first: a bucket the caller may not read is never loaded
+        if (!bucketFilter.test(rid.getBucketId()) || filter != null && !filter.accepts(rid))
           continue;
         if (recordFilter != null && !recordFilter.decidesBucket(rid.getBucketId())) {
           // a bucket no index listing decided: the records' predicate is tested on the loaded record, as the rows do (issue #11069)

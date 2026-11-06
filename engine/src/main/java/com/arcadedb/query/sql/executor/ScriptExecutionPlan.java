@@ -25,6 +25,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.parser.BreakStatement;
 import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Limit;
@@ -188,10 +189,19 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
           partial = lastStep.syncPull(context, n);
         }
 
-        if (lastStep instanceof ScriptLineStep step)
+        if (lastStep instanceof ScriptLineStep step) {
           ((InternalResultSet) finalResult).setPlan(step.plan);
+          // the rows are drained, so a SELECT ... FACETS on the last line has its facets computed: they are the script's
+          ((InternalResultSet) finalResult).setFacets(step.plan.getFacets());
+        }
       }
     }
+  }
+
+  /** The facets of the last statement when it is a {@code SELECT ... FACETS}, null for any other script or before execution. */
+  @Override
+  public FacetResults getFacets() {
+    return finalResult == null ? null : finalResult.getFacets();
   }
 
   @Override

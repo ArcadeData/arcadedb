@@ -140,6 +140,36 @@ class PostCommandHandlerAutoLimitTest {
   }
 
   @Test
+  void appendsLimitToAFacetsQueryWithoutOne() {
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM Asset FACETS brand TERMS TOP 5", "sql", LIMIT, null)).isTrue();
+  }
+
+  @Test
+  void doesNotAppendWhenTheLimitPrecedesFacets() {
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM Asset FACETS brand TERMS LIMIT 3", "sql", LIMIT, null)).isFalse();
+    // A LIMIT before FACETS is the caller's own mistake: left as written, the parser says FACETS must come first, instead of
+    // reporting the second LIMIT this handler would have appended
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM Asset LIMIT 3 FACETS brand TERMS", "sql", LIMIT, null)).isFalse();
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM Asset LIMIT 3\nFACETS brand TERMS", "sql", LIMIT, null)).isFalse();
+  }
+
+  /** The words alone decide nothing: a query without a FACETS clause that mentions both is auto-limited as it always was. */
+  @Test
+  void aQueryMentioningFacetsAndLimitWithoutTheClauseIsStillAutoLimited() {
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT name, facets FROM P WHERE note = 'no limit here' ORDER BY name", "sql",
+        LIMIT, null)).isTrue();
+    assertThat(PostCommandHandler.requiresAutomaticLimit(
+        "SELECT FROM V WHERE tag = 'facets ' AND x IN (SELECT y FROM Z LIMIT 5) ORDER BY ts", "sql", LIMIT, null)).isTrue();
+  }
+
+  /** A FACETS query without a LIMIT of its own gets one, even when its text mentions the word: FACETS precedes the appended LIMIT. */
+  @Test
+  void aFacetsQueryWithoutItsOwnLimitIsAutoLimitedEvenWhenTheTextSaysLimit() {
+    assertThat(PostCommandHandler.requiresAutomaticLimit("SELECT FROM P WHERE note = 'a limit here' FACETS brand TERMS", "sql", LIMIT,
+        null)).isTrue();
+  }
+
+  @Test
   void probeLimitIsOneRowAboveTheCapAndSaturates() {
     // What the handler actually pushes down: the extra row is never serialized, it only tells a result ending
     // at the cap from a truncated one.

@@ -91,11 +91,16 @@ class FacetExecutorTermsTest extends TestHelper {
   }
 
   /** The value buckets as a map, the records without a value under {@link FacetOracle#MISSING} (as the oracle keys them). */
+  /**
+   * The counts keyed as the oracle keys them: the facets return the values a row holds (a Double for a DOUBLE property), the oracle
+   * keys them normalized ({@code Type.normalizeNumberForKey}), so the facet values go through the same normalization first.
+   */
   private static Map<Object, Long> counts(final FacetResult result) {
     final Map<Object, Long> counts = new HashMap<>();
     for (final FacetBucket bucket : result.buckets())
       if (!bucket.isMissing())
-        assertThat(counts.put(bucket.value(), bucket.count())).as("value " + bucket.value() + " returned twice").isNull();
+        assertThat(counts.put(FacetValueComparator.normalize(bucket.value()), bucket.count())).as("value " + bucket.value() + " returned twice")
+            .isNull();
     if (result.missing() > 0)
       counts.put(FacetOracle.MISSING, result.missing());
     return counts;

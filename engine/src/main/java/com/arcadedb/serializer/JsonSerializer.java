@@ -29,6 +29,9 @@ import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetBucket;
+import com.arcadedb.query.facet.FacetResult;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
@@ -526,6 +529,55 @@ public class JsonSerializer {
   public JsonSerializer setIncludeTypeHints(final boolean includeTypeHints) {
     this.includeTypeHints = includeTypeHints;
     return this;
+  }
+
+  /**
+   * The {@code facets} member of a query response: {@link FacetResults#toJSON} with every value of the data (a term, a bound, a
+   * cursor) written exactly as {@link #serializeResult} writes a row's value of the same property (final review C-I8): a date in the
+   * schema's date format, a date-time in its date-time format at the column's precision, a non-finite number by its name (the engine
+   * already gives every value the Java type a row of its property holds). With type hints a terms facet over a property whose type JSON does not round-trip carries the
+   * {@code @props} hint a row of that property would ({@code value:<type id>}), so the client decodes its values as it decodes rows.
+   */
+  public JSONObject serializeFacets(final Database database, final FacetResults facets) {
+    // the engine hands the values over as a row of the property holds them: encoded here exactly as such a row's
+    final JSONObject json = facets.toJSON((value, type) -> serializeValue(database, value, type));
+    if (includeTypeHints)
+      for (final String alias : facets.aliases()) {
+        final FacetResult result = facets.get(alias);
+        final Type valueType = result.valueType();
+        // Issue #10899, as a row's: a non-finite DOUBLE goes out as its marker string, which only the hint turns back into the number
+        if (valueType != null && (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(valueType) || (valueType == Type.DOUBLE
+            && carriesNonFiniteTerm(result))))
+          json.getJSONObject(alias).put(FacetResult.VALUE_TYPE_HINT, "value:" + valueType.getId());
+      }
+    return json;
+  }
+
+  /** True when a term the facet writes with its {@code value} hint is a non-finite {@code Double}; range and histogram bounds are not. */
+  private static boolean carriesNonFiniteTerm(final FacetResult result) {
+    final List<FacetBucket> buckets = result.buckets();
+    if (buckets != null)
+      for (int i = 0; i < buckets.size(); i++) {
+        final FacetBucket bucket = buckets.get(i);
+        if (bucket.key() == null && !bucket.isMissing() && isNonFiniteDouble(bucket.value()))
+          return true;
+      }
+    return false;
+  }
+
+  /**
+   * One value as {@link #serializeResult} writes a column of {@code propertyType} (null when unknown): the JSON-ready form, a temporal
+   * already formatted.
+   */
+  private Object serializeValue(final Database database, final Object value, final Type propertyType) {
+    final Object serialized = formatTemporalForPrecision(serializeObject(database, value), propertyType,
+        database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
+    if (!(serialized instanceof Date || serialized instanceof Calendar || serialized instanceof Temporal))
+      return serialized;
+    // left for the date formats of the row's JSONObject: formatted by the same one here
+    final JSONObject row = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
+        .setDateTimeFormat(database.getSchema().getDateTimeFormat()).put("v", serialized);
+    return row.get("v");
   }
 
   private void setMetadata(final Document document, final JSONObject object) {

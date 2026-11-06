@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
+import com.arcadedb.index.columnar.ColumnarSchemaEvent;
 import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
@@ -386,6 +387,82 @@ class CrossBucketOrdinalMapTest extends TestHelper {
       }
     } finally {
       close(s1);
+    }
+  }
+
+  /**
+   * Final review C-I6: consumers caching per-ordinal state key on {@link CrossBucketOrdinalMap#version()}, so two entries (the cached
+   * one, a private one of a restricted user, one recreated after a schema event) never report the same version, even before any rebuild.
+   */
+  @Test
+  @Timeout(300)
+  void everyEntryHasAVersionOfItsOwn() {
+    final ColumnarTestData data = data(3);
+    data.createSchema(database);
+    data.insertAssets(database, 1_500);
+    FacetOracle.awaitCaughtUp(database);
+
+    final Set<Long> versions = new HashSet<>();
+    final ColumnarSnapshot[] snapshots = acquire(TYPE);
+    try {
+      try (final CrossBucketOrdinalMap cached = of(snapshots)) {
+        assertThat(versions.add(cached.version())).isTrue();
+      }
+      // private entries, as a user who may not read every bucket gets one per query
+      assertThat(versions.add(new CrossBucketOrdinalMap.Entry().version())).isTrue();
+      assertThat(versions.add(new CrossBucketOrdinalMap.Entry().version())).isTrue();
+      // a columnar schema event drops the cached entry: the next query's entry is a new one, with a new version
+      manager().onSchemaEvent(new ColumnarSchemaEvent(ColumnarSchemaEvent.Kind.RENAME, snapshots[0].bucketId(), -1, null, TYPE));
+      try (final CrossBucketOrdinalMap recreated = of(snapshots)) {
+        assertThat(versions.add(recreated.version())).isTrue();
+      }
+    } finally {
+      close(snapshots);
+    }
+  }
+
+  /**
+   * Final review C-I5: a compaction re-translates the new dictionary onto the merged space, which keeps every value no bucket holds any
+   * more. Under churn (values written, deleted, compacted away, cycle after cycle) the entry is started afresh once its merged values
+   * outnumber twice the values of the dictionaries it translates, so its size follows the live values, not the history.
+   */
+  @Test
+  @Timeout(600)
+  void theEntryOfAChurningDictionaryStaysBounded() throws Exception {
+    final ColumnarTestData data = data(3);
+    data.createSchema(database);
+    data.insertAssets(database, 1_500);
+    FacetOracle.awaitCaughtUp(database);
+    final Bucket first = database.getSchema().getType(TYPE).getBuckets(false).getFirst();
+
+    for (int cycle = 0; cycle < 4; cycle++) {
+      final int from = 10_000 + cycle * 1_200;
+      database.transaction(() -> {
+        for (int i = 0; i < 1_200; i++)
+          database.newDocument(TYPE).set("brand", "brand-" + (from + i)).save(first.getName());
+      });
+      FacetOracle.awaitCaughtUp(database);
+      final ColumnarSnapshot[] grown = acquire(TYPE);
+      try (final CrossBucketOrdinalMap map = of(grown)) {
+        mergedByValue(map, grown);
+      } finally {
+        close(grown);
+      }
+
+      deleteBrandsOfBucket(first, from, from + 1_200);
+      assertThat(manager().compactDictionaryNow(first.getFileId(), "brand")).isTrue();
+      final ColumnarSnapshot[] compacted = acquire(TYPE);
+      try (final CrossBucketOrdinalMap map = of(compacted)) {
+        long live = 0;
+        for (final ColumnarSnapshot snapshot : compacted)
+          if (snapshot.dictionary("brand") != null)
+            live += snapshot.dictionary("brand").size();
+        assertThat((long) map.size()).as("merged values after cycle " + cycle).isLessThanOrEqualTo(2 * live);
+        // still a correct map of the current dictionaries
+        mergedByValue(map, compacted);
+      } finally {
+        close(compacted);
+      }
     }
   }
 }

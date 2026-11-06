@@ -19,6 +19,7 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -84,6 +85,11 @@ public class ProfilingResultSet implements ResultSet {
   @Override
   public Optional<ExecutionPlan> getExecutionPlan() {
     return delegate.getExecutionPlan();
+  }
+
+  @Override
+  public FacetResults getFacets() {
+    return delegate.getFacets();
   }
 
   @Override
