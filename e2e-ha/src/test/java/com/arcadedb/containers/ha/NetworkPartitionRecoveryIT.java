@@ -21,6 +21,8 @@ package com.arcadedb.containers.ha;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.FacetDatabaseWrapper;
+import com.arcadedb.test.support.FacetSnapshot;
 import com.arcadedb.test.support.ServerWrapper;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
@@ -35,7 +37,10 @@ import java.net.URL;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static com.arcadedb.test.support.FacetDatabaseWrapper.REBUILDS;
+import static com.arcadedb.test.support.FacetDatabaseWrapper.SEGMENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -51,6 +56,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+
+  private static final int  QUERIES_DURING_PARTITION = 20;
+  /** Spreads the facet queries over the write window; not a timing assertion. */
+  private static final long QUERY_SPACING_MILLIS     = 250L;
 
 
   @Test
@@ -156,6 +165,123 @@ class NetworkPartitionRecoveryIT extends ContainersTestTemplate {
     dbs[leaderIdx].close();
     dbs[otherIdx].close();
     dbRestarted.close();
+  }
+
+  /**
+   * As {@link #partitionRecovery()} with facet data: while a follower is isolated, the connected follower's facet answers are always
+   * exact or carry their lag; after the heal (reconnect plus a SIGKILL restart, so crash recovery) the isolated node catches up
+   * through the Raft log, its facets equal the {@code GROUP BY} of every node and its projection is not rebuilt. The catch-up stays on
+   * the log only while the leader keeps the entries the node missed: 1500 ops are far below the default
+   * {@code arcadedb.ha.snapshotThreshold}, and a lower threshold would install a snapshot and count a {@code snapshot_install} rebuild.
+   */
+  @Test
+  @Timeout(value = 25, unit = TimeUnit.MINUTES) // a hang detector, sized for host stalls
+  @DisplayName("Partition recovery: facets stay exact or report their lag, the healed node does not rebuild")
+  void partitionRecoveryKeepsFacetsExact() throws Exception {
+    final GenericContainer<?>[] nodeContainers = new GenericContainer<?>[3];
+    for (int i = 0; i < 3; i++)
+      nodeContainers[i] = createPersistentArcadeContainer("arcadedb-" + i, SERVER_LIST, "majority", network);
+
+    final List<ServerWrapper> servers = startCluster();
+    final FacetDatabaseWrapper[] f = new FacetDatabaseWrapper[3];
+    for (int i = 0; i < 3; i++)
+      f[i] = new FacetDatabaseWrapper(servers.get(i), DatabaseWrapper.Protocol.HTTP, i);
+
+    final AtomicReference<Thread> writerThread = new AtomicReference<>();
+    try {
+      f[0].createDatabase();
+      f[0].createSchema();
+      for (final FacetDatabaseWrapper node : f)
+        logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
+
+      logger.info("Ingested {} assets", f[0].ingest(2_000));
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 120);
+
+      final int leaderIdx = findLeaderIndex(servers);
+      assertThat(leaderIdx).as("a leader before the partition").isNotNegative();
+      // isolate a follower, so the majority keeps the leader
+      final int isolatedIdx = (leaderIdx + 1) % 3;
+      final int otherIdx = (leaderIdx + 2) % 3;
+      logger.info("Leader is node {}, isolating follower node {}", leaderIdx, isolatedIdx);
+
+      disconnectFromNetwork(nodeContainers[isolatedIdx]);
+      waitForRaftLeader(List.of(servers.get(leaderIdx), servers.get(otherIdx)), 60);
+
+      final AtomicReference<Object> writerOutcome = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          writerOutcome.set(f[leaderIdx].runMixedOps(1_500));
+        } catch (final Throwable t) {
+          writerOutcome.set(t);
+        }
+      }, "facet-partition-writer");
+      writerThread.set(writer);
+      writer.start();
+
+      int duringWrites = 0;
+      int nonExact = 0;
+      int metaInconsistent = 0;
+      for (int q = 0; q < QUERIES_DURING_PARTITION; q++) {
+        final boolean writing = writer.isAlive();
+        final FacetSnapshot s = f[otherIdx].queryFacets("");
+        // ruling B-M1: an inexact answer that reports no lag is logged and counted, not a failure (as the chaos FACET_META warning)
+        if (!s.metaConsistent()) {
+          metaInconsistent++;
+          logger.warn("Query {} on the connected follower: inexact without lag: exact={} lagMs={} patched={} sources={}", q,
+              s.exact(), s.lagMs(), s.patched(), s.sources());
+        }
+        if (writing)
+          duringWrites++;
+        if (!s.exact())
+          nonExact++;
+        Thread.sleep(QUERY_SPACING_MILLIS);
+      }
+      logger.info("Connected follower: {} queries, {} while the writer ran, {} not exact, {} inexact without lag", QUERIES_DURING_PARTITION,
+          duringWrites, nonExact, metaInconsistent);
+      assertThat(duringWrites).as("facet queries ran while the partition writer was writing").isPositive();
+
+      writer.join(TimeUnit.MINUTES.toMillis(5));
+      assertThat(writer.isAlive()).as("the writer during the partition ended").isFalse();
+      // through the majority leader: the isolated follower is not on the write path
+      logger.info("Mixed ops through the leader during the partition: {}",
+          FacetDatabaseWrapper.assertWrote(writerOutcome.get(), "writer during the partition", true));
+
+      // After a Docker network partition, gRPC channels between peers are stuck in exponential backoff: restart the isolated node
+      logger.info("Healing partition: reconnecting and restarting isolated node {}", isolatedIdx);
+      reconnectToNetwork(nodeContainers[isolatedIdx]);
+      // stop() removes the container, taking its log with it
+      dumpContainerLogs("partitionFacets-stop");
+      f[isolatedIdx].close();
+      f[isolatedIdx] = null; // closed once: the finally skips it until its successor is opened
+      nodeContainers[isolatedIdx].stop();
+      nodeContainers[isolatedIdx].start();
+      assertThat(waitForContainerHealthy(nodeContainers[isolatedIdx], 90)).as("isolated node restarted").isTrue();
+
+      final FacetDatabaseWrapper restarted = new FacetDatabaseWrapper(new ServerWrapper(nodeContainers[isolatedIdx]),
+          DatabaseWrapper.Protocol.HTTP, 100 + isolatedIdx);
+      f[isolatedIdx] = restarted;
+      // metrics bound, manifest loaded
+      Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).ignoreExceptions()
+          .until(() -> restarted.scrapeMetric(SEGMENTS) > 0);
+
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f), 180);
+      // asserted after the comparison: by then any rebuild the open scheduled has started and been counted
+      final String reasons = restarted.rebuildsByReason();
+      logger.info("Healed node {} rebuilds after the restart: {}", isolatedIdx, reasons);
+      assertThat(restarted.scrapeMetric(REBUILDS)).as("restart must not rebuild (%s)", reasons).isZero();
+    } finally {
+      final Thread writer = writerThread.get();
+      if (writer != null)
+        writer.join(TimeUnit.MINUTES.toMillis(5));
+      dumpContainerLogs("partitionFacets-end");
+      for (final FacetDatabaseWrapper wrapper : f)
+        if (wrapper != null)
+          try {
+            wrapper.close();
+          } catch (final RuntimeException e) {
+            logger.warn("Closing {} failed: {}", wrapper.describe(), e.getMessage());
+          }
+    }
   }
 
   @Test

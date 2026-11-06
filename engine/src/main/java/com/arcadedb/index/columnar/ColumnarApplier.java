@@ -63,8 +63,9 @@ import java.util.logging.Level;
  * A RECORD whose bytes cannot be read (a broken chain or pointer, a record in motion, a value that fails to deserialize) keeps its
  * previous value, is counted in {@code apply.unreadable} and never touches the owner maps. A permanently corrupt slot is never re-marked
  * by a commit, so its page is re-marked here with an exponential backoff; after {@value #UNREADABLE_ATTEMPTS_BEFORE_REBUILD} failed
- * retries a {@code corrupt} rebuild is requested, the previous valid state serving meanwhile. Unreadable records are logged once per page
- * per minute (with the exception when deserialization threw), and the rebuild request once. A committed page that cannot be read at
+ * retries a {@code corrupt} rebuild is requested, the previous valid state serving meanwhile. The first failure of a page is logged at
+ * FINE (most likely a commit still publishing the record), the failed retries at WARNING once per page per minute (with the exception
+ * when deserialization threw), and the rebuild request once. A committed page that cannot be read at
  * all is kept whole and retried the same way. So is a page past the bucket's committed page count (a commit's first mark drained before
  * its pages are published), never applied as an empty page, but neither counted, logged nor rebuilt: it leaves the retries once visible,
  * or after the last attempt (see {@link UnreadablePages#notVisible}).
@@ -575,15 +576,22 @@ final class ColumnarApplier {
       }
     }
 
-    /** Records the failed visit of a page in the retries, logs it (rate limited); true when the page is due for a rebuild. */
+    /**
+     * Records the failed visit of a page in the retries and logs it; true when the page is due for a rebuild. The first failure, which
+     * covers every visit before the first retry and is most likely a commit still publishing the record, logs at FINE without using up
+     * the rate limit, so the WARNING of the first retry that still fails is not held back by it; the WARNINGs are rate limited.
+     */
     private boolean failed(final UnreadablePages retries, final int page, final long nowMs) {
-      final boolean corrupt = retries.failed(page, nowMs) >= UNREADABLE_ATTEMPTS_BEFORE_REBUILD;
+      final int attempts = retries.failed(page, nowMs);
       // with the exception of a record that failed to deserialize; a broken chain, a record in motion, an undecodable header or an
       // unreadable committed page has none
-      if (retries.logDue(page, nowMs))
-        LogManager.instance().log(this, Level.WARNING, "Unreadable record on page %d of bucket '%s': its previous columnar value is kept and "
-            + "the page is retried", unreadableCause, page, projection.bucketName());
-      return corrupt;
+      if (attempts <= 1)
+        LogManager.instance().log(this, Level.FINE, "Unreadable record on page %d of bucket '%s' (first visit, likely a commit still "
+            + "publishing it): its previous columnar value is kept and the page is retried", unreadableCause, page, projection.bucketName());
+      else if (retries.logDue(page, nowMs))
+        LogManager.instance().log(this, Level.WARNING, "Unreadable record on page %d of bucket '%s' after %d attempts: its previous "
+            + "columnar value is kept and the page is retried", unreadableCause, page, projection.bucketName(), attempts);
+      return attempts >= UNREADABLE_ATTEMPTS_BEFORE_REBUILD;
     }
 
     private void prepare(final LocalDatabase db) {

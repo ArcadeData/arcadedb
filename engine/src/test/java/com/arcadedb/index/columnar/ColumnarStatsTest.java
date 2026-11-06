@@ -116,13 +116,18 @@ class ColumnarStatsTest {
     stats.queryPatched(2);
     stats.queryBudgetWaits(3);
     stats.queryPatchOverflow();
-    stats.queryFallbackScan();
-    stats.queryFallbackScan();
+    stats.queryFallbackScan(ColumnarStats.FALLBACK_NO_INDEX);
+    stats.queryFallbackScan(ColumnarStats.FALLBACK_NO_INDEX);
+    stats.queryFallbackScan(ColumnarStats.FALLBACK_NOT_PUBLISHED);
 
     assertThat(stats.queryPatchedCount()).isEqualTo(42);
     assertThat(stats.queryBudgetWaitsCount()).isEqualTo(3);
     assertThat(stats.queryPatchOverflowsCount()).isEqualTo(1);
-    assertThat(stats.queryFallbackScansCount()).isEqualTo(2);
+    assertThat(stats.queryFallbackScansCount()).as("the sum of every reason").isEqualTo(3);
+    assertThat(stats.queryFallbackScansCount("no_index")).isEqualTo(2);
+    assertThat(stats.queryFallbackScansCount("not_published")).isEqualTo(1);
+    assertThat(stats.queryFallbackScansCount("read_events")).isZero();
+    assertThat(stats.queryFallbackScansCount("unknown")).isZero();
     // database-wide counters, not cells keyed by type
     assertThat(stats.hasCells()).isFalse();
   }

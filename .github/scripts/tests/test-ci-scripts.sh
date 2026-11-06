@@ -2455,6 +2455,7 @@ cat >"$work/chaos/run1/summary.json" <<'JSON'
   "nodes": 3,
   "duration": "PT1H",
   "writers": 4,
+  "facetWriters": 1,
   "faults": "kill:3,pause",
   "result": "PASS",
   "message": "Completed 12 steps\nsecond line",
@@ -2463,6 +2464,9 @@ cat >"$work/chaos/run1/summary.json" <<'JSON'
   "lateCommits": 5,
   "reformats": 7,
   "stepsWithUnreadReformats": 1,
+  "facetWarnings": [],
+  "facetWarningsDropped": 0,
+  "facets": { "checks": 3 },
   "replay": "./mvnw verify -Dchaos.seed=42",
   "addedLater": [],
   "nothing": null
@@ -2476,7 +2480,8 @@ else
     fail "renders the result as the heading" "$chaos_out"
 fi
 for leaf in seed nodes duration writers faults message steps ledger.acked ledger.ackedLate ledger.failed ledger.unknown \
-    ledger.lostUnknown ledger.inFlight lateCommits reformats stepsWithUnreadReformats replay addedLater nothing; do
+    ledger.lostUnknown ledger.inFlight lateCommits reformats stepsWithUnreadReformats facetWriters facetWarnings \
+    facetWarningsDropped facets.checks replay addedLater nothing; do
     if grep -qE "^- ${leaf//./\\.}: " <<<"$chaos_out"; then
         pass "prints the '$leaf' field"
     else
@@ -2501,8 +2506,8 @@ fi
 
 # The fixture above must keep covering every key the harness writes, or the cases above stop
 # proving that the real summary reaches the page.
-chaos_keys="$(sed -n '/public void summary(/,/Files.writeString/p' \
-    e2e-ha/src/test/java/com/arcadedb/containers/ha/chaos/ChaosReport.java | grep -oE '\.put\("[a-zA-Z]+"' | sed -E 's/\.put\("(.*)"/\1/')"
+chaos_keys="$(sed -n '/public .*void summary(/,/Files.writeString/p' \
+    e2e-ha/src/test/java/com/arcadedb/containers/ha/chaos/ChaosReport.java | grep -oE '\.put\("[a-zA-Z]+"' | sed -E 's/\.put\("(.*)"/\1/' || true)"
 if [[ -z $chaos_keys ]]; then
     fail "reads the keys ChaosReport.summary writes" "no .put(\"...\") found in ChaosReport.summary"
 else

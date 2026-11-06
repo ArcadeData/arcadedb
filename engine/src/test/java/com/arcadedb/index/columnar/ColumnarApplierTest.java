@@ -56,6 +56,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -449,6 +450,60 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
       assertThat(projection().unreadablePages().sizeForTesting()).isZero();
     } finally {
       restoreChain(rid, original);
+    }
+  }
+
+  @Test
+  void theFirstFailureOfAPageLogsAtFineAndABackoffFailureWarns() throws Exception {
+    // a first failure is most likely a commit still publishing the record: FINE, and it must not use up the WARNING's rate limit
+    createAsset();
+    final AtomicLong clock = new AtomicLong(1_000_000L);
+    manager().setClockForTesting(clock::get);
+    final RID rid = chunkedRecord("a");
+    caughtUp();
+    final String text = "Unreadable record on page " + pageOf(rid);
+
+    final long original = breakChain(rid);
+    try (final LogCapture log = new LogCapture()) {
+      try {
+        awaitDrained(projection());
+        assertThat(stats().unreadableCount("Asset")).isEqualTo(1);
+        // a commit re-marking the page before the retry is due is a visit, not an attempt: still the first failure
+        manager().markPages(bucketId(), new int[] { pageOf(rid) }, 1);
+        awaitDrained(projection());
+        assertThat(stats().unreadableCount("Asset")).isEqualTo(2);
+        assertThat(log.messages(Level.WARNING, text)).as("no WARNING for a first failure").isEmpty();
+        assertThat(log.messages(Level.FINE, text)).hasSize(2);
+
+        // the first backoff visit still fails: the real signal, at once
+        clock.addAndGet(ColumnarIndexManager.MAINTENANCE_BACKOFF_MAX_MS);
+        awaitUnreadable(3);
+        assertThat(log.messages(Level.WARNING, text)).hasSize(1).first().asString().contains("after 2 attempts");
+      } finally {
+        restoreChain(rid, original);
+      }
+    }
+  }
+
+  @Test
+  void aPageThatFailsOnceThenReadsNeverWarns() throws Exception {
+    createAsset();
+    manager().setClockForTesting(() -> 1_000_000L);
+    final RID rid = chunkedRecord("a");
+    caughtUp();
+
+    try (final LogCapture log = new LogCapture()) {
+      final long original = breakChain(rid);
+      try {
+        awaitDrained(projection());
+        assertThat(stats().unreadableCount("Asset")).isEqualTo(1);
+      } finally {
+        restoreChain(rid, original);
+      }
+      caughtUp();
+      assertThat(projection().unreadablePages().sizeForTesting()).as("the page read on its next visit").isZero();
+      assertThat(log.messages(Level.WARNING, "Unreadable record")).isEmpty();
+      assertThat(log.messages(Level.FINE, "Unreadable record on page " + pageOf(rid))).hasSize(1);
     }
   }
 

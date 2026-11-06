@@ -790,7 +790,7 @@ public final class ColumnarProjection {
   }
 
   /** The last reason passed to {@link #markUnusable} or recorded by {@link #open}, null when usable. */
-  String unusableReason() {
+  public String unusableReason() {
     return unusableReason;
   }
 

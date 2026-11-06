@@ -23,6 +23,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.BrokenChunkChainException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
@@ -283,13 +285,30 @@ public final class FacetPatcher {
     }
   }
 
-  /** The record as the caller's transaction reads it, null when there is none at the position. */
+  /**
+   * The record as the caller's transaction reads it, null when there is none at the position. Called by the facet patch path
+   * ({@link #countPatched}), the facet fallback scan ({@code FacetFallbackScanner}) and the accelerated GROUP BY's read of the pending
+   * pages ({@code ColumnarGroupByStep.countProjection}).
+   *
+   * @throws ConcurrentModificationException when the record's chunk chain reads as broken, on every node. Kept as a safety net after
+   *                                         #10941 and #11283 (both fixed): a replica read that overlapped a replicated apply was able to
+   *                                         see a chain in motion, and the engine cannot tell that from a corruption, so the statement
+   *                                         fails with a retryable error and the next attempt reads the chain whole; removal tracked in
+   *                                         #11359. A chain that stays broken surfaces once the client's bounded retries are spent,
+   *                                         with the original diagnosis and its CHECK DATABASE FIX hint in the message. Only an atomic
+   *                                         single-request command is retried automatically: inside an explicit transaction the client
+   *                                         manages (an HTTP session, a {@code RemoteDatabase} transaction) the exception reaches the
+   *                                         client at once, which retries or gives up itself
+   */
   public static Document recordAt(final DatabaseInternal db, final RID rid) {
     // the empty slots of pending pages are not in the patch set (MatchSet keeps the occupied ones), so an absent record is a delete
     try {
       return db.lookupByRID(rid, true).asDocument();
     } catch (final RecordNotFoundException e) {
       return null;
+    } catch (final BrokenChunkChainException e) {
+      throw new ConcurrentModificationException("Columnar read of multi-page record " + rid
+          + " met a broken chunk chain, possibly a replicated apply in progress on this node, retry the statement: " + e.getMessage(), e);
     }
   }
 
