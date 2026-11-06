@@ -64,21 +64,37 @@ final class ColumnarFlusher {
   }
 
   /**
-   * Whether the projection needs a flush now: the overlay holds {@code maxRows} rows or more, or holds rows the oldest of which is
-   * {@code intervalMs} old (P39); with no overlay row (a deletes-only workload), when applied pages wait for their dead sets to be
-   * persisted and the last flush is {@code intervalMs} old. Always true while a failed flush left a frozen overlay. Cheap: no
-   * allocation, one tracker lock at most.
+   * Whether the projection needs a flush now (P39, Task 3 of #10662): the overlay holds {@code maxRows} rows or more; or holds
+   * {@code minRows} rows or more the oldest of which is {@code intervalMs} old; or holds rows the oldest of which is {@code maxAgeMs}
+   * old; or, with no overlay row (a deletes-only workload), applied pages wait for their dead sets to be persisted and the last flush is
+   * {@code maxAgeMs} old; or the unflushed pages of the projection reach half of {@link ColumnarIndexManager#REAPPLY_FLOOR}, so an unclean
+   * open re-applies what a crash left unflushed instead of rebuilding the projection. {@code maxAgeMs} is never less than
+   * {@code intervalMs}. Always true while a failed flush left a frozen overlay. A WAL drop never asks for a flush: the recovery set covers
+   * the unflushed pages ({@link ColumnarIndexManager#persistRecoverySet()}). Cheap: no allocation, one tracker lock per tracker at most.
    */
-  static boolean shouldFlush(final ColumnarProjection p, final long nowMs, final long intervalMs, final int maxRows) {
+  static boolean shouldFlush(final ColumnarProjection p, final long nowMs, final long intervalMs, final int maxRows, final int minRows,
+      final long maxAgeMs) {
     if (p.hasFrozenOverlay())
       return true;
     final ColumnarOverlay overlay = p.overlay();
     final long rows = overlay.rows();
     if (rows >= maxRows)
       return true;
-    if (rows > 0)
-      return nowMs - overlay.oldestRowMs() >= intervalMs;
-    return nowMs - p.lastFlushMs() >= intervalMs && hasUnflushedPages(p);
+    final long maxAge = Math.max(intervalMs, maxAgeMs);
+    if (rows > 0) {
+      final long age = nowMs - overlay.oldestRowMs();
+      if (age >= maxAge || rows >= minRows && age >= intervalMs)
+        return true;
+    }
+    final int unflushed = unflushedPageCount(p);
+    if (unflushed == 0)
+      return false;
+    return unflushed >= ColumnarIndexManager.REAPPLY_FLOOR / 2 || rows == 0 && nowMs - p.lastFlushMs() >= maxAge;
+  }
+
+  private static int unflushedPageCount(final ColumnarProjection p) {
+    final DirtyPageTracker external = p.externalTracker();
+    return p.tracker().unflushedCount() + (external != null ? external.unflushedCount() : 0);
   }
 
   private static boolean hasUnflushedPages(final ColumnarProjection p) {

@@ -18,13 +18,18 @@
  */
 package com.arcadedb.query.facet;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -36,6 +41,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -291,5 +298,346 @@ class FacetReadEventsTest extends TestHelper {
     }
     assertEveryKindIsTheNormalPlans(TYPE, null, "index");
     assertMeasuresAnsweredFrom("index");
+  }
+
+  /**
+   * An AFTER READ listener of the type that counts the reads of the calling thread (not those of the background apply) and leaves every
+   * record as it is.
+   */
+  private static AfterRecordReadListener counting(final AtomicLong reads) {
+    final Thread caller = Thread.currentThread();
+    return record -> {
+      if (Thread.currentThread() == caller)
+        reads.incrementAndGet();
+      return record;
+    };
+  }
+
+  /** The rows of the statement, the reads counted by {@code reads} while it runs reset first. */
+  private long rows(final String sql, final AtomicLong reads) {
+    reads.set(0);
+    long rows = 0;
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext()) {
+        rs.next();
+        rows++;
+      }
+    }
+    return rows;
+  }
+
+  /** The facets of the statement, the reads counted by {@code reads} while it runs reset first. */
+  private FacetResults facets(final String sql, final AtomicLong reads) {
+    reads.set(0);
+    return facets(sql);
+  }
+
+  /**
+   * Plan 7 Task 13: the facets of a type whose records fire read events are taken from the rows the WHERE read, so an AFTER READ
+   * listener sees each matched record once, as the normal plan does (it saw each twice: once for the row, once more for the scan that
+   * counted it). The WHERE is answered by an LSM index, so the normal plan reads the matches only.
+   */
+  @Test
+  @Timeout(300)
+  void afterReadListenerFiresOncePerMatchedRecordWithWhere() {
+    AdvancedFacetsFixture.load(database, 13L, 1500);
+    database.command("sql", "CREATE INDEX ON " + TYPE + " (fileSize) NOTUNIQUE");
+    // a quarter of the records, read through the index
+    final String narrow = "fileSize > 3000000";
+    FacetOracle.awaitCaughtUp(database);
+    final AtomicLong reads = new AtomicLong();
+    final AfterRecordReadListener listener = counting(reads);
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    try {
+      final long records = visible(TYPE);
+      final long matches = rows("SELECT FROM " + TYPE + where(narrow), reads);
+      assertThat(matches).isGreaterThan(0).isLessThan(records);
+      assertThat(reads.get()).as("the normal plan reads each match once").isEqualTo(matches);
+
+      final FacetResults facets = facets("SELECT FROM " + TYPE + where(narrow) + FACETS, reads);
+      assertThat(reads.get()).as("reads of the FACETS statement").isEqualTo(matches);
+      for (final String alias : List.of("b", "a", "t", "d", "s", "r", "h"))
+        assertThat(facets.get(alias).source()).as(alias + ": " + facets.get(alias).reason()).isEqualTo("scan");
+      assertThat(profiledMatches("SELECT FROM " + TYPE + where(narrow) + FACETS)).containsExactly("rows", String.valueOf(matches));
+      assertEveryKindIsTheNormalPlans(TYPE, narrow, "scan");
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+  }
+
+  /** The same without WHERE: the rows are every record of the type, each read once. */
+  @Test
+  @Timeout(300)
+  void afterReadListenerFiresOncePerRecordWithoutWhere() {
+    AdvancedFacetsFixture.load(database, 17L, 1200);
+    final AtomicLong reads = new AtomicLong();
+    final AfterRecordReadListener listener = counting(reads);
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    try {
+      final long records = rows("SELECT FROM " + TYPE, reads);
+      assertThat(reads.get()).as("the normal plan reads each record once").isEqualTo(records);
+
+      final FacetResults facets = facets("SELECT FROM " + TYPE + FACETS, reads);
+      assertThat(reads.get()).as("reads of the FACETS statement").isEqualTo(records);
+      assertThat(facets.get("b").source()).isEqualTo("scan");
+      // LIMIT: the rows past it are read once too, to count the facets, and none twice
+      facets("SELECT FROM " + TYPE + FACETS + " LIMIT 10", reads);
+      assertThat(reads.get()).as("reads of the FACETS statement with LIMIT").isEqualTo(records);
+      assertEveryKindIsTheNormalPlans(TYPE, null, "scan");
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * Disjunctive faceting (spec 7.5) over a type with an AFTER READ listener that hides the hidden tenant and rewrites brands: each facet
+   * counts the rows every other FILTER passes (its own one ignored), from the records as the listener left them, read once.
+   */
+  @Test
+  @Timeout(300)
+  void disjunctiveFiltersOnReadEventTypeEqualNormalPlan() {
+    AdvancedFacetsFixture.load(database, 19L, 1500);
+    database.command("sql", "CREATE INDEX ON " + TYPE + " (fileSize) NOTUNIQUE");
+    FacetOracle.awaitCaughtUp(database);
+    final AtomicLong reads = new AtomicLong();
+    final Thread caller = Thread.currentThread();
+    final AfterRecordReadListener listener = record -> {
+      if (Thread.currentThread() == caller)
+        reads.incrementAndGet();
+      final Object author = record.asDocument().get("author");
+      if (AdvancedFacetsFixture.isHiddenTenant(author))
+        return null;
+      if (author instanceof String name && name.startsWith("author-2"))
+        return record.asDocument().modify().set("brand", MASKED);
+      return record;
+    };
+    final String brand = "brand = '" + MASKED + "'";
+    final String size = "fileSize > 500000";
+    final String author = "author <> 'author-3'";
+    final String sql = "SELECT FROM " + TYPE + where(WHERE) + " FACETS x: brand TERMS TOP 1000 FILTER (" + brand + "),"
+        + " y: author TERMS TOP 1000 FILTER (" + size + "), f: author TERMS TOP 1000, s: fileSize STATS FILTER (" + author + ")";
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    try {
+      rows("SELECT FROM " + TYPE + where(WHERE), reads);
+      // a rewrite reloads the record (modify), which the listener sees too: the normal plan's reads are the reference
+      final long normalReads = reads.get();
+      final String all = WHERE + " AND " + brand + " AND " + size + " AND " + author;
+      final long passing = rows("SELECT FROM " + TYPE + where(all), reads);
+      assertThat(passing).as("rows pass every filter").isGreaterThan(0);
+
+      reads.set(0);
+      final FacetResults facets;
+      long forwarded = 0;
+      try (final ResultSet rs = database.query("sql", sql)) {
+        while (rs.hasNext()) {
+          rs.next();
+          forwarded++;
+        }
+        facets = rs.getFacets();
+      }
+      assertThat(reads.get()).as("reads of the FACETS statement").isEqualTo(normalReads);
+      assertThat(forwarded).as("the rows every FILTER passes").isEqualTo(passing);
+      assertThat(toMap(facets.get("x"))).as("x: brand, y's and s's filters").hasSizeGreaterThan(1)
+          .isEqualTo(FacetOracle.expectedCounts(database, TYPE, "brand", WHERE + " AND " + size + " AND " + author));
+      assertThat(toMap(facets.get("y"))).as("y: author, x's and s's filters").isNotEmpty()
+          .isEqualTo(FacetOracle.expectedCounts(database, TYPE, "author", WHERE + " AND " + brand + " AND " + author));
+      assertThat(toMap(facets.get("f"))).as("f: author, every filter").isNotEmpty()
+          .isEqualTo(FacetOracle.expectedCounts(database, TYPE, "author", all));
+      assertThat(facets.get("s").stats()).as("s: fileSize, x's and y's filters")
+          .isEqualTo(FacetOracle.stats(database, TYPE, "fileSize", WHERE + " AND " + brand + " AND " + size));
+      for (final String alias : List.of("x", "y", "f", "s"))
+        assertThat(facets.get(alias).source()).as(alias).isEqualTo("scan");
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * No fallback-scan permit: the facets that read a bucket with read events are {@code unavailable / fallback scans capped}, as before,
+   * the rows are still read once, and the permit count is unchanged afterwards.
+   */
+  @Test
+  @Timeout(300)
+  void readEventsWithoutAScanPermitAreCapped() {
+    AdvancedFacetsFixture.load(database, 23L, 800);
+    final AtomicLong reads = new AtomicLong();
+    final AfterRecordReadListener listener = counting(reads);
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    final Semaphore permits = ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getColumnarIndexManager().fallbackScans();
+    try {
+      final long matches = rows("SELECT FROM " + TYPE + where(WHERE), reads);
+      final int held = permits.drainPermits();
+      try {
+        final FacetResults facets = facets("SELECT FROM " + TYPE + where(WHERE) + " FACETS b: brand TERMS TOP 10, s: fileSize STATS", reads);
+        assertThat(reads.get()).as("reads of the FACETS statement").isEqualTo(matches);
+        for (final String alias : List.of("b", "s")) {
+          assertThat(facets.get(alias).source()).as(alias).isEqualTo(FacetResult.UNAVAILABLE);
+          assertThat(facets.get(alias).reason()).as(alias).isEqualTo(FacetExecutor.FALLBACK_SCANS_CAPPED);
+        }
+      } finally {
+        permits.release(held);
+      }
+      assertThat(permits.availablePermits()).isEqualTo(database.getConfiguration().getValueAsInteger(
+          GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS));
+      assertThat(facets("SELECT FROM " + TYPE + where(WHERE) + " FACETS b: brand TERMS TOP 10", reads).get("b").source()).isEqualTo("scan");
+      assertThat(permits.availablePermits()).isEqualTo(database.getConfiguration().getValueAsInteger(
+          GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS));
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * A result set closed after its first rows, before its facets were asked: the rows' scan of the buckets with read events gives its
+   * scan permit and its counting memory back.
+   */
+  @Test
+  @Timeout(300)
+  void aRowScanClosedBeforeItsFacetsGivesItsPermitAndMemoryBack() {
+    AdvancedFacetsFixture.load(database, 29L, 800);
+    final AtomicLong reads = new AtomicLong();
+    final AfterRecordReadListener listener = counting(reads);
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    final Semaphore permits = ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getColumnarIndexManager().fallbackScans();
+    final int allPermits = database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS);
+    final long fullBudget = FacetMemoryBudget.instance().available();
+    try {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + FACETS)) {
+        for (int i = 0; i < 5; i++)
+          rs.next();
+        assertThat(permits.availablePermits()).as("the rows' scan holds the permit").isEqualTo(allPermits - 1);
+      }
+      assertThat(permits.availablePermits()).isEqualTo(allPermits);
+      assertThat(FacetMemoryBudget.instance().available()).isEqualTo(fullBudget);
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * Fix round 1, the projection+scan source: a query on the super type, no WHERE, whose subtype has a BEFORE READ listener. The super
+   * type's bucket is answered from its projection, the subtype's bucket is counted from the rows, so the listener sees each subtype
+   * record once (it saw each twice: once by the scan of the uncovered buckets, once by the rows), with or without a LIMIT.
+   */
+  @Test
+  @Timeout(300)
+  void subtypeListenerUnderTheProjectionSourceFiresOncePerRecord() {
+    AdvancedFacetsFixture.load(database, 31L, 800);
+    database.command("sql", "CREATE DOCUMENT TYPE Clip EXTENDS " + TYPE);
+    database.transaction(() -> {
+      for (int i = 0; i < 300; i++)
+        database.newDocument("Clip").set("brand", "clip-" + (i % 9)).set("author", "author-" + (i % 30)).set("fileSize", (long) i * 977)
+            .set("tags", List.of("t/" + (1 + i % 3), "t/1/" + (1 + i % 3))).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+    final AtomicLong reads = new AtomicLong();
+    // every thread's reads: a scan of two buckets reads them in parallel (the projection is caught up, the apply reads nothing)
+    final BeforeRecordReadListener listener = rid -> {
+      reads.incrementAndGet();
+      return true;
+    };
+    database.getSchema().getType("Clip").getEvents().registerListener(listener);
+    try {
+      rows("SELECT FROM " + TYPE, reads);
+      final long clips = reads.get();
+      assertThat(clips).as("the normal plan reads each subtype record once").isEqualTo(300);
+      final String sql = "SELECT FROM " + TYPE + FACETS;
+      assertThat(profiledMatches(sql)[0]).as("the shape under test").startsWith("projection");
+
+      rows(sql, reads);
+      assertThat(reads.get()).as("reads of the FACETS statement").isEqualTo(clips);
+      facets(sql, reads);
+      assertThat(reads.get()).as("reads of the FACETS statement, facets asked before the rows").isEqualTo(clips);
+      facets(sql + " LIMIT 10", reads);
+      assertThat(reads.get()).as("reads of the FACETS statement with LIMIT").isEqualTo(clips);
+      assertEveryKindIsTheNormalPlans(TYPE, null, "scan");
+    } finally {
+      database.getSchema().getType("Clip").getEvents().unregisterListener(listener);
+    }
+    assertEveryKindIsTheNormalPlans(TYPE, null, "index");
+  }
+
+  /**
+   * Fix round 1, the projection+scan source of a hidden bucket: a type with an AFTER READ listener and two buckets, one of which the
+   * user may not read. The readable bucket is counted from the rows, so the FACETS statement fires the listener as often as the same
+   * statement without FACETS (it read the readable bucket a second time), and the facet counts the readable bucket's records.
+   */
+  @Test
+  @Timeout(300)
+  void readEventTypeWithAHiddenBucketFiresOncePerRecord() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 2");
+    database.command("sql", "CREATE PROPERTY Doc.brand STRING");
+    database.command("sql", "CREATE INDEX ON Doc (brand) COLUMNAR");
+    database.transaction(() -> {
+      for (int i = 0; i < 600; i++)
+        database.newDocument("Doc").set("brand", "brand-" + (i % 7)).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+    final int hiddenBucket = database.getSchema().getType("Doc").getBuckets(false).getFirst().getFileId();
+    final String readableBucket = database.getSchema().getType("Doc").getBuckets(false).get(1).getName();
+    final AtomicLong reads = new AtomicLong();
+    // every thread's reads: a scan of two buckets reads them in parallel (the projection is caught up, the apply reads nothing)
+    final AfterRecordReadListener listener = record -> {
+      reads.incrementAndGet();
+      return record;
+    };
+    database.getSchema().getType("Doc").getEvents().registerListener(listener);
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+    context.setCurrentUser(userWithoutReadOn(hiddenBucket));
+    try {
+      // an embedded query applies no record-level check of this user: the rows hold the hidden bucket's records too, the facets do not
+      rows("SELECT FROM Doc", reads);
+      final long normalReads = reads.get();
+      assertThat(normalReads).isEqualTo(600);
+      final Map<Object, Long> readable = new HashMap<>();
+      try (final ResultSet rs = database.query("sql", "SELECT brand AS v FROM BUCKET:" + readableBucket)) {
+        while (rs.hasNext())
+          readable.merge(rs.next().getProperty("v"), 1L, Long::sum);
+      }
+      reads.set(0);
+      assertThat(readable.values().stream().mapToLong(Long::longValue).sum()).as("both buckets hold records").isBetween(1L, 599L);
+      final String sql = "SELECT FROM Doc FACETS b: brand TERMS TOP 100";
+      assertThat(profiledMatches(sql)[0]).as("the shape under test").startsWith("projection");
+
+      final FacetResults facets = facets(sql, reads);
+      assertThat(reads.get()).as("reads of the FACETS statement").isEqualTo(normalReads);
+      assertThat(facets.get("b").source()).isEqualTo("scan");
+      assertThat(toMap(facets.get("b"))).as("the readable bucket's brands").isEqualTo(readable);
+      facets(sql + " LIMIT 5", reads);
+      assertThat(reads.get()).as("reads of the FACETS statement with LIMIT").isEqualTo(normalReads);
+    } finally {
+      context.setCurrentUser(null);
+      database.getSchema().getType("Doc").getEvents().unregisterListener(listener);
+    }
+  }
+
+  /** A user who may do everything but read the records of {@code hiddenBucket}. */
+  private static SecurityDatabaseUser userWithoutReadOn(final int hiddenBucket) {
+    return new SecurityDatabaseUser() {
+      @Override
+      public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+        return true;
+      }
+
+      @Override
+      public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+        return access != ACCESS.READ_RECORD || fileId != hiddenBucket;
+      }
+
+      @Override
+      public String getName() {
+        return "noBucket";
+      }
+
+      @Override
+      public long getResultSetLimit() {
+        return -1L;
+      }
+
+      @Override
+      public long getReadTimeout() {
+        return -1L;
+      }
+    };
   }
 }

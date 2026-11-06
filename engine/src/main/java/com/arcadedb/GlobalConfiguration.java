@@ -379,11 +379,23 @@ public enum GlobalConfiguration {
 
   COLUMNAR_FLUSH_INTERVAL("arcadedb.columnar.flushInterval", SCOPE.DATABASE,
       "Milliseconds after which the in-memory overlay of a COLUMNAR index is flushed to an immutable segment even if it is below "
-          + "arcadedb.columnar.flushMaxRows. Default is 1000", Long.class, 1000L),
+          + "arcadedb.columnar.flushMaxRows, provided it holds at least arcadedb.columnar.flushMinRows rows (any overlay with the "
+          + "default 0); a smaller overlay waits for arcadedb.columnar.flushMaxAge. Default is 1000", Long.class, 1000L),
 
   COLUMNAR_FLUSH_MAX_ROWS("arcadedb.columnar.flushMaxRows", SCOPE.DATABASE,
       "Rows held by the in-memory overlay of a COLUMNAR index that trigger a flush to an immutable segment. Default is 65536",
       Integer.class, 65536),
+
+  COLUMNAR_FLUSH_MIN_ROWS("arcadedb.columnar.flushMinRows", SCOPE.DATABASE,
+      "Rows the in-memory overlay of a COLUMNAR index must hold for arcadedb.columnar.flushInterval to flush it. A smaller overlay "
+          + "waits for arcadedb.columnar.flushMaxAge, or until the pages it covers reach half the number of changed pages an unclean "
+          + "open re-applies instead of rebuilding, so fewer and larger segments are written and merged. 0 flushes any overlay at the "
+          + "interval. Default is 0", Integer.class, 0),
+
+  COLUMNAR_FLUSH_MAX_AGE("arcadedb.columnar.flushMaxAge", SCOPE.DATABASE,
+      "Milliseconds after which the in-memory overlay of a COLUMNAR index is flushed whatever its row count, and after which pages "
+          + "applied without overlay rows (deletes) are persisted. Never less than arcadedb.columnar.flushInterval: the default 0 means the "
+          + "interval. Default is 0", Long.class, 0L),
 
   COLUMNAR_MERGE_DEAD_RATIO("arcadedb.columnar.mergeDeadRatio", SCOPE.DATABASE,
       "Ratio (0-1) of dead rows in a COLUMNAR segment above which the segment is rewritten by a merge. Default is 0.3",
@@ -402,8 +414,15 @@ public enum GlobalConfiguration {
   COLUMNAR_APPLY_INTERVAL("arcadedb.columnar.applyInterval", SCOPE.DATABASE,
       "Milliseconds between two checks for committed pages to apply to the COLUMNAR indexes of a database. The JVM-wide ticker "
           + "wakes up every 10ms and honors this value per database, at every check. Under sustained ingest the interval is stretched "
-          + "up to 5 times, never past the larger of this value and 500ms (500ms at the default), so one pass covers more commits; "
+          + "up to arcadedb.columnar.applyMaxLag (500ms at the default), never past the larger of the two values, so one pass covers more commits; "
           + "schema reconciles and file watchers of COLUMNAR indexes ride on the same interval. Default is 100", Long.class, 100L),
+
+  COLUMNAR_APPLY_MAX_LAG("arcadedb.columnar.applyMaxLag", SCOPE.DATABASE,
+      "Milliseconds the adaptive pacing of the COLUMNAR apply may stretch arcadedb.columnar.applyInterval to under sustained ingest: "
+          + "the interval grows by at most max(1, applyMaxLag / applyInterval) times, and falls back to the base as soon as the oldest "
+          + "committed page waiting to be applied is older than this value. A higher value lets one pass cover more commits (fewer "
+          + "re-reads of a page written by consecutive commits) at the cost of a staler facet projection; a value below twice the "
+          + "interval disables the stretching. Default is 500", Long.class, 500L),
 
   COLUMNAR_APPLY_THREADS("arcadedb.columnar.applyThreads", SCOPE.JVM,
       "Threads of the JVM-wide pool that applies committed pages to COLUMNAR indexes (at most one pass per database at a time). "
@@ -441,6 +460,15 @@ public enum GlobalConfiguration {
       "Milliseconds a FACETS query waits for counting memory (see arcadedb.columnar.queryMemoryBudget) before the facet is reported "
           + "as unavailable. The window is per collector: a facet that spans N declaring types has N collectors and can wait up to "
           + "N windows in all. Default is 5000", Long.class, 5000L),
+
+  COLUMNAR_PARALLEL_COUNT_TASKS("arcadedb.columnar.parallelCountTasks", SCOPE.SERVER,
+      "Slices of contiguous pages one FACETS query splits the matches of a facet in a bucket into, counted in parallel on the "
+          + "query-parallelism pool (arcadedb.queryParallelismPoolThreads); the query thread counts one slice itself. At most the number "
+          + "of cores is used. 1 counts every match on the query thread. Default is 4", Integer.class, 4),
+
+  COLUMNAR_PARALLEL_MIN_MATCHES("arcadedb.columnar.parallelMinMatches", SCOPE.SERVER,
+      "Matches of a facet in one bucket below which they are counted on the query thread alone, whatever "
+          + "arcadedb.columnar.parallelCountTasks. Default is 262144", Long.class, 262_144L),
 
   COLUMNAR_TOP_MAX("arcadedb.columnar.topMax", SCOPE.SERVER,
       "Maximum value accepted by the TOP option of a FACETS clause. A larger value is a parse error. Default is 1000",
@@ -2083,6 +2111,8 @@ public enum GlobalConfiguration {
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
        to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[albert:einstein:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`. \
+       A `:`, `,`, `;`, `[`, `]` or `%` inside a user name, password or group is written percent-encoded (`%3A`, `%2C`, `%3B`, `%5B`, `%5D`, `%25`), as in a URI: \
+       `mydb[myuser:my%3Apass:admin]` is the password `my:pass`. A credential with more than three `:`-separated fields is refused rather than truncated. \
        On a replicated database, `restore` is per-node: it does not force a cluster snapshot install the way the `restore database`/`restore backup` server commands do, so it is meant for every node in the cluster to run for itself \
        with the same startup configuration, not as a way to replace a database cluster-wide from one node. A node that finds an existing copy of the database drops ONLY its own local copy before restoring, and logs a WARNING when \
        that copy was replicated, because the rest of the cluster keeps whatever it already has until it is restored the same way.""",
@@ -5013,10 +5043,13 @@ public enum GlobalConfiguration {
    * The field boundaries mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between
    * credentials, then {@code ':'} between fields - so what is treated as a password here is what the server
    * authenticates with. That parity is the point, and it is positional on both sides: the server uses field 1
-   * and nothing else, so field 1 is the only one replaced. A password written with a {@code ':'} in it is
-   * therefore published from the colon onwards - not a leak of the password the server uses, which is only the
-   * part before it, but a reason not to write one that way. The format cannot express it, the same way it
-   * cannot express a password containing a {@code ','}.
+   * and nothing else, so field 1 is the only one replaced. A field that needs a separator writes it percent-encoded
+   * ({@code %3A} for a {@code ':'}, issue #11269), so the separators stay unambiguous in the raw text and nothing here
+   * needs decoding: the masked field is the encoded password. The shapes the server refuses instead of reading fail
+   * closed: a credential with more than three fields (a raw {@code ':'} in a password) is masked after its user name,
+   * and text after the block that opens no {@code {commands}} segment (a raw {@code ']'} in a password) is masked whole.
+   * A raw {@code ':'} in a password with no group written after it still reads as {@code user:password:group}, to the
+   * server as here, and its tail is published as the group it is to the server.
    */
   private static String redactDefaultDatabaseCredentials(final String databases) {
     final StringBuilder redacted = new StringBuilder(databases.length());
@@ -5090,7 +5123,14 @@ public enum GlobalConfiguration {
       credentialBegin = credentialEnd + 1;
     }
 
-    redacted.append(databases, credentialsEnd, end);
+    // Text after the block that does not open a '{commands}' segment is what a ']' inside a password leaves behind: the
+    // rest of that password. The server refuses such an entry and quotes it through here (issue #11269), so it fails
+    // closed like an unclosed '['. Whitespace alone is copied: the server tolerates it, and it hides nothing
+    final int afterBlock = credentialsEnd + 1;
+    if (afterBlock < end && databases.charAt(afterBlock) != '{' && !databases.substring(afterBlock, end).isBlank())
+      redacted.append(']').append("*****");
+    else
+      redacted.append(databases, credentialsEnd, end);
   }
 
   /** One {@code user:password[:group]} credential, of which only the password is replaced. */
@@ -5109,8 +5149,18 @@ public enum GlobalConfiguration {
 
     redacted.append(databases, begin, userEnd + 1);
 
+    final int groupEnd = passwordEnd < end ? databases.indexOf(':', passwordEnd + 1) : -1;
+    if (groupEnd >= 0 && groupEnd < end) {
+      // More than three fields: the server refuses the credential (issue #11269), because a password written with a raw
+      // ':' is the commonest way to get there, and then which field is the password cannot be told. Every field after
+      // the user is masked, the way a malformed block fails closed
+      redacted.append("*****");
+      return;
+    }
+
     if (passwordEnd == userEnd + 1)
-      // An EMPTY password is not a secret, and "*****" would report one as configured where none is.
+      // An EMPTY password is not a secret, and "*****" would report one as configured where none is. The server refuses
+      // such a credential (issue #11269), and the report shows it as written so the refusal in the log can be matched to it.
       redacted.append(databases, userEnd + 1, end);
     else
       redacted.append("*****").append(databases, passwordEnd, end);

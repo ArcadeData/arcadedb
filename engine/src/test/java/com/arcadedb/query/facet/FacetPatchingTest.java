@@ -417,9 +417,14 @@ class FacetPatchingTest extends TestHelper {
       });
       try (final MatchSet matches = MatchSet.fromProjection((DatabaseInternal) database, bucketIds(), 0)) {
         noFilters(matches);
+        // the deleted positions are pending (their commit marked them, record by record since Task 15 of #10662)...
+        final PositionBitmap pending = matches.snapshot(rids.getFirst().getBucketId()).pendingPositions();
+        for (int i = 0; i < 5; i++)
+          assertThat(pending.get(rids.get(i * 101).getPosition())).as("deleted record %d is pending", i).isTrue();
         final FacetResults results = executeOn(matches);
         assertThat(results.exact()).isTrue();
-        assertThat(results.patched()).isPositive();
+        // ...and none of them is a match: nothing is read from the records, and no deleted record is counted
+        assertThat(results.patched()).isZero();
         assertEqualsOracle(results, null);
       }
     }

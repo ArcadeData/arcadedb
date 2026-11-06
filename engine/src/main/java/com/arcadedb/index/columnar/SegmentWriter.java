@@ -206,6 +206,7 @@ final class SegmentWriter implements AutoCloseable {
 
     writeFileHeader();
     channel.force(true);
+    ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_SEGMENT);
     channel.close();
     finished = true;
     return new SegmentReader.Meta(segmentId, rowCount, minPage, maxPage);

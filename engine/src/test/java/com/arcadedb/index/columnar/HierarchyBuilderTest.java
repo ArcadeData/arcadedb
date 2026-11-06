@@ -41,10 +41,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * The hierarchy node space built from the tag graph: one node per distinct key, CSR parents deduplicated and sorted by value, depth
@@ -56,6 +60,7 @@ class HierarchyBuilderTest extends TestHelper {
   private static final List<String> TAG_VALUES = List.of("a/b/c", "a/d", "zzz");
   private static final String       INDEX_NAME = ColumnarTestData.TYPE + "[tagsbyitem]_columnar";
   private static final String       CYCLE_LOG  = "on a cycle of parent links";
+  private static final int          CHAIN      = 100_000;
 
   private HierarchyDefinition def;
 
@@ -263,15 +268,8 @@ class HierarchyBuilderTest extends TestHelper {
   /** A chain of 100000 tags: the depth walk and the cycle walk are iterative, a recursive one would overflow the thread stack. */
   @Test
   void deepChainNeedsNoRecursion() {
-    final int length = 100_000;
-    final MutableVertex[] chain = new MutableVertex[length];
-    database.transaction(() -> {
-      // the leaf first, so node 0 is the leaf and a depth-first walk from it climbs the whole chain
-      for (int i = length - 1; i >= 0; i--)
-        chain[i] = database.newVertex(ColumnarTestData.TAG_TYPE).set("path", "c" + i).save();
-      for (int i = 1; i < length; i++)
-        chain[i - 1].newEdge(ColumnarTestData.PARENT_EDGE, chain[i]);
-    });
+    final int length = CHAIN;
+    final MutableVertex[] chain = chain(length);
 
     final HierarchyView v = build(def);
     assertThat(v.nodeOfValue("c" + (length - 1))).isEqualTo(0);
@@ -374,6 +372,66 @@ class HierarchyBuilderTest extends TestHelper {
     final Set<String> carried = assetTags();
     assertThat(carried).isNotEmpty();
     assertThat(TAG_VALUES).containsAll(carried);
+  }
+
+  /** Task 11: the merge sort of the node values checks the cancel flag, not only the scan. */
+  @Test
+  void cancelStopsTheSort() {
+    assertCancelStops("sortByValue");
+  }
+
+  /** Task 11: the breadth-first depth pass checks the cancel flag. */
+  @Test
+  void cancelStopsTheDepthPass() {
+    assertCancelStops("depths");
+  }
+
+  /** Task 11: the strongly connected components pass checks the cancel flag. */
+  @Test
+  void cancelStopsTheCyclePass() {
+    assertCancelStops("cycleNodes");
+  }
+
+  /**
+   * Over a chain of {@value #CHAIN} tags, a cancel flag that turns true on its first call from the named CPU pass of the builder, after
+   * every check the scan made returned false: the build stops there with a {@link CancellationException}, and the flag was called more
+   * times than by the scan alone.
+   */
+  private void assertCancelStops(final String pass) {
+    chain(CHAIN);
+    final AtomicInteger calls = new AtomicInteger();
+    final AtomicInteger scanCalls = new AtomicInteger();
+    final BooleanSupplier cancelled = () -> {
+      calls.incrementAndGet();
+      final String caller = StackWalker.getInstance().walk(frames -> frames.skip(1)
+          .filter(f -> f.getClassName().equals(HierarchyBuilder.class.getName()) && !f.getMethodName().equals("checkCancelled")).findFirst()
+          .map(StackWalker.StackFrame::getMethodName).orElse(""));
+      if (caller.equals("build"))
+        scanCalls.incrementAndGet();
+      return caller.equals(pass);
+    };
+
+    final Throwable thrown = catchThrowable(
+        () -> HierarchyBuilder.build((DatabaseInternal) database, def, 1, INDEX_NAME, false, null, cancelled));
+    assertThat(thrown).isInstanceOf(CancellationException.class);
+    assertThat(thrown.getStackTrace())
+        .anyMatch(f -> f.getClassName().equals(HierarchyBuilder.class.getName()) && f.getMethodName().equals(pass));
+    // a check every 1024 vertices of the scan
+    assertThat(scanCalls.get()).isGreaterThanOrEqualTo(CHAIN / 1024);
+    assertThat(calls.get()).isGreaterThan(scanCalls.get());
+  }
+
+  /** A chain c0 -> c1 -> ... of {@code length} tags ({@code c(i - 1)} the parent of {@code c(i)}), the leaf created first. */
+  private MutableVertex[] chain(final int length) {
+    final MutableVertex[] chain = new MutableVertex[length];
+    database.transaction(() -> {
+      // the leaf first, so node 0 is the leaf and a depth-first walk from it climbs the whole chain
+      for (int i = length - 1; i >= 0; i--)
+        chain[i] = database.newVertex(ColumnarTestData.TAG_TYPE).set("path", "c" + i).save();
+      for (int i = 1; i < length; i++)
+        chain[i - 1].newEdge(ColumnarTestData.PARENT_EDGE, chain[i]);
+    });
+    return chain;
   }
 
   private HierarchyView build(final HierarchyDefinition definition) {

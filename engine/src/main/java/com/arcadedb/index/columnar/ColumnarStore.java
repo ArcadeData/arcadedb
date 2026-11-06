@@ -84,6 +84,7 @@ public final class ColumnarStore {
     try (final FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
       channel.force(true);
     }
+    ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_FILE);
   }
 
   /**
@@ -93,6 +94,7 @@ public final class ColumnarStore {
    */
   public static void fsyncDirectory(final Path dir) throws IOException {
     FileUtils.forceDirectory(dir);
+    ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_DIRECTORY);
   }
 
   /**
@@ -125,6 +127,7 @@ public final class ColumnarStore {
       FileUtils.writeFully(channel, ByteBuffer.wrap(content), 0);
       channel.force(true);
     }
+    ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_FILE);
     if (tmpWrittenPoint != null)
       ColumnarTestHooks.reach(tmpWrittenPoint);
   }

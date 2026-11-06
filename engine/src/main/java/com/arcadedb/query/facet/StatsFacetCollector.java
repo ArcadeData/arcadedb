@@ -233,6 +233,32 @@ public final class StatsFacetCollector implements FacetCollector {
   }
 
   @Override
+  public boolean isUnavailable() {
+    return unavailable != null;
+  }
+
+  /**
+   * Adds the count, missing rows, extremes and sum of a collector of the same LONG column that counted other pages (parallel
+   * counting). A LONG sum does not depend on its order (an overflow widens to a decimal), a DOUBLE one does: those are not absorbed.
+   */
+  @Override
+  public boolean absorb(final FacetCollector other) {
+    if (!(other instanceof StatsFacetCollector partial) || kind != ColumnKind.LONG || partial.kind != kind || partial.rawNumbers
+        || partial.rawDates)
+      return false;
+    if (unavailable != null)
+      return true;
+    count += partial.count;
+    missing += partial.missing;
+    columnCount += partial.columnCount;
+    minL = Math.min(minL, partial.minL);
+    maxL = Math.max(maxL, partial.maxL);
+    if (partial.sum != null)
+      sum.merge(partial.sum);
+    return true;
+  }
+
+  @Override
   public void merge(final FacetCollector other) {
     if (!(other instanceof StatsFacetCollector collector))
       throw new IllegalArgumentException("FACETS " + spec.alias() + ": cannot merge a " + other.getClass().getSimpleName() + " into stats");

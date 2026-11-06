@@ -26,8 +26,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ColumnarTransactionManagerTestAccess;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CallableNoReturn;
+import com.arcadedb.utility.IntHashSet;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -37,8 +40,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
@@ -365,6 +371,222 @@ class ColumnarCrashRecoveryTest extends TestHelper {
     database = factory.open();
     assertThat(database.countType(ColumnarTestData.TYPE, true)).isEqualTo(10_000);
     assertRecoveredWithoutRebuild();
+  }
+
+  /**
+   * Task 3 of #10662: a kill with a coalesced overlay (fewer rows than flushMinRows, younger than flushMaxAge) recovers to the oracle with
+   * no rebuild. 3,000 scattered updates over a bucket of about 4,000 pages change more pages than {@link ColumnarIndexManager#REAPPLY_FLOOR}
+   * and a quarter of the bucket, which an unclean open would rebuild ({@code unclean_pages}) were they all left unflushed: the
+   * unflushed-page bound flushes the overlay before it gets there. With record-granular marks (Task 15): since Task 15b a
+   * page read by record is stamped with the version it read, so a flushed one is not taken for changed.
+   */
+  @Test
+  void crashWithCoalescedOverlayRecoversWithoutRebuild() throws Exception {
+    // 16 KB pages, so about 4,000 pages take some 60,000 records only
+    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.setValue(16_384);
+    GlobalConfiguration.COLUMNAR_FLUSH_MIN_ROWS.setValue(4_096);
+    GlobalConfiguration.COLUMNAR_FLUSH_MAX_AGE.setValue(Long.MAX_VALUE);
+    final ColumnarTestData data = new ColumnarTestData(29L);
+    data.createSchema(database);
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(bucketId());
+    final List<RID> rids = new ArrayList<>();
+    while (bucket.getTotalPages() < 4_000)
+      rids.addAll(data.insertAssets(database, 2_000));
+    FacetOracle.awaitCaughtUp(database);
+    manager().flushNow();
+    // coalescing from here: a finite flushInterval the overlay ignores below flushMinRows (3,000 updates stay below 4,096) and a
+    // flushMaxAge it never reaches, so only the unflushed-page bound flushes
+    GlobalConfiguration.COLUMNAR_FLUSH_INTERVAL.setValue(1_000L);
+    final int pages = bucket.getTotalPages();
+    final int maxRecordsInPage = manager().projection(bucketId()).maxRecordsInPage();
+    final long flushes = manager().getStats().flushCount(ColumnarTestData.TYPE);
+
+    final Random random = new Random(29L);
+    final IntHashSet touched = new IntHashSet();
+    for (int batch = 0; batch < 30; batch++) {
+      database.transaction(() -> {
+        for (int i = 0; i < 100; i++) {
+          final RID rid = rids.get(random.nextInt(rids.size()));
+          touched.add((int) (rid.getPosition() / maxRecordsInPage));
+          database.lookupByRID(rid, true).asDocument().modify().set("brand", "brand-" + random.nextInt(200)).save();
+        }
+      });
+      FacetOracle.awaitCaughtUp(database);
+    }
+    // the test can fail: left unflushed, these pages are past both bounds of the unclean-open page check
+    assertThat(touched.size()).isGreaterThan(ColumnarIndexManager.REAPPLY_FLOOR).isGreaterThan(pages / 4);
+    assertThat(manager().getStats().flushCount(ColumnarTestData.TYPE)).as("the unflushed-page bound flushed").isGreaterThan(flushes);
+
+    // the kill comes with a coalesced overlay: 20 more updates once no flush is queued or running and the pages left unflushed stay
+    // below the bound with them, so no flush takes these rows before the kill
+    final ColumnarProjection projection = manager().projection(bucketId());
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(HANG_MS);
+    while (!(manager().isMaintenanceIdleForTesting() && projection.tracker().unflushedCount() < ColumnarIndexManager.REAPPLY_FLOOR / 2 - 20)
+        && System.nanoTime() - deadline < 0)
+      Thread.sleep(1);
+    assertThat(manager().isMaintenanceIdleForTesting()).isTrue();
+    assertThat(projection.tracker().unflushedCount()).isLessThan(ColumnarIndexManager.REAPPLY_FLOOR / 2 - 20);
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++)
+        database.lookupByRID(rids.get(random.nextInt(rids.size())), true).asDocument().modify().set("brand", "brand-last-" + i).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+    assertThat(projection.overlay().rows()).as("rows of the coalesced overlay at the kill").isPositive();
+
+    ((DatabaseInternal) database).kill();
+    database.close();
+
+    database = factory.open();
+    assertRecoveredWithoutRebuild();
+  }
+
+  /**
+   * Task 15b of #10662: 3,000 scattered updates, applied record by record (Task 15), all flushed, then a kill. A
+   * page an apply pass read by record is stamped with the version it read, so the page check of the unclean open finds none of them
+   * changed: no {@code unclean_pages} rebuild (before Task 15b each kept the version of its last whole read, and the check rebuilt).
+   */
+  @Test
+  void crashWithRecordMarkedPagesRecoversWithoutRebuild() throws Exception {
+    // 16 KB pages, so about 4,000 pages take some 60,000 records only
+    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.setValue(16_384);
+    final ColumnarTestData data = new ColumnarTestData(30L);
+    data.createSchema(database);
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(bucketId());
+    final List<RID> rids = new ArrayList<>();
+    while (bucket.getTotalPages() < 4_000)
+      rids.addAll(data.insertAssets(database, 2_000));
+    FacetOracle.awaitCaughtUp(database);
+    manager().flushNow();
+    final int pages = bucket.getTotalPages();
+    final ColumnarProjection projection = manager().projection(bucketId());
+    final int maxRecordsInPage = projection.maxRecordsInPage();
+    final long rereadBefore = manager().getStats().recordsRereadCount(ColumnarTestData.TYPE);
+
+    final Random random = new Random(30L);
+    final IntHashSet touched = new IntHashSet();
+    for (int batch = 0; batch < 30; batch++) {
+      database.transaction(() -> {
+        for (int i = 0; i < 100; i++) {
+          final RID rid = rids.get(random.nextInt(rids.size()));
+          touched.add((int) (rid.getPosition() / maxRecordsInPage));
+          database.lookupByRID(rid, true).asDocument().modify().set("brand", "brand-" + random.nextInt(200)).save();
+        }
+      });
+      FacetOracle.awaitCaughtUp(database);
+    }
+    // the test can fail: these pages are past both bounds of the unclean-open page check, which rebuilds if it finds them changed
+    assertThat(touched.size()).isGreaterThan(ColumnarIndexManager.REAPPLY_FLOOR).isGreaterThan(pages / 4);
+    // and they were applied by record, not whole: a whole read of about 4,000 pages would re-read the whole bucket
+    assertThat(manager().getStats().recordsRereadCount(ColumnarTestData.TYPE) - rereadBefore).isLessThan(2 * 3_000);
+
+    manager().flushNow();
+    assertThat(projection.overlay().rows()).isZero();
+    ((DatabaseInternal) database).kill();
+    database.close();
+
+    database = factory.open();
+    assertRecoveredWithoutRebuild();
+    assertThat(manager().getStats().rebuilds(ColumnarTestData.TYPE, ColumnarRebuilder.UNCLEAN_PAGES)).isZero();
+  }
+
+  /**
+   * Task 15b: the window a version stamped by a record read leaves open. A commit's first mark is applied before its publication (from
+   * the previous images); after the publication a pass reads another record of the page by record and stamps the version it read, and
+   * the page is flushed with it; the kill comes before the commit's second mark. The page check would take the page for current, so
+   * the stale record must come back through the WAL: the housekeeping never drops the file of a commit between its two marks, and its
+   * replay marks the page. Removing that guard makes this test fail.
+   */
+  @Test
+  void aRecordMarkPendingAtTheCrashIsReappliedAfterIt() throws Exception {
+    schemaWithData(31L, 1_000);
+    // only the test drops WAL files, and as the housekeeping does
+    ColumnarTransactionManagerTestAccess.cancelHousekeeping(((DatabaseInternal) database).getTransactionManager());
+    final File databaseDir = new File(database.getDatabasePath());
+    final int bucketId = bucketId();
+    final ColumnarIndexManager manager = manager();
+    final ColumnarProjection projection = manager.projection(bucketId);
+    final int maxRecordsInPage = projection.maxRecordsInPage();
+    final List<RID> pair = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS rid FROM " + ColumnarTestData.TYPE + " LIMIT 2")) {
+      while (rs.hasNext())
+        pair.add(rs.next().<RID>getProperty("rid"));
+    }
+    assertThat(pair).hasSize(2);
+    assertThat(pair.get(0).getPosition() / maxRecordsInPage).as("the premise: one page")
+        .isEqualTo(pair.get(1).getPosition() / maxRecordsInPage);
+    // the WAL files of the load dropped first: the only files the rotation below may keep are the ones the held commit wrote
+    assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(((DatabaseInternal) database).getEmbedded())).isTrue();
+    ColumnarTransactionManagerTestAccess.rotateAndDropWALAsHousekeeping(((DatabaseInternal) database).getTransactionManager());
+    final int page = (int) (pair.get(0).getPosition() / maxRecordsInPage);
+
+    final CountDownLatch firstMarked = new CountDownLatch(1);
+    final CountDownLatch releaseFirst = new CountDownLatch(1);
+    final CountDownLatch published = new CountDownLatch(1);
+    final CountDownLatch releasePublished = new CountDownLatch(1);
+    TransactionContext.afterFirstColumnarMarkForTesting = () -> pause(firstMarked, releaseFirst);
+    TransactionContext.afterPublishBeforeSecondMarkForTesting = () -> pause(published, releasePublished);
+    final Thread committer = new Thread(() -> {
+      try {
+        database.transaction(() -> {
+          database.lookupByRID(pair.get(0), true).asDocument().modify().set("brand", "pending-at-crash").save();
+          database.lookupByRID(pair.get(1), true).asDocument().modify().set("brand", "read-by-record").save();
+        });
+      } catch (final Throwable e) {
+        // the commit resumes on a killed database: whatever it throws then is part of the crash
+      }
+    }, "columnar-crash-committer");
+
+    try (final AutoCloseable hold = manager.suspendApply()) {
+      committer.start();
+      assertThat(firstMarked.await(HANG_MS, TimeUnit.MILLISECONDS)).isTrue();
+      TransactionContext.afterFirstColumnarMarkForTesting = null;
+      // the first mark is drained and its records read from the images before the publication: nothing changes
+      ColumnarApplier.runPass(manager, projection);
+      releaseFirst.countDown();
+      assertThat(published.await(HANG_MS, TimeUnit.MILLISECONDS)).isTrue();
+      TransactionContext.afterPublishBeforeSecondMarkForTesting = null;
+
+      // after the publication, the second record alone is marked (as another commit would) and read by record: the page is stamped with
+      // the version it read while the first record keeps its old value, and the page is flushed with that version
+      manager.markRecords(bucketId, new long[] { pair.get(1).getPosition() }, 1);
+      ColumnarApplier.runPass(manager, projection);
+      // the stamp this test is about: the version read, after the publication, with the first record's row still the old one
+      final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(bucketId);
+      final long committed = bucket.visitCommittedSlots(page, new long[maxRecordsInPage / 64], (position, kind, content, offPages,
+          count) -> {
+      });
+      assertThat(projection.overlay().page(page).pageVersion()).as("stamped with the version read").isEqualTo(committed);
+      manager.flushNow();
+      assertThat(projection.overlay().rows()).isZero();
+
+      // every page on disk, then the housekeeping: it drops what it may (the unused one), and keeps the WAL file of the commit between
+      // its marks, which only the guard keeps: its pages are on disk
+      assertThat(PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(((DatabaseInternal) database).getEmbedded())).isTrue();
+      final Set<String> walOfTheCommit = walFiles(databaseDir);
+      ColumnarTransactionManagerTestAccess.rotateAndDropWALAsHousekeeping(((DatabaseInternal) database).getTransactionManager());
+      assertThat(walFiles(databaseDir)).as("the WAL file of the commit between its marks").containsAnyElementsOf(walOfTheCommit);
+      ((DatabaseInternal) database).kill();
+    } finally {
+      releaseFirst.countDown();
+      releasePublished.countDown();
+    }
+    committer.join(HANG_MS);
+    assertThat(committer.isAlive()).isFalse();
+    database.close();
+
+    database = factory.open();
+    assertRecoveredWithoutRebuild();
+    assertThat(FacetOracle.projectionCounts(database, ColumnarTestData.TYPE, "brand", null, false).get("pending-at-crash"))
+        .as("the record whose second mark the crash lost").isEqualTo(1L);
+  }
+
+  private static void pause(final CountDownLatch reached, final CountDownLatch release) {
+    reached.countDown();
+    try {
+      release.await();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   // ------------------------------------------------------------------------------------------------------------------- helpers

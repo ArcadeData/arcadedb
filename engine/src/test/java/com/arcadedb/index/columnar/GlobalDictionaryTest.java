@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.block.BlockCorruptionException;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -103,6 +105,75 @@ class GlobalDictionaryTest {
       assertThat(reopened.ordinalOf(values[i])).isEqualTo(i);
     }
     reopened.close();
+  }
+
+  /**
+   * Task 2 of plan 7 (#10662): the apply pass looks a string value up from its UTF-8 bytes in the record, without building a String.
+   * The ordinal must be the one the String lookup answers, for every kind of text, at any offset of the buffer, and across a reopen of
+   * the dictionary generation; bytes that are not well-formed UTF-8 answer as the String the record path decodes from them.
+   */
+  @Test
+  void utf8LookupAgreesWithStringLookup() throws IOException {
+    final String[] texts = { "acme", "Z\u00fcrich", "\uD83D\uDE00 emoji", "", "\u65e5\u672c\u8a9e", "a\u0000b", "\uFFFF\u0800\u07FF\u0080" };
+    final byte[][] malformed = { { (byte) 0xC3 }, { (byte) 0xC0, (byte) 0x80 }, { (byte) 0xED, (byte) 0xA0, (byte) 0x80 },
+        { (byte) 0xF4, (byte) 0x90, (byte) 0x80, (byte) 0x80 }, { 'x', (byte) 0xFF, 'y' }, { (byte) 0xE2, (byte) 0x82 } };
+    final Path file = dir.resolve("dict-2.0.dic");
+    final GlobalDictionary dictionary = GlobalDictionary.create(file);
+    dictionary.getOrAdd(1L);
+    dictionary.getOrAdd("1");
+
+    for (int i = 0; i < texts.length; i++) {
+      final String text = texts[i];
+      final Binary bytes = utf8At(text.getBytes(StandardCharsets.UTF_8), 3 + i);
+      assertThat(dictionary.ordinalOfUtf8(bytes, 3 + i, bytes.size() - 3 - i)).as("absent '%s'", text).isEqualTo(-1);
+      // added from the bytes for the even values, from the String for the odd ones
+      final int ordinal = i % 2 == 0 ? dictionary.getOrAddUtf8(bytes, 3 + i, bytes.size() - 3 - i) : dictionary.getOrAdd(text);
+      assertThat(dictionary.valueOf(ordinal)).isEqualTo(text);
+      assertThat(dictionary.getOrAddUtf8(bytes, 3 + i, bytes.size() - 3 - i)).as("'%s'", text).isEqualTo(dictionary.getOrAdd(text));
+      assertThat(dictionary.ordinalOfUtf8(bytes, 3 + i, bytes.size() - 3 - i)).isEqualTo(dictionary.ordinalOf(text));
+    }
+    for (final byte[] raw : malformed) {
+      final String decoded = new String(raw, StandardCharsets.UTF_8);
+      final Binary bytes = utf8At(raw, 1);
+      final int ordinal = dictionary.getOrAddUtf8(bytes, 1, raw.length);
+      assertThat(dictionary.valueOf(ordinal)).as(Arrays.toString(raw)).isEqualTo(decoded);
+      assertThat(dictionary.ordinalOf(decoded)).isEqualTo(ordinal);
+      assertThat(dictionary.ordinalOfUtf8(bytes, 1, raw.length)).isEqualTo(ordinal);
+    }
+    final int size = dictionary.size();
+    final long length = dictionary.fsync().bytes();
+    dictionary.close();
+
+    final GlobalDictionary reopened = GlobalDictionary.open(file, length, size);
+    try {
+      for (final String text : texts) {
+        final byte[] raw = text.getBytes(StandardCharsets.UTF_8);
+        final Binary bytes = utf8At(raw, 0);
+        assertThat(reopened.ordinalOfUtf8(bytes, 0, raw.length)).as("'%s' after the reopen", text).isEqualTo(reopened.ordinalOf(text));
+        assertThat(reopened.getOrAddUtf8(bytes, 0, raw.length)).isEqualTo(reopened.ordinalOf(text));
+      }
+      assertThat(reopened.size()).isEqualTo(size);
+      // a value appended after the reopen
+      final Binary late = utf8At("late \u00e9t\u00e9".getBytes(StandardCharsets.UTF_8), 2);
+      final int ordinal = reopened.getOrAddUtf8(late, 2, late.size() - 2);
+      assertThat(ordinal).isEqualTo(size);
+      assertThat(reopened.ordinalOf("late \u00e9t\u00e9")).isEqualTo(ordinal);
+      // a String that is not a dictionary String never matches its bytes: the Long 1 and the String "1" stay apart
+      final Binary one = utf8At(new byte[] { '1' }, 0);
+      assertThat(reopened.ordinalOfUtf8(one, 0, 1)).isEqualTo(reopened.ordinalOf("1")).isNotEqualTo(reopened.ordinalOf(1L));
+    } finally {
+      reopened.close();
+    }
+  }
+
+  /** The bytes at {@code offset} of a Binary whose first bytes are noise, positioned past them as a record read leaves it. */
+  private static Binary utf8At(final byte[] raw, final int offset) {
+    final byte[] content = new byte[offset + raw.length];
+    Arrays.fill(content, 0, offset, (byte) 'z');
+    System.arraycopy(raw, 0, content, offset, raw.length);
+    final Binary binary = new Binary(content);
+    binary.position(offset);
+    return binary;
   }
 
   @Test

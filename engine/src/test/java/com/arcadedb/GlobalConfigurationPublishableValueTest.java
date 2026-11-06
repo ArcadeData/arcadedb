@@ -73,15 +73,48 @@ class GlobalConfigurationPublishableValueTest {
 
   @Test
   void onlyTheFieldTheServerAuthenticatesWithIsMasked() {
-    // A ':' inside a password is not expressible in this format: ArcadeDBServer.parseCredentials authenticates
-    // with field 1 and reads field 2 as the group, so "word" below is a GROUP NAME to the server, not a secret.
-    // Masking it too would hide a role an operator reads this report for; what the server calls the password is
-    // masked, whatever the field count.
+    // A ':' inside a password is written %3A (issue #11269). Written raw with no group after it, ArcadeDBServer.parseCredentials
+    // authenticates with field 1 and reads field 2 as the group, so "word" below is a GROUP NAME to the server, not a
+    // secret. Masking it too would hide a role an operator reads this report for.
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:pass:word]"))
         .isEqualTo("mydb[jay:*****:word]");
+  }
+
+  /**
+   * Issue #11269: a credential with more than three fields is what a password written with a raw ':' becomes, and the
+   * server now refuses it rather than reading field 1 as the password and dropping the rest. Which field is the password
+   * cannot be told, so every field after the user name is masked: this used to publish "word:extra", the tail of it.
+   */
+  @Test
+  void aCredentialWithMoreThanThreeFieldsIsMaskedAfterItsUserName() {
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:pass:word:extra]"))
-        .as("a field the server ignores entirely is not a secret it could ever have used")
-        .isEqualTo("mydb[jay:*****:word:extra]");
+        .isEqualTo("mydb[jay:*****]");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[ann:x,jay:my:pass:admin:readonly,bob:y:g]"))
+        .as("only the refused credential fails closed; its neighbours keep their user names and groups")
+        .isEqualTo("mydb[ann:*****,jay:*****,bob:*****:g]");
+  }
+
+  /**
+   * Issue #11269: a ']' inside a password closes the block early, and the rest of the password follows it. The server
+   * refuses the entry and quotes it through this redaction, which used to copy that rest verbatim.
+   */
+  @Test
+  void textAfterTheBlockThatOpensNoCommandsIsMasked() {
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hun]ter2:admin];other[bob:pw]"))
+        .isEqualTo("mydb[jay:*****]*****;other[bob:*****]");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2] ;other[bob:pw]"))
+        .as("whitespace after the block hides nothing and the server tolerates it")
+        .isEqualTo("mydb[jay:*****] ;other[bob:*****]");
+  }
+
+  /**
+   * Issue #11269: a separator inside a field is written percent-encoded, so the raw text keeps one ':' per field boundary
+   * and the masked field is the whole (encoded) password.
+   */
+  @Test
+  void aPercentEncodedPasswordIsMaskedWhole() {
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:my%3Apass%2Cword%5D:admin]"))
+        .isEqualTo("mydb[jay:*****:admin]");
   }
 
   @Test
@@ -128,8 +161,8 @@ class GlobalConfigurationPublishableValueTest {
 
   @Test
   void anEmptyPasswordIsNotASecretToHide() {
-    // The server reads 'jay:' as a reference to an existing user (split(":") drops the trailing empty field,
-    // so parseCredentials sees one field), and there is no password in it to replace.
+    // There is no password in 'jay:' to replace. The server refuses the credential since issue #11269 (an empty password
+    // is not one a user could be created with), and the report shows it as written so the refusal can be matched to it.
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:]")).isEqualTo("mydb[jay:]");
   }
 
@@ -151,7 +184,8 @@ class GlobalConfigurationPublishableValueTest {
   @Test
   void anEmptyPasswordBeforeAGroupIsNotReportedAsAConfiguredOne() {
     // The sibling of anEmptyPasswordIsNotASecretToHide, with a group after it: 'jay::admins' has no password
-    // either, and "*****" there would tell an operator one is configured where none is.
+    // either, and "*****" there would tell an operator one is configured where none is. The server refuses it too
+    // (issue #11269), where it used to create 'jay' with an empty password.
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay::admins]"))
         .isEqualTo("mydb[jay::admins]");
   }

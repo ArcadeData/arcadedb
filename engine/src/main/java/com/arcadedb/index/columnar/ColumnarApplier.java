@@ -29,10 +29,13 @@ import com.arcadedb.database.RecordFactory;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.IntHashSet;
 
 import java.io.UncheckedIOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -46,14 +49,18 @@ import java.util.logging.Level;
  * <ol>
  * <li>The trackers are drained (primary, and external when the bucket has one, R7). The owners of the drained pages in the content owner
  * maps (records behind a placeholder pointer or a chunk chain whose bytes live on a drained primary page, records whose EXTERNAL value
- * lives on a drained external page) are re-read too, unless their own page is drained: that page's visit handles them.</li>
- * <li>Each drained primary page is visited ascending through {@link LocalBucket#visitCommittedPage}, with no transaction. A RECORD is
- * extracted column by column with the projection's own writer dictionaries and compared with {@link ColumnarProjection#liveValueLookup}:
- * equal is a no-op (spec 6.3, the vertex head pointer churn of an edge insert), different is staged in the page's NEW
- * {@link OverlayPageBlock} (seeded first from the page's current block: a block is the page's WHOLE overlay content). A changed value
- * whose old one lives in a segment marks that row dead (V-M18), one in the frozen overlay of a running flush supersedes it there (V-B2).
+ * lives on a drained external page) are re-read too, unless their own page is drained: that page's visit handles them (an owner on a
+ * page drained by record joins its records).</li>
+ * <li>Each drained primary page is visited ascending through {@link LocalBucket#visitCommittedPage}, with no transaction; a page a local
+ * commit marked by record (Task 15 of #10662) only for its marked records, through {@link LocalBucket#visitCommittedSlots}, its block
+ * keeping the version of its last whole visit. A RECORD is extracted column by column with the projection's own writer dictionaries
+ * and compared with {@link ColumnarProjection#liveValueLookup}: equal is a no-op (spec 6.3, the vertex head pointer churn of an edge
+ * insert), different is staged in the page's NEW {@link OverlayPageBlock} (seeded first from the page's current block: a block is the
+ * page's WHOLE overlay content). A changed value whose old one lives in a segment marks that row dead (V-M18), one in the frozen overlay
+ * of a running flush supersedes it there (V-B2).
  * A live position that is no record any more (deleted, a freed slot, content of another record, past the page's record count) dies the
- * same way. Each owner is re-read alone through {@link LocalBucket#visitCommittedRecord}.</li>
+ * same way, and so does a chunked record deleted while the pass walked its chain (reported {@code EMPTY}, Task 14 of #10662). Each
+ * owner is re-read alone through {@link LocalBucket#visitCommittedRecord}.</li>
  * <li>The owner maps follow every readable record: off-page pages set, a plain or deleted record removed. The changes are collected
  * during the read and written after the publish, under each map's write lock, so a pass that fails leaves the maps as they were.</li>
  * <li>Kill point {@value #BEFORE_PUBLISH}, then dead rows, new blocks, superseded frozen rows and the overlay are published, the owner
@@ -79,6 +86,8 @@ import java.util.logging.Level;
 final class ColumnarApplier {
   /** Reached by every pass that drained pages, after the pages are read and before anything of them is published. */
   static final String BEFORE_PUBLISH                    = "apply.beforePublish";
+  /** Reached after each drained primary page, or the owners of a clean page, were read and before the block is stamped (Task 15b). */
+  static final String AFTER_PAGE_READ                   = "apply.afterPageRead";
   /** Failed retries of a page with an unreadable record, spaced by the backoff, after which the projection is marked corrupt. */
   static final int    UNREADABLE_ATTEMPTS_BEFORE_REBUILD = 5;
 
@@ -137,10 +146,10 @@ final class ColumnarApplier {
     }
   }
 
-  /** The drained pages of the tracker, ascending. */
-  private static int[] drain(final DirtyPageTracker tracker) {
+  /** The drained pages of the tracker, ascending; the records of the pages drained by record go to {@code records} (null: none). */
+  private static int[] drain(final DirtyPageTracker tracker, final PositionBitmap records) {
     final IntHashSet pages = new IntHashSet();
-    if (tracker.drainInto(pages) == 0)
+    if (tracker.drainInto(pages, records) == 0)
       return NO_PAGES;
     final int[] sorted = pages.toArray();
     Arrays.sort(sorted);
@@ -407,6 +416,140 @@ final class ColumnarApplier {
   }
 
   /**
+   * Fills a {@link RowValues} with the projected values of one record, with the failing values and the coerced flags of each column:
+   * from a record ({@link #decode(Document)}), or (Task 2 of #10662) straight from the record's bytes ({@link #decode(Binary)}), with
+   * no record, no String for an ordinal value and no list built. A column with no writer dictionary yet (V-B4) is missing. Owned by one
+   * apply pass; reused across its records and runs.
+   */
+  static final class RowDecoder {
+    final RowValues                                   fresh;
+    /** Failing values of each column of the record being read, counted only when the record is staged. */
+    final int[]                                       failures;
+    /** By column: whether the record being read holds a value converted from another stored type. */
+    final boolean[]                                   coerced;
+    private final ColumnDefinition[]                  columns;
+    private final GlobalDictionary[]                  dictionaries;
+    private final ColumnarValueExtractor              extractor;
+    private final ColumnarValueExtractor.RecordReader reader;
+    private final Sink                                sink;
+    // per run
+    private BinarySerializer                          serializer;
+    private DatabaseInternal                          database;
+    private boolean                                   direct;
+
+    /** @param dictionaries the writer dictionaries by column, filled by the owner before each run (shared, not copied) */
+    RowDecoder(final String typeName, final ColumnDefinition[] columns, final GlobalDictionary[] dictionaries, final ColumnarStats stats) {
+      this.columns = columns;
+      this.dictionaries = dictionaries;
+      // the dictionaries are passed explicitly, the resolver is never asked
+      this.extractor = new ColumnarValueExtractor(typeName, columns, (bucketId, property) -> {
+        throw new IllegalStateException("The apply pass passes its dictionaries explicitly");
+      }, stats);
+      this.reader = new ColumnarValueExtractor.RecordReader(columns);
+      this.fresh = new RowValues(columns.length);
+      this.sink = new Sink(fresh);
+      this.failures = new int[columns.length];
+      this.coerced = new boolean[columns.length];
+    }
+
+    ColumnarValueExtractor extractor() {
+      return extractor;
+    }
+
+    /**
+     * Once per run. The bytes are read directly only when they hold exactly what the record read would answer: no paired external
+     * bucket (an external value is read through its RID), no data encryption, no String a declared temporal property converts when
+     * read, and every column walked from the header.
+     */
+    void prepare(final LocalDatabase db, final DocumentType type, final boolean externalBucket) {
+      reader.prepare(db.getSchema().getDictionary());
+      serializer = db.getSerializer();
+      database = db.getWrappedDatabaseInstance();
+      direct = !externalBucket && serializer.getDataEncryption() == null && type instanceof LocalDocumentType local
+          && !local.mayConvertStoredStrings() && reader.walksEveryColumn();
+    }
+
+    /**
+     * Decodes the record from its bytes (positioned at its record type byte); false, with nothing to use, when the bytes cannot be read
+     * here exactly as the record read reads them (the caller then decodes the record). A dictionary append that
+     * fails fails the pass, as on the record path; any other exception (a deserializer failure included) declines. The content's
+     * position is restored.
+     * <p>
+     * A decline after this record's earlier columns (or earlier items of a list) were appended to the dictionary leaves those ordinals
+     * in it even when the record path then reads the record differently, which only corrupt bytes cause: an ordinal no row uses, as a
+     * deleted value leaves one, so counts are unaffected. It is the one case where the ordinals assigned differ from the record path's.
+     */
+    boolean decode(final Binary content) {
+      if (!direct)
+        return false;
+      final int before = content.position();
+      try {
+        if (!reader.begin(content, serializer))
+          return false;
+        for (int k = 0; k < columns.length; k++) {
+          fresh.present[k] = false;
+          failures[k] = 0;
+          coerced[k] = false;
+          final ColumnDefinition column = columns[k];
+          final ColumnKind kind = column.kind();
+          if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
+            continue;
+          sink.k = k;
+          final int at = reader.position(k);
+          if (at < 0) {
+            failures[k] = extractor.extractValueForApplyUncounted(null, column, dictionaries[k], sink);
+            continue;
+          }
+          content.position(at);
+          final byte type = content.getByte();
+          if (type == BinaryTypes.TYPE_STRING && kind == ColumnKind.ORDINAL) {
+            coerced[k] = ColumnarValueExtractor.isCoerced(column, String.class);
+            failures[k] = ColumnarValueExtractor.extractUtf8ForApply(content, dictionaries[k], sink);
+          } else if (type == BinaryTypes.TYPE_LIST && kind == ColumnKind.ORDINAL_LIST) {
+            // the record read answers an ArrayList
+            coerced[k] = ColumnarValueExtractor.isCoerced(column, ArrayList.class);
+            failures[k] = extractor.extractListForApply(content, serializer, database, dictionaries[k], sink);
+          } else {
+            final Object raw = ColumnarValueExtractor.deserializeForApply(serializer, database, content, type);
+            coerced[k] = raw != null && ColumnarValueExtractor.isCoerced(column, raw);
+            failures[k] = extractor.extractValueForApplyUncounted(raw, column, dictionaries[k], sink);
+          }
+        }
+        return true;
+      } catch (final ColumnarTestHooks.SimulatedCrash | UncheckedIOException e) {
+        // a dictionary append that failed (the only UncheckedIOException left here: deserializeForApply converts the deserializer's)
+        throw e;
+      } catch (final RuntimeException e) {
+        // bytes the record read refuses or reads as missing (it logs them): left to it, which decides the same way as before
+        return false;
+      } finally {
+        content.position(before);
+      }
+    }
+
+    /** Decodes the record through its one-walk reader. */
+    void decode(final Document document) {
+      reader.begin(document);
+      try {
+        for (int k = 0; k < columns.length; k++) {
+          fresh.present[k] = false;
+          failures[k] = 0;
+          coerced[k] = false;
+          final ColumnKind kind = columns[k].kind();
+          if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
+            continue;
+          sink.k = k;
+          final Object raw = reader.raw(k);
+          coerced[k] = raw != null && ColumnarValueExtractor.isCoerced(columns[k], raw);
+          failures[k] = extractor.extractValueForApplyUncounted(raw, columns[k], dictionaries[k], sink);
+        }
+      } finally {
+        reader.end();
+      }
+    }
+  }
+
+  /**
    * The pass itself, with the buffers it reuses: one instance per projection, column set and type name, kept by the projection and used
    * under its apply lock only. The per-run fields are set by {@link #run}.
    */
@@ -415,17 +558,18 @@ final class ColumnarApplier {
     private final ColumnDefinition[]     columns;
     private final String                 typeName;
     private final int                    maxRecordsInPage;
+    private final RowDecoder             decoder;
     private final ColumnarValueExtractor extractor;
     private final RowBuffer              rows;
     private final RowValues              fresh;
     private final RowValues              old;
-    private final Sink                   sink;
+    /** The old-value lookups of {@link #stage} and {@link #delete} (Task 2 of #10662); its blocks are dropped at the end of each run. */
+    private final ColumnarProjection.LiveLookup lookup;
     private final long[]                 live;
     private final long[]                 records;
     private final GlobalDictionary[]     dictionaries;
-    /** Failing values of each column of the record being read, counted only when the record is staged. */
+    /** {@link RowDecoder#failures} of the record being read. */
     private final int[]                  failures;
-    private final ColumnarValueExtractor.RecordReader reader;
     private long[]                       found       = new long[16];
     private long[]                       owners      = new long[16];
     private OverlayPageBlock[]           blocks      = new OverlayPageBlock[16];
@@ -437,6 +581,7 @@ final class ColumnarApplier {
     private int                          changedOwnerCount;
 
     // per run
+    private ColumnarIndexManager manager;
     private LocalBucket       bucket;
     private DocumentType      type;
     private DatabaseInternal  database;
@@ -446,6 +591,11 @@ final class ColumnarApplier {
     private ExternalValuePages externalValues;
     private PositionBitmap    deadNow;
     private PositionBitmap    superseded;
+    /**
+     * The records to re-read on the drained primary pages marked by record (Task 15 of #10662), plus the owners on those pages of a
+     * drained content page; a drained page with no record here is read whole.
+     */
+    private PositionBitmap    marked;
     private int               blockCount;
     private long              reread;
     private long              unreadable;
@@ -460,7 +610,7 @@ final class ColumnarApplier {
     private final long[]      stagedFailures;
     /** Values of the staged records converted from another stored type, by column. */
     private final long[]      stagedCoerced;
-    /** By column: whether the record being extracted holds a value converted from another stored type. */
+    /** {@link RowDecoder#coerced} of the record being read. */
     private final boolean[]   coerced;
 
     private Pass(final ColumnarProjection projection, final ColumnDefinition[] columns, final String typeName) {
@@ -468,22 +618,19 @@ final class ColumnarApplier {
       this.columns = columns;
       this.typeName = typeName;
       this.maxRecordsInPage = projection.maxRecordsInPage();
-      // the dictionaries are passed explicitly, the resolver is never asked
-      this.extractor = new ColumnarValueExtractor(typeName, columns, (bucketId, property) -> {
-        throw new IllegalStateException("The apply pass passes its dictionaries explicitly");
-      }, projection.stats());
+      this.dictionaries = new GlobalDictionary[columns.length];
+      this.decoder = new RowDecoder(typeName, columns, dictionaries, projection.stats());
+      this.extractor = decoder.extractor();
       this.rows = new RowBuffer(maxRecordsInPage, columns);
-      this.fresh = new RowValues(columns.length);
+      this.fresh = decoder.fresh;
       this.old = new RowValues(columns.length);
-      this.sink = new Sink(fresh);
+      this.lookup = new ColumnarProjection.LiveLookup(projection);
       this.live = new long[maxRecordsInPage / 64];
       this.records = new long[maxRecordsInPage / 64];
-      this.dictionaries = new GlobalDictionary[columns.length];
-      this.failures = new int[columns.length];
+      this.failures = decoder.failures;
       this.stagedFailures = new long[columns.length];
       this.stagedCoerced = new long[columns.length];
-      this.coerced = new boolean[columns.length];
-      this.reader = new ColumnarValueExtractor.RecordReader(columns);
+      this.coerced = decoder.coerced;
     }
 
     private int run(final ColumnarIndexManager manager) {
@@ -491,21 +638,25 @@ final class ColumnarApplier {
       final UnreadablePages retries = projection.unreadablePages();
       retries.remarkDue(nowMs, projection.tracker());
 
-      final int[] pages = drain(projection.tracker());
+      marked = new PositionBitmap(maxRecordsInPage);
+      final int[] pages = drain(projection.tracker(), marked);
       final DirtyPageTracker externalTracker = projection.externalTracker();
-      final int[] externalPages = externalTracker == null ? NO_PAGES : drain(externalTracker);
+      final int[] externalPages = externalTracker == null ? NO_PAGES : drain(externalTracker, null);
       if (pages.length == 0 && externalPages.length == 0)
         return 0;
 
+      this.manager = manager;
       prepare(manager.getDatabase());
       try {
         final int ownerCount = ownersToReread(pages, externalPages);
         boolean corrupt = false;
         for (final int page : pages) {
-          applyPage(page);
-          if (!unreadableHere)
-            retries.readable(page);
-          else if (pastCount)
+          final boolean whole = applyPage(page);
+          if (!unreadableHere) {
+            // a visit of some records of the page says nothing of the others
+            if (whole)
+              retries.readable(page);
+          } else if (pastCount)
             retries.notVisible(page, nowMs);
           else
             corrupt |= failed(retries, page, nowMs);
@@ -565,10 +716,13 @@ final class ColumnarApplier {
       } finally {
         Arrays.fill(blocks, 0, blockCount, null);
         blockCount = 0;
+        lookup.clear();
         changedOwnerCount = 0;
         unreadableCause = null;
         deadNow = null;
         superseded = null;
+        marked = null;
+        this.manager = null;
         bucket = null;
         type = null;
         database = null;
@@ -600,13 +754,13 @@ final class ColumnarApplier {
       database = db.getWrappedDatabaseInstance();
       recordFactory = db.getRecordFactory();
       serializer = db.getSerializer();
-      reader.prepare(db.getSchema().getDictionary());
       externalFileId = projection.externalFileId();
       externalValues = externalFileId < 0 ? null : new ExternalValuePages((LocalBucket) db.getSchema().getBucketById(externalFileId));
       for (int k = 0; k < columns.length; k++) {
         final ColumnKind kind = columns[k].kind();
         dictionaries[k] = kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST ? projection.dictionary(columns[k].property()) : null;
       }
+      decoder.prepare(db, type, externalFileId >= 0);
       deadNow = new PositionBitmap(maxRecordsInPage);
       superseded = new PositionBitmap(maxRecordsInPage);
       Arrays.fill(stagedFailures, 0L);
@@ -617,7 +771,8 @@ final class ColumnarApplier {
 
     /**
      * Fills {@link #owners} with the owners of the drained primary and external pages, ascending and distinct, leaving out those whose
-     * own page is drained; returns their count.
+     * own page is drained: that page's visit reads them, an owner on a page drained by record joined to its {@link #marked} records (a
+     * page is visited once per pass, its block built once). Returns their count.
      */
     private int ownersToReread(final int[] pages, final int[] externalPages) {
       int count = 0;
@@ -648,8 +803,12 @@ final class ColumnarApplier {
       final int n = map.owners(contentPage, found);
       for (int i = 0; i < n; i++) {
         final long owner = found[i];
-        if (Arrays.binarySearch(drainedPages, (int) (owner / maxRecordsInPage)) >= 0)
+        final int ownerPage = (int) (owner / maxRecordsInPage);
+        if (Arrays.binarySearch(drainedPages, ownerPage) >= 0) {
+          if (marked.stripe(ownerPage) != null)
+            marked.set(owner);
           continue;
+        }
         if (count == owners.length)
           owners = Arrays.copyOf(owners, count * 2);
         owners[count++] = owner;
@@ -657,11 +816,15 @@ final class ColumnarApplier {
       return count;
     }
 
-    /** A drained primary page: every slot, then every live position that is no record any more. */
-    private void applyPage(final int page) {
+    /**
+     * A drained primary page: every slot, then every live position that is no record any more; a page drained by record, only its
+     * {@link #marked} slots. Returns whether the whole page was read.
+     */
+    private boolean applyPage(final int page) {
+      final long[] only = marked.stripe(page);
       final OverlayPageBlock current = startPage(page);
       Arrays.fill(records, 0L);
-      final long version = bucket.visitCommittedPage(page, this);
+      final long version = only == null ? bucket.visitCommittedPage(page, this) : bucket.visitCommittedSlots(page, only, this);
       if (version < 0) {
         // nothing is known of the page, everything is kept and the page retried: a committed page that could not be read, or one past the
         // committed page count (final review A-C1: the first mark of a commit drained before its pages are published, which its second
@@ -671,16 +834,44 @@ final class ColumnarApplier {
         else
           unreadableHere = pastCount = true;
         endPage(page, current, 0);
-        return;
+        return only == null;
       }
+      ColumnarTestHooks.reach(AFTER_PAGE_READ);
       projection.liveSlots(page, live);
       final long base = (long) page * maxRecordsInPage;
       for (int w = 0; w < live.length; w++)
-        for (long gone = live[w] & ~records[w]; gone != 0; gone &= gone - 1) {
+        for (long gone = live[w] & ~records[w] & (only == null ? -1L : only[w]); gone != 0; gone &= gone - 1) {
           final int slot = (w << 6) + Long.numberOfTrailingZeros(gone);
           delete(base + slot, slot);
         }
-      endPage(page, current, version);
+      if (only == null || stampsReadVersion(page))
+        endPage(page, current, version);
+      else
+        // the block keeps the version of its last whole read (0 without one), so neither the page check of an unclean open nor a
+        // rebuild takes its rows for the committed page
+        endPage(page, current, current != null ? current.pageVersion() : 0);
+      return only == null;
+    }
+
+    /**
+     * Task 15b: whether a page just read by record may be stamped with the version read, as a whole read is, so a flushed page is not
+     * taken for changed by the page check of an unclean open or a rebuild's reuse. Every write at or below that version is in rows read
+     * after it became visible, or still has a mark to come that a crash cannot lose:
+     * <ul>
+     * <li>a local commit runs its first mark before its publication and so before this read. A first mark not drained yet is in the
+     * current epoch, checked here after the read. One drained in this pass names records read now. One drained by an earlier pass is
+     * followed by the second mark, after the publication: drained before this pass, its records were read after it; landed since the
+     * drain, it is in the current epoch, checked here after the read; not landed yet, the commit keeps its WAL file from every drop
+     * ({@code TransactionManager.cleanWALFiles}, spec 6.2), whose replay marks the page;</li>
+     * <li>an apply that marks after writing ({@code TransactionManager.applyChanges}) is counted from before its first write until its
+     * mark landed: none counted, read before the epoch, means every such mark of a write this read saw is in an epoch;</li>
+     * <li>a record that could not be read keeps its old row, so the page keeps its old version too.</li>
+     * </ul>
+     */
+    private boolean stampsReadVersion(final int page) {
+      // the counter BEFORE the epoch: an apply decrements it only after its mark landed, so a zero read first means that mark is
+      // already in the epoch read next (the other order could miss a mark landing between the two reads)
+      return !unreadableHere && !manager.hasUnmarkedApplies() && !projection.tracker().isMarkedSinceDrain(page);
     }
 
     /** The owners {@code owners[from, to)} of one clean page, each re-read alone. */
@@ -701,8 +892,10 @@ final class ColumnarApplier {
         if (!recordReported)
           delete(owner, (int) (owner % maxRecordsInPage));
       }
-      // the other rows of the page were read at the block's version
-      endPage(page, current, current != null ? current.pageVersion() : Math.max(version, 0));
+      ColumnarTestHooks.reach(AFTER_PAGE_READ);
+      // the other rows of the page were read at the block's version; with no block, the owners alone stand for the version read only
+      // on the terms of a page read by record (Task 15b), else 0
+      endPage(page, current, current != null ? current.pageVersion() : version >= 0 && stampsReadVersion(page) ? version : 0);
     }
 
     private OverlayPageBlock startPage(final int page) {
@@ -738,6 +931,15 @@ final class ColumnarApplier {
         return;
       }
 
+      if (decoder.decode(content)) {
+        // read from the bytes (Task 2 of #10662): no paired external bucket, so no external pages
+        markRecord(slot);
+        reread++;
+        queueOwner(false, position, offPagePages, offPageCount);
+        stage(position, slot);
+        return;
+      }
+
       final int externalCount;
       try {
         final Record record = recordFactory.newImmutableRecord(database, type, new RID(projection.bucketId(), position), content, null);
@@ -745,7 +947,7 @@ final class ColumnarApplier {
           return; // not a projected record
         markRecord(slot);
         reread++;
-        extract(document);
+        decoder.decode(document);
         externalCount = externalFileId < 0 ? 0 : externalValues.collect(serializer, database, document, columns);
       } catch (final ColumnarTestHooks.SimulatedCrash | UncheckedIOException e) {
         // a crash test, or a dictionary append that failed: the pass fails, its pages stay in flight
@@ -775,33 +977,12 @@ final class ColumnarApplier {
       unreadableHere = true;
     }
 
-    /** Fills {@link #fresh} with the record's column values; a column with no writer dictionary yet (V-B4) is missing. */
-    private void extract(final Document document) {
-      reader.begin(document);
-      try {
-        for (int k = 0; k < columns.length; k++) {
-          fresh.present[k] = false;
-          failures[k] = 0;
-          coerced[k] = false;
-          final ColumnKind kind = columns[k].kind();
-          if ((kind == ColumnKind.ORDINAL || kind == ColumnKind.ORDINAL_LIST) && dictionaries[k] == null)
-            continue;
-          sink.k = k;
-          final Object raw = reader.raw(k);
-          coerced[k] = raw != null && ColumnarValueExtractor.isCoerced(columns[k], raw);
-          failures[k] = extractor.extractValueForApplyUncounted(raw, columns[k], dictionaries[k], sink);
-        }
-      } finally {
-        reader.end();
-      }
-    }
-
     /** Stages the record's values unless they equal the live ones (spec 6.3); the value they replace stops being live. */
     private void stage(final long position, final int slot) {
       long where = ColumnarProjection.LOOKUP_ABSENT;
       boolean equal = true;
       for (int k = 0; k < columns.length && equal; k++) {
-        final long at = projection.liveValueLookup(position, k, old);
+        final long at = lookup.lookup(position, k, old);
         if (k == 0)
           where = at;
         equal = same(k);
@@ -821,7 +1002,7 @@ final class ColumnarApplier {
 
     /** The position is no record any more: its live value dies, wherever it is. */
     private void delete(final long position, final int slot) {
-      final long where = projection.liveValueLookup(position, 0, old);
+      final long where = lookup.lookup(position, 0, old);
       if (where == ColumnarProjection.LOOKUP_OVERLAY) {
         rows.remove(slot);
         changed = true;

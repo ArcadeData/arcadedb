@@ -167,6 +167,16 @@ public final class RangeBucketer {
     dirty = true;
   }
 
+  /** Adds the counts of a bucketer over the same bounds (parallel counting: another slice of the same facet). */
+  public void addAll(final RangeBucketer other) {
+    if (other.counters.length != counters.length)
+      throw new IllegalArgumentException("Bucketers over different bounds: " + other.counters.length + " intervals, expected " + counters.length);
+    for (int i = 0; i < counters.length; i++)
+      counters[i] += other.counters[i];
+    nanCount += other.nanCount;
+    dirty = true;
+  }
+
   /** The interval holding both {@code min} and {@code max}, or -1 when {@code [min, max]} spans more than one (or is not ordered). */
   public int singleIntervalOf(final double min, final double max) {
     if (Double.isNaN(min) || Double.isNaN(max) || min > max)

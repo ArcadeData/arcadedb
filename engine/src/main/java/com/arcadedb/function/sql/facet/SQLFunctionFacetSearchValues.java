@@ -36,21 +36,30 @@ import com.arcadedb.index.columnar.ColumnarSnapshot;
 import com.arcadedb.index.columnar.DictionaryPrefixSearch;
 import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.query.facet.FacetBucket;
+import com.arcadedb.query.facet.FacetExecutor;
+import com.arcadedb.query.facet.FacetFallbackScanner;
 import com.arcadedb.query.facet.FacetMemoryBudget;
+import com.arcadedb.query.facet.FacetOrder;
 import com.arcadedb.query.facet.FacetResult;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.facet.FacetSpec;
+import com.arcadedb.query.facet.MatchSet;
+import com.arcadedb.query.facet.TermsFacetSpec;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
+import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * {@code facet.searchValues(type, property, prefix, limit)}: the values of a COLUMNAR property (a string, or a list of strings indexed
@@ -61,11 +70,18 @@ import java.util.concurrent.TimeUnit;
  * records of (the dictionaries have no access check of their own; a user who may read none of them gets the security error the normal
  * plan raises), k-way merged by value with duplicates dropped, in batches of
  * {@code max(2 * limit, 16)}. A dictionary keeps the values of deleted and updated records until compaction, so every batch is counted
- * by an internal {@code SELECT FROM <type> FACETS v: <property> TERMS INCLUDE [...]} query, which counts only live records the user may
- * read (patching what the projection has not applied yet, and reading the records of a type with READ triggers or listeners, so a record
- * they hide is not counted): a candidate counted 0 is dropped. A value only such a listener writes into a record is in no dictionary and
- * is not suggested. The search stops at {@code limit} rows, at
- * the end of the prefix range or after {@value #MAX_BATCHES} batches, returning what it found.
+ * as the internal {@code SELECT FROM <type> FACETS v: <property> TERMS INCLUDE [...] LIMIT 0} query counts it, only live records the
+ * user may read (patching what the projection has not applied yet, and reading the records of a type with READ triggers or listeners,
+ * so a record they hide is not counted): a candidate counted 0 is dropped. A value only such a listener writes into a record is in no
+ * dictionary and is not suggested. The search stops at {@code limit} rows, at the end of the prefix range or after
+ * {@value #MAX_BATCHES} batches, returning what it found.
+ * <p>
+ * Counting (plan 7 Task 10): when every readable bucket of the type (polymorphic) has a usable snapshot, none of them fires read events
+ * ({@link FacetFallbackScanner#firesReadEvents}) and the caller's open transaction changed none of them, the batches are counted
+ * by {@link FacetExecutor} directly over one {@link MatchSet#fromProjection} match set taken for the call, which is the match set and
+ * the facet the internal query would count (no statement is parsed or planned). Otherwise every batch is the internal query, whose text
+ * has one fixed shape per batch size: {@code max(2 * limit, 16)} parameters rounded up to a power of two (at most {@code 2 x topMax}),
+ * a short batch repeating its last candidate (equal INCLUDE values are one bucket), so the statement is parsed once per shape.
  * <p>
  * The limit is capped by {@code arcadedb.columnar.topMax}. Buckets of the type without the column (an index declared only on a subtype)
  * hold no dictionary and are not searched: a value only they hold is not suggested. A readable bucket whose projection is missing,
@@ -82,10 +98,18 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
   public static final String NAME        = "facet.searchValues";
   static final        int    MAX_BATCHES = 8;
   static final        int    MIN_BATCH   = 16;
-  /** Budget per candidate of a batch: the reference, its query parameter entry and name, its INCLUDE literal and facet bucket. */
+  /** Budget per INCLUDE entry of a batch (its shape): the reference, its query parameter entry and name, its literal and facet bucket. */
   private static final long  CANDIDATE_BYTES = 256;
   /** Budget per returned row: its map, its entries (value, count and, when inexact, exact) and the boxed count. */
   private static final long  ROW_BYTES       = 160;
+  /** What {@link #countHook} receives for a batch counted directly; a batch counted by SQL hands it the statement text. */
+  static final String DIRECT = "direct";
+  /** Told how each batch is counted, for tests; null in production. */
+  static volatile Consumer<String> countHook;
+  /** For tests: count every batch through the internal query, the reference the direct path is held to; false in production. */
+  static volatile boolean          sqlCountsOnly;
+  /** The TOP of the internal query, its default: INCLUDE answers every listed value whatever the TOP. */
+  private static final int INCLUDE_TOP = 10;
 
   public SQLFunctionFacetSearchValues() {
     super(NAME);
@@ -127,11 +151,17 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
     final List<Bucket> polymorphic = type.getBuckets(true);
     final int[] bucketIds = new int[polymorphic.size()];
     final String[] bucketNames = new String[polymorphic.size()];
+    // every readable bucket, with the column or not: the internal query counts the records of all of them
+    final int[] readable = new int[polymorphic.size()];
+    int readableCount = 0;
     ColumnDefinition column = null;
     boolean indexed = false;
     int firstDenied = -1;
     int n = 0;
     for (final Bucket bucket : polymorphic) {
+      final boolean canRead = SecurityHelper.canAccessFile(db, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+      if (canRead)
+        readable[readableCount++] = bucket.getFileId();
       final ColumnDefinition bucketColumn = column(db.getSchema().getTypeByBucketId(bucket.getFileId()), property);
       if (bucketColumn == null)
         continue;
@@ -141,7 +171,7 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
             + "): only string values can be searched by prefix");
       if (column == null)
         column = bucketColumn;
-      if (!SecurityHelper.canAccessFile(db, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD)) {
+      if (!canRead) {
         if (firstDenied < 0)
           firstDenied = bucket.getFileId();
         continue;
@@ -157,15 +187,18 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
       // no bucket of the type is readable: the error the normal plan (and the internal count) raises for it, never an empty answer
       db.checkPermissionsOnFile(firstDenied, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final int limit = (int) Math.min(number.longValue(), GlobalConfiguration.COLUMNAR_TOP_MAX.getValueAsInteger());
+    // saturated to the int range (a limit above it is capped like any limit above topMax), never wrapped
+    final int limit = Math.min(requireIntArgument(number, "limit"), GlobalConfiguration.COLUMNAR_TOP_MAX.getValueAsInteger());
     final List<Map<String, Object>> rows = new ArrayList<>();
     if (limit == 0 || n == 0)
       return rows;
 
-    final Search search = new Search(n, prefix, Math.max(limit * 2, MIN_BATCH));
+    final int batch = Math.max(limit * 2, MIN_BATCH);
+    final Search search = new Search(n, prefix, batch, shape(batch));
+    Counter counter = null;
     try {
       search.acquire(((LocalDatabase) db.getEmbedded()).getColumnarIndexManager(), bucketIds, bucketNames, column.property(), limit);
-      final String sql = "SELECT FROM `" + type.getName() + "` FACETS v: `" + column.property() + "` TERMS INCLUDE [";
+      counter = new Counter(db, type, column.property(), Arrays.copyOf(readable, readableCount), search.shape, context);
       final List<String> candidates = new ArrayList<>(search.batch);
       for (int round = 0; round < MAX_BATCHES && rows.size() < limit; round++) {
         candidates.clear();
@@ -173,7 +206,7 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
           candidates.add(next);
         if (candidates.isEmpty())
           break;
-        final Counts counted = count(db, sql, candidates);
+        final Counts counted = counter.count(candidates);
         for (final String candidate : candidates) {
           final Long count = counted.counts().get(candidate);
           if (count == null || count < 1)
@@ -192,40 +225,133 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
       }
       return rows;
     } finally {
-      search.close();
+      try {
+        if (counter != null)
+          counter.close();
+      } finally {
+        search.close();
+      }
     }
   }
 
   /**
-   * The live counts of the candidates: INCLUDE returns every listed value, count 0 included (TOP and MIN_COUNT do not apply to it), and
-   * resolves one named parameter per value, so no value is ever written into the statement.
+   * The number of INCLUDE parameters of the internal query for a batch of {@code batch} candidates: rounded up to a power of two, so
+   * the few statement texts a workload sends are parsed once each; at most {@code 2 x topMax}, the largest batch, and never below the
+   * batch (a {@code topMax} under 8 leaves the minimum batch above it).
    */
-  private static Counts count(final DatabaseInternal db, final String select, final List<String> candidates) {
-    final StringBuilder sql = new StringBuilder(select.length() + candidates.size() * 6 + 16).append(select);
-    final Map<String, Object> parameters = new HashMap<>(candidates.size() * 2);
-    for (int i = 0; i < candidates.size(); i++) {
-      if (i > 0)
-        sql.append(", ");
-      sql.append(":v").append(i);
-      parameters.put("v" + i, candidates.get(i));
+  static int shape(final int batch) {
+    final int rounded = Integer.highestOneBit(batch - 1) << 1;
+    return Math.max(batch, Math.min(rounded, 2 * GlobalConfiguration.COLUMNAR_TOP_MAX.getValueAsInteger()));
+  }
+
+  /**
+   * Counts the batches of one call, directly or by the internal query (see the class comment), decided once at the first batch: the
+   * conditions cannot change during the call, which runs on the caller's thread and transaction. Holds the direct match set, and with
+   * it its snapshots, until {@link #close()}: every batch of the call is counted on that one set, so the direct counts are exact as of
+   * the first batch, where the SQL path takes a new match set per batch and counts each as of its own execution.
+   */
+  private static final class Counter {
+    private final DatabaseInternal db;
+    private final DocumentType     type;
+    private final String           property;
+    private final int[]            readable;
+    private final CommandContext   context;
+    private final String           statement;
+    private final int              shape;
+    private       boolean          decided;
+    private       MatchSet         matches;
+
+    private Counter(final DatabaseInternal db, final DocumentType type, final String property, final int[] readable, final int shape,
+        final CommandContext context) {
+      this.db = db;
+      this.type = type;
+      this.property = property;
+      this.readable = readable;
+      this.context = context;
+      this.shape = shape;
+      final StringBuilder sql = new StringBuilder(64 + shape * 7).append("SELECT FROM `").append(type.getName())
+          .append("` FACETS v: `").append(property).append("` TERMS INCLUDE [");
+      for (int i = 0; i < shape; i++) {
+        if (i > 0)
+          sql.append(", ");
+        sql.append(":v").append(i);
+      }
+      // LIMIT 0: no row is fetched, only the facet is computed. A row fetch reads the buckets of the type in scan order, an unreadable
+      // subtype's included, and fails the call for a user the facet itself answers (it counts the readable buckets only)
+      this.statement = sql.append("] LIMIT 0").toString();
     }
-    // LIMIT 0: no row is fetched, only the facet is computed. A row fetch reads the buckets of the type in scan order, an unreadable
-    // subtype's included, and fails the call for a user the facet itself answers (it counts the readable buckets only)
-    sql.append("] LIMIT 0");
-    final FacetResult result;
-    final boolean exact;
-    try (final ResultSet rs = db.query("sql", sql.toString(), parameters)) {
-      final FacetResults facets = rs.getFacets();
-      result = facets.get("v");
-      exact = facets.exact();
+
+    /**
+     * The live counts of the candidates: INCLUDE returns every listed value, count 0 included (TOP and MIN_COUNT do not apply to it).
+     * The internal query resolves one named parameter per value, so no value is ever written into the statement.
+     */
+    private Counts count(final List<String> candidates) {
+      if (!decided) {
+        decided = true;
+        matches = directMatches();
+      }
+      final Consumer<String> hook = countHook;
+      final FacetResults facets;
+      if (matches != null) {
+        if (hook != null)
+          hook.accept(DIRECT);
+        final List<FacetSpec> spec = List.of(new TermsFacetSpec("v", property, null, null, INCLUDE_TOP, 1, FacetOrder.COUNT_DESC,
+            new ArrayList<>(candidates), false, null));
+        facets = FacetExecutor.execute(db, matches, spec, context, type);
+      } else {
+        if (hook != null)
+          hook.accept(statement);
+        final Map<String, Object> parameters = new HashMap<>(shape * 2);
+        for (int i = 0; i < shape; i++)
+          parameters.put("v" + i, candidates.get(Math.min(i, candidates.size() - 1)));
+        try (final ResultSet rs = db.query("sql", statement, parameters)) {
+          facets = rs.getFacets();
+        }
+      }
+      final FacetResult result = facets.get("v");
+      if (FacetResult.UNAVAILABLE.equals(result.source()))
+        throw new CommandExecutionException(NAME + ": the counts are unavailable (" + result.reason() + "), retry");
+      final Map<Object, Long> counts = new HashMap<>(result.buckets().size() * 2);
+      for (final FacetBucket bucket : result.buckets())
+        if (!bucket.isMissing())
+          counts.put(bucket.value(), bucket.count());
+      return new Counts(counts, facets.exact());
     }
-    if (FacetResult.UNAVAILABLE.equals(result.source()))
-      throw new CommandExecutionException(NAME + ": the counts are unavailable (" + result.reason() + "), retry");
-    final Map<Object, Long> counts = new HashMap<>(result.buckets().size() * 2);
-    for (final FacetBucket bucket : result.buckets())
-      if (!bucket.isMissing())
-        counts.put(bucket.value(), bucket.count());
-    return new Counts(counts, exact);
+
+    /**
+     * The match set the internal query would count, when the direct path may take it: no readable bucket firing read events or
+     * changed by the caller's transaction, and a usable snapshot (an entry of the set) for every readable bucket. Null for the internal
+     * query.
+     */
+    private MatchSet directMatches() {
+      if (sqlCountsOnly)
+        return null;
+      for (final int bucketId : readable)
+        if (FacetFallbackScanner.firesReadEvents(db, db.getSchema().getTypeByBucketId(bucketId)))
+          return null;
+      if (db.isTransactionActive()) {
+        final IntHashSet files = new IntHashSet(readable.length * 2);
+        for (final int bucketId : readable)
+          files.add(bucketId);
+        if (db.getTransaction().hasChangesInFiles(files))
+          return null;
+      }
+      final MatchSet set = MatchSet.fromProjection(db, readable, GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
+      boolean usable = !set.isOverBudget();
+      for (int i = 0; usable && i < readable.length; i++)
+        usable = set.snapshot(readable[i]) != null;
+      if (!usable) {
+        set.close();
+        return null;
+      }
+      set.setFacetFilterIndex(new int[] { -1 });
+      return set;
+    }
+
+    private void close() {
+      if (matches != null)
+        matches.close();
+    }
   }
 
   /** The counts of one batch; {@code exact} false when the query could not patch every pending match (spec 7.3). */
@@ -252,6 +378,7 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
   private static final class Search {
     private final String                        prefix;
     private final int                           batch;
+    private final int                           shape;
     private final long                          deadlineNanos;
     private final ColumnarSnapshot[]            snapshots;
     private final GlobalDictionary[]            dictionaries;
@@ -262,9 +389,10 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
     private       int                           buckets;
     private       FacetMemoryBudget.Reservation reservation;
 
-    private Search(final int buckets, final String prefix, final int batch) {
+    private Search(final int buckets, final String prefix, final int batch, final int shape) {
       this.prefix = prefix;
       this.batch = batch;
+      this.shape = shape;
       this.deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GlobalConfiguration.COLUMNAR_QUERY_BUDGET_WAIT.getValueAsLong());
       this.snapshots = new ColumnarSnapshot[buckets];
       this.dictionaries = new GlobalDictionary[buckets];
@@ -287,7 +415,7 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
         if (!snapshot.publishes(property) || dictionaries[i] == null)
           throw notReady(bucketNames[i]);
       }
-      reservation = reserve((long) snapshots.length * batch * Integer.BYTES + batch * CANDIDATE_BYTES + limit * ROW_BYTES);
+      reservation = reserve((long) snapshots.length * batch * Integer.BYTES + (long) shape * CANDIDATE_BYTES + limit * ROW_BYTES);
       for (int i = 0; i < buffers.length; i++)
         buffers[i] = new int[batch];
     }

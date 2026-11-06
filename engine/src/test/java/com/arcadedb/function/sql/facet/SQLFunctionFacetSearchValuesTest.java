@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
@@ -40,12 +41,15 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -406,6 +410,301 @@ class SQLFunctionFacetSearchValuesTest extends TestHelper {
     assertThat(values(caughtUp)).containsExactly("run", "running");
     for (final Result row : caughtUp)
       assertThat(row.hasProperty("exact")).isFalse();
+  }
+
+  /** The way each batch of the last search was counted: {@link SQLFunctionFacetSearchValues#DIRECT} or the statement text sent. */
+  private final List<String> counted = new ArrayList<>();
+
+  /** The search with the direct count path allowed or not (every batch through the internal query), recording how each was counted. */
+  private List<Map<String, Object>> searchWith(final boolean direct, final String type, final String prefix, final int limit) throws Exception {
+    counted.clear();
+    SQLFunctionFacetSearchValues.countHook = counted::add;
+    SQLFunctionFacetSearchValues.sqlCountsOnly = !direct;
+    try {
+      final List<Map<String, Object>> rows = new ArrayList<>();
+      for (final Result row : search(type, "tags", prefix, limit))
+        rows.add(row.toMap());
+      return rows;
+    } finally {
+      SQLFunctionFacetSearchValues.countHook = null;
+      SQLFunctionFacetSearchValues.sqlCountsOnly = false;
+    }
+  }
+
+  /** The search on both paths: the direct path counts every batch directly, the SQL path sends every batch as SQL, and the rows are equal. */
+  private List<Map<String, Object>> assertBothPathsEqual(final String type, final String prefix, final int limit) throws Exception {
+    final List<Map<String, Object>> sql = searchWith(false, type, prefix, limit);
+    assertThat(counted).as("SQL path, " + prefix + " limit " + limit).isNotEmpty().doesNotContain(SQLFunctionFacetSearchValues.DIRECT);
+    final List<Map<String, Object>> direct = searchWith(true, type, prefix, limit);
+    assertThat(counted).as("direct path, " + prefix + " limit " + limit).isNotEmpty().containsOnly(SQLFunctionFacetSearchValues.DIRECT);
+    assertThat(direct).as(prefix + " limit " + limit).isEqualTo(sql);
+    return direct;
+  }
+
+  /** The number of INCLUDE parameters of a counting statement. */
+  private static int parameters(final String statement) {
+    final Matcher matcher = Pattern.compile(":v\\d+").matcher(statement);
+    int count = 0;
+    while (matcher.find())
+      count++;
+    return count;
+  }
+
+  /**
+   * 26 prefixes of 3 buckets, 40 values each ({@code a00}..{@code z39}) carried by 1 to 4 records, a quarter of them only by records
+   * deleted or updated away since (counted 0, dropped, so a search takes several batches), and per letter 5 values held only by bucket
+   * 3, which the restricted user cannot read. Both paths answer every prefix and limit with the same rows and the same {@code exact};
+   * the restricted user never sees a value of bucket 3. Then, apply suspended and no patch budget, an update the projection has not
+   * applied makes both paths answer {@code exact: false} identically.
+   */
+  @Test
+  @Timeout(300)
+  void directPathEqualsSqlPathCounts() throws Exception {
+    createSchema(3, null);
+    final List<Bucket> buckets = database.getSchema().getType(TYPE).getBuckets(false);
+    final List<RID> gone = new ArrayList<>();
+    database.transaction(() -> {
+      for (char letter = 'a'; letter <= 'z'; letter++)
+        for (int v = 0; v < 40; v++) {
+          final String value = String.format(Locale.ROOT, "%c%02d", letter, v);
+          final boolean hiddenOnly = v % 8 == 3;
+          for (int r = 0; r <= v % 4; r++) {
+            final MutableDocument doc = database.newDocument(TYPE).set("tags", List.of(value, "_shared")).set("brand", "b");
+            doc.save(buckets.get(hiddenOnly ? 2 : (v + r) % 3).getName());
+            if (v % 4 == 1 && !hiddenOnly)
+              gone.add(doc.getIdentity());
+          }
+        }
+    });
+    FacetOracle.awaitCaughtUp(database);
+    database.transaction(() -> {
+      for (int i = 0; i < gone.size(); i++)
+        if (i % 2 == 0)
+          database.deleteRecord(gone.get(i).asDocument());
+        else
+          gone.get(i).asDocument().modify().set("tags", List.of("_shared")).save();
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    final Set<Integer> hidden = Set.of(buckets.get(2).getFileId());
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+    for (final boolean restricted : new boolean[] { false, true }) {
+      if (restricted)
+        context.setCurrentUser(userWithoutReadOn(hidden));
+      try {
+        for (char letter = 'a'; letter <= 'z'; letter++)
+          for (final int limit : new int[] { 1, 7, 50 }) {
+            final List<Map<String, Object>> rows = assertBothPathsEqual(TYPE, String.valueOf(letter), limit);
+            assertThat(rows).isNotEmpty();
+            for (final Map<String, Object> row : rows) {
+              assertThat(row).doesNotContainKey("exact");
+              final int v = Integer.parseInt(((String) row.get("value")).substring(1));
+              assertThat(v % 4).as("a value only gone records held is dropped: " + row).isNotEqualTo(1);
+              if (restricted)
+                assertThat(v % 8).as("the restricted user sees no value of the hidden bucket: " + row).isNotEqualTo(3);
+            }
+          }
+      } finally {
+        context.setCurrentUser(null);
+      }
+    }
+    // one answer of the restricted user pinned by the fixture: limit 50 over 'q' is every live value of the letter with a readable
+    // record, in value order: not the 10 only on gone records nor the 5 only in the hidden bucket, and value v counted on its readable
+    // records (record r of its v % 4 + 1 is in bucket (v + r) % 3, the third one hidden)
+    final List<Map<String, Object>> expected = new ArrayList<>();
+    for (int v = 0; v < 40; v++) {
+      long readableRecords = 0;
+      for (int r = 0; r <= v % 4; r++)
+        if ((v + r) % 3 != 2)
+          readableRecords++;
+      if (v % 4 != 1 && v % 8 != 3 && readableRecords > 0)
+        expected.add(Map.of("value", String.format(Locale.ROOT, "q%02d", v), "count", readableRecords));
+    }
+    assertThat(expected).hasSizeGreaterThan(15);
+    context.setCurrentUser(userWithoutReadOn(hidden));
+    try {
+      assertThat(searchWith(true, TYPE, "q", 50)).isEqualTo(expected);
+    } finally {
+      context.setCurrentUser(null);
+    }
+
+    final Object budget = GlobalConfiguration.COLUMNAR_PATCH_BUDGET.getValue();
+    final Object ratio = GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.getValue();
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(0);
+    GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(0d);
+    try (final AutoCloseable hold = manager().suspendApply()) {
+      database.transaction(() -> {
+        try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " WHERE tags CONTAINS 'm02'")) {
+          rs.next().getElement().get().asDocument().modify().set("tags", List.of("_shared")).save();
+        }
+      });
+      final List<Map<String, Object>> rows = assertBothPathsEqual(TYPE, "m", 7);
+      assertThat(rows).isNotEmpty().allSatisfy(row -> assertThat(row.get("exact")).as(row.toString()).isEqualTo(false));
+    } finally {
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET.setValue(budget);
+      GlobalConfiguration.COLUMNAR_PATCH_BUDGET_RATIO.setValue(ratio);
+    }
+  }
+
+  /**
+   * The SQL path sends one statement text per batch shape, whatever the batch holds: {@code max(2 * limit, 16)} candidates rounded up to
+   * a power of two, a short batch padded with its last candidate. Limits 1 and 7 (batch 16) and a prefix with only 5 candidates share
+   * the 16-parameter text, limit 9 (batch 18) sends the 32-parameter one and limit 50 (batch 100) the 128-parameter one; the padded
+   * statement answers what the exact one did.
+   */
+  @Test
+  @Timeout(300)
+  void sqlPathReusesOneStatementTextPerBatchShape() throws Exception {
+    load(1);
+    database.transaction(() -> {
+      for (int i = 0; i < 300; i++)
+        insert(TYPE, String.format(Locale.ROOT, "v%03d", i));
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    final Set<String> texts16 = new LinkedHashSet<>();
+    for (final String prefix : new String[] { "v", "ru" })
+      for (final int limit : new int[] { 1, 7 }) {
+        searchWith(false, TYPE, prefix, limit);
+        texts16.addAll(counted);
+      }
+    assertThat(texts16).hasSize(1);
+    assertThat(parameters(texts16.iterator().next())).isEqualTo(16);
+
+    // 5 candidates in one short batch: the 16-parameter text, its last candidate repeated, still the exact answer
+    final List<Map<String, Object>> rows = searchWith(false, TYPE, "ru", 7);
+    assertThat(counted).containsExactlyElementsOf(texts16);
+    assertThat(rows).extracting(row -> row.get("value")).containsExactly("rum", "run", "runner", "running");
+    final Map<Object, Long> expected = FacetOracle.expectedCounts(database, TYPE, "tags", null);
+    for (final Map<String, Object> row : rows)
+      assertThat(row.get("count")).isEqualTo(expected.get(row.get("value")));
+
+    searchWith(false, TYPE, "v", 9);
+    assertThat(counted).hasSize(1);
+    assertThat(parameters(counted.getFirst())).isEqualTo(32);
+
+    searchWith(false, TYPE, "v", 50);
+    assertThat(counted).hasSize(1);
+    assertThat(parameters(counted.getFirst())).isEqualTo(128);
+    // 300 values in one short batch of the largest shape
+    final List<Map<String, Object>> all = searchWith(false, TYPE, "v", 1000);
+    assertThat(all).hasSize(300);
+    assertThat(new HashSet<>(counted)).hasSize(1);
+    // batch 2000 (limit capped at topMax 1000): rounded up to 2048, capped at 2 x topMax
+    assertThat(parameters(counted.getFirst())).isEqualTo(2000);
+  }
+
+  /**
+   * The index is declared on the subtype only: the records of the super type are counted by the SQL path from their raw values (the
+   * fallback scan) though its buckets hold no dictionary. They have no snapshot, so the direct path is not taken and the count of
+   * {@code run} includes them.
+   */
+  @Test
+  @Timeout(300)
+  void bucketWithoutUsableSnapshotTakesTheSqlPath() throws Exception {
+    database.command("sql", "CREATE DOCUMENT TYPE " + TYPE + " BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY " + TYPE + ".tags LIST OF STRING");
+    database.command("sql", "CREATE DOCUMENT TYPE Photo EXTENDS " + TYPE + " BUCKETS 1");
+    database.command("sql", "CREATE INDEX ON Photo (tags BY ITEM) COLUMNAR");
+    database.transaction(() -> {
+      insert(TYPE, "run");
+      insert(TYPE, "run", "rum");
+      insert("Photo", "run");
+      insert("Photo", "runner");
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    final List<Map<String, Object>> rows = searchWith(true, TYPE, "ru", 5);
+    assertThat(counted).isNotEmpty().doesNotContain(SQLFunctionFacetSearchValues.DIRECT);
+    assertThat(rows).extracting(row -> row.get("value")).containsExactly("run", "runner");
+    assertThat(rows.getFirst().get("count")).isEqualTo(3L);
+    assertThat(rows).isEqualTo(searchWith(false, TYPE, "ru", 5));
+    // the subtype alone has a snapshot for every bucket: counted directly
+    assertBothPathsEqual("Photo", "ru", 5);
+  }
+
+  /** A READ listener hides the record of {@code runner}: only a read of the records applies it, so the SQL path counts, and drops it. */
+  @Test
+  @Timeout(300)
+  void readEventTypeTakesTheSqlPath() throws Exception {
+    load(1);
+    assertBothPathsEqual(TYPE, "run", 5);
+    final AfterRecordReadListener listener = record -> ((List<?>) record.asDocument().get("tags")).contains("runner") ? null : record;
+    database.getSchema().getType(TYPE).getEvents().registerListener(listener);
+    try {
+      final List<Map<String, Object>> rows = searchWith(true, TYPE, "run", 5);
+      assertThat(counted).isNotEmpty().doesNotContain(SQLFunctionFacetSearchValues.DIRECT);
+      assertThat(rows).extracting(row -> row.get("value")).containsExactly("run", "running");
+      assertThat(rows).isEqualTo(searchWith(false, TYPE, "run", 5));
+    } finally {
+      database.getSchema().getType(TYPE).getEvents().unregisterListener(listener);
+    }
+    assertThat(searchWith(true, TYPE, "run", 5)).extracting(row -> row.get("value")).containsExactly("run", "runner", "running");
+    assertThat(counted).containsOnly(SQLFunctionFacetSearchValues.DIRECT);
+  }
+
+  /**
+   * The caller's open transaction wrote a record: the SQL path counts it (patched from the transaction), the direct path would not.
+   * Its new value is in no applied dictionary and is still not suggested, as documented.
+   */
+  @Test
+  @Timeout(300)
+  void ownTransactionChangesTakeTheSqlPath() throws Exception {
+    load(1);
+    database.begin();
+    try {
+      insert(TYPE, "run", "runx");
+      final List<Map<String, Object>> rows = searchWith(true, TYPE, "run", 5);
+      assertThat(counted).isNotEmpty().doesNotContain(SQLFunctionFacetSearchValues.DIRECT);
+      assertThat(rows).extracting(row -> row.get("value")).containsExactly("run", "runner", "running");
+      assertThat(rows.getFirst().get("count")).isEqualTo(4L);
+      assertThat(rows).isEqualTo(searchWith(false, TYPE, "run", 5));
+    } finally {
+      database.rollback();
+    }
+    assertThat(searchWith(true, TYPE, "run", 5).getFirst().get("count")).isEqualTo(3L);
+    assertThat(counted).containsOnly(SQLFunctionFacetSearchValues.DIRECT);
+  }
+
+  /**
+   * The direct path decides on the buckets the user may read only: a hidden subtype whose type fires read events, and whose bucket
+   * the caller's open transaction wrote, sends the user who cannot read it through the direct path with the SQL path's rows, while a
+   * user who can read it takes the SQL path.
+   */
+  @Test
+  @Timeout(300)
+  void hiddenSubtypeBucketDoesNotRefuseTheDirectPath() throws Exception {
+    createSchema(1, "Photo");
+    database.transaction(() -> {
+      insert(TYPE, "run", "rum");
+      insert(TYPE, "runner");
+      insert("Photo", "run");
+      insert("Photo", "running");
+    });
+    FacetOracle.awaitCaughtUp(database);
+    final Set<Integer> hidden = new HashSet<>(database.getSchema().getType("Photo").getBucketIds(false));
+    final AfterRecordReadListener listener = record -> record;
+    database.getSchema().getType("Photo").getEvents().registerListener(listener);
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+    database.begin();
+    try {
+      insert("Photo", "run");
+      // a user who reads Photo: its read events and the transaction's write refuse the direct path
+      searchWith(true, TYPE, "ru", 5);
+      assertThat(counted).isNotEmpty().doesNotContain(SQLFunctionFacetSearchValues.DIRECT);
+
+      context.setCurrentUser(userWithoutReadOn(hidden));
+      try {
+        final List<Map<String, Object>> rows = assertBothPathsEqual(TYPE, "ru", 5);
+        assertThat(rows).isEqualTo(List.of(Map.of("value", "rum", "count", 1L), Map.of("value", "run", "count", 1L),
+            Map.of("value", "runner", "count", 1L)));
+      } finally {
+        context.setCurrentUser(null);
+      }
+    } finally {
+      database.rollback();
+      database.getSchema().getType("Photo").getEvents().unregisterListener(listener);
+    }
   }
 
   /** A user who may do everything but read the records of {@code hidden}. */

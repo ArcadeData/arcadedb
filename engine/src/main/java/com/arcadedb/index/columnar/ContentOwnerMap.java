@@ -227,6 +227,7 @@ public final class ContentOwnerMap {
     try (channel) {
       FileUtils.writeFully(channel, buffer, 0);
       channel.force(true);
+      ColumnarTestHooks.forced(ColumnarTestHooks.FORCE_OWNER_MAP);
     } catch (final IOException | RuntimeException e) {
       Files.deleteIfExists(file);
       throw e;
