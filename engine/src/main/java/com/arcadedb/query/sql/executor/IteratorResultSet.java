@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.facet.FacetResults;
 
 import java.util.Iterator;
 import java.util.Optional;
@@ -29,6 +30,7 @@ import java.util.Optional;
 public class IteratorResultSet implements ResultSet {
   protected final Iterator iterator;
   protected QueryStatistics statistics;
+  protected FacetResults    facets;
 
   public IteratorResultSet(final Iterator iter) {
     this.iterator = iter;
@@ -36,6 +38,15 @@ public class IteratorResultSet implements ResultSet {
 
   public void setStatistics(final QueryStatistics statistics) {
     this.statistics = statistics;
+  }
+
+  @Override
+  public FacetResults getFacets() {
+    return facets;
+  }
+
+  public void setFacets(final FacetResults facets) {
+    this.facets = facets;
   }
 
   @Override
