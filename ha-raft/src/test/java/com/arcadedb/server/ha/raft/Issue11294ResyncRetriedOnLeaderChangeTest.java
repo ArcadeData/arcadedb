@@ -27,9 +27,10 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,15 +41,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * when a leader became known - which Ratis tells the state machine about through {@code notifyLeaderChanged}. In the
  * Jepsen run that reported it the retry came about six seconds after the refusal, with the leader elected before both.
  * <p>
- * The leader change now drives the attempt itself, without waiting out the throttle. These tests observe it through
- * the throttle slot, which the retry takes exactly when it decides to drive a resync and leaves alone otherwise.
+ * The leader change now drives the attempt itself, without waiting out the throttle. Two things are observed: the
+ * throttle slot, which the retry takes exactly when it decides to drive a resync, and the resync itself, counted where
+ * it resolves the leader's address to dial it. The leader's address is answered to the retry's precheck and refused to
+ * that dial, so the resync stops there instead of starting a snapshot download nobody could serve, and every task it
+ * queued has finished before the state machine is closed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue11294ResyncRetriedOnLeaderChangeTest {
-  private static final String     DB     = "jepsen";
-  private static final RaftPeerId LEADER = RaftPeerId.valueOf("peer-a_2434");
-  private static final RaftPeerId LOCAL  = RaftPeerId.valueOf("peer-d_2434");
+  private static final String                  DB        = "jepsen";
+  private static final RaftPeerId              LEADER    = RaftPeerId.valueOf("peer-a_2434");
+  private static final RaftPeerId              LOCAL     = RaftPeerId.valueOf("peer-d_2434");
+  private static final Map<RaftPeerId, String> ADDRESSES = Map.of(LEADER, "peer-a:2480", LOCAL, "peer-d:2480");
+
+  private final AtomicInteger resyncDials = new AtomicInteger();
 
   /** The reported sequence: quarantined while no leader is known, then the leader is learnt. */
   @Test
@@ -59,15 +66,17 @@ class Issue11294ResyncRetriedOnLeaderChangeTest {
     try {
       sm.markStateDiverged(DB, DivergenceCause.UNDECODABLE_LOG_ENTRY);
       sm.retryUnfilledSnapshotGap();
-      assertThat(readLastRetryMs(sm)).as("no leader is known, so nothing can be driven yet").isZero();
+      drainLifecycleTasks(sm);
+      assertThat(retryStamp(sm).get()).as("no leader is known, so nothing can be driven yet").isZero();
 
       raft.leaderId(LEADER);
       sm.notifyLeaderChanged(memberId(), LEADER);
-      sm.awaitLifecycleTasksForTesting(30_000);
+      drainLifecycleTasks(sm);
 
-      assertThat(readLastRetryMs(sm))
+      assertThat(retryStamp(sm).get())
           .as("the leader change is what the refusal was waiting for, so it drives the resync instead of the next tick")
           .isNotZero();
+      assertThat(resyncDials.get()).as("and the targeted resync of the quarantined database ran").isEqualTo(1);
     } finally {
       sm.close();
     }
@@ -86,47 +95,36 @@ class Issue11294ResyncRetriedOnLeaderChangeTest {
     try {
       sm.markStateDiverged(DB, DivergenceCause.UNDECODABLE_LOG_ENTRY);
       final long aMomentAgo = System.currentTimeMillis() - 1_000;
-      lastRetryMs(sm).set(aMomentAgo);
+      retryStamp(sm).set(aMomentAgo);
 
       sm.retryUnfilledSnapshotGap();
-      assertThat(readLastRetryMs(sm)).as("a tick inside the interval is still throttled").isEqualTo(aMomentAgo);
+      drainLifecycleTasks(sm);
+      assertThat(retryStamp(sm).get()).as("a tick inside the interval is still throttled").isEqualTo(aMomentAgo);
+      assertThat(resyncDials.get()).isZero();
 
       sm.notifyLeaderChanged(memberId(), LEADER);
-      sm.awaitLifecycleTasksForTesting(30_000);
+      drainLifecycleTasks(sm);
 
-      assertThat(readLastRetryMs(sm)).as("the leader change took the slot and drove the resync").isGreaterThan(aMomentAgo);
+      assertThat(retryStamp(sm).get()).as("the leader change took the slot").isGreaterThan(aMomentAgo);
+      assertThat(resyncDials.get()).as("and drove the resync").isEqualTo(1);
     } finally {
       sm.close();
     }
   }
 
   /**
-   * Ratis sometimes notifies the same leader again within the same term. Nothing a refusal waits on has changed then, so
-   * that callback leaves the throttle to pace the retries.
+   * Ratis sometimes notifies the same leader again within the same term. Nothing a refusal waits on has changed then,
+   * so that callback leaves the throttle to pace the retries.
    */
   @Test
   void aSameTermReNotificationOfTheSameLeaderDoesNotBypassTheThrottle(@TempDir final Path tempDir) throws Exception {
-    final ArcadeStateMachine sm = newStateMachine(tempDir);
-    final FakeRaftHAServer raft = follower();
-    raft.leaderId(LEADER);
-    raft.currentTerm(5L, 5L);
-    sm.setRaftHAServer(raft);
-    try {
-      // The leader is first learnt while nothing is outstanding, so no resync is started (none could run here anyway)
-      sm.notifyLeaderChanged(memberId(), LEADER);
-      sm.awaitLifecycleTasksForTesting(30_000);
-      assertThat(readLastRetryMs(sm)).isZero();
+    sameLeaderNotifiedAgain(tempDir, 5L, 5L);
+  }
 
-      sm.markStateDiverged(DB, DivergenceCause.UNDECODABLE_LOG_ENTRY);
-      final long aMomentAgo = System.currentTimeMillis() - 1_000;
-      lastRetryMs(sm).set(aMomentAgo);
-      sm.notifyLeaderChanged(memberId(), LEADER);
-      sm.awaitLifecycleTasksForTesting(30_000);
-
-      assertThat(readLastRetryMs(sm)).isEqualTo(aMomentAgo);
-    } finally {
-      sm.close();
-    }
+  /** ...and a re-notification of the same leader in a term that cannot be read is not taken for a new election either. */
+  @Test
+  void aReNotificationOfTheSameLeaderInAnUnreadableTermDoesNotBypassTheThrottle(@TempDir final Path tempDir) throws Exception {
+    sameLeaderNotifiedAgain(tempDir, 5L, -1L);
   }
 
   /** Nothing outstanding: a leader change drives nothing, as the tick does not. */
@@ -138,9 +136,10 @@ class Issue11294ResyncRetriedOnLeaderChangeTest {
     sm.setRaftHAServer(raft);
     try {
       sm.notifyLeaderChanged(memberId(), LEADER);
-      sm.awaitLifecycleTasksForTesting(30_000);
+      drainLifecycleTasks(sm);
 
-      assertThat(readLastRetryMs(sm)).isZero();
+      assertThat(retryStamp(sm).get()).isZero();
+      assertThat(resyncDials.get()).isZero();
     } finally {
       sm.close();
     }
@@ -153,28 +152,78 @@ class Issue11294ResyncRetriedOnLeaderChangeTest {
     final FakeRaftHAServer raft = follower();
     raft.leader(true);
     raft.leaderId(LOCAL);
-    raft.peerHttpAddress(LOCAL, "peer-d:2480");
     sm.setRaftHAServer(raft);
     try {
       sm.markStateDiverged(DB, DivergenceCause.UNDECODABLE_LOG_ENTRY);
 
       sm.notifyLeaderChanged(memberId(), LOCAL);
-      sm.awaitLifecycleTasksForTesting(30_000);
+      drainLifecycleTasks(sm);
 
-      assertThat(readLastRetryMs(sm)).isZero();
+      assertThat(retryStamp(sm).get()).isZero();
+      assertThat(resyncDials.get()).isZero();
       assertThat(sm.isDatabaseDiverged(DB)).isTrue();
     } finally {
       sm.close();
     }
   }
 
-  private static FakeRaftHAServer follower() {
+  /**
+   * The leader is first learnt in {@code firstTerm} while nothing is outstanding, so nothing is driven; then a quarantine
+   * is raised, a tick holds the throttle slot, and the same leader is notified again with the term reading
+   * {@code secondTerm}.
+   */
+  private void sameLeaderNotifiedAgain(final Path tempDir, final long firstTerm, final long secondTerm) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    final FakeRaftHAServer raft = follower();
+    raft.leaderId(LEADER);
+    raft.currentTerm(firstTerm, secondTerm);
+    sm.setRaftHAServer(raft);
+    try {
+      sm.notifyLeaderChanged(memberId(), LEADER);
+      drainLifecycleTasks(sm);
+      assertThat(retryStamp(sm).get()).isZero();
+
+      sm.markStateDiverged(DB, DivergenceCause.UNDECODABLE_LOG_ENTRY);
+      final long aMomentAgo = System.currentTimeMillis() - 1_000;
+      retryStamp(sm).set(aMomentAgo);
+      sm.notifyLeaderChanged(memberId(), LEADER);
+      drainLifecycleTasks(sm);
+
+      assertThat(retryStamp(sm).get()).isEqualTo(aMomentAgo);
+      assertThat(resyncDials.get()).isZero();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /**
+   * A follower whose view of the leader's address answers the retry's precheck and refuses the resync's dial, counting
+   * the dial: {@code PeerDialAddress.resolve} is the step every targeted resync takes before it downloads anything.
+   */
+  private FakeRaftHAServer follower() {
     final FakeRaftHAServer raft = FakeRaftHAServer.detached();
     raft.leader(false);
     raft.localPeerId(LOCAL);
-    raft.localHttpAddress("peer-d:2480");
-    raft.peerHttpAddress(LEADER, "peer-a:2480");
+    raft.localHttpAddress(ADDRESSES.get(LOCAL));
+    raft.peerHttpAddress(LEADER, ADDRESSES.get(LEADER));
+    raft.on("getUnambiguousPeerHttpAddress", args -> {
+      if (StackWalker.getInstance()
+          .walk(frames -> frames.anyMatch(frame -> frame.getClassName().equals(PeerDialAddress.class.getName())))) {
+        resyncDials.incrementAndGet();
+        return null;
+      }
+      return args[0] == null ? null : ADDRESSES.get((RaftPeerId) args[0]);
+    });
     return raft;
+  }
+
+  /**
+   * Returns once the retry a leader change queued AND the resync that retry queued behind it have run: each await queues
+   * a no-op behind what is already queued, and the resync is queued only while the retry runs.
+   */
+  private static void drainLifecycleTasks(final ArcadeStateMachine sm) throws Exception {
+    sm.awaitLifecycleTasksForTesting(30_000);
+    sm.awaitLifecycleTasksForTesting(30_000);
   }
 
   private static RaftGroupMemberId memberId() {
@@ -189,13 +238,7 @@ class Issue11294ResyncRetriedOnLeaderChangeTest {
     return sm;
   }
 
-  private static AtomicLong lastRetryMs(final ArcadeStateMachine sm) throws Exception {
-    final Field f = ArcadeStateMachine.class.getDeclaredField("lastStaleSnapshotRetryMs");
-    f.setAccessible(true);
-    return (AtomicLong) f.get(sm);
-  }
-
-  private static long readLastRetryMs(final ArcadeStateMachine sm) throws Exception {
-    return lastRetryMs(sm).get();
+  private static AtomicLong retryStamp(final ArcadeStateMachine sm) {
+    return sm.staleSnapshotRetryStampForTesting();
   }
 }

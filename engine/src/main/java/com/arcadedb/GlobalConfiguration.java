@@ -5131,7 +5131,8 @@ public enum GlobalConfiguration {
     }
 
     if (passwordEnd == userEnd + 1)
-      // An EMPTY password is not a secret, and "*****" would report one as configured where none is.
+      // An EMPTY password is not a secret, and "*****" would report one as configured where none is. The server refuses
+      // such a credential (issue #11269), and the report shows it as written so the refusal in the log can be matched to it.
       redacted.append(databases, userEnd + 1, end);
     else
       redacted.append("*****").append(databases, passwordEnd, end);

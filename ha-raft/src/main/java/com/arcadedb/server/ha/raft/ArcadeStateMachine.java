@@ -3140,15 +3140,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
-    } else if (!newLeaderId.equals(raftHA.getLocalPeerId()) && !(newLeaderId.equals(prevId) && currentTerm <= prevTerm
-        && currentTerm >= 0)) {
+    } else if (!newLeaderId.equals(raftHA.getLocalPeerId()) && !(newLeaderId.equals(prevId) && (currentTerm < 0
+        || currentTerm <= prevTerm))) {
       // Issue #11294: a targeted resync of a quarantined database, or the retry of a read floor, that was refused
       // because no leader was known (or the leader had no address yet) used to wait for the next HealthMonitor tick,
       // which is throttled to one attempt per snapshot-watchdog interval. A leader just became known, which is the one
       // thing that refusal was waiting for, so the attempt runs now. Queued on the single-threaded lifecycleExecutor,
       // behind any resync still running there, so it never overlaps one; it asks the same questions the tick asks and
-      // does nothing on a node with nothing outstanding. Not on a same-term re-notification of the same leader: nothing a
-      // refusal waits on has changed then, and the throttle is there for exactly such repeats.
+      // does nothing on a node with nothing outstanding. Not on a re-notification of the same leader in the same term, nor
+      // in a term that cannot be read: nothing a refusal waits on is known to have changed then, and the throttle is there
+      // for exactly such repeats.
       try {
         lifecycleExecutor.submit(() -> retryUnfilledSnapshotGap(true));
       } catch (final RejectedExecutionException ree) {
@@ -9199,6 +9200,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Only reinitialize() raises the floor in production, and a live server cannot be made to restart onto a stale marker
     // from a test (issue #9498)
     staleSnapshotAppliedFloor.set(floor);
+  }
+
+  /** The throttle slot of {@link #retryUnfilledSnapshotGap()}: when it last drove a retry, 0 when none since the last reset. */
+  // @VisibleForTesting
+  AtomicLong staleSnapshotRetryStampForTesting() {
+    return lastStaleSnapshotRetryMs;
   }
 
   /**

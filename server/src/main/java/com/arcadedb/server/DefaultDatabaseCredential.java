@@ -40,7 +40,14 @@ import java.nio.charset.StandardCharsets;
  * A credential with more than three fields used to be read as {@code user:password:group} with the rest dropped, so a
  * password written with a raw {@code ':'} was truncated at it and the text after it became the group: the password
  * {@code s3cret:admin} created a user in the {@code admin} group with the password {@code s3cret}. Such a credential is now
- * refused, because whichever of its fields is the password cannot be told.
+ * refused, because whichever of its fields is the password cannot be told. So is a credential with an empty user name
+ * ({@code :pw}) or an empty password ({@code user:}, {@code user::group}): the first used to be read as a reference to a
+ * user named {@code "user:"}, the second created a user anybody could authenticate as.
+ * <p>
+ * Every field is decoded, the user name and the group as well as the password, so the three spell a separator the same
+ * way. The compatibility cost is the same for each: a name written before with a literal {@code '%'} followed by two
+ * hexadecimal digits ({@code team%41}) now reads as the decoded name ({@code teamA}) and so names another user or group;
+ * such a {@code '%'} is written {@code %25}. A {@code '%'} followed by anything else is read as written, as before.
  *
  * @param user     the user name, decoded
  * @param password the password, decoded, or {@code null} for a credential that only names an existing user

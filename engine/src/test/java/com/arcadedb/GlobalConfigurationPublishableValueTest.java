@@ -161,8 +161,8 @@ class GlobalConfigurationPublishableValueTest {
 
   @Test
   void anEmptyPasswordIsNotASecretToHide() {
-    // The server reads 'jay:' as a reference to an existing user (split(":") drops the trailing empty field,
-    // so parseCredentials sees one field), and there is no password in it to replace.
+    // There is no password in 'jay:' to replace. The server refuses the credential since issue #11269 (an empty password
+    // is not one a user could be created with), and the report shows it as written so the refusal can be matched to it.
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:]")).isEqualTo("mydb[jay:]");
   }
 
@@ -184,7 +184,8 @@ class GlobalConfigurationPublishableValueTest {
   @Test
   void anEmptyPasswordBeforeAGroupIsNotReportedAsAConfiguredOne() {
     // The sibling of anEmptyPasswordIsNotASecretToHide, with a group after it: 'jay::admins' has no password
-    // either, and "*****" there would tell an operator one is configured where none is.
+    // either, and "*****" there would tell an operator one is configured where none is. The server refuses it too
+    // (issue #11269), where it used to create 'jay' with an empty password.
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay::admins]"))
         .isEqualTo("mydb[jay::admins]");
   }

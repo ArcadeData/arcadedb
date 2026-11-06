@@ -109,6 +109,26 @@ class Issue11269DefaultDatabaseCredentialEncodingTest extends StaticBaseServerTe
         .isEqualTo("%٣٣");
   }
 
+  /**
+   * The user name and the group are decoded like the password. A '%' that does not start an escape is read as written,
+   * so such a name is unchanged; one followed by two hexadecimal digits decodes, and '%25' is how it keeps its '%'.
+   */
+  @Test
+  void aUserOrGroupNameIsDecodedLikeThePassword() {
+    assertThat(DefaultDatabaseCredential.parse("ops%team:pw:read%only"))
+        .as("no escape in either name: both are read as written")
+        .isEqualTo(new DefaultDatabaseCredential("ops%team", "pw", "read%only"));
+    assertThat(DefaultDatabaseCredential.parse("team%41:pw:group%41"))
+        .as("a '%' followed by two hexadecimal digits is an escape in a name too")
+        .isEqualTo(new DefaultDatabaseCredential("teamA", "pw", "groupA"));
+    assertThat(DefaultDatabaseCredential.parse("team%2541:pw:group%2541"))
+        .as("and '%25' keeps a literal '%' before two hexadecimal digits")
+        .isEqualTo(new DefaultDatabaseCredential("team%41", "pw", "group%41"));
+    assertThat(DefaultDatabaseCredential.parse("team%41"))
+        .as("a credential naming an existing user is decoded the same way")
+        .isEqualTo(new DefaultDatabaseCredential("teamA", null, null));
+  }
+
   @Test
   void escapesThatAreNotUtf8AreRefused() {
     assertThatThrownBy(() -> DefaultDatabaseCredential.parse("jay:secret%FFvalue"))
