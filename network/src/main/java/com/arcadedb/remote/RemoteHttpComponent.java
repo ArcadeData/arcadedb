@@ -974,7 +974,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
       final String[] leaderServerParts = HostUtil.parseHostAddress(cfgLeaderServer, HostUtil.HA_DEFAULT_PORT);
 
-      leaderServer = new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
+      final Pair<String, Integer> newLeaderServer =
+          new Pair<>(leaderServerParts[0], Integer.parseInt(leaderServerParts[1]));
 
       final String cfgReplicaServers = (String) ha.get("replicaAddresses");
 
@@ -998,6 +999,7 @@ public class RemoteHttpComponent extends RWLockContext {
         }
       }
 
+      leaderServer = newLeaderServer;
       publishReplicaServerList(newReplicaServerList);
 
       LogManager.instance()

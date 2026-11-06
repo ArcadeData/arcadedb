@@ -38,8 +38,8 @@ class Issue11304RemoteClusterReloadFailoverTest {
   @Test
   void reloadTriesTheNextReplicaWhenTheFirstCannotProvideAClusterConfiguration() throws Exception {
     final HttpServer original = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-    final int unavailableReplicaPort = unavailablePort();
     final HttpServer liveReplica = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+    final int unavailableReplicaPort = unavailablePort();
     final AtomicInteger liveReplicaRequests = new AtomicInteger();
 
     liveReplica.createContext("/api/v1/server", exchange -> {
@@ -91,6 +91,7 @@ class Issue11304RemoteClusterReloadFailoverTest {
       malformedConfiguration.set(true);
 
       assertThat(client.reloadClusterConfiguration()).isFalse();
+      assertThat(client.getLeaderAddress()).isNull();
     } finally {
       client.close();
       original.stop(0);
