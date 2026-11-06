@@ -26,6 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonGraphSerializer;
@@ -167,6 +168,21 @@ class Issue11335BucketOfNoTypeTest extends TestHelper {
     database.transaction(() -> database.command("sql", "DELETE FROM " + more[0]).close());
     database.transaction(() -> more[1].asDocument().delete());
     assertThat(database.countBucket("x")).isEqualTo(1);
+  }
+
+  @Test
+  void deletingARecordOfTheBucketLeavesTheIndexOfItsFormerTypeAlone() {
+    // THE SUB-INDEX OF THE BUCKET LEFT WITH IT, SO THE KEY OF THE DETACHED RECORD IS FREE AND A NEW RECORD OF THE TYPE CAN TAKE IT.
+    // DELETING THE DETACHED RECORD MUST NOT TAKE THAT ENTRY WITH IT
+    final RID[] live = new RID[1];
+    database.transaction(() -> live[0] = database.newDocument("A").set("id", 1).save().getIdentity());
+
+    database.transaction(() -> document.asDocument().delete());
+
+    final IndexCursor found = database.lookupByKey("A", "id", 1);
+    assertThat(found.hasNext()).isTrue();
+    assertThat(found.next().getIdentity()).isEqualTo(live[0]);
+    assertThat(found.hasNext()).isFalse();
   }
 
   @Test
