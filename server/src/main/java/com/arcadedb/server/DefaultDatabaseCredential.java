@@ -73,6 +73,7 @@ record DefaultDatabaseCredential(String user, String password, String group) {
     final String user = decode(fields[0], "user name");
     if (user.isEmpty())
       throw new IllegalArgumentException("has no user name");
+    refuseControlCharacters(user, "user name");
 
     if (fields.length == 1)
       return new DefaultDatabaseCredential(user, null, null);
@@ -82,7 +83,20 @@ record DefaultDatabaseCredential(String user, String password, String group) {
       throw new IllegalArgumentException("has an empty password");
 
     final String group = fields.length == 3 && !fields[2].isEmpty() ? decode(fields[2], "group") : null;
+    if (group != null)
+      refuseControlCharacters(group, "group");
     return new DefaultDatabaseCredential(user, password, group);
+  }
+
+  /**
+   * A name is quoted in the server log and stored in the users file, so a control character an escape can now spell
+   * ({@code %0A}, {@code %00}) is refused in it: it would let one credential write lines of its own into the log. A password
+   * is never logged and may hold any character.
+   */
+  private static void refuseControlCharacters(final String name, final String fieldName) {
+    for (int i = 0; i < name.length(); i++)
+      if (Character.isISOControl(name.charAt(i)))
+        throw new IllegalArgumentException("has a " + fieldName + " with a control character in it");
   }
 
   /**

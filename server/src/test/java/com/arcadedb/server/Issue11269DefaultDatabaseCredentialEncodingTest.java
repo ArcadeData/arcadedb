@@ -129,6 +129,14 @@ class Issue11269DefaultDatabaseCredentialEncodingTest extends StaticBaseServerTe
         .isEqualTo(new DefaultDatabaseCredential("teamA", null, null));
   }
 
+  /** A name is logged and stored: an escape must not smuggle a line break or a NUL into it. A password may hold anything. */
+  @Test
+  void aControlCharacterInADecodedNameIsRefused() {
+    assertThatThrownBy(() -> DefaultDatabaseCredential.parse("jay%0Aforged:pw")).hasMessageContaining("user name with a control character");
+    assertThatThrownBy(() -> DefaultDatabaseCredential.parse("jay:pw:adm%00in")).hasMessageContaining("group with a control character");
+    assertThat(DefaultDatabaseCredential.parse("jay:line%0Abreak%09tab").password()).isEqualTo("line\nbreak\ttab");
+  }
+
   @Test
   void escapesThatAreNotUtf8AreRefused() {
     assertThatThrownBy(() -> DefaultDatabaseCredential.parse("jay:secret%FFvalue"))
