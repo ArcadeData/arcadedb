@@ -25,6 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,6 +87,50 @@ class ChaosReportTest {
     assertThat(summary.getJSONObject("ledger").getLong("acked")).isEqualTo(1L);
     assertThat(summary.getLong("lateCommits")).isEqualTo(2L);
     assertThat(summary.getString("replay")).contains("-Dchaos.seed=42");
+  }
+
+  @Test
+  void summaryCarriesTheFacetWorkloadOnlyWhenItRan() throws Exception {
+    try (final ChaosReport report = new ChaosReport(dir, config)) {
+      report.summary(new ChaosResult(ResultKind.PASS, "Completed 1 steps", 1, List.of()), new Ledger(1), 0);
+      assertThat(new JSONObject(Files.readString(dir.resolve("summary.json"))).has("facets")).isFalse();
+      report.facetStats(new FacetWorkload.Stats(10, 1, 4, 0, 2, 3, 0).toJSON());
+      report.summary(new ChaosResult(ResultKind.PASS, "Completed 1 steps", 1, List.of()), new Ledger(1), 0);
+    }
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("summary.json")));
+    assertThat(summary.getInt("facetWriters")).isEqualTo(2);
+    assertThat(summary.getJSONObject("facets").getLong("writesOk")).isEqualTo(10L);
+    assertThat(summary.getJSONObject("facets").getLong("queryFailures")).isEqualTo(2L);
+  }
+
+  /** Each warning becomes a line of the run page: a long run of distinct ones is cut at a bound, and what was cut is counted. */
+  @Test
+  void facetWarningsAreBounded() throws Exception {
+    final List<String> warnings = new ArrayList<>();
+    for (int i = 0; i < 300; i++)
+      warnings.add("FACET_META node 0 patched=" + i);
+    try (final ChaosReport report = new ChaosReport(dir, config)) {
+      report.facetWarnings(warnings);
+      // the same batch again, as the next checkpoint would send it
+      report.facetWarnings(warnings);
+      report.summary(new ChaosResult(ResultKind.PASS, "Completed 2 steps", 2, List.of()), new Ledger(1), 0);
+    }
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("summary.json")));
+    assertThat(summary.getJSONArray("facetWarnings").length()).isEqualTo(200);
+    assertThat(summary.getJSONArray("facetWarnings").getString(0)).isEqualTo("FACET_META node 0 patched=0");
+    assertThat(summary.getLong("facetWarningsDropped")).isEqualTo(200L);
+  }
+
+  @Test
+  void aFewFacetWarningsAreAllKeptAndNoneDropped() throws Exception {
+    try (final ChaosReport report = new ChaosReport(dir, config)) {
+      report.facetWarnings(List.of("FACET_META node 1", "FACET_RETRY node 2"));
+      report.facetWarnings(List.of("FACET_META node 1"));
+      report.summary(new ChaosResult(ResultKind.PASS, "Completed 2 steps", 2, List.of()), new Ledger(1), 0);
+    }
+    final JSONObject summary = new JSONObject(Files.readString(dir.resolve("summary.json")));
+    assertThat(summary.getJSONArray("facetWarnings").length()).isEqualTo(2);
+    assertThat(summary.getLong("facetWarningsDropped")).isZero();
   }
 
   @Test

@@ -37,6 +37,25 @@ public final class ColumnarStats {
 
   private static final String NONE = "";
 
+  /** Reasons a FACETS query read a bucket from its records, indexes of {@link #FALLBACK_SCAN_REASONS}. */
+  public static final int FALLBACK_EXPRESSION     = 0;
+  public static final int FALLBACK_NO_PROJECTION  = 1;
+  public static final int FALLBACK_NO_INDEX       = 2;
+  public static final int FALLBACK_NOT_PUBLISHED  = 3;
+  public static final int FALLBACK_ENCODING       = 4;
+  public static final int FALLBACK_SEGMENT_COLUMN = 5;
+  public static final int FALLBACK_READ_EVENTS    = 6;
+  public static final int FALLBACK_OWN_WRITES     = 7;
+
+  /**
+   * The {@code reason} tag of {@code query.fallback.scans}, by reason index: an expression facet; no usable projection (none, closed or
+   * unusable); no COLUMNAR index on the property; the column not published yet (a create or schema rebuild window); the column
+   * published with another encoding than the schema's; a segment without the column holding a match; a type with read events; the
+   * caller's own writes over the patch budget.
+   */
+  public static final String[] FALLBACK_SCAN_REASONS = { "expression", "no_projection", "no_index", "not_published", "encoding_changed",
+      "segment_without_column", "read_events", "own_writes" };
+
   /** Count and total of a duration. */
   private static final class Duration {
     final LongAdder count = new LongAdder();
@@ -116,7 +135,8 @@ public final class ColumnarStats {
   private final LongAdder queryPatched        = new LongAdder();
   private final LongAdder queryBudgetWaits    = new LongAdder();
   private final LongAdder queryPatchOverflows = new LongAdder();
-  private final LongAdder queryFallbackScans  = new LongAdder();
+  /** By reason index ({@link #FALLBACK_SCAN_REASONS}). */
+  private final LongAdder[] queryFallbackScans = adders(FALLBACK_SCAN_REASONS.length);
   private final LongAdder queryFilterFallbacks = new LongAdder();
   // GROUP BY queries answered by a ColumnarGroupByStep (plan 5): database-wide, not keyed by type
   private final LongAdder groupByAccelerated = new LongAdder();
@@ -194,9 +214,14 @@ public final class ColumnarStats {
     queryPatchOverflows.increment();
   }
 
-  /** One FACETS query that scanned records because the projection could not answer a bucket. */
-  public void queryFallbackScan() {
-    queryFallbackScans.increment();
+  /**
+   * One FACETS query that scanned records because the projection could not answer a bucket, counted under the reason of its first
+   * scanned facet and bucket.
+   *
+   * @param reason an index of {@link #FALLBACK_SCAN_REASONS}
+   */
+  public void queryFallbackScan(final int reason) {
+    queryFallbackScans[reason].increment();
   }
 
   /** One INDEX facet FILTER evaluator that answered from the rows instead of its RID set (index not ready, collation, key type, budget). */
@@ -270,6 +295,13 @@ public final class ColumnarStats {
     openFiles.cell(type, NONE).set(n);
   }
 
+  private static LongAdder[] adders(final int count) {
+    final LongAdder[] adders = new LongAdder[count];
+    for (int i = 0; i < count; i++)
+      adders[i] = new LongAdder();
+    return adders;
+  }
+
   // ---- readers
 
   private static long sum(final LongAdder cell) {
@@ -332,8 +364,20 @@ public final class ColumnarStats {
     return queryPatchOverflows.sum();
   }
 
+  /** The FACETS queries that scanned records, whatever the reason. */
   public long queryFallbackScansCount() {
-    return queryFallbackScans.sum();
+    long sum = 0;
+    for (final LongAdder reason : queryFallbackScans)
+      sum += reason.sum();
+    return sum;
+  }
+
+  /** The FACETS queries that scanned records for the reason (a {@link #FALLBACK_SCAN_REASONS} tag); 0 for an unknown one. */
+  public long queryFallbackScansCount(final String reason) {
+    for (int i = 0; i < FALLBACK_SCAN_REASONS.length; i++)
+      if (FALLBACK_SCAN_REASONS[i].equals(reason))
+        return queryFallbackScans[i].sum();
+    return 0;
   }
 
   public long queryFilterFallbacksCount() {

@@ -90,7 +90,9 @@ class PrometheusColumnarQueryMetricsIT extends BaseGraphServerTest {
       final String body = scrape(client);
       for (final String name : NAMES)
         assertThat(body).as(name).contains("arcadedb_columnar_query_" + name + "_total{database=\"" + getDatabaseName() + "\"");
-      assertThat(body).containsPattern("arcadedb_columnar_query_fallback_scans_total\\{database=\"" + getDatabaseName() + "\"[^}]*\\} 1\\.0");
+      // the scan is counted under its reason; every reason has its series, the others at 0
+      assertThat(body).contains("arcadedb_columnar_query_fallback_scans_total{database=\"" + getDatabaseName() + "\",reason=\"no_index\"} 1.0");
+      assertThat(body).contains("arcadedb_columnar_query_fallback_scans_total{database=\"" + getDatabaseName() + "\",reason=\"not_published\"} 0.0");
       assertThat(body).containsPattern("arcadedb_columnar_query_patched_total\\{database=\"" + getDatabaseName() + "\"[^}]*\\} 0\\.0");
       for (final String name : NAMES)
         assertThat(Metrics.globalRegistry.find("arcadedb.columnar.query." + name.replace('_', '.')).tag("database", getDatabaseName())

@@ -20,6 +20,7 @@ package com.arcadedb.containers.ha;
 
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
+import com.arcadedb.test.support.FacetDatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
@@ -28,8 +29,15 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static com.arcadedb.test.support.FacetDatabaseWrapper.REBUILDS;
+import static com.arcadedb.test.support.FacetDatabaseWrapper.SNAPSHOT_INSTALL;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Leader failover and automatic election tests for Raft HA cluster resilience.
@@ -42,6 +50,11 @@ import java.util.concurrent.TimeUnit;
 class LeaderFailoverIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+
+  /** One refresh of the server's columnar metrics (5 s) plus a margin. */
+  private static final long   METRICS_REFRESH_MILLIS = 6_000L;
+  /** Mixed ops per round of the writer that runs during the rejoin. */
+  private static final int    WRITER_CHUNK           = 100;
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
@@ -146,6 +159,153 @@ class LeaderFailoverIT extends ContainersTestTemplate {
     dbRestarted.close();
     dbs[survivor1].close();
     dbs[survivor2].close();
+  }
+
+  /**
+   * The killed leader comes back as a genuinely new replica: {@code createArcadeContainer} copies an empty host directory into the
+   * container and {@code stop()} removes the container, so it has no database and no Raft storage. It is bootstrapped from a leader
+   * snapshot, and its node-local columnar projection (excluded from snapshots) is rebuilt in the background while writes go on. The
+   * low snapshot threshold and purge gap also exercise the log purge on the survivors.
+   */
+  @Test
+  @Timeout(value = 15, unit = TimeUnit.MINUTES)
+  @DisplayName("Leader failover: a new replica rebuilds its facet projection in the background")
+  void leaderFailoverNewReplicaRebuildsFacets() throws Exception {
+    final GenericContainer<?>[] containers = new GenericContainer<?>[3];
+    for (int i = 0; i < 3; i++)
+      containers[i] = createArcadeContainer("arcadedb-" + i, SERVER_LIST, "majority", network)
+          .withEnv("arcadedb.ha.snapshotThreshold", "200")
+          .withEnv("arcadedb.ha.logPurgeGap", "16");
+
+    final List<ServerWrapper> servers = startCluster();
+    final FacetDatabaseWrapper[] f = new FacetDatabaseWrapper[3];
+    for (int i = 0; i < 3; i++)
+      f[i] = new FacetDatabaseWrapper(servers.get(i), DatabaseWrapper.Protocol.HTTP, i);
+
+    final List<FacetDatabaseWrapper> opened = new ArrayList<>(List.of(f));
+    final AtomicReference<Thread> writerThread = new AtomicReference<>();
+    try {
+      f[0].createDatabase();
+      f[0].createSchema();
+      for (final FacetDatabaseWrapper node : f)
+        logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
+
+      logger.info("Ingested {} assets", f[0].ingest(2_000));
+      logger.info("Initial mixed ops: {}", FacetDatabaseWrapper.assertWrote(f[0].runMixedOps(1_000), "initial writer", true));
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f[0], f[1], f[2]), 120);
+
+      final int leaderIdx = findLeaderIndex(servers);
+      assertThat(leaderIdx).as("a leader before the failover").isNotNegative();
+      final int survivor1 = (leaderIdx + 1) % 3;
+      final int survivor2 = (leaderIdx + 2) % 3;
+      final int[] survivors = { survivor1, survivor2 };
+
+      // the old leader's container is removed by stop(), taking its log with it
+      dumpContainerLogs("leaderFailoverFacets-beforeKill");
+      logger.info("Killing leader (node {})", leaderIdx);
+      f[leaderIdx].close();
+      opened.remove(f[leaderIdx]);
+      containers[leaderIdx].stop();
+
+      waitForRaftLeader(List.of(servers.get(survivor1), servers.get(survivor2)), 60);
+
+      final FacetDatabaseWrapper survivorWriter = new FacetDatabaseWrapper(servers.get(survivor1), DatabaseWrapper.Protocol.HTTP, 10);
+      opened.add(survivorWriter);
+      logger.info("Mixed ops through survivor node {}: {}", survivor1,
+          FacetDatabaseWrapper.assertWrote(survivorWriter.runMixedOps(1_000), "survivor writer", true));
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f[survivor1], f[survivor2]), 120);
+
+      // a lagging survivor may have installed a snapshot during the ingest (spec 6.6 accepts it): logged, then held fixed
+      final double[] before = new double[3];
+      for (final int s : survivors) {
+        before[s] = settledMetric(f[s], SNAPSHOT_INSTALL);
+        logger.info("Survivor node {} snapshot_install rebuilds before the rejoin: {}", s, before[s]);
+      }
+
+      // the writer runs from before the restart until the rebuild ended, so the new replica acquires and rebuilds under writes
+      final FacetDatabaseWrapper rebuildWriter = new FacetDatabaseWrapper(servers.get(survivor1), DatabaseWrapper.Protocol.HTTP, 30);
+      opened.add(rebuildWriter);
+      final AtomicBoolean rebuilt = new AtomicBoolean();
+      final AtomicReference<Object> writerOutcome = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          long acked = 0L;
+          long failed = 0L;
+          long retries = 0L;
+          while (!rebuilt.get() || acked + failed < 1_000) {
+            final FacetDatabaseWrapper.OpCounts chunk = rebuildWriter.runMixedOps(WRITER_CHUNK);
+            acked += chunk.acked();
+            failed += chunk.failed();
+            retries += chunk.retries();
+          }
+          writerOutcome.set(new FacetDatabaseWrapper.OpCounts(acked, failed, retries));
+        } catch (final Throwable t) {
+          writerOutcome.set(t);
+        }
+      }, "facet-rebuild-writer");
+      writerThread.set(writer);
+      writer.start();
+
+      final FacetDatabaseWrapper rejoined;
+      final List<String> sources;
+      try {
+        logger.info("Restarting node {} as a fresh replica", leaderIdx);
+        containers[leaderIdx].start();
+        assertThat(waitForContainerHealthy(containers[leaderIdx], 60)).isTrue();
+        rejoined = new FacetDatabaseWrapper(new ServerWrapper(containers[leaderIdx]), DatabaseWrapper.Protocol.HTTP, 20);
+        opened.add(rejoined);
+        // the rebuild is polled from the first answer of the new replica, so a scan or unavailable phase is recorded
+        sources = rejoined.awaitRebuildToIndex(300);
+        logger.info("New replica facet sources: {}", sources);
+        logger.info("Facet schema served from the index on the new replica after {} ms", rejoined.awaitSchema(180));
+      } finally {
+        rebuilt.set(true);
+      }
+
+      writer.join(TimeUnit.MINUTES.toMillis(5));
+      assertThat(writer.isAlive()).as("the writer running during the rebuild ended").isFalse();
+      // through a survivor of a quorum that holds: the rejoin does not touch the write path
+      logger.info("Mixed ops during the rejoin and rebuild: {}",
+          FacetDatabaseWrapper.assertWrote(writerOutcome.get(), "writer running during the rebuild", true));
+
+      Awaitility.await("a snapshot_install rebuild on the new replica")
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(2, TimeUnit.SECONDS)
+          .ignoreExceptions()
+          .until(() -> rejoined.scrapeMetric(REBUILDS, "reason", SNAPSHOT_INSTALL) >= 1.0);
+      assertThat(rejoined.scrapeMetric(REBUILDS, "reason", SNAPSHOT_INSTALL)).isGreaterThanOrEqualTo(1.0);
+      logger.info("New replica rebuilds by reason: {}", rejoined.rebuildsByReason());
+
+      for (final int s : survivors)
+        assertThat(settledMetric(f[s], SNAPSHOT_INSTALL)).as("survivors install nothing during the rejoin (node %d)", s)
+            .isEqualTo(before[s]);
+
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(rejoined, f[survivor1], f[survivor2]), 180);
+    } finally {
+      // the writer must stop using its client before the client is closed
+      final Thread writer = writerThread.get();
+      if (writer != null)
+        writer.join(TimeUnit.MINUTES.toMillis(5));
+      dumpContainerLogs("leaderFailoverFacets");
+      for (final FacetDatabaseWrapper node : opened)
+        node.close();
+    }
+  }
+
+  /**
+   * Reads the rebuild counter of {@code reason} once two scrapes taken across a metrics refresh (5 s) agree, so the value is not a stale
+   * one from before the last refresh.
+   */
+  private static double settledMetric(final FacetDatabaseWrapper node, final String reason) throws InterruptedException {
+    double previous = node.scrapeMetric(REBUILDS, "reason", reason);
+    for (int attempt = 0; attempt < 10; attempt++) {
+      Thread.sleep(METRICS_REFRESH_MILLIS);
+      final double current = node.scrapeMetric(REBUILDS, "reason", reason);
+      if (current == previous)
+        return current;
+      previous = current;
+    }
+    throw new AssertionError("The " + reason + " rebuild counter of " + node.describe() + " kept moving: " + previous);
   }
 
   @Test

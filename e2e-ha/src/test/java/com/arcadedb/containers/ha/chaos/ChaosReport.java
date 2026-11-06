@@ -19,6 +19,7 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.BufferedWriter;
@@ -26,7 +27,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Writes the run's report under {@code target/chaos/<seed>/}. Step and trend lines are flushed as they are written,
@@ -41,6 +44,13 @@ public final class ChaosReport implements AutoCloseable {
   private       int            reformats;
   // Steps whose reformat counts could not be read, so that "none seen" is not mistaken for "none happened"
   private       int            stepsWithUnreadReformats;
+  // FACET_META / FACET_RETRY findings of every checkpoint: reported, never a failure; bounded, as each line reaches the run page
+  private static final int     MAX_FACET_WARNINGS = 200;
+  private final Set<String>    facetWarnings      = new LinkedHashSet<>();
+  // Warnings past the bound, counted once per checkpoint that reported them
+  private       long           facetWarningsDropped;
+  // Counters of the facet workload, set once it has stopped; null when the run had no facet workload
+  private       JSONObject     facetStats;
 
   public ChaosReport(final Path dir, final ChaosConfig config) throws IOException {
     Files.createDirectories(dir);
@@ -85,6 +95,18 @@ public final class ChaosReport implements AutoCloseable {
     trends.flush();
   }
 
+  public synchronized void facetWarnings(final List<String> warnings) {
+    for (final String warning : warnings)
+      if (facetWarnings.size() < MAX_FACET_WARNINGS)
+        facetWarnings.add(warning);
+      else if (!facetWarnings.contains(warning))
+        facetWarningsDropped++;
+  }
+
+  public synchronized void facetStats(final JSONObject stats) {
+    facetStats = stats;
+  }
+
   public void ledgerDiff(final List<Violation> violations) throws IOException {
     final StringBuilder text = new StringBuilder();
     for (final Violation violation : violations) {
@@ -107,7 +129,7 @@ public final class ChaosReport implements AutoCloseable {
     return stepsWithUnreadReformats;
   }
 
-  public void summary(final ChaosResult result, final Ledger ledger, final long lateCommits) throws IOException {
+  public synchronized void summary(final ChaosResult result, final Ledger ledger, final long lateCommits) throws IOException {
     final JSONObject counts = new JSONObject()
         .put("acked", ledger.count(Ledger.ACKED))
         .put("ackedLate", ledger.count(Ledger.ACKED_LATE))
@@ -120,6 +142,7 @@ public final class ChaosReport implements AutoCloseable {
         .put("nodes", config.nodes())
         .put("duration", config.duration().toString())
         .put("writers", config.writers())
+        .put("facetWriters", config.facetWriters())
         .put("faults", config.faultsSpec())
         .put("result", result.kind().name())
         .put("message", result.message())
@@ -128,7 +151,11 @@ public final class ChaosReport implements AutoCloseable {
         .put("lateCommits", lateCommits)
         .put("reformats", reformats())
         .put("stepsWithUnreadReformats", stepsWithUnreadReformats())
+        .put("facetWarnings", new JSONArray(facetWarnings))
+        .put("facetWarningsDropped", facetWarningsDropped)
         .put("replay", config.replayCommand());
+    if (facetStats != null)
+      summary.put("facets", facetStats);
     Files.writeString(dir.resolve("summary.json"), summary.toString(2), StandardCharsets.UTF_8);
   }
 
