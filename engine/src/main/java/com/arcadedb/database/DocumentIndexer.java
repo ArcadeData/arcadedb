@@ -832,7 +832,9 @@ public class DocumentIndexer {
 
     final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
     if (type == null)
-      throw new IllegalStateException("Type not found for bucket " + bucketId);
+      // A BUCKET NO TYPE OWNS ANY MORE: THE INDEXES OF THE TYPE IT LEFT DROPPED THEIR SUB-INDEX OF IT, SO THERE IS NOTHING TO REMOVE
+      // (ISSUE #11335)
+      return;
 
     final List<IndexInternal> metadata = type.getPolymorphicBucketIndexMaintainedInTransaction(bucketId);
     if (metadata != null && !metadata.isEmpty()) {

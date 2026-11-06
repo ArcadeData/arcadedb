@@ -36,7 +36,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
 import java.lang.reflect.InvocationTargetException;
@@ -78,7 +77,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
     // identity actually holds, and writes the archive to the server filesystem (data exfiltration). Like its sibling
     // whole-database operation IMPORT DATABASE (which requires UPDATE_SECURITY), it is restricted to administrative
     // users (GHSA / arcadedb-operations#654). In embedded mode (no security configured) this check is a no-op.
-    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+    checkWholeDatabaseStatementAllowed(context, "BACKUP DATABASE");
 
     final String targetUrl = this.url != null ? this.url.getUrlString() : null;
     final ResultInternal result = new ResultInternal(context.getDatabase());

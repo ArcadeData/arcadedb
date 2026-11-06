@@ -597,7 +597,9 @@ public class ResultInternal implements Result {
     final boolean isVertex = !isEdge && (element instanceof Vertex || type instanceof VertexType);
 
     putStructuralAttribute(sink, Property.CAT_PROPERTY, isEdge ? "e" : isVertex ? "v" : "d");
-    putStructuralAttribute(sink, Property.TYPE_PROPERTY, element.getTypeName());
+    final String typeName = element.getTypeName();
+    if (typeName != null)
+      putStructuralAttribute(sink, Property.TYPE_PROPERTY, typeName);
 
     final RID rid = element.getIdentity();
     if (rid != null)

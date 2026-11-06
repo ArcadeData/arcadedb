@@ -1079,12 +1079,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       checkDatabaseIsOpen();
 
-      final String typeName = schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getFileId());
-      schema.getBucketByName(bucketName).scan((rid, view) -> {
-        final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid
-            , view, null);
-        return callback.onRecord(record);
-      }, errorRecordCallback);
+      // NULL FOR A BUCKET NO TYPE OWNS ANY MORE, WHOSE RECORDS ARE STILL THERE TO READ (ISSUE #11335)
+      final Bucket bucket = schema.getBucketByName(bucketName);
+      final DocumentType type = schema.getTypeByBucketId(bucket.getFileId());
+      bucket.scan((rid, view) -> callback.onRecord(recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null)),
+          errorRecordCallback);
       return null;
     });
   }
@@ -2191,8 +2190,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // asynchronous delete task included, reaches the listeners through here (issue #7003).
     if (!events.onBeforeDelete(record))
       return false;
-    if (record instanceof Document document)
-      if (!((LocalDocumentType) document.getType()).fireBeforeDelete(record))
+    // A RECORD OF A BUCKET NO TYPE OWNS ANY MORE HAS NO TYPE, HENCE NO LISTENER OF ONE: DELETING IT IS HOW THE BUCKET IS CLEANED UP
+    // (ISSUE #11335)
+    if (record instanceof Document document && document.getType() instanceof LocalDocumentType type)
+      if (!type.fireBeforeDelete(record))
         return false;
 
     boolean success = false;
@@ -2314,8 +2315,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // INVOKE EVENT CALLBACKS
       events.onAfterDelete(record);
-      if (record instanceof Document document)
-        ((LocalDocumentType) document.getType()).fireAfterDelete(record);
+      if (record instanceof Document document && document.getType() instanceof LocalDocumentType type)
+        type.fireAfterDelete(record);
 
     } finally {
       if (implicitTransaction) {

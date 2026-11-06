@@ -34,7 +34,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
@@ -56,7 +55,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     // IMPORT DATABASE can create schema, overwrite data and read local files / remote URLs (SSRF/LFI surface), so it is
     // restricted to administrative users. In embedded mode (no security configured) this check is a no-op.
-    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+    checkWholeDatabaseStatementAllowed(context, "IMPORT DATABASE");
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "import database");
