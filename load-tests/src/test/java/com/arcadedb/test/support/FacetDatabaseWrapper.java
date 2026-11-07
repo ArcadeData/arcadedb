@@ -114,6 +114,55 @@ public class FacetDatabaseWrapper implements AutoCloseable {
     return counts;
   }
 
+  /**
+   * @param sequence the distinct per-facet source tuples of {@link #awaitRebuildToIndex(int)}, each a comma-joined list of sources
+   *
+   * @return whether any facet was answered by something else than the index, that is, whether the poll saw the scan or unavailable phase
+   *     of a rebuild and not only its end
+   */
+  public static boolean sawNonIndexSource(final List<String> sequence) {
+    for (final String tuple : sequence)
+      for (final String source : tuple.split(","))
+        if (!"index".equals(source))
+          return true;
+    return false;
+  }
+
+  /**
+   * Inserts {@code writers * perWriter} assets through {@code writers} concurrent clients of {@code server}, each its own writer: a
+   * rebuild that must outlast the first answers needs a table that a single sequential client takes too long to fill. Every node must
+   * have run {@link #awaitSchema(int)} first.
+   *
+   * @param firstWriterId the id of the first client, the others follow; must not collide with the ids of the other writers of the test
+   *
+   * @return the number of acknowledged inserts
+   */
+  public static long ingestConcurrently(final ServerWrapper server, final DatabaseWrapper.Protocol protocol, final int firstWriterId,
+      final int writers, final int perWriter) throws InterruptedException {
+    final long[] acked = new long[writers];
+    final Throwable[] failure = new Throwable[writers];
+    final Thread[] threads = new Thread[writers];
+    for (int w = 0; w < writers; w++) {
+      final int slot = w;
+      threads[w] = new Thread(() -> {
+        try (final FacetDatabaseWrapper client = new FacetDatabaseWrapper(server, protocol, firstWriterId + slot)) {
+          acked[slot] = client.ingest(perWriter);
+        } catch (final Throwable t) {
+          failure[slot] = t;
+        }
+      }, "facet-ingest-" + w);
+      threads[w].start();
+    }
+    long total = 0L;
+    for (int w = 0; w < writers; w++) {
+      threads[w].join();
+      if (failure[w] != null)
+        throw new AssertionError("Ingest client " + (firstWriterId + w) + " failed: " + failure[w], failure[w]);
+      total += acked[w];
+    }
+    return total;
+  }
+
   private record Stable(FacetSnapshot facets, SortedMap<String, Long> groupBy) {
   }
 

@@ -55,6 +55,8 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   private static final long   METRICS_REFRESH_MILLIS = 6_000L;
   /** Mixed ops per round of the writer that runs during the rejoin. */
   private static final int    WRITER_CHUNK           = 100;
+  /** Assets ingested before the facet rebuild test kills the leader, so the new replica's rebuild outlasts its first answers. */
+  private static final int    REBUILD_ASSETS         = 50_000;
 
   @Test
   @Timeout(value = 10, unit = TimeUnit.MINUTES)
@@ -171,6 +173,9 @@ class LeaderFailoverIT extends ContainersTestTemplate {
   @Timeout(value = 15, unit = TimeUnit.MINUTES)
   @DisplayName("Leader failover: a new replica rebuilds its facet projection in the background")
   void leaderFailoverNewReplicaRebuildsFacets() throws Exception {
+    // large enough that the rebuild outlasts the first answers of the new replica, so its scan or unavailable phase is observed
+    final int writers = 4;
+    final int perWriter = REBUILD_ASSETS / writers;
     final GenericContainer<?>[] containers = new GenericContainer<?>[3];
     for (int i = 0; i < 3; i++)
       containers[i] = createArcadeContainer("arcadedb-" + i, SERVER_LIST, "majority", network)
@@ -191,8 +196,10 @@ class LeaderFailoverIT extends ContainersTestTemplate {
         logger.info("Facet schema ready on {} after {} ms", node.describe(), node.awaitSchema(60));
 
       logger.info("Ingested {} assets", f[0].ingest(2_000));
+      logger.info("Ingested {} more assets through {} concurrent clients",
+          FacetDatabaseWrapper.ingestConcurrently(servers.get(0), DatabaseWrapper.Protocol.HTTP, 100, writers, perWriter), writers);
       logger.info("Initial mixed ops: {}", FacetDatabaseWrapper.assertWrote(f[0].runMixedOps(1_000), "initial writer", true));
-      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f[0], f[1], f[2]), 120);
+      FacetDatabaseWrapper.assertSameFacetsOnEveryNode(List.of(f[0], f[1], f[2]), 300);
 
       final int leaderIdx = findLeaderIndex(servers);
       assertThat(leaderIdx).as("a leader before the failover").isNotNegative();
@@ -257,6 +264,10 @@ class LeaderFailoverIT extends ContainersTestTemplate {
         // the rebuild is polled from the first answer of the new replica, so a scan or unavailable phase is recorded
         sources = rejoined.awaitRebuildToIndex(300);
         logger.info("New replica facet sources: {}", sources);
+        assertThat(FacetDatabaseWrapper.sawNonIndexSource(sources))
+            .as("the rebuild outlasted the first answers, so a scan or unavailable phase was observed (sequence %s); every comparable "
+                + "sample met on the way was checked against GROUP BY by awaitRebuildToIndex", sources)
+            .isTrue();
         logger.info("Facet schema served from the index on the new replica after {} ms", rejoined.awaitSchema(180));
       } finally {
         rebuilt.set(true);
