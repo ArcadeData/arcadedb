@@ -41,6 +41,7 @@ import com.arcadedb.utility.IntHashSet;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -104,7 +105,7 @@ public final class HierarchyManager {
   private final String               indexName;
   /** The file ids of the bucket indexes of the type index at creation: the index is gone when none is left. */
   private final int[]                indexFileIds;
-  private final Runnable             onChange      = this::scheduleRebuild;
+  private final Runnable             onChange      = () -> scheduleRebuild();
   private final ReentrantLock        buildLock     = new ReentrantLock();
   private final Object               sourcesLock   = new Object();
   private final AtomicBoolean        rebuildQueued = new AtomicBoolean();
@@ -119,6 +120,8 @@ public final class HierarchyManager {
   private volatile long              sourcesSchemaVersion = Long.MIN_VALUE;
   private volatile String            unavailableReason;
   private volatile boolean           closed;
+  /** Where {@link #scheduleRebuild} queues the rebuild instead of the maintenance pool, null for the pool (tests only). */
+  volatile Executor                  rebuildExecutorForTesting;
 
   HierarchyManager(final DatabaseInternal db, final ColumnarIndexManager columnar, final String typeName, final String property,
       final HierarchyDefinition def) {
@@ -226,7 +229,9 @@ public final class HierarchyManager {
    * ends (the deferred rebuild), so the wait always has a build coming.
    */
   private HierarchyView awaitPublished(final long wanted, final long deadlineMs) {
-    scheduleRebuild();
+    // the pool rejected the rebuild: nothing will publish, so waiting out the deadline would only hold the query thread
+    if (!scheduleRebuild())
+      return null;
     synchronized (published) {
       while (true) {
         final HierarchyView view = current;
@@ -339,14 +344,25 @@ public final class HierarchyManager {
 
   // ------------------------------------------------------------------------------------------------------------------- internals
 
-  /** Run by the coalesced watcher on {@link ColumnarApplyPool}: queues one rebuild on {@link ColumnarMaintenancePool}, never builds. */
-  private void scheduleRebuild() {
-    if (closed || unavailableReason != null || !rebuildQueued.compareAndSet(false, true))
-      return;
+  /**
+   * Run by the coalesced watcher on {@link ColumnarApplyPool}: queues one rebuild on {@link ColumnarMaintenancePool}, never builds.
+   *
+   * @return whether a rebuild is queued or running for the caller: false when the manager is closed or unavailable, or the pool
+   *         rejected it (issue #11357), so a caller that waits for the publication knows none is coming
+   */
+  private boolean scheduleRebuild() {
+    if (closed || unavailableReason != null)
+      return false;
+    // already queued: that run publishes the view the caller waits for
+    if (!rebuildQueued.compareAndSet(false, true))
+      return true;
     try {
-      ColumnarMaintenancePool.getInstance().getExecutorService().execute(this::runScheduledRebuild);
+      final Executor override = rebuildExecutorForTesting;
+      (override != null ? override : ColumnarMaintenancePool.getInstance().getExecutorService()).execute(this::runScheduledRebuild);
+      return true;
     } catch (final RejectedExecutionException e) {
       rebuildQueued.set(false);
+      return false;
     }
   }
 

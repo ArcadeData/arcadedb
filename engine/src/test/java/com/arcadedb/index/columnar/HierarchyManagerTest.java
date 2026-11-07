@@ -43,6 +43,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -549,6 +550,31 @@ class HierarchyManagerTest extends TestHelper {
       ColumnarTestHooks.killPoint = null;
     }
     assertThat(queryBuilt.get()).as("the query never ran the shared build").isFalse();
+  }
+
+  /**
+   * #11357: when the maintenance pool rejects the rebuild, a query with a deadline gets no view at once instead of waiting the whole
+   * deadline out for a publication that cannot come.
+   */
+  @Test
+  void aRejectedRebuildReturnsAtOnceInsteadOfWaitingForTheDeadline() throws Exception {
+    manager.view();
+    try (final AutoCloseable hold = columnar().suspendApply()) {
+      database.transaction(() -> reparent("a/d", "x"));
+      manager.rebuildExecutorForTesting = command -> {
+        throw new RejectedExecutionException("saturated");
+      };
+      try {
+        final long start = System.nanoTime();
+        assertThat(manager.view(System.currentTimeMillis() + HANG_MS)).isNull();
+        // a hang detector, not a latency bound: the wait for HANG_MS is what it must not do
+        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isLessThan(HANG_MS / 2);
+        assertThat(manager.unavailableReason()).isNull();
+        assertThat(manager.deadlineReason()).isEqualTo(HierarchyManager.BEING_REBUILT);
+      } finally {
+        manager.rebuildExecutorForTesting = null;
+      }
+    }
   }
 
   /**
