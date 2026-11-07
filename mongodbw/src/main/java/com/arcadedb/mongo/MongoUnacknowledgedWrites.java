@@ -53,6 +53,8 @@ final class MongoUnacknowledgedWrites {
   private static final int FLAG_BITS_OFFSET  = 16;
   private static final int OP_MSG            = 2013;
   private static final int MORE_TO_COME      = 1 << 1;
+  // the header and the OP_MSG flag bits, the shortest frame whose flags can be read
+  private static final int MIN_OP_MSG_LENGTH = FLAG_BITS_OFFSET + Integer.BYTES;
 
   private MongoUnacknowledgedWrites() {
   }
@@ -72,6 +74,7 @@ final class MongoUnacknowledgedWrites {
     if (libraryDecoder == null)
       return;
 
+    // an id leaves the set when its reply is written; one the library never replies to stays until the connection closes
     final Set<Integer> unacknowledged = ConcurrentHashMap.newKeySet();
     pipeline.addBefore(libraryDecoder.name(), DECODER_NAME, new MoreToComeDecoder(unacknowledged));
     pipeline.addBefore(libraryDecoder.name(), REPLY_FILTER_NAME, new ReplyFilter(unacknowledged));
@@ -93,7 +96,7 @@ final class MongoUnacknowledgedWrites {
       if (in.readableBytes() < Integer.BYTES)
         return;
       final int length = in.getIntLE(in.readerIndex());
-      if (length <= FLAG_BITS_OFFSET || length > MongoWireProtocolHandler.MAX_MESSAGE_SIZE_BYTES) {
+      if (length < MIN_OP_MSG_LENGTH || length > MongoWireProtocolHandler.MAX_MESSAGE_SIZE_BYTES) {
         out.add(in.readRetainedSlice(in.readableBytes()));
         return;
       }

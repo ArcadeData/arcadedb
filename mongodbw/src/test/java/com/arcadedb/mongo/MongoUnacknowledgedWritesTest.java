@@ -95,6 +95,28 @@ class MongoUnacknowledgedWritesTest {
   }
 
   @Test
+  void framesTooShortToHoldTheFlagBitsArePassedOnUnchanged() {
+    for (int length = 17; length < 20; length++) {
+      final Set<Integer> unacknowledged = new HashSet<>();
+      final EmbeddedChannel channel = new EmbeddedChannel(new MongoUnacknowledgedWrites.MoreToComeDecoder(unacknowledged));
+      // a buffer of exactly the frame's size, so reading past it is out of bounds
+      final ByteBuf frame = Unpooled.buffer(length, length);
+      frame.writeIntLE(length);
+      frame.writeIntLE(1);
+      frame.writeIntLE(0);
+      frame.writeIntLE(OP_MSG);
+      frame.writeZero(length - 16);
+
+      channel.writeInbound(frame);
+
+      final ByteBuf passed = channel.readInbound();
+      assertThat(passed.readableBytes()).isEqualTo(length);
+      assertThat(unacknowledged).isEmpty();
+      passed.release();
+    }
+  }
+
+  @Test
   void theReplyToAnUnacknowledgedRequestIsDroppedAndOthersAreWritten() {
     final Set<Integer> unacknowledged = new HashSet<>(Set.of(42));
     final EmbeddedChannel channel = new EmbeddedChannel(new MongoUnacknowledgedWrites.ReplyFilter(unacknowledged));
