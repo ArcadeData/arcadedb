@@ -30,12 +30,12 @@ import com.arcadedb.graph.StripedEdgeList;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.facet.FacetMemoryBudget;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.query.facet.FacetMemoryBudget;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IntHashSet;
 
@@ -449,6 +449,8 @@ public final class HierarchyManager {
     // so the refusal is cached for the generation
     FacetMemoryBudget.Reservation charge = null;
     HierarchyView published = built;
+    // the view being replaced gives its heap back first: both held at once would refuse a view that fits on its own
+    swapCharge(null);
     if (built.rejectedReason() == null) {
       charge = FacetMemoryBudget.instance().reserve(built.heapBytes(), 0);
       if (charge == null) {

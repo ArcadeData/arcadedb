@@ -127,6 +127,31 @@ class HierarchyManagerTest extends TestHelper {
     }
   }
 
+  /** Review of #11395: a rebuild gives the replaced view's heap back before charging the new one. */
+  @Test
+  void aRebuildFitsWhenOnlyTheReplacedChargeIsGivenBack() {
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final HierarchyManager own = new HierarchyManager((DatabaseInternal) database, columnar(), ColumnarTestData.TYPE, "tags",
+        new HierarchyDefinition(ColumnarTestData.TAG_TYPE, "path", ColumnarTestData.PARENT_EDGE, Vertex.DIRECTION.IN));
+    try {
+      final HierarchyView first = own.view();
+      assertThat(first.rejectedReason()).isNull();
+      // leave room for exactly one view: the old charge plus the new one would not fit
+      final FacetMemoryBudget.Reservation rest = budget.reserve(budget.available() - first.heapBytes() - 1024, 0);
+      assertThat(rest).isNotNull();
+      try {
+        database.transaction(() -> reparent("a/d", "x"));
+        final HierarchyView second = own.view();
+        assertThat(second.rejectedReason()).isNull();
+        assertThat(second.generation()).isGreaterThan(first.generation());
+      } finally {
+        rest.close();
+      }
+    } finally {
+      own.close();
+    }
+  }
+
   @Test
   void committedEdgeChangeIsVisibleToTheNextView() {
     final HierarchyView before = manager.view();

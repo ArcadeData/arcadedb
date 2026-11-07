@@ -168,6 +168,7 @@ public final class HierarchyBuilder {
       parents = Arrays.copyOf(parents, parentCount);
 
     final int[] depth = depths(nodeCount, parentOffsets, parents, cancelled);
+    // unlike the node cap, this one is checked after the arrays are built: the depth is only known once they are
     if (maxDepth > 0)
       for (final int d : depth)
         if (d > maxDepth)

@@ -377,10 +377,13 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       return;
     }
     // a private view (the caller's transaction changed the tag graph) is this query's own heap: charged to it, once per query
-    final long privateHeap = source != null ? source.takePrivateHeap() : 0L;
-    if (privateHeap > 0 && budget.reserve(privateHeap, true) == null) {
-      refuse();
-      return;
+    final long privateHeap = source != null ? source.unchargedPrivateHeap() : 0L;
+    if (privateHeap > 0) {
+      if (budget.reserve(privateHeap, true) == null) {
+        refuse();
+        return;
+      }
+      source.privateHeapCharged();
     }
     allocateNodeCounter();
   }
@@ -439,11 +442,14 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       return view;
     }
 
-    /** The heap of the view when it was built privately for this query's transaction, once: the first collector asking pays it. */
-    long takePrivateHeap() {
-      final long heap = privateHeap;
+    /** The heap of the view when it was built privately for this query's transaction, until a collector has paid it. */
+    long unchargedPrivateHeap() {
+      return privateHeap;
+    }
+
+    /** The first collector paid the heap of the private view: later ones do not. A refused one leaves it to the next. */
+    void privateHeapCharged() {
       privateHeap = 0L;
-      return heap;
     }
 
     private String open(final long deadlineMs) {
