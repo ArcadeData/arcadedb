@@ -171,7 +171,7 @@ public class Issue11382GrpcSchemaTypedConversionRefusesTest extends BaseGrpcServ
     assertThat(doc.getBoolean("b")).isTrue();
     assertThat(doc.getDouble("dbl")).isEqualTo(3.0);
     assertThat(doc.getList("l")).containsExactly("a");
-    assertThat(doc.get("ints")).isNotNull();
+    assertThat(doc.getList("ints")).containsExactly(5, 6);
   }
 
   @Test
