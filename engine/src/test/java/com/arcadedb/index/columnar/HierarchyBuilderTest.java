@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -105,6 +106,44 @@ class HierarchyBuilderTest extends TestHelper {
       assertThat(v.orphan(n)).isFalse();
       assertThat(v.nodeOfValue(v.value(n))).isEqualTo(n);
     }
+  }
+
+  /** Issue #11368: more nodes than hierarchyMaxNodes is a rejected view, not a built one. */
+  @Test
+  void moreNodesThanTheCapIsRejected() {
+    standardTree(ColumnarTestData.PARENT_EDGE);
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_NODES, 4);
+    try {
+      final HierarchyView capped = HierarchyBuilder.build((DatabaseInternal) database, def, 1, INDEX_NAME);
+      assertThat(capped.rejectedReason()).contains("more than 4 nodes");
+      assertThat(capped.nodeCount()).isZero();
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_NODES, 5);
+      assertThat(build(def).rejectedReason()).isNull();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_NODES, 0);
+    }
+  }
+
+  /** Issue #11368: a depth above hierarchyMaxDepth is a rejected view (a -1 depth of a cycle is not a depth). */
+  @Test
+  void aDeeperTreeThanTheCapIsRejected() {
+    standardTree(ColumnarTestData.PARENT_EDGE);
+    database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_DEPTH, 1);
+    try {
+      assertThat(HierarchyBuilder.build((DatabaseInternal) database, def, 1, INDEX_NAME).rejectedReason()).contains("deeper than 1");
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_DEPTH, 2);
+      assertThat(build(def).rejectedReason()).isNull();
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_DEPTH, 0);
+    }
+  }
+
+  @Test
+  void aBuiltViewReportsItsHeap() {
+    standardTree(ColumnarTestData.PARENT_EDGE);
+    final HierarchyView v = build(def);
+    assertThat(v.heapBytes()).isGreaterThan(4L * v.nodeCount());
+    assertThat(HierarchyView.rejected(1L, "x").heapBytes()).isZero();
   }
 
   @Test

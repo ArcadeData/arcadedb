@@ -27,6 +27,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
+import com.arcadedb.query.facet.FacetMemoryBudget;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
@@ -87,6 +88,43 @@ class HierarchyManagerTest extends TestHelper {
     });
     manager = columnar().hierarchy(ColumnarTestData.TYPE, "tags");
     assertThat(manager).isNotNull();
+  }
+
+  /** Issue #11368: the published shared view holds its heap in the FACETS memory budget, and gives it back on close. */
+  @Test
+  void theSharedViewIsChargedToTheFacetMemoryBudget() {
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final HierarchyManager own = new HierarchyManager((DatabaseInternal) database, columnar(), ColumnarTestData.TYPE, "tags",
+        new HierarchyDefinition(ColumnarTestData.TAG_TYPE, "path", ColumnarTestData.PARENT_EDGE, Vertex.DIRECTION.IN));
+    final long before = budget.available();
+    final HierarchyView view = own.view();
+    try {
+      assertThat(view.rejectedReason()).isNull();
+      assertThat(before - budget.available()).isGreaterThanOrEqualTo(view.heapBytes());
+    } finally {
+      own.close();
+    }
+    assertThat(budget.available()).isEqualTo(before);
+  }
+
+  @Test
+  void aRefusedChargeRejectsTheSharedViewInsteadOfRebuildingIt() {
+    final FacetMemoryBudget budget = FacetMemoryBudget.instance();
+    final HierarchyManager own = new HierarchyManager((DatabaseInternal) database, columnar(), ColumnarTestData.TYPE, "tags",
+        new HierarchyDefinition(ColumnarTestData.TAG_TYPE, "path", ColumnarTestData.PARENT_EDGE, Vertex.DIRECTION.IN));
+    final FacetMemoryBudget.Reservation everything = budget.reserve(budget.available(), 0);
+    assertThat(everything).isNotNull();
+    try {
+      final HierarchyView view = own.view();
+      assertThat(view.rejectedReason()).isEqualTo(HierarchyView.MEMORY_BUDGET);
+      // cached for the generation: the next ask does not build again
+      final long builds = own.rebuildCount();
+      assertThat(own.view()).isSameAs(view);
+      assertThat(own.rebuildCount()).isEqualTo(builds);
+    } finally {
+      everything.close();
+      own.close();
+    }
   }
 
   @Test

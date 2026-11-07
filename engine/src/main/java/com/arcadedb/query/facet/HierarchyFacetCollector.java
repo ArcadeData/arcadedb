@@ -371,6 +371,17 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       }
       view = source.view();
     }
+    if (view.rejectedReason() != null) {
+      // a cap of the hierarchy, or its heap refused by the memory budget: no node to count over
+      unavailable = view.rejectedReason();
+      return;
+    }
+    // a private view (the caller's transaction changed the tag graph) is this query's own heap: charged to it, once per query
+    final long privateHeap = source != null ? source.takePrivateHeap() : 0L;
+    if (privateHeap > 0 && budget.reserve(privateHeap, true) == null) {
+      refuse();
+      return;
+    }
     allocateNodeCounter();
   }
 
@@ -394,6 +405,7 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
     private       HierarchyView    view;
     /** Why there is no view, null when there is one (or it was not taken yet). */
     private       String           reason;
+    private       long             privateHeap;
 
     ViewSource(final DatabaseInternal database, final String declaringType, final String property) {
       this.database = database;
@@ -427,6 +439,13 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       return view;
     }
 
+    /** The heap of the view when it was built privately for this query's transaction, once: the first collector asking pays it. */
+    long takePrivateHeap() {
+      final long heap = privateHeap;
+      privateHeap = 0L;
+      return heap;
+    }
+
     private String open(final long deadlineMs) {
       manager = ((LocalDatabase) database.getEmbedded()).getColumnarIndexManager().hierarchy(declaringType, property);
       if (manager == null)
@@ -451,6 +470,8 @@ public final class HierarchyFacetCollector implements FacetCollector, OrdinalCon
       if (!readable())
         return NOT_READABLE;
       view = taken;
+      if (taken.rejectedReason() == null && !manager.isSharedView(taken))
+        privateHeap = taken.heapBytes();
       return null;
     }
 

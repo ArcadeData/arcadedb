@@ -35,6 +35,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.query.facet.FacetMemoryBudget;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IntHashSet;
 
@@ -115,6 +116,9 @@ public final class HierarchyManager {
   private final AtomicLong           rebuilds      = new AtomicLong();
   /** Notified at every publication of the shared view (and at close): a caller with a deadline waits on it ({@link #view(long)}). */
   private final Object               published     = new Object();
+  private final Object               chargeLock    = new Object();
+  /** The facet memory budget held for the heap of the published shared view. */
+  private FacetMemoryBudget.Reservation charge;
   private volatile HierarchyView     current;
   private volatile FileSet           files         = FileSet.NONE;
   private volatile long              sourcesSchemaVersion = Long.MIN_VALUE;
@@ -326,7 +330,24 @@ public final class HierarchyManager {
       columnar.unwatchFiles(onChange);
     }
     current = null;
+    swapCharge(null);
     notifyPublished();
+  }
+
+  /** Replaces the memory budget reservation of the published view, giving the old one back. */
+  private void swapCharge(final FacetMemoryBudget.Reservation next) {
+    final FacetMemoryBudget.Reservation old;
+    synchronized (chargeLock) {
+      old = charge;
+      charge = next;
+    }
+    if (old != null)
+      old.close();
+  }
+
+  /** Whether the shared view in service is {@code view} (a view that is not it was built privately for a transaction). */
+  public boolean isSharedView(final HierarchyView view) {
+    return view == current;
   }
 
   /** Whether the type index this manager belongs to is still in the schema (one of its bucket indexes at creation is left). */
@@ -424,16 +445,32 @@ public final class HierarchyManager {
         context.setCurrentUser(user);
       }
     });
-    current = built;
+    // the shared view's heap is charged to the facet memory budget for as long as it is published; a refusal publishes a rejected view,
+    // so the refusal is cached for the generation
+    FacetMemoryBudget.Reservation charge = null;
+    HierarchyView published = built;
+    if (built.rejectedReason() == null) {
+      charge = FacetMemoryBudget.instance().reserve(built.heapBytes(), 0);
+      if (charge == null) {
+        published = HierarchyView.rejected(built.generation(), HierarchyView.MEMORY_BUDGET);
+        LogManager.instance().log(this, Level.WARNING,
+            "Hierarchy of index '%s' of database '%s' needs about %d bytes of the facet memory budget (arcadedb.columnar.queryMemoryBudget)"
+                + " and it is not available: HIERARCHY facets are unavailable until it is", indexName, database.getName(),
+            built.heapBytes());
+      }
+    }
+    swapCharge(charge);
+    current = published;
     // a close that cleared the view meanwhile wins: nothing is left published in a closed manager
     if (closed) {
       current = null;
+      swapCharge(null);
       notifyPublished();
       return null;
     }
     rebuilds.incrementAndGet();
     notifyPublished();
-    return built;
+    return published;
   }
 
 
@@ -482,6 +519,7 @@ public final class HierarchyManager {
         columnar.unwatchFiles(onChange);
         files = FileSet.NONE;
         current = null;
+        swapCharge(null);
         return;
       }
 

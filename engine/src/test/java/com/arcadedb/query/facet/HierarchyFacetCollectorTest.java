@@ -480,6 +480,20 @@ class HierarchyFacetCollectorTest extends TestHelper {
     assertThat(FacetMemoryBudget.instance().available()).isEqualTo(before);
   }
 
+  /** Issue #11368: a view rejected by a cap of the hierarchy answers the facet unavailable with the reason, and holds no budget. */
+  @Test
+  void aRejectedViewMakesTheFacetUnavailableWithItsReason() {
+    final long before = FacetMemoryBudget.instance().available();
+    final HierarchyFacetCollector collector = HierarchyFacetCollector.forView(spec(10, 1), COLUMN, 1_000,
+        HierarchyView.rejected(1L, "hierarchy of Tag.path has more than 3 nodes"), WAIT_MS);
+    final GlobalDictionary dictionary = dictionary("a/b/c");
+    collector.beginBucket(0, new Snapshot(0, dictionary), new Merged(dictionary));
+    final FacetResult result = collector.finish();
+    assertThat(result.source()).isEqualTo(FacetResult.UNAVAILABLE);
+    assertThat(result.reason()).isEqualTo("hierarchy of Tag.path has more than 3 nodes");
+    assertThat(FacetMemoryBudget.instance().available()).isEqualTo(before);
+  }
+
   @Test
   void validationOnlyCollectorFinishesEmpty() {
     final FacetCollector collector = FacetExecutor.collectorFor(spec(10, 1), null, null, 0);

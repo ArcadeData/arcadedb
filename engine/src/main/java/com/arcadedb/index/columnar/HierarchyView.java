@@ -32,6 +32,8 @@ import java.util.Map;
  * Immutable once built and safe to share between threads; the arrays returned are the view's own and must not be modified.
  */
 public final class HierarchyView {
+  /** Why a view was rejected for want of {@code FacetMemoryBudget} (the same text as the facet collectors' memory refusal). */
+  public static final String MEMORY_BUDGET = "memory budget";
   private static final boolean[] NO_ORPHANS = new boolean[0];
 
   private final long                 generation;
@@ -45,6 +47,9 @@ public final class HierarchyView {
   private final long                 cycleSignature;
   private final int                  duplicateKeys;
   private final int                  nullKeys;
+  /** Why the hierarchy was not built into a usable view (a cap or the memory budget), null for a usable one. */
+  private final String               rejected;
+  private final long                 heapBytes;
 
   /** {@code orphan} null means no node is an orphan. */
   HierarchyView(final long generation, final int[] parentOffsets, final int[] parents, final Object[] values, final int[] depth,
@@ -61,6 +66,45 @@ public final class HierarchyView {
     this.cycleSignature = cycleSignature;
     this.duplicateKeys = duplicateKeys;
     this.nullKeys = nullKeys;
+    this.rejected = null;
+    this.heapBytes = estimateHeap(parentOffsets, parents, values, depth, this.orphan);
+  }
+
+  private HierarchyView(final long generation, final String rejected) {
+    this.generation = generation;
+    this.parentOffsets = new int[1];
+    this.parents = new int[0];
+    this.values = new Object[0];
+    this.depth = new int[0];
+    this.orphan = NO_ORPHANS;
+    this.keyToNode = Map.of();
+    this.cycleNodes = 0;
+    this.cycleSignature = 0L;
+    this.duplicateKeys = 0;
+    this.nullKeys = 0;
+    this.rejected = rejected;
+    this.heapBytes = 0L;
+  }
+
+  /**
+   * A view standing for a hierarchy that must not be used: no node, {@link #rejectedReason()} says why. Published in place of the
+   * real one so the refusal is cached for the generation instead of the graph being rebuilt by every query.
+   */
+  public static HierarchyView rejected(final long generation, final String reason) {
+    return new HierarchyView(generation, reason);
+  }
+
+  /**
+   * The heap of the arrays, the values and the key to node map, estimated: the arrays exactly, each map entry at 56 bytes (node, boxed
+   * node number, table slot) and each value at its size plus an object header.
+   */
+  private static long estimateHeap(final int[] parentOffsets, final int[] parents, final Object[] values, final int[] depth,
+      final boolean[] orphan) {
+    long bytes = 16L * 5 + 4L * (parentOffsets.length + parents.length + depth.length) + orphan.length + 8L * values.length;
+    bytes += 56L * values.length;
+    for (final Object value : values)
+      bytes += value instanceof CharSequence text ? 40L + text.length() : 24L;
+    return bytes;
   }
 
   /**
@@ -83,6 +127,16 @@ public final class HierarchyView {
         throw new IllegalArgumentException("The value " + values[node] + " is the key of two nodes");
     }
     return new HierarchyView(0L, parentOffsets, parents, normalized, depth, orphan, keyToNode, 0, 0L, 0, 0);
+  }
+
+  /** Why this is not a usable view (a cap of the hierarchy, the memory budget), null for a usable one. */
+  public String rejectedReason() {
+    return rejected;
+  }
+
+  /** The estimated heap the view holds. */
+  public long heapBytes() {
+    return heapBytes;
   }
 
   public int nodeCount() {

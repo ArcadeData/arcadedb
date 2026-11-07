@@ -500,6 +500,11 @@ class FacetReadEventsTest extends TestHelper {
     database.getSchema().getType(TYPE).getEvents().registerListener(listener);
     final Semaphore permits = ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getColumnarIndexManager().fallbackScans();
     final int allPermits = database.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_MAX_FALLBACK_SCANS);
+    // the first query publishes the hierarchy views, whose heap stays charged to the budget while they are published (issue #11368):
+    // the budget to come back to is the one with them in place
+    try (final ResultSet warm = database.query("sql", "SELECT FROM " + TYPE + FACETS)) {
+      warm.stream().count();
+    }
     final long fullBudget = FacetMemoryBudget.instance().available();
     try {
       try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + FACETS)) {
