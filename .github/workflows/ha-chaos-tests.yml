@@ -97,6 +97,13 @@ jobs:
         # without a second edit here (#10603).
         run: ./.github/scripts/chaos-run-summary.sh e2e-ha/target/chaos/*/summary.json >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Make container-written files readable
+        if: always()
+        # The node containers run as a different uid, so a JVM heap dump
+        # (target/logs/arcadedb-N/java_pid1.hprof) is root-owned and upload-artifact dies with
+        # EACCES, dropping the whole report. Hand the tree back to the runner user first.
+        run: sudo chown -R "$(id -u):$(id -g)" e2e-ha/target || true
+
       - name: Upload chaos report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
