@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * fetch: the handler asks for at most the effective ceiling plus one row, and that one extra row is what still
  * tells a cut response from a complete one.
  * <p>
- * The residency itself is asserted at engine level by {@code Issue7336AscendingLimitTest}, which counts the
+ * The residency itself is asserted at engine level by {@code TimeSeriesAscendingDescendingLimitTest.AscendingLimit}, which counts the
  * blocks decompressed. What this class pins is the part a caller can see, because a bounded fetch is only a fix
  * if none of it changed: {@code count}, {@code limit}, {@code truncated}, the row content and ordering, and the
  * HTTP 413 the hard ceiling answers with.

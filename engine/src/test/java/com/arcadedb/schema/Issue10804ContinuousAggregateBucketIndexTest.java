@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 /**
  * Issue #10804: every ingest request refreshes the continuous aggregates over its type, and a refresh deleted the buckets at or
  * after the watermark before it recomputed them. The backing type had no index, so that delete read every row the aggregate ever
- * wrote: measured with {@code Issue10804IngestRefreshCostBenchmark}, an autocommit INSERT into the open bucket of an aggregate holding
+ * wrote: measured with {@code IngestRefreshCostBenchmark}, an autocommit INSERT into the open bucket of an aggregate holding
  * 100k rows cost 9 ms, 400 times the INSERT alone, and the cost grew with the history of the aggregate, not with the bucket. The open
  * bucket itself, the cost the issue was filed for, is 10 to 30 times the INSERT and bounded by the bucket.
  * <p>

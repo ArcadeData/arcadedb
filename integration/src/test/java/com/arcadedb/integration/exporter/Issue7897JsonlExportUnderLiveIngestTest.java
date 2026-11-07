@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * whole export.
  * <p>
  * That the lock is no longer held across a visitor is asserted where it can be asserted exactly, on the method
- * this exporter calls: {@code Issue7897ScanDoesNotHoldTheCompactionLockTest} parks a visitor and requires an
+ * this exporter calls: {@code TimeSeriesSealedStoreLockingTest} parks a visitor and requires an
  * append to complete anyway. Timing the same thing from out here would only measure how long a 200k-sample export
  * happens to take.
  * <p>

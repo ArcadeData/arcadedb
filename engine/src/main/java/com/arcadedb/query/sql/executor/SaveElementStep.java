@@ -259,7 +259,7 @@ public class SaveElementStep extends AbstractExecutionStep {
    * transaction containing the INSERT takes the statement's DOCUMENT/VERTEX rows back while leaving the
    * time-series samples in place. This differs from every other target type an INSERT can have, which is why
    * it is spelled out here rather than left to the engine javadoc; the mechanism is documented on
-   * {@code TimeSeriesShard.appendSamples}, and {@code Issue7410AppendTransactionScopeTest} pins this entry
+   * {@code TimeSeriesShard.appendSamples}, and {@code TimeSeriesEngineTest} pins this entry
    * point.
    * <p>
    * A TAG/FIELD value reaches this method as the statement produced it (the document layer leaves it alone, see

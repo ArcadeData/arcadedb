@@ -277,7 +277,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * the Raft log - would no longer be the calling thread's. (The original note gave the reason as the shard
    * pages being published "out of band with the enclosing commit"; per #7410 that happens on both paths,
    * since the shard commit never was the enclosing one. The cross-thread dispatch is what the in-thread
-   * fallback actually removes, and what {@code Issue4957AppendBatchTransactionTest} pins.) In that case the
+   * fallback actually removes, and what {@code TimeSeriesEngineTest} pins.) In that case the
    * per-shard sub-batches are written sequentially on the calling thread, preserving the batched-transaction
    * saving (at most S shard transactions) without the parallelism.
    * <p>
@@ -776,7 +776,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * prefetches, so the row that trips the ceiling is followed by one more being located before the loop
    * breaks. It is two rows and not the rest of the bucket, because that prefetch returns at the first in-range
    * row it finds and never evaluates the tag filter, so rows this loop will later reject cannot draw it
-   * further either. {@code Issue7724AggregationBucketCeilingTest} pins the number so a restructuring cannot
+   * further either. {@code TimeSeriesAggregationCeilingTest} pins the number so a restructuring cannot
    * quietly turn it into a scan. That is safe precisely because the scan stops only once the
    * count is already ABOVE the ceiling: the caller's own after-the-fact check therefore fires on it and refuses
    * it, in the same words as before, so no partial answer can escape. The alternative shape - refusing up front

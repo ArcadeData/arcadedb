@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * number, so a number on the left made {@code 2000 = t} and {@code 2000 <> t} judge every datetime "not equal", a fractional
  * number was read as the millisecond it falls in ({@code t = 2000.5} held for the datetime at 2000), and a number outside the range of
  * a long matched no datetime at all ({@code t <= 1e19}). The time series planner and its residual WHERE depend on it (see
- * {@code Issue10560TimeSeriesBoundNotALongTest}); this is the same rule on a plain document type.
+ * {@code TimeSeriesTemporalColumnsTest}); this is the same rule on a plain document type.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

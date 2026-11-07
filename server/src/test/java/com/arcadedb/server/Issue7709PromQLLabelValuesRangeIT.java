@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * last hour was offered every value the type had ever held, and the sibling {@code /series} endpoint - which does
  * read them - disagreed with this one about what a range means. Pinned through HTTP because that disagreement is
  * between two HTTP endpoints; the engine-level bound has its own test in
- * {@code Issue7709RangeScopedDistinctTagValuesTest}.
+ * {@code TagFilterTest}.
  * <p>
  * The compatibility half matters as much as the fix: a request carrying neither bound must keep answering over the
  * whole series, because that is every request any deployed dashboard sends today.

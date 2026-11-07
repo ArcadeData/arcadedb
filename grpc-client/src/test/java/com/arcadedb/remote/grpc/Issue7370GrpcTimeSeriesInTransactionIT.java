@@ -487,7 +487,7 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGrpcClientServerTest {
    * The DOCUMENT insert in the same transaction is the control: it proves the statements ran inside a live
    * transaction that really did roll back, so "the sample survived" cannot be explained by the transaction
    * never having existed. #7410 closed the divergence between this and {@code TimeSeriesEngine}'s javadoc, in
-   * favour of what this test measures; {@code Issue7410AppendTransactionScopeTest} pins the same contract
+   * favour of what this test measures; {@code TimeSeriesEngineTest} pins the same contract
    * embedded, at the engine and SQL entry points.
    */
   @Test

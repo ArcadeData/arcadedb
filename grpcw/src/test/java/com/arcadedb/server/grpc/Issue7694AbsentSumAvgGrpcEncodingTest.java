@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The other three readers are pinned: {@code Issue7584AbsentSumAvgSampleEncodingTest} and
  * {@code Issue7584AbsentSumAvgOverHttpIT} for the two HTTP time-series handlers,
- * {@code Issue7584AbsentSumAvgSqlPushDownTest} for {@code AggregateFromTimeSeriesStep}. The gRPC aggregation
+ * {@code TimeSeriesNaNHandlingTest} for {@code AggregateFromTimeSeriesStep}. The gRPC aggregation
  * stream in {@code ArcadeDbGrpcService} hands every value to {@link GrpcTimeSeriesSupport#toSampleValue}, which
  * maps an absent sample to an unset {@code GrpcValue} - correct by inspection, and until now driven by nothing, so
  * "simplifying" it to a bare {@code setDoubleValue} would have shipped green and a client would have read a gap as

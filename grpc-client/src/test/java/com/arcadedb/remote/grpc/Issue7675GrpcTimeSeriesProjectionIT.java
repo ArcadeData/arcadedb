@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code bucket_interval_ms <= 0} and an empty {@code requests} list are NOT driven from here: this client's
  * {@code TimeSeriesQuery.aggregate} refuses both before a request is built, so the wire cannot be reached
  * through it. The server-side rule those two share with HTTP is pinned in
- * {@code Issue7675EdgeCaseRequestContractTest}, and the status this RPC answers is unchanged - the refusal
+ * {@code TimeSeriesAggregationRequestContractTest}, and the status this RPC answers is unchanged - the refusal
  * moved from an inline {@code Status.INVALID_ARGUMENT} to an {@code IllegalArgumentException} that
  * {@code GrpcErrorMapper} classifies to the same code.
  */

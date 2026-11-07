@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * Reported, not fatal, and that is deliberate: retention dropping blocks older than the policy while a long
  * export runs is legitimate, and those samples are genuinely gone rather than somewhere else - unlike a block a
- * DOWNSAMPLE coarsened, for which the engine raises instead (see {@code Issue8166WalkAcrossDownsampleTest}).
+ * DOWNSAMPLE coarsened, for which the engine raises instead (see {@code TimeSeriesSealedWalkTest}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/8166">issue #8166</a>

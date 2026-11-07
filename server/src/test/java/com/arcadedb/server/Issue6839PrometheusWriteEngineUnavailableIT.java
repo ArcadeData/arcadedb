@@ -59,7 +59,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The state is reached here by closing the live type's engine, which nulls the same field a failed
  * {@code initEngine()} leaves null - the field this guard reads - without needing to corrupt a file and restart
  * the server around it. The engine-side arms of that state (a corrupt {@code .ts.sealed} at schema load, and the
- * recovery from it) are pinned by {@code Issue6340TimeSeriesCheckDatabaseTest} and
+ * recovery from it) are pinned by {@code TimeSeriesCheckDatabaseTest} and
  * {@code Issue6839TsSealedBlobRecoveryTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
