@@ -42,6 +42,8 @@ import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -496,6 +498,62 @@ class ColumnarApplierTest extends BucketPageLayoutTestSupport {
     } finally {
       restoreChain(rid, original);
     }
+  }
+
+  /**
+   * #11364: on a replica a committed read gives up when publications stay open through every attempt (the sequence is JVM-wide). That
+   * is not a record at fault: the page is retried at the first backoff, never counted as unreadable and never escalated to a rebuild,
+   * however many passes meet the open publication.
+   */
+  @Test
+  void aReadGivenUpOnAnOpenPublicationNeverRequestsARebuild() throws Exception {
+    createAsset();
+    final AtomicLong clock = new AtomicLong(1_000_000L);
+    manager().setClockForTesting(clock::get);
+    final List<String> rebuilds = new CopyOnWriteArrayList<>();
+    projection().setRebuildRequester(rebuilds::add);
+    final RID rid = chunkedRecord("a");
+    caughtUp();
+
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final DatabaseInternal previous = local.getWrappedDatabaseInstance();
+    local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if ("isLeader".equals(method.getName()))
+            return false;
+          try {
+            return method.invoke(local, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        }));
+    LocalBucketTestAccess.beginPublication(local);
+    try {
+      final int passes = ColumnarApplier.UNREADABLE_ATTEMPTS_BEFORE_REBUILD + 2;
+      for (int pass = 0; pass < passes; pass++) {
+        final long before = stats().applyPasses();
+        if (pass == 0)
+          manager().markPages(bucketId(), new int[] { pageOf(rid) }, 1);
+        else
+          clock.addAndGet(ColumnarIndexManager.MAINTENANCE_BACKOFF_MAX_MS);
+        for (int i = 0; i < 2_000 && stats().applyPasses() == before; i++)
+          Thread.sleep(5);
+        assertThat(stats().applyPasses()).as("pass %d met the open publication", pass).isGreaterThan(before);
+      }
+      assertThat(rebuilds).as("a read given up on an open publication is not corruption").isEmpty();
+      assertThat(stats().unreadableCount("Asset")).as("nothing is unreadable").isZero();
+      assertThat(projection().unreadablePages().sizeForTesting()).as("the page is still being retried").isEqualTo(1);
+    } finally {
+      LocalBucketTestAccess.endPublication(local);
+      local.setWrappedDatabaseInstance(previous);
+    }
+
+    clock.addAndGet(ColumnarIndexManager.MAINTENANCE_BACKOFF_MAX_MS);
+    caughtUp();
+    assertThat(rebuilds).isEmpty();
+    assertThat(projection().unreadablePages().sizeForTesting()).as("a readable visit ends the retries").isZero();
+    assertThat(projection().isUsable()).isTrue();
+    assertThat(brandCounts()).isEqualTo(Map.of("a", 1L));
   }
 
   @Test
