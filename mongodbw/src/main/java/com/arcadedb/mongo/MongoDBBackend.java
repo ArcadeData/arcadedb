@@ -134,6 +134,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   @Override
   public Document handleCommand(final Channel channel, final String databaseName, final String command, final Document query) {
+    // the first request on a connection is the driver's handshake, a command: from here on its w=0 writes run (issue #11375)
+    MongoUnacknowledgedWrites.install(channel);
     final String enclosing = tagAsMongo();
     try {
       return handleClientCommand(channel, databaseName, command, query);
@@ -152,6 +154,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
     final String enclosing = tagAsMongo();
     try {
       final Channel channel = query.getChannel();
+      MongoUnacknowledgedWrites.install(channel);
       final String databaseName = query.getDatabaseName();
       final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Query on '" + query.getFullCollectionName() + "'");
       return runAuthorized(channel, databaseName, user, true, () -> "query " + query.getFullCollectionName() + " " + query.getQuery(),
