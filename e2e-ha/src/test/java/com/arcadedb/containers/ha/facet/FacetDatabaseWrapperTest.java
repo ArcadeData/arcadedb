@@ -25,6 +25,8 @@ import com.arcadedb.test.support.FacetDatabaseWrapper;
 import com.arcadedb.test.support.FacetDatabaseWrapper.OpCounts;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -33,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <ul>
  *   <li>a duplicate key counts as an acknowledged write only for an INSERT that was retried, since only then can its own earlier
  *   attempt have committed behind a retryable error;</li>
+ *   <li>a rebuild that never left the index proves nothing about the scan and unavailable phases;</li>
  *   <li>a writer thread's outcome proves that it wrote, which is the premise of every facets-under-writes assertion.</li>
  * </ul>
  */
@@ -87,5 +90,18 @@ class FacetDatabaseWrapperTest {
     assertThatThrownBy(() -> FacetDatabaseWrapper.assertWrote(new IllegalStateException("boom"), "writer", false))
         .isInstanceOf(AssertionError.class).hasMessageContaining("boom");
     assertThatThrownBy(() -> FacetDatabaseWrapper.assertWrote(null, "writer", false)).isInstanceOf(AssertionError.class);
+  }
+
+  @Test
+  void aRebuildThatEndedInsideTheFirstOpenSawNoRebuildPhase() {
+    // the sequence LeaderFailoverIT recorded before the rebuild was made to outlast the first answers
+    assertThat(FacetDatabaseWrapper.sawNonIndexSource(List.of("index,index,index"))).isFalse();
+    assertThat(FacetDatabaseWrapper.sawNonIndexSource(List.of())).isFalse();
+  }
+
+  @Test
+  void aScanOrUnavailableFacetIsARebuildPhase() {
+    assertThat(FacetDatabaseWrapper.sawNonIndexSource(List.of("unavailable,unavailable,unavailable", "index,index,index"))).isTrue();
+    assertThat(FacetDatabaseWrapper.sawNonIndexSource(List.of("scan,index,index", "index,index,index"))).isTrue();
   }
 }
