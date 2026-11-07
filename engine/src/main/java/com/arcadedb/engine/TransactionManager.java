@@ -48,6 +48,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -132,7 +133,11 @@ public class TransactionManager {
   // Commits between their two columnar marks (spec 6.2) whose WAL record is still queued above, so no WAL file counts them in
   // WALFile.columnarMarksStarted() yet: the record lands in a file only at the next flush pass, which may run, and see its pages
   // flushed, before the second mark. cleanWALFiles drops no file while one is pending, since the record may be in any of them
-  private final AtomicInteger                queuedColumnarMarks  = new AtomicInteger();
+  // #11352: counted per retire epoch rather than database-wide, so a file is held back only by the commits that started before it
+  // was retired. The epoch is raised each time a WAL file leaves the active pool; a commit counts itself under the epoch it started in.
+  // A counter at zero of an epoch before the current one is tombstoned (QUEUED_MARKS_RETIRED) and removed by cleanWALFiles
+  private final ConcurrentSkipListMap<Long, AtomicInteger> queuedColumnarMarks = new ConcurrentSkipListMap<>();
+  private final AtomicLong                     walRetireEpoch       = new AtomicLong();
   // Test hook: runs before each file a group-commit pass or forceWALFiles() flushes, so a test can make the flush fail. Per instance, so tests
   // running concurrently in one JVM do not see each other's
   volatile WALSyncFaultInjector              walSyncFaultInjector;
@@ -725,16 +730,61 @@ public class TransactionManager {
 
   /**
    * A commit whose WAL record is queued by the group commit ({@link #queueTransactionToWAL}) reached its first columnar mark: no WAL
-   * file holds the record yet, so none is dropped until {@link #queuedColumnarMarksEnded()} (spec 6.2, the queued twin of
+   * file holds the record yet, so none is dropped until {@link #queuedColumnarMarksEnded(long)} (spec 6.2, the queued twin of
    * {@link WALFile#columnarMarksStarted()}). Called before the pages are published.
+   *
+   * @return the retire epoch the commit is counted under: the caller passes it to the matching {@code queuedColumnarMarksEnded}
    */
-  public void queuedColumnarMarksStarted() {
-    queuedColumnarMarks.incrementAndGet();
+  public long queuedColumnarMarksStarted() {
+    while (true) {
+      final long epoch = walRetireEpoch.get();
+      final AtomicInteger counter = queuedColumnarMarks.computeIfAbsent(epoch, e -> new AtomicInteger());
+      if (counter.incrementAndGet() > 0) {
+        // counted before any retirement that followed: a file retired meanwhile must see this commit, so otherwise try again
+        if (walRetireEpoch.get() == epoch)
+          return epoch;
+        counter.decrementAndGet();
+      } else
+        // the counter was pruned between the lookup and the increment: it is out of the map, the next lookup makes a new one
+        counter.decrementAndGet();
+    }
   }
 
   /** The second columnar mark of a commit of {@link #queuedColumnarMarksStarted()} ran, or the commit failed: called once, in a finally. */
-  public void queuedColumnarMarksEnded() {
-    queuedColumnarMarks.decrementAndGet();
+  public void queuedColumnarMarksEnded(final long epoch) {
+    queuedColumnarMarks.get(epoch).decrementAndGet();
+  }
+
+  /**
+   * Moves a file to the inactive pool, stamping the retire epoch first: a commit with a queued record that started its marks before
+   * this call may still land in the file, one that started after cannot, since the file is no longer written to (#11352).
+   */
+  private void addToInactivePool(final WALFile file) {
+    file.setRetireEpoch(walRetireEpoch.incrementAndGet());
+    inactiveWALFilePool.add(file);
+  }
+
+  /**
+   * Whether a commit that started its marks before the file was retired is still between them. Also prunes the counters of past
+   * epochs that reached zero, so the map holds the epochs with a commit in flight and the current one.
+   */
+  private boolean heldByQueuedColumnarMarks(final WALFile file) {
+    final long current = walRetireEpoch.get();
+    // the clamp is only a safety net: a file of the inactive pool always carries its stamp
+    for (final Map.Entry<Long, AtomicInteger> entry : queuedColumnarMarks.headMap(Math.min(file.getRetireEpoch(), current + 1)).entrySet()) {
+      final AtomicInteger counter = entry.getValue();
+      if (counter.get() > 0)
+        return true;
+    }
+    return false;
+  }
+
+  /** Removes the counters of epochs before the current one that no commit is in: a tombstone stops a late increment from using one. */
+  private void pruneQueuedColumnarMarks() {
+    final long current = walRetireEpoch.get();
+    for (final Map.Entry<Long, AtomicInteger> entry : queuedColumnarMarks.headMap(current).entrySet())
+      if (entry.getValue().compareAndSet(0, Integer.MIN_VALUE / 2))
+        queuedColumnarMarks.remove(entry.getKey());
   }
 
   /**
@@ -801,7 +851,7 @@ public class TransactionManager {
           if (pool[i] == file) {
             pool[i] = null;
             file.setActive(false);
-            inactiveWALFilePool.add(file);
+            addToInactivePool(file);
             LogManager.instance().log(this, Level.SEVERE, "WAL file '%s' of database '%s' failed an fsync: retired, no commit appends to it"
                 + " any more", null, file, database.getName());
             return;
@@ -1251,7 +1301,7 @@ public class TransactionManager {
             for (final WALFile file : recoveryFiles)
               if (file != null) {
                 file.setActive(false);
-                inactiveWALFilePool.add(file);
+                addToInactivePool(file);
               }
             walKeptForFsync = true;
           }
@@ -2417,7 +2467,7 @@ public class TransactionManager {
         final WALFile file = activeWALFilePool[i];
         if (file != null) {
           activeWALFilePool[i] = null;
-          inactiveWALFilePool.add(file);
+          addToInactivePool(file);
           file.setActive(false);
         }
       }
@@ -2465,7 +2515,7 @@ public class TransactionManager {
           continue;
         pool[i] = null;
         file.setActive(false);
-        inactiveWALFilePool.add(file);
+        addToInactivePool(file);
       }
     }
   }
@@ -2509,7 +2559,7 @@ public class TransactionManager {
             // database that gets fenced right below (issue #7479 review - this used to only happen on the
             // success path, leaking the old file's handle and self-lock whenever the check below failed).
             file.setActive(false);
-            inactiveWALFilePool.add(file);
+            addToInactivePool(file);
 
             // #7479: same reasoning as createWALFilePool() - a freshly counted name that turns out to
             // already be locked means another process/instance raced this rotation and got there first.
@@ -2597,7 +2647,7 @@ public class TransactionManager {
    * without waiting for a real file to cross {@link #MAX_LOG_FILE_SIZE}.
    */
   void addInactiveWALFileForTesting(final WALFile file) {
-    inactiveWALFilePool.add(file);
+    addToInactivePool(file);
   }
 
   /**
@@ -2656,8 +2706,10 @@ public class TransactionManager {
       // commit raises its marks counter before publishing the pages that counter covers, which only then can reach the disk
       final List<WALFile> removable = new ArrayList<>(inactiveWALFilePool.size());
       for (final WALFile file : inactiveWALFilePool)
-        if (force || !dropFiles || file.getPendingPagesToFlush() == 0 && file.getPendingColumnarMarks() == 0 && queuedColumnarMarks.get() == 0)
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0 && file.getPendingColumnarMarks() == 0 && !heldByQueuedColumnarMarks(file))
           removable.add(file);
+
+      pruneQueuedColumnarMarks();
 
       if (removable.isEmpty())
         return false;
@@ -2748,7 +2800,7 @@ public class TransactionManager {
           activeWALFilePool[i] = database.getWALFileFactory()
               .newInstance(database.getDatabasePath() + File.separator + "txlog_" + logFileCounter.getAndIncrement() + ".wal");
           file.setActive(false);
-          inactiveWALFilePool.add(file);
+          addToInactivePool(file);
         }
       }
     return cleanWALFiles(true, force, true);

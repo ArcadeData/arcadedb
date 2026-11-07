@@ -79,6 +79,8 @@ public class WALFile extends LockContext {
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   // Commits written here whose second columnar mark has not run yet: the file is not dropped meanwhile (see columnarMarksStarted)
   private final    AtomicInteger    pendingColumnarMarks = new AtomicInteger();
+  // The retire epoch the transaction manager stamped when the file left the active pool (#11352): Long.MAX_VALUE until then
+  private volatile long             retireEpoch          = Long.MAX_VALUE;
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
   // #10234: WHEN THIS FILE WAS OPENED OR LAST WRITTEN, SO THE HOUSEKEEPING CAN RELEASE A FILE NOBODY WRITES ANY MORE
@@ -554,6 +556,15 @@ public class WALFile extends LockContext {
     }
 
     return true;
+  }
+
+  /** Stamped by the transaction manager before the file joins the inactive pool, see {@code TransactionManager.addToInactivePool}. */
+  void setRetireEpoch(final long retireEpoch) {
+    this.retireEpoch = retireEpoch;
+  }
+
+  long getRetireEpoch() {
+    return retireEpoch;
   }
 
   public synchronized void setActive(final boolean active) {

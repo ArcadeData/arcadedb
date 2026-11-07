@@ -3912,10 +3912,11 @@ public class TransactionContext implements Transaction {
     // a group commit's record is still queued (#10509): no file holds it yet, the transaction manager counts it instead
     final TransactionManager marksQueue = projected && !withoutWAL && marksWAL == null && deferredWALSyncTicket > 0 ?
         database.getTransactionManager() : null;
+    long queuedEpoch = 0;
     if (marksWAL != null)
       marksWAL.columnarMarksStarted();
     else if (marksQueue != null)
-      marksQueue.queuedColumnarMarksStarted();
+      queuedEpoch = marksQueue.queuedColumnarMarksStarted();
     try {
       // a failure to write the NOWAL marker refuses the no-WAL commit here, before anything is visible
       columnar.markPackedPages(columnarMarkKeys, columnarMarkCount, columnarMarkPages, columnarRecordKeys, columnarRecordCount,
@@ -3941,7 +3942,7 @@ public class TransactionContext implements Transaction {
       if (marksWAL != null)
         marksWAL.columnarMarksEnded();
       else if (marksQueue != null)
-        marksQueue.queuedColumnarMarksEnded();
+        marksQueue.queuedColumnarMarksEnded(queuedEpoch);
     }
   }
 
