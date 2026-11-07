@@ -56,6 +56,17 @@ class CombinedLoadTest {
     assertThat(other.closed).isTrue();
   }
 
+  @Test
+  void routesAroundOnEveryMember() {
+    final FakeLoad primary = quiet(1);
+    final FakeLoad other = quiet(1);
+    final CombinedLoad combined = new CombinedLoad(primary, other);
+    combined.routeAround(0b100);
+    combined.routeAround(0);
+    assertThat(primary.routedAround).containsExactly(0b100L, 0L);
+    assertThat(other.routedAround).containsExactly(0b100L, 0L);
+  }
+
   private static LoadGenerator failingOnClose(final RuntimeException failure) {
     return new LoadGenerator() {
       @Override
