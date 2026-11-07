@@ -133,9 +133,16 @@ final class ColumnarApplier {
     if (contextCreated)
       DatabaseContext.INSTANCE.init(database);
     final boolean transactionWasActive = !contextCreated && database.isTransactionActive();
+    // THE PROJECTION IS NOT A READER OF THE USER: A BEFORE READ LISTENER MUST NOT FIRE FROM A BACKGROUND JOB (#11351). IT COULD VETO
+    // AN EXTERNAL VALUE, DIVERGING THE PROJECTION FROM THE STORED RECORD, OR READ THE DATABASE AND TAKE ITS LOCK, WHICH STALLS A DROP
+    // FENCING THIS JOB. THE GUARD THAT KEEPS A LISTENER'S OWN READS FROM FIRING LISTENERS DOES EXACTLY THAT FOR THE WHOLE BODY
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(path);
+    final boolean wasFiringReadEvents = context.isFiringReadEvents();
+    context.setFiringReadEvents(true);
     try {
       return body.get();
     } finally {
+      context.setFiringReadEvents(wasFiringReadEvents);
       try {
         if (!transactionWasActive && database.isTransactionActive())
           database.rollback();
