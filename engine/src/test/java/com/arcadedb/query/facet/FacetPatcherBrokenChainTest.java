@@ -28,7 +28,6 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.BrokenChunkChainException;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -41,10 +40,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A record the projection's readers ({@link FacetPatcher#recordAt}: the facet patch and fallback paths, and the accelerated GROUP BY's
- * pending pages) read with a broken chunk chain fails the statement with a retryable error that still carries the original diagnosis:
- * on a replica the chain may be read while a replicated apply is still writing it (#10941), and the next attempt reads it whole, while
- * a chain that stays broken surfaces once the client's bounded retries are spent, with its CHECK DATABASE FIX hint. A record that is
- * not there stays "no record" (a delete), and a healthy one is read.
+ * pending pages) read with a broken chunk chain fails the statement with the engine's own non-retryable
+ * {@link BrokenChunkChainException} and its CHECK DATABASE FIX hint, on every node (#11359): since #10941 and #11283 a replicated apply
+ * in motion is no longer proved to be a broken chain, so a chain that reads as broken is a corruption and must not be retried. A record
+ * that is not there stays "no record" (a delete), and a healthy one is read.
  */
 class FacetPatcherBrokenChainTest extends TestHelper {
 
@@ -57,7 +56,7 @@ class FacetPatcherBrokenChainTest extends TestHelper {
   }
 
   @Test
-  void brokenChunkChainIsARetryableErrorKeepingTheDiagnosis() {
+  void brokenChunkChainIsANonRetryableErrorWithTheRepairHint() {
     final int bucketId = createType(false);
     final RID[] rids = insertRecords();
     corruptFirstChunkPointer(bucketId);
@@ -67,9 +66,8 @@ class FacetPatcherBrokenChainTest extends TestHelper {
         .as("precondition: the chain of the first record is confirmed broken").isTrue();
 
     db.transaction(() -> assertThatThrownBy(() -> FacetPatcher.recordAt(db, rids[0]))//
-        .isInstanceOf(ConcurrentModificationException.class).isInstanceOf(NeedRetryException.class)
-        .hasMessageContaining(rids[0].toString()).hasMessageContaining("replicated apply")
-        .hasMessageContaining("Run CHECK DATABASE FIX to repair it").hasCauseInstanceOf(BrokenChunkChainException.class));
+        .isInstanceOf(BrokenChunkChainException.class).isNotInstanceOf(NeedRetryException.class)
+        .hasMessageContaining(rids[0].toString()).hasMessageContaining("Run CHECK DATABASE FIX to repair it"));
   }
 
   @Test
@@ -89,10 +87,10 @@ class FacetPatcherBrokenChainTest extends TestHelper {
 
   /**
    * The accelerated GROUP BY reads the records of the pending pages through {@link FacetPatcher#recordAt}: a broken chain there fails the
-   * statement with the same retryable error. Only the accelerated path can raise it: the normal plan's scan skips an unreadable record.
+   * statement with the same non-retryable error. Only the accelerated path can raise it: the normal plan's scan skips an unreadable record.
    */
   @Test
-  void acceleratedGroupByReadingABrokenChainOnAPendingPageIsARetryableError() throws Exception {
+  void acceleratedGroupByReadingABrokenChainOnAPendingPageIsNotRetryable() throws Exception {
     final int bucketId = createType(true);
     final RID[] rids = insertRecords();
     FacetOracle.awaitCaughtUp(database);
@@ -105,11 +103,16 @@ class FacetPatcherBrokenChainTest extends TestHelper {
       corruptFirstChunkPointer(bucketId);
       assertThatThrownBy(() -> groupCount(sql)).satisfies(failure -> {
         Throwable cause = failure;
-        while (cause != null && !(cause instanceof ConcurrentModificationException))
+        while (cause != null && !(cause instanceof BrokenChunkChainException))
           cause = cause.getCause();
-        assertThat(cause).as("a retryable error from the pending-page read: " + failure).isInstanceOf(ConcurrentModificationException.class)
-            .hasMessageContaining(rids[0].toString()).hasMessageContaining("Run CHECK DATABASE FIX to repair it")
-            .hasCauseInstanceOf(BrokenChunkChainException.class);
+        assertThat(cause).as("the broken chain from the pending-page read: " + failure).isInstanceOf(BrokenChunkChainException.class)
+            .isNotInstanceOf(NeedRetryException.class).hasMessageContaining(rids[0].toString())
+            .hasMessageContaining("Run CHECK DATABASE FIX to repair it");
+        Throwable c = failure;
+        while (c != null) {
+          assertThat(c).as("no retryable error anywhere in the chain").isNotInstanceOf(NeedRetryException.class);
+          c = c.getCause();
+        }
       });
     }
   }

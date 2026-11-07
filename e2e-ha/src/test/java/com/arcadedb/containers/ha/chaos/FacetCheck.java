@@ -45,11 +45,10 @@ import java.util.function.Predicate;
  *   {@link #warnings()}, and the polling goes on so wrong counts still surface as {@code FACET_DRIFT}</li>
  *   <li>{@code FACET_STALL} (AVAILABILITY): no exact answer, or no settled answer, before the deadline: the apply thread is
  *   stuck, a rebuild never ends or the memory budget keeps refusing the patch set</li>
- *   <li>{@code FACET_ERROR} (SAFETY): a 5xx on a facet or {@code GROUP BY} query. A 503 is retryable: a replica can read a
- *   record chain that a replicated apply is still writing, and the server answers that read with a retryable
- *   {@code ConcurrentModificationException}. A 503 is logged as a {@code FACET_RETRY} warning and the read is retried; only a
- *   503 that still answers at the deadline is a violation, since a chain that stays broken on a quiesced, converged cluster is a
- *   corruption. Any other 5xx is a violation at once</li>
+ *   <li>{@code FACET_ERROR} (SAFETY): a 5xx on a facet or {@code GROUP BY} query. A 503 is a retryable conflict (a read that
+ *   overlapped a commit or a replicated apply): it is logged as a {@code FACET_RETRY} warning and the read is retried; only a
+ *   503 that still answers at the deadline is a violation. A broken chunk chain is no longer a 503 (#11359): it is a corruption
+ *   and answers a non-retryable 5xx, a violation at once. Any other 5xx is a violation at once</li>
  *   <li>{@code FACET_SCAN} (AVAILABILITY): another I/O failure that lasts until the deadline</li>
  *   <li>{@code FACET_HARNESS} (HARNESS): the server rejected a query with a 4xx, which is the harness' fault. A 401 or 403 (an
  *   authentication lockout caused by a stranger on the port) is retried like a 503 and reported only at the deadline</li>

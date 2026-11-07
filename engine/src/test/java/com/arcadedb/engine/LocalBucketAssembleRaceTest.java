@@ -336,11 +336,11 @@ class LocalBucketAssembleRaceTest extends TestHelper {
   }
 
   /**
-   * The decision on {@code FacetPatcher.recordAt}'s mapping (roadmap Plan 6 outcome, plan 6 ruling 129), kept by Task 14 of #10662. A
-   * read through the transaction ({@code loadMultiPageRecord}) proves a chain broken against the newest committed images, under the
+   * A read through {@code FacetPatcher.recordAt} during a replicated apply (the mapping of a broken chain to a retryable conflict is
+   * gone, #11359). A read through the transaction ({@code loadMultiPageRecord}) proves a chain broken against the newest committed images, under the
    * page-manager lock when a publication overlapped. On a replica that lock does not exclude the replicated apply, and since #11283 a
    * proof a publication overlapped even under the lock is void: the chain the apply is still writing is no longer proved broken, the
-   * read ends in the plain retryable conflict. The mapping to a retryable conflict stays as the defence for a proof that does stand.
+   * read ends in the plain retryable conflict, never in a broken chain.
    */
   @Test
   void readThroughTheTransactionDuringAReplicatedApplyStillMeetsABrokenChain() throws Exception {

@@ -290,15 +290,10 @@ public final class FacetPatcher {
    * ({@link #countPatched}), the facet fallback scan ({@code FacetFallbackScanner}) and the accelerated GROUP BY's read of the pending
    * pages ({@code ColumnarGroupByStep.countProjection}).
    *
-   * @throws ConcurrentModificationException when the record's chunk chain reads as broken, on every node. Kept as a safety net after
-   *                                         #10941 and #11283 (both fixed): a replica read that overlapped a replicated apply was able to
-   *                                         see a chain in motion, and the engine cannot tell that from a corruption, so the statement
-   *                                         fails with a retryable error and the next attempt reads the chain whole; removal tracked in
-   *                                         #11359. A chain that stays broken surfaces once the client's bounded retries are spent,
-   *                                         with the original diagnosis and its CHECK DATABASE FIX hint in the message. Only an atomic
-   *                                         single-request command is retried automatically: inside an explicit transaction the client
-   *                                         manages (an HTTP session, a {@code RemoteDatabase} transaction) the exception reaches the
-   *                                         client at once, which retries or gives up itself
+   * @throws BrokenChunkChainException when the record's chunk chain reads as broken. A corruption on every node, replicas included: the
+   *                                    replicated apply no longer exposes a chain in motion as a proof of breakage (#10941, #11283), so
+   *                                    the error is not retryable and its message carries the CHECK DATABASE FIX hint. A read that
+   *                                    overlapped an apply still ends in the plain retryable {@link ConcurrentModificationException}
    */
   public static Document recordAt(final DatabaseInternal db, final RID rid) {
     // the empty slots of pending pages are not in the patch set (MatchSet keeps the occupied ones), so an absent record is a delete
@@ -306,9 +301,6 @@ public final class FacetPatcher {
       return db.lookupByRID(rid, true).asDocument();
     } catch (final RecordNotFoundException e) {
       return null;
-    } catch (final BrokenChunkChainException e) {
-      throw new ConcurrentModificationException("Columnar read of multi-page record " + rid
-          + " met a broken chunk chain, possibly a replicated apply in progress on this node, retry the statement: " + e.getMessage(), e);
     }
   }
 
