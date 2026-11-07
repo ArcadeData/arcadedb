@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.facet;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -70,6 +71,19 @@ class FacetSpecCompilerTest {
     assertThatThrownBy(() -> only("brand TERMS TOP 1001")).isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("arcadedb.columnar.topMax").hasMessageContaining("1000");
     assertThat(((TermsFacetSpec) only("brand TERMS TOP 1000")).top()).isEqualTo(1000);
+  }
+
+  @Test
+  void tooManyFacetsIsRefused() {
+    final int previous = GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.getValueAsInteger();
+    GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.setValue(2);
+    try {
+      assertThat(compile("a TERMS, b TERMS", Map.of())).hasSize(2);
+      assertThatThrownBy(() -> compile("a TERMS, b TERMS, c TERMS", Map.of())).isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("arcadedb.columnar.maxFacetsPerQuery").hasMessageContaining("3 facets").hasMessageContaining("maximum of 2");
+    } finally {
+      GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.setValue(previous);
+    }
   }
 
   @Test

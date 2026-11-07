@@ -71,6 +71,11 @@ public final class FacetSpecCompiler {
    * @throws CommandSQLParsingException on an invalid value
    */
   public static List<FacetSpec> compile(final FacetsClause clause, final CommandContext ctx) {
+    final int maxFacets = GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.getValueAsInteger();
+    if (clause.items.size() > maxFacets)
+      throw new CommandSQLParsingException(
+          "FACETS: " + clause.items.size() + " facets are above the maximum of " + maxFacets + " per query (setting "
+              + GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.getKey() + ")");
     final List<FacetSpec> specs = new ArrayList<>(clause.items.size());
     for (final FacetItem item : clause.items)
       specs.add(compile(item, ctx));

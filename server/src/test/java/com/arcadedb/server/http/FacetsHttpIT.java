@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
@@ -91,6 +92,31 @@ public class FacetsHttpIT extends BaseGraphServerTest {
     assertThat(facets.getJSONObject("meta").getBoolean("exact")).isTrue();
     assertThat(facets.getJSONObject("brand").toString()).isEqualTo(embeddedFacets(QUERY).getJSONObject("brand").toString());
     assertThat(matches(facets.getJSONObject("brand"))).isEqualTo(embeddedCount("fileSize > 0"));
+  }
+
+  /** #11353: a clause above arcadedb.columnar.maxFacetsPerQuery is refused, and the facets past arcadedb.columnar.maxResponseBuckets are unavailable. */
+  @Test
+  void facetCountAndTotalBucketsAreCapped() throws Exception {
+    final int maxFacets = GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.getValueAsInteger();
+    final int maxBuckets = GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.getValueAsInteger();
+    try {
+      final String sql = "SELECT FROM " + TYPE + " FACETS brand TERMS TOP 5, tags TERMS TOP 5 LIMIT 1";
+      final int brandBuckets = post(sql, null, null, null).getJSONObject("facets").getJSONObject("brand").getJSONArray("buckets").length();
+
+      GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.setValue(brandBuckets);
+      final JSONObject facets = post(sql, null, null, null).getJSONObject("facets");
+      assertThat(facets.getJSONObject("brand").getString("source")).isNotEqualTo("unavailable");
+      assertThat(facets.getJSONObject("tags").getString("source")).isEqualTo("unavailable");
+      assertThat(facets.getJSONObject("tags").getString("reason")).isEqualTo("bucket limit");
+
+      GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.setValue(1);
+      final HttpResponse<String> refused = send(postRequest(sql, null, null, null, null));
+      assertThat(refused.statusCode()).isGreaterThanOrEqualTo(400);
+      assertThat(refused.body()).contains("arcadedb.columnar.maxFacetsPerQuery");
+    } finally {
+      GlobalConfiguration.COLUMNAR_MAX_FACETS_PER_QUERY.setValue(maxFacets);
+      GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.setValue(maxBuckets);
+    }
   }
 
   /** No LIMIT in the text: the handler appends one above its cap, yet the facets count all 2,000 records and the limits describe rows. */

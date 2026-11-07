@@ -104,6 +104,8 @@ public final class FacetExecutor {
   /** The {@code source} of a facet a bucket of which was read from its records. */
   static final String SCAN                  = "scan";
   static final String FALLBACK_SCANS_CAPPED = "fallback scans capped";
+  /** The reason of a facet left out because the buckets of the query would pass {@code arcadedb.columnar.maxResponseBuckets}. */
+  static final String BUCKET_LIMIT          = "bucket limit";
 
   /** By facet and bucket: the projection answers the facet in the bucket; any other value is {@link #scanReason}. */
   private static final byte     ANSWERS      = 0;
@@ -222,6 +224,7 @@ public final class FacetExecutor {
           rowScan);
       if (patched > 0)
         manager.getStats().queryPatched(patched);
+      capResponseBuckets(results);
       final FacetResults facetResults = new FacetResults(exact, patched, lagMs, results);
       facetResults.setExecutionStats(stats);
       return facetResults;
@@ -233,6 +236,23 @@ public final class FacetExecutor {
         manager.getStats().queryBudgetWaits(patchCharges.waits());
       patchCharges.release();
       closeAcquired(snapshots, acquired, failure);
+    }
+  }
+
+  /**
+   * Keeps the buckets of the whole response under {@code arcadedb.columnar.maxResponseBuckets}: in declaration order, a facet whose
+   * buckets would take the total above the limit is replaced by an {@code unavailable} one with the reason {@link #BUCKET_LIMIT}.
+   */
+  static void capResponseBuckets(final LinkedHashMap<String, FacetResult> results) {
+    final long max = GlobalConfiguration.COLUMNAR_MAX_RESPONSE_BUCKETS.getValueAsInteger();
+    long total = 0;
+    for (final Map.Entry<String, FacetResult> entry : results.entrySet()) {
+      final FacetResult result = entry.getValue();
+      final int size = result.buckets().size();
+      if (total + size > max)
+        entry.setValue(FacetResult.unavailable(result.kind(), BUCKET_LIMIT));
+      else
+        total += size;
     }
   }
 
