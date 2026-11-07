@@ -35,7 +35,7 @@ class Issue11389DateWithZoneSuffixTest extends TestHelper {
   @Test
   void insertOfDateWithZoneSuffixKeepsTheDay() {
     database.getSchema().createDocumentType("D11389").createProperty("d", Type.DATE);
-    for (final String text : new String[] { "2024-05-06 +01", "2024-05-06 +01:00", "2024-05-06 -08", "2024-05-06 Z" })
+    for (final String text : new String[] { "2024-05-06 +01", "2024-05-06 +01:00", "2024-05-06 +0100", "2024-05-06 -08", "2024-05-06 Z" })
       database.transaction(() -> database.newDocument("D11389").set("d", text).save());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM D11389")) {
@@ -44,7 +44,7 @@ class Issue11389DateWithZoneSuffixTest extends TestHelper {
         assertThat((Object) rs.next().getProperty("d")).isEqualTo(LocalDate.of(2024, 5, 6));
         count++;
       }
-      assertThat(count).isEqualTo(4);
+      assertThat(count).isEqualTo(5);
     }
   }
 
@@ -58,6 +58,19 @@ class Issue11389DateWithZoneSuffixTest extends TestHelper {
     assertCount("d <= ?", 1);
     assertCount("d < ?", 0);
     assertCount("d > ?", 0);
+  }
+
+  @Test
+  void dateTimeStillReadsATimeAndNowReadsADateWithAnOffsetAsMidnightAtThatOffset() {
+    database.getSchema().createDocumentType("T11389").createProperty("t", Type.DATETIME_SECOND);
+    database.transaction(() -> {
+      database.newDocument("T11389").set("t", "2024-05-06 10:00:00").save();
+      database.newDocument("T11389").set("t", "2024-05-06 +01").save();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT FROM T11389 ORDER BY t")) {
+      assertThat(rs.next().<Object>getProperty("t").toString()).isEqualTo("2024-05-05T23:00");
+      assertThat(rs.next().<Object>getProperty("t").toString()).isEqualTo("2024-05-06T10:00");
+    }
   }
 
   private void assertCount(final String where, final int expected) {
