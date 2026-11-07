@@ -173,10 +173,10 @@ class WorkloadTest {
     assertThat(bodies).anySatisfy(body -> assertThat(body).contains("\"language\":\"sqlscript\"").contains("\"target\""));
   }
 
-  /** Node 0 is the live server, node 1 refuses connections: a write sent to it is FAILED. */
-  private Endpoints liveAndRefusing(final int closedPort) {
+  /** Node 0 is the live server, node 1 a second server that rejects every write (FAILED), held bound so no port is ever guessed. */
+  private Endpoints liveAndRejecting(final HttpServer rejecting) {
     final Endpoint live = new Endpoint("127.0.0.1", server.getAddress().getPort());
-    final Endpoint refusing = new Endpoint("127.0.0.1", closedPort);
+    final Endpoint other = new Endpoint("127.0.0.1", rejecting.getAddress().getPort());
     return new Endpoints() {
       @Override
       public int size() {
@@ -185,15 +185,20 @@ class WorkloadTest {
 
       @Override
       public Endpoint endpoint(final int node) {
-        return node == 0 ? live : refusing;
+        return node == 0 ? live : other;
       }
     };
   }
 
-  private static int freeClosedPort() throws IOException {
-    try (final ServerSocket socket = new ServerSocket(0)) {
-      return socket.getLocalPort();
-    }
+  private static HttpServer startRejectingServer() throws IOException {
+    final HttpServer rejecting = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    rejecting.createContext("/", exchange -> {
+      exchange.getRequestBody().readAllBytes();
+      exchange.sendResponseHeaders(401, -1);
+      exchange.close();
+    });
+    rejecting.start();
+    return rejecting;
   }
 
   private static long countOutcome(final Ledger ledger, final int writer, final byte outcome) {
@@ -207,10 +212,13 @@ class WorkloadTest {
   @Test
   void routedAroundNodeIsNotWrittenToExceptByTheBlindWriter() throws IOException {
     final Ledger ledger = new Ledger(2);
-    try (final Workload workload = workload(ledger, liveAndRefusing(freeClosedPort()), 2_000)) {
+    final HttpServer rejecting = startRejectingServer();
+    try (final Workload workload = workload(ledger, liveAndRejecting(rejecting), 2_000)) {
       workload.routeAround(1L << 1);
       workload.start();
       await().atMost(Duration.ofSeconds(20)).until(() -> countOutcome(ledger, 1, Ledger.FAILED) >= 5);
+    } finally {
+      rejecting.stop(0);
     }
     assertThat(countOutcome(ledger, 0, Ledger.FAILED)).as("writer 0 must avoid the routed-around node").isZero();
     assertThat(countOutcome(ledger, 0, Ledger.ACKED)).isPositive();
@@ -220,22 +228,28 @@ class WorkloadTest {
   @Test
   void routingAroundEveryNodeFallsBackToAnyNode() throws IOException {
     final Ledger ledger = new Ledger(2);
-    try (final Workload workload = workload(ledger, liveAndRefusing(freeClosedPort()), 2_000)) {
+    final HttpServer rejecting = startRejectingServer();
+    try (final Workload workload = workload(ledger, liveAndRejecting(rejecting), 2_000)) {
       workload.routeAround(0b11);
       workload.start();
       await().atMost(Duration.ofSeconds(20)).until(() -> ledger.count(Ledger.ACKED) >= 5);
+    } finally {
+      rejecting.stop(0);
     }
   }
 
   @Test
   void clearingTheRouteLetsEveryWriterReachTheNodeAgain() throws IOException {
     final Ledger ledger = new Ledger(2);
-    try (final Workload workload = workload(ledger, liveAndRefusing(freeClosedPort()), 2_000)) {
+    final HttpServer rejecting = startRejectingServer();
+    try (final Workload workload = workload(ledger, liveAndRejecting(rejecting), 2_000)) {
       workload.routeAround(1L << 1);
       workload.start();
       await().atMost(Duration.ofSeconds(20)).until(() -> ledger.count(Ledger.ACKED) >= 20);
       workload.routeAround(0);
       await().atMost(Duration.ofSeconds(20)).until(() -> countOutcome(ledger, 0, Ledger.FAILED) >= 1);
+    } finally {
+      rejecting.stop(0);
     }
   }
 
