@@ -408,6 +408,15 @@ public enum GlobalConfiguration {
       "Distinct values per dictionary-encoded property of a COLUMNAR index above which a warning is raised "
           + "(arcadedb.columnar.cardinality.exceeded). Default is 1000000", Integer.class, 1_000_000),
 
+  COLUMNAR_HIERARCHY_MAX_NODES("arcadedb.columnar.hierarchyMaxNodes", SCOPE.DATABASE,
+      "Distinct nodes (tags) of a HIERARCHY facet's tag graph above which the hierarchy is not built and the facet is reported as "
+          + "unavailable. 0 means no limit. Read at every build of the hierarchy. Default is 0", Integer.class, 0),
+
+  COLUMNAR_HIERARCHY_MAX_DEPTH("arcadedb.columnar.hierarchyMaxDepth", SCOPE.DATABASE,
+      "Depth (longest shortest-path from a root, in links) of a HIERARCHY facet's tag graph above which the hierarchy is dropped and "
+          + "the facet is reported as unavailable. 0 means no limit. Read at every build of the hierarchy. Default is 0", Integer.class,
+      0),
+
   COLUMNAR_SEGMENT_BLOCK_ROWS("arcadedb.columnar.segmentBlockRows", SCOPE.DATABASE,
       "Rows per column block of a COLUMNAR segment. Default is 16384", Integer.class, 16384),
 

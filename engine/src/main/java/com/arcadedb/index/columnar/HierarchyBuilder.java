@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.columnar;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -76,6 +77,8 @@ public final class HierarchyBuilder {
    */
   static HierarchyView build(final DatabaseInternal db, final HierarchyDefinition def, final long generation, final String indexName,
       final boolean logCycles, final HierarchyView previous, final BooleanSupplier cancelled) {
+    final int maxNodes = db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_NODES);
+    final int maxDepth = db.getConfiguration().getValueAsInteger(GlobalConfiguration.COLUMNAR_HIERARCHY_MAX_DEPTH);
     // PASS 1: A NODE PER DISTINCT KEY, VERTEX RID TO NODE
     final RidLongHashMap ridToNode = new RidLongHashMap();
     final HashMap<Object, Integer> keyToNode = new HashMap<>();
@@ -96,6 +99,8 @@ public final class HierarchyBuilder {
       }
       Integer node = keyToNode.get(key);
       if (node == null) {
+        if (maxNodes > 0 && nodeCount >= maxNodes)
+          return capped(db, def, generation, indexName, logCycles, "more than " + maxNodes + " nodes (arcadedb.columnar.hierarchyMaxNodes)");
         node = nodeCount;
         keyToNode.put(key, node);
         if (nodeCount == values.length)
@@ -163,6 +168,11 @@ public final class HierarchyBuilder {
       parents = Arrays.copyOf(parents, parentCount);
 
     final int[] depth = depths(nodeCount, parentOffsets, parents, cancelled);
+    // unlike the node cap, this one is checked after the arrays are built: the depth is only known once they are
+    if (maxDepth > 0)
+      for (final int d : depth)
+        if (d > maxDepth)
+          return capped(db, def, generation, indexName, logCycles, "deeper than " + maxDepth + " levels (arcadedb.columnar.hierarchyMaxDepth)");
     final long[] cycleState = new long[] { -1, 0 };
     final int cycleNodes = cycleNodes(nodeCount, parentOffsets, parents, values, cycleState, cancelled);
     final long cycleSignature = cycleState[1];
@@ -175,6 +185,15 @@ public final class HierarchyBuilder {
     // no orphan node in a view built from the graph: every node has a vertex
     return new HierarchyView(generation, parentOffsets, parents, values, depth, null, keyToNode, cycleNodes, cycleSignature, duplicateKeys,
         nullKeys);
+  }
+
+  private static HierarchyView capped(final DatabaseInternal db, final HierarchyDefinition def, final long generation,
+      final String indexName, final boolean log, final String what) {
+    final String reason = "hierarchy of " + def.vertexType() + "." + def.key() + " has " + what;
+    if (log)
+      LogManager.instance().log(HierarchyBuilder.class, Level.WARNING, "Hierarchy of index '%s' of database '%s' is not used: %s",
+          indexName, db.getName(), reason);
+    return HierarchyView.rejected(generation, reason);
   }
 
   /** Breadth-first from the nodes without parents over the child links: the shortest distance from a root, -1 when none reaches. */
