@@ -29,6 +29,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -46,8 +47,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *   (append-only) and rebuilt when the bucket's current dictionary is another instance (a compaction), which bumps
  *   {@link #version()}. Arrays are published copy-on-write, so a concurrent query keeps those it read. A snapshot holding a dictionary
  *   that is neither the cached one nor its bucket's current one (a compaction raced the acquire) gets an array of its own, uncached
- *   and charged to {@link FacetMemoryBudget}. A user who may not read every bucket of the declaring type gets an uncached entry of
- *   the query's own, so the merge holds the values of the buckets it reads only.</li>
+ *   and charged to {@link FacetMemoryBudget}. A user who may not read every bucket of the declaring type gets the entry of the set of buckets it
+ *   may read, so the merge holds the values of the buckets it reads only.</li>
  * </ul>
  * A value no bucket references any more keeps its merged ordinal until the entry is dropped or started afresh: the entries live in the
  * database's {@link ColumnarIndexManager#ordinalMapEntry}, cleared on any columnar schema event (they are rare: a projection or a column
@@ -82,11 +83,10 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
   public static CrossBucketOrdinalMap of(final DatabaseInternal db, final String typeName, final String property,
       final ColumnarSnapshot[] snapshots) {
     final ColumnarIndexManager manager = ((LocalDatabase) db.getEmbedded()).getColumnarIndexManager();
-    // the cached entry merges every bucket any query read: its size would count the values of buckets this user may not read
-    final Entry entry = readsEveryBucket(db, typeName) ? entry(manager, typeName, property) : new Entry();
     for (final ColumnarSnapshot snapshot : snapshots)
       if (snapshot.dictionary(property) == null)
         throw new IllegalArgumentException("The snapshot of bucket " + snapshot.bucketId() + " has no dictionary of '" + property + "'");
+    final Entry entry = entryOf(db, manager, typeName, property, snapshots);
     if (snapshots.length == 1)
       return entry.identity(snapshots[0].bucketId(), snapshots[0].dictionary(property));
     return entry.merged(manager, property, snapshots);
@@ -122,23 +122,37 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
   }
 
   /**
-   * Whether the current user may read every bucket of the declaring type and its subtypes. When not, the query merges its own snapshots
-   * in an uncached entry: its counter size and PROFILE cardinality then depend on the dictionaries of the buckets it reads only, never
-   * on values only hidden records hold, nor on what another user counted before.
+   * The entry serving the current user. The shared entry merges every bucket any unrestricted query read, so its size would count the
+   * values of buckets a restricted user may not read; such a user gets an entry of its own, keyed by the set of buckets it may read
+   * (not by the user: two users reading the same buckets see the same values), so the merge holds the values of those buckets only,
+   * never values only hidden records hold nor what a user reading more counted before, and is reused by the next query of that set.
+   * A change of ACL changes the set and so the key; the entries of sets no one asks for any more go with the next columnar schema event
+   * or when the cache outgrows its bound.
    */
-  private static boolean readsEveryBucket(final DatabaseInternal db, final String typeName) {
+  private static Entry entryOf(final DatabaseInternal db, final ColumnarIndexManager manager, final String typeName,
+      final String property, final ColumnarSnapshot[] snapshots) {
     final SecurityDatabaseUser user = SecurityHelper.currentUser(db);
     if (user == null)
-      return true;
+      return entry(manager, new Key(typeName, property));
+    final BitSet readable = new BitSet();
+    boolean readsEveryBucket = true;
     for (final Bucket bucket : db.getSchema().getType(typeName).getBuckets(true))
-      if (!user.requestAccessOnFile(bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
-        return false;
-    return true;
+      if (user.requestAccessOnFile(bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+        readable.set(bucket.getFileId());
+      else
+        readsEveryBucket = false;
+    if (readsEveryBucket)
+      return entry(manager, new Key(typeName, property));
+    // a snapshot of a bucket the user may not read is not the query of a restricted user: never cache it under the set
+    for (final ColumnarSnapshot snapshot : snapshots)
+      if (!readable.get(snapshot.bucketId()))
+        return new Entry();
+    return entry(manager, new RestrictedKey(typeName, property, readable));
   }
 
-  /** The database's entry of the (declaring type, property), held by its {@link ColumnarIndexManager#ordinalMapEntry}. */
-  private static Entry entry(final ColumnarIndexManager manager, final String typeName, final String property) {
-    return (Entry) manager.ordinalMapEntry(new Key(typeName, property), k -> new Entry());
+  /** The database's entry under the key, held by its {@link ColumnarIndexManager#ordinalMapEntry}. */
+  private static Entry entry(final ColumnarIndexManager manager, final Object key) {
+    return (Entry) manager.ordinalMapEntry(key, k -> new Entry());
   }
 
   private static Object normalize(final Object value) {
@@ -146,6 +160,10 @@ public abstract class CrossBucketOrdinalMap implements AutoCloseable {
   }
 
   private record Key(String typeName, String property) {
+  }
+
+  /** The entry of the users reading exactly these buckets (file ids) of the declaring type; {@link BitSet} compares by value. */
+  private record RestrictedKey(String typeName, String property, BitSet readableBuckets) {
   }
 
   /** The bucket ordinals are the merged ordinals: a type read through one bucket. */

@@ -238,6 +238,7 @@ public final class ColumnarIndexManager {
   private volatile boolean    reconcileTracked;
   private final List<Consumer<ColumnarSchemaEvent>> schemaListeners = new CopyOnWriteArrayList<>();
   /** The query layer's merged ordinal maps of this database (plan 4), dropped on a columnar schema event and on close. */
+  private static final int ORDINAL_MAP_CACHE_MAX_ENTRIES = 256;
   private final ConcurrentHashMap<Object, Object>   ordinalMapCache = new ConcurrentHashMap<>();
   private final Runnable      tick         = this::tick;
   /** The interval the tick is registered with: the paced apply interval, read only when there is work (C-M1). */
@@ -1127,6 +1128,9 @@ public final class ColumnarIndexManager {
    * @apiNote internal to {@code com.arcadedb.query.facet.CrossBucketOrdinalMap}, which owns the keys and the values
    */
   public Object ordinalMapEntry(final Object key, final Function<Object, Object> factory) {
+    // entries of restricted readable-bucket sets are keyed by ACL: bound them (queries in flight keep the entry they hold)
+    if (ordinalMapCache.size() >= ORDINAL_MAP_CACHE_MAX_ENTRIES)
+      ordinalMapCache.clear();
     return ordinalMapCache.computeIfAbsent(key, factory);
   }
 

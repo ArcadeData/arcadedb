@@ -19,6 +19,7 @@
 package com.arcadedb.query.facet;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
@@ -32,6 +33,7 @@ import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.index.columnar.GlobalDictionary;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -160,6 +162,119 @@ class CrossBucketOrdinalMapTest extends TestHelper {
       assertThat(mergedByValue(map, snapshots).keySet()).isEqualTo(distinct);
     } finally {
       close(snapshots);
+    }
+  }
+
+  /** A user who may do everything but read the records of the buckets with the given file ids. */
+  private static SecurityDatabaseUser userWithoutReadOn(final Set<Integer> hidden) {
+    return new SecurityDatabaseUser() {
+      @Override
+      public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+        return true;
+      }
+
+      @Override
+      public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+        return access != ACCESS.READ_RECORD || !hidden.contains(fileId);
+      }
+
+      @Override
+      public String getName() {
+        return "restricted";
+      }
+
+      @Override
+      public long getResultSetLimit() {
+        return -1L;
+      }
+
+      @Override
+      public long getReadTimeout() {
+        return -1L;
+      }
+    };
+  }
+
+  /** The snapshots of the buckets of the type but the hidden one. */
+  private ColumnarSnapshot[] acquireExcept(final int hiddenFileId) {
+    final List<ColumnarSnapshot> readable = new ArrayList<>();
+    for (final Bucket bucket : buckets(TYPE))
+      if (bucket.getFileId() != hiddenFileId)
+        readable.add(manager().projection(bucket.getFileId()).acquire());
+    return readable.toArray(new ColumnarSnapshot[0]);
+  }
+
+  /**
+   * Issue #11354: a user who may not read every bucket used to merge the dictionaries of its buckets from scratch on every query. The
+   * merge is now cached per set of readable buckets: the next query of that set reuses it, it never holds a value only a hidden bucket
+   * has, and another set (another ACL) or the unrestricted users never share it.
+   */
+  @Test
+  @Timeout(300)
+  void restrictedUsersReuseTheEntryOfTheirReadableBucketSet() {
+    final ColumnarTestData data = data(3);
+    data.createSchema(database);
+    data.insertAssets(database, 1_500);
+    final List<Bucket> buckets = buckets(TYPE);
+    insertIntoBucket(buckets.get(0), "only-in-hidden-bucket", 3);
+    FacetOracle.awaitCaughtUp(database);
+
+    final int hidden = buckets.get(0).getFileId();
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+    final ColumnarSnapshot[] all = acquire(TYPE);
+    final ColumnarSnapshot[] readable = acquireExcept(hidden);
+    final ColumnarSnapshot[] readableAgain = acquireExcept(hidden);
+    final ColumnarSnapshot[] otherReadable = acquireExcept(buckets.get(1).getFileId());
+    try {
+      final CrossBucketOrdinalMap.Entry shared;
+      try (final CrossBucketOrdinalMap map = of(all)) {
+        shared = ((CrossBucketOrdinalMap.MergedOrdinalMap) map).entry();
+        assertThat(map.mergedOf("only-in-hidden-bucket")).isNotNegative();
+      }
+
+      context.setCurrentUser(userWithoutReadOn(Set.of(hidden)));
+      try (final CrossBucketOrdinalMap first = of(readable); final CrossBucketOrdinalMap second = of(readableAgain)) {
+        final CrossBucketOrdinalMap.Entry entry = ((CrossBucketOrdinalMap.MergedOrdinalMap) first).entry();
+        assertThat(((CrossBucketOrdinalMap.MergedOrdinalMap) second).entry()).as("the next query of the same set reuses the entry").isSameAs(entry);
+        assertThat(entry).as("never the shared entry").isNotSameAs(shared);
+        assertThat(second.version()).isEqualTo(first.version());
+        assertThat(first.mergedOf("only-in-hidden-bucket")).as("a value only the hidden bucket holds").isEqualTo(-1);
+        final Set<Object> distinct = new HashSet<>();
+        for (final ColumnarSnapshot snapshot : readable) {
+          final GlobalDictionary dictionary = snapshot.dictionary("brand");
+          for (int ordinal = 0; ordinal < dictionary.size(); ordinal++)
+            distinct.add(dictionary.valueOf(ordinal));
+        }
+        assertThat(first.size()).as("the values of the readable buckets only").isEqualTo(distinct.size());
+        assertThat(mergedByValue(first, readable).keySet()).isEqualTo(distinct);
+      }
+
+      // another ACL (another set of readable buckets) never shares the entry
+      context.setCurrentUser(userWithoutReadOn(Set.of(buckets.get(1).getFileId())));
+      final CrossBucketOrdinalMap.Entry otherEntry;
+      try (final CrossBucketOrdinalMap map = of(otherReadable)) {
+        otherEntry = ((CrossBucketOrdinalMap.MergedOrdinalMap) map).entry();
+      }
+      context.setCurrentUser(userWithoutReadOn(Set.of(hidden)));
+      try (final CrossBucketOrdinalMap map = of(readable)) {
+        assertThat(otherEntry).isNotSameAs(((CrossBucketOrdinalMap.MergedOrdinalMap) map).entry());
+      }
+
+      // a columnar schema event drops the entries of the restricted sets too
+      final CrossBucketOrdinalMap.Entry before;
+      try (final CrossBucketOrdinalMap map = of(readable)) {
+        before = ((CrossBucketOrdinalMap.MergedOrdinalMap) map).entry();
+      }
+      manager().onSchemaEvent(new ColumnarSchemaEvent(ColumnarSchemaEvent.Kind.RENAME, readable[0].bucketId(), -1, null, TYPE));
+      try (final CrossBucketOrdinalMap map = of(readable)) {
+        assertThat(((CrossBucketOrdinalMap.MergedOrdinalMap) map).entry()).isNotSameAs(before);
+      }
+    } finally {
+      context.setCurrentUser(null);
+      close(all);
+      close(readable);
+      close(readableAgain);
+      close(otherReadable);
     }
   }
 
