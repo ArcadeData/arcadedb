@@ -65,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #7758: the frozen-files run ({@code [2]}) restored 0 of the 50 records, intermittently, in the CI lane. The
  * cause was the backup, not the test: a flush suspension that began while a commit's pages were still queued froze the
  * files without them, so the archive carried the bucket as it stood before the commit (issue #8111, fixed by PR #8128
- * and pinned in the engine by {@code Issue8111SuspendFlushDrainsPendingPagesTest}). What #7758 asked of the test is
+ * and pinned in the engine by {@code PageManagerFlushSuspendTest}). What #7758 asked of the test is
  * kept here: each parameter has its own paths and chooses the backup path on its own database's configuration, and the
  * archive is checked for the committed records BEFORE the restore, so a recurrence names the half that lost them.
  *
